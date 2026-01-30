@@ -12,7 +12,17 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from types import TracebackType
-from typing import Any, Callable, Iterable, Literal, Protocol, TypedDict, cast, overload
+from typing import (
+    Any,
+    Callable,
+    Iterable,
+    Iterator,
+    Literal,
+    Protocol,
+    TypedDict,
+    cast,
+    overload
+)
 
 from .run import (
     LockDir,
@@ -27,6 +37,7 @@ from .run import (
 
 SANITIZE: re.Pattern[str] = re.compile(r"[^a-zA-Z0-9_.-]")
 ATOMIC_UNDO: dict[str, Callable[[Pipeline, dict[str, Any]], None]] = {}
+STATE: Path = UserInfo().home / ".local" / "state" / "bertrand"
 
 
 class HasQualName(Protocol):
@@ -92,39 +103,45 @@ def atomic(t: type[Atomic]) -> type[Atomic]:
     return t
 
 
+# TODO: I should implement some level of journal compaction over time, to avoid
+# endless growth of the journal file.
+# -> always keep the N most recent failed runs for each step, and discard the rest.
+
+
+# TODO: also, since I can now pass in arguments from the `run()` method, then the door
+# is open to converting all CLI commands into pipelines, which is super clean.  I just
+# need some notion of an ephemeral step that doesn't get recorded in the journal,
+# since some CLI steps are one-offs that don't need to be cached between runs.
+# -> Persistent steps can never depend on ephemeral ones, but ephemeral steps can
+# depend on persistent ones.  This could be enforced in the decorator.
+
+
 @dataclass
 class Pipeline:
     """A reversible sequence of steps that can be planned and executed in order.
 
     Attributes
     ----------
+    state_dir : Path
+        The base directory for storing pipeline state, including the lock, journal,
+        and backup files.
+    schema : int
+        The schema version to expect when loading the journal file.
     user : UserInfo
         The user information (uid/gid/name/home directory) for the user performing the
         installation.
-    assume_yes : bool
-        Whether to assume "yes" for all prompts during installation.
     timeout : int
         The timeout in seconds for acquiring the installation lock.  May also be used
         by operations that need to wait for external resources.
-    scope: str
-        A string identifying the pipeline scope for this installation context.  This
-        will be used to disambiguate the state directory if multiple pipelines are in
-        use, and will also be checked against the journal file to ensure compatibility.
-    schema : int
-        The schema version of the journal format, for compatibility checks.
     attempt_id : str
         A UUID for the current installation attempt.
+    targets : list[Pipeline.Target]
+        The list of registered installation steps in the pipeline, along with their
+        dependency information.
     facts : dict[str, Any]
         A scratch space for storing arbitrary facts during installation.  These will
         be loaded from completed steps in previous runs if needed, and are otherwise
         populated idempotently by steps during installation.
-    targets : list[Pipeline.Target]
-        The list of registered installation steps in the pipeline, along with their
-        dependency information.
-    capabilities : set[str]
-        The set of all capability flags provided by the registered steps in the
-        pipeline.  At minimum, this will include the fully-qualified name of each step
-        function, which must be unique.
 
     Notes
     -----
@@ -132,52 +149,33 @@ class Pipeline:
     managers.
 
     When used as a function decorator, the `__call__()` method will register new
-    installation steps by appending the decorated function to the pipeline's internal
-    list, which will then be topologically sorted by their capabilities and executed
-    when the `run()` method is invoked.  Decorators cannot be applied while the
-    pipeline context is active.
+    steps by appending a decorated function to the pipeline's internal list, which will
+    then be topologically sorted by their capabilities and executed when the `run()`
+    method is invoked.  Decorators cannot be applied while the pipeline context is
+    active.
 
     When used as a context manager, the pipeline will acquire an exclusive lock on a
-    user-level installation state directory, and load or create a persistent journal to
-    determine which steps have already been completed, as well as roll back those that
-    were interrupted or failed.  When the `run()` method is invoked, it will begin by
-    acquiring this context and executing any incomplete steps with the result of the
-    `step()` method, which produces a nested context that records operations in the
-    journal and completes the step on exit.  If the step function raises an error
-    during execution, then the recorded operations will be replayed in reverse order to
-    roll the installation back to a previous state before propagating the error.
+    user-defined state directory, and load or create a persistent journal to determine
+    which steps have already been completed, as well as roll back those that were
+    interrupted or failed.  When the `run()` method is invoked, it will begin by
+    acquiring this context and executing any incomplete steps with nested `InProgress`
+    contexts, which record operations in the journal and complete the step on exit.  If
+    the step function raises an error during execution, then the recorded operations
+    will be replayed in reverse order to roll the pipeline back to a previous state
+    before propagating the error.
 
-    Steps are always ordered according to their `requires` and `provides` capabilities,
-    with ties broken by their registration order.  If a step is added or removed from
-    the pipeline or its originating module is changed in any way, then all dependent
-    steps will be rolled back and re-executed on the next run.  The `undo()` method
-    will also replay all completed steps in reverse order to uninstall the entire
-    pipeline or roll back certain capabilities by name.
+    Steps are always ordered according to their `requires` capabilities, with ties
+    broken by their registration order.  If a step is added or removed from the
+    pipeline or its originating module is changed in any way, then all dependent steps
+    will be rolled back and re-executed on the next run.  The `undo()` method also
+    allows users to roll back steps by dependency, or all at once, by replaying the
+    journal in reverse order.
     """
     class Function(Protocol):
         """A type hint for a function that can be decorated as a pipeline step."""
         __module__: str
         __qualname__: str
         def __call__(self, ctx: Pipeline.InProgress) -> None: ...
-
-    class Operation(TypedDict):
-        """Type hint for an operation taken as part of a step."""
-        kind: str  # fully-qualified name of the operation class
-        payload: dict[str, Any]  # operation-specific payload for undoing the operation
-
-    class Step(TypedDict, total=False):
-        """Type hint for an atomic step in the journal."""
-        attempt_id: str  # uuid of the installation run that created this step
-        name: str  # dotted name of the step function
-        version: str  # hash of the step's originating module for change detection
-        status: Literal["in_progress", "completed", "failed"]
-        started_at: str  # ISO timestamp
-        ended_at: str  # ISO timestamp
-        requires: list[str]  # dotted names of prerequisite steps
-        ops: list[Pipeline.Operation]  # ordered operations performed in this step
-        facts: dict[str, Any]  # facts recorded during this step
-        backups: list[str]  # backup filenames associated with this step
-        error: str  # error message if step failed
 
     @dataclass(frozen=True)
     class Target:
@@ -212,25 +210,36 @@ class Pipeline:
             return id(self.func)
 
         def __eq__(self, other: Any) -> bool:
-            return self is other if isinstance(other, Pipeline.Target) else NotImplemented
+            if isinstance(other, Pipeline.Target):
+                return self.func is other.func
+            return NotImplemented
+
+    class OpRecord(TypedDict):
+        """Type hint for an operation taken as part of a step."""
+        kind: str  # fully-qualified name of the operation class
+        payload: dict[str, Any]  # operation-specific payload for undoing the operation
+
+    class StepRecord(TypedDict, total=False):
+        """Type hint for an atomic step in the journal."""
+        attempt_id: str  # uuid of the installation run that created this step
+        name: str  # dotted name of the step function
+        version: str  # hash of the step's originating module for change detection
+        status: Literal["in_progress", "completed", "failed"]
+        started_at: str  # ISO timestamp
+        ended_at: str  # ISO timestamp
+        requires: list[str]  # dotted names of prerequisite steps
+        ops: list[Pipeline.OpRecord]  # ordered operations performed in this step
+        args: dict[str, str]  # keyword name and value hash of arguments accessed during this step
+        facts: dict[str, Any]  # facts recorded during this step
+        backups: list[str]  # backup filenames associated with this step
+        error: str  # error message if step failed
 
     # pipeline-wide config
-    scope: str
+    state_dir: Path
+    schema: int = 1
     user: UserInfo = field(default_factory=UserInfo)
-    assume_yes: bool = False
     timeout: int = 30  # seconds
     attempt_id: str = field(default_factory=lambda: uuid.uuid4().hex, repr=False)
-
-    # TODO: _versions can use targets as keys instead of names
-
-    # context
-    state_dir: Path = field(init=False)
-    facts: dict[str, Any] = field(default_factory=dict, repr=False)
-    _lock: LockDir = field(init=False, repr=False)
-    _data: dict[str, Any] = field(default_factory=dict, repr=False)  # journal data
-    _versions: dict[str, str] = field(default_factory=dict, repr=False)  # name -> observed version
-    _active: Pipeline.Target | None = field(default=None, repr=False)  # to forbid nested steps
-    _completed: set[Pipeline.Target] = field(default_factory=set, repr=False)
 
     # planning/registration
     targets: list[Pipeline.Target] = field(default_factory=list)
@@ -238,13 +247,23 @@ class Pipeline:
     _lookup: dict[str, Pipeline.Target] = field(default_factory=dict, repr=False)  # name -> target
     _modules: dict[str, str] = field(default_factory=dict, repr=False)  # module path -> hash
 
+    # context
+    facts: dict[str, Any] = field(default_factory=dict, repr=False)
+    _lock: LockDir = field(init=False, repr=False)
+    _data: dict[str, Any] = field(default_factory=dict, repr=False)
+    _completed: dict[Pipeline.Target, str] = field(default_factory=dict, repr=False)
+    _active: Pipeline.Target | None = field(default=None, repr=False)
+    _kwargs: dict[str, tuple[str, Any]] = field(default_factory=dict, repr=False)
+
     def __post_init__(self) -> None:
-        self.state_dir = self.user.home / ".local" / "state" / "bertrand" / self.scope
         mkdir_private(self.state_dir)
         mkdir_private(self.backup_dir)
         self._lock = LockDir(path=self.state_dir / ".lock", timeout=self.timeout)
 
-    def _version(self, obj: Any) -> str:
+    # TODO: if a module hash returns "", then I should always invalidate dependent
+    # that step, since I can't be sure it hasn't changed.
+
+    def _module_hash(self, obj: Any) -> str:
         try:
             # find originating source file
             source = inspect.getsourcefile(obj) or inspect.getfile(obj)
@@ -269,6 +288,10 @@ class Pipeline:
         except Exception:
             return ""  # best-effort
 
+    # TODO: json serialization for arguments, facts, and payloads is currently too
+    # strict.  I should use sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+    # and default=str
+
     def _plan(self) -> None:
         if self._ordered:
             return
@@ -290,7 +313,7 @@ class Pipeline:
             if len(new_pending) == len(pending):
                 lines = ["Pipeline stalled; unsatisfied dependencies:"]
                 for s in pending:
-                    lines.append(f"  - {_qualname(s.func)}: missing {s.requires - have}")
+                    lines.append(f"  - {s}: missing {s.requires - have}")
                 raise OSError("\n".join(lines))
 
             pending = new_pending
@@ -301,8 +324,28 @@ class Pipeline:
     def _dump(self) -> None:
         atomic_write_text(self.journal, json.dumps(self._data, indent=2, sort_keys=True) + "\n")
 
-    def _rollback_step(self, step: Pipeline.Step) -> None:
-        # undo operations in reverse order
+    def _rollback_step(self, step: Pipeline.StepRecord) -> None:
+        name = step.get("name")
+        step["ended_at"] = _utc_now_iso()
+        step["status"] = "failed"
+
+        # TODO: rather than removing facts blindly, I should maybe just rebuild
+        # the facts dict from scratch after rollback?  Or maybe I can track the
+        # facts that are accessed by a step, similar to what I do for args?
+
+        # remove any facts set by this step
+        facts = step.get("facts")
+        if isinstance(facts, dict):
+            for key in facts:
+                self.facts.pop(key, None)
+
+        # remove from completed targets if present
+        if isinstance(name, str):
+            target = self._lookup.get(name)
+            if target is not None:
+                self._completed.pop(target, None)
+
+        # undo operations in reverse order (best-effort)
         ok = True
         for op in reversed(step.get("ops", [])):
             undo = ATOMIC_UNDO.get(op["kind"])
@@ -310,50 +353,34 @@ class Pipeline:
                 try:
                     undo(self, op["payload"])
                 except Exception:
-                    ok = False  # best-effort
+                    ok = False
 
         # remove backup files associated with this step
-        if ok:
-            backups = step.get("backups", [])
-            while backups:
-                b = backups.pop()
-                try:
-                    p = self.backup_dir / b
-                    if p.exists() and p.is_file():
-                        p.unlink()
-                except Exception:
-                    backups.append(b)  # best-effort
-                    ok = False
-                    break
+        kept: list[str] = []
+        for b in step.get("backups", []):
+            try:
+                p = self.backup_dir / b
+                if p.exists() and p.is_file():
+                    p.unlink()
+            except Exception:
+                kept.append(b)  # best-effort
 
-        # mark step as failed
-        if ok:
-            step["ended_at"] = _utc_now_iso()
-            step["status"] = "failed"
+        # keep track of any backups that couldn't be deleted
+        step["backups"] = kept
+        if not ok:
+            error = step.get("error", "")
+            if isinstance(error, str) and error:
+                step["error"] = f"{error}; partial rollback failure"
+            else:
+                step["error"] = "partial rollback failure"
 
     def _rollback_in_progress(self) -> bool:
         changed = False
-        for s in reversed(self.steps):
+        for s in reversed(self.records):
             if s.get("status") == "in_progress":
                 self._rollback_step(s)
                 changed = True
         return changed
-
-    def _clean_backups(self) -> None:
-        keep: set[str] = {
-            b
-            for s in self.steps
-            for b in (s.get("backups", []) or []) if isinstance(b, str) and b
-        }
-        try:
-            for p in self.backup_dir.iterdir():
-                if p.is_file() and p.name not in keep:
-                    try:
-                        p.unlink()
-                    except OSError:
-                        pass  # best-effort
-        except OSError:
-            pass  # best-effort
 
     def __enter__(self) -> Pipeline:
         # acquire lock
@@ -365,14 +392,14 @@ class Pipeline:
         changed = False
         if self.journal.exists():
             self._data = json.loads(self.journal.read_text(encoding="utf-8"))
-            if self._data.get("scope") != self.scope:
+            if self._data.get("schema") != f"pipeline/v{self.schema}":
                 raise OSError(
-                    f"Registry schema/scope mismatch at {self.journal}. "
-                    f"Found scope={self._data.get('scope')}."
+                    f"Registry schema mismatch at {self.journal}. Found schema="
+                    f"{self._data.get('schema')} (expected pipeline/v{self.schema})."
                 )
         else:  # write new journal
             self._data = {
-                "scope": self.scope,
+                "schema": f"pipeline/v{self.schema}",
                 "created_at": _utc_now_iso(),
                 "uid": self.user.uid,
                 "user": self.user.name,
@@ -389,22 +416,32 @@ class Pipeline:
             self._dump()
 
         # clean up any orphaned backup files
-        self._clean_backups()
+        keep: set[str] = {
+            b
+            for s in self.records
+            for b in (s.get("backups", []) or []) if isinstance(b, str)
+        }
+        try:
+            for p in self.backup_dir.iterdir():
+                if p.is_file() and p.name not in keep:
+                    try:
+                        p.unlink()
+                    except OSError:
+                        pass
+        except OSError:
+            pass  # best-effort
 
         # hydrate in-memory state
         self.facts.clear()
         self._completed.clear()
-        for s in self.steps:
+        for s in self.records:
             if s.get("status") == "completed":
                 name = s.get("name")
-                if isinstance(name, str):
+                version = s.get("version")
+                if isinstance(name, str) and isinstance(version, str):
                     target = self._lookup.get(name)
                     if target is not None:
-                        self._completed.add(target)
-
-                version = s.get("version")
-                if isinstance(version, str) and name in self._versions:
-                    self._versions[name] = version
+                        self._completed[target] = version
 
                 facts = s.get("facts")
                 if isinstance(facts, dict):
@@ -427,6 +464,10 @@ class Pipeline:
 
         # always synchronize journal state on exit
         self._dump()
+        self._data.clear()
+        self.facts.clear()
+        self._completed.clear()
+        self._kwargs.clear()
 
         # release lock
         self._lock.__exit__(exc_type, exc_value, traceback)
@@ -482,7 +523,12 @@ class Pipeline:
         TypeError
             If any provided capabilities are not unique within the pipeline, or if
             the step name is not unique.
+        OSError
+            If the pipeline context is currently active.
         """
+        if self._lock.depth > 0:
+            raise OSError("cannot register pipeline steps while within its context")
+
         if not enable:  # no-op
             return func if func is not None else lambda func: func
 
@@ -506,13 +552,50 @@ class Pipeline:
                 r = frozenset(_r)
 
             # register step
-            target = Pipeline.Target(func=func, version=self._version(func), requires=r)
+            target = Pipeline.Target(func=func, version=self._module_hash(func), requires=r)
             self.targets.append(target)
             self._lookup[name] = target
             self._ordered = False  # re-plan on next run
             return func
 
         return _decorator(func) if func is not None else _decorator
+
+    def __len__(self) -> int:
+        """The number of functions registered in this pipeline.
+
+        Returns
+        -------
+        int
+            The number of registered functions.
+        """
+        return len(self.targets)
+
+    def __iter__(self) -> Iterator[Pipeline.Function]:
+        """Iterate over the functions registered in this pipeline in topological order.
+
+        Returns
+        -------
+        Iterator[Pipeline.Function]
+            An iterator over the registered functions.
+        """
+        self._plan()
+        for target in self.targets:
+            yield target.func
+
+    def __contains__(self, target: Pipeline.Function) -> bool:
+        """Check if a function is registered as a target in this pipeline.
+
+        Parameters
+        ----------
+        target : Pipeline.Function
+            The function to check for.
+
+        Returns
+        -------
+        bool
+            True if the function is registered, False otherwise.
+        """
+        return _qualname(target) in self._lookup
 
     @property
     def backup_dir(self) -> Path:
@@ -537,14 +620,14 @@ class Pipeline:
         return self.state_dir / "journal.json"
 
     @property
-    def steps(self) -> list[Pipeline.Step]:
+    def records(self) -> list[Pipeline.StepRecord]:
         """
         Returns
         -------
-        list[Pipeline.Step]
+        list[Pipeline.StepRecord]
             A list of steps recorded in the journal.
         """
-        return cast(list[Pipeline.Step], self._data.setdefault("steps", []))
+        return cast(list[Pipeline.StepRecord], self._data.setdefault("steps", []))
 
     @dataclass
     class InProgress:
@@ -552,28 +635,27 @@ class Pipeline:
         # pylint: disable=protected-access
         pipeline: Pipeline
         target: Pipeline.Target
-        rec: Pipeline.Step = field(init=False)
+        record: Pipeline.StepRecord = field(init=False)
 
         def __enter__(self) -> Pipeline.InProgress:
             if self.pipeline._active is not None:
                 raise OSError("nested installation steps are not supported")
-            self.rec = {
-                "id": uuid.uuid4().hex,
+            self.record = {
                 "attempt_id": self.pipeline.attempt_id,
-                "name": _qualname(self.target.func),
+                "name": str(self.target),
                 "version": self.target.version,
                 "status": "in_progress",
                 "started_at": _utc_now_iso(),
-                "provides": list(self.target.provides),
-                "requires": list(self.target.requires),
+                "requires": sorted(str(p) for p in self.target.requires),
                 "ops": [],
+                "args": {},
                 "facts": {},
                 "backups": [],
                 "error": "",
             }
-            self.pipeline.steps.append(self.rec)
+            self.pipeline.records.append(self.record)
             self.pipeline._dump()
-            self.pipeline._active = target
+            self.pipeline._active = self.target
             return self
 
         def __exit__(
@@ -586,12 +668,17 @@ class Pipeline:
                 raise OSError("installation step exit does not match active step")
             try:
                 if exc_type is None:
-                    self.rec["status"] = "completed"
-                    self.rec["ended_at"] = _utc_now_iso()
-                    self.pipeline.facts.update(self.rec["facts"])
+                    self.record["status"] = "completed"
+                    self.record["ended_at"] = _utc_now_iso()
+                    self.pipeline.facts.update(self.record["facts"])
+                    self.pipeline._completed[self.target] = self.target.version
                 else:
-                    self.pipeline._rollback_step(self.rec)
-                    self.rec["error"] = f"{exc_type.__name__}: {exc_value}"
+                    self.pipeline._rollback_step(self.record)
+                    error = self.record.get("error")
+                    if isinstance(error, str) and error:
+                        self.record["error"] = f"{error}; {exc_type.__name__}: {exc_value}"
+                    else:
+                        self.record["error"] = f"{exc_type.__name__}: {exc_value}"
                 self.pipeline._dump()
             finally:
                 self.pipeline._active = None
@@ -627,16 +714,6 @@ class Pipeline:
             return self.pipeline.user.gid
 
         @property
-        def assume_yes(self) -> bool:
-            """
-            Returns
-            -------
-            bool
-                Whether to assume "yes" for all prompts during installation.
-            """
-            return self.pipeline.assume_yes
-
-        @property
         def timeout(self) -> int:
             """
             Returns
@@ -667,13 +744,16 @@ class Pipeline:
             return self.pipeline.attempt_id
 
         def __getitem__(self, key: str) -> Any:
-            """Look up a fact stored in the installation context, preferring the local
-            step context and falling back to the global context.
+            """Look up a fact stored in the pipeline context, preferring arguments
+            passed to the pipeline's `run()` method, then the local step context, and
+            finally the global context if necessary.
 
             Parameters
             ----------
             key : str
-                The fact key to look up.
+                The key to look up.  If this corresponds to an argument passed to the
+                pipeline's `run()` method, then the argument and its hashed value will
+                be recorded in the journal for change detection.
 
             Returns
             -------
@@ -685,9 +765,18 @@ class Pipeline:
             KeyError
                 If the requested fact is not found.
             """
-            f = self.rec["facts"]
+            # kwargs take precedence over facts
+            if key in self.pipeline._kwargs:
+                arg_hash, value = self.pipeline._kwargs[key]
+                self.record.setdefault("args", {})[key] = arg_hash
+                return value
+
+            # local facts take precedence over global facts
+            f = self.record["facts"]
             if key in f:
                 return f[key]
+
+            # fall back to global facts
             return self.pipeline.facts[key]
 
         def __setitem__(self, key: str, value: Any) -> None:
@@ -697,27 +786,36 @@ class Pipeline:
             Parameters
             ----------
             key : str
-                The fact key to set.
+                The key to set.
             value : Any
-                The value to set for the requested fact.
+                The value to set for the keyed fact.
+
+            Raises
+            ------
+            KeyError
+                If the fact key conflicts with an argument passed to the pipeline's
+                `run()` method or a fact in the global context.
             """
-            self.rec["facts"][key] = value
+            if key in self.pipeline._kwargs or key in self.pipeline.facts:
+                raise KeyError(f"Cannot overwrite '{key}' in installation context")
+            json.dumps(value)  # validate serializability
+            self.record["facts"][key] = value
 
         def __delitem__(self, key: str) -> None:
-            """Delete a fact from the local step context.  Never modifies the global
-            context.
+            """Delete a fact from the local step context.  Never modifies the
+            arguments passed to the pipeline's `run()` method or the global context.
 
             Parameters
             ----------
             key : str
-                The fact key to delete.
+                The key to delete.
 
             Raises
             ------
             KeyError
                 If the requested fact is not found in the local step context.
             """
-            del self.rec["facts"][key]
+            del self.record["facts"][key]
 
         def __contains__(self, key: str) -> bool:
             """Check if a fact exists in the local step context or the global context.
@@ -732,7 +830,11 @@ class Pipeline:
             bool
                 True if the fact exists in either context, False otherwise.
             """
-            return key in self.rec["facts"] or key in self.pipeline.facts
+            return (
+                key in self.pipeline._kwargs or
+                key in self.record["facts"] or
+                key in self.pipeline.facts
+            )
 
         def get(self, key: str, default: Any = None) -> Any:
             """Look up a fact stored in the installation context, preferring the local
@@ -750,9 +852,18 @@ class Pipeline:
             Any
                 The value of the requested fact, or the default value if not found.
             """
-            f = self.rec["facts"]
+            # kwargs take precedence over facts
+            if key in self.pipeline._kwargs:
+                arg_hash, value = self.pipeline._kwargs[key]
+                self.record.setdefault("args", {})[key] = arg_hash
+                return value
+
+            # local facts take precedence over global facts
+            f = self.record["facts"]
             if key in f:
                 return f[key]
+
+            # fall back to global facts
             return self.pipeline.facts.get(key, default)
 
         def do(self, op: Atomic) -> None:
@@ -766,7 +877,8 @@ class Pipeline:
             """
             payload = op.apply(self)
             if payload is not None:
-                self.rec.setdefault("ops", []).append({
+                json.dumps(payload)  # validate serializability
+                self.record.setdefault("ops", []).append({
                     "kind": _qualname(type(op)),
                     "payload": payload
                 })
@@ -798,7 +910,7 @@ class Pipeline:
                 raise FileNotFoundError(f"Cannot back up non-existent file: {path}")
             filename = f"{uuid.uuid4().hex}__{SANITIZE.sub('_', path.name.strip())}"
             atomic_write_bytes(self.pipeline.backup_dir / filename, path.read_bytes())
-            self.rec.setdefault("backups", []).append(filename)
+            self.record.setdefault("backups", []).append(filename)
             self.pipeline._dump()
             return filename
 
@@ -837,16 +949,16 @@ class Pipeline:
             return None
         return path.read_bytes()
 
-    # TODO: run() should accept optional **kwargs to pass to each step function?  That's
-    # the mechanism I would use to pass in command-line options or other context.
-    # In order to implement this, I would have to store the kwargs internally within
-    # the pipeline instance, and then expose them via the InProgress context.  Maybe
-    # they should be merged with the facts dict somehow?  The trouble here is that
-    # changing the kwargs would possibly invalidate the pipeline, so it would have to
-    # be very carefully managed.
-
     def run(self, **kwargs: Any) -> None:
         """Run the installation pipeline with the given `Pipeline`.
+
+        Parameters
+        ----------
+        **kwargs : Any
+            Keyword arguments that can be accessed by steps during installation via
+            the `ctx.arg()` method.  If any argument value's serialized hash changes
+            between runs, then any steps that access it or depend on a step that does
+            so will be rolled back and re-executed.
 
         Raises
         ------
@@ -860,42 +972,66 @@ class Pipeline:
         if self._lock.depth > 0:
             raise OSError("cannot run a pipeline while within its context")
 
-        # compute topological order
+        # TODO: it may be possible to store the JSON in the `kwargs` dict directly,
+        # and then return lists or dicts as tuples or MappingProxies to prevent
+        # mutation after hashing.  Or I can just list this in the contract and
+        # leave it up to the user (which is generally just me).
+
+        # compute topological order + record kwargs
         self._plan()
+        self._kwargs = {
+            k: (hashlib.sha256(json.dumps(v, sort_keys=True).encode("utf-8")).hexdigest(), v)
+            for k, v in kwargs.items()
+        }
 
         # acquire lock + journal context
         with self:
-            # gather all changed or missing targets
             invalid: set[Pipeline.Target] = set()
+
+            # look for steps that access changed arguments or whose requirements have changed
+            for s in self.records:
+                if s.get("status") == "completed":
+                    name = s.get("name")
+                    target = self._lookup.get(name) if isinstance(name, str) else None
+                    if target is not None:
+                        args = s.get("args")
+                        current_requires = sorted(str(r) for r in target.requires)
+                        recorded_requires = s.get("requires")
+                        if (
+                            not isinstance(args, dict) or
+                            not isinstance(recorded_requires, list) or
+                            current_requires != recorded_requires or
+                            any(
+                                arg_name not in self._kwargs or
+                                self._kwargs[arg_name][0] != arg_hash
+                                for arg_name, arg_hash in args.items()
+                            )
+                        ):
+                            invalid.add(target)
+
+            # extend to cover all changed targets + dependencies
             for t in self.targets:
                 # the targets have already have been topologically sorted, so any
                 # dependent capabilities can be invalidated by checking earlier targets
-                if (
-                    self._versions.get(str(t), "") != t.version or
-                    any(r in invalid for r in t.requires)
-                ):
+                if self._completed.get(t) != t.version or any(r in invalid for r in t.requires):
                     invalid.add(t)
 
-            # if any capabilities were invalidated, then roll back all steps that
-            # require them in strict reverse order
-            if invalid:
-                for s in reversed(self.steps):
-                    if s.get("status") == "completed":
-                        step_name = s.get("name")
-                        if (
-                            step_name is None or
-                            step_name not in self._lookup or
-                            self._lookup[step_name] in invalid
-                        ):
-                            # TODO: I may need to do more than this in order to properly
-                            # synchronize the in-memory state, unless `_rollback_step()`
-                            # handles that sufficiently.
-                            self._rollback_step(s)
+            # roll back any completed steps that are now invalid, or have been removed
+            # from the pipeline
+            for s in reversed(self.records):
+                if s.get("status") == "completed":
+                    step_name = s.get("name")
+                    if (
+                        not isinstance(step_name, str) or
+                        step_name not in self._lookup or
+                        self._lookup[step_name] in invalid
+                    ):
+                        self._rollback_step(s)
+                        error = s.get("error")
+                        if isinstance(error, str) and error:
+                            s["error"] = f"{error}; step invalidated due to dependency change"
+                        else:
                             s["error"] = "step invalidated due to dependency change"
-
-            # fast path: all steps already completed
-            if len(self._completed) == len(self.targets):
-                return
 
             # apply incomplete steps in topological order
             for target in self.targets:
@@ -906,62 +1042,66 @@ class Pipeline:
                 with Pipeline.InProgress(pipeline=self, target=target) as entry:
                     target.func(entry)
 
-    def undo(self, caps: Iterable[str] | None = None) -> None:
+    def undo(self, steps: Iterable[Pipeline.Function] | None = None) -> None:
         """Replay the installation journal in reverse order to uninstall changes.
 
         Parameters
         ----------
-        caps : Iterable[str] | None
-            An optional list of capability flags to roll back.  If None (the default),
-            all completed steps will be rolled back.  Otherwise, only steps that
-            provide or depend on the specified capabilities will be rolled back.
+        steps : Iterable[Pipeline.Function] | None
+            An optional sequence of step functions which should be rolled back, along
+            with any steps that depend on them.  If None (the default), all completed
+            steps will be rolled back.
 
         Raises
         ------
         OSError
-            If the pipeline context is active, or if capabilities are specified but
-            the pipeline cannot be topologically ordered.
+            If the pipeline context is active.
+        KeyError
+            If any specified capability is not found in the pipeline.
         """
         if self._lock.depth > 0:
             raise OSError("cannot undo a pipeline while within its context")
 
-        if caps is None:  # roll back all completed steps in reverse order
-            with self:  # acquire lock + journal context
-                if len(self._completed) == 0:
-                    return  # fast path: nothing to roll back
-
-                for s in reversed(self.steps):
+        # roll back all completed steps in reverse order
+        if steps is None:
+            with self:
+                for s in reversed(self.records):
                     if s.get("status") == "completed":
                         self._rollback_step(s)
+            return
+
+        # convert step functions into dotted names
+        invalid: set[str] = set()
+        for func in steps:
+            func_name = _qualname(func)
+            if func_name not in self._lookup:
+                raise KeyError(func_name)
+            invalid.add(func_name)
+        if not invalid:
+            return  # nothing to roll back
 
         # roll back only steps providing or requiring the specified capabilities
-        else:
-            invalid: set[str] = set(caps)
-            if not invalid:
-                return  # nothing to roll back
-
-            with self:  # acquire lock + journal context
-                # extend caps to include all dependent capabilities
-                completed = [s for s in self.steps if s.get("status") == "completed"]
-                while True:
-                    n = len(invalid)
-                    for s in completed:
-                        p = s.get("provides", [])
-                        if (
-                            any(c in invalid for c in p) or
-                            any(r in invalid for r in s.get("requires", []))
-                        ):
-                            invalid.update(p)
-                    if len(invalid) == n:
-                        break  # no changes
-
-                # roll back all steps that provide or require an invalidated capability
-                for s in reversed(completed):
+        with self:
+            # extend invalid steps to include all dependent capabilities
+            completed = [s for s in self.records if s.get("status") == "completed"]
+            while True:
+                n = len(invalid)
+                for s in completed:
+                    step_name = s.get("name")
+                    requires = s.get("requires")
                     if (
-                        any(c in invalid for c in s.get("provides", [])) or
-                        any(r in invalid for r in s.get("requires", []))
+                        isinstance(step_name, str) and
+                        isinstance(requires, list) and
+                        any(r in invalid for r in requires)
                     ):
-                        self._rollback_step(s)
+                        invalid.add(step_name)
+                if len(invalid) == n:
+                    break  # no changes
+
+            # roll back all steps that provide or require an invalidated capability
+            for s in reversed(completed):
+                if s.get("name") in invalid:
+                    self._rollback_step(s)
 
 
 ##########################
