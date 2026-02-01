@@ -19,61 +19,74 @@ from typing import (
     Iterator,
     Literal,
     Protocol,
-    TypedDict,
+    TypeAlias,
     overload
 )
 
-from .run import (
-    LockDir,
-    UserInfo,
-    atomic_write_text,
-    atomic_write_bytes,
-    mkdir_private
-)
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError, model_validator
+from typing_extensions import Annotated
+
+from .run import LockDir, atomic_write_text, atomic_write_bytes, mkdir_private
+
 
 #pylint: disable=broad-except
-
-
+SYNTAX: int = 1
 SANITIZE: re.Pattern[str] = re.compile(r"[^a-zA-Z0-9_.-]")
-ATOMIC_UNDO: dict[str, Callable[[Pipeline, dict[str, Any]], None]] = {}
-STATE: Path = UserInfo().home / ".local" / "state" / "bertrand"
-MISSING: str = "<missing>"  # not a valid SHA-256 hexdigest
+MISSING: Literal["<missing>"] = "<missing>"  # not a valid SHA-256 hexdigest
+ATOMIC_UNDO: dict[str, Callable[[Pipeline, dict[str, JSONValue]], None]] = {}
+QualName = Annotated[str, Field(pattern=r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*$")]
+UUID4Hex = Annotated[str, Field(pattern=r"^[a-f0-9]{32}$")]
+Hash256 = Annotated[str, Field(pattern=r"^[a-f0-9]{64}$")]
+BackupName = Annotated[str, Field(pattern=r"^[a-f0-9]{32}__[a-zA-Z0-9_.-]+$")]
+JSONValue: TypeAlias = (
+    None
+    | bool
+    | int
+    | float
+    | str
+    | list["JSONValue"]
+    | dict[str, "JSONValue"]
+)
+JSONView: TypeAlias = (
+    None
+    | bool
+    | int
+    | float
+    | str
+    | tuple["JSONView", ...]
+    | MappingProxyType[str, "JSONView"]
+)
 
 
-class HasQualName(Protocol):
-    """A type hint for any object with a `__module__` and `__qualname__` attribute."""
-    __module__: str
-    __qualname__: str
+class _HasQualName(Protocol):
+    __module__: QualName
+    __qualname__: QualName
+
+
+def _qualname(x: _HasQualName) -> str:
+    return f"{x.__module__}.{x.__qualname__}"
 
 
 class Atomic(Protocol):
-    """A type hint for a reversible operation performed as part of a step in the
-    installation/uninstallation registry.  Operations can be registered using the
-    `@atomic` class decorator on any class implementing this protocol.
+    """A type hint for a reversible operation performed as part of a
+    `Pipeline.InProgress` step.  Operations can be registered using the `@atomic` class
+    decorator on any class implementing this protocol.
 
     Methods
     -------
-    apply(ctx: Pipeline.InProgress) -> dict[str, Any] | None
+    apply(ctx: Pipeline.InProgress) -> dict[str, JSONValue] | None
         Apply the operation to the host system within an in-progress `Pipeline` step,
         and return an optional payload describing any state needed to undo the
         operation.  Use the `ctx.do()` method to record an operation in the journal.
-    undo(ctx: Pipeline, payload: dict[str, Any]) -> None
+    undo(ctx: Pipeline, payload: dict[str, JSONValue]) -> None
         Undo the operation on the host system within the given `Pipeline`, using the
         payload returned by the original `apply()` call.
     """
     # pylint: disable=missing-function-docstring
-    def apply(self, ctx: Pipeline.InProgress) -> dict[str, Any] | None: ...
+    def apply(self, ctx: Pipeline.InProgress) -> dict[str, JSONValue] | None: ...
 
     @staticmethod
-    def undo(ctx: Pipeline, payload: dict[str, Any]) -> None: ...
-
-
-def _qualname(x: HasQualName) -> str:
-    return f"{x.__module__}.{x.__qualname__}"
-
-
-def _utc_now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+    def undo(ctx: Pipeline, payload: dict[str, JSONValue]) -> None: ...
 
 
 def atomic(t: type[Atomic]) -> type[Atomic]:
@@ -112,13 +125,9 @@ class Pipeline:
     state_dir : Path
         The base directory for storing pipeline state, including the lock, journal,
         and backup files.
-    schema : int, optional
-        The schema version to expect when loading the journal file.  Defaults to the
-        highest version supported by this codebase.
     timeout : int, optional
-        The timeout in seconds for acquiring the installation lock.  May also be used
-        by operations that need to wait for external resources.  Defaults to 30
-        seconds.
+        The timeout in seconds for acquiring the pipeline lock.  May also be used by
+        operations that need to wait for external resources.  Defaults to 30 seconds.
     keep : int, optional
         The number of previous attempts to keep in the journal for each step.  Defaults
         to 3.
@@ -159,16 +168,16 @@ class Pipeline:
 
     @dataclass(frozen=True)
     class Target:
-        """An entry in the installation pipeline, along with its dependency information.
+        """An entry in the pipeline, along with its dependency information.
 
         Attributes
         ----------
         func : Pipeline.Function
             The function to execute for this step, which accepts an in-progress
-            context and uses it to record mutating operations in the installation
-            journal.  The function's fully-qualified (dotted) name will be used as the
-            step name, and must be unique within the pipeline.
-        version : int
+            context and uses it to record mutating operations in the journal.  The
+            function's fully-qualified (dotted) name will be used as the step name, and
+            must be unique within the pipeline.
+        version : Hash256
             A current version specifier for the function's enclosing module, which
             will be cross-checked against the journal to detect changes.
         cache : bool
@@ -182,7 +191,7 @@ class Pipeline:
             error will be raised during registration.
         """
         func: Pipeline.Function
-        version: str
+        version: Hash256
         cache: bool
         requires: frozenset[Pipeline.Target]
 
@@ -197,97 +206,106 @@ class Pipeline:
                 return self.func is other.func
             return NotImplemented
 
-    class OpRecord(TypedDict):
+    class OpRecord(BaseModel):
         """JSON representation for an atomic operation taken as part of a step.
 
         Attributes
         ----------
-        kind : str
+        kind : QualName
             The fully-qualified (dotted) name of the operation class.
-        payload : dict[str, Any]
+        payload : dict[str, JSONValue]
             The operation-specific payload needed to undo the operation.  Must be
             JSON-serializable.
         """
-        kind: str
-        payload: dict[str, Any]
+        model_config = ConfigDict(extra="forbid")  # reject unexpected keys
+        kind: QualName
+        payload: dict[str, JSONValue]
 
-    class StepRecord(TypedDict):
+        @model_validator(mode="after")
+        def _check_kind(self) -> Pipeline.OpRecord:
+            if self.kind not in ATOMIC_UNDO:
+                raise ValueError(f"unknown atomic operation kind: {self.kind}")
+            return self
+
+    class StepRecord(BaseModel):
         """JSON representation for a full step in the journal.
 
         Attributes
         ----------
-        attempt_id : str
+        syntax : int
+            The syntax version of the journal format, for forward compatibility.
+        run : UUID4Hex
             The UUID of the `run()` that created this step.
-        name : str
+        name : QualName
             The fully-qualified (dotted) name of the step function.  Guaranteed to be
             unique within the pipeline.
-        status : Literal["in_progress", "completed", "failed"]
+        status : Literal["in_progress", "completed", "rolled_back"]
             The current status of the step.
         started_at : str
             The ISO timestamp when the step began execution.
         ended_at : str
             The ISO timestamp when the step completed execution or failed.
-        version : str
+        version : Hash256
             The version specifier (hash) of the step's originating module for basic
             change detection.  Note that this will not cover calls to functions
             imported from other modules, so steps should either be self-contained
             within a module or be manually invalidated when their dependencies change.
             This is a best-effort mechanism, not a guarantee.
-        accesses : dict[str, str]
+        accesses : dict[str, Hash256 | Literal["<missing>"]]
             A mapping that tracks the arguments and global facts that were accessed
             during this step, where each key is an argument/fact name and each value is
             a hash of its JSON-serialized value.  This is used for change detection in
             addition to `version`; if any argument or fact is removed or changes value
             between runs, then all steps that access it will be invalidated.
-        requires : list[str]
+        requires : list[QualName]
             The list of dotted names of prerequisite steps that must be completed
             before this step can run.  If any of these steps are invalidated, or
             require an invalidated step in turn (recursively), then this step will also
             be invalidated.
-        facts : dict[str, Any]
+        facts : dict[str, JSONValue]
             A mapping of the facts that were generated during this step.  The keys will
             never conflict with `accesses`, and the values must be JSON-serializable.
         ops : list[Pipeline.OpRecord]
             An ordered list of atomic operations that were performed during this step,
             which will be replayed in reverse order if the step needs to be rolled
             back.
-        backups : list[str]
+        backups : list[BackupName]
             A list of backup filenames that were generated during this step, which will
             be deleted after the step is rolled back.
         error : str
             An informative error message if the step failed.
         """
-        attempt_id: str
-        name: str
-        status: Literal["in_progress", "completed", "failed"]
-        started_at: str
-        ended_at: str
-        version: str
-        accesses: dict[str, str]
-        requires: list[str]
-        facts: dict[str, Any]
+        model_config = ConfigDict(extra="forbid")  # reject unexpected keys
+        syntax: int
+        run: UUID4Hex
+        name: QualName
+        status: Literal["in_progress", "completed", "rolled_back"]
+        started_at: datetime
+        ended_at: datetime | None
+        version: Hash256
+        accesses: dict[str, Hash256 | Literal["<missing>"]]
+        requires: list[QualName]
+        facts: dict[str, JSONValue]
         ops: list[Pipeline.OpRecord]
-        backups: list[str]
+        backups: list[BackupName]
         error: str
 
-    class Journal(TypedDict):
-        """JSON representation for the installation journal header.
+        @model_validator(mode="after")
+        def _check_syntax(self) -> Pipeline.StepRecord:
+            if self.syntax != 1:
+                raise ValueError(f"unsupported journal syntax version: {self.syntax}")
+            return self
 
-        Attributes
-        ----------
-        schema : str
-            The schema version string (e.g. "pipeline/v1").  This is used to verify
-            compatibility when loading the journal.
-        created_at : str
-            The ISO timestamp when the journal was created.
-        steps : list[Pipeline.StepRecord]
-            The list of recorded steps in the journal.  In order to prevent endless
-            growth, only the last `pipeline.keep` attempts will be retained for each
-            step.
-        """
-        schema: str  # schema version string (e.g. "pipeline/v1")
-        created_at: str  # ISO timestamp
-        steps: list[Pipeline.StepRecord]  # recorded steps
+        @model_validator(mode="after")
+        def _check_ended_at(self) -> Pipeline.StepRecord:
+            if self.ended_at is None:
+                if self.status != "in_progress":
+                    raise ValueError(
+                        f"ended_at must be an ISO timestamp when status='{self.status}'"
+                    )
+            elif self.ended_at < self.started_at:
+                raise ValueError("ended_at must be after started_at")
+            return self
 
     @dataclass(frozen=True)
     class Fact:
@@ -296,54 +314,40 @@ class Pipeline:
 
         Attributes
         ----------
-        origin : str | None
+        origin : QualName | None
             The name of the step that created this fact.  If another step accesses this
             fact without declaring the origin step as a prerequisite, then an error
             will be raised.  If None, then the fact is considered to be ephemeral, and
             may have originated from kwargs passed to `pipeline.run()`.
-        hash : str
+        hash : Hash256
             The SHA-256 hash of the JSON-serialized value of this fact.
-        value : Any
+        value : JSONView
             The deserialized value of this fact.  If the value is a mutable type (e.g.
             list or dict), then it will be wrapped in a read-only proxy to prevent
             accidental modification by dependent steps.
         """
-        origin: str | None
-        hash: str
-        value: Any
+        origin: QualName | None
+        hash: Hash256
+        value: JSONView
 
     # pipeline-wide config
     state_dir: Path
-    schema: int = 1
     timeout: int = 30  # seconds
     keep: int = 3
 
     # registration
     _targets: list[Pipeline.Target] = field(default_factory=list, repr=False)
     _ordered: bool = field(default=False, repr=False)  # skip planning
-    _lookup: dict[str, Pipeline.Target] = field(default_factory=dict, repr=False)  # name -> target
-    _modules: dict[str, str] = field(default_factory=dict, repr=False)  # module path -> hash
-
-    # TODO: maybe preventing _data from being None would be better.  I can probably
-    # write a staticmethod that produces a "default" empty journal, and then always
-    # reset it to that value on exit.  That would avoid all the Optional checks and
-    # related confusion.
-
-    # TODO: it's also currently impossible to roll back ephemerals if they fully
-    # complete without error, since they are not recorded in the journal.  Maybe I
-    # should record them anyway, and just mark them as ephemeral so they automatically
-    # get cleaned up on entrance to the pipeline context, which forces a re-run in the
-    # manner I'm expecting?  That doesn't alter the behavior too much, and increases
-    # symmetry with regular steps.
+    _lookup: dict[QualName, Pipeline.Target] = field(default_factory=dict, repr=False)
+    _modules: dict[str, Hash256] = field(default_factory=dict, repr=False)  # source -> hash
 
     # context
     _lock: LockDir = field(init=False, repr=False)
-    _data: Journal | None = field(default=None, repr=False)
+    _records: list[Pipeline.StepRecord] = field(default_factory=list, repr=False)
     _facts: dict[str, Pipeline.Fact] = field(default_factory=dict, repr=False)
-    _completed: dict[Pipeline.Target, str] = field(default_factory=dict, repr=False)
-    _ephemeral: list[Pipeline.StepRecord] = field(default_factory=list, repr=False)
+    _completed: dict[Pipeline.Target, Hash256] = field(default_factory=dict, repr=False)
     _active: Pipeline.Target | None = field(default=None, repr=False)
-    _attempt_id: str = field(init=False, repr=False)
+    _run_id: UUID4Hex = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
         if self.keep < 1:
@@ -351,9 +355,6 @@ class Pipeline:
         mkdir_private(self.state_dir)
         mkdir_private(self.backup_dir)
         self._lock = LockDir(path=self.state_dir / ".lock", timeout=self.timeout)
-
-    # TODO: anywhere I use `.get()` assumes the object is a dict, and I should
-    # try to confirm that before using it.
 
     @staticmethod
     def _json(obj: Any) -> str:
@@ -369,7 +370,7 @@ class Pipeline:
         )
 
     @staticmethod
-    def _readonly(obj: Any) -> Any:
+    def _readonly(obj: JSONValue) -> JSONView:
         if isinstance(obj, list):
             return tuple(Pipeline._readonly(v) for v in obj)
         if isinstance(obj, dict):
@@ -377,7 +378,8 @@ class Pipeline:
         return obj
 
     def _dump(self) -> None:
-        atomic_write_text(self.journal, self._json(self._data) + "\n")
+        data = JournalAdapter.dump_python(self._records, mode="json")
+        atomic_write_text(self.journal, self._json(data) + "\n", private=True)
 
     def _module_hash(self, obj: Any) -> str:
         # find originating source file
@@ -392,6 +394,7 @@ class Pipeline:
 
         # compute hash of source file
         path = Path(source)
+        result: Hash256 | Literal["<missing>"]
         if not path.exists() or not path.is_file():
             result = MISSING
         else:
@@ -431,35 +434,33 @@ class Pipeline:
         self._ordered = True
 
     def _rollback_step(self, step: Pipeline.StepRecord) -> None:
-        name = step.get("name")
-        step["ended_at"] = _utc_now_iso()
-        step["status"] = "failed"
+        step.ended_at = datetime.now(timezone.utc)
+        step.status = "rolled_back"
 
         # remove any facts set by this step
-        facts = step.get("facts")
-        if isinstance(facts, dict):
-            for key in facts:
-                self._facts.pop(key, None)
+        for key in step.facts:
+            self._facts.pop(key, None)
 
         # remove from completed targets if present
-        if isinstance(name, str):
-            target = self._lookup.get(name)
-            if target is not None:
-                self._completed.pop(target, None)
+        target = self._lookup.get(step.name)
+        if target is not None:
+            self._completed.pop(target, None)
 
         # undo operations in reverse order (best-effort)
-        ok = True
-        for op in reversed(step.get("ops", [])):
-            undo = ATOMIC_UNDO.get(op["kind"])
-            if undo:
-                try:
-                    undo(self, op["payload"])
-                except Exception:
-                    ok = False
+        errors: list[str] = []
+        for op in reversed(step.ops):
+            undo = ATOMIC_UNDO.get(op.kind)
+            if not undo:
+                errors.append(f"unknown atomic operation kind '{op.kind}'")
+                continue
+            try:
+                undo(self, op.payload)
+            except Exception:
+                errors.append(f"failed to undo operation '{op.kind}'")
 
         # remove backup files associated with this step
         kept: list[str] = []
-        for b in step.get("backups", []):
+        for b in step.backups:
             try:
                 p = self.backup_dir / b
                 if p.exists() and p.is_file():
@@ -468,18 +469,17 @@ class Pipeline:
                 kept.append(b)  # best-effort
 
         # keep track of any backups that couldn't be deleted
-        step["backups"] = kept
-        if not ok:
-            error = step.get("error", "")
-            if isinstance(error, str) and error:
-                step["error"] = f"{error}; partial rollback failure"
+        step.backups = kept
+        if errors:
+            if step.error:
+                step.error = f"{step.error}; partial rollback failure:\n{'\n'.join(errors)}"
             else:
-                step["error"] = "partial rollback failure"
+                step.error = f"partial rollback failure:\n{'\n'.join(errors)}"
 
     def _rollback_in_progress(self) -> bool:
         changed = False
-        for s in reversed(self.records):
-            if s.get("status") == "in_progress":
+        for s in reversed(self._records):
+            if s.status == "in_progress":
                 self._rollback_step(s)
                 changed = True
         return changed
@@ -491,26 +491,19 @@ class Pipeline:
             return self  # re-entrant case
 
         try:
-            # generate new attempt ID
-            self._attempt_id = uuid.uuid4().hex
+            # generate new run ID
+            self._run_id = uuid.uuid4().hex
 
-            # load journal state
+            # load + validate journal state
             changed = False
             if self.journal.exists():
-                self._data = json.loads(self.journal.read_text(encoding="utf-8"))
-                if not isinstance(self._data, dict):
-                    raise OSError("journal must be a valid JSON mapping object")
-                if self._data.get("schema") != f"pipeline/v{self.schema}":
-                    raise OSError(
-                        f"Registry schema mismatch at {self.journal}. Found schema="
-                        f"{self._data.get('schema')} (expected pipeline/v{self.schema})."
-                    )
+                raw = self.journal.read_text(encoding="utf-8")
+                try:
+                    self._records = JournalAdapter.validate_json(raw)
+                except ValidationError as err:
+                    raise OSError(f"Pipeline journal is malformed:\n{err}") from err
             else:  # write new journal
-                self._data = {
-                    "schema": f"pipeline/v{self.schema}",
-                    "created_at": _utc_now_iso(),
-                    "steps": [],
-                }
+                self._records = []
                 changed = True
 
             # roll back in-progress steps from previous runs
@@ -524,34 +517,26 @@ class Pipeline:
             # hydrate in-memory state
             self._facts.clear()
             self._completed.clear()
-            self._ephemeral.clear()
-            for s in self.records:
-                if s.get("status") != "completed":
+            for s in self._records:
+                if s.status != "completed":
                     continue
 
-                name = s.get("name")
-                version = s.get("version")
-                if not isinstance(name, str) or not isinstance(version, str):
-                    continue
-
-                target = self._lookup.get(name)
+                target = self._lookup.get(s.name)
                 if target is None:
                     continue
-                self._completed[target] = version
 
                 # hydrate facts with hashes + readonly views
-                facts = s.get("facts")
-                if isinstance(facts, dict):
-                    for k, v in facts.items():
-                        v_norm = v
-                        v_json = self._json(v_norm)
-                        v_hash = hashlib.sha256(v_json.encode("utf-8")).hexdigest()
-                        v_readonly = self._readonly(v_norm)
-                        self._facts[k] = Pipeline.Fact(
-                            origin=name,
-                            hash=v_hash,
-                            value=v_readonly
-                        )
+                self._completed[target] = s.version
+                for k, v in s.facts.items():
+                    v_norm = v
+                    v_json = self._json(v_norm)
+                    v_hash = hashlib.sha256(v_json.encode("utf-8")).hexdigest()
+                    v_readonly = self._readonly(v_norm)
+                    self._facts[k] = Pipeline.Fact(
+                        origin=s.name,
+                        hash=v_hash,
+                        value=v_readonly
+                    )
 
             return self
 
@@ -571,38 +556,22 @@ class Pipeline:
             return  # re-entrant case
 
         try:
-            # TODO: maybe _rollback_in_progress() should be extended to cover ephemeral
-            # steps as well?  Also, if an exception originates from the rest of `__exit__`,
-            # then ephemeral steps will need to be rolled back too.
-
             # roll back any in-progress steps, including ephemeral steps if there is an error
             self._rollback_in_progress()
-            if exc_type is not None:
-                for r in reversed(self._ephemeral):
-                    self._rollback_step(r)
 
             # compact the journal to keep only the last N attempts per step
-            if self._data is not None:
-                steps = self._data.get("steps")
-                if isinstance(steps, list):
-                    compacted: list[Pipeline.StepRecord] = []
-                    seen: dict[str, int] = {}
-                    for step in reversed(steps):
-                        name = step.get("name")
-                        if not isinstance(name, str):
-                            continue
-                        count = seen.get(name, 0)
-                        if count < self.keep:
-                            compacted.append(step)
-                            seen[name] = count + 1
-                    self._data["steps"] = list(reversed(compacted))
+            compacted: list[Pipeline.StepRecord] = []
+            seen: dict[QualName, int] = {}
+            for step in reversed(self._records):
+                count = seen.get(step.name, 0)
+                if count < self.keep:
+                    compacted.append(step)
+                    seen[step.name] = count + 1
+            self._records = compacted
+            self._records.reverse()
 
             # clean up any orphaned backup files
-            keep: set[str] = {
-                b
-                for s in self.records
-                for b in (s.get("backups", []) or []) if isinstance(b, str)
-            }
+            keep: set[BackupName] = {b for s in self._records for b in s.backups}
             try:
                 for p in self.backup_dir.iterdir():
                     if p.is_file() and p.name not in keep:
@@ -615,10 +584,9 @@ class Pipeline:
 
             # always synchronize journal state on exit
             self._dump()
-            self._data = None
+            self._records.clear()
             self._facts.clear()
             self._completed.clear()
-            self._ephemeral.clear()
 
         # always release lock
         finally:
@@ -672,11 +640,11 @@ class Pipeline:
         -------
         func
             The decorated step function, which will execute the step with the given
-            installation context.  The `ctx.do()` and `ctx.backup()` methods should be
-            used within the function to record mutating operations in the installation
+            `Pipeline.InProgress` context.  The `ctx.do()` and `ctx.backup()` methods
+            should be used within the function to record mutating operations in the
             journal, so that they can be rolled back if needed.  If an error is raised
-            during the function, the installation process will roll back to the
-            previous stable state using the journal.
+            during the function, the pipeline will roll back to the previous stable
+            state using the journal.
 
         Raises
         ------
@@ -808,26 +776,9 @@ class Pipeline:
         """
         return self.state_dir / "journal.json"
 
-    @property
-    def records(self) -> list[Pipeline.StepRecord]:
-        """
-        Returns
-        -------
-        list[Pipeline.StepRecord]
-            A list of steps recorded in the journal.
-
-        Raises
-        ------
-        OSError
-            If the pipeline context is not active.
-        """
-        if self._data is None:
-            raise OSError("pipeline context is not active")
-        return self._data.setdefault("steps", [])
-
     @dataclass
     class InProgress:
-        """A context manager representing an in-progress installation step."""
+        """A context manager representing an in-progress pipeline step."""
         # pylint: disable=protected-access
         target: Pipeline.Target
         record: Pipeline.StepRecord = field(init=False)
@@ -836,24 +787,24 @@ class Pipeline:
 
         def __enter__(self) -> Pipeline.InProgress:
             if self.pipeline._active is not None:
-                raise OSError("nested installation steps are not supported")
-            self.record = {
-                "attempt_id": self.pipeline._attempt_id,
-                "name": str(self.target),
-                "version": self.target.version,
-                "status": "in_progress",
-                "started_at": _utc_now_iso(),
-                "ended_at": "",
-                "requires": sorted(str(p) for p in self.target.requires),
-                "accesses": {},
-                "ops": [],
-                "facts": {},
-                "backups": [],
-                "error": "",
-            }
-            if self.target.cache:
-                self.pipeline.records.append(self.record)
-                self.pipeline._dump()
+                raise OSError("nested steps are not supported")
+            self.record = Pipeline.StepRecord(
+                syntax=SYNTAX,
+                run=self.pipeline._run_id,
+                name=str(self.target),
+                version=self.target.version,
+                status="in_progress",
+                started_at=datetime.now(timezone.utc),
+                ended_at=None,
+                requires=sorted(str(p) for p in self.target.requires),
+                accesses={},
+                ops=[],
+                facts={},
+                backups=[],
+                error="",
+            )
+            self.pipeline._records.append(self.record)
+            self.pipeline._dump()
             self.pipeline._active = self.target
             return self
 
@@ -864,19 +815,18 @@ class Pipeline:
             exc_traceback: TracebackType | None
         ) -> None:
             if self.pipeline._active != self.target:
-                raise OSError("installation step exit does not match active step")
+                raise OSError("exited step does not match active step")
             try:
                 if exc_type is None:
                     # mark step as completed
                     try:
-                        self.record["status"] = "completed"
-                        self.record["ended_at"] = _utc_now_iso()
-                        self.pipeline._facts.update(self.facts)
+                        # uncached steps never transition to "completed"
                         if self.target.cache:
                             self.pipeline._completed[self.target] = self.target.version
-                            self.pipeline._dump()
-                        else:
-                            self.pipeline._ephemeral.append(self.record)
+                            self.record.status = "completed"
+                        self.record.ended_at = datetime.now(timezone.utc)
+                        self.pipeline._facts.update(self.facts)
+                        self.pipeline._dump()
                         return
 
                     # fall through to rollback
@@ -887,15 +837,23 @@ class Pipeline:
 
                 # roll back step on error
                 self.pipeline._rollback_step(self.record)
-                error = self.record.get("error")
-                if isinstance(error, str) and error:
-                    self.record["error"] = f"{error}; {exc_type.__name__}: {exc_value}"
+                if self.record.error:
+                    self.record.error = f"{self.record.error}; {exc_type.__name__}: {exc_value}"
                 else:
-                    self.record["error"] = f"{exc_type.__name__}: {exc_value}"
-                if self.target.cache:
-                    self.pipeline._dump()
+                    self.record.error = f"{exc_type.__name__}: {exc_value}"
+                self.pipeline._dump()
             finally:
                 self.pipeline._active = None
+
+        @property
+        def run(self) -> str:
+            """
+            Returns
+            -------
+            str
+                The unique identifier for the current run.
+            """
+            return self.pipeline._run_id
 
         @property
         def timeout(self) -> int:
@@ -903,7 +861,7 @@ class Pipeline:
             Returns
             -------
             int
-                The timeout in seconds for acquiring the installation lock.
+                The timeout in seconds for acquiring the pipeline lock.
             """
             return self.pipeline.timeout
 
@@ -913,29 +871,19 @@ class Pipeline:
             Returns
             -------
             Path
-                The base directory for storing installation state.
+                The base directory for storing pipeline state.
             """
             return self.pipeline.state_dir
 
-        @property
-        def attempt_id(self) -> str:
-            """
-            Returns
-            -------
-            str
-                The unique identifier for the current installation attempt.
-            """
-            return self.pipeline._attempt_id
-
-        def _origin_is_required(self, origin: str) -> bool:
+        def _origin_is_required(self, origin: QualName) -> bool:
             target = self.pipeline._lookup.get(origin)
             if target is None:
                 return False
-            requires = self.record.get("requires")
-            if not isinstance(requires, list):
-                return False
             seen: set[Pipeline.Target] = set()
-            stack = [self.pipeline._lookup[r] for r in requires if r in self.pipeline._lookup]
+            stack = [
+                self.pipeline._lookup[r]
+                for r in self.record.requires if r in self.pipeline._lookup
+            ]
             while stack:
                 t = stack.pop()
                 if t == target:
@@ -944,7 +892,7 @@ class Pipeline:
                 stack.extend(t.requires - seen)
             return False
 
-        def __getitem__(self, key: str) -> Any:
+        def __getitem__(self, key: str) -> JSONView:
             """Look up a fact stored in the pipeline context, preferring arguments
             passed to the pipeline's `run()` method, then the local step context, and
             finally the global context if necessary.
@@ -958,7 +906,7 @@ class Pipeline:
 
             Returns
             -------
-            Any
+            JSONView
                 The value of the requested fact.  If the fact comes from the global
                 context or corresponds to an argument passed to the pipeline's `run()`
                 method, then it will be returned as a read-only, JSON-deserialized
@@ -976,25 +924,25 @@ class Pipeline:
                 return self.facts[key].value
 
             # check global facts
-            accesses = self.record.setdefault("accesses", {})
             if key in self.pipeline._facts:
                 fact = self.pipeline._facts[key]
                 if (
                     fact.origin is not None and
-                    key not in accesses and
+                    key not in self.record.accesses and
                     not self._origin_is_required(fact.origin)
                 ):
                     raise KeyError(
                         f"Fact '{key}' originates from step '{fact.origin}', which is not "
-                        "a prerequisite of the current step "
-                        f"'{self.record.get('name')}'.  Add it to the 'requires' list "
-                        "to ensure proper ordering."
+                        f"a prerequisite of the current step '{self.record.name}'.  "
+                        "Add it to the 'requires' list to ensure proper ordering."
                     )
-                accesses[key] = fact.hash
+                if self.target.cache:
+                    self.record.accesses[key] = fact.hash
                 return fact.value
 
-            # # record negative global access and surface key error
-            accesses[key] = MISSING
+            # record negative global access and surface key error
+            if self.target.cache:
+                self.record.accesses[key] = MISSING
             raise KeyError(f"Fact '{key}' not found in local or global context")
 
         def __setitem__(self, key: str, value: Any) -> None:
@@ -1006,7 +954,8 @@ class Pipeline:
             key : str
                 The key to set.
             value : Any
-                The value to set for the keyed fact.
+                The value to set for the keyed fact.  Must be JSON-serializable, and
+                will be converted to a deserialized, read-only view for storage.
 
             Raises
             ------
@@ -1021,17 +970,17 @@ class Pipeline:
             value_json = self.pipeline._json(value)
             value_hash = hashlib.sha256(value_json.encode("utf-8")).hexdigest()
             value_norm = json.loads(value_json)
-            self.record.setdefault("facts", {})[key] = value_norm
+            if self.target.cache:
+                self.record.facts[key] = value_norm
 
             # store read-only view in local context, for future reference
             value_readonly = self.pipeline._readonly(value_norm)
             self.facts[key] = Pipeline.Fact(
-                origin=self.record.get("name"),
+                origin=self.record.name,
                 hash=value_hash,
                 value=value_readonly
             )
-            if self.target.cache:
-                self.pipeline._dump()
+            self.pipeline._dump()
 
         def __delitem__(self, key: str) -> None:
             """Delete a fact from the local step context.  Never modifies the
@@ -1051,9 +1000,8 @@ class Pipeline:
                 raise KeyError(f"Fact '{key}' not found in local context")
 
             self.facts.pop(key, None)
-            self.record.get("facts", {}).pop(key, None)
-            if self.target.cache:
-                self.pipeline._dump()
+            self.record.facts.pop(key, None)
+            self.pipeline._dump()
 
         def __contains__(self, key: str) -> bool:
             """Check if a fact exists in the local step context or the global context.
@@ -1073,29 +1021,29 @@ class Pipeline:
                 return True
 
             # record positive global access
-            accesses = self.record.setdefault("accesses", {})
             if key in self.pipeline._facts:
                 fact = self.pipeline._facts[key]
                 if (
                     fact.origin is not None and
-                    key not in accesses and
+                    key not in self.record.accesses and
                     not self._origin_is_required(fact.origin)
                 ):
                     raise KeyError(
                         f"Fact '{key}' originates from step '{fact.origin}', which is "
-                        "not a prerequisite of the current step "
-                        f"'{self.record.get('name')}'.  Add it to the 'requires' list "
-                        "to ensure proper ordering."
+                        f"not a prerequisite of the current step '{self.record.name}'.  "
+                        "Add it to the 'requires' list to ensure proper ordering."
                     )
-                accesses[key] = fact.hash
+                if self.target.cache:
+                    self.record.accesses[key] = fact.hash
                 return True
 
             # record negative global access
-            accesses[key] = MISSING
+            if self.target.cache:
+                self.record.accesses[key] = MISSING
             return False
 
         def get(self, key: str, default: Any = None) -> Any:
-            """Look up a fact stored in the installation context, preferring the local
+            """Look up a fact stored in the pipeline context, preferring the local
             step context and falling back to the global context.
 
             Parameters
@@ -1121,29 +1069,29 @@ class Pipeline:
                 return self.facts[key].value
 
             # record positive global access
-            accesses = self.record.setdefault("accesses", {})
             if key in self.pipeline._facts:
                 fact = self.pipeline._facts[key]
                 if (
                     fact.origin is not None and
-                    key not in accesses and
+                    key not in self.record.accesses and
                     not self._origin_is_required(fact.origin)
                 ):
                     raise KeyError(
                         f"Fact '{key}' originates from step '{fact.origin}', which is not "
-                        "a prerequisite of the current step "
-                        f"'{self.record.get('name')}'.  Add it to the 'requires' list "
-                        "to ensure proper ordering."
+                        f"a prerequisite of the current step '{self.record.name}'.  "
+                        "Add it to the 'requires' list to ensure proper ordering."
                     )
-                accesses[key] = fact.hash
+                if self.target.cache:
+                    self.record.accesses[key] = fact.hash
                 return fact.value
 
             # record negative global access
-            accesses[key] = MISSING
+            if self.target.cache:
+                self.record.accesses[key] = MISSING
             return default
 
         def do(self, op: Atomic) -> None:
-            """Apply an operation within this installation step, recording it in the
+            """Apply an operation within this pipeline step, recording it in the
             journal.
 
             Parameters
@@ -1154,12 +1102,11 @@ class Pipeline:
             payload = op.apply(self)
             if payload is not None:
                 self.pipeline._json(payload)  # validate serializability
-                self.record.setdefault("ops", []).append({
-                    "kind": _qualname(type(op)),
-                    "payload": payload
-                })
-                if self.target.cache:
-                    self.pipeline._dump()
+                self.record.ops.append(Pipeline.OpRecord(
+                    kind=_qualname(type(op)),
+                    payload=payload
+                ))
+                self.pipeline._dump()
 
         def backup(self, path: Path) -> str:
             """Write backup data to a uniquely named file in the backup directory.
@@ -1187,10 +1134,13 @@ class Pipeline:
                 raise FileNotFoundError(f"Cannot back up non-existent file: {path}")
 
             filename = f"{uuid.uuid4().hex}__{SANITIZE.sub('_', path.name.strip())}"
-            atomic_write_bytes(self.pipeline.backup_dir / filename, path.read_bytes())
-            self.record.setdefault("backups", []).append(filename)
-            if self.target.cache:
-                self.pipeline._dump()
+            atomic_write_bytes(
+                self.pipeline.backup_dir / filename,
+                path.read_bytes(),
+                private=True
+            )
+            self.record.backups.append(filename)
+            self.pipeline._dump()
             return filename
 
     def backup(self, filename: str) -> bytes | None:
@@ -1229,16 +1179,16 @@ class Pipeline:
         return path.read_bytes()
 
     def run(self, **kwargs: Any) -> None:
-        """Run the installation pipeline with the given `Pipeline`.
+        """Run the pipeline with the given keyword arguments.
 
         Parameters
         ----------
         **kwargs : Any
-            Keyword arguments that can be accessed by steps during installation via
-            the subscript interface.  Each value must be JSON-serializable, and a hash
-            + read-only view of its serialized value will be stored for change
-            detection and lookup.  If the value changes between runs, then any steps
-            that access it will be invalidated and re-executed.
+            Keyword arguments that can be accessed by `Pipeline.InProgress` steps
+            during execution via the subscript interface.  Each value must be
+            JSON-serializable, and a hash + read-only view of its serialized value will
+            be stored for change detection and lookup.  If the value changes between
+            runs, then any steps that access it will be invalidated and re-executed.
 
         Raises
         ------
@@ -1249,7 +1199,7 @@ class Pipeline:
             If any provided keyword argument conflicts with a fact in the pipeline
             context.
         Exception
-            If any step in the installation process fails.  The type of the exception
+            If any step in the pipeline execution fails.  The type of the exception
             will depend on the underlying error.
         """
         if self._lock.depth > 0:
@@ -1276,35 +1226,26 @@ class Pipeline:
 
             # look for steps that access changed facts or whose requirements have changed
             invalid: set[Pipeline.Target] = set()
-            for s in self.records:
-                if s.get("status") != "completed":
+            for s in self._records:
+                if s.status != "completed":
                     continue
 
-                name = s.get("name")
-                target = self._lookup.get(name) if isinstance(name, str) else None
+                target = self._lookup.get(s.name)
                 if target is None:
                     continue
 
-                accesses = s.get("accesses")
-                current_requires = sorted(str(r) for r in target.requires)
-                recorded_requires = s.get("requires")
-                facts = s.get("facts")  # facts produced by this step
+                requires = sorted(str(r) for r in target.requires)
                 if (
-                    not isinstance(accesses, dict) or  # malformed accesses
-                    not isinstance(recorded_requires, list) or  # malformed requires
-                    current_requires != recorded_requires or  # requirements changed
+                    requires != s.requires or  # requirements changed
                     not all(
-                        (
+                        access_name in s.facts or (
                             access_name in self._facts and  # positive access
                             self._facts[access_name].hash == access_hash
                         ) or (
                             access_hash == MISSING and  # negative access
                             access_name not in self._facts
-                        ) or (
-                            isinstance(facts, dict) and  # fact produced by this step
-                            access_name in facts
                         )
-                        for access_name, access_hash in accesses.items()
+                        for access_name, access_hash in s.accesses.items()
                     )
                 ):
                     invalid.add(target)
@@ -1318,32 +1259,27 @@ class Pipeline:
 
             # roll back any completed steps that are now invalid, or have been removed
             # from the pipeline
-            for s in reversed(self.records):
-                if s.get("status") == "completed":
-                    step_name = s.get("name")
-                    if (
-                        not isinstance(step_name, str) or
-                        step_name not in self._lookup or
-                        self._lookup[step_name] in invalid
-                    ):
+            for s in reversed(self._records):
+                if s.status == "completed":
+                    target = self._lookup.get(s.name)
+                    if target is None or target in invalid:
                         self._rollback_step(s)
-                        error = s.get("error")
-                        if isinstance(error, str) and error:
-                            s["error"] = f"{error}; step invalidated due to dependency change"
+                        if s.error:
+                            s.error = f"{s.error}; step invalidated due to dependency change"
                         else:
-                            s["error"] = "step invalidated due to dependency change"
+                            s.error = "step invalidated due to dependency change"
 
             # apply incomplete steps in topological order
-            for target in self._targets:
-                if target in self._completed:
+            for t in self._targets:
+                if t in self._completed:
                     continue
 
                 # run step within a new journal entry
-                with Pipeline.InProgress(pipeline=self, target=target) as entry:
-                    target.func(entry)
+                with Pipeline.InProgress(pipeline=self, target=t) as entry:
+                    t.func(entry)
 
     def undo(self, steps: Iterable[Pipeline.Function] | None = None) -> None:
-        """Replay the installation journal in reverse order to uninstall changes.
+        """Replay the journal in reverse order to undo changes.
 
         Parameters
         ----------
@@ -1365,19 +1301,17 @@ class Pipeline:
         # roll back all completed steps in reverse order
         if steps is None:
             with self:
-                for s in reversed(self.records):
-                    if s.get("status") == "completed":
+                for s in reversed(self._records):
+                    if s.status == "completed":
                         self._rollback_step(s)
             return
 
         # convert step functions into dotted names
-        invalid: set[str] = set()
+        invalid: set[QualName] = set()
         for func in steps:
             func_name = _qualname(func)
             if func_name not in self._lookup:
                 raise KeyError(func_name)
-            if not self._lookup[func_name].cache:
-                raise KeyError(f"Cannot undo uncached pipeline step: '{func_name}'")
             invalid.add(func_name)
         if not invalid:
             return  # nothing to roll back
@@ -1385,25 +1319,22 @@ class Pipeline:
         # roll back only steps providing or requiring the specified capabilities
         with self:
             # extend invalid steps to include all dependent capabilities
-            completed = [s for s in self.records if s.get("status") == "completed"]
+            completed = [s for s in self._records if s.status == "completed"]
             while True:
                 n = len(invalid)
                 for s in completed:
-                    step_name = s.get("name")
-                    requires = s.get("requires")
-                    if (
-                        isinstance(step_name, str) and
-                        isinstance(requires, list) and
-                        any(r in invalid for r in requires)
-                    ):
-                        invalid.add(step_name)
+                    if any(r in invalid for r in s.requires):
+                        invalid.add(s.name)
                 if len(invalid) == n:
                     break  # no changes
 
             # roll back all steps that provide or require an invalidated capability
             for s in reversed(completed):
-                if s.get("name") in invalid:
+                if s.name in invalid:
                     self._rollback_step(s)
+
+
+JournalAdapter = TypeAdapter(list[Pipeline.StepRecord])
 
 
 ##########################

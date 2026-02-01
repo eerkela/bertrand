@@ -66,6 +66,7 @@ dependencies = [
     "psutil",
     # "pyarrow",
     # "pybind11 >= 2.6.1",
+    "pydantic",
     # "python-dateutil",
     # "pytz",
     # "regex",

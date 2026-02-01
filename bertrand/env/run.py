@@ -427,7 +427,7 @@ def mkdir_private(path: Path) -> None:
         pass
 
 
-def atomic_write_text(path: Path, text: str) -> None:
+def atomic_write_text(path: Path, text: str, private: bool = False) -> None:
     """Atomically write text to a file, avoiding race conditions and partial writes.
 
     Parameters
@@ -436,6 +436,8 @@ def atomic_write_text(path: Path, text: str) -> None:
         The path to write to.
     text : str
         The text to write.
+    private : bool, optional
+        Whether to set private permissions (0600) on the written file, by default False.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f"{path.name}.tmp.{os.getpid()}.{int(time.time())}")
@@ -446,10 +448,15 @@ def atomic_write_text(path: Path, text: str) -> None:
             os.fsync(f.fileno())
     except OSError:
         pass
+    if private:
+        try:
+            tmp.chmod(0o600)
+        except OSError:
+            pass
     tmp.replace(path)
 
 
-def atomic_write_bytes(path: Path, data: bytes) -> None:
+def atomic_write_bytes(path: Path, data: bytes, private: bool = False) -> None:
     """Atomically write bytes to a file, avoiding race conditions and partial writes.
 
     Parameters
@@ -458,6 +465,8 @@ def atomic_write_bytes(path: Path, data: bytes) -> None:
         The path to write to.
     data : bytes
         The bytes to write.
+    private : bool, optional
+        Whether to set private permissions (0600) on the written file, by default False.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f"{path.name}.tmp.{os.getpid()}.{int(time.time())}")
@@ -468,6 +477,11 @@ def atomic_write_bytes(path: Path, data: bytes) -> None:
             os.fsync(f.fileno())
     except OSError:
         pass
+    if private:
+        try:
+            tmp.chmod(0o600)
+        except OSError:
+            pass
     tmp.replace(path)
 
 
