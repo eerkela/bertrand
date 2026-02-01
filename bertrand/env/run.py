@@ -2,14 +2,14 @@
 import json
 import os
 import pwd
-import re
 import shlex
 import shutil
 import subprocess
 import sys
 import threading
 import time
-from datetime import datetime
+import uuid
+from dataclasses import dataclass, field
 from pathlib import Path
 from types import TracebackType
 from typing import Mapping, TextIO
@@ -19,12 +19,9 @@ import psutil
 #pylint: disable=redefined-builtin
 
 
-HIDDEN: str = rf"^(?P<prefix>.*{re.escape(os.path.sep)})?(?P<suffix>\..*)"
-
-
 class CompletedProcess(subprocess.CompletedProcess[str]):
-    """A custom CompletedProcess that captures the output of stdout/stderr and prints
-    it when converted to a string.
+    """A subclass of `subprocess.CompletedProcess` that prints the command and its
+    output when converted to a string.
     """
     def __str__(self) -> str:
         out = [
@@ -37,8 +34,8 @@ class CompletedProcess(subprocess.CompletedProcess[str]):
 
 
 class CommandError(subprocess.CalledProcessError):
-    """A custom exception for command-line and docker errors, which captures the
-    output of stdout/stderr and prints it when converted to a string.
+    """A subclass of `subprocess.CalledProcessError` that prints the command and its
+    output when converted to a string.
     """
     def __init__(self, returncode: int, cmd: list[str], stdout: str, stderr: str) -> None:
         super().__init__(returncode, cmd, stdout, stderr)
@@ -53,7 +50,32 @@ class CommandError(subprocess.CalledProcessError):
         return "\n\n".join(out)
 
 
-def _pump_output(src: TextIO, sink: TextIO, buf_list: list[str]) -> None:
+def confirm(prompt: str, *, assume_yes: bool = False) -> bool:
+    """Ask the user for a yes/no confirmation for a given prompt.
+
+    Parameters
+    ----------
+    prompt : str
+        The prompt to display to the user.
+    assume_yes : bool, optional
+        If True, automatically return True without prompting the user.  Default is
+        False.
+
+    Returns
+    -------
+    bool
+        True if the user confirmed yes, false otherwise.
+    """
+    if assume_yes:
+        return True
+    try:
+        response = input(prompt).strip().lower()
+    except EOFError:
+        return False
+    return response in {"y", "yes"}
+
+
+def _tee(src: TextIO, sink: TextIO, buf_list: list[str]) -> None:
     for line in src:
         buf_list.append(line)
         sink.write(line)
@@ -148,12 +170,12 @@ def run(
 
             # read both streams without deadlock
             t_out = threading.Thread(
-                target=_pump_output,
+                target=_tee,
                 args=(p.stdout, sys.stdout, stdout_lines),
                 daemon=True
             )
             t_err = threading.Thread(
-                target=_pump_output,
+                target=_tee,
                 args=(p.stderr, sys.stderr, stderr_lines),
                 daemon=True
             )
@@ -177,31 +199,6 @@ def run(
     return result
 
 
-def confirm(prompt: str, *, assume_yes: bool = False) -> bool:
-    """Ask the user for a yes/no confirmation for a given prompt.
-
-    Parameters
-    ----------
-    prompt : str
-        The prompt to display to the user.
-    assume_yes : bool, optional
-        If True, automatically return True without prompting the user.  Default is
-        False.
-
-    Returns
-    -------
-    bool
-        True if the user confirmed yes, false otherwise.
-    """
-    if assume_yes:
-        return True
-    try:
-        response = input(prompt).strip().lower()
-    except EOFError:
-        return False
-    return response in {"y", "yes"}
-
-
 # TODO: sudo_prefix should maybe be rethought to be more reliable and ideally just
 # not necessary at all.
 
@@ -221,77 +218,42 @@ def sudo_prefix() -> list[str]:
     return ["sudo", f"--preserve-env={preserve}"]
 
 
-class UserInfo:
-    """A simple structure representing a user identity by user ID and group ID."""
+@dataclass(frozen=True)
+class User:
+    """A simple structure representing a user identity by user ID and group ID.
 
-    def __init__(self) -> None:
+    Attributes
+    ----------
+    uid : int
+        The numeric user ID.
+    gid : int
+        The numeric group ID.
+    name : str
+        The username.
+    home : Path
+        The path to the user's home directory.
+    """
+    uid: int = field(init=False)
+    gid: int = field(init=False)
+    name: str = field(init=False)
+    home: Path = field(init=False)
+
+    def __post_init__(self) -> None:
         euid = os.geteuid()
         sudo_uid = os.environ.get("SUDO_UID")
         sudo_user = os.environ.get("SUDO_USER")
         if euid == 0 and sudo_uid:
-            self._uid = int(sudo_uid)
-            pw = pwd.getpwuid(self._uid)
-            self._gid = pw.pw_gid
-            self._name = sudo_user or pw.pw_name
-            self._home = Path(pw.pw_dir)
-            self._shell = Path(pw.pw_shell)
+            object.__setattr__(self, 'uid', int(sudo_uid))
+            pw = pwd.getpwuid(self.uid)
+            object.__setattr__(self, 'gid', pw.pw_gid)
+            object.__setattr__(self, 'name', sudo_user or pw.pw_name)
+            object.__setattr__(self, 'home', Path(pw.pw_dir))
         else:
-            self._uid = os.getuid()
-            pw = pwd.getpwuid(self._uid)
-            self._gid = pw.pw_gid
-            self._name = pw.pw_name
-            self._home = Path(pw.pw_dir)
-            self._shell = Path(pw.pw_shell)
-
-    @property
-    def uid(self) -> int:
-        """
-        Returns
-        -------
-        int
-            The numeric user ID.
-        """
-        return self._uid
-
-    @property
-    def gid(self) -> int:
-        """
-        Returns
-        -------
-        int
-            The numeric group ID.
-        """
-        return self._gid
-
-    @property
-    def name(self) -> str:
-        """
-        Returns
-        -------
-        str
-            The host username.
-        """
-        return self._name
-
-    @property
-    def home(self) -> Path:
-        """
-        Returns
-        -------
-        Path
-            The path to the user's home directory.
-        """
-        return self._home
-
-    @property
-    def shell(self) -> Path:
-        """
-        Returns
-        -------
-        Path
-            The path to the user's login shell.
-        """
-        return self._shell
+            object.__setattr__(self, 'uid', os.getuid())
+            pw = pwd.getpwuid(self.uid)
+            object.__setattr__(self, 'gid', pw.pw_gid)
+            object.__setattr__(self, 'name', pw.pw_name)
+            object.__setattr__(self, 'home', Path(pw.pw_dir))
 
 
 class LockDir:
@@ -361,7 +323,11 @@ class LockDir:
                         shutil.rmtree(self.path, ignore_errors=True)
                         continue
                 except Exception:  # pylint: disable=broad-except
-                    shutil.rmtree(self.path, ignore_errors=True)
+                    if (now - start) > self.timeout:
+                        raise TimeoutError(
+                            f"could not acquire environment lock within {self.timeout} seconds"
+                        ) from err
+                    time.sleep(0.1)
                     continue
 
                 # check whether owning process is still alive
@@ -440,7 +406,7 @@ def atomic_write_text(path: Path, text: str, private: bool = False) -> None:
         Whether to set private permissions (0600) on the written file, by default False.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(f"{path.name}.tmp.{os.getpid()}.{int(time.time())}")
+    tmp = path.with_name(f"{path.name}.tmp.{uuid.uuid4().hex}")
     tmp.write_text(text, encoding="utf-8")
     try:
         with tmp.open("r+", encoding="utf-8") as f:
@@ -469,7 +435,7 @@ def atomic_write_bytes(path: Path, data: bytes, private: bool = False) -> None:
         Whether to set private permissions (0600) on the written file, by default False.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(f"{path.name}.tmp.{os.getpid()}.{int(time.time())}")
+    tmp = path.with_name(f"{path.name}.tmp.{uuid.uuid4().hex}")
     tmp.write_bytes(data)
     try:
         with tmp.open("r+b") as f:
@@ -483,42 +449,3 @@ def atomic_write_bytes(path: Path, data: bytes, private: bool = False) -> None:
         except OSError:
             pass
     tmp.replace(path)
-
-
-def up_to_date(start: Path, timestamp: datetime, exclude: str = HIDDEN) -> bool:
-    """Check whether all files under a given directory are older than the specified
-    timestamp, excluding files that match a given regex pattern.
-
-    Parameters
-    ----------
-    start : Path
-        The path to start checking from.  If this is a directory, then all files
-        under it will be checked recursively.
-    timestamp : datetime
-        The timestamp to compare against.
-    exclude : str, optional
-        A regex pattern for files or directories to exclude from the check.  The
-        default pattern excludes any path component (relative to `start`) that begins
-        with a dot (usually indicating hidden files or directories).
-
-    Returns
-    -------
-    bool
-        True if all relevant files are older than the timestamp, false otherwise.
-
-    Raises
-    ------
-    re.error
-        If the provided regex pattern is invalid.
-    """
-    mtime = timestamp.timestamp()
-    regex = re.compile(exclude)
-    remaining = [start.expanduser().resolve()]
-    while remaining:
-        path = remaining.pop()
-        if path.exists() and not regex.match(str(path.relative_to(start))):
-            if path.is_dir():  # recursively explore directories
-                remaining.extend(path.iterdir())
-            elif path.stat().st_mtime > mtime:  # found a newer file
-                return False
-    return True

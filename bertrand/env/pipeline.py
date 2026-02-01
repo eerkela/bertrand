@@ -1,13 +1,22 @@
-"""General-purpose installation framework for Bertrand's host dependencies."""
+"""A general-purpose pipeline framework used to implement Bertrand's CLI commands in
+a reversible and maintainable manner.  Each pipeline represents a series of steps,
+which consist of atomic operations that can be rolled back in case of failure.  Steps
+may depend on other steps, and the pipeline will compute a topological ordering to
+execute them in the correct sequence.  Steps will also be persisted in a journal file
+so that they can be resumed or rolled back across multiple runs, or invalidated after
+changes to their source code, inputs, or dependencies.
+"""
 from __future__ import annotations
 
+import errno
 import json
 import hashlib
 import inspect
+import os
 import re
 import shutil
+import stat
 import uuid
-
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -20,20 +29,21 @@ from typing import (
     Literal,
     Protocol,
     TypeAlias,
-    overload
+    overload,
 )
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError, model_validator
 from typing_extensions import Annotated
 
-from .run import LockDir, atomic_write_text, atomic_write_bytes, mkdir_private
+from .run import LockDir, User, atomic_write_text, atomic_write_bytes, mkdir_private
 
 
 #pylint: disable=broad-except
 SYNTAX: int = 1
+STATE_DIR = User().home / ".local" / "share" / "bertrand" / "pipelines"
 SANITIZE: re.Pattern[str] = re.compile(r"[^a-zA-Z0-9_.-]")
 MISSING: Literal["<missing>"] = "<missing>"  # not a valid SHA-256 hexdigest
-ATOMIC_UNDO: dict[str, Callable[[Pipeline, dict[str, JSONValue]], None]] = {}
+ATOMIC_UNDO: dict[str, Callable[[dict[str, JSONValue]], None]] = {}
 QualName = Annotated[str, Field(pattern=r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*$")]
 UUID4Hex = Annotated[str, Field(pattern=r"^[a-f0-9]{32}$")]
 Hash256 = Annotated[str, Field(pattern=r"^[a-f0-9]{64}$")]
@@ -71,22 +81,37 @@ class Atomic(Protocol):
     """A type hint for a reversible operation performed as part of a
     `Pipeline.InProgress` step.  Operations can be registered using the `@atomic` class
     decorator on any class implementing this protocol.
-
-    Methods
-    -------
-    apply(ctx: Pipeline.InProgress) -> dict[str, JSONValue] | None
-        Apply the operation to the host system within an in-progress `Pipeline` step,
-        and return an optional payload describing any state needed to undo the
-        operation.  Use the `ctx.do()` method to record an operation in the journal.
-    undo(ctx: Pipeline, payload: dict[str, JSONValue]) -> None
-        Undo the operation on the host system within the given `Pipeline`, using the
-        payload returned by the original `apply()` call.
     """
-    # pylint: disable=missing-function-docstring
-    def apply(self, ctx: Pipeline.InProgress) -> dict[str, JSONValue] | None: ...
+
+    def apply(self, ctx: Pipeline.InProgress) -> dict[str, JSONValue]:
+        """Apply the operation within an in-progress `Pipeline` step, and return a
+        payload describing any state needed to undo the operation.
+
+        Parameters
+        ----------
+        ctx : Pipeline.InProgress
+            The current installation step.  Indexing the step like a dictionary will
+            yield any global facts that have been recorded so far, which are immutable.
+            The `do()` and `backup()` methods may be used to perform further operations
+            or record backup files as part of this step.
+
+        Returns
+        -------
+        dict[str, JSONValue]
+            A payload describing any state needed to undo the operation.  May be empty
+            if no state is needed.
+        """
 
     @staticmethod
-    def undo(ctx: Pipeline, payload: dict[str, JSONValue]) -> None: ...
+    def undo(payload: dict[str, JSONValue]) -> None:
+        """Undo the operation within the given `Pipeline`, using the payload returned
+        by the original `apply()` call.
+
+        Parameters
+        ----------
+        payload : dict[str, JSONValue]
+            The payload returned by the original `apply()` call.
+        """
 
 
 def atomic(t: type[Atomic]) -> type[Atomic]:
@@ -180,10 +205,11 @@ class Pipeline:
         version : Hash256
             A current version specifier for the function's enclosing module, which
             will be cross-checked against the journal to detect changes.
-        cache : bool
-            Whether to cache the results of this step in the journal.  If False, the
-            step will always be re-executed on each run, regardless of its previous
-            state or dependencies.  Cached steps must never depend on uncached steps.
+        ephemeral : bool
+            If False, the step's effects will be recorded in the journal and persisted
+            between runs (subject to invalidation).  Otherwise, the step will always be
+            rolled back at the end of the pipeline run, even if it completed
+            successfully.  Persistent steps must never depend on ephemeral steps.
         requires : frozenset[Pipeline.Target]
             The set of previous targets which must be completed before this step can
             run.  Each step will be executed in strict topological order based on these
@@ -192,7 +218,7 @@ class Pipeline:
         """
         func: Pipeline.Function
         version: Hash256
-        cache: bool
+        ephemeral: bool
         requires: frozenset[Pipeline.Target]
 
         def __str__(self) -> str:
@@ -220,12 +246,6 @@ class Pipeline:
         model_config = ConfigDict(extra="forbid")  # reject unexpected keys
         kind: QualName
         payload: dict[str, JSONValue]
-
-        @model_validator(mode="after")
-        def _check_kind(self) -> Pipeline.OpRecord:
-            if self.kind not in ATOMIC_UNDO:
-                raise ValueError(f"unknown atomic operation kind: {self.kind}")
-            return self
 
     class StepRecord(BaseModel):
         """JSON representation for a full step in the journal.
@@ -332,14 +352,14 @@ class Pipeline:
 
     # pipeline-wide config
     state_dir: Path
-    timeout: int = 30  # seconds
+    timeout: int = 30
     keep: int = 3
 
     # registration
     _targets: list[Pipeline.Target] = field(default_factory=list, repr=False)
-    _ordered: bool = field(default=False, repr=False)  # skip planning
+    _ordered: bool = field(default=False, repr=False)
     _lookup: dict[QualName, Pipeline.Target] = field(default_factory=dict, repr=False)
-    _modules: dict[str, Hash256] = field(default_factory=dict, repr=False)  # source -> hash
+    _modules: dict[str, Hash256] = field(default_factory=dict, repr=False)
 
     # context
     _lock: LockDir = field(init=False, repr=False)
@@ -454,7 +474,8 @@ class Pipeline:
                 errors.append(f"unknown atomic operation kind '{op.kind}'")
                 continue
             try:
-                undo(self, op.payload)
+                undo(op.payload)
+                op.payload.clear()  # avoid leaking payload
             except Exception:
                 errors.append(f"failed to undo operation '{op.kind}'")
 
@@ -599,7 +620,7 @@ class Pipeline:
         *,
         requires: Iterable[Pipeline.Function] | None = ...,
         enable: bool = ...,
-        cache: bool = ...,
+        ephemeral: bool = ...,
     ) -> Pipeline.Function: ...
     @overload
     def __call__(
@@ -608,7 +629,7 @@ class Pipeline:
         *,
         requires: Iterable[Pipeline.Function] | None = ...,
         enable: bool = ...,
-        cache: bool = ...,
+        ephemeral: bool = ...,
     ) -> Callable[[Pipeline.Function], Pipeline.Function]: ...
     def __call__(
         self,
@@ -616,7 +637,7 @@ class Pipeline:
         *,
         requires: Iterable[Pipeline.Function] | None = None,
         enable: bool = True,
-        cache: bool = False,
+        ephemeral: bool = True,
     ) -> Pipeline.Function | Callable[[Pipeline.Function], Pipeline.Function]:
         """Register a step function with the given dependencies.
 
@@ -630,11 +651,11 @@ class Pipeline:
         enable : bool, optional
             Whether to enable this step in the pipeline.  If False, the step will not
             be registered, and the pipeline will be unchanged.  Default is True.
-        cache : bool, optional
-            Whether to cache the results of this step in the journal.  If False (the
-            default), the step will always be re-executed on each run, regardless of
-            its previous state or dependencies.  If any cached step depends on an
-            uncached step, an error will be raised during registration.
+        ephemeral : bool, optional
+            Whether this step's effects should be persisted between runs (False) or
+            rolled back successful completion (True).  Default is True.  If any
+            persistent step depends on an ephemeral one, an error will be raised during
+            registration.
 
         Returns
         -------
@@ -650,8 +671,8 @@ class Pipeline:
         ------
         TypeError
             If any provided capabilities are not unique within the pipeline, or if
-            the step name is not unique, or if a cached step depends on an uncached
-            step.
+            the step name is not unique, or if a persistent step depends on an
+            ephemeral step.
         OSError
             If the pipeline context is currently active.
         """
@@ -681,11 +702,11 @@ class Pipeline:
                 r = frozenset(_r)
 
             # validate cache dependencies
-            if cache:
+            if not ephemeral:
                 for t in r:
-                    if not t.cache:
+                    if t.ephemeral:
                         raise TypeError(
-                            f"Cached pipeline step '{name}' cannot depend on uncached "
+                            f"Persistent pipeline step '{name}' cannot depend on ephemeral "
                             f"step '{t}'."
                         )
 
@@ -699,7 +720,7 @@ class Pipeline:
                 )
 
             # register step
-            target = Pipeline.Target(func=func, version=version, cache=cache, requires=r)
+            target = Pipeline.Target(func=func, version=version, ephemeral=ephemeral, requires=r)
             self._targets.append(target)
             self._lookup[name] = target
             self._ordered = False  # re-plan on next run
@@ -820,8 +841,8 @@ class Pipeline:
                 if exc_type is None:
                     # mark step as completed
                     try:
-                        # uncached steps never transition to "completed"
-                        if self.target.cache:
+                        # ephemeral steps never transition to "completed"
+                        if not self.target.ephemeral:
                             self.pipeline._completed[self.target] = self.target.version
                             self.record.status = "completed"
                         self.record.ended_at = datetime.now(timezone.utc)
@@ -936,12 +957,12 @@ class Pipeline:
                         f"a prerequisite of the current step '{self.record.name}'.  "
                         "Add it to the 'requires' list to ensure proper ordering."
                     )
-                if self.target.cache:
+                if not self.target.ephemeral:
                     self.record.accesses[key] = fact.hash
                 return fact.value
 
             # record negative global access and surface key error
-            if self.target.cache:
+            if not self.target.ephemeral:
                 self.record.accesses[key] = MISSING
             raise KeyError(f"Fact '{key}' not found in local or global context")
 
@@ -970,7 +991,7 @@ class Pipeline:
             value_json = self.pipeline._json(value)
             value_hash = hashlib.sha256(value_json.encode("utf-8")).hexdigest()
             value_norm = json.loads(value_json)
-            if self.target.cache:
+            if not self.target.ephemeral:
                 self.record.facts[key] = value_norm
 
             # store read-only view in local context, for future reference
@@ -1033,12 +1054,12 @@ class Pipeline:
                         f"not a prerequisite of the current step '{self.record.name}'.  "
                         "Add it to the 'requires' list to ensure proper ordering."
                     )
-                if self.target.cache:
+                if not self.target.ephemeral:
                     self.record.accesses[key] = fact.hash
                 return True
 
             # record negative global access
-            if self.target.cache:
+            if not self.target.ephemeral:
                 self.record.accesses[key] = MISSING
             return False
 
@@ -1081,12 +1102,12 @@ class Pipeline:
                         f"a prerequisite of the current step '{self.record.name}'.  "
                         "Add it to the 'requires' list to ensure proper ordering."
                     )
-                if self.target.cache:
+                if not self.target.ephemeral:
                     self.record.accesses[key] = fact.hash
                 return fact.value
 
             # record negative global access
-            if self.target.cache:
+            if not self.target.ephemeral:
                 self.record.accesses[key] = MISSING
             return default
 
@@ -1100,13 +1121,16 @@ class Pipeline:
                 The operation to apply.
             """
             payload = op.apply(self)
-            if payload is not None:
-                self.pipeline._json(payload)  # validate serializability
-                self.record.ops.append(Pipeline.OpRecord(
-                    kind=_qualname(type(op)),
-                    payload=payload
-                ))
-                self.pipeline._dump()
+            payload_json = self.pipeline._json(payload)  # validate serializability
+            self.record.ops.append(Pipeline.OpRecord(
+                kind=_qualname(type(op)),
+                payload=json.loads(payload_json)  # normalize for storage
+            ))
+            self.pipeline._dump()
+
+        # TODO: maybe it's possible to write to a metadata file that cross-references
+        # all backup files to their originating steps, to allow garbage collection
+        # to proceed automatically without needing to track backups in the journal?
 
         def backup(self, path: Path) -> str:
             """Write backup data to a uniquely named file in the backup directory.
@@ -1178,7 +1202,7 @@ class Pipeline:
             return None
         return path.read_bytes()
 
-    def run(self, **kwargs: Any) -> None:
+    def run(self, **kwargs: Any) -> dict[str, JSONView]:
         """Run the pipeline with the given keyword arguments.
 
         Parameters
@@ -1189,6 +1213,12 @@ class Pipeline:
             JSON-serializable, and a hash + read-only view of its serialized value will
             be stored for change detection and lookup.  If the value changes between
             runs, then any steps that access it will be invalidated and re-executed.
+
+        Returns
+        -------
+        dict[str, JSONView]
+            The final set of facts in the pipeline context after execution, as
+            read-only views.
 
         Raises
         ------
@@ -1278,6 +1308,9 @@ class Pipeline:
                 with Pipeline.InProgress(pipeline=self, target=t) as entry:
                     t.func(entry)
 
+            # return final set of facts as read-only views
+            return {k: v.value for k, v in self._facts.items()}
+
     def undo(self, steps: Iterable[Pipeline.Function] | None = None) -> None:
         """Replay the journal in reverse order to undo changes.
 
@@ -1337,246 +1370,18 @@ class Pipeline:
 JournalAdapter = TypeAdapter(list[Pipeline.StepRecord])
 
 
-##########################
-####    OPERATIONS    ####
-##########################
-
-
-@atomic
-@dataclass(frozen=True)
-class WriteTextFile:
-    """An operation that writes text to a file on the host system and backs up any
-    existing file as needed.
-
-    Attributes
-    ----------
-    path : Path
-        The path of the file to write.
-    text : str
-        The text content to write to the file.
-    mode : int | None
-        The file mode (permissions) to set on the written file, or None to leave
-        unchanged.
-    mkdir_parents : bool
-        Whether to create parent directories as needed, by default True.
-    encoding : str
-        The text encoding to use when writing the file, by default "utf-8".
-    newline : str | None
-        The newline mode to use when writing the file, by default None (universal).
-    """
-    # pylint: disable=unused-argument
-    path: Path = Path()
-    text: str = ""
-    mode: int | None = None
-    mkdir_parents: bool = True
-    encoding: str = "utf-8"
-    newline: str | None = None
-
-    # TODO: newline currently isn't being used.  It should either be deleted or
-    # implemented properly.
-
-    def apply(self, ctx: Pipeline) -> dict[str, Any] | None:
-        """Write the specified text to a file on the host system, backing up any
-        existing file as needed, and record the action in the installation registry.
-
-        Parameters
-        ----------
-        ctx : Pipeline
-            The in-flight installation context.
-
-        Returns
-        -------
-        dict[str, Any] | None
-            A payload describing the written file for undo purposes, or None if no
-            changes were made.
-
-        Raises
-        ------
-        OSError
-            If the installation context is not properly initialized, or if backing up
-            the existing file fails.
-        """
-        if not hasattr(ctx, "journal"):
-            raise OSError("WriteTextFileOp requires ctx.journal to be initialized")
-
-        # ensure parent directories exist
-        p = self.path
-        if self.mkdir_parents:
-            p.parent.mkdir(parents=True, exist_ok=True)
-
-        # compute new content hash
-        data = self.text.encode(self.encoding)
-        new_hash = hashlib.sha256(data).hexdigest()
-
-        # check existing file and do nothing if contents already match
-        existed = p.exists()
-        backup: str | None = None
-        old_mode: int | None = None
-        old_bytes: bytes | None = None
-        if existed:
-            try:
-                old_mode = p.stat().st_mode & 0o777
-            except OSError:
-                old_mode = None
-            try:
-                old_bytes = p.read_bytes()
-            except OSError:
-                old_bytes = None
-            if old_bytes is not None:
-                # if contents already match, only apply mode changes if needed
-                if old_bytes == data:
-                    mode_changed = False
-                    if self.mode is not None and old_mode is not None and old_mode != self.mode:
-                        try:
-                            p.chmod(self.mode)
-                            mode_changed = True
-                        except OSError:
-                            pass
-                    if mode_changed:
-                        return {
-                            "path": str(p),
-                            "existed": True,
-                            "backup": None,
-                            "restore_mode": old_mode,
-                            "expected_size": len(data),
-                            "expected_hash": new_hash,
-                            "wrote": False,
-                            "mode_changed": True,
-                        }
-                    return None
-
-                # if contents differ, back up existing mode
-                backup = ctx.write_backup(old_bytes, p.name)
-
-        # write new contents
-        atomic_write_bytes(p, data)
-
-        # apply mode if requested (best-effort)
-        if self.mode is not None:
-            try:
-                p.chmod(self.mode)
-            except OSError:
-                pass
-        return {
-            "path": str(p),
-            "existed": existed,
-            "backup": backup,  # filename in backup dir
-            "restore_mode": old_mode,
-            "expected_size": len(data),
-            "expected_hash": new_hash,
-            "wrote": True,
-            "mode_changed": self.mode is not None and (old_mode is None or old_mode != self.mode),
-        }
-
-    @staticmethod
-    def undo(ctx: Pipeline, payload: dict[str, Any]) -> None:
-        """Restore the backed-up file on the host system, or remove the file if it did
-        not exist before.
-
-        Parameters
-        ----------
-        ctx : Docker
-            The in-flight Docker installation state.
-        payload : dict[str, Any]
-            The payload returned by the original `apply()` call.
-        """
-        p = Path(str(payload.get("path", "")))
-        existed = bool(payload.get("existed", False))
-        backup = payload.get("backup")
-        restore_mode = payload.get("restore_mode")
-        expected_size = payload.get("expected_size")
-        expected_hash = payload.get("expected_hash")
-        mode_changed = bool(payload.get("mode_changed", False))
-
-        # helper to see if the current file still looks like the one we wrote
-        def _matches_expected() -> bool:
-            if not expected_hash:
-                return True  # no reference; be permissive
-            try:
-                cur = p.read_bytes()
-            except OSError:
-                return False
-            return (
-                (expected_size is None or len(cur) == expected_size) and
-                hashlib.sha256(cur).hexdigest() == expected_hash
-            )
-
-        # if we overwrote an existing file, restore it, but only if safe
-        if existed:
-            if backup is not None:
-                backup_data = ctx.read_backup(backup)
-                if backup_data is None or (p.exists() and not _matches_expected()):
-                    return  # backup is empty or user has changed original file - don't clobber
-                try:
-                    p.parent.mkdir(parents=True, exist_ok=True)
-                    p.write_bytes(backup_data)
-                    if restore_mode is not None:
-                        try:
-                            p.chmod(int(restore_mode))
-                        except OSError:
-                            pass
-                    # TODO: remove backup file?
-                    # -> This requires some level of garbage collection to avoid deleting
-                    # backups that may still be needed due to rollback or similar
-                except OSError:
-                    pass
-                return
-
-            #iIf we didn't create a backup but we did change mode only, restore mode
-            if mode_changed and restore_mode is not None and p.exists():
-                try:
-                    p.chmod(int(restore_mode))
-                except OSError:
-                    pass
-            return
-
-        # file did not exist before - delete only if it still matches what we wrote
-        if p.exists() and _matches_expected():
-            try:
-                p.unlink()
-            except OSError:
-                pass
-
-
-@atomic
-@dataclass(frozen=True)
-class RmTree:
-    """An operation that removes a directory tree from the host system."""
-    # pylint: disable=unused-argument
-    path: Path = Path()
-    ignore_errors: bool = True
-
-    def apply(self, ctx: Pipeline.InProgress) -> dict[str, Any] | None:
-        """Remove the specified directory tree from the host system and record the
-        action in the installation registry.
-
-        Parameters
-        ----------
-        ctx : Pipeline.InProgress
-            The current installation step.
-
-        Returns
-        -------
-        dict[str, Any] | None
-            A payload describing the removed path for undo purposes, or None if the
-            path did not exist.
-        """
-        p = self.path
-        if not p.exists():
-            return None
-        shutil.rmtree(p, ignore_errors=self.ignore_errors)
-        return {"path": str(p)}
-
-    @staticmethod
-    def undo(ctx: Pipeline, payload: dict[str, Any]) -> None:
-        """Undo the removal of a directory tree on the host system.  This operation is
-        irreversible, so this method is intentionally a no-op.
-
-        Parameters
-        ----------
-        ctx : Pipeline
-            The in-flight installation context.
-        payload : dict[str, Any]
-            The payload returned by the original `apply()` call.
-        """
-        return
+on_init = Pipeline(state_dir=STATE_DIR / "init")
+on_build = Pipeline(state_dir=STATE_DIR / "build")
+on_start = Pipeline(state_dir=STATE_DIR / "start")
+on_enter = Pipeline(state_dir=STATE_DIR / "enter")
+on_stop = Pipeline(state_dir=STATE_DIR / "stop")
+on_pause = Pipeline(state_dir=STATE_DIR / "pause")
+on_resume = Pipeline(state_dir=STATE_DIR / "resume")
+on_restart = Pipeline(state_dir=STATE_DIR / "restart")
+on_ls = Pipeline(state_dir=STATE_DIR / "ls")
+on_rm = Pipeline(state_dir=STATE_DIR / "rm")
+on_top = Pipeline(state_dir=STATE_DIR / "top")
+on_stats = Pipeline(state_dir=STATE_DIR / "stats")
+on_import = Pipeline(state_dir=STATE_DIR / "import")
+on_export = Pipeline(state_dir=STATE_DIR / "export")
+on_publish = Pipeline(state_dir=STATE_DIR / "publish")

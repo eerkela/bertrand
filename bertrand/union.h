@@ -379,7 +379,7 @@ namespace meta {
     namespace detail::visit {
 
         /* Decomposing an arbitrary type begins with a pre-pass that recursively
-        collects all the empty and optional states ahead of time (converting `void` to
+        collects all the empty and error states ahead of time (converting `void` to
         `NoneType`). */
         template <typename T, typename = meta::pack<>>
         struct prepass {
