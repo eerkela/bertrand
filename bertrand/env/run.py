@@ -393,7 +393,12 @@ def mkdir_private(path: Path) -> None:
         pass
 
 
-def atomic_write_text(path: Path, text: str, private: bool = False) -> None:
+def atomic_write_text(
+    path: Path,
+    text: str,
+    encoding: str | None = None,
+    private: bool = False,
+) -> None:
     """Atomically write text to a file, avoiding race conditions and partial writes.
 
     Parameters
@@ -402,14 +407,16 @@ def atomic_write_text(path: Path, text: str, private: bool = False) -> None:
         The path to write to.
     text : str
         The text to write.
+    encoding : str | None, optional
+        The text encoding to use (default is None, which uses the system default).
     private : bool, optional
         Whether to set private permissions (0600) on the written file, by default False.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f"{path.name}.tmp.{uuid.uuid4().hex}")
-    tmp.write_text(text, encoding="utf-8")
+    tmp.write_text(text, encoding=encoding)
     try:
-        with tmp.open("r+", encoding="utf-8") as f:
+        with tmp.open("r+", encoding=encoding) as f:
             f.flush()
             os.fsync(f.fileno())
     except OSError:
