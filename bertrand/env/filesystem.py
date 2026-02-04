@@ -1,4 +1,4 @@
-"""A selection of atomic operations meant to be used in conjunction with CLI
+"""A selection of atomic filesystem operations meant to be used in conjunction with CLI
 pipelines.
 """
 from __future__ import annotations
