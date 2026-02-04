@@ -444,7 +444,7 @@ class InstallPackage:
     ----------
     manager : str
         The package manager name (e.g., "apt", "dnf", "yum", "zypper", "pacman",
-        "apk").  The manager string will be checked against `PACKAGE_MANAGERS` to
+        "apk").  The manager string will be checked against `INSTALL_MANAGERS` to
         determine the corresponding commands to use.
     packages : list[str]
         The package names to install.
@@ -461,6 +461,8 @@ class InstallPackage:
     refresh: bool = True
 
     def apply(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+        if os.name != "posix":
+            raise OSError("Package manager operations require a POSIX system.")
         manager = _normalize_install_manager(self.manager)
         spec = INSTALL_MANAGERS[manager]
         _ensure_manager_cmd(manager, spec)
@@ -505,6 +507,8 @@ class InstallPackage:
             # refresh if requested and manager supports it
             env = _cmd_env(spec.noninteractive_env, self.assume_yes)
             if self.refresh and spec.refresh:
+                if not shutil.which(spec.refresh[0]):
+                    raise FileNotFoundError(f"Refresh command not found: {spec.refresh[0]}")
                 cmd = _build_cmd(
                     spec.refresh,
                     spec.yes_refresh,
@@ -541,6 +545,8 @@ class InstallPackage:
 
     @staticmethod
     def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+        if os.name != "posix":
+            raise OSError("Package manager operations require a POSIX system.")
         manager = payload.get("manager")
         installed = payload.get("installed")
         if not isinstance(manager, str) or not isinstance(installed, list):
@@ -612,9 +618,9 @@ class AddRepository:
         The package manager name ("apt", "dnf", "yum", "zypper").  Must be present in
         the `REPOSITORY_MANAGERS` mapping.
     name : str
-        A short name for the repository (used for file names and native commands).
+        A short name for the repository (used for file names).
     repo : str
-        Repository definition text or URL for native commands.
+        Repository definition text.
     repo_path : Path | None, optional
         Optional repo file path for file-based mode.
     replace : bool, optional
@@ -633,6 +639,10 @@ class AddRepository:
     assume_yes: bool = False
 
     def apply(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+        if os.name != "posix":
+            raise OSError("Package manager operations require a POSIX system.")
+        if os.geteuid() != 0:
+            raise PermissionError("Adding repositories requires root privileges.")
         manager = _normalize_repository_manager(self.manager)
         spec = REPOSITORY_MANAGERS[manager]
         repo_path = self.repo_path or (spec.repo_dir / f"{self.name}{spec.repo_ext}")
@@ -657,6 +667,8 @@ class AddRepository:
 
         # refresh if requested and manager supports it
         if self.refresh and spec.refresh:
+            if not shutil.which(spec.refresh[0]):
+                raise FileNotFoundError(f"Refresh command not found: {spec.refresh[0]}")
             cmd = _build_cmd(
                 spec.refresh,
                 spec.yes_refresh,
@@ -718,6 +730,10 @@ class VerifyRepository:
     replace: bool = False
 
     def apply(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+        if os.name != "posix":
+            raise OSError("Package manager operations require a POSIX system.")
+        if os.geteuid() != 0:
+            raise PermissionError("Verifying repositories requires root privileges.")
         manager = _normalize_repository_manager(self.manager)
         spec = REPOSITORY_MANAGERS[manager]
         key_path = self.key_path or (spec.key_dir / f"{self.name}.gpg")
@@ -791,6 +807,10 @@ class InstallCACert:
     refresh: bool = True
 
     def apply(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+        if os.name != "posix":
+            raise OSError("Package manager operations require a POSIX system.")
+        if os.geteuid() != 0:
+            raise PermissionError("Installing CA certificates requires root privileges.")
         manager = _normalize_ca_manager(self.manager)
         spec = CA_CERT_MANAGERS[manager]
         source = self.source.absolute()
@@ -824,6 +844,8 @@ class InstallCACert:
 
         # refresh trust store if requested and supported
         if self.refresh and spec.refresh:
+            if not shutil.which(spec.refresh[0]):
+                raise FileNotFoundError(f"Refresh command not found: {spec.refresh[0]}")
             cmd = _build_cmd(
                 spec.refresh,
                 spec.yes_refresh,

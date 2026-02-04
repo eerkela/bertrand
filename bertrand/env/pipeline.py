@@ -244,6 +244,7 @@ class Pipeline:
         """
         model_config = ConfigDict(extra="forbid")  # reject unexpected keys
         kind: QualName
+        undo: bool
         payload: dict[str, JSONValue] = Field(default_factory=dict)
 
     class StepRecord(BaseModel):
@@ -473,11 +474,17 @@ class Pipeline:
         with Pipeline.UndoStep(ephemeral=True, pipeline=self, record=step) as ctx:
             while step.ops:
                 op = step.ops.pop()  # destroy as we go
+                if not op.undo:
+                    continue  # one-way operation; skip undo
+
+                # lookup undo handler
                 undo = ATOMIC_UNDO.get(op.kind)
                 if not undo:
                     step.ops.append(op)
                     self._rollback_fail_error(step, f"unknown atomic operation kind '{op.kind}'")
                     break
+
+                # attempt undo
                 try:
                     undo(ctx, op.payload)
                 except Exception as err:
@@ -995,7 +1002,7 @@ class Pipeline:
                 self.record.accesses[key] = MISSING
             return default
 
-        def do(self, op: Atomic) -> None:
+        def do(self, op: Atomic, undo: bool = True) -> None:
             """Apply an operation within this pipeline step, recording it in the
             journal.
 
@@ -1004,8 +1011,12 @@ class Pipeline:
             op : Atomic
                 The operation to apply.  See the `Atomic` type for implementation
                 details.
+            undo : bool, optional
+                Whether this operation should be undone if the step is rolled back, by
+                default True.  Setting this to false will still record the operation in
+                the journal, but it will be skipped during rollback, making it one-way.
             """
-            rec = Pipeline.OpRecord(kind=_qualname(type(op)))
+            rec = Pipeline.OpRecord(kind=_qualname(type(op)), undo=undo)
             self.record.ops.append(rec)
             self.dump()
             op.apply(self, rec.payload)
