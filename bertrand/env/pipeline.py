@@ -736,20 +736,87 @@ class Pipeline:
         for target in self._targets:
             yield target.func
 
-    def __contains__(self, target: Pipeline.Function) -> bool:
-        """Check if a function is registered as a target in this pipeline.
+    def __contains__(self, key: str) -> bool:
+        """Check if a fact is present in the global pipeline context.
 
         Parameters
         ----------
-        target : Pipeline.Function
-            The function to check for.
+        key : str
+            The name of the fact to check for.
 
         Returns
         -------
         bool
-            True if the function is registered, False otherwise.
+            True if the fact is present in the global context, False otherwise.
+
+        Raises
+        ------
+        OSError
+            If the pipeline context is not currently active.
         """
-        return _qualname(target) in self._lookup
+        if self._lock.depth < 1:
+            raise OSError("must acquire pipeline context before accessing facts")
+        return key in self._facts
+
+    def __getitem__(self, key: str) -> JSONView:
+        """Look up a fact stored in the global pipeline context.
+
+        Parameters
+        ----------
+        key : str
+            The key to look up.  Note that only facts stored by persistent steps
+            will be available in the global context, so this will not return any facts
+            that were recorded by ephemeral steps., unless it is somehow called during
+            pipeline execution (which is discouraged - use the in-progress context
+            instead).
+
+        Returns
+        -------
+        JSONView
+            A read-only JSON view of the requested fact, where lists are converted to
+            tuples and dictionaries to `MappingProxyType` instances in order to
+            discourage modification.
+
+        Raises
+        ------
+        OSError
+            If the pipeline context is not currently active.
+        KeyError
+            If the requested fact is not found in the global context.
+        """
+        if self._lock.depth < 1:
+            raise OSError("must acquire pipeline context before accessing facts")
+        return self._facts[key].value
+
+    def get(self, key: str, default: JSONValue = None) -> JSONView:
+        """Look up a fact stored in the global pipeline context, returning a default
+        value if the fact is not found.
+
+        Parameters
+        ----------
+        key : str
+            The key to look up.
+        default : JSONValue, optional
+            The value to return if the fact is not found.  Must be JSON-serializable,
+            and will be converted to a deserialized, read-only view.
+
+        Returns
+        -------
+        JSONView | None
+            A read-only JSON view of the requested fact if it is found, or default
+            value otherwise, where lists are converted to tuples and dictionaries to
+            `MappingProxyType` instances in order to discourage modification.
+
+        Raises
+        ------
+        OSError
+            If the pipeline context is not currently active.
+        """
+        if self._lock.depth < 1:
+            raise OSError("must acquire pipeline context before accessing facts")
+        if key in self._facts:
+            return self._facts[key].value
+        return self._readonly(default)
 
     @dataclass
     class InProgress:
@@ -805,31 +872,27 @@ class Pipeline:
             return self.pipeline.state_dir
 
         def __getitem__(self, key: str) -> JSONView:
-            """Look up a fact stored in the pipeline context, preferring arguments
-            passed to the pipeline's `run()` method, then the local step context, and
-            finally the global context if necessary.
+            """Look up a fact stored in the pipeline context.
 
             Parameters
             ----------
             key : str
-                The key to look up.  If this corresponds to an argument passed to the
-                pipeline's `run()` method, then the argument and its hashed value will
-                be recorded in the journal for change detection.
+                The key to look up.  If this corresponds to a fact in the global
+                context, then the argument and its hashed value will be recorded in the
+                journal for change detection.
 
             Returns
             -------
             JSONView
-                The value of the requested fact.  If the fact comes from the global
-                context or corresponds to an argument passed to the pipeline's `run()`
-                method, then it will be returned as a read-only, JSON-deserialized
-                object, where lists are converted to tuples and dictionaries to
-                `MappingProxyType` instances to discourage modification.
+                A read-only JSON view of the requested fact, where lists are converted
+                to tuples and dictionaries to `MappingProxyType` instances in order to
+                discourage modification.
 
             Raises
             ------
             KeyError
                 If the requested fact is not found, or if it originates from the global
-                context but the corresponding step is not a prerequisite of this step.
+                context but the corresponding step is not a prerequisite.
             """
             # check local facts first
             if key in self._facts:
@@ -857,7 +920,7 @@ class Pipeline:
                 self.record.accesses[key] = MISSING
             raise KeyError(f"Fact '{key}' not found in local or global context")
 
-        def __setitem__(self, key: str, value: Any) -> None:
+        def __setitem__(self, key: str, value: JSONValue) -> None:
             """Set a fact in the local step context, which will be written to the
             global context upon step completion.
 
@@ -865,15 +928,14 @@ class Pipeline:
             ----------
             key : str
                 The key to set.
-            value : Any
+            value : JSONValue
                 The value to set for the keyed fact.  Must be JSON-serializable, and
                 will be converted to a deserialized, read-only view for storage.
 
             Raises
             ------
             KeyError
-                If the fact key conflicts with an argument passed to the pipeline's
-                `run()` method or a fact in the global context.
+                If the fact key conflicts with a fact in the global context.
             """
             if key in self.pipeline._facts:
                 raise KeyError(f"Cannot overwrite '{key}' in global context")
@@ -895,8 +957,8 @@ class Pipeline:
             self.dump()
 
         def __delitem__(self, key: str) -> None:
-            """Delete a fact from the local step context.  Never modifies the
-            arguments passed to the pipeline's `run()` method or the global context.
+            """Delete a fact from the local step context.  Never modifies the global
+            context.
 
             Parameters
             ----------
@@ -954,7 +1016,7 @@ class Pipeline:
                 self.record.accesses[key] = MISSING
             return False
 
-        def get(self, key: str, default: Any = None) -> Any:
+        def get(self, key: str, default: JSONValue = None) -> JSONView:
             """Look up a fact stored in the pipeline context, preferring the local
             step context and falling back to the global context.
 
@@ -962,19 +1024,19 @@ class Pipeline:
             ----------
             key : str
                 The fact key to look up.
-            default : Any, optional
+            default : JSONValue, optional
                 The default value to return if the fact is not found, by default None.
 
             Returns
             -------
-            Any
+            JSONView
                 The value of the requested fact, or the default value if not found.
 
             Raises
             ------
             KeyError
                 If the requested fact originates from the global context but the
-                corresponding step is not a prerequisite of this step.
+                corresponding step is not a prerequisite.
             """
             # check local facts first
             if key in self._facts:
@@ -1000,7 +1062,7 @@ class Pipeline:
             # record negative global access
             if not self.ephemeral:
                 self.record.accesses[key] = MISSING
-            return default
+            return self.pipeline._readonly(default)
 
         def do(self, op: Atomic, undo: bool = True) -> None:
             """Apply an operation within this pipeline step, recording it in the

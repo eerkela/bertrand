@@ -8,7 +8,7 @@ import platform
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, cast
+from typing import Callable, Literal, cast
 
 from .pipeline import JSONValue, Pipeline, atomic
 from .filesystem import WriteBytes, WriteText
@@ -39,6 +39,83 @@ def _read_os_release() -> dict[str, str]:
         k, v = line.split("=", 1)
         data[k.strip()] = v.strip().strip('"').strip("'")
     return data
+
+
+def _detect_apt_arch() -> str | None:
+    """Detect the Debian/Ubuntu architecture string (e.g., amd64, arm64)."""
+    if shutil.which("dpkg"):
+        try:
+            result = run(["dpkg", "--print-architecture"], capture_output=True)
+            arch = result.stdout.strip()
+            if arch:
+                return arch
+        except Exception:
+            pass
+    machine = platform.machine()
+    arch_map = {
+        "x86_64": "amd64",
+        "amd64": "amd64",
+        "aarch64": "arm64",
+        "arm64": "arm64",
+        "armv7l": "armhf",
+        "armv6l": "armel",
+        "i386": "i386",
+        "i686": "i386",
+        "ppc64le": "ppc64el",
+        "s390x": "s390x",
+    }
+    return arch_map.get(machine)
+
+
+def _parse_repo_key_path(manager: str, repo_path: Path) -> Path | None:
+    """Best-effort parse of a key path referenced inside a repo file."""
+    try:
+        text = repo_path.read_text(encoding="utf-8", errors="ignore")
+    except Exception:
+        return None
+
+    def _clean(token: str) -> str:
+        return token.strip().strip('"').strip("'")
+
+    if manager == "apt":
+        for line in text.splitlines():
+            raw = line.strip()
+            if not raw or raw.startswith("#"):
+                continue
+            key, sep, value = raw.partition(":")
+            if sep and key.strip().lower() == "signed-by":
+                token = _clean(value)
+                if token:
+                    first = token.split()[0]
+                    if first.startswith("/"):
+                        return Path(first)
+            if raw.startswith("deb "):
+                if "[" in raw and "]" in raw:
+                    opts = raw[raw.find("[") + 1:raw.find("]")]
+                    for opt in opts.split():
+                        if opt.startswith("signed-by="):
+                            token = _clean(opt.split("=", 1)[1])
+                            if token.startswith("/"):
+                                return Path(token)
+
+        return None
+
+    # RPM-style repo
+    for line in text.splitlines():
+        raw = line.strip()
+        if not raw or raw.startswith("#"):
+            continue
+        if raw.lower().startswith("gpgkey="):
+            value = _clean(raw.split("=", 1)[1])
+            for token in value.replace(",", " ").split():
+                token = _clean(token)
+                if token.startswith("file://"):
+                    path = token[7:]
+                else:
+                    path = token
+                if path.startswith("/"):
+                    return Path(path)
+    return None
 
 
 def detect_package_manager() -> DetectPackageManager:
@@ -128,7 +205,7 @@ class InstallSpec:
 @dataclass(frozen=True)
 class RepositorySpec:
     """A specification class describing repository management for a system package
-    manager, to be used with `AddRepository` and `VerifyRepository`.
+    manager, to be used with `AddRepository`.
 
     Attributes
     ----------
@@ -295,7 +372,7 @@ INSTALL_MANAGERS: dict[str, InstallSpec] = {
 REPOSITORY_MANAGERS: dict[str, RepositorySpec] = {
     "apt": RepositorySpec(
         repo_dir=Path("/etc/apt/sources.list.d"),
-        repo_ext=".list",
+        repo_ext=".sources",
         key_dir=Path("/etc/apt/keyrings"),
         refresh=["apt-get", "update"],
         yes_refresh=[],
@@ -360,28 +437,22 @@ CA_CERT_MANAGERS: dict[str, CACertSpec] = {
 }
 
 
-def _normalize_install_manager(manager: str) -> str:
-    manager = manager.strip().lower()
+def _valid_install_manager(manager: str) -> None:
     if manager not in INSTALL_MANAGERS:
         supported = ", ".join(sorted(INSTALL_MANAGERS))
         raise ValueError(f"Unsupported package manager '{manager}'. Supported: {supported}")
-    return manager
 
 
-def _normalize_repository_manager(manager: str) -> str:
-    manager = manager.strip().lower()
+def _valid_repository_manager(manager: str) -> None:
     if manager not in REPOSITORY_MANAGERS:
         supported = ", ".join(sorted(REPOSITORY_MANAGERS))
         raise ValueError(f"Unsupported repository manager '{manager}'. Supported: {supported}")
-    return manager
 
 
-def _normalize_ca_manager(manager: str) -> str:
-    manager = manager.strip().lower()
+def _valid_ca_manager(manager: str) -> None:
     if manager not in CA_CERT_MANAGERS:
         supported = ", ".join(sorted(CA_CERT_MANAGERS))
         raise ValueError(f"Unsupported CA manager '{manager}'. Supported: {supported}")
-    return manager
 
 
 def _ensure_manager_cmd(manager: str, spec: InstallSpec) -> None:
@@ -435,6 +506,14 @@ def _gpg_fingerprint(path: Path) -> str | None:
     return None
 
 
+def _pin_version(manager: str, name: str, version: str) -> str:
+    if manager in {"apt", "pacman", "apk"}:
+        return f"{name}={version}"
+    if manager in {"dnf", "yum", "zypper"}:
+        return f"{name}-{version}"
+    raise ValueError(f"Unsupported version pinning for manager '{manager}'")
+
+
 @atomic
 @dataclass(frozen=True)
 class InstallPackage:
@@ -463,9 +542,9 @@ class InstallPackage:
     def apply(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
         if os.name != "posix":
             raise OSError("Package manager operations require a POSIX system.")
-        manager = _normalize_install_manager(self.manager)
-        spec = INSTALL_MANAGERS[manager]
-        _ensure_manager_cmd(manager, spec)
+        _valid_install_manager(self.manager)
+        spec = INSTALL_MANAGERS[self.manager]
+        _ensure_manager_cmd(self.manager, spec)
 
         # ensure we can elevate if needed
         sudo = sudo_prefix()
@@ -486,7 +565,7 @@ class InstallPackage:
             return
 
         # persist intent before mutating
-        payload["manager"] = manager
+        payload["manager"] = self.manager
         payload["packages"] = cast(list[JSONValue], packages)
         payload["assume_yes"] = self.assume_yes
         payload["refresh"] = self.refresh
@@ -494,15 +573,14 @@ class InstallPackage:
 
         # snapshot preinstalled state
         preinstalled: dict[str, JSONValue] = {}
-        for pkg in packages:
-            installed, version = spec.query(pkg)
-            if installed:
-                preinstalled[pkg] = version
+        for p in packages:
+            p_installed, p_version = spec.query(p)
+            if p_installed:
+                preinstalled[p] = p_version
         if preinstalled:
             payload["preinstalled"] = preinstalled
             ctx.dump()
 
-        # install and record what was newly installed
         try:
             # refresh if requested and manager supports it
             env = _cmd_env(spec.noninteractive_env, self.assume_yes)
@@ -528,18 +606,18 @@ class InstallPackage:
             )
             run(cmd, env=env)
 
-        # record newly-installed packages even if installation fails
+        # record successfully installed packages even if installation fails
         finally:
             present: list[dict[str, JSONValue]] = []
             for pkg in packages:
-                installed, version = spec.query(pkg)
-                if not installed:
+                pkg_installed, pkg_version = spec.query(pkg)
+                if not pkg_installed:
                     continue
                 if pkg in preinstalled:
                     continue
-                if version is None:
+                if pkg_version is None:
                     continue  # cannot verify version; skip for no-clobber
-                present.append({"name": pkg, "version": version})
+                present.append({"name": pkg, "version": pkg_version})
             payload["installed"] = cast(list[JSONValue], present)
             ctx.dump()
 
@@ -553,11 +631,11 @@ class InstallPackage:
             return  # didn't get far enough to install packages
 
         # validate manager and check availability
-        manager = _normalize_install_manager(manager)
+        _valid_install_manager(manager)
         spec = INSTALL_MANAGERS[manager]
         _ensure_manager_cmd(manager, spec)
 
-        # ensure root privileges if needed
+        # ensure we can elevate if needed
         sudo = sudo_prefix()
         if os.name == "posix" and os.geteuid() != 0 and not sudo:
             raise PermissionError(
@@ -602,7 +680,187 @@ class InstallPackage:
             except Exception as e:
                 errors.append(str(e))
 
-        # raise error if any issues occurred
+        # raise if any issues occurred
+        if errors:
+            raise OSError(f"Errors occurred during package undo:\n{'\n'.join(errors)}")
+
+
+@atomic
+@dataclass(frozen=True)
+class UninstallPackage:
+    """Remove packages using the system package manager.
+
+    Attributes
+    ----------
+    manager : str
+        The package manager name (e.g., "apt", "dnf", "yum", "zypper", "pacman",
+        "apk").  The manager string will be checked against `INSTALL_MANAGERS` to
+        determine the corresponding commands to use.
+    packages : list[str]
+        The package names to remove.
+    assume_yes : bool, optional
+        If true, use non-interactive flags to assume yes to all prompts.  Defaults to
+        false.
+    refresh : bool, optional
+        If true, refresh the package manager's cache before removing.  Defaults to
+        false.
+    """
+    manager: str
+    packages: list[str]
+    assume_yes: bool = False
+    refresh: bool = False
+
+    def apply(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+        if os.name != "posix":
+            raise OSError("Package manager operations require a POSIX system.")
+        _valid_install_manager(self.manager)
+        spec = INSTALL_MANAGERS[self.manager]
+        _ensure_manager_cmd(self.manager, spec)
+        if spec.remove and not shutil.which(spec.remove[0]):
+            raise FileNotFoundError(f"Remove command not found: {spec.remove[0]}")
+
+        # ensure we can elevate if needed
+        sudo = sudo_prefix()
+        if os.name == "posix" and os.geteuid() != 0 and not sudo:
+            raise PermissionError(
+                "Package removal requires root privileges; sudo not available."
+            )
+
+        # deduplicate package list while preserving order
+        packages: list[str] = []
+        seen: set[str] = set()
+        for pkg in self.packages:
+            if not pkg or pkg in seen:
+                continue
+            seen.add(pkg)
+            packages.append(pkg)
+        if not packages:
+            return
+
+        # persist intent before mutating
+        payload["manager"] = self.manager
+        payload["packages"] = cast(list[JSONValue], packages)
+        payload["assume_yes"] = self.assume_yes
+        payload["refresh"] = self.refresh
+        ctx.dump()
+
+        # snapshot preinstalled state
+        preinstalled: dict[str, JSONValue] = {}
+        for p in packages:
+            p_installed, p_version = spec.query(p)
+            if p_installed:
+                preinstalled[p] = p_version
+        if preinstalled:
+            payload["preinstalled"] = preinstalled
+            ctx.dump()
+
+        try:
+            # refresh if requested and manager supports it
+            env = _cmd_env(spec.noninteractive_env, self.assume_yes)
+            if self.refresh and spec.refresh:
+                if not shutil.which(spec.refresh[0]):
+                    raise FileNotFoundError(f"Refresh command not found: {spec.refresh[0]}")
+                cmd = _build_cmd(
+                    spec.refresh,
+                    spec.yes_refresh,
+                    [],
+                    sudo=sudo,
+                    assume_yes=self.assume_yes,
+                )
+                run(cmd, env=env)
+
+            # remove packages
+            cmd = _build_cmd(
+                spec.remove,
+                spec.yes_remove,
+                list(preinstalled),
+                sudo=sudo,
+                assume_yes=self.assume_yes,
+            )
+            run(cmd, env=env)
+
+        # record successfully removed packages even if removal fails
+        finally:
+            removed: list[dict[str, JSONValue]] = []
+            for pkg, pkg_version in preinstalled.items():
+                pkg_installed, _ = spec.query(pkg)
+                if pkg_installed:
+                    continue
+                if pkg_version is None:
+                    continue  # cannot restore exact version; skip for no-clobber
+                removed.append({"name": pkg, "version": pkg_version})
+            payload["removed"] = cast(list[JSONValue], removed)
+            ctx.dump()
+
+    @staticmethod
+    def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+        if os.name != "posix":
+            raise OSError("Package manager operations require a POSIX system.")
+        manager = payload.get("manager")
+        removed = payload.get("removed")
+        if not isinstance(manager, str) or not isinstance(removed, list):
+            return
+
+        # validate manager and check availability
+        _valid_install_manager(manager)
+        spec = INSTALL_MANAGERS[manager]
+        _ensure_manager_cmd(manager, spec)
+
+        # ensure we can elevate if needed
+        sudo = sudo_prefix()
+        if os.name == "posix" and os.geteuid() != 0 and not sudo:
+            raise PermissionError(
+                "Package installation requires root privileges; sudo not available."
+            )
+
+        # detect which packages need to be re-installed
+        assume_yes = bool(payload.get("assume_yes", False))
+        to_install: list[str] = []
+        errors: list[str] = []
+        expected: dict[str, str] = {}
+        for item in removed:
+            if not isinstance(item, dict):
+                continue
+            name = item.get("name")
+            version = item.get("version")
+            if not isinstance(name, str) or not isinstance(version, str):
+                continue
+            installed, _ = spec.query(name)
+            if installed:
+                continue
+            try:
+                pinned = _pin_version(manager, name, version)
+            except ValueError as err:
+                errors.append(str(err))
+                continue
+            to_install.append(pinned)
+            expected[name] = version
+
+        # install any eligible packages (best-effort)
+        if to_install:
+            # install packages
+            try:
+                cmd = _build_cmd(
+                    spec.install,
+                    spec.yes_install,
+                    to_install,
+                    sudo=sudo,
+                    assume_yes=assume_yes,
+                )
+                run(cmd, env=_cmd_env(spec.noninteractive_env, assume_yes))
+            except Exception as e:
+                errors.append(str(e))
+
+            # verify re-installation
+            for name, version in expected.items():
+                installed, current = spec.query(name)
+                if not installed:
+                    errors.append(f"[{name}] not installed after undo")
+                    continue
+                if current != version:
+                    errors.append(f"[{name}] version mismatch after undo: {current} != {version}")
+
+        # raise if any issues occurred
         if errors:
             raise OSError(f"Errors occurred during package undo:\n{'\n'.join(errors)}")
 
@@ -619,51 +877,308 @@ class AddRepository:
         the `REPOSITORY_MANAGERS` mapping.
     name : str
         A short name for the repository (used for file names).
-    repo : str
-        Repository definition text.
-    repo_path : Path | None, optional
-        Optional repo file path for file-based mode.
+    url : str
+        Base URL for the repository.
+    repo_url : bool, optional
+        If true, then the content at `url` is treated as a prebuilt repository file and
+        downloaded directly to the repository path, ignoring structured fields.
+        Otherwise, the repository is constructed from the structured fields.
+        When `repo_url` is true and a key is provided, the key path is inferred from
+        the repo file if possible. For APT, the repo file may be deb822 or deb-line
+        format.
+    suite : str | None, optional
+        APT suite (auto-detected if omitted).  Ignored for RPM managers.
+    components : list[str] | None, optional
+        APT components (required for APT).  Ignored for RPM managers.
+    arch : str | None, optional
+        APT architecture (auto-detected if omitted).  Ignored for RPM managers.
     replace : bool, optional
-        Whether to replace an existing repo file.  Defaults to false.
+        Whether to replace existing repo/key files.  Defaults to false.
     refresh : bool, optional
         Whether to refresh repository metadata after adding.  Defaults to true.
     assume_yes : bool, optional
         Whether to assume yes for prompts when supported.  Defaults to false.
+    key_url : str | None, optional
+        URL to the repository key (optional).
+    key_ext : Literal[".asc", ".gpg"] | None, optional
+        Optional key file extension (defaults to manager-specific extension).
+    key_sha256 : str | None, optional
+        Optional SHA-256 checksum for the key.
+    key_fingerprint : str | None, optional
+        Optional GPG fingerprint to verify.
+
+    Notes
+    -----
+    For APT repositories, `components` is required, while `suite` and `arch` are
+    auto-detected when omitted. RPM-family managers ignore `suite`, `components`,
+    and `arch`.
     """
     manager: str
     name: str
-    repo: str
-    repo_path: Path | None = None
+    url: str
+    repo_url: bool = False
+    suite: str | None = None
+    components: list[str] | None = None
+    arch: str | None = None
     replace: bool = False
     refresh: bool = True
     assume_yes: bool = False
+    key_url: str | None = None
+    key_ext: Literal[".asc", ".gpg"] | None = None
+    key_sha256: str | None = None
+    key_fingerprint: str | None = None
+
+    def _get_components(self) -> tuple[str | None, list[str] | None, str | None]:
+        suite = self.suite
+        components = self.components
+        arch = self.arch
+        if self.repo_url:
+            return None, None, None
+        if self.manager != "apt":
+            return None, None, None
+
+        if not components:
+            raise ValueError("APT repository definitions require components.")
+        components = list(components)
+
+        if suite is None:
+            os_release = _read_os_release()
+            suite = os_release.get("VERSION_CODENAME") or os_release.get("UBUNTU_CODENAME")
+            if not suite:
+                raise OSError("Unable to determine APT suite from /etc/os-release.")
+
+        if arch is None:
+            arch = _detect_apt_arch()
+            if not arch:
+                raise OSError("Unable to determine APT architecture.")
+
+        return suite, components, arch
+
+    def _repo_text(
+        self,
+        suite: str | None,
+        components: list[str] | None,
+        arch: str | None,
+        key_path: Path | None,
+    ) -> str:
+        # deb822-style repo
+        if self.manager == "apt":
+            assert suite is not None, "suite detection failed without raising an error"
+            lines = [
+                "Types: deb",
+                f"URIs: {self.url}",
+                f"Suites: {suite}",
+                f"Components: {' '.join(components or [])}",
+            ]
+            if arch is not None:
+                lines.append(f"Architectures: {arch}")
+            if key_path is not None:
+                lines.append(f"Signed-By: {key_path}")
+            return "\n".join(lines) + "\n"
+
+        # RPM-style repo
+        lines = [
+            f"[{self.name}]",
+            f"name={self.name}",
+            f"baseurl={self.url}",
+            "enabled=1",
+            f"gpgcheck={1 if key_path is not None else 0}",
+        ]
+        if key_path is not None:
+            lines.append(f"gpgkey=file://{key_path}")
+        return "\n".join(lines) + "\n"
+
+    def _from_repo_url(
+        self,
+        ctx: Pipeline.InProgress,
+        payload: dict[str, JSONValue],
+        spec: RepositorySpec,
+        repo_path: Path,
+        key_ext: str | None,
+    ) -> None:
+        # download repo file directly
+        repo_payload: dict[str, JSONValue] = {}
+        payload["repo_download"] = repo_payload
+        ctx.dump()
+        Download(
+            url=self.url,
+            target=repo_path,
+            replace=self.replace,
+        ).apply(ctx, repo_payload)
+
+        # if a key URL is given, attempt to infer the key path from the repo file
+        if self.key_url is not None:
+            parsed = _parse_repo_key_path(self.manager, repo_path)
+            if parsed is not None:
+                key_path = parsed
+                payload["key_path_from_repo"] = True
+            else:
+                key_path = spec.key_dir / f"{self.name}{key_ext}"
+                payload["key_path_from_repo"] = False
+            payload["key_path"] = str(key_path)
+            if key_ext is not None:
+                payload["key_ext"] = key_ext
+            ctx.dump()
+            key_dir = key_path.parent
+            key_dir.mkdir(parents=True, exist_ok=True)
+            os.chmod(key_dir, 0o755)  # permissive
+
+            # download the key to that location
+            download_payload = payload.get("download")
+            if not isinstance(download_payload, dict):
+                download_payload = {}
+                payload["download"] = download_payload
+                ctx.dump()
+            Download(
+                url=self.key_url,
+                target=key_path,
+                replace=self.replace,
+                sha256=self.key_sha256,
+            ).apply(ctx, download_payload)
+
+            # verify key fingerprint if given
+            if self.key_fingerprint is not None:
+                actual = _gpg_fingerprint(key_path)
+                if actual is None:
+                    raise OSError(f"Failed to read GPG fingerprint: {key_path}")
+                expected = _normalize_fingerprint(self.key_fingerprint)
+                if actual != expected:
+                    raise OSError(
+                        f"GPG fingerprint mismatch for {key_path}: {actual} != {expected}"
+                    )
+
+            # ensure key file is readable by package manager
+            os.chmod(key_path, 0o644)
+            if os.geteuid() == 0:
+                os.chown(key_path, 0, 0)
+
+    def _write_repo_file(
+        self,
+        ctx: Pipeline.InProgress,
+        payload: dict[str, JSONValue],
+        spec: RepositorySpec,
+        repo_path: Path,
+        suite: str | None,
+        components: list[str] | None,
+        arch: str | None,
+        key_ext: str | None,
+    ) -> None:
+        if self.key_url is not None:
+            key_path = spec.key_dir / f"{self.name}{key_ext}"
+            payload["key_path"] = str(key_path)
+            if key_ext is not None:
+                payload["key_ext"] = key_ext
+            ctx.dump()
+            key_dir = spec.key_dir
+            key_dir.mkdir(parents=True, exist_ok=True)
+            os.chmod(key_dir, 0o755)
+
+            # download key to standard location
+            download_payload = payload.get("download")
+            if not isinstance(download_payload, dict):
+                download_payload = {}
+                payload["download"] = download_payload
+                ctx.dump()
+            Download(
+                url=self.key_url,
+                target=key_path,
+                replace=self.replace,
+                sha256=self.key_sha256,
+            ).apply(ctx, download_payload)
+
+            # verify key fingerprint if given
+            if self.key_fingerprint is not None:
+                actual = _gpg_fingerprint(key_path)
+                if actual is None:
+                    raise OSError(f"Failed to read GPG fingerprint: {key_path}")
+                expected = _normalize_fingerprint(self.key_fingerprint)
+                if actual != expected:
+                    raise OSError(
+                        f"GPG fingerprint mismatch for {key_path}: {actual} != {expected}"
+                    )
+
+            # ensure key file is readable by package manager
+            os.chmod(key_path, 0o644)
+            if os.geteuid() == 0:
+                os.chown(key_path, 0, 0)
+
+        # write the repository definition file
+        write_payload: dict[str, JSONValue] = {}
+        payload["write"] = write_payload
+        ctx.dump()
+        WriteText(
+            repo_path,
+            self._repo_text(suite, components, arch, key_path),
+            replace=self.replace
+        ).apply(ctx, write_payload)
 
     def apply(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
         if os.name != "posix":
             raise OSError("Package manager operations require a POSIX system.")
         if os.geteuid() != 0:
             raise PermissionError("Adding repositories requires root privileges.")
-        manager = _normalize_repository_manager(self.manager)
-        spec = REPOSITORY_MANAGERS[manager]
-        repo_path = self.repo_path or (spec.repo_dir / f"{self.name}{spec.repo_ext}")
+        _valid_repository_manager(self.manager)
+        spec = REPOSITORY_MANAGERS[self.manager]
+        repo_ext = spec.repo_ext
+        if self.repo_url and self.manager == "apt":
+            url_lower = self.url.lower()
+            if url_lower.endswith(".list"):
+                repo_ext = ".list"
+            elif url_lower.endswith(".sources"):
+                repo_ext = ".sources"
+        repo_path = spec.repo_dir / f"{self.name}{repo_ext}"
+        key_ext = self.key_ext
+        if self.key_url:
+            if key_ext is None:
+                key_ext = ".asc" if self.manager == "apt" else ".gpg"
+            elif key_ext not in {".asc", ".gpg"}:
+                raise ValueError("key_ext must be '.asc' or '.gpg'")
+        if not self.url:
+            raise ValueError("Repository URL is required.")
+        suite, components, arch = self._get_components()
 
         # persist intent before mutating
-        payload["manager"] = manager
+        payload["manager"] = self.manager
         payload["name"] = self.name
-        payload["repo"] = self.repo
+        payload["url"] = self.url
+        if self.repo_url:
+            payload["repo_url"] = self.repo_url
+        if suite is not None:
+            payload["suite"] = suite
+        if components is not None:
+            payload["components"] = list(components)
+        if arch is not None:
+            payload["arch"] = arch
         payload["repo_path"] = str(repo_path)
         payload["replace"] = self.replace
         payload["refresh"] = self.refresh
         payload["assume_yes"] = self.assume_yes
+        if self.key_url is not None:
+            payload["key_url"] = self.key_url
+        if self.key_sha256 is not None:
+            payload["key_sha256"] = self.key_sha256
+        if self.key_fingerprint is not None:
+            payload["key_fingerprint"] = self.key_fingerprint
         ctx.dump()
-
-        # write repository definition file
         env = _cmd_env(spec.noninteractive_env, self.assume_yes)
         sudo = sudo_prefix()
-        write_payload: dict[str, JSONValue] = {}
-        payload["write"] = write_payload
-        ctx.dump()
-        WriteText(repo_path, self.repo, replace=self.replace).apply(ctx, write_payload)
+
+        # download trusted repo file and set key path from it if given
+        if self.repo_url:
+            self._from_repo_url(ctx, payload, spec, repo_path, key_ext)
+
+        # write repo file from structured input and download key to standard location
+        else:
+            self._write_repo_file(
+                ctx,
+                payload,
+                spec,
+                repo_path,
+                suite,
+                components,
+                arch,
+                key_ext
+            )
 
         # refresh if requested and manager supports it
         if self.refresh and spec.refresh:
@@ -685,9 +1200,7 @@ class AddRepository:
             return
 
         # validate manager (best-effort)
-        try:
-            manager = _normalize_repository_manager(manager)
-        except Exception:
+        if manager not in REPOSITORY_MANAGERS:
             return
 
         # undo definition file write (best-effort)
@@ -698,81 +1211,14 @@ class AddRepository:
             except Exception:
                 pass
 
+        # undo trusted repo download (best-effort)
+        repo_payload = payload.get("repo_download")
+        if isinstance(repo_payload, dict):
+            try:
+                Download.undo(ctx, repo_payload)
+            except Exception:
+                pass
 
-@atomic
-@dataclass(frozen=True)
-class VerifyRepository:
-    """Download and verify a repository key.
-
-    Attributes
-    ----------
-    manager : str
-        The package manager name ("apt", "dnf", "yum", "zypper").
-    name : str
-        A short name for the repository, used in default paths.
-    key_url : str
-        URL to the repository key.
-    key_path : Path | None, optional
-        Optional path to store the key. Defaults to a manager-specific location.
-    key_sha256 : str | None, optional
-        Optional SHA-256 checksum for the key.
-    key_fingerprint : str | None, optional
-        Optional GPG fingerprint to verify.
-    replace : bool, optional
-        Whether to replace an existing key at the same path. Defaults to false.
-    """
-    manager: str
-    name: str
-    key_url: str
-    key_path: Path | None = None
-    key_sha256: str | None = None
-    key_fingerprint: str | None = None
-    replace: bool = False
-
-    def apply(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
-        if os.name != "posix":
-            raise OSError("Package manager operations require a POSIX system.")
-        if os.geteuid() != 0:
-            raise PermissionError("Verifying repositories requires root privileges.")
-        manager = _normalize_repository_manager(self.manager)
-        spec = REPOSITORY_MANAGERS[manager]
-        key_path = self.key_path or (spec.key_dir / f"{self.name}.gpg")
-
-        # persist intent before mutating
-        payload["manager"] = manager
-        payload["name"] = self.name
-        payload["key_url"] = self.key_url
-        payload["key_path"] = str(key_path)
-        payload["replace"] = self.replace
-        if self.key_sha256 is not None:
-            payload["key_sha256"] = self.key_sha256
-        if self.key_fingerprint is not None:
-            payload["key_fingerprint"] = self.key_fingerprint
-
-        # download key
-        download_payload: dict[str, JSONValue] = {}
-        payload["download"] = download_payload
-        ctx.dump()
-        Download(
-            url=self.key_url,
-            target=key_path,
-            replace=self.replace,
-            sha256=self.key_sha256,
-        ).apply(ctx, download_payload)
-
-        # verify fingerprint if provided
-        if self.key_fingerprint is not None:
-            actual = _gpg_fingerprint(key_path)
-            if actual is None:
-                raise OSError(f"Failed to read GPG fingerprint: {key_path}")
-            expected = _normalize_fingerprint(self.key_fingerprint)
-            if actual != expected:
-                raise OSError(
-                    f"GPG fingerprint mismatch for {key_path}: {actual} != {expected}"
-                )
-
-    @staticmethod
-    def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
         # undo key download (best-effort)
         download_payload = payload.get("download")
         if isinstance(download_payload, dict):
@@ -811,8 +1257,8 @@ class InstallCACert:
             raise OSError("Package manager operations require a POSIX system.")
         if os.geteuid() != 0:
             raise PermissionError("Installing CA certificates requires root privileges.")
-        manager = _normalize_ca_manager(self.manager)
-        spec = CA_CERT_MANAGERS[manager]
+        _valid_ca_manager(self.manager)
+        spec = CA_CERT_MANAGERS[self.manager]
         source = self.source.absolute()
         name = self.name
 
@@ -828,7 +1274,7 @@ class InstallCACert:
         target = spec.cert_dir / target_name
 
         # persist intent before mutating
-        payload["manager"] = manager
+        payload["manager"] = self.manager
         payload["source"] = str(source)
         payload["target"] = str(target)
         payload["replace"] = self.replace
@@ -860,9 +1306,9 @@ class InstallCACert:
         manager = payload.get("manager")
         if not isinstance(manager, str):
             return
-        try:
-            manager = _normalize_ca_manager(manager)
-        except Exception:
+    
+        # validate manager (best-effort)
+        if manager not in CA_CERT_MANAGERS:
             return
 
         # undo cert write (best-effort)

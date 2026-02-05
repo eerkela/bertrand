@@ -284,10 +284,14 @@ class Mkdir:
         False.  If `replace` is False and the directory already exists, enabling
         `private` may temporarily tighten permissions; undo will best-effort restore
         the prior mode without clobbering if the directory has been replaced.
+    rmtree : bool, optional
+        If true and the directory was created by this operation, allow undo to remove
+        the full subtree even if it is non-empty.  Defaults to False.
     """
     path: Path
     replace: bool = False
     private: bool = False
+    rmtree: bool = False
 
     def apply(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
         path = self.path.absolute()
@@ -309,6 +313,7 @@ class Mkdir:
         # create new directory
         payload["path"] = str(path)
         payload["private"] = self.private
+        payload["rmtree"] = self.rmtree
         payload["created"] = created
         ctx.dump()
         if self.private:
@@ -333,12 +338,19 @@ class Mkdir:
             _clear_id(ctx, payload)
             _unstash_existing(ctx, payload)
             return
+        rmtree = payload.get("rmtree")
+        if not isinstance(rmtree, bool):
+            rmtree = False
 
         # step 1: remove the directory we created, but only if it's the same one
         path = Path(path_str)
         if _exists(path):
             if created:
-                if not _is_dir(path) or not _check_id(path, payload) or not _only_dirs(path):
+                if not _is_dir(path) or not _check_id(path, payload):
+                    raise FileExistsError(
+                        f"Cannot remove created directory; path occupied: {path}"
+                    )
+                if not rmtree and not _only_dirs(path):
                     raise FileExistsError(
                         f"Cannot remove created directory; path occupied: {path}"
                     )

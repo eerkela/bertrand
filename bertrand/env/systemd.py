@@ -6,6 +6,7 @@ from __future__ import annotations
 import os
 import shutil
 from dataclasses import dataclass
+from typing import cast
 
 from .pipeline import JSONValue, Pipeline, atomic
 from .run import run, sudo_prefix
@@ -19,14 +20,15 @@ def _systemctl_base(user: bool) -> list[str]:
     return ["systemctl"]
 
 
-def _ensure_systemctl() -> None:
+def _ensure_systemctl(user: bool) -> None:
     if not shutil.which("systemctl"):
         raise OSError("systemctl not found")
-    cp = run(["systemctl", "is-system-running"], check=False, capture_output=True)
+    cp = run([*_systemctl_base(user), "is-system-running"], check=False, capture_output=True)
     state = (cp.stdout or "").strip()
     if state in {"running", "degraded", "starting", "maintenance"}:
         return
-    raise OSError(f"systemctl not reachable (state={state or 'unknown'})")
+    scope = "user" if user else "system"
+    raise OSError(f"systemctl ({scope}) not reachable (state={state or 'unknown'})")
 
 
 def _service_show(name: str, user: bool) -> dict[str, str]:
@@ -78,22 +80,34 @@ class StartService:
     user : bool, optional
         If true, operate on the user service manager rather than the system service
         manager.
+    env : dict[str, str] | None, optional
+        An optional environment to pass when starting the service.  Note that this will
+        not have any effect if the service is already active.  Defaults to None.
     """
     name: str
     user: bool = False
+    env: dict[str, str] | None = None
 
     def apply(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
         if os.name != "posix":
             raise OSError("systemd operations require a POSIX system.")
-        _ensure_systemctl()
         name = self.name
         user = self.user
+        env = self.env or {}
+        _ensure_systemctl(user)
         payload["name"] = name
         payload["user"] = user
+        payload["env"] = cast(dict[str, JSONValue], env)
         ctx.dump()
 
         # check current active state
-        is_active = run([*_systemctl_base(user), "is-active", "--quiet", name], check=False)
+        cmd_prefix = _systemctl_base(user)
+        is_active = run([
+            *cmd_prefix,
+            "is-active",
+            "--quiet",
+            name
+        ], check=False, env=env)
         was_active = is_active.returncode == 0
         payload["was_active"] = was_active
         ctx.dump()
@@ -101,7 +115,6 @@ class StartService:
             return
 
         # ensure we can elevate if needed
-        cmd_prefix = _systemctl_base(user)
         if not user:
             sudo = sudo_prefix()
             if os.geteuid() != 0 and not sudo:
@@ -111,7 +124,7 @@ class StartService:
             cmd_prefix = [*sudo, *cmd_prefix]
 
         # start the service
-        run([*cmd_prefix, "start", name])
+        run([*cmd_prefix, "start", name], env=env)
 
         # record start timestamp
         info = _service_show(name, user)
@@ -124,9 +137,10 @@ class StartService:
     def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
         name = payload.get("name")
         user = payload.get("user")
+        env = payload.get("env")
         was_active = payload.get("was_active")
         start_monotonic = payload.get("start_monotonic")
-        if not isinstance(name, str) or not isinstance(user, bool):
+        if not isinstance(name, str) or not isinstance(user, bool) or not isinstance(env, dict):
             return
         if was_active is not False:
             return
@@ -148,8 +162,8 @@ class StartService:
                 raise PermissionError(
                     "Stopping system services requires root privileges; no sudo available."
                 )
-            cmd_prefix = [*sudo, "systemctl"]
-        run([*cmd_prefix, "stop", name])
+            cmd_prefix = [*sudo, *cmd_prefix]
+        run([*cmd_prefix, "stop", name], env=cast(dict[str, str], env))
 
 
 @atomic
@@ -164,22 +178,34 @@ class StopService:
     user : bool, optional
         If true, operate on the user service manager rather than the system service
         manager.
+    env : dict[str, str] | None, optional
+        An optional environment to pass when stopping the service.  Note that this will
+        not have any effect if the service is already inactive.  Defaults to None.
     """
     name: str
     user: bool = False
+    env: dict[str, str] | None = None
 
     def apply(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
         if os.name != "posix":
             raise OSError("systemd operations require a POSIX system.")
-        _ensure_systemctl()
         name = self.name
         user = self.user
+        env = self.env or {}
+        _ensure_systemctl(user)
         payload["name"] = name
         payload["user"] = user
+        payload["env"] = cast(dict[str, JSONValue], env)
         ctx.dump()
 
         # check current active state
-        is_active = run([*_systemctl_base(user), "is-active", "--quiet", name], check=False)
+        cmd_prefix = _systemctl_base(user)
+        is_active = run([
+            *cmd_prefix,
+            "is-active",
+            "--quiet",
+            name
+        ], check=False, env=env)
         was_active = is_active.returncode == 0
         payload["was_active"] = was_active
 
@@ -193,7 +219,6 @@ class StopService:
             return
 
         # ensure we can elevate if needed
-        cmd_prefix = _systemctl_base(user)
         if not user:
             sudo = sudo_prefix()
             if os.geteuid() != 0 and not sudo:
@@ -203,7 +228,7 @@ class StopService:
             cmd_prefix = [*sudo, *cmd_prefix]
 
         # stop the service
-        run([*cmd_prefix, "stop", name])
+        run([*cmd_prefix, "stop", name], env=env)
 
         # record stop timestamp
         info = _service_show(name, user)
@@ -216,9 +241,10 @@ class StopService:
     def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
         name = payload.get("name")
         user = payload.get("user")
+        env = payload.get("env")
         was_active = payload.get("was_active")
         stop_monotonic = payload.get("stop_monotonic")
-        if not isinstance(name, str) or not isinstance(user, bool):
+        if not isinstance(name, str) or not isinstance(user, bool) or not isinstance(env, dict):
             return
         if was_active is not True:
             return
@@ -240,8 +266,8 @@ class StopService:
                 raise PermissionError(
                     "Starting system services requires root privileges; no sudo available."
                 )
-            cmd_prefix = [*sudo, "systemctl"]
-        run([*cmd_prefix, "start", name])
+            cmd_prefix = [*sudo, *cmd_prefix]
+        run([*cmd_prefix, "start", name], env=cast(dict[str, str], env))
 
 
 @atomic
@@ -256,28 +282,26 @@ class RestartService:
     user : bool, optional
         If true, operate on the user service manager rather than the system service
         manager.
+    env : dict[str, str] | None, optional
+        An optional environment to pass when restarting the service.  Defaults to None.
     """
     name: str
     user: bool = False
+    env: dict[str, str] | None = None
 
     def apply(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
         if os.name != "posix":
             raise OSError("systemd operations require a POSIX system.")
-        _ensure_systemctl()
         name = self.name
         user = self.user
+        env = self.env or {}
+        _ensure_systemctl(user)
         payload["name"] = name
         payload["user"] = user
+        payload["env"] = cast(dict[str, JSONValue], env)
         ctx.dump()
 
-        # record pre-restart timestamp
-        info = _service_show(name, user)
-        pre_monotonic = info.get("ActiveEnterTimestampMonotonic")
-        if pre_monotonic:
-            payload["pre_restart_monotonic"] = pre_monotonic
-            ctx.dump()
-
-        # restart the service
+        # try-restart the service (no-op if inactive)
         cmd_prefix = _systemctl_base(user)
         if not user:
             sudo = sudo_prefix()
@@ -286,14 +310,7 @@ class RestartService:
                     "Restarting system services requires root privileges; no sudo available."
                 )
             cmd_prefix = [*sudo, *cmd_prefix]
-        run([*cmd_prefix, "restart", name])
-
-        # record post-restart timestamp
-        info = _service_show(name, user)
-        post_monotonic = info.get("ActiveEnterTimestampMonotonic")
-        if post_monotonic:
-            payload["post_restart_monotonic"] = post_monotonic
-            ctx.dump()
+        run([*cmd_prefix, "try-restart", name], env=env)
 
     @staticmethod
     def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
@@ -312,18 +329,24 @@ class EnableService:
     user : bool, optional
         If true, operate on the user service manager rather than the system service
         manager.
+    env : dict[str, str] | None, optional
+        An optional environment to pass when enabling the service.  Note that this will
+        not have any effect if the service is already enabled.  Defaults to None.
     """
     name: str
     user: bool = False
+    env: dict[str, str] | None = None
 
     def apply(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
         if os.name != "posix":
             raise OSError("systemd operations require a POSIX system.")
-        _ensure_systemctl()
         name = self.name
         user = self.user
+        env = self.env or {}
+        _ensure_systemctl(user)
         payload["name"] = name
         payload["user"] = user
+        payload["env"] = cast(dict[str, JSONValue], env)
         ctx.dump()
 
         # check current enabled state
@@ -342,14 +365,15 @@ class EnableService:
                     "Enabling system services requires root privileges; no sudo available."
                 )
             cmd_prefix = [*sudo, *cmd_prefix]
-        run([*cmd_prefix, "enable", name])
+        run([*cmd_prefix, "enable", name], env=env)
 
     @staticmethod
     def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
         name = payload.get("name")
         user = payload.get("user")
+        env = payload.get("env")
         was_enabled = payload.get("was_enabled")
-        if not isinstance(name, str) or not isinstance(user, bool):
+        if not isinstance(name, str) or not isinstance(user, bool) or not isinstance(env, dict):
             return
         if was_enabled is not False:
             return
@@ -364,7 +388,7 @@ class EnableService:
                 )
             cmd_prefix = [*sudo, *cmd_prefix]
         try:
-            run([*cmd_prefix, "disable", name])
+            run([*cmd_prefix, "disable", name], env=cast(dict[str, str], env))
         except Exception:
             pass
 
@@ -381,18 +405,24 @@ class DisableService:
     user : bool, optional
         If true, operate on the user service manager rather than the system service
         manager.
+    env : dict[str, str] | None, optional
+        An optional environment to pass when disabling the service.  Note that this
+        will not have any effect if the service is already disabled.  Defaults to None.
     """
     name: str
     user: bool = False
+    env: dict[str, str] | None = None
 
     def apply(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
         if os.name != "posix":
             raise OSError("systemd operations require a POSIX system.")
-        _ensure_systemctl()
         name = self.name
         user = self.user
+        env = self.env or {}
+        _ensure_systemctl(user)
         payload["name"] = name
         payload["user"] = user
+        payload["env"] = cast(dict[str, JSONValue], env)
         ctx.dump()
 
         # check current enabled state
@@ -411,14 +441,15 @@ class DisableService:
                     "Disabling system services requires root privileges; no sudo available."
                 )
             cmd_prefix = [*sudo, *cmd_prefix]
-        run([*cmd_prefix, "disable", name])
+        run([*cmd_prefix, "disable", name], env=env)
 
     @staticmethod
     def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
         name = payload.get("name")
         user = payload.get("user")
+        env = payload.get("env")
         was_enabled = payload.get("was_enabled")
-        if not isinstance(name, str) or not isinstance(user, bool):
+        if not isinstance(name, str) or not isinstance(user, bool) or not isinstance(env, dict):
             return
         if was_enabled is not True:
             return
@@ -433,7 +464,7 @@ class DisableService:
                 )
             cmd_prefix = [*sudo, *cmd_prefix]
         try:
-            run([*cmd_prefix, "enable", name])
+            run([*cmd_prefix, "enable", name], env=cast(dict[str, str], env))
         except Exception:
             pass
 
@@ -448,15 +479,20 @@ class ReloadDaemon:
     user : bool, optional
         If true, operate on the user service manager rather than the system service
         manager.
+    env : dict[str, str] | None, optional
+        An optional environment to pass when reloading the daemon.  Defaults to None.
     """
     user: bool = False
+    env: dict[str, str] | None = None
 
     def apply(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
         if os.name != "posix":
             raise OSError("systemd operations require a POSIX system.")
-        _ensure_systemctl()
         user = self.user
+        env = self.env or {}
+        _ensure_systemctl(user)
         payload["user"] = user
+        payload["env"] = cast(dict[str, JSONValue], env)
         ctx.dump()
 
         # reload the daemon
@@ -468,7 +504,7 @@ class ReloadDaemon:
                     "Reloading systemd requires root privileges; no sudo available."
                 )
             cmd_prefix = [*sudo, *cmd_prefix]
-        run([*cmd_prefix, "daemon-reload"])
+        run([*cmd_prefix, "daemon-reload"], env=env)
 
     @staticmethod
     def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:

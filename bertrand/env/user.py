@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import cast
 
 from .pipeline import JSONValue, Pipeline, atomic
-from .run import atomic_write_text, run, sudo_prefix
+from .run import atomic_write_text, confirm, run, sudo_prefix
 
 # pylint: disable=unused-argument, missing-function-docstring, broad-exception-caught
 
@@ -140,6 +140,14 @@ def _passwd_status(name: str) -> str | None:
     return parts[1]
 
 
+def _read_proc_sys(path: str) -> int | None:
+    p = Path("/proc/sys") / path
+    try:
+        return int(p.read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return None
+
+
 def _require_root_or_user(uid: int, message: str) -> bool:
     if os.geteuid() == 0:
         return True
@@ -231,6 +239,11 @@ class EnsureSubIDs:
     needed: int = 65536
     subuid_path: Path = Path("/etc/subuid")
     subgid_path: Path = Path("/etc/subgid")
+    prompt: str = (
+        "Provisioning subordinate UID/GID ranges requires modifying system files.  "
+        "This may require root privileges.\nDo you want to proceed? [y/N] "
+    )
+    assume_yes: bool = False
 
     def apply(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
         if os.name != "posix":
@@ -242,6 +255,7 @@ class EnsureSubIDs:
         payload["subgid_path"] = str(self.subgid_path)
         ctx.dump()
 
+        # check whether there are enough subuids/subgids already
         uid_ranges = _read_subid_file(self.subuid_path)
         gid_ranges = _read_subid_file(self.subgid_path)
         if (
@@ -251,16 +265,20 @@ class EnsureSubIDs:
             return
 
         sudo = sudo_prefix()
-        if os.name == "posix" and os.geteuid() != 0 and not sudo:
+        if os.geteuid() != 0 and not sudo:
             raise PermissionError(
                 "Subuid/subgid provisioning requires root privileges; no sudo available."
             )
+        if not confirm(self.prompt, assume_yes=self.assume_yes):
+            raise OSError("User declined to provision subordinate UID/GID ranges.")
 
+        # choose non-overlapping ranges and append to files
         start_uid = _choose_non_overlapping_start(uid_ranges, self.needed)
         start_gid = _choose_non_overlapping_start(gid_ranges, self.needed)
         _append_subid(self.subuid_path, user, start_uid, self.needed, sudo)
         _append_subid(self.subgid_path, user, start_gid, self.needed, sudo)
 
+        # verify
         uid_ranges = _read_subid_file(self.subuid_path)
         gid_ranges = _read_subid_file(self.subgid_path)
         if (
@@ -268,6 +286,75 @@ class EnsureSubIDs:
             not _has_enough(user, gid_ranges, self.needed)
         ):
             raise OSError("Failed to provision subuid/subgid ranges correctly.")
+
+    @staticmethod
+    def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+        return  # no-op
+
+
+@atomic
+@dataclass(frozen=True)
+class EnsureUserNamespaces:
+    """Ensure unprivileged user namespaces are enabled.
+
+    Attributes
+    ----------
+    needed : int, optional
+        The minimum number of user namespaces that should be supported.  Defaults to
+        15000.
+    prompt : str
+        The prompt to show the user when requesting sudo permission to enable user
+        namespaces.
+    assume_yes : bool, optional
+        If true, assume "yes" to any prompts.  Defaults to false.
+    """
+    needed: int = 15000
+    prompt: str = (
+        "Enabling unprivileged user namespaces requires modifying system settings.  "
+        "This may require root privileges.\nDo you want to proceed? [y/N] "
+    )
+    assume_yes: bool = False
+
+    def apply(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+        if os.name != "posix":
+            raise OSError("User management operations require a POSIX system.")
+        payload["needed"] = self.needed
+        ctx.dump()
+
+        # check current status
+        unpriv = _read_proc_sys("kernel/unprivileged_userns_clone")
+        maxns = _read_proc_sys("user/max_user_namespaces")
+        if (
+            (unpriv is None or unpriv != 0) and
+            (maxns is None or maxns >= self.needed)
+        ):
+            return
+
+        # prompt for sudo if needed
+        sudo = sudo_prefix()
+        if os.geteuid() != 0 and not sudo:
+            raise PermissionError(
+                "Enabling user namespaces requires root privileges; no sudo available."
+            )
+        if not confirm(self.prompt, assume_yes=self.assume_yes):
+            raise OSError("User declined to enable unprivileged user namespaces.")
+
+        # enable unprivileged user namespaces
+        if unpriv == 0:
+            run([*sudo, "sysctl", "-w", "kernel.unprivileged_userns_clone=1"])
+        if maxns is not None and maxns < self.needed:
+            run([
+                *sudo,
+                "sysctl",
+                "-w",
+                f"user.max_user_namespaces={self.needed}",
+            ])
+
+        # verify
+        unpriv = _read_proc_sys("kernel/unprivileged_userns_clone")
+        maxns = _read_proc_sys("user/max_user_namespaces")
+        if (unpriv == 0) or (maxns is not None and maxns < self.needed):
+            raise OSError("Failed to enable unprivileged user namespaces.")
 
     @staticmethod
     def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
@@ -395,8 +482,17 @@ class EnableLinger:
     ----------
     user : str | None, optional
         The username to enable linger for.  Defaults to the current user.
+    prompt : str
+        The prompt to show the user when requesting sudo permission to disable linger.
+    assume_yes : bool, optional
+        If true, assume "yes" to any prompts.  Defaults to false.
     """
     user: str | None = None
+    prompt: str = (
+        "Enabling systemd linger requires modifying system settings.  "
+        "This may require root privileges.\nDo you want to proceed? [y/N] "
+    )
+    assume_yes: bool = False
 
     def apply(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
         if os.name != "posix":
@@ -423,10 +519,12 @@ class EnableLinger:
 
         # enable linger
         sudo = sudo_prefix()
-        if os.name == "posix" and os.geteuid() != 0 and not sudo:
+        if os.geteuid() != 0 and not sudo:
             raise PermissionError(
                 "Enabling linger requires root privileges; no sudo available."
             )
+        if not confirm(self.prompt, assume_yes=self.assume_yes):
+            raise OSError("User declined to enable systemd linger.")
         run([*sudo, "loginctl", "enable-linger", user])
 
     @staticmethod
@@ -443,8 +541,17 @@ class DisableLinger:
     ----------
     user : str | None, optional
         The username to disable linger for.  Defaults to the current user.
+    prompt : str
+        The prompt to show the user when requesting sudo permission to disable linger.
+    assume_yes : bool, optional
+        If true, assume "yes" to any prompts.  Defaults to false.
     """
     user: str | None = None
+    prompt: str = (
+        "Disabling systemd linger requires modifying system settings.  "
+        "This may require root privileges.\nDo you want to proceed? [y/N] "
+    )
+    assume_yes: bool = False
 
     def apply(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
         if os.name != "posix":
@@ -471,10 +578,12 @@ class DisableLinger:
 
         # disable linger
         sudo = sudo_prefix()
-        if os.name == "posix" and os.geteuid() != 0 and not sudo:
+        if os.geteuid() != 0 and not sudo:
             raise PermissionError(
                 "Disabling linger requires root privileges; no sudo available."
             )
+        if not confirm(self.prompt, assume_yes=self.assume_yes):
+            raise OSError("User declined to disable systemd linger.")
         run([*sudo, "loginctl", "disable-linger", user])
 
     @staticmethod
