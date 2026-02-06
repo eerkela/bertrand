@@ -4,12 +4,14 @@ with CLI pipelines.
 from __future__ import annotations
 
 import os
+import shlex
 import shutil
 from dataclasses import dataclass
+from pathlib import Path
 from typing import cast
 
 from .pipeline import JSONValue, Pipeline, atomic
-from .run import run, sudo_prefix
+from .run import confirm, run, sudo_prefix
 
 # pylint: disable=unused-argument, missing-function-docstring, broad-exception-caught
 
@@ -505,6 +507,68 @@ class ReloadDaemon:
                 )
             cmd_prefix = [*sudo, *cmd_prefix]
         run([*cmd_prefix, "daemon-reload"], env=env)
+
+    @staticmethod
+    def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+        return  # no-op
+
+
+@atomic
+@dataclass(frozen=True)
+class DelegateUserControllers:
+    """Write a systemd drop-in to delegate cgroup controllers to user sessions.
+
+    Attributes
+    ----------
+    controllers : list[str]
+        The cgroup controllers to delegate (e.g., cpu, io, memory, pids, cpuset).
+    prompt : str
+        The prompt to show the user before making system-level changes.
+    assume_yes : bool, optional
+        If true, assume "yes" to any prompts.  Defaults to false.
+    """
+    controllers: list[str]
+    prompt: str
+    assume_yes: bool = False
+
+    def apply(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+        if os.name != "posix":
+            raise OSError("systemd operations require a POSIX system.")
+        if not shutil.which("systemctl"):
+            raise OSError("systemctl not found")
+
+        # validate controllers and record in payload
+        controllers = [c for c in self.controllers if c]
+        payload["controllers"] = cast(list[JSONValue], controllers)
+        ctx.dump()
+        if not controllers:
+            return
+
+        # ensure we can elevate if needed
+        sudo = sudo_prefix()
+        if os.geteuid() != 0 and not sudo:
+            raise PermissionError(
+                "Configuring controller delegation requires root privileges; no sudo available."
+            )
+        if not confirm(self.prompt, assume_yes=self.assume_yes):
+            payload["declined"] = True
+            ctx.dump()
+            return
+
+        # ensure drop-in directory exists
+        dropin_dir = Path("/etc/systemd/system/user@.service.d")
+        run([*sudo, "mkdir", "-p", str(dropin_dir)])
+
+        # write delegate.conf via sudo
+        delegate_path = dropin_dir / "delegate.conf"
+        contents = "[Service]\nDelegate=" + " ".join(controllers) + "\n"
+        quoted_path = shlex.quote(str(delegate_path))
+        run([*sudo, "sh", "-lc", f"cat > {quoted_path}"], input=contents)
+        payload["applied"] = True
+        ctx.dump()
+
+        # reload system daemon to pick up drop-in
+        run([*sudo, "systemctl", "daemon-reload"])
 
     @staticmethod
     def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:

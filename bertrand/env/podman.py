@@ -1,29 +1,430 @@
-"""Install Docker Engine and pull container images."""
+"""Install and run a rootless OCI container engine (podman) to orchestrate Bertrand's
+CLI.
+"""
 from __future__ import annotations
 
 import json
 import os
 import platform
+import re
 import shlex
 import shutil
 import sys
-import time
 import uuid
 
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from resource import getpagesize
 from types import TracebackType
-from typing import Iterable, Literal, TypedDict, overload
+from typing import Annotated, Iterable, Literal, TypeAlias, TypedDict, overload
 
-import psutil
+from pydantic import (
+    AwareDatetime,
+    BaseModel,
+    BeforeValidator,
+    AfterValidator,
+    ConfigDict,
+    PositiveInt,
+    StringConstraints,
+    ValidationError,
+    model_validator,
+)
 
-from .docker_engine import docker_cmd, docker_exec
-from .run import CommandError, atomic_write_text, confirm
+from .package import (
+    InstallPackage,
+    detect_package_manager
+)
+from .pipeline import Pipeline, on_init
+from .run import (
+    CommandError,
+    CompletedProcess,
+    LockDir,
+    User,
+    atomic_write_text,
+    confirm,
+    mkdir_private,
+    run,
+)
+from .systemd import (
+    DelegateUserControllers,
+)
+from .user import EnsureSubIDs, EnsureUserNamespaces
 from .version import __version__
 
 #pylint: disable=redefined-builtin, redefined-outer-name, broad-except
+
+
+############################
+####    INSTALLATION    ####
+############################
+
+
+# shared fact names
+USER = "user"
+UID = "uid"
+GID = "gid"
+PACKAGE_MANAGER = "package_manager"
+DISTRO_ID = "distro_id"
+DISTRO_VERSION = "distro_version"
+DISTRO_CODENAME = "distro_codename"
+
+
+@on_init(requires=[], ephemeral=False)
+def detect_platform(ctx: Pipeline.InProgress) -> None:
+    """Detect the host platform and package manager to use when installing the
+    container backend.  These are persisted as facts in the pipeline context.
+
+    Parameters
+    ----------
+    ctx : Pipeline.InProgress
+        The in-flight pipeline context.
+    """
+    user = User()
+    ctx[USER] = user.name
+    ctx[UID] = user.uid
+    ctx[GID] = user.gid
+
+    detect = detect_package_manager()
+    ctx[PACKAGE_MANAGER] = detect.manager
+    ctx[DISTRO_ID] = detect.distro_id
+    ctx[DISTRO_VERSION] = detect.version_id
+    ctx[DISTRO_CODENAME] = detect.codename
+
+
+@on_init(requires=[detect_platform], ephemeral=False)
+def install_container_cli(ctx: Pipeline.InProgress) -> None:
+    """Install the base packages required for the container backend via the detected
+    package manager.  This will prompt the user for confirmation before
+
+    Parameters
+    ----------
+    ctx : Pipeline.InProgress
+        The in-flight pipeline context.
+
+    Raises
+    ------
+    OSError
+        If `podman` is not found and installation is declined by the user.
+    """
+    # check if podman CLI is already present
+    cli = shutil.which("podman")
+    if cli:
+        return
+
+    # prompt to install dependencies
+    package_manager = ctx.get(PACKAGE_MANAGER)
+    if not isinstance(package_manager, str):
+        raise OSError(f"Invalid package manager: {package_manager}")
+    if not confirm(
+        "Bertrand requires 'podman' to manage rootless containers.  Would you like to "
+        f"install it now using {package_manager} (requires sudo).\n"
+        "[y/N] ",
+        assume_yes=False,
+    ):
+        raise OSError("Installation declined by user.")
+
+    # install podman and rootless helpers for the detected distro
+    packages = [
+        "podman",
+        "slirp4netns",
+        "passt",
+        "fuse-overlayfs",
+    ]
+    if package_manager == "apt":
+        packages.append("uidmap")
+    elif package_manager == "dnf":
+        packages.append("shadow-utils")
+    else:
+        raise OSError(f"Unknown package manager: '{package_manager}'")
+    ctx.do(InstallPackage(
+        manager=package_manager,
+        packages=packages,
+        refresh=True
+    ))
+
+    # verify installation and record facts for later steps
+    cli = shutil.which("podman")
+    if not cli:
+        raise OSError(
+            "Installation completed, but 'podman' is still not found.  Please "
+            "investigate the issue and ensure the required packages are installed."
+        )
+
+
+@on_init(requires=[install_container_cli], ephemeral=False)
+def enable_user_namespaces(ctx: Pipeline.InProgress) -> None:
+    """Ensure unprivileged user namespaces are enabled on the host system, which are
+    required for the rootless container cli.
+
+    Parameters
+    ----------
+    ctx : Pipeline.InProgress
+        The in-flight pipeline context.
+    """
+    ctx.do(EnsureUserNamespaces(
+        needed=15000,
+        prompt=(
+            "Rootless containers require unprivileged user namespaces to be enabled on "
+            "the host system.  This may require sudo privileges.\n"
+            "Do you want to proceed? [y/N] "
+        )
+    ))
+
+
+@on_init(requires=[install_container_cli], ephemeral=False)
+def provision_subids(ctx: Pipeline.InProgress) -> None:
+    """Ensure subordinate UID/GID ranges are allocated for the host user in
+    /etc/subuid and /etc/subgid, which are required for rootless Podman operation.
+
+    Parameters
+    ----------
+    ctx : Pipeline.InProgress
+        The in-flight pipeline context.
+
+    Raises
+    ------
+    OSError
+        If the USER fact is not a valid string.  This should have been set by the
+        `detect_platform` step.
+    """
+    user = ctx.get(USER)
+    if not isinstance(user, str):
+        raise OSError(f"Invalid user: {user}")
+    ctx.do(EnsureSubIDs(
+        user=user,
+        needed=65536,
+        prompt=(
+            "Rootless containers require subordinate UID/GID ranges (>= 65536) in "
+            "/etc/subuid and /etc/subgid.  Bertrand can configure this, but may "
+            "require sudo privileges to do so.\n"
+            "Do you want to proceed? [y/N] "
+        )
+    ))
+
+
+def _cgroup_v2_controllers() -> set[str] | None:
+    path = Path("/sys/fs/cgroup/cgroup.controllers")
+    try:
+        text = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    return set(text.split()) if text else set()
+
+
+def _user_cgroup_controllers(uid: int) -> set[str] | None:
+    path = Path(
+        f"/sys/fs/cgroup/user.slice/user-{uid}.slice/"
+        f"user@{uid}.service/cgroup.controllers"
+    )
+    try:
+        text = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    return set(text.split()) if text else set()
+
+
+def _systemd_version() -> int | None:
+    cp = run(["systemctl", "--version"], check=False, capture_output=True)
+    if cp.returncode != 0:
+        return None
+    line = ""
+    if cp.stdout:
+        line = cp.stdout.splitlines()[0].strip()
+    match = re.search(r"systemd\s+(\d+)", line)
+    if not match:
+        return None
+    return int(match.group(1))
+
+
+def _dropin_delegate_controllers(path: Path) -> set[str] | None:
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("Delegate="):
+            value = line.split("=", 1)[1].strip()
+            return set(value.split()) if value else set()
+    return set()
+
+
+@on_init(requires=[provision_subids, enable_user_namespaces], ephemeral=False)
+def delegate_controllers(ctx: Pipeline.InProgress) -> None:
+    """Configure systemd controller delegation for the rootless container CLI, if not
+    already configured.  This allows the container CLI to manage resource limits on
+    cgroup v2 hosts.
+
+    Parameters
+    ----------
+    ctx : Pipeline.InProgress
+        The in-flight pipeline context.
+
+    Raises
+    ------
+    OSError
+        If systemd is not found, or if elevation is required but not available.
+    """
+    uid = ctx.get(UID)
+    if not isinstance(uid, int):
+        raise OSError(f"Invalid UID: {uid}")
+
+    # controller delegation for cgroup v2 to enable rootless resource limits
+    root_controllers = _cgroup_v2_controllers()
+    if root_controllers is not None:
+        required = {"cpu", "io", "memory", "pids"}
+
+        # systemd 244+ is required for cpuset delegation
+        systemd_version = _systemd_version()
+        if "cpuset" in root_controllers:
+            if systemd_version is not None and systemd_version >= 244:
+                required.add("cpuset")
+            else:
+                print(
+                    "bertrand: cpuset controller detected, but systemd < 244; "
+                    "skipping cpuset delegation.",
+                    file=sys.stderr
+                )
+
+        # check if delegation is already configured for the requested controllers
+        delegated = _user_cgroup_controllers(uid) or set()
+        if not required.issubset(delegated):
+            dropin_path = Path("/etc/systemd/system/user@.service.d/delegate.conf")
+            dropin_controllers = _dropin_delegate_controllers(dropin_path) or set()
+            if dropin_controllers and required.issubset(dropin_controllers):
+                print(
+                    "bertrand: controller delegation is configured but may require "
+                    "logging out and back in to take effect.",
+                    file=sys.stderr
+                )
+
+            # prompt and update delegation if needed
+            else:
+                ctx.do(DelegateUserControllers(
+                    controllers=sorted(required),
+                    prompt=(
+                        "Enforcing resource limits for rootless containers requires "
+                        "cgroup controllers to be delegated to user sessions.  Bertrand "
+                        "can configure this, but may require sudo privileges to do so.\n"
+                        "Do you want to proceed? [y/N] "
+                    ),
+                ))
+                dropin_controllers = _dropin_delegate_controllers(dropin_path) or set()
+                if dropin_controllers and required.issubset(dropin_controllers):
+                    print(
+                        "bertrand: controller delegation updated. You may need to "
+                        "log out and back in for changes to take effect.",
+                        file=sys.stderr
+                    )
+                else:
+                    print(
+                        "bertrand: controller delegation could not be configured; some "
+                        "resource limits may be unavailable.",
+                        file=sys.stderr
+                    )
+
+
+DOCKER_ENV_VARS = (
+    "DOCKER_CONTEXT",
+    "DOCKER_HOST",
+    "DOCKER_TLS_VERIFY",
+    "DOCKER_CERT_PATH",
+    "DOCKER_MACHINE_NAME",
+    "DOCKER_CONFIG",
+    "DOCKER_BUILDKIT",
+)
+
+
+def _podman_env(ctx: Pipeline | Pipeline.InProgress) -> dict[str, str]:
+    env = os.environ.copy()
+    uid = ctx.get(UID)
+    if not isinstance(uid, int):
+        raise OSError(f"Invalid UID: {uid}")
+
+    # set up state directories
+    data = ctx.state_dir / "container_data"
+    config = ctx.state_dir / "container_config"
+    mkdir_private(data)
+    mkdir_private(config)
+
+    # isolate podman configuration under pipeline state
+    env["XDG_DATA_HOME"] = str(data)
+    env["XDG_CONFIG_HOME"] = str(config)
+    env.setdefault("XDG_RUNTIME_DIR", f"/run/user/{uid}")
+    for k in DOCKER_ENV_VARS:
+        env.pop(k, None)
+    return env
+
+
+def podman_cmd(
+    args: list[str],
+    *,
+    check: bool = True,
+    capture_output: bool | None = False,
+    input: str | None = None,
+    cwd: Path | None = None
+) -> CompletedProcess:
+    """Run a podman command.
+
+    Parameters
+    ----------
+    args : list[str]
+        The podman command arguments (excluding the 'podman' executable).
+    check : bool, optional
+        If True, raise CommandError on non-zero exit code.  Default is True.
+    capture_output : bool | None, optional
+        If True, capture stdout/stderr in the returned `CompletedProcess` or
+        `CommandError`.  If False, do not capture output.  If None, tee output to both
+        the console and the returned objects.
+    input : str | None, optional
+        Input to send to the command's stdin (default is None).
+    cwd : Path | None, optional
+        An optional working directory to run the command in.  If None (the default),
+        then the current working directory will be used.
+
+    Returns
+    -------
+    CompletedProcess
+        The completed process result.
+
+    Raises
+    ------
+    CommandError
+        If the command fails and `check` is True.
+    """
+    return run(
+        ["podman", *args],
+        check=check,
+        capture_output=capture_output,
+        input=input,
+        cwd=cwd,
+        env=_podman_env(on_init),
+    )
+
+
+def podman_exec(args: list[str]) -> None:
+    """Run a podman command by replacing the current process.  This is intended for
+    interactive use cases like `bertrand enter` where we want to drop the user into a
+    shell inside the container.
+
+    Parameters
+    ----------
+    args : list[str]
+        The podman command arguments (excluding the 'podman' executable).
+
+    Raises
+    ------
+    OSError
+        If execution fails.
+    """
+    os.execvpe("podman", ["podman", *args], _podman_env(on_init))
+
+
+###################
+####    CLI    ####
+###################
 
 
 VERSION: int = 1
@@ -38,28 +439,28 @@ EDITORS: dict[str, tuple[str, ...]] = {
 }
 
 
-def _bertrand_dir(env_root: Path) -> Path:
+def _env_dir(env_root: Path) -> Path:
     return env_root / ".bertrand"
 
 
-def _bertrand_tmp_dir(env_root: Path) -> Path:
-    return _bertrand_dir(env_root) / "tmp"
+def _env_tmp_dir(env_root: Path) -> Path:
+    return _env_dir(env_root) / "tmp"
 
 
 def _cid_file(env_root: Path, name: str) -> Path:
-    return _bertrand_tmp_dir(env_root) / f"{name}.cid"
+    return _env_tmp_dir(env_root) / f"{name}.cid"
 
 
 def _iid_file(env_root: Path, name: str) -> Path:
-    return _bertrand_tmp_dir(env_root) / f"{name}.iid"
+    return _env_tmp_dir(env_root) / f"{name}.iid"
 
 
 def _env_file(env_root: Path) -> Path:
-    return _bertrand_dir(env_root) / "env.json"
+    return _env_dir(env_root) / "env.json"
 
 
-def _docker_file(env_root: Path) -> Path:
-    return env_root / "Dockerfile"
+def _container_file(env_root: Path) -> Path:
+    return env_root / "Containerfile"
 
 
 def _sanitize_name(name: str) -> str:
@@ -82,68 +483,66 @@ def _normalize_args(args: Iterable[str]) -> list[str]:
     return out
 
 
-def _validate_version(data: dict[str, object]) -> int:
-    version = data.get("version")
-    if not isinstance(version, int) or version <= 0:
-        raise ValueError(f"missing or invalid 'version' field: {version}")
-    return version
+def _check_list_field(value: object, field: str) -> list[str]:
+    if not isinstance(value, list) or not all(isinstance(x, str) for x in value):
+        raise ValueError(f"missing or invalid '{field}' field: {value}")
+    return _normalize_args(value)
 
 
-def _validate_id(data: dict[str, object]) -> str:
-    id = data.get("id")
-    if not isinstance(id, str):
-        raise ValueError(f"missing or invalid 'id' field: {id}")
-    id = id.strip()
-    if not id:
-        raise ValueError(f"missing or invalid 'id' field: {id}")
-    return id
+def _check_args_field(value: object) -> list[str]:
+    return _check_list_field(value, "args")
 
 
-def _validate_uuid(data: dict[str, object]) -> str:
-    uuid_str = data.get("uuid")
-    if not isinstance(uuid_str, str):
-        raise ValueError(f"missing or invalid 'uuid' field: {uuid_str}")
-    uuid_str = uuid_str.strip()
-    if not uuid_str:
-        raise ValueError(f"missing or invalid 'uuid' field: {uuid_str}")
+def _check_entry_point_field(value: object) -> list[str]:
+    return _check_list_field(value, "entry_point")
+
+
+def _check_uuid_str(value: str) -> str:
+    value = value.strip()
+    if not value:
+        raise ValueError(f"missing or invalid 'id' field: {value}")
     try:
-        uuid.UUID(uuid_str)
+        uuid.UUID(value)
     except Exception as err:
-        raise ValueError(f"'uuid' must be a valid UUID: {uuid_str}") from err
-    return uuid_str
+        raise ValueError(f"'id' must be a valid UUID: {value}") from err
+    return value
 
 
-def _validate_created(data: dict[str, object]) -> datetime:
-    created = data.get("created")
-    if not isinstance(created, str) or not created.strip():
-        raise ValueError(f"missing or invalid 'created' field: {created}")
-    try:
-        return datetime.fromisoformat(created).astimezone(timezone.utc)
-    except Exception as err:
-        raise ValueError(f"'created' must be a valid ISO timestamp: {created}") from err
+def _check_shell(value: str) -> str:
+    if value not in SHELLS:
+        raise ValueError(f"unsupported shell: {value}")
+    return value
 
 
-def _validate_args(data: dict[str, object]) -> list[str]:
-    args = data.get("args")
-    if not isinstance(args, list) or not all(isinstance(x, str) and x for x in args):
-        raise ValueError(f"missing or invalid 'args' field: {args}")
-    return _normalize_args(args)
+def _check_code(value: str) -> str:
+    if value not in EDITORS:
+        raise ValueError(f"unsupported code command: {value}")
+    return value
 
 
-def _validate_entry_point(data: dict[str, object]) -> list[str]:
-    entry_point = data.get("entry_point")
-    if (
-        not isinstance(entry_point, list) or
-        not all(isinstance(x, str) and x for x in entry_point)
-    ):
-        raise ValueError(f"missing or invalid 'entry_point' field: {entry_point}")
-    return _normalize_args(entry_point)
+def _to_utc(value: datetime) -> datetime:
+    if value.tzinfo is None or value.tzinfo.utcoffset(value) is None:
+        raise ValueError(f"'created' must be a valid ISO timestamp: {value}")
+    return value.astimezone(timezone.utc)
 
 
-@dataclass
-class Container:
-    """In-memory metadata representing a local Bertrand Docker container, which is a
-    runtime context for a compiled image.  An image can have many containers, each
+ContainerId: TypeAlias = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+ImageId: TypeAlias = ContainerId
+EnvironmentId: TypeAlias = Annotated[str, BeforeValidator(_check_uuid_str)]
+CreatedAt: TypeAlias = Annotated[AwareDatetime, AfterValidator(_to_utc)]
+ArgsList: TypeAlias = Annotated[
+    list[Annotated[str, StringConstraints(min_length=1)]],
+    BeforeValidator(_check_args_field)
+]
+EntryPoint: TypeAlias = Annotated[
+    list[Annotated[str, StringConstraints(min_length=1)]],
+    BeforeValidator(_check_entry_point_field)
+]
+
+
+class Container(BaseModel):
+    """In-memory metadata representing a local Bertrand container, which acts as a
+    runtime harness for a compiled image.  An image can have many containers, each
     built with a different runtime configuration, and each container is considered to
     be immutable once created.
 
@@ -155,20 +554,27 @@ class Container:
     version : int
         The version number for backwards compatibility.
     id : str
-        The unique Docker container ID.  This is equivalent to the metadata file name
-        in `container_dir`.
+        The unique podman container ID.
     created : datetime
         The ISO timestamp when the container was created.
     args : list[str]
-        The original `docker create` arguments used to create the container.
+        The original `podman create` arguments used to create the container.
     entry_point : list[str]
         The shell prefix used to run the container.  This is usually detected during
         compilation by looking for a __main__.py file or a C++ module with a main()
         function.
     """
     class State(TypedDict, total=False):
-        """Type hint for docker container state information."""
-        Status: Literal["created", "restarting", "running", "removing", "paused", "exited", "dead"]
+        """Type hint for container state information."""
+        Status: Literal[
+            "created",
+            "restarting",
+            "running",
+            "removing",
+            "paused",
+            "exited",
+            "dead"
+        ]
         Running: bool
         Paused: bool
         Restarting: bool
@@ -176,7 +582,7 @@ class Container:
         Dead: bool
 
     class Mounts(TypedDict, total=False):
-        """Type hint for docker container mount information."""
+        """Type hint for container mount information."""
         Type: Literal["bind", "volume", "tmpfs", "npipe"]
         Source: str
         Destination: str
@@ -184,72 +590,32 @@ class Container:
         Propagation: Literal["shared", "slave", "private", "rshared", "rslave", "rprivate"]
 
     class Inspect(TypedDict, total=False):
-        """Type hint for docker container inspect output."""
-        Id: str
-        Created: str
+        """Type hint for container inspect output.
+
+        https://docs.podman.io/en/latest/markdown/podman-container-inspect.1.html#examples
+        """
+        Id: ContainerId
+        Created: CreatedAt
         State: Container.State
-        Image: str
+        Image: ImageId
         Mounts: list[Container.Mounts]
 
-    version: int
-    id: str
-    created: datetime
-    args: list[str]
-    entry_point: list[str]
-
-    @staticmethod
-    def from_json(data: dict[str, object]) -> Container:
-        """Load a Container from a dictionary of metadata.
-
-        Parameters
-        ----------
-        data : dict[str, object]
-            The raw JSON metadata.
-
-        Returns
-        -------
-        Container
-            The loaded `Container` object.
-
-        Raises
-        ------
-        ValueError
-            If the container metadata is malformed.
-        """
-        return Container(
-            version=_validate_version(data),
-            id=_validate_id(data),
-            created=_validate_created(data),
-            args=_validate_args(data),
-            entry_point=_validate_entry_point(data),
-        )
-
-    def to_json(self) -> dict[str, object]:
-        """Serialize this Container to a JSON-compatible dictionary.
-
-        Returns
-        -------
-        dict[str, object]
-            The serialized JSON metadata.
-        """
-        return {
-            "version": self.version,
-            "id": self.id,
-            "created": self.created.isoformat(),
-            "args": self.args,
-            "entry_point": self.entry_point,
-        }
+    model_config = ConfigDict(extra="forbid")
+    version: PositiveInt
+    id: ContainerId
+    created: CreatedAt
+    args: ArgsList
+    entry_point: EntryPoint
 
     def inspect(self) -> Container.Inspect | None:
-        """Invoke Docker to inspect this container.
+        """Invoke podman to inspect this container.
 
         Returns
         -------
         Container.Inspect | None
-            A JSON response from the Docker daemon or None if the container could not
-            be found.  Type hints are provided via the `Container.Inspect` TypedDict.
+            A JSON response from podman or None if the container could not be found.
         """
-        result = docker_cmd(["inspect", self.id], check=False, capture_output=True)
+        result = podman_cmd(["container", "inspect", self.id], check=False, capture_output=True)
         if result.returncode != 0 or not result.stdout:
             return None
         data = json.loads(result.stdout)
@@ -257,8 +623,8 @@ class Container:
 
     @staticmethod
     def relocated(env_root: Path, inspect: Container.Inspect) -> bool:
-        """Detect whether a Docker container's mounted environment path has drifted
-        from the environment's true root directory.
+        """Detect whether a container's mounted environment path has drifted from the
+        environment's true root directory.
 
         Parameters
         ----------
@@ -281,8 +647,8 @@ class Container:
 
     @staticmethod
     def mount(inspect: Container.Inspect) -> Path | None:
-        """Extract the root path of the environment directory mounted to this Docker
-        container from its inspection data.
+        """Extract the root path of the environment directory mounted to this container
+        from its inspection data.
 
         Parameters
         ----------
@@ -305,7 +671,7 @@ class Container:
 
     @staticmethod
     def new(inspect: Container.Inspect) -> bool:
-        """Check whether a Docker container is newly created (i.e. has never been
+        """Check whether a container has been newly created (i.e. has never been
         started).
 
         Parameters
@@ -322,7 +688,7 @@ class Container:
 
     @staticmethod
     def running(inspect: Container.Inspect) -> bool:
-        """Check whether a Docker container is currently running.
+        """Check whether a container is currently running.
 
         Parameters
         ----------
@@ -339,7 +705,7 @@ class Container:
 
     @staticmethod
     def paused(inspect: Container.Inspect) -> bool:
-        """Check whether a Docker container is currently paused.
+        """Check whether a container is currently paused.
 
         Parameters
         ----------
@@ -355,7 +721,7 @@ class Container:
 
     @staticmethod
     def stopped(inspect: Container.Inspect) -> bool:
-        """Check whether a Docker container is currently stopped.
+        """Check whether a container is currently stopped.
 
         Parameters
         ----------
@@ -372,7 +738,7 @@ class Container:
 
     @staticmethod
     def start(inspect: Container.Inspect) -> None:
-        """Start a Docker container if it is not already running.
+        """Start a container if it is not already running.
 
         Parameters
         ----------
@@ -383,13 +749,13 @@ class Container:
         if state["Running"] or state["Restarting"]:
             return
         if state["Paused"]:
-            docker_cmd(["container", "unpause", inspect["Id"]], check=False)
+            podman_cmd(["container", "unpause", inspect["Id"]], check=False)
         else:
-            docker_cmd(["container", "start", inspect["Id"]], check=False)
+            podman_cmd(["container", "start", inspect["Id"]], check=False)
 
     @staticmethod
     def stop(inspect: Container.Inspect, timeout: int = TIMEOUT) -> None:
-        """Stop a Docker container if it is currently running.
+        """Stop a container if it is currently running.
 
         Parameters
         ----------
@@ -401,14 +767,14 @@ class Container:
         """
         state = inspect["State"]
         if state["Running"] or state["Restarting"] or state["Paused"]:
-            docker_cmd(
+            podman_cmd(
                 ["container", "stop", inspect["Id"], "-t", str(timeout)],
                 check=False
             )
 
     @staticmethod
     def pause(inspect: Container.Inspect) -> None:
-        """Pause a Docker container if it is currently running.
+        """Pause a container if it is currently running.
 
         Parameters
         ----------
@@ -417,11 +783,11 @@ class Container:
         """
         state = inspect["State"]
         if state["Running"] or state["Restarting"]:
-            docker_cmd(["container", "pause", inspect["Id"]], check=False)
+            podman_cmd(["container", "pause", inspect["Id"]], check=False)
 
     @staticmethod
     def resume(inspect: Container.Inspect) -> None:
-        """Resume a Docker container if it is currently paused.
+        """Resume a container if it is currently paused.
 
         Parameters
         ----------
@@ -429,11 +795,11 @@ class Container:
             The output of `Container.inspect()` for the container to resume.
         """
         if inspect["State"]["Paused"]:
-            docker_cmd(["container", "unpause", inspect["Id"]], check=False)
+            podman_cmd(["container", "unpause", inspect["Id"]], check=False)
 
     @staticmethod
     def restart(inspect: Container.Inspect, timeout: int = TIMEOUT) -> None:
-        """Restart a Docker container.
+        """Restart a container.
 
         Parameters
         ----------
@@ -445,39 +811,16 @@ class Container:
         """
         state = inspect["State"]
         if state["Running"] or state["Paused"]:
-            docker_cmd(
+            podman_cmd(
                 ["container", "restart", inspect["Id"], "-t", str(timeout)],
                 check=False
             )
 
 
-def _validate_containers(data: dict[str, object]) -> dict[str, Container]:
-    result: dict[str, Container] = {}
-    containers = data.get("containers", {})
-    if not isinstance(containers, dict):
-        raise ValueError(f"missing or invalid 'containers' field: {containers}")
-    for container_tag, container_data in containers.items():
-        if not isinstance(container_tag, str):
-            raise ValueError(
-                f"invalid container tag: {container_tag}"
-            )
-        if not isinstance(container_data, dict):
-            raise ValueError(
-                f"invalid data for container tag '{container_tag}': {container_data}"
-            )
-        if container_tag in result:
-            raise ValueError(
-                f"duplicate container tag '{container_tag}'"
-            )
-        result[container_tag] = Container.from_json(container_data)
-    return result
-
-
-@dataclass
-class Image:
-    """In-memory metadata representing a local Bertrand Docker image, which is a
-    compiled snapshot of an environment with a particular set of build arguments.  An
-    environment can have many images, each built with a different set of Dockerfile
+class Image(BaseModel):
+    """In-memory metadata representing a local Bertrand image, which acts as a compiled
+    snapshot of an environment with a particular set of build arguments.  An
+    environment can have many images, each built with a different set of Containerfile
     arguments, and each image is considered to be immutable once created.
 
     Specific care is taken not to store anything that references the host filesystem,
@@ -488,81 +831,40 @@ class Image:
     version : int
         The version number for backwards compatibility.
     id : str
-        The unique Docker image ID.  This is equivalent to the metadata file name in
+        The unique podman image ID.  This is equivalent to the metadata file name in
         `image_dir`.
     created : datetime
         The ISO timestamp when the image was created.
     args : list[str]
-        The original `docker build` args used to build the image.
+        The original `podman build` args used to build the image.
     containers : dict[str, Container]
         A mapping from container tags to their corresponding `Container` metadata
         objects built from this image.
     """
     class Inspect(TypedDict, total=False):
-        """Type hint for `docker container inspect` output."""
-        Id: str
-        Created: str
+        """Type hint for `podman image inspect` output.
 
-    version: int
-    id: str
-    created: datetime
-    args: list[str]
+        https://docs.podman.io/en/latest/markdown/podman-image-inspect.1.html#example
+        """
+        Id: ImageId
+        Created: CreatedAt
+
+    model_config = ConfigDict(extra="forbid")
+    version: PositiveInt
+    id: ImageId
+    created: CreatedAt
+    args: ArgsList
     containers: dict[str, Container]
 
-    @staticmethod
-    def from_json(data: dict[str, object]) -> Image:
-        """Load an Image from a dictionary of metadata representing an entry in the
-        `env.json` tag mapping.
-
-        Parameters
-        ----------
-        data : dict[str, object]
-            The raw JSON metadata.
-
-        Returns
-        -------
-        Image
-            The loaded `Image` object.
-
-        Raises
-        ------
-        ValueError
-            If the image metadata is malformed.
-        """
-        return Image(
-            version=_validate_version(data),
-            id=_validate_id(data),
-            created=_validate_created(data),
-            args=_validate_args(data),
-            containers=_validate_containers(data),
-        )
-
-    def to_json(self) -> dict[str, object]:
-        """Serialize this Image to a JSON-compatible dictionary.
-
-        Returns
-        -------
-        dict[str, object]
-            The serialized JSON metadata.
-        """
-        return {
-            "version": self.version,
-            "id": self.id,
-            "created": self.created.isoformat(),
-            "args": self.args,
-            "containers": {tag: container.to_json() for tag, container in self.containers.items()}
-        }
-
     def inspect(self) -> Image.Inspect | None:
-        """Invoke Docker to inspect this image.
+        """Invoke podman to inspect this image.
 
         Returns
         -------
         Image.Inspect | None
-            A JSON response from the Docker daemon or None if the image could not
-            be found.  Type hints are provided via the `Image.Inspect` TypedDict.
+            A JSON response from podman or None if the image could not be found.
         """
-        result = docker_cmd(["image", "inspect", self.id], check=False, capture_output=True)
+        result = podman_cmd(["image", "inspect", self.id], check=False, capture_output=True)
         if result.returncode != 0 or not result.stdout:
             return None
         data = json.loads(result.stdout)
@@ -591,7 +893,7 @@ class Image:
         container_tag : str
             The tag of the container within the image.
         container_args : list[str] | None
-            The `docker create` arguments to use for the container.  If None, the
+            The `podman create` arguments to use for the container.  If None, the
             existing arguments for the container with the given tag will be reused,
             or an empty list if no such container exists and the tag is empty.
 
@@ -609,7 +911,7 @@ class Image:
             If no previous container exists for the given tag and `container_args` is
             None.
         CommandError
-            If the `docker create` or `docker container rm` (for an outdated container)
+            If the `podman create` or `podman container rm` (for an outdated container)
             command fails.
         """
         existing = self.containers.get(container_tag)
@@ -630,7 +932,7 @@ class Image:
                 return existing
 
         # build new container
-        container = Container(
+        container = Container.model_construct(
             version=VERSION,
             id="",  # corrected after create
             created=datetime.now(timezone.utc),
@@ -644,14 +946,14 @@ class Image:
         cache_prefix = f"bertrand-{env_uuid[:13]}"
         try:
             cid_file.parent.mkdir(parents=True, exist_ok=True)
-            docker_cmd([
+            podman_cmd([
                 "create",
                 "--init",
                 f"--name={container_name}",
                 f"--hostname={container_name}",
                 "--cidfile", str(cid_file),
 
-                # labels for docker-level lookup
+                # labels for podman-level lookup
                 "--label", "BERTRAND=1",
                 "--label", f"BERTRAND_ENV={env_uuid}",
                 "--label", f"BERTRAND_IMAGE={image_tag}",
@@ -686,9 +988,9 @@ class Image:
         # remove existing container with same tag if needed
         if existing is not None:
             try:
-                docker_cmd(["container", "rm", "-f", existing.id], check=False)
+                podman_cmd(["container", "rm", "-f", existing.id], check=False)
             except CommandError as err:
-                docker_cmd(["container", "rm", "-f", container.id], check=False)
+                podman_cmd(["container", "rm", "-f", container.id], check=False)
                 raise err
         self.containers[container_tag] = container
         return container
@@ -696,8 +998,8 @@ class Image:
 
 class Environment:
     """On-disk metadata representing environment-level data structures, which map from
-    human-readable, stable tags to the corresponding Docker images and containers built
-    within this environment directory.
+    human-readable, stable tags to the corresponding images and containers built within
+    this environment directory.
 
     This class is meant to be used as a context manager, which will automatically
     acquire and release a lock on the environment directory in order to prevent
@@ -723,39 +1025,38 @@ class Environment:
     ----------
     root : Path
         An absolute root path to the environment directory.  This is not stored in the
-        on-disk JSON in order to allow relocation of the environment directory.
-    timeout : int
-        The maximum time in seconds to wait for acquiring the environment lock.  Not
-        stored in the on-disk JSON.
-    depth : int
-        The nested depth of `with` statements for this environment (0 == disengaged).
-        Not stored in the on-disk JSON.
-    version : int
-        The version number for backwards compatibility.
-    uuid : str
-        A UUID for this environment.  This is used to label all Docker images and
-        containers associated with this environment, to allow for easy lookup via the
-        Docker daemon.
-    shell : list[str]
-        The shell command to execute during `bertrand enter`.
-    code : list[str]
-        The default host command invoked by `code` within the container.
-    tags : dict[str, Environment.Tag]
-        A mapping from image tags to metadata objects representing corresponding Docker
-        images.  Each image object contains a nested mapping from container tags to
-        downstream container metadata objects.  This is the single source of truth
-        for locating images and containers within this environment, such that the
-        underlying Docker image and container IDs may change without affecting the
-        user-visible tags.
+        on-disk JSON in order to allow relocation of the environment directory..
     """
+    class JSON(BaseModel):
+        """Pydantic model representing JSON metadata for a Bertrand environment."""
+        model_config = ConfigDict(extra="forbid", validate_assignment=True)
+        version: PositiveInt
+        id: EnvironmentId
+        shell: Annotated[str, AfterValidator(_check_shell)]
+        code: Annotated[str, AfterValidator(_check_code)]
+        tags: dict[str, Image]
+
+        @model_validator(mode="after")
+        def _check_tags(self) -> Environment.JSON:
+            cleaned: dict[str, Image] = {}
+            for tag, image in self.tags.items():
+                if not isinstance(tag, str):
+                    raise ValueError(f"invalid image tag in environment metadata: {tag}")
+                tag = tag.strip()
+                sanitized = _sanitize_name(tag)
+                if tag != sanitized:
+                    raise ValueError(
+                        f"invalid characters in image tag '{tag}' (sanitizes to: '{sanitized}')"
+                    )
+                if tag in cleaned:
+                    raise ValueError(f"duplicate image tag in environment metadata: {tag}")
+                cleaned[tag] = image
+            self.tags = cleaned
+            return self
+
     root: Path
-    timeout: int
-    depth: int
-    version: int
-    uuid: str
-    shell: str
-    code: str
-    tags: dict[str, Image]
+    _json: JSON
+    _lock: LockDir
 
     def __init__(
         self,
@@ -765,132 +1066,46 @@ class Environment:
         code: Literal["vscode"] = "vscode"
     ) -> None:
         self.root = root.expanduser().resolve()
-        self.timeout = timeout
-        self.depth = 0
-        self.version = 0
-        self.uuid = ""
-        self.shell = shell
-        self.code = code
-        self.tags = {}
-
-    # TODO: this lock can be improved by reusing the LockDir class from `run`, and
-    # just manually calling its __enter__ and __exit__ methods here.
-
-    def _lock(self) -> None:
-        lock_dir = self.bertrand_dir / ".lock"
-        lock_file = lock_dir / "owner.json"
-        pid = os.getpid()
-        create_time = psutil.Process(pid).create_time()
-        start = time.time()
-        while True:
-            try:
-                lock_dir.mkdir(parents=True)
-                atomic_write_text(lock_file, json.dumps({
-                    "pid": pid,
-                    "pid_start": create_time,
-                }, indent=2) + "\n")
-                break
-            except FileExistsError as err:
-                # another process holds the lock - check if it's stale
-                now = time.time()
-                try:
-                    owner = json.loads(lock_file.read_text(encoding="utf-8"))
-                    if not isinstance(owner, dict):
-                        shutil.rmtree(lock_dir, ignore_errors=True)
-                        continue
-                except Exception:
-                    shutil.rmtree(lock_dir, ignore_errors=True)
-                    continue
-
-                # check whether owning process is still alive
-                owner_pid = owner.get("pid")
-                owner_start = owner.get("pid_start")
-                tolerance = 0.001  # tolerate floating point precision issues
-                if isinstance(owner_pid, int) and isinstance(owner_start, (int, float)) and (
-                    not psutil.pid_exists(owner_pid) or
-                    psutil.Process(owner_pid).create_time() > (owner_start + tolerance)
-                ):
-                    shutil.rmtree(lock_dir, ignore_errors=True)
-                    continue
-
-                # error on timeout
-                if (now - start) > self.timeout:
-                    detail = f"\nlock owner: {json.dumps(owner, indent=2)})" if owner else ""
-                    raise TimeoutError(
-                        f"could not acquire environment lock within {self.timeout} seconds{detail}"
-                    ) from err
-
-                # wait and retry
-                time.sleep(0.1)
-
-    def _validate_shell(self, data: dict[str, object]) -> None:
-        shell = data.get("shell")
-        if not isinstance(shell, str):
-            raise ValueError("missing required field: shell")
-        if shell not in SHELLS:
-            raise ValueError(f"unsupported shell: {shell}")
-        self.shell = shell
-
-    def _validate_code(self, data: dict[str, object]) -> None:
-        code = data.get("code")
-        if not isinstance(code, str):
-            raise ValueError("missing required field: code")
-        if code not in EDITORS:
-            raise ValueError(f"unsupported code command: {code}")
-        self.code = code
-
-    def _validate_tags(self, data: dict[str, object]) -> None:
-        tags = data.get("tags")
-        if not isinstance(tags, dict):
-            raise ValueError(f"missing or invalid 'tags' field: {tags}")
-
-        for image_tag, image_data in tags.items():
-            # validate image tag
-            if not isinstance(image_tag, str):
-                raise ValueError(f"invalid image tag in environment metadata: {image_tag}")
-            image_tag = image_tag.strip()
-            sanitized = _sanitize_name(image_tag)
-            if image_tag != sanitized:
-                raise ValueError(
-                    f"invalid characters in image tag '{image_tag}' (sanitizes to: '{sanitized}')"
-                )
-            if image_tag in self.tags:
-                raise ValueError(f"duplicate image tag in environment metadata: {image_tag}")
-
-            # load image metadata + containers
-            image = Image.from_json(image_data)
-            self.tags[image_tag] = image
+        self._json = self.JSON.model_construct(
+            version=0,
+            id="",
+            shell=shell,
+            code=code,
+            tags={}
+        )
+        self._lock = LockDir(_env_dir(self.root) / ".lock", timeout=timeout)
 
     def __enter__(self) -> Environment:
-        # allow nested context managers without deadlocking
-        self.depth += 1
-        if self.depth > 1:
-            return self
-        self._lock()
+        self._lock.__enter__()
+        if self._lock.depth > 1:
+            return self  # re-entrant case
 
         # try to load existing metadata if possible
-        env_file = self.env_file
+        env_file = _env_file(self.root)
         if env_file.exists():
             data = json.loads(env_file.read_text(encoding="utf-8"))
             if not isinstance(data, dict):
                 raise ValueError("environment metadata must be a JSON mapping")
-            self.version = _validate_version(data)
-            self.uuid = _validate_uuid(data)
-            self._validate_shell(data)
-            self._validate_code(data)
-            self._validate_tags(data)
+            try:
+                self._json = self.JSON.model_validate(data)
+            except ValidationError as err:
+                raise ValueError(f"invalid environment metadata: {err}") from err
             return self
 
         # initialize new metadata if needed
-        self.version = VERSION
-        self.uuid = uuid.uuid4().hex
-        self.tags = {}
+        self._json = self.JSON(
+            version=VERSION,
+            id=uuid.uuid4().hex,
+            shell=self._json.shell,
+            code=self._json.code,
+            tags={},
+        )
 
-        # init .dockerignore
-        docker_ignore = self.docker_ignore
-        if not docker_ignore.exists():
-            docker_ignore.parent.mkdir(parents=True, exist_ok=True)
-            atomic_write_text(docker_ignore, r"""# Bertrand internal state
+        # init .containerignore
+        container_ignore = self.container_ignore
+        if not container_ignore.exists():
+            container_ignore.parent.mkdir(parents=True, exist_ok=True)
+            atomic_write_text(container_ignore, r"""# Bertrand internal state
 .bertrand/
 **/.bertrand/
 
@@ -923,17 +1138,16 @@ out/
 .DS_Store
 """)
 
-        # init Dockerfile
-        docker_file = self.docker_file
-        if not docker_file.exists():
-            docker_file.parent.mkdir(parents=True, exist_ok=True)
-            atomic_write_text(docker_file, rf"""# syntax=docker/dockerfile:1
-
-# Bertrand requires a minimal set of arguments to be provided at compile time, which
-# are baked into its reproducible Docker images to avoid lengthy recompilation.  These
+        # init Containerfile
+        container_file = self.container_file
+        if not container_file.exists():
+            container_file.parent.mkdir(parents=True, exist_ok=True)
+            # pylint:disable=line-too-long
+            atomic_write_text(container_file, rf"""# Bertrand requires a minimal set of arguments to be provided at compile time, which
+# are baked into its reproducible images to avoid lengthy recompilation.  These
 # arguments may be overridden by passing `<arg>=<value>` options to the
 # `bertrand build`, `bertrand start`, or `bertrand enter` commands, which are then
-# forwarded to this Dockerfile.  Otherwise, the default values will be used.
+# forwarded to this Containerfile.  Otherwise, the default values will be used.
 
 # toolchain version to install (defaults to host Bertrand version)
 ARG BERTRAND={__version__}
@@ -970,20 +1184,21 @@ RUN --mount=type=cache,target={TMP}/.cache/pip,sharing=locked \
 # A `pip install .` command of that form will incrementally compile the contents of the
 # local environment directory (WORKDIR) and install them into the base image as Python
 # packages, C++ modules, and/or executable binaries on the container's PATH.  If you
-# then upload this image to a Docker repository, downstream users will be able to use
-# `FROM <your-image>` in their own Dockerfiles in order to inherit Bertrand's toolchain
-# along with your built artifacts and dependencies without needing to recompile them
-# from scratch.  This can be useful for large projects where build time is significant,
-# or which have external dependencies or build configurations that are otherwise
-# difficult to install.  Small projects without significant configuration needs are
-# encouraged to use the bundled package managers instead, and leave this file alone.
+# then upload this image to an external repository, downstream users will be able to
+# use `FROM <your-image>` in their own Containerfiles in order to inherit Bertrand's
+# toolchain along with your built artifacts and dependencies without needing to
+# recompile them from scratch.  This can be useful for large projects where build time
+# is significant, or which have external dependencies or build configurations that are
+# otherwise difficult to install.  Small projects without significant configuration
+# needs are encouraged to use the bundled package managers instead, and leave this file
+# alone.
 
 # In most cases, `pip install .` is all you need, but if you'd like to add your own
 # compilation flags or install additional system dependencies outside of
-# `pyproject.toml`, then you can do so using standard Dockerfile commands.  See the
-# official Dockerfile documentation for a comprehensive reference, and the Bertrand
+# `pyproject.toml`, then you can do so using standard Containerfile commands.  See the
+# official Containerfile documentation for a comprehensive reference, and the Bertrand
 # toolchain documentation for more details on how this fits into the overall build
-# process, as well as tips for your own Dockerfiles.
+# process, as well as tips for your own Containerfiles.
 """)
         return self
 
@@ -993,26 +1208,20 @@ RUN --mount=type=cache,target={TMP}/.cache/pip,sharing=locked \
         exc_value: BaseException | None,
         traceback: TracebackType | None
     ) -> None:
-        # allow nested context managers without deadlocking
-        self.depth -= 1
-        if self.depth > 0:
-            return
+        if self._lock.depth > 1:
+            self._lock.__exit__(exc_type, exc_value, traceback)
+            return  # re-entrant case
 
         # write changes
-        self.bertrand_dir.mkdir(parents=True, exist_ok=True)
+        _env_dir(self.root).mkdir(parents=True, exist_ok=True)
+        self._json = self.JSON.model_validate(self._json.model_dump(mode="python"))
         atomic_write_text(
-            self.env_file,
-            json.dumps({
-                "version": self.version,
-                "uuid": self.uuid,
-                "shell": self.shell,
-                "code": self.code,
-                "tags": {tag: image.to_json() for tag, image in self.tags.items()}
-            }, indent=2) + "\n"
+            _env_file(self.root),
+            json.dumps(self._json.model_dump(mode="json"), indent=2) + "\n"
         )
 
         # release lock
-        shutil.rmtree(self.bertrand_dir / ".lock", ignore_errors=True)
+        shutil.rmtree(_env_dir(self.root) / ".lock", ignore_errors=True)
 
     def __hash__(self) -> int:
         return hash(self.root)
@@ -1022,58 +1231,17 @@ RUN --mount=type=cache,target={TMP}/.cache/pip,sharing=locked \
             return NotImplemented
         return self.root == other.root
 
-    @property
-    def bertrand_dir(self) -> Path:
-        """
-        Returns
-        -------
-        Path
-            The path to the `.bertrand` directory within the environment root.
-        """
-        return _bertrand_dir(self.root)
-
-    @property
-    def env_file(self) -> Path:
-        """
-        Returns
-        -------
-        Path
-            The path to the `env.json` file which this metadata is tied to.
-        """
-        return _env_file(self.root)
-
-    @property
-    def docker_file(self) -> Path:
-        """
-        Returns
-        -------
-        Path
-            The path to the `Dockerfile` within the environment root.
-        """
-        return _docker_file(self.root)
-
-    @property
-    def docker_ignore(self) -> Path:
-        """
-        Returns
-        -------
-        Path
-            The path to the `.dockerignore` file within the environment root.
-        """
-        return self.root / ".dockerignore"
-
     @staticmethod
     def current() -> Environment | None:
-        """Detect whether the current process is running inside a Bertrand Docker
-        container.
+        """Detect whether the current process is running inside a Bertrand container.
 
         Returns
         -------
         Environment | None
             An `Environment` metadata object with the proper mount path if invoked
-            within a Bertrand Docker container, or None otherwise.  Note that the
-            result is disengaged, and must be acquired as a context manager before it
-            can be used to access or modify the environment.
+            within a Bertrand container, or None otherwise.  Note that the result is
+            disengaged, and must be acquired as a context manager before it can be
+            used to access or modify the environment.
         """
         if (
             os.environ.get("BERTRAND", "0") == "1" and
@@ -1135,6 +1303,95 @@ RUN --mount=type=cache,target={TMP}/.cache/pip,sharing=locked \
             )
         return Path(prev.strip()).expanduser().resolve(), san2, san1
 
+    @property
+    def timeout(self) -> int:
+        """
+        Returns
+        -------
+        int
+            The maximum time in seconds to wait for acquiring the environment lock.
+        """
+        return self._lock.timeout
+
+    @property
+    def version(self) -> int:
+        """
+        Returns
+        -------
+        int
+            The version number for this environment's metadata format.  This is used for
+            backwards compatibility.
+        """
+        return self._json.version
+
+    @property
+    def id(self) -> str:
+        """
+        Returns
+        -------
+        str
+            A UUID for this environment.  This is used to label all images and
+            containers associated with this environment, to allow for easy lookup.
+        """
+        return self._json.id
+
+    @property
+    def shell(self) -> tuple[str, ...]:
+        """
+        Returns
+        -------
+        tuple[str, ...]
+            The shell command to execute during `bertrand enter`, as specified in the
+            environment metadata.
+        """
+        return SHELLS[self._json.shell]
+
+    @property
+    def code(self) -> tuple[str, ...]:
+        """
+        Returns
+        -------
+        tuple[str, ...]
+            The default host command invoked by `bertrand code` while within the
+            container, as specified in the environment metadata.
+        """
+        return EDITORS[self._json.code]
+
+    @property
+    def tags(self) -> dict[str, Image]:
+        """
+        Returns
+        -------
+        dict[str, Image]
+            A mapping from image tags to metadata objects representing corresponding
+            images.  Each image object contains a nested mapping from container tags to
+            downstream container metadata objects.  This is the single source of truth
+            for locating images and containers within this environment, such that the
+            underlying image and container IDs may change without affecting the
+            user-visible tags.
+        """
+        return self._json.tags
+
+    @property
+    def container_file(self) -> Path:
+        """
+        Returns
+        -------
+        Path
+            The path to the `Containerfile` within the environment root.
+        """
+        return _container_file(self.root)
+
+    @property
+    def container_ignore(self) -> Path:
+        """
+        Returns
+        -------
+        Path
+            The path to the `.containerignore` file within the environment root.
+        """
+        return self.root / ".containerignore"
+
     @overload
     def __getitem__(self, args: tuple[str, str]) -> Container | None: ...
     @overload
@@ -1164,7 +1421,7 @@ RUN --mount=type=cache,target={TMP}/.cache/pip,sharing=locked \
         TypeError
             If the arguments are not of the expected types.
         """
-        if self.depth < 1:
+        if self._lock.depth < 1:
             raise OSError("environment must be acquired as a context manager before accessing")
         if isinstance(args, str):
             image_tag = args
@@ -1214,7 +1471,7 @@ RUN --mount=type=cache,target={TMP}/.cache/pip,sharing=locked \
         TypeError
             If `image` is None but `container` is not.
         """
-        if self.depth < 1:
+        if self._lock.depth < 1:
             raise OSError("environment must be acquired as a context manager before accessing")
 
         # list all images
@@ -1242,7 +1499,7 @@ RUN --mount=type=cache,target={TMP}/.cache/pip,sharing=locked \
         container = image.containers.get(container_tag)
         if container is None:
             return
-        docker_cmd(["container", "rm", "-f", container.id], check=False)
+        podman_cmd(["container", "rm", "-f", container.id], check=False)
         image.containers.pop(container_tag, None)
 
     def _rm_image(self, image_tag: str) -> None:
@@ -1251,7 +1508,7 @@ RUN --mount=type=cache,target={TMP}/.cache/pip,sharing=locked \
             return
 
         # remove all descendant containers
-        out = docker_cmd([
+        out = podman_cmd([
             "container",
             "ls",
             "-a",
@@ -1262,44 +1519,44 @@ RUN --mount=type=cache,target={TMP}/.cache/pip,sharing=locked \
         if out.returncode == 0:
             ids = list(out.stdout.splitlines())
             if ids:
-                docker_cmd(["container", "rm", "-f", *ids], check=False)
+                podman_cmd(["container", "rm", "-f", *ids], check=False)
 
         # remove image
-        docker_cmd(["image", "rm", "-f", image.id], check=False)
+        podman_cmd(["image", "rm", "-f", image.id], check=False)
         self.tags.pop(image_tag)
 
     def _rm_all(self) -> None:
         # remove all containers associated with this environment
-        out = docker_cmd([
+        out = podman_cmd([
             "container",
             "ls",
             "-a",
             "--no-trunc",
-            "--filter", f"label=BERTRAND_ENV={self.uuid}",
+            "--filter", f"label=BERTRAND_ENV={self.id}",
             "--format", "{{.ID}}"
         ], check=False, capture_output=True)
         if out.returncode == 0:
             ids = list(out.stdout.splitlines())
             if ids:
-                docker_cmd(["container", "rm", "-f", *ids], check=False)
+                podman_cmd(["container", "rm", "-f", *ids], check=False)
 
         # remove all images associated with this environment
-        out = docker_cmd([
+        out = podman_cmd([
             "image",
             "ls",
             "-a",
             "--no-trunc",
-            "--filter", f"label=BERTRAND_ENV={self.uuid}",
+            "--filter", f"label=BERTRAND_ENV={self.id}",
             "--format", "{{.ID}}"
         ], check=False, capture_output=True)
         if out.returncode == 0:
             ids = list(out.stdout.splitlines())
             if ids:
-                docker_cmd(["image", "rm", "-f", *ids], check=False)
+                podman_cmd(["image", "rm", "-f", *ids], check=False)
 
         # delete cache volumes
-        cache_prefix = f"bertrand-{self.uuid[:13]}"
-        out = docker_cmd([
+        cache_prefix = f"bertrand-{self.id[:13]}"
+        out = podman_cmd([
             "volume",
             "ls",
             "--filter", f"name={cache_prefix}",
@@ -1309,7 +1566,7 @@ RUN --mount=type=cache,target={TMP}/.cache/pip,sharing=locked \
             names = list(out.stdout.splitlines())
             for name in names:
                 if name.startswith(cache_prefix):
-                    docker_cmd(["volume", "rm", "-f", name], check=False)
+                    podman_cmd(["volume", "rm", "-f", name], check=False)
 
         # clear metadata
         self.tags.clear()
@@ -1335,10 +1592,10 @@ RUN --mount=type=cache,target={TMP}/.cache/pip,sharing=locked \
         TypeError
             If `image_tag` is None but `container_tag` is not.
         """
-        if self.depth < 1:
+        if self._lock.depth < 1:
             raise OSError("environment must be acquired as a context manager before accessing")
         if Environment.current() is not None:
-            raise OSError("cannot invoke Docker from within a Bertrand container")
+            raise OSError("cannot invoke podman from within a Bertrand container")
 
         # delete all images
         if image_tag is None:
@@ -1366,7 +1623,7 @@ RUN --mount=type=cache,target={TMP}/.cache/pip,sharing=locked \
             raise KeyError(f"no image found for tag: '{image_tag}'")
         return image.build(
             env_root=self.root,
-            env_uuid=self.uuid,
+            env_uuid=self.id,
             image_tag=image_tag,
             container_tag=container_tag,
             container_args=container_args
@@ -1386,30 +1643,30 @@ RUN --mount=type=cache,target={TMP}/.cache/pip,sharing=locked \
 
 
         # build new image
-        # NOTE: Docker + BuildKit will automatically reuse cached layers as long as
+        # NOTE: podman + BuildAh will automatically reuse cached layers as long as
         # none of the inputs have changed (including the contents of the environment
-        # directory, excluding patterns in .dockerignore).  Therefore, we can build
+        # directory, excluding patterns in .containerignore).  Therefore, we can build
         # unconditionally, and check whether the ID has changed afterwards to detect
         # whether a rebuild was necessary.
-        image = Image(
+        image = Image.model_construct(
             version=VERSION,
             id="",  # corrected after build
             created=datetime.now(timezone.utc),
             args=image_args,
             containers={},
         )
-        image_name = f"{_sanitize_name(self.root.name)}.{image_tag}.{self.uuid[:13]}"
+        image_name = f"{_sanitize_name(self.root.name)}.{image_tag}.{self.id[:13]}"
         iid_file = _iid_file(self.root, image_name)
         try:
             iid_file.parent.mkdir(parents=True, exist_ok=True)
-            docker_cmd([
+            podman_cmd([
                 "build",
                 *image_args,
                 "-t", image_name,
-                "-f", str(self.docker_file),
+                "-f", str(self.container_file),
                 "--iidfile", str(iid_file),
                 "--label", "BERTRAND=1",
-                "--label", f"BERTRAND_ENV={self.uuid}",
+                "--label", f"BERTRAND_ENV={self.id}",
                 "--label", f"BERTRAND_IMAGE={image_tag}",
                 str(self.root),
             ])
@@ -1424,7 +1681,7 @@ RUN --mount=type=cache,target={TMP}/.cache/pip,sharing=locked \
             for container_tag, container in existing.containers.items() if existing else []:
                 image.build(
                     env_root=self.root,
-                    env_uuid=self.uuid,
+                    env_uuid=self.id,
                     image_tag=image_tag,
                     container_tag=container_tag,
                     container_args=container.args
@@ -1432,8 +1689,8 @@ RUN --mount=type=cache,target={TMP}/.cache/pip,sharing=locked \
             self._rm_image(image_tag)
         except Exception as err:
             for container in image.containers.values():
-                docker_cmd(["container", "rm", "-f", container.id], check=False)
-            docker_cmd(["image", "rm", "-f", image.id], check=False)
+                podman_cmd(["container", "rm", "-f", container.id], check=False)
+            podman_cmd(["image", "rm", "-f", image.id], check=False)
             raise err
         self.tags[image_tag] = image
         return image
@@ -1460,8 +1717,8 @@ RUN --mount=type=cache,target={TMP}/.cache/pip,sharing=locked \
         image_tag: str | None = None,
         image_args: list[str] | None = None
     ) -> Environment | Image:
-        """Incrementally build a Docker image with the given tag and arguments, or load
-        an existing one if it is already up-to-date.
+        """Incrementally build an image with the given tag and arguments, or load an
+        existing one if it is already up-to-date.
 
         Parameters
         ----------
@@ -1472,7 +1729,7 @@ RUN --mount=type=cache,target={TMP}/.cache/pip,sharing=locked \
             If None (the default), all images in the environment will be built
             incrementally using their existing arguments.
         image_args : list[str] | None, optional
-            The `docker build` arguments to use when building the image if no existing
+            The `podman build` arguments to use when building the image if no existing
             image could be found.  If an existing image is found with the same tag, but
             different arguments, then it will be removed and rebuilt with these
             arguments.  If a non-empty list of arguments is provided, then `image_tag`
@@ -1500,13 +1757,13 @@ RUN --mount=type=cache,target={TMP}/.cache/pip,sharing=locked \
             If no existing image could be found for the given `image_tag`, and
             `image_args` is None.
         CommandError
-            If a `docker build` or `docker image inspect` command fails.
+            If a `podman build` or `podman image inspect` command fails.
         """
         # pylint: disable=missing-raises-doc
-        if self.depth < 1:
+        if self._lock.depth < 1:
             raise OSError("environment must be acquired as a context manager before accessing")
         if Environment.current() is not None:
-            raise OSError("cannot invoke Docker from within a Bertrand container")
+            raise OSError("cannot invoke podman from within a Bertrand container")
         if image_args and not image_tag:
             raise TypeError("images with non-default arguments must have a tag")
 
@@ -1576,9 +1833,8 @@ RUN --mount=type=cache,target={TMP}/.cache/pip,sharing=locked \
         container_tag: str | None = None,
         container_args: list[str] | None = None
     ) -> Environment | Image | Container:
-        """Incrementally build a Docker container with the given image, tag, and
-        arguments, or load an existing one if it is already up-to-date, and then start
-        it.
+        """Incrementally build a container with the given image, tag, and arguments, or
+        load an existing one if it is already up-to-date, and then start it.
 
         Parameters
         ----------
@@ -1595,7 +1851,7 @@ RUN --mount=type=cache,target={TMP}/.cache/pip,sharing=locked \
             associated with this tag.  If None (the default), all containers in the
             indicated image will be started.
         container_args : list[str] | None, optional
-            The `docker create` arguments to use when creating the container if no
+            The `podman create` arguments to use when creating the container if no
             existing container could be found.  If an existing container is found with
             the same tag, but different arguments, then it will be removed and rebuilt
             with these arguments.  If a non-empty list of arguments is provided, then
@@ -1626,14 +1882,14 @@ RUN --mount=type=cache,target={TMP}/.cache/pip,sharing=locked \
             is provided and `container_args` is None, but the container could not be
             found.
         CommandError
-            If a `docker build`, `docker image inspect`, `docker create`,
-            `docker container inspect`, or `docker start` command fails.
+            If a `podman build`, `podman image inspect`, `podman create`,
+            `podman container inspect`, or `podman start` command fails.
         """
         # pylint: disable=missing-raises-doc
-        if self.depth < 1:
+        if self._lock.depth < 1:
             raise OSError("environment must be acquired as a context manager before accessing")
         if Environment.current() is not None:
-            raise OSError("cannot invoke Docker from within a Bertrand container")
+            raise OSError("cannot invoke podman from within a Bertrand container")
         if container_args and not container_tag:
             raise TypeError("containers with non-default arguments must have a tag")
 
@@ -1659,7 +1915,7 @@ RUN --mount=type=cache,target={TMP}/.cache/pip,sharing=locked \
         container_args: list[str] | None = None
     ) -> Container:
         """Replace the current process with an interactive shell inside the specified
-        Docker container, starting or rebuilding it as necessary.
+        container, starting or rebuilding it as necessary.
 
         Parameters
         ----------
@@ -1675,7 +1931,7 @@ RUN --mount=type=cache,target={TMP}/.cache/pip,sharing=locked \
             associated with this tag.  If a non-empty tag is provided, then
             `container_args` must also be non-empty.
         container_args : list[str] | None, optional
-            The `docker create` arguments to use when creating the container if no
+            The `podman create` arguments to use when creating the container if no
             existing container could be found.  If an existing container is found with
             the same tag, but different arguments, then it will be removed and rebuilt
             with these arguments.  If a non-empty list of arguments is provided, then
@@ -1698,8 +1954,8 @@ RUN --mount=type=cache,target={TMP}/.cache/pip,sharing=locked \
             method is invoked from within a Bertrand container, or if non-empty
             `container_args` are provided with an empty `container_tag`, or vice versa.
         CommandError
-            If a `docker build`, `docker image inspect`, `docker create`,
-            `docker container inspect`, or `docker exec` command fails.
+            If a `podman build`, `podman image inspect`, `podman create`,
+            `podman container inspect`, or `podman exec` command fails.
         """
         # start or rebuild the container, then replace current process with an inner shell
         container = self.start(image_tag, container_tag, container_args)
@@ -1714,12 +1970,12 @@ RUN --mount=type=cache,target={TMP}/.cache/pip,sharing=locked \
             )
 
         # launch interactive shell
-        docker_exec([
+        podman_exec([
             "exec",
             "-it",
             "-w", MOUNT,
             container.id,
-            *SHELLS[self.shell]
+            *self.shell
         ])
         return container
 
@@ -1753,7 +2009,7 @@ RUN --mount=type=cache,target={TMP}/.cache/pip,sharing=locked \
             )
 
         # run the command within the container context
-        docker_cmd([
+        podman_cmd([
             "exec",
             *self._run_interactive(),
             "-w", MOUNT,
@@ -1785,7 +2041,7 @@ RUN --mount=type=cache,target={TMP}/.cache/pip,sharing=locked \
                 )
 
             # run the command within the container context
-            docker_cmd([
+            podman_cmd([
                 "exec",
                 *self._run_interactive(),
                 "-w", MOUNT,
@@ -1827,8 +2083,8 @@ RUN --mount=type=cache,target={TMP}/.cache/pip,sharing=locked \
         container_tag: str | None = None,
         argv: list[str] | None = None
     ) -> Environment | Image | Container:
-        """Invoke a Docker container's entry point, starting or rebuilding it as
-        necessary, and passing along any additional arguments.
+        """Invoke a container's entry point, starting or rebuilding it as necessary,
+        and passing along any additional arguments.
 
         Parameters
         ----------
@@ -1868,14 +2124,14 @@ RUN --mount=type=cache,target={TMP}/.cache/pip,sharing=locked \
         KeyError
             If an image or container tag is provided but could not be found.
         CommandError
-            If a `docker build`, `docker image inspect`, `docker create`,
-            `docker container inspect`, or `docker exec` command fails, or if the
+            If a `podman build`, `podman image inspect`, `podman create`,
+            `podman container inspect`, or `podman exec` command fails, or if the
             container does not have a valid entry point.
         """
-        if self.depth < 1:
+        if self._lock.depth < 1:
             raise OSError("environment must be acquired as a context manager before accessing")
         if Environment.current() is not None:
-            raise OSError("cannot invoke Docker from within a Bertrand container")
+            raise OSError("cannot invoke podman from within a Bertrand container")
         if argv is None:
             argv = []
 
@@ -1929,10 +2185,10 @@ RUN --mount=type=cache,target={TMP}/.cache/pip,sharing=locked \
         TypeError
             If `image_tag` is None but `container_tag` is not.
         """
-        if self.depth < 1:
+        if self._lock.depth < 1:
             raise OSError("environment must be acquired as a context manager before accessing")
         if Environment.current() is not None:
-            raise OSError("cannot invoke Docker from within a Bertrand container")
+            raise OSError("cannot invoke podman from within a Bertrand container")
 
         # stop all containers in the environment
         if image_tag is None:
@@ -2008,10 +2264,10 @@ RUN --mount=type=cache,target={TMP}/.cache/pip,sharing=locked \
         TypeError
             If `image_tag` is None but `container_tag` is not.
         """
-        if self.depth < 1:
+        if self._lock.depth < 1:
             raise OSError("environment must be acquired as a context manager before accessing")
         if Environment.current() is not None:
-            raise OSError("cannot invoke Docker from within a Bertrand container")
+            raise OSError("cannot invoke podman from within a Bertrand container")
 
         # pause all containers in the environment
         if image_tag is None:
@@ -2087,10 +2343,10 @@ RUN --mount=type=cache,target={TMP}/.cache/pip,sharing=locked \
         TypeError
             If `image_tag` is None but `container_tag` is not.
         """
-        if self.depth < 1:
+        if self._lock.depth < 1:
             raise OSError("environment must be acquired as a context manager before accessing")
         if Environment.current() is not None:
-            raise OSError("cannot invoke Docker from within a Bertrand container")
+            raise OSError("cannot invoke podman from within a Bertrand container")
 
         # resume all paused containers in the environment
         if image_tag is None:
@@ -2184,10 +2440,10 @@ RUN --mount=type=cache,target={TMP}/.cache/pip,sharing=locked \
         TypeError
             If `image_tag` is None but `container_tag` is not.
         """
-        if self.depth < 1:
+        if self._lock.depth < 1:
             raise OSError("environment must be acquired as a context manager before accessing")
         if Environment.current() is not None:
-            raise OSError("cannot invoke Docker from within a Bertrand container")
+            raise OSError("cannot invoke podman from within a Bertrand container")
 
         # prune all images
         if image_tag is None:
@@ -2316,10 +2572,10 @@ RUN --mount=type=cache,target={TMP}/.cache/pip,sharing=locked \
         KeyError
             If an image or container tag is provided but could not be found.
         """
-        if self.depth < 1:
+        if self._lock.depth < 1:
             raise OSError("environment must be acquired as a context manager before accessing")
         if Environment.current() is not None:
-            raise OSError("cannot invoke Docker from within a Bertrand container")
+            raise OSError("cannot invoke podman from within a Bertrand container")
 
         # restart all containers in the environment
         if image_tag is None:
@@ -2335,7 +2591,7 @@ RUN --mount=type=cache,target={TMP}/.cache/pip,sharing=locked \
         return self._restart_container(image_tag, container_tag)
 
     class Info(TypedDict):
-        """Type hint for the json output of `docker container ls`."""
+        """Type hint for the json output of `podman container ls`."""
         ID: str
         Names: str
         Image: str
@@ -2354,7 +2610,7 @@ RUN --mount=type=cache,target={TMP}/.cache/pip,sharing=locked \
         if parse:
             cmd.append("--no-trunc")
             cmd.append("--format=json")
-            result = docker_cmd(cmd, capture_output=True)
+            result = podman_cmd(cmd, capture_output=True)
             out = json.loads(result.stdout)
             if not isinstance(out, list):
                 out = [out]
@@ -2364,7 +2620,7 @@ RUN --mount=type=cache,target={TMP}/.cache/pip,sharing=locked \
             "--format=table {{.Names}}\t{{.CreatedAt}}\t{{.State}}\t{{.Command}}\t"
             "{{.RunningFor}}\t{{.Status}}\t{{.Size}}\t{{.Ports}}"
         )
-        docker_cmd(cmd)
+        podman_cmd(cmd)
         return None
 
     @overload
@@ -2420,17 +2676,17 @@ RUN --mount=type=cache,target={TMP}/.cache/pip,sharing=locked \
         TypeError
             If `image_tag` is None but `container_tag` is not.
         """
-        if self.depth < 1:
+        if self._lock.depth < 1:
             raise OSError("environment must be acquired as a context manager before accessing")
         if Environment.current() is not None:
-            raise OSError("cannot invoke Docker from within a Bertrand container")
+            raise OSError("cannot invoke podman from within a Bertrand container")
 
         cmd = [
             "container",
             "ls",
             "--all",
             "--size",
-            "--filter", f"label=BERTRAND_ENV={self.uuid}",
+            "--filter", f"label=BERTRAND_ENV={self.id}",
         ]
 
         # gather info for all containers in the environment
@@ -2451,7 +2707,7 @@ RUN --mount=type=cache,target={TMP}/.cache/pip,sharing=locked \
         return self._info(cmd, parse=parse)
 
     class Stats(TypedDict):
-        """Type hint for the json output of `docker stats`."""
+        """Type hint for the json output of `podman stats`."""
         Container: str
         ID: str
         Name: str
@@ -2477,7 +2733,7 @@ RUN --mount=type=cache,target={TMP}/.cache/pip,sharing=locked \
             cmd.append("--no-trunc")
             cmd.append("--format=json")
             cmd.extend(ids)
-            result = docker_cmd(cmd, capture_output=True)
+            result = podman_cmd(cmd, capture_output=True)
             out = json.loads(result.stdout)
             if not isinstance(out, list):
                 return [out]
@@ -2494,7 +2750,7 @@ RUN --mount=type=cache,target={TMP}/.cache/pip,sharing=locked \
                 "{{.NetIO}}\t{{.BlockIO}}\t{{.PIDs}}"
             )
         cmd.extend(ids)
-        docker_cmd(cmd)
+        podman_cmd(cmd)
         return None
 
     @overload
@@ -2559,10 +2815,10 @@ RUN --mount=type=cache,target={TMP}/.cache/pip,sharing=locked \
             If `image_tag` is None but `container_tag` is not, or if both `parse` and
             `stream` are True.
         """
-        if self.depth < 1:
+        if self._lock.depth < 1:
             raise OSError("environment must be acquired as a context manager before accessing")
         if Environment.current() is not None:
-            raise OSError("cannot invoke Docker from within a Bertrand container")
+            raise OSError("cannot invoke podman from within a Bertrand container")
         if parse and stream:
             raise TypeError("cannot stream output in json format")
 
@@ -2570,25 +2826,25 @@ RUN --mount=type=cache,target={TMP}/.cache/pip,sharing=locked \
             "container",
             "ls",
             "--format", "{{.ID}}",
-            "--filter", f"label=BERTRAND_ENV={self.uuid}",
+            "--filter", f"label=BERTRAND_ENV={self.id}",
         ]
 
         # gather stats for all containers in the environment
         if image_tag is None:
             if container_tag is not None:
                 raise TypeError("cannot specify a container when listing all images")
-            ids = docker_cmd(search, capture_output=True)
+            ids = podman_cmd(search, capture_output=True)
             return self._stats(ids.stdout.strip().splitlines(), parse=parse, stream=stream)
 
         # gather stats for all containers in an image
         search.append(f"--filter=label=BERTRAND_IMAGE={image_tag}")
         if container_tag is None:
-            ids = docker_cmd(search, capture_output=True)
+            ids = podman_cmd(search, capture_output=True)
             return self._stats(ids.stdout.strip().splitlines(), parse=parse, stream=stream)
 
         # gather stats for a specific container in an image
         search.append(f"--filter=label=BERTRAND_CONTAINER={container_tag}")
-        ids = docker_cmd(search, capture_output=True)
+        ids = podman_cmd(search, capture_output=True)
         return self._stats(ids.stdout.strip().splitlines(), parse=parse, stream=stream)
 
     def top(self, image_tag: str, container_tag: str) -> None:
@@ -2610,10 +2866,10 @@ RUN --mount=type=cache,target={TMP}/.cache/pip,sharing=locked \
         KeyError
             If the specified image or container tag could not be found.
         """
-        if self.depth < 1:
+        if self._lock.depth < 1:
             raise OSError("environment must be acquired as a context manager before accessing")
         if Environment.current() is not None:
-            raise OSError("cannot invoke Docker from within a Bertrand container")
+            raise OSError("cannot invoke podman from within a Bertrand container")
 
         image = self.tags.get(image_tag)
         if image is None:
@@ -2621,10 +2877,10 @@ RUN --mount=type=cache,target={TMP}/.cache/pip,sharing=locked \
         container = image.containers.get(container_tag)
         if container is None:
             raise KeyError(f"no container found for tag: '{container_tag}'")
-        docker_cmd(["container", "top", f"{container.id}"])
+        podman_cmd(["container", "top", f"{container.id}"])
 
 
-def ls() -> list[str]:
+def ls_global() -> list[str]:
     """Return a list of paths to all Bertrand environments on the system.
 
     Returns
@@ -2638,10 +2894,10 @@ def ls() -> list[str]:
         If this function is invoked from within a Bertrand container.
     """
     if Environment.current() is not None:
-        raise OSError("cannot invoke Docker from within a Bertrand container")
+        raise OSError("cannot invoke podman from within a Bertrand container")
 
     # find all Bertrand containers on the system
-    out = list(docker_cmd([
+    out = list(podman_cmd([
         "container",
         "ls",
         "--all",
@@ -2653,7 +2909,7 @@ def ls() -> list[str]:
         return []
 
     # inspect all containers to find their mount points
-    inspects = json.loads(docker_cmd(["container", "inspect", *out], capture_output=True).stdout)
+    inspects = json.loads(podman_cmd(["container", "inspect", *out], capture_output=True).stdout)
     assert isinstance(inspects, list)
     seen: set[Path] = set()
     result: list[str] = []
@@ -2666,7 +2922,7 @@ def ls() -> list[str]:
     return result
 
 
-def rm(*, assume_yes: bool = False) -> None:
+def rm_global(*, assume_yes: bool = False) -> None:
     """Delete all Bertrand environments on the system.
 
     Parameters
@@ -2681,7 +2937,7 @@ def rm(*, assume_yes: bool = False) -> None:
         If this function is invoked from within a Bertrand container.
     """
     if Environment.current() is not None:
-        raise OSError("cannot invoke Docker from within a Bertrand container")
+        raise OSError("cannot invoke podman from within a Bertrand container")
 
     if confirm(
         "This will delete all Bertrand environments, images, and containers on this "
@@ -2689,7 +2945,7 @@ def rm(*, assume_yes: bool = False) -> None:
         "Are you sure you want to continue? [y/N]: ",
         assume_yes=assume_yes
     ):
-        for env_path in ls():
+        for env_path in ls_global():
             try:
                 with Environment(Path(env_path)) as env:
                     env.rm()
@@ -2697,7 +2953,7 @@ def rm(*, assume_yes: bool = False) -> None:
                 pass
 
 
-def build(*, assume_yes: bool = False) -> None:
+def build_global(*, assume_yes: bool = False) -> None:
     """Build all Bertrand environments on the system.
 
     Parameters
@@ -2712,7 +2968,7 @@ def build(*, assume_yes: bool = False) -> None:
         If this function is invoked from within a Bertrand container.
     """
     if Environment.current() is not None:
-        raise OSError("cannot invoke Docker from within a Bertrand container")
+        raise OSError("cannot invoke podman from within a Bertrand container")
 
     if confirm(
         "This will build all Bertrand environments on this system.  This may take "
@@ -2720,7 +2976,7 @@ def build(*, assume_yes: bool = False) -> None:
         "Are you sure you want to continue? [y/N]: ",
         assume_yes=assume_yes
     ):
-        for env_path in ls():
+        for env_path in ls_global():
             try:
                 with Environment(Path(env_path)) as env:
                     env.build()
@@ -2728,7 +2984,7 @@ def build(*, assume_yes: bool = False) -> None:
                 pass
 
 
-def start(*, assume_yes: bool = False) -> None:
+def start_global(*, assume_yes: bool = False) -> None:
     """Start all stopped Bertrand containers on the system.
 
     Parameters
@@ -2743,14 +2999,14 @@ def start(*, assume_yes: bool = False) -> None:
         If this function is invoked from within a Bertrand container.
     """
     if Environment.current() is not None:
-        raise OSError("cannot invoke Docker from within a Bertrand container")
+        raise OSError("cannot invoke podman from within a Bertrand container")
 
     if confirm(
         "This will start all stopped Bertrand containers on this system.\n"
         "Are you sure you want to continue? [y/N]: ",
         assume_yes=assume_yes
     ):
-        for env_path in ls():
+        for env_path in ls_global():
             try:
                 with Environment(Path(env_path)) as env:
                     env.start()
@@ -2758,7 +3014,7 @@ def start(*, assume_yes: bool = False) -> None:
                 pass
 
 
-def run(argv: list[str] | None = None, *, assume_yes: bool = False) -> None:
+def run_global(argv: list[str] | None = None, *, assume_yes: bool = False) -> None:
     """Run all stopped Bertrand containers on the system.
 
     Parameters
@@ -2777,14 +3033,14 @@ def run(argv: list[str] | None = None, *, assume_yes: bool = False) -> None:
         If this function is invoked from within a Bertrand container.
     """
     if Environment.current() is not None:
-        raise OSError("cannot invoke Docker from within a Bertrand container")
+        raise OSError("cannot invoke podman from within a Bertrand container")
 
     if confirm(
         "This will run all Bertrand containers on this system.\n"
         "Are you sure you want to continue? [y/N]: ",
         assume_yes=assume_yes
     ):
-        for env_path in ls():
+        for env_path in ls_global():
             try:
                 with Environment(Path(env_path)) as env:
                     env.run(argv=argv)
@@ -2792,7 +3048,7 @@ def run(argv: list[str] | None = None, *, assume_yes: bool = False) -> None:
                 pass
 
 
-def stop(*, assume_yes: bool = False) -> None:
+def stop_global(*, assume_yes: bool = False) -> None:
     """Stop all running Bertrand containers on the system.
 
     Parameters
@@ -2807,14 +3063,14 @@ def stop(*, assume_yes: bool = False) -> None:
         If this function is invoked from within a Bertrand container.
     """
     if Environment.current() is not None:
-        raise OSError("cannot invoke Docker from within a Bertrand container")
+        raise OSError("cannot invoke podman from within a Bertrand container")
 
     if confirm(
         "This will stop all running Bertrand containers on this system.\n"
         "Are you sure you want to continue? [y/N]: ",
         assume_yes=assume_yes
     ):
-        for env_path in ls():
+        for env_path in ls_global():
             try:
                 with Environment(Path(env_path)) as env:
                     env.stop()
@@ -2822,7 +3078,7 @@ def stop(*, assume_yes: bool = False) -> None:
                 pass
 
 
-def pause(*, assume_yes: bool = False) -> None:
+def pause_global(*, assume_yes: bool = False) -> None:
     """Pause all running Bertrand containers on the system.
 
     Parameters
@@ -2837,14 +3093,14 @@ def pause(*, assume_yes: bool = False) -> None:
         If this function is invoked from within a Bertrand container.
     """
     if Environment.current() is not None:
-        raise OSError("cannot invoke Docker from within a Bertrand container")
+        raise OSError("cannot invoke podman from within a Bertrand container")
 
     if confirm(
         "This will pause all running Bertrand containers on this system.\n"
         "Are you sure you want to continue? [y/N]: ",
         assume_yes=assume_yes
     ):
-        for env_path in ls():
+        for env_path in ls_global():
             try:
                 with Environment(Path(env_path)) as env:
                     env.pause()
@@ -2852,7 +3108,7 @@ def pause(*, assume_yes: bool = False) -> None:
                 pass
 
 
-def resume(*, assume_yes: bool = False) -> None:
+def resume_global(*, assume_yes: bool = False) -> None:
     """Resume all paused Bertrand containers on the system.
 
     Parameters
@@ -2867,14 +3123,14 @@ def resume(*, assume_yes: bool = False) -> None:
         If this function is invoked from within a Bertrand container.
     """
     if Environment.current() is not None:
-        raise OSError("cannot invoke Docker from within a Bertrand container")
+        raise OSError("cannot invoke podman from within a Bertrand container")
 
     if confirm(
         "This will resume all paused Bertrand containers on this system.\n"
         "Are you sure you want to continue? [y/N]: ",
         assume_yes=assume_yes
     ):
-        for env_path in ls():
+        for env_path in ls_global():
             try:
                 with Environment(Path(env_path)) as env:
                     env.resume()
@@ -2882,7 +3138,7 @@ def resume(*, assume_yes: bool = False) -> None:
                 pass
 
 
-def prune() -> None:
+def prune_global() -> None:
     """Delete all stale Bertrand images and containers on the system.
 
     Raises
@@ -2891,9 +3147,9 @@ def prune() -> None:
         If this function is invoked from within a Bertrand container.
     """
     if Environment.current() is not None:
-        raise OSError("cannot invoke Docker from within a Bertrand container")
+        raise OSError("cannot invoke podman from within a Bertrand container")
 
-    for env_path in ls():
+    for env_path in ls_global():
         try:
             with Environment(Path(env_path)) as env:
                 env.prune()
@@ -2901,7 +3157,7 @@ def prune() -> None:
             pass
 
 
-def restart(*, assume_yes: bool = False) -> None:
+def restart_global(*, assume_yes: bool = False) -> None:
     """Restart all running Bertrand containers on the system.
 
     Parameters
@@ -2916,14 +3172,14 @@ def restart(*, assume_yes: bool = False) -> None:
         If this function is invoked from within a Bertrand container.
     """
     if Environment.current() is not None:
-        raise OSError("cannot invoke Docker from within a Bertrand container")
+        raise OSError("cannot invoke podman from within a Bertrand container")
 
     if confirm(
         "This will restart all running Bertrand containers on this system.\n"
         "Are you sure you want to continue? [y/N]: ",
         assume_yes=assume_yes
     ):
-        for env_path in ls():
+        for env_path in ls_global():
             try:
                 with Environment(Path(env_path)) as env:
                     env.restart()
@@ -2932,10 +3188,10 @@ def restart(*, assume_yes: bool = False) -> None:
 
 
 @overload
-def info(*, parse: Literal[True] = ...) -> list[Environment.Info]: ...
+def info_global(*, parse: Literal[True] = ...) -> list[Environment.Info]: ...
 @overload
-def info(*, parse: Literal[False]) -> None: ...
-def info(*, parse: bool = True) -> list[Environment.Info] | None:
+def info_global(*, parse: Literal[False]) -> None: ...
+def info_global(*, parse: bool = True) -> list[Environment.Info] | None:
     """Gather status information for all containers in all Bertrand environments
     on the system.
 
@@ -2959,7 +3215,7 @@ def info(*, parse: bool = True) -> list[Environment.Info] | None:
         If this function is invoked from within a Bertrand container.
     """
     if Environment.current() is not None:
-        raise OSError("cannot invoke Docker from within a Bertrand container")
+        raise OSError("cannot invoke podman from within a Bertrand container")
 
     cmd = [
         "container",
@@ -2972,7 +3228,7 @@ def info(*, parse: bool = True) -> list[Environment.Info] | None:
     if parse:
         cmd.append("--no-trunc")
         cmd.append("--format=json")
-        result = docker_cmd(cmd, capture_output=True)
+        result = podman_cmd(cmd, capture_output=True)
         out = json.loads(result.stdout)
         if not isinstance(out, list):
             out = [out]
@@ -2982,15 +3238,15 @@ def info(*, parse: bool = True) -> list[Environment.Info] | None:
         "--format=table {{.Names}}\t{{.CreatedAt}}\t{{.State}}\t{{.Command}}\t"
         "{{.RunningFor}}\t{{.Status}}\t{{.Size}}\t{{.Ports}}"
     )
-    docker_cmd(cmd)
+    podman_cmd(cmd)
     return None
 
 
 @overload
-def stats(*, parse: Literal[True] = ..., stream: bool = ...) -> list[Environment.Stats]: ...
+def stats_global(*, parse: Literal[True] = ..., stream: bool = ...) -> list[Environment.Stats]: ...
 @overload
-def stats(*, parse: Literal[False], stream: bool = ...) -> None: ...
-def stats(*, parse: bool = True, stream: bool = False) -> list[Environment.Stats] | None:
+def stats_global(*, parse: Literal[False], stream: bool = ...) -> None: ...
+def stats_global(*, parse: bool = True, stream: bool = False) -> list[Environment.Stats] | None:
     """Gather resource utilization statistics for all containers in all Bertrand
     environments on the system.
 
@@ -3019,7 +3275,7 @@ def stats(*, parse: bool = True, stream: bool = False) -> list[Environment.Stats
         If both `parse` and `stream` are True.
     """
     if Environment.current() is not None:
-        raise OSError("cannot invoke Docker from within a Bertrand container")
+        raise OSError("cannot invoke podman from within a Bertrand container")
     if parse and stream:
         raise TypeError("cannot stream output in json format")
 
@@ -3034,7 +3290,7 @@ def stats(*, parse: bool = True, stream: bool = False) -> list[Environment.Stats
 
     if parse:
         cmd.append("--format=json")
-        result = docker_cmd(cmd, capture_output=True)
+        result = podman_cmd(cmd, capture_output=True)
         out = json.loads(result.stdout)
         if not isinstance(out, list):
             return [out]
@@ -3050,5 +3306,5 @@ def stats(*, parse: bool = True, stream: bool = False) -> list[Environment.Stats
             "--format=table {{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.MemPerc}}\t"
             "{{.NetIO}}\t{{.BlockIO}}\t{{.PIDs}}"
         )
-    docker_cmd(cmd)
+    podman_cmd(cmd)
     return None
