@@ -28,6 +28,7 @@ from typing import (
     Literal,
     Protocol,
     TypeAlias,
+    TypeVar,
     overload,
 )
 
@@ -66,12 +67,7 @@ JSONView: TypeAlias = (
 )
 
 
-class _HasQualName(Protocol):
-    __module__: QualName
-    __qualname__: QualName
-
-
-def _qualname(x: _HasQualName) -> str:
+def _qualname(x: Any) -> str:
     return f"{x.__module__}.{x.__qualname__}"
 
 
@@ -81,7 +77,7 @@ class Atomic(Protocol):
     decorator on any class implementing this protocol.
     """
 
-    def apply(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+    def do(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
         """Apply the operation within an in-progress `Pipeline` step and record a
         payload describing any state needed to undo the operation.
 
@@ -93,7 +89,7 @@ class Atomic(Protocol):
         payload : dict[str, JSONValue]
             A mutable dictionary that can be populated with any JSON-serializable state
             needed to undo the operation later.  This is appended to the step's list of
-            operations before `apply()` is called, so it can be modified in-place and
+            operations before `do()` is called, so it can be modified in-place and
             `ctx.dump()` can be called to persist it to the journal within the
             operation itself, for additional crash safety.
         """
@@ -101,7 +97,7 @@ class Atomic(Protocol):
     @staticmethod
     def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
         """Undo the operation within the given `Pipeline`, using the payload populated
-        by the original `apply()` call.
+        by the original `do()` call.
 
         Parameters
         ----------
@@ -109,7 +105,7 @@ class Atomic(Protocol):
             The current pipeline step.  Indexing the step like a dictionary will yield
             any facts that have been recorded so far, which are immutable.
         payload : dict[str, JSONValue]
-            The payload populated by the original `apply()` call.
+            The payload populated by the original `do()` call.
         """
 
 
@@ -138,7 +134,6 @@ def atomic(t: type[Atomic]) -> type[Atomic]:
         raise TypeError(f"Atomic operation must have a unique class name: {kind}")
     ATOMIC_UNDO[kind] = t.undo
     return t
-
 
 @dataclass
 class Pipeline:
@@ -186,8 +181,6 @@ class Pipeline:
     """
     class Function(Protocol):
         """A type hint for a function that can be decorated as a pipeline step."""
-        __module__: str
-        __qualname__: str
         def __call__(self, ctx: Pipeline.InProgress) -> None: ...
 
     @dataclass(frozen=True)
@@ -600,15 +593,17 @@ class Pipeline:
         finally:
             self._lock.__exit__(exc_type, exc_value, traceback)
 
+    T = TypeVar("T", bound=Pipeline.Function)
+
     @overload
     def __call__(
         self,
-        func: Pipeline.Function,
+        func: T,
         *,
         requires: Iterable[Pipeline.Function] | None = ...,
         enable: bool = ...,
         ephemeral: bool = ...,
-    ) -> Pipeline.Function: ...
+    ) -> T: ...
     @overload
     def __call__(
         self,
@@ -617,15 +612,15 @@ class Pipeline:
         requires: Iterable[Pipeline.Function] | None = ...,
         enable: bool = ...,
         ephemeral: bool = ...,
-    ) -> Callable[[Pipeline.Function], Pipeline.Function]: ...
+    ) -> Callable[[T], T]: ...
     def __call__(
         self,
-        func: Pipeline.Function | None = None,
+        func: T | None = None,
         *,
         requires: Iterable[Pipeline.Function] | None = None,
         enable: bool = True,
-        ephemeral: bool = True,
-    ) -> Pipeline.Function | Callable[[Pipeline.Function], Pipeline.Function]:
+        ephemeral: bool = False,
+    ) -> T | Callable[[T], T]:
         """Register a step function with the given dependencies.
 
         Parameters
@@ -640,7 +635,7 @@ class Pipeline:
             be registered, and the pipeline will be unchanged.  Default is True.
         ephemeral : bool, optional
             Whether this step's effects should be persisted between runs (False) or
-            rolled back successful completion (True).  Default is True.  If any
+            rolled back successful completion (True).  Default is False.  If any
             persistent step depends on an ephemeral one, an error will be raised during
             registration.
 
@@ -668,7 +663,7 @@ class Pipeline:
         if not enable:  # no-op
             return func if func is not None else lambda func: func
 
-        def _decorator(func: Pipeline.Function) -> Pipeline.Function:
+        def _decorator(func: Pipeline.T) -> Pipeline.T:
             name = _qualname(func)
             if name in self._lookup:
                 raise TypeError(f"Pipeline step function must be unique: '{name}'")
@@ -1081,7 +1076,7 @@ class Pipeline:
             rec = Pipeline.OpRecord(kind=_qualname(type(op)), undo=undo)
             self.record.ops.append(rec)
             self.dump()
-            op.apply(self, rec.payload)
+            op.do(self, rec.payload)
             self.dump()
 
         def dump(self) -> None:
@@ -1201,7 +1196,7 @@ class Pipeline:
                 self.record.ended_at = datetime.now(timezone.utc)
             self.pipeline._dump()
 
-    def run(self, **kwargs: Any) -> dict[str, JSONView]:
+    def do(self, **kwargs: Any) -> dict[str, JSONView]:
         """Run the pipeline with the given keyword arguments.
 
         Parameters
@@ -1369,18 +1364,21 @@ class Pipeline:
 JournalAdapter = TypeAdapter(list[Pipeline.StepRecord])
 
 
-on_init = Pipeline(state_dir=STATE_DIR / "init")
-on_build = Pipeline(state_dir=STATE_DIR / "build")
-on_start = Pipeline(state_dir=STATE_DIR / "start")
-on_enter = Pipeline(state_dir=STATE_DIR / "enter")
-on_stop = Pipeline(state_dir=STATE_DIR / "stop")
-on_pause = Pipeline(state_dir=STATE_DIR / "pause")
-on_resume = Pipeline(state_dir=STATE_DIR / "resume")
-on_restart = Pipeline(state_dir=STATE_DIR / "restart")
-on_ls = Pipeline(state_dir=STATE_DIR / "ls")
-on_rm = Pipeline(state_dir=STATE_DIR / "rm")
-on_top = Pipeline(state_dir=STATE_DIR / "top")
-on_stats = Pipeline(state_dir=STATE_DIR / "stats")
-on_import = Pipeline(state_dir=STATE_DIR / "import")
-on_export = Pipeline(state_dir=STATE_DIR / "export")
-on_publish = Pipeline(state_dir=STATE_DIR / "publish")
+on_init = Pipeline(state_dir=STATE_DIR / "init", keep=5)
+on_build = Pipeline(state_dir=STATE_DIR / "build", keep=5)
+on_start = Pipeline(state_dir=STATE_DIR / "start", keep=5)
+on_enter = Pipeline(state_dir=STATE_DIR / "enter", keep=5)
+on_run = Pipeline(state_dir=STATE_DIR / "run", keep=5)
+on_stop = Pipeline(state_dir=STATE_DIR / "stop", keep=5)
+on_pause = Pipeline(state_dir=STATE_DIR / "pause", keep=5)
+on_resume = Pipeline(state_dir=STATE_DIR / "resume", keep=5)
+on_restart = Pipeline(state_dir=STATE_DIR / "restart", keep=5)
+on_prune = Pipeline(state_dir=STATE_DIR / "prune", keep=5)
+on_ls = Pipeline(state_dir=STATE_DIR / "ls", keep=5)
+on_rm = Pipeline(state_dir=STATE_DIR / "rm", keep=5)
+on_info = Pipeline(state_dir=STATE_DIR / "info", keep=5)
+on_stats = Pipeline(state_dir=STATE_DIR / "stats", keep=5)
+on_top = Pipeline(state_dir=STATE_DIR / "top", keep=5)
+on_import = Pipeline(state_dir=STATE_DIR / "import", keep=5)
+on_export = Pipeline(state_dir=STATE_DIR / "export", keep=5)
+on_publish = Pipeline(state_dir=STATE_DIR / "publish", keep=5)

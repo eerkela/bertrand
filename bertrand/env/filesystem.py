@@ -119,7 +119,7 @@ def _stash_existing(
     if _exists(path):
         existing: dict[str, JSONValue] = {}
         payload["existing"] = existing
-        Stash(path).apply(ctx, existing)
+        Stash(path).do(ctx, existing)
 
 
 def _unstash_existing(
@@ -191,7 +191,7 @@ class Remove:
     """
     path: Path
 
-    def apply(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+    def do(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
         src = self.path.absolute()
         if not _exists(src):
             return
@@ -219,7 +219,7 @@ class Stash:
     """
     path: Path
 
-    def apply(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+    def do(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
         src = self.path.absolute()
         if not _exists(src):
             return
@@ -243,7 +243,7 @@ class Stash:
         src_str = payload.get("source")
         dst_str = payload.get("stashed_at")
         if not isinstance(src_str, str) or not isinstance(dst_str, str):
-            return  # apply() never got far enough to matter
+            return  # do() never got far enough to matter
 
         # if dst is missing, there's nothing to do.  If both are missing, then some
         # kind of corruption has occurred, but we can't do anything about it here.
@@ -293,7 +293,7 @@ class Mkdir:
     private: bool = False
     rmtree: bool = False
 
-    def apply(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+    def do(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
         path = self.path.absolute()
         created = True
         if self.replace:
@@ -396,7 +396,7 @@ class WriteBytes:
     replace: bool = False
     private: bool = False
 
-    def apply(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+    def do(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
         path = self.path.absolute()
         if self.replace:
             _stash_existing(ctx, payload, path)
@@ -469,7 +469,7 @@ class WriteText:
     replace: bool = False
     private: bool = False
 
-    def apply(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+    def do(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
         """Write the text to the file, moving any conflicting file to a stash location.
 
         Parameters
@@ -486,7 +486,7 @@ class WriteText:
             data=self.text.encode(self.encoding),
             replace=self.replace,
             private=self.private,
-        ).apply(ctx, payload)
+        ).do(ctx, payload)
 
     @staticmethod
     def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
@@ -497,7 +497,7 @@ class WriteText:
         ----------
         ctx : Pipeline.InProgress
         payload : dict[str, JSONValue]
-            The payload returned by `apply()`.
+            The payload returned by `do()`.
         """
         WriteBytes.undo(ctx, payload)
 
@@ -539,7 +539,7 @@ class Copy:
         elif _exists(path):
             raise FileExistsError(f"could not copy to target; path occupied: {path}")
 
-    def _apply(
+    def _do(
         self,
         ctx: Pipeline.InProgress,
         payload: dict[str, JSONValue],
@@ -601,12 +601,12 @@ class Copy:
                 }
                 contents.append(item_payload)
                 ctx.dump()
-                self._apply(ctx, item_payload, item, item_target)
+                self._do(ctx, item_payload, item, item_target)
 
         else:
             raise OSError(f"Unsupported file type for copy: {source}")
 
-    def apply(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+    def do(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
         source = self.source.absolute()
         target = self.target.absolute()
         if source == target:
@@ -618,7 +618,7 @@ class Copy:
         payload["target"] = str(target)
         payload["replace"] = self.replace
         ctx.dump()
-        self._apply(ctx, payload, source, target)
+        self._do(ctx, payload, source, target)
 
     @staticmethod
     def _undo(
@@ -774,7 +774,7 @@ class Move:
         elif _exists(path):
             raise FileExistsError(f"could not move to target; path occupied: {path}")
 
-    def _apply(
+    def _do(
         self,
         ctx: Pipeline.InProgress,
         payload: dict[str, JSONValue],
@@ -834,7 +834,7 @@ class Move:
                 }
                 contents.append(item_payload)
                 ctx.dump()
-                self._apply(ctx, item_payload, item, item_target)
+                self._do(ctx, item_payload, item, item_target)
 
             # remove the now-empty source directory
             try:
@@ -847,7 +847,7 @@ class Move:
         else:
             raise OSError(f"Unsupported file type for move: {source}")
 
-    def apply(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+    def do(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
         source = self.source.absolute()
         target = self.target.absolute()
         if source == target:
@@ -860,7 +860,7 @@ class Move:
         payload["target"] = str(target)
         payload["replace"] = self.replace
         ctx.dump()
-        self._apply(ctx, payload, source, target)
+        self._do(ctx, payload, source, target)
 
     @staticmethod
     def _undo(
@@ -1021,7 +1021,7 @@ class Symlink:
     target: Path
     replace: bool = False
 
-    def apply(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+    def do(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
         # resolve cwd, but not symlinks
         source = self.source
         target = self.target.absolute()
@@ -1085,7 +1085,7 @@ class Swap:
     first: Path
     second: Path
 
-    def apply(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+    def do(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
         first = self.first.absolute()
         second = self.second.absolute()
         if os.path.samefile(first, second):
@@ -1150,7 +1150,7 @@ class Chmod:
     path: Path
     mode: int
 
-    def apply(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+    def do(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
         path = self.path.absolute()
         if not _exists(path):
             return
@@ -1220,7 +1220,7 @@ class Chown:
     uid: int | None = None
     gid: int | None = None
 
-    def apply(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+    def do(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
         path = self.path.absolute()
         if not _exists(path):
             return
@@ -1295,7 +1295,7 @@ class Touch:
     atime_ns: int | None = None
     mtime_ns: int | None = None
 
-    def apply(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+    def do(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
         path = self.path.absolute()
         if not _exists(path):
             return
@@ -1371,7 +1371,7 @@ class Extract:
     target: Path
     replace: bool = False
 
-    def apply(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+    def do(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
         archive = self.archive.absolute()
         target = self.target.absolute()
         if not _exists(archive) or not _is_file(archive):
@@ -1392,7 +1392,7 @@ class Extract:
         move_payload: dict[str, JSONValue] = {}
         payload["move"] = move_payload
         ctx.dump()
-        Move(temp, target, replace=self.replace).apply(ctx, move_payload)
+        Move(temp, target, replace=self.replace).do(ctx, move_payload)
 
         # delete temporary directory
         shutil.rmtree(temp, ignore_errors=True)

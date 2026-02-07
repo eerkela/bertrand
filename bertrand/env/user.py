@@ -245,7 +245,7 @@ class EnsureSubIDs:
     )
     assume_yes: bool = False
 
-    def apply(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+    def do(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
         if os.name != "posix":
             raise OSError("User management operations require a POSIX system.")
         user = self.user or _current_user()
@@ -315,7 +315,7 @@ class EnsureUserNamespaces:
     )
     assume_yes: bool = False
 
-    def apply(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+    def do(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
         if os.name != "posix":
             raise OSError("User management operations require a POSIX system.")
         payload["needed"] = self.needed
@@ -368,7 +368,7 @@ class AddUserToGroup:
     user: str
     group: str
 
-    def apply(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+    def do(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
         if os.name != "posix":
             raise OSError("User management operations require a POSIX system.")
         user = self.user
@@ -424,7 +424,7 @@ class RemoveUserFromGroup:
     user: str
     group: str
 
-    def apply(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+    def do(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
         if os.name != "posix":
             raise OSError("User management operations require a POSIX system.")
         user = self.user
@@ -494,7 +494,7 @@ class EnableLinger:
     )
     assume_yes: bool = False
 
-    def apply(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+    def do(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
         if os.name != "posix":
             raise OSError("User management operations require a POSIX system.")
         if not shutil.which("loginctl"):
@@ -553,7 +553,7 @@ class DisableLinger:
     )
     assume_yes: bool = False
 
-    def apply(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+    def do(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
         if os.name != "posix":
             raise OSError("User management operations require a POSIX system.")
         if not shutil.which("loginctl"):
@@ -607,7 +607,7 @@ class CreateGroup:
     name: str
     system: bool = False
 
-    def apply(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+    def do(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
         if os.name != "posix":
             raise OSError("User management operations require a POSIX system.")
         name = self.name
@@ -697,7 +697,7 @@ class CreateUser:
     create_home: bool = False
     shell: str | None = None
 
-    def apply(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+    def do(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
         if os.name != "posix":
             raise OSError("User management operations require a POSIX system.")
         name = self.name
@@ -802,7 +802,7 @@ class SetUserShell:
     name: str
     shell: Path
 
-    def apply(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+    def do(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
         if os.name != "posix":
             raise OSError("User management operations require a POSIX system.")
         name = self.name
@@ -879,7 +879,7 @@ class LockUser:
     """
     name: str
 
-    def apply(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+    def do(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
         if os.name != "posix":
             raise OSError("User management operations require a POSIX system.")
         name = self.name
@@ -946,7 +946,7 @@ class UnlockUser:
     """
     name: str
 
-    def apply(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+    def do(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
         if os.name != "posix":
             raise OSError("User management operations require a POSIX system.")
         name = self.name
@@ -1020,7 +1020,7 @@ class CreateHomeDir:
     path: Path | None = None
     mode: int = 0o700
 
-    def apply(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+    def do(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
         if os.name != "posix":
             raise OSError("User management operations require a POSIX system.")
         name = self.name
@@ -1127,7 +1127,7 @@ class InstallSSHKey:
     replace: bool = False
     comment: str | None = None
 
-    def apply(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+    def do(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
         if os.name != "posix":
             raise OSError("SSH authorized_keys management requires a POSIX system.")
         user = self.user
@@ -1226,7 +1226,7 @@ class RemoveSSHKey:
     user: str
     key: str
 
-    def apply(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+    def do(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
         if os.name != "posix":
             raise OSError("SSH authorized_keys management requires a POSIX system.")
         user = self.user

@@ -12,11 +12,21 @@ import shutil
 import sys
 import uuid
 
+from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
 from pathlib import Path
 from resource import getpagesize
 from types import TracebackType
-from typing import Annotated, Iterable, Literal, TypeAlias, TypedDict, overload
+from typing import (
+    Annotated,
+    Any,
+    Iterable,
+    Literal,
+    TypeAlias,
+    TypedDict,
+    cast,
+    overload
+)
 
 from pydantic import (
     AwareDatetime,
@@ -34,7 +44,25 @@ from .package import (
     InstallPackage,
     detect_package_manager
 )
-from .pipeline import Pipeline, on_init
+from .pipeline import (
+    JSONView,
+    Pipeline,
+    on_init,
+    on_ls,
+    on_rm,
+    on_build,
+    on_start,
+    on_enter,
+    on_run,
+    on_stop,
+    on_pause,
+    on_resume,
+    on_restart,
+    on_prune,
+    on_info,
+    on_stats,
+    on_top,
+)
 from .run import (
     CommandError,
     CompletedProcess,
@@ -69,7 +97,7 @@ DISTRO_VERSION = "distro_version"
 DISTRO_CODENAME = "distro_codename"
 
 
-@on_init(requires=[], ephemeral=False)
+@on_init(requires=[])
 def detect_platform(ctx: Pipeline.InProgress) -> None:
     """Detect the host platform and package manager to use when installing the
     container backend.  These are persisted as facts in the pipeline context.
@@ -91,7 +119,7 @@ def detect_platform(ctx: Pipeline.InProgress) -> None:
     ctx[DISTRO_CODENAME] = detect.codename
 
 
-@on_init(requires=[detect_platform], ephemeral=False)
+@on_init(requires=[detect_platform])
 def install_container_cli(ctx: Pipeline.InProgress) -> None:
     """Install the base packages required for the container backend via the detected
     package manager.  This will prompt the user for confirmation before
@@ -151,7 +179,7 @@ def install_container_cli(ctx: Pipeline.InProgress) -> None:
         )
 
 
-@on_init(requires=[install_container_cli], ephemeral=False)
+@on_init(requires=[install_container_cli])
 def enable_user_namespaces(ctx: Pipeline.InProgress) -> None:
     """Ensure unprivileged user namespaces are enabled on the host system, which are
     required for the rootless container cli.
@@ -171,7 +199,7 @@ def enable_user_namespaces(ctx: Pipeline.InProgress) -> None:
     ))
 
 
-@on_init(requires=[install_container_cli], ephemeral=False)
+@on_init(requires=[install_container_cli])
 def provision_subids(ctx: Pipeline.InProgress) -> None:
     """Ensure subordinate UID/GID ranges are allocated for the host user in
     /etc/subuid and /etc/subgid, which are required for rootless Podman operation.
@@ -251,7 +279,7 @@ def _dropin_delegate_controllers(path: Path) -> set[str] | None:
     return set()
 
 
-@on_init(requires=[provision_subids, enable_user_namespaces], ephemeral=False)
+@on_init(requires=[provision_subids, enable_user_namespaces])
 def delegate_controllers(ctx: Pipeline.InProgress) -> None:
     """Configure systemd controller delegation for the rootless container CLI, if not
     already configured.  This allows the container CLI to manage resource limits on
@@ -540,6 +568,23 @@ EntryPoint: TypeAlias = Annotated[
 ]
 
 
+def _remove_dangling_volumes(*, force: bool, missing_ok: bool) -> None:
+    volumes = list(podman_cmd([
+        "volume",
+        "ls",
+        "-q",
+        "--filter", "label=BERTRAND=1",
+        "--filter", "dangling=true",
+    ], capture_output=True).stdout.splitlines())
+    if volumes:
+        cmd = ["volume", "rm"]
+        if force:
+            cmd.append("-f")
+        if missing_ok:
+            cmd.append("-i")
+        podman_cmd([*cmd, *volumes])
+
+
 class Container(BaseModel):
     """In-memory metadata representing a local Bertrand container, which acts as a
     runtime harness for a compiled image.  An image can have many containers, each
@@ -606,6 +651,42 @@ class Container(BaseModel):
     created: CreatedAt
     args: ArgsList
     entry_point: EntryPoint
+
+    def remove(self, *, force: bool, timeout: int, missing_ok: bool) -> None:
+        """Remove this container via podman.
+
+        Parameters
+        ----------
+        force : bool
+            If True, forcefully remove the container even if it is currently running
+            or paused.  If False, only remove the container if it is currently stopped.
+        timeout : int
+            The maximum time in seconds to wait for a running container to stop before
+            forcefully killing it.  -1 indicates an infinite wait.
+        missing_ok : bool
+            If True, do not raise an error if the container is already removed or
+            otherwise missing.
+
+        Raises
+        ------
+        CommandError
+            If the podman command fails.
+        """
+        cmd = [
+            "container",
+            "rm",
+            "--depend",  # remove dependent containers
+            "-v",  # remove anonymous volumes
+            "-t", str(timeout),
+        ]
+        if force:
+            cmd.append("-f")
+        if missing_ok:
+            cmd.append("-i")
+        podman_cmd([*cmd, self.id])
+
+        # remove any now-dangling volumes
+        _remove_dangling_volumes(force=force, missing_ok=missing_ok)
 
     def inspect(self) -> Container.Inspect | None:
         """Invoke podman to inspect this container.
@@ -855,6 +936,64 @@ class Image(BaseModel):
     created: CreatedAt
     args: ArgsList
     containers: dict[str, Container]
+
+    def remove(self, *, force: bool, timeout: int, missing_ok: bool) -> None:
+        """Remove this image via podman.  Will also remove all containers built from
+        this image.
+
+        Parameters
+        ----------
+        force : bool
+            If True, forcefully remove the image even if it has running containers.
+            If False, only remove stopped containers, and then remove the image if no
+            containers remain.
+        timeout : int
+            The maximum time in seconds to wait for running containers to stop before
+            forcefully killing them.  -1 indicates an infinite wait.
+        missing_ok : bool
+            If True, do not raise an error if the image or any descendant container is
+            already removed or otherwise missing.
+
+        Raises
+        ------
+        OSError
+            If `force` is False and there are still containers referencing this image.
+        CommandError
+            If any of the podman commands fail.
+        """
+        # remove descendant containers first to avoid dangling references
+        containers = list(podman_cmd([
+            "container",
+            "ls",
+            "-a",
+            "-q",
+            "--no-trunc",
+            "--filter", f"ancestor={self.id}",
+        ], capture_output=True).stdout.splitlines())
+        if containers:
+            cmd = [
+                "container",
+                "rm",
+                "--depend",  # remove dependent containers
+                "-v",  # remove anonymous volumes
+                "-t", str(timeout),
+            ]
+            if force:
+                cmd.append("-f")
+            if missing_ok:
+                cmd.append("-i")
+            podman_cmd([*cmd, *containers])
+
+        # remove image
+        cmd = ["image", "rm"]
+        if force:
+            cmd.append("-f")
+        if missing_ok:
+            cmd.append("-i")
+        podman_cmd([*cmd, self.id])
+
+        # remove any now-dangling volumes
+        _remove_dangling_volumes(force=force, missing_ok=missing_ok)
 
     def inspect(self) -> Image.Inspect | None:
         """Invoke podman to inspect this image.
@@ -1261,7 +1400,7 @@ RUN --mount=type=cache,target={TMP}/.cache/pip,sharing=locked \
         ----------
         spec : str
             The container specification string to parse, which is usually provided from
-            the command line or `ls()`.
+            the command line or `$ bertrand ls`.
 
         Returns
         -------
@@ -1444,203 +1583,467 @@ RUN --mount=type=cache,target={TMP}/.cache/pip,sharing=locked \
         # search for container
         return image.containers.get(container_tag)
 
-    def ls(self, image_tag: str | None = None, container_tag: str | None = None) -> list[str]:
-        """Return a list of image or container tags within this environment.
+    def remove(self, *, force: bool, timeout: int, missing_ok: bool) -> None:
+        """Remove this environment via podman, including all descendant images and
+        containers.  Note that this does not delete the referencing tags, meaning the
+        images and containers will be rebuilt again if referenced in the future.
 
         Parameters
         ----------
-        image_tag : str | None, optional
-            An optional image tag to list.  If None (the default), all image tags in
-            this environment will be listed.
-        container_tag : str | None, optional
-            An optional container tag to list.  If None (the default), all container
-            tags in the indicated image will be listed.
-
-        Returns
-        -------
-        list[str]
-            A list of fully qualified image or container tags within this environment,
-            depending on the provided arguments.  An empty list will be returned if no
-            matching tags could be found.  Use `parse()` to split the returned tags
-            into their constituent parts.
+        force : bool
+            If True, remove images even if they have dependent containers, removing
+            the containers as well.  If False, only remove images that have no
+            dependent containers.
+        timeout : int
+            The maximum time in seconds to wait for dependent containers to stop before
+            forcefully killing them.  -1 indicates an infinite wait.
+        missing_ok : bool
+            If True, do not raise an error if the environment or any descendant image or
+            container is already removed or otherwise missing.
 
         Raises
         ------
         OSError
-            If the environment has not been acquired as a context manager.
-        TypeError
-            If `image` is None but `container` is not.
+            If `force` is False and there are still images or containers referencing
+            this environment.
+        CommandError
+            If any of the podman commands fail and `missing_ok` is False.
         """
-        if self._lock.depth < 1:
-            raise OSError("environment must be acquired as a context manager before accessing")
-
-        # list all images
-        if image_tag is None:
-            if container_tag is not None:
-                raise TypeError("cannot specify a container when listing all images")
-            return [f"{self.root}:{k}" for k in self.tags]
-
-        # list all containers in an image
-        image = self.tags.get(image_tag)
-        if image is None:
-            return []
-        if container_tag is None:
-            return [f"{self.root}:{image_tag}:{k}" for k in image.containers]
-
-        # check for specific container in an image
-        if container_tag in image.containers:
-            return [f"{self.root}:{image_tag}:{container_tag}"]
-        return []
-
-    def _rm_container(self, image_tag: str, container_tag: str) -> None:
-        image = self.tags.get(image_tag)
-        if image is None:
-            return
-        container = image.containers.get(container_tag)
-        if container is None:
-            return
-        podman_cmd(["container", "rm", "-f", container.id], check=False)
-        image.containers.pop(container_tag, None)
-
-    def _rm_image(self, image_tag: str) -> None:
-        image = self.tags.get(image_tag)
-        if image is None:
-            return
-
-        # remove all descendant containers
-        out = podman_cmd([
+        # find all descendant containers + images
+        containers = list(podman_cmd([
             "container",
             "ls",
             "-a",
-            "--no-trunc",
-            "--filter", f"ancestor={image.id}",
-            "--format", "{{.ID}}"
-        ], check=False, capture_output=True)
-        if out.returncode == 0:
-            ids = list(out.stdout.splitlines())
-            if ids:
-                podman_cmd(["container", "rm", "-f", *ids], check=False)
-
-        # remove image
-        podman_cmd(["image", "rm", "-f", image.id], check=False)
-        self.tags.pop(image_tag)
-
-    def _rm_all(self) -> None:
-        # remove all containers associated with this environment
-        out = podman_cmd([
-            "container",
-            "ls",
-            "-a",
+            "-q",
             "--no-trunc",
             "--filter", f"label=BERTRAND_ENV={self.id}",
-            "--format", "{{.ID}}"
-        ], check=False, capture_output=True)
-        if out.returncode == 0:
-            ids = list(out.stdout.splitlines())
-            if ids:
-                podman_cmd(["container", "rm", "-f", *ids], check=False)
-
-        # remove all images associated with this environment
-        out = podman_cmd([
+        ], capture_output=True).stdout.splitlines())
+        images = list(podman_cmd([
             "image",
             "ls",
             "-a",
+            "-q",
             "--no-trunc",
             "--filter", f"label=BERTRAND_ENV={self.id}",
-            "--format", "{{.ID}}"
-        ], check=False, capture_output=True)
-        if out.returncode == 0:
-            ids = list(out.stdout.splitlines())
-            if ids:
-                podman_cmd(["image", "rm", "-f", *ids], check=False)
+        ], capture_output=True).stdout.splitlines())
 
-        # delete cache volumes
-        cache_prefix = f"bertrand-{self.id[:13]}"
-        out = podman_cmd([
-            "volume",
-            "ls",
-            "--filter", f"name={cache_prefix}",
-            "--format", "{{.Name}}"
-        ], check=False, capture_output=True)
-        if out.returncode == 0:
-            names = list(out.stdout.splitlines())
-            for name in names:
-                if name.startswith(cache_prefix):
-                    podman_cmd(["volume", "rm", "-f", name], check=False)
+        # remove containers first
+        if containers:
+            cmd = [
+                "container",
+                "rm",
+                "--depend",  # remove dependent containers
+                "-v",  # remove anonymous volumes
+                "-t", str(timeout),
+            ]
+            if force:
+                cmd.append("-f")
+            if missing_ok:
+                cmd.append("-i")
+            podman_cmd([*cmd, *containers])
 
-        # clear metadata
-        self.tags.clear()
+        # remove images
+        if images:
+            cmd = ["image", "rm"]
+            if force:
+                cmd.append("-f")
+            if missing_ok:
+                cmd.append("-i")
+            podman_cmd([*cmd, *images])
 
-    def rm(self, image_tag: str | None = None, container_tag: str | None = None) -> None:
-        """Delete images and/or containers from this environment.
+        # remove any now-dangling volumes
+        _remove_dangling_volumes(force=force, missing_ok=missing_ok)
 
-        Parameters
-        ----------
-        image_tag : str | None, optional
-            An optional image tag to remove.  If None (the default), all images and
-            containers in this environment will be removed.
-        container_tag : str | None, optional
-            An optional container tag to remove.  If None (the default), all containers
-            in the indicated image (or whole environment if `image_tag` is None) will
-            be removed.
 
-        Raises
-        ------
-        OSError
-            If the environment has not been acquired as a context manager, or if this
-            method is invoked from within a Bertrand container.
-        TypeError
-            If `image_tag` is None but `container_tag` is not.
-        """
-        if self._lock.depth < 1:
-            raise OSError("environment must be acquired as a context manager before accessing")
+# pylint: disable=missing-function-docstring, missing-return-doc, unused-argument
+
+
+@dataclass
+class _Command:
+
+    @staticmethod
+    def _validate_env(x: JSONView) -> Path | None:
+        if x is None:
+            return None
+        if not isinstance(x, str):
+            raise TypeError("environment path must be a string")
+        x = x.strip()
+        if not x:
+            return None
+        return Path(x).expanduser().resolve()
+
+    @staticmethod
+    def _validate_image(x: JSONView) -> str:
+        if x is None:
+            return ""
+        if not isinstance(x, str):
+            raise TypeError("image tag must be a string")
+        x = x.strip()
+        sanitized = _sanitize_name(x)
+        if x != sanitized:
+            raise ValueError(
+                f"invalid image tag: '{x}' (must contain only alphanumerics, '_', or '.')"
+            )
+        return x
+
+    @staticmethod
+    def _validate_container(x: JSONView) -> str:
+        if x is None:
+            return ""
+        if not isinstance(x, str):
+            raise TypeError("container tag must be a string")
+        x = x.strip()
+        sanitized = _sanitize_name(x)
+        if x != sanitized:
+            raise ValueError(
+                f"invalid container tag: '{x}' (must contain only alphanumerics, '_', or '.')"
+            )
+        return x
+
+    @staticmethod
+    def _validate_timeout(x: JSONView) -> int:
+        if x is None:
+            return TIMEOUT
+        if not isinstance(x, int):
+            raise TypeError("timeout must be an integer")
+        if x < -1:
+            raise ValueError("timeout must be non-negative or -1 for no timeout")
+        return x
+
+    env = _validate_env
+    image_tag = _validate_image
+    container_tag = _validate_container
+    timeout = _validate_timeout
+
+    def _call(self, ctx: Pipeline.InProgress) -> None:
+        # pylint: disable=no-member
+        # extract and validate all arguments from the context
+        kwargs = {k: v(ctx.get(k)) for k, v in asdict(self).items()}
+
+        # if no environment is given, call the subclass's `all()` method
+        env_root = kwargs.pop("env")
+        if env_root is None:
+            if kwargs["image_tag"] or kwargs["container_tag"]:
+                raise TypeError("cannot specify image or container tag when environment is None")
+            kwargs["env"] = None
+            self.all(**kwargs)  # type: ignore[attr-defined]
+            return
+
+        # load environment metadata
+        with Environment(env_root, timeout=kwargs["timeout"]) as env:
+            kwargs["env"] = env
+
+            # if no image tag is given, call the subclass's `environment()` method
+            if kwargs["image_tag"]:
+                if kwargs["container_tag"]:
+                    raise TypeError("cannot specify a container when image tag is None")
+                self.environment(**kwargs)  # type: ignore[attr-defined]
+                return
+
+            # if no container tag is given, call the subclass's `image()`
+            if kwargs["container_tag"]:
+                self.image(**kwargs)  # type: ignore[attr-defined]
+                return
+
+            # otherwise, call the subclass's `container()` method
+            self.container(**kwargs)  # type: ignore[attr-defined]
+
+    def __call__(self, ctx: Pipeline.InProgress) -> None:
         if Environment.current() is not None:
             raise OSError("cannot invoke podman from within a Bertrand container")
+        self._call(ctx)
 
-        # delete all images
-        if image_tag is None:
-            if container_tag is not None:
-                raise TypeError("cannot specify a container when removing all images")
-            self._rm_all()
-            return
 
-        # delete all containers in an image
-        if container_tag is None:
-            self._rm_image(image_tag)
-            return
+@dataclass
+class Ls(_Command):
+    """Return a list of qualified paths of Bertrand entities on the system, scoping to
+    images and containers within an environment if desired.
+    """
+    recursive = bool
 
-        # delete specific container in an image
-        self._rm_container(image_tag, container_tag)
-
-    def _build_container(
-        self,
+    @staticmethod
+    def list_containers(
+        *,
+        env: Environment,
         image_tag: str,
         container_tag: str,
-        container_args: list[str] | None
-    ) -> Container:
-        image = self.tags.get(image_tag)
+    ) -> list[str]:
+        image = env.tags.get(image_tag)
         if image is None:
-            raise KeyError(f"no image found for tag: '{image_tag}'")
-        return image.build(
-            env_root=self.root,
-            env_uuid=self.id,
+            return []
+        container = image.containers.get(container_tag)
+        if container is None:
+            return []
+        return [f"{env.root}:{image_tag}:{container_tag}"]
+
+    @staticmethod
+    def list_images(
+        *,
+        env: Environment,
+        image_tag: str,
+    ) -> list[str]:
+        image = env.tags.get(image_tag)
+        if image is None:
+            return []
+        return [f"{env.root}:{image_tag}:{c}" for c in image.containers]
+
+    @staticmethod
+    def list_environments(
+        *,
+        env: Environment,
+        recursive: bool
+    ) -> list[str]:
+        if not recursive:
+            return [f"{env.root}:{k}" for k in env.tags]
+        result: list[str] = []
+        for image_tag, image in env.tags.items():
+            result.append(f"{env.root}:{image_tag}")
+            for container_tag in image.containers:
+                result.append(f"{env.root}:{image_tag}:{container_tag}")
+        return result
+
+    @staticmethod
+    def list_all(*, recursive: bool) -> list[str]:
+        out = list(podman_cmd([
+            "container",
+            "ls",
+            "--all",
+            "--filter", "label=BERTRAND=1",
+            "--no-trunc",
+            "--format={{.ID}}"
+        ], capture_output=True).stdout.strip().splitlines())
+        if not out:
+            return []
+
+        # inspect all containers to find their mount points
+        inspects = json.loads(podman_cmd(
+            ["container", "inspect", *out],
+            capture_output=True
+        ).stdout)
+        assert isinstance(inspects, list)
+        seen: set[Path] = set()
+        result: list[str] = []
+        for inspect in inspects:
+            assert isinstance(inspect, dict)
+            mount = Container.mount(inspect)  # type: ignore[arg-type]
+            if mount is not None and mount not in seen:
+                seen.add(mount)
+                result.append(str(mount))
+
+        if not recursive:
+            return result
+
+        # attempt to open each environment and recursively list all images and
+        # containers within it
+        recur: list[str] = []
+        for env_path in result:
+            try:
+                with Environment(Path(env_path)) as env:
+                    for image_tag, image in env.tags.items():
+                        recur.append(f"{env_path}:{image_tag}")
+                        for container_tag in image.containers:
+                            recur.append(f"{env_path}:{image_tag}:{container_tag}")
+            except Exception:
+                pass
+        return recur
+
+    @staticmethod
+    def container(
+        *,
+        env: Environment,
+        image_tag: str,
+        container_tag: str,
+        **kwargs: Any
+    ) -> None:
+        out = Ls.list_containers(
+            env=env,
             image_tag=image_tag,
             container_tag=container_tag,
-            container_args=container_args
+        )
+        if out:
+            print("\n".join(out))
+
+    @staticmethod
+    def image(
+        *,
+        env: Environment,
+        image_tag: str,
+        recursive: bool,
+        **kwargs: Any
+    ) -> None:
+        out = Ls.list_images(
+            env=env,
+            image_tag=image_tag,
+        )
+        if out:
+            print("\n".join(out))
+
+    @staticmethod
+    def environment(
+        *,
+        env: Environment,
+        recursive: bool,
+        **kwargs: Any
+    ) -> None:
+        out = Ls.list_environments(
+            env=env,
+            recursive=recursive
+        )
+        if out:
+            print("\n".join(out))
+
+    @staticmethod
+    def all(*, recursive: bool, **kwargs: Any) -> None:
+        out = Ls.list_all(recursive=recursive)
+        if out:
+            print("\n".join(out))
+
+
+@dataclass
+class Rm(_Command):
+    """Delete Bertrand entities on the system, scoping to images and containers within
+    an environment if desired.
+
+    This command only deletes images and containers, and never alters the host
+    filesystem.  The environment directory may be safely deleted after invoking this
+    command.
+    """
+    force = bool
+    missing_ok = bool
+
+    @staticmethod
+    def container(
+        *,
+        env: Environment,
+        image_tag: str,
+        container_tag: str,
+        force: bool,
+        timeout: int,
+        **kwargs: Any
+    ) -> None:
+        i = env.tags.get(image_tag)
+        if i is None:
+            return
+        c = i.containers.get(container_tag)
+        if c is None:
+            return
+        c.remove(force=force, timeout=timeout, missing_ok=True)
+        i.containers.pop(container_tag)
+
+    @staticmethod
+    def image(
+        *,
+        env: Environment,
+        image_tag: str,
+        force: bool,
+        timeout: int,
+        **kwargs: Any
+    ) -> None:
+        i = env.tags.get(image_tag)
+        if i is None:
+            return
+        i.remove(force=force, timeout=timeout, missing_ok=True)
+        env.tags.pop(image_tag)
+
+    @staticmethod
+    def environment(
+        *,
+        env: Environment,
+        force: bool,
+        timeout: int,
+        **kwargs: Any
+    ) -> None:
+        env.remove(force=force, timeout=timeout, missing_ok=True)
+        env.tags.clear()
+
+    @staticmethod
+    def all(
+        *,
+        force: bool,
+        timeout: int,
+        **kwargs: Any
+    ) -> None:
+        if confirm(
+            "This will remove all Bertrand images, containers, and volumes on this "
+            "system.  This action cannot be undone.\n"
+            "Are you sure you want to continue? [y/N] "
+        ):
+            for env_path in Ls.list_all(recursive=False):
+                try:
+                    with Environment(Path(env_path)) as env:
+                        env.remove(force=force, timeout=timeout, missing_ok=True)
+                        env.tags.clear()
+                except Exception:
+                    pass
+
+
+@dataclass
+class Build(_Command):
+    """Incrementally build Bertrand images/containers within an environment, scoping to
+    specific images and containers if desired.  This command does not start any
+    containers, but may rebuild and restart existing containers if their parent images
+    are out of date.
+
+    If an image tag is provided, then arbitrary additional command-line arguments may
+    be passed to assign to the tag, making them available for use in downstream
+    commands.  If no image tag is provided, then no additional arguments may be passed,
+    and all images in the environment will be built using their currently-tagged
+    arguments.
+    """
+
+    @staticmethod
+    def _validate_args(x: JSONView) -> list[str]:
+        if x is None:
+            return []
+        if isinstance(x, tuple) and all(isinstance(i, str) for i in x):
+            return list(cast(tuple[str, ...], x))
+        raise TypeError("args must be a list of strings")
+
+    args = _validate_args
+
+    @staticmethod
+    def container(
+        *,
+        env: Environment,
+        image_tag: str,
+        container_tag: str,
+        args: list[str],
+        **kwargs: Any
+    ) -> Container:
+        image = env.tags.get(image_tag)
+        if image is None:
+            raise KeyError(f"no image found for tag: '{image_tag}'")
+        if args and not container_tag:
+            raise TypeError("containers with non-default arguments must have a tag")
+        return image.build(
+            env_root=env.root,
+            env_uuid=env.id,
+            image_tag=image_tag,
+            container_tag=container_tag,
+            container_args=args
         )
 
-    def _build_image(self, image_tag: str, image_args: list[str] | None) -> Image:
-        existing = self.tags.get(image_tag)
-        if image_args is None:
+    @staticmethod
+    def image(
+        *,
+        env: Environment,
+        image_tag: str,
+        args: list[str],
+        **kwargs: Any
+    ) -> Image:
+        if args and not image_tag:
+            raise TypeError("images with non-default arguments must have a tag")
+
+        existing = env.tags.get(image_tag)
+        if not args:
             if existing is None:
                 if image_tag:
                     raise KeyError(f"no image found for tag: '{image_tag}'")
-                image_args = []  # empty tag implies empty args
+                args = []  # empty tag implies empty args
             else:
-                image_args = existing.args  # reuse existing args
+                args = existing.args  # reuse existing args
         else:
-            image_args = _normalize_args(image_args)  # define new args
-
+            args = _normalize_args(args)  # define new args
 
         # build new image
         # NOTE: podman + BuildAh will automatically reuse cached layers as long as
@@ -1652,23 +2055,23 @@ RUN --mount=type=cache,target={TMP}/.cache/pip,sharing=locked \
             version=VERSION,
             id="",  # corrected after build
             created=datetime.now(timezone.utc),
-            args=image_args,
+            args=args,
             containers={},
         )
-        image_name = f"{_sanitize_name(self.root.name)}.{image_tag}.{self.id[:13]}"
-        iid_file = _iid_file(self.root, image_name)
+        image_name = f"{_sanitize_name(env.root.name)}.{image_tag}.{env.id[:13]}"
+        iid_file = _iid_file(env.root, image_name)
         try:
             iid_file.parent.mkdir(parents=True, exist_ok=True)
             podman_cmd([
                 "build",
-                *image_args,
+                *args,
                 "-t", image_name,
-                "-f", str(self.container_file),
+                "-f", str(env.container_file),
                 "--iidfile", str(iid_file),
                 "--label", "BERTRAND=1",
-                "--label", f"BERTRAND_ENV={self.id}",
+                "--label", f"BERTRAND_ENV={env.id}",
                 "--label", f"BERTRAND_IMAGE={image_tag}",
-                str(self.root),
+                str(env.root),
             ])
             image.id = iid_file.read_text(encoding="utf-8").strip()  # build returns image ID
         finally:
@@ -1680,917 +2083,776 @@ RUN --mount=type=cache,target={TMP}/.cache/pip,sharing=locked \
         try:
             for container_tag, container in existing.containers.items() if existing else []:
                 image.build(
-                    env_root=self.root,
-                    env_uuid=self.id,
+                    env_root=env.root,
+                    env_uuid=env.id,
                     image_tag=image_tag,
                     container_tag=container_tag,
                     container_args=container.args
                 )
-            self._rm_image(image_tag)
+            image.remove(force=True, timeout=env.timeout, missing_ok=True)
         except Exception as err:
             for container in image.containers.values():
                 podman_cmd(["container", "rm", "-f", container.id], check=False)
             podman_cmd(["image", "rm", "-f", image.id], check=False)
             raise err
-        self.tags[image_tag] = image
+        env.tags[image_tag] = image
         return image
 
-    def _build_all(self) -> Environment:
-        for t in list(self.tags):
-            self._build_image(t, None)
-        return self
+    @staticmethod
+    def environment(
+        *,
+        env: Environment,
+        args: list[str],
+        **kwargs: Any
+    ) -> Environment:
+        if args:
+            raise TypeError("cannot specify arguments when building a whole environment")
+        for tag in env.tags:
+            Build.image(env=env, image_tag=tag, args=args, **kwargs)
+        return env
 
-    @overload
-    def build(
-        self,
-        image_tag: str,
-        image_args: list[str] | None = ...
-    ) -> Image: ...
-    @overload
-    def build(
-        self,
-        image_tag: None = ...,
-        image_args: None = ...
-    ) -> Environment: ...
-    def build(
-        self,
-        image_tag: str | None = None,
-        image_args: list[str] | None = None
-    ) -> Environment | Image:
-        """Incrementally build an image with the given tag and arguments, or load an
-        existing one if it is already up-to-date.
+    @staticmethod
+    def all(
+        *,
+        args: list[str],
+        **kwargs: Any
+    ) -> None:
+        if args:
+            raise TypeError("cannot specify arguments when building all environments")
 
-        Parameters
-        ----------
-        image_tag : str | None, optional
-            The image tag to search for.  If no existing image with the same tag is
-            found, or the existing image is out of date, or its arguments differ from
-            `image_args`, then a new image will be built and associated with this tag.
-            If None (the default), all images in the environment will be built
-            incrementally using their existing arguments.
-        image_args : list[str] | None, optional
-            The `podman build` arguments to use when building the image if no existing
-            image could be found.  If an existing image is found with the same tag, but
-            different arguments, then it will be removed and rebuilt with these
-            arguments.  If a non-empty list of arguments is provided, then `image_tag`
-            must also be non-empty.  If None (the default), the existing arguments for
-            the image will be reused if possible, or an error will be raised if no
-            existing image could be found.
+        if confirm(
+            "This will build all Bertrand environments on this system.  This may take "
+            "a long time depending on the number and complexity of the environments.\n"
+            "Are you sure you want to continue? [y/N] "
+        ):
+            for env_path in Ls.list_all(recursive=False):
+                try:
+                    with Environment(Path(env_path)) as env:
+                        for tag in env.tags:
+                            Build.image(env=env, image_tag=tag, args=args, **kwargs)
+                except Exception as err:
+                    print(err, file=sys.stderr)
 
-        Returns
-        -------
-        Environment | Image
-            The resulting image metadata, which may be a reference to an existing image
-            or a newly built one.  If `image_tag` is None, then the environment itself
-            will be returned, after building all images.
 
-        Raises
-        ------
-        OSError
-            If the environment has not been acquired as a context manager, or if this
-            method is invoked from within a Bertrand container, or if non-empty
-            `image_args` are provided with an empty `image_tag`, or vice versa.
-        TypeError
-            If `image_tag` is None but `image_args` is not None, or if non-empty
-            `image_args` are provided with an empty `image_tag`.
-        KeyError
-            If no existing image could be found for the given `image_tag`, and
-            `image_args` is None.
-        CommandError
-            If a `podman build` or `podman image inspect` command fails.
-        """
-        # pylint: disable=missing-raises-doc
-        if self._lock.depth < 1:
-            raise OSError("environment must be acquired as a context manager before accessing")
-        if Environment.current() is not None:
-            raise OSError("cannot invoke podman from within a Bertrand container")
-        if image_args and not image_tag:
-            raise TypeError("images with non-default arguments must have a tag")
+@dataclass
+class Start(_Command):
+    """Start Bertrand containers within an environment, scoping to specific images and
+    containers if desired.  This is equivalent to `Build` followed by a
+    `podman container start` command on all referenced containers.
+    """
 
-        # if no tag is provided, build all images
-        if image_tag is None:
-            if image_args is not None:
-                raise TypeError("cannot provide arguments when building all images")
-            return self._build_all()
-
-        # build specific image
-        return self._build_image(image_tag, image_args)
-
-    def _start_container(
-        self,
+    @staticmethod
+    def container(
+        *,
+        env: Environment,
         image_tag: str,
         container_tag: str,
-        container_args: list[str] | None
+        args: list[str],
+        **kwargs: Any
     ) -> Container:
-        self._build_image(image_tag, None)
-        container = self._build_container(image_tag, container_tag, container_args)
-        inspect = container.inspect()
-        assert inspect is not None, (
-            f"failed to build container '{container_tag}' in image '{image_tag}'"
+        image = env.tags.get(image_tag)
+        if image is None:
+            raise KeyError(f"no image found for tag: '{image_tag}'")
+        container = Build.container(
+            env=env,
+            image_tag=image_tag,
+            container_tag=container_tag,
+            args=args,
         )
+        inspect = container.inspect()
+        if inspect is None:
+            raise OSError(
+                f"failed to build container '{container_tag}' in image '{image_tag}'"
+            )
         Container.start(inspect)
         return container
 
-    def _start_image(self, image_tag: str) -> Image:
-        image = self._build_image(image_tag, None)
-        for container_tag, container in list(image.containers.items()):
+    @staticmethod
+    def image(
+        *,
+        env: Environment,
+        image_tag: str,
+        args: list[str],
+        **kwargs: Any
+    ) -> Image:
+        image = env.tags.get(image_tag)
+        if image is None:
+            raise KeyError(f"no image found for tag: '{image_tag}'")
+        if args:
+            raise TypeError("cannot specify arguments when starting an image")
+        image = Build.image(env=env, image_tag=image_tag, args=args, **kwargs)
+        for container_tag, container in image.containers.items():
             inspect = container.inspect()
             if inspect is None:
-                self._rm_container(image_tag, container_tag)
-            else:
-                Container.start(inspect)
+                raise OSError(
+                    f"failed to build container '{container_tag}' in image '{image_tag}'"
+                )
+            Container.start(inspect)
         return image
 
-    def _start_all(self) -> Environment:
-        for image_tag in list(self.tags):
-            self._start_image(image_tag)
-        return self
+    @staticmethod
+    def environment(
+        *,
+        env: Environment,
+        args: list[str],
+        **kwargs: Any
+    ) -> Environment:
+        if args:
+            raise TypeError("cannot specify arguments when starting a whole environment")
+        Build.environment(env=env, args=args, **kwargs)
+        for image_tag, image in env.tags.items():
+            for container_tag, container in image.containers.items():
+                inspect = container.inspect()
+                if not inspect:
+                    raise OSError(
+                        f"failed to build container '{container_tag}' in image '{image_tag}'"
+                    )
+                Container.start(inspect)
+        return env
 
-    @overload
-    def start(
-        self,
+    @staticmethod
+    def all(
+        *,
+        args: list[str],
+        **kwargs: Any
+    ) -> None:
+        if args:
+            raise TypeError("cannot specify arguments when starting all environments")
+
+        if confirm(
+            "This will start all Bertrand containers on this system.  This may take "
+            "a long time depending on the number and complexity of the environments.\n"
+            "Are you sure you want to continue? [y/N] "
+        ):
+            for env_path in Ls.list_all(recursive=False):
+                try:
+                    with Environment(Path(env_path)) as env:
+                        for image_tag, image in env.tags.items():
+                            for container_tag, container in image.containers.items():
+                                inspect = container.inspect()
+                                if inspect is None:
+                                    raise OSError(
+                                        f"failed to build container '{container_tag}' in "
+                                        f"image '{image_tag}'"
+                                    )
+                                Container.start(inspect)
+                except Exception as err:
+                    print(err, file=sys.stderr)
+
+
+@dataclass
+class Enter(_Command):
+    """Replace the current process with an interactive shell inside the specified
+    container, starting or rebuilding it as necessary.  This is equivalent to `Start`
+    followed by a `podman container exec {shell}` command on a single container,
+    where `{shell}` is set by the parent environment.
+    """
+
+    @staticmethod
+    def container(
+        *,
+        env: Environment,
         image_tag: str,
         container_tag: str,
-        container_args: list[str] | None = ...
-    ) -> Container: ...
-    @overload
-    def start(
-        self,
-        image_tag: str,
-        container_tag: None = ...,
-        container_args: None = ...
-    ) -> Image: ...
-    @overload
-    def start(
-        self,
-        image_tag: None = ...,
-        container_tag: None = ...,
-        container_args: None = ...
-    ) -> Environment: ...
-    def start(
-        self,
-        image_tag: str | None = None,
-        container_tag: str | None = None,
-        container_args: list[str] | None = None
-    ) -> Environment | Image | Container:
-        """Incrementally build a container with the given image, tag, and arguments, or
-        load an existing one if it is already up-to-date, and then start it.
-
-        Parameters
-        ----------
-        image_tag : str | None, optional
-            The image tag to search for.  If no existing image with the same tag is
-            found, and the tag is not empty, then an error will be raised.  Otherwise,
-            if the tagged image is out of date, it will be rebuilt using its original
-            arguments.  If None (the default), all images in the environment will be
-            started.
-        container_tag : str | None, optional
-            The container tag to search for.  If no existing container with the same
-            tag is found, or the existing container is out of date, or its arguments
-            differ from `container_args`, then a new container will be created and
-            associated with this tag.  If None (the default), all containers in the
-            indicated image will be started.
-        container_args : list[str] | None, optional
-            The `podman create` arguments to use when creating the container if no
-            existing container could be found.  If an existing container is found with
-            the same tag, but different arguments, then it will be removed and rebuilt
-            with these arguments.  If a non-empty list of arguments is provided, then
-            `container_tag` must also be non-empty.  If None (the default), the
-            existing arguments for the container will be reused if possible, or an
-            error will be raised if no existing container could be found.
-
-        Returns
-        -------
-        Environment | Image | Container
-            The resulting container metadata, which may be a reference to an existing
-            container or a newly created one.  If `image_tag` is None, then the
-            environment itself will be returned, after starting all containers.  If
-            `container_tag` is None, then the parent image will be returned, after
-            starting all containers in that image.
-
-        Raises
-        ------
-        OSError
-            If the environment has not been acquired as a context manager, or if this
-            method is invoked from within a Bertrand container.
-        TypeError
-            If `image_tag` or `container_tag` is None but any of the subsequent
-            arguments are not None, or if non-empty `container_args` are provided with
-            an empty `container_tag`.
-        KeyError
-            If an image tag is provided but could not be found, or if a container tag
-            is provided and `container_args` is None, but the container could not be
-            found.
-        CommandError
-            If a `podman build`, `podman image inspect`, `podman create`,
-            `podman container inspect`, or `podman start` command fails.
-        """
-        # pylint: disable=missing-raises-doc
-        if self._lock.depth < 1:
-            raise OSError("environment must be acquired as a context manager before accessing")
-        if Environment.current() is not None:
-            raise OSError("cannot invoke podman from within a Bertrand container")
-        if container_args and not container_tag:
-            raise TypeError("containers with non-default arguments must have a tag")
-
-        # start all containers in this environment
-        if image_tag is None:
-            if container_tag is not None or container_args is not None:
-                raise TypeError("cannot specify a tag or arguments when starting all containers")
-            return self._start_all()
-
-        # start all containers in the specified image
-        if container_tag is None:
-            if container_args is not None:
-                raise TypeError("cannot specify arguments when starting all containers in an image")
-            return self._start_image(image_tag)
-
-        # start specific container
-        return self._start_container(image_tag, container_tag, container_args)
-
-    def enter(
-        self,
-        image_tag: str,
-        container_tag: str,
-        container_args: list[str] | None = None
-    ) -> Container:
-        """Replace the current process with an interactive shell inside the specified
-        container, starting or rebuilding it as necessary.
-
-        Parameters
-        ----------
-        image_tag : str
-            The image tag to search for.  If no existing image with the same tag is
-            found, and the tag is not empty, then an error will be raised.  Otherwise
-            if the tagged image is out of date, it will be rebuilt using its original
-            arguments.
-        container_tag : str
-            The container tag to search for.  If no existing container with the same
-            tag is found, or the existing container is out of date, or its arguments
-            differ from `container_args`, then a new container will be created and
-            associated with this tag.  If a non-empty tag is provided, then
-            `container_args` must also be non-empty.
-        container_args : list[str] | None, optional
-            The `podman create` arguments to use when creating the container if no
-            existing container could be found.  If an existing container is found with
-            the same tag, but different arguments, then it will be removed and rebuilt
-            with these arguments.  If a non-empty list of arguments is provided, then
-            `container_tag` must also be non-empty.  If None (the default), the
-            existing arguments for the container will be reused if possible, or an
-            error will be raised if no existing container could be found.
-
-        Returns
-        -------
-        Container
-            The resulting container metadata, which may be a reference to an existing
-            container or a newly created one.
-
-        Raises
-        ------
-        KeyError
-            If an image tag is provided but could not be found.
-        OSError
-            If the environment has not been acquired as a context manager, or if this
-            method is invoked from within a Bertrand container, or if non-empty
-            `container_args` are provided with an empty `container_tag`, or vice versa.
-        CommandError
-            If a `podman build`, `podman image inspect`, `podman create`,
-            `podman container inspect`, or `podman exec` command fails.
-        """
-        # start or rebuild the container, then replace current process with an inner shell
-        container = self.start(image_tag, container_tag, container_args)
-
-        # ensure stdin and stdout can attach to a TTY
+        args: list[str],
+        **kwargs: Any
+    ) -> None:
         if not sys.stdin.isatty() or not sys.stdout.isatty():
             raise CommandError(
                 returncode=1,
-                cmd=["bertrand", "enter", f"{self.root}:{image_tag}:{container_tag}"],
+                cmd=[
+                    "bertrand",
+                    "enter",
+                    f"{env.root}:{image_tag}:{container_tag}",
+                    *args
+                ],
                 stdout="",
                 stderr="'bertrand enter' requires both stdin and stdout to be a TTY."
             )
 
-        # launch interactive shell
+        container = Start.container(
+            env=env,
+            image_tag=image_tag,
+            container_tag=container_tag,
+            args=args,
+            **kwargs
+        )
         podman_exec([
             "exec",
             "-it",
             "-w", MOUNT,
             container.id,
-            *self.shell
+            *env.shell,
         ])
-        return container
 
-    def _run_interactive(self) -> list[str]:
+    @staticmethod
+    def image(
+        *,
+        env: Environment,
+        image_tag: str,
+        args: list[str],
+        **kwargs: Any
+    ) -> None:
+        Enter.container(
+            env=env,
+            image_tag=image_tag,
+            container_tag="",  # default container
+            args=args,
+            **kwargs
+        )
+
+    @staticmethod
+    def environment(
+        *,
+        env: Environment,
+        args: list[str],
+        **kwargs: Any
+    ) -> None:
+        Enter.container(
+            env=env,
+            image_tag="",  # default image
+            container_tag="",  # default container
+            args=args,
+            **kwargs
+        )
+
+    @staticmethod
+    def all(
+        *,
+        args: list[str],
+        **kwargs: Any
+    ) -> None:
+        raise TypeError("must specify a container to enter")
+
+
+@dataclass
+class Run(_Command):
+    """Run an arbitrary command inside a container's context, starting or rebuilding it
+    as necessary.  This is equivalent to `Start` followed by a `podman container exec`
+    command on a single container, forwarding any arguments to the `exec` portion.
+    """
+
+    @staticmethod
+    def container(
+        *,
+        env: Environment,
+        image_tag: str,
+        container_tag: str,
+        args: list[str],
+        **kwargs: Any
+    ) -> None:
+        container = Start.container(
+            env=env,
+            image_tag=image_tag,
+            container_tag=container_tag,
+            args=[],
+            **kwargs
+        )
+
+        # always run in interactive mode, but only add a TTY if we're currently attached
+        # to one
+        cmd = ["-i"]
         if (
             sys.stdin.isatty() and
             sys.stdout.isatty() and
             sys.stderr.isatty() and
             os.environ.get("TERM", "") not in ("", "dumb")
         ):
-            return ["-i", "-t"]
-        return ["-i"]
-
-    def _run_container(
-        self,
-        image_tag: str,
-        container_tag: str,
-        argv: list[str]
-    ) -> Container:
-        # ensure container has a valid entry point
-        container = self._start_container(image_tag, container_tag, None)
-        if not container.entry_point:
-            raise CommandError(
-                returncode=1,
-                cmd=["bertrand", "run", f"{self.root}:{image_tag}:{container_tag}", *argv],
-                stdout="",
-                stderr=
-                    "Cannot run command: container has no entry point defined.  Either "
-                    "write a '__main__.py' file or include a C++ source file that "
-                    "implements an 'int main()' function."
-            )
-
-        # run the command within the container context
+            cmd.append("-t")
         podman_cmd([
             "exec",
-            *self._run_interactive(),
+            *cmd,
             "-w", MOUNT,
             container.id,
-            *container.entry_point,
-            *argv
+            *args
         ])
-        return container
 
-    def _run_image(self, image_tag: str, argv: list[str]) -> Image:
-        image = self._build_image(image_tag, None)
-        for container_tag, container in list(image.containers.items()):
-            inspect = container.inspect()
-            assert inspect is not None, (
-                f"failed to build container '{container_tag}' in image '{image_tag}'"
-            )
-            Container.start(inspect)
+    @staticmethod
+    def image(
+        *,
+        env: Environment,
+        image_tag: str,
+        args: list[str],
+        **kwargs: Any
+    ) -> None:
+        Run.container(
+            env=env,
+            image_tag=image_tag,
+            container_tag="",  # default container
+            args=args,
+            **kwargs
+        )
 
-            # ensure container has a valid entry point
-            if not container.entry_point:
-                raise CommandError(
-                    returncode=1,
-                    cmd=["bertrand", "run", f"{self.root}:{image_tag}:{container_tag}", *argv],
-                    stdout="",
-                    stderr=
-                        "Cannot run command: container has no entry point defined.  Either "
-                        "write a '__main__.py' file or include a C++ source file that "
-                        "implements an 'int main()' function to run."
-                )
+    @staticmethod
+    def environment(
+        *,
+        env: Environment,
+        args: list[str],
+        **kwargs: Any
+    ) -> None:
+        Run.container(
+            env=env,
+            image_tag="",  # default image
+            container_tag="",  # default container
+            args=args,
+            **kwargs
+        )
 
-            # run the command within the container context
-            podman_cmd([
-                "exec",
-                *self._run_interactive(),
-                "-w", MOUNT,
-                container.id,
-                *container.entry_point,
-                *argv
-            ])
-        return image
+    @staticmethod
+    def all(
+        *,
+        args: list[str],
+        **kwargs: Any
+    ) -> None:
+        raise TypeError("must specify a container to run a command in")
 
-    def _run_all(self, argv: list[str]) -> Environment:
-        for image_tag in list(self.tags):
-            self._run_image(image_tag, argv)
-        return self
 
-    @overload
-    def run(
-        self,
+@dataclass
+class Stop(_Command):
+    """Stop running Bertrand containers within an environment, scoping to specific images
+    and containers if desired.
+    """
+
+    @staticmethod
+    def container(
+        *,
+        env: Environment,
         image_tag: str,
         container_tag: str,
-        argv: list[str] | None = ...
-    ) -> Container: ...
-    @overload
-    def run(
-        self,
-        image_tag: str,
-        container_tag: None = ...,
-        argv: list[str] | None = ...
-    ) -> Image: ...
-    @overload
-    def run(
-        self,
-        image_tag: None = ...,
-        container_tag: None = ...,
-        argv: list[str] | None = ...
-    ) -> Environment: ...
-    def run(
-        self,
-        image_tag: str | None = None,
-        container_tag: str | None = None,
-        argv: list[str] | None = None
-    ) -> Environment | Image | Container:
-        """Invoke a container's entry point, starting or rebuilding it as necessary,
-        and passing along any additional arguments.
-
-        Parameters
-        ----------
-        image_tag : str | None
-            The image tag to search for.  If no existing image with the same tag is
-            found, and the tag is not empty, then an error will be raised.  Otherwise,
-            if the tagged image is out of date, it will be rebuilt using its original
-            arguments.  If None (the default), all images in the environment will be
-            run with the same arguments.
-        container_tag : str | None
-            The container tag to search for.  If no existing container with the same
-            tag is found, and the tag is not empty, then an error will be raised.
-            Otherwise, if the tagged container is out of date, it will be rebuilt using
-            its original arguments.  If None (the default), all containers in the
-            indicated image will be run with the same arguments.
-        argv : list[str] | None
-            The arguments to pass to the container's entry point when running the
-            command.  The entry point itself is prepended automatically.  If None
-            (the default), then no additional arguments will be passed.
-
-        Returns
-        -------
-        Environment | Image | Container
-            The resulting container metadata, which may be a reference to an existing
-            container or a newly created one.  If `image_tag` is None, then the
-            environment itself will be returned, after scheduling all containers.  If
-            `container_tag` is None, then the parent image will be returned, after
-            scheduling all containers in that image.
-
-        Raises
-        ------
-        OSError
-            If the environment has not been acquired as a context manager, or if this
-            method is invoked from within a Bertrand container.
-        TypeError
-            If `image_tag` is None but `container_tag` is not.
-        KeyError
-            If an image or container tag is provided but could not be found.
-        CommandError
-            If a `podman build`, `podman image inspect`, `podman create`,
-            `podman container inspect`, or `podman exec` command fails, or if the
-            container does not have a valid entry point.
-        """
-        if self._lock.depth < 1:
-            raise OSError("environment must be acquired as a context manager before accessing")
-        if Environment.current() is not None:
-            raise OSError("cannot invoke podman from within a Bertrand container")
-        if argv is None:
-            argv = []
-
-        # run all containers in this environment
-        if image_tag is None:
-            if container_tag is not None:
-                raise TypeError("cannot specify a container when image tag is None")
-            return self._run_all(argv)
-
-        # run all containers in the specified image
-        if container_tag is None:
-            return self._run_image(image_tag, argv)
-
-        # run a specific container
-        return self._run_container(image_tag, container_tag, argv)
-
-    @overload
-    def stop(self, image_tag: str, container_tag: str) -> Container | None: ...
-    @overload
-    def stop(self, image_tag: str, container_tag: None = None) -> Image | None: ...
-    @overload
-    def stop(self, image_tag: None = None, container_tag: None = None) -> Environment | None: ...
-    def stop(
-        self,
-        image_tag: str | None = None,
-        container_tag: str | None = None
-    ) -> Environment | Image | Container | None:
-        """Stop running containers within this environment.
-
-        Parameters
-        ----------
-        image_tag : str | None, optional
-            An optional image tag to stop containers within.  If None (the default),
-            all containers in this environment will be stopped.
-        container_tag : str | None, optional
-            An optional container tag to stop within the indicated image.  If None (the
-            default), all containers in the indicated image (or whole environment if
-            `image_tag` is None) will be stopped.
-
-        Returns
-        -------
-        Environment | Image | Container | None
-            The top-level environment, image, or container metadata that was stopped,
-            or None if no matching tag could be found.
-
-        Raises
-        ------
-        OSError
-            If the environment has not been acquired as a context manager, or if this
-            method is invoked from within a Bertrand container.
-        TypeError
-            If `image_tag` is None but `container_tag` is not.
-        """
-        if self._lock.depth < 1:
-            raise OSError("environment must be acquired as a context manager before accessing")
-        if Environment.current() is not None:
-            raise OSError("cannot invoke podman from within a Bertrand container")
-
-        # stop all containers in the environment
-        if image_tag is None:
-            if container_tag is not None:
-                raise TypeError("cannot specify a container when stopping all images")
-            for i in self.tags.values():
-                for c in i.containers.values():
-                    inspect = c.inspect()
-                    if inspect is None:
-                        continue
-                    Container.stop(inspect, self.timeout)
-            return self
-
-        # stop all containers in an image
-        if container_tag is None:
-            image = self.tags.get(image_tag)
-            if image is None:
-                return None
-            for c in image.containers.values():
-                inspect = c.inspect()
-                if inspect is None:
-                    continue
-                Container.stop(inspect, self.timeout)
-            return image
-
-        # stop a specific container in an image
-        image = self.tags.get(image_tag)
+        timeout: int,
+        **kwargs: Any
+    ) -> Container:
+        image = env.tags.get(image_tag)
         if image is None:
-            return None
+            raise KeyError(f"no image found for tag: '{image_tag}'")
         container = image.containers.get(container_tag)
         if container is None:
-            return None
+            raise KeyError(f"no container found for tag: '{container_tag}'")
         inspect = container.inspect()
         if inspect is None:
-            return None
-        Container.stop(inspect, self.timeout)
+            raise OSError(
+                f"failed to inspect container '{container_tag}' in image '{image_tag}'"
+            )
+        Container.stop(inspect, timeout=timeout)
         return container
 
-    @overload
-    def pause(self, image_tag: str, container_tag: str) -> Container | None: ...
-    @overload
-    def pause(self, image_tag: str, container_tag: None = None) -> Image | None: ...
-    @overload
-    def pause(self, image_tag: None = None, container_tag: None = None) -> Environment | None: ...
-    def pause(
-        self,
-        image_tag: str | None = None,
-        container_tag: str | None = None
-    ) -> Environment | Image | Container | None:
-        """Pause running containers within this environment.
-
-        Parameters
-        ----------
-        image_tag : str | None, optional
-            An optional image tag to pause containers within.  If None (the default),
-            all containers in this environment will be paused.
-        container_tag : str | None, optional
-            An optional container tag to pause within the indicated image.  If None (the
-            default), all containers in the indicated image (or whole environment if
-            `image_tag` is None) will be paused.
-
-        Returns
-        -------
-        Environment | Image | Container | None
-            The top-level environment, image, or container metadata that was paused,
-            or None if no matching tag could be found.
-
-        Raises
-        ------
-        OSError
-            If the environment has not been acquired as a context manager, or if this
-            method is invoked from within a Bertrand container.
-        TypeError
-            If `image_tag` is None but `container_tag` is not.
-        """
-        if self._lock.depth < 1:
-            raise OSError("environment must be acquired as a context manager before accessing")
-        if Environment.current() is not None:
-            raise OSError("cannot invoke podman from within a Bertrand container")
-
-        # pause all containers in the environment
-        if image_tag is None:
-            if container_tag is not None:
-                raise TypeError("cannot specify a container when pausing all images")
-            for i in self.tags.values():
-                for c in i.containers.values():
-                    inspect = c.inspect()
-                    if inspect is None:
-                        continue
-                    Container.pause(inspect)
-            return self
-
-        # pause all containers in an image
-        if container_tag is None:
-            image = self.tags.get(image_tag)
-            if image is None:
-                return None
-            for c in image.containers.values():
-                inspect = c.inspect()
-                if inspect is None:
-                    continue
-                Container.pause(inspect)
-            return image
-
-        # pause a specific container in an image
-        image = self.tags.get(image_tag)
+    @staticmethod
+    def image(
+        *,
+        env: Environment,
+        image_tag: str,
+        timeout: int,
+        **kwargs: Any
+    ) -> Image:
+        image = env.tags.get(image_tag)
         if image is None:
-            return None
+            raise KeyError(f"no image found for tag: '{image_tag}'")
+        image_inspect = image.inspect()
+        if image_inspect is None:
+            raise OSError(f"failed to inspect image '{image_tag}'")
+        for container in image.containers.values():
+            inspect = container.inspect()
+            if inspect is not None:
+                Container.stop(inspect, timeout=timeout)
+        return image
+
+    @staticmethod
+    def environment(
+        *,
+        env: Environment,
+        timeout: int,
+        **kwargs: Any
+    ) -> Environment:
+        for image in env.tags.values():
+            for container in image.containers.values():
+                inspect = container.inspect()
+                if inspect is not None:
+                    Container.stop(inspect, timeout=timeout)
+        return env
+
+    @staticmethod
+    def all(
+        *,
+        timeout: int,
+        **kwargs: Any
+    ) -> None:
+        if confirm(
+            "This will stop all running Bertrand containers on this system.\n"
+            "Are you sure you want to continue? [y/N] "
+        ):
+            for env_path in Ls.list_all(recursive=False):
+                try:
+                    with Environment(Path(env_path)) as env:
+                        Stop.environment(env=env, timeout=timeout, **kwargs)
+                except Exception as err:
+                    print(err, file=sys.stderr)
+
+
+@dataclass
+class Pause(_Command):
+    """Pause running Bertrand containers within an environment, scoping to specific
+    images and containers if desired.
+    """
+
+    @staticmethod
+    def container(
+        *,
+        env: Environment,
+        image_tag: str,
+        container_tag: str,
+        **kwargs: Any
+    ) -> Container:
+        image = env.tags.get(image_tag)
+        if image is None:
+            raise KeyError(f"no image found for tag: '{image_tag}'")
         container = image.containers.get(container_tag)
         if container is None:
-            return None
+            raise KeyError(f"no container found for tag: '{container_tag}'")
         inspect = container.inspect()
         if inspect is None:
-            return None
+            raise OSError(
+                f"failed to inspect container '{container_tag}' in image '{image_tag}'"
+            )
         Container.pause(inspect)
         return container
 
-    @overload
-    def resume(self, image_tag: str, container_tag: str) -> Container | None: ...
-    @overload
-    def resume(self, image_tag: str, container_tag: None = None) -> Image | None: ...
-    @overload
-    def resume(self, image_tag: None = None, container_tag: None = None) -> Environment | None: ...
-    def resume(
-        self,
-        image_tag: str | None = None,
-        container_tag: str | None = None
-    ) -> Environment | Image | Container | None:
-        """Resume paused containers within this environment.
-
-        Parameters
-        ----------
-        image_tag : str | None, optional
-            An optional image tag to resume containers within.  If None (the default),
-            all paused containers in this environment will be resumed.
-        container_tag : str | None, optional
-            An optional container tag to resume within the indicated image.  If None
-            (the default), all paused containers in the indicated image (or whole
-            environment if `image_tag` is None) will be resumed.
-
-        Returns
-        -------
-        Environment | Image | Container | None
-            The top-level environment, image, or container metadata that was resumed,
-            or None if no matching tag could be found.
-
-        Raises
-        ------
-        OSError
-            If the environment has not been acquired as a context manager, or if this
-            method is invoked from within a Bertrand container.
-        TypeError
-            If `image_tag` is None but `container_tag` is not.
-        """
-        if self._lock.depth < 1:
-            raise OSError("environment must be acquired as a context manager before accessing")
-        if Environment.current() is not None:
-            raise OSError("cannot invoke podman from within a Bertrand container")
-
-        # resume all paused containers in the environment
-        if image_tag is None:
-            if container_tag is not None:
-                raise TypeError("cannot specify a container when stopping all images")
-            for i in self.tags.values():
-                for c in i.containers.values():
-                    inspect = c.inspect()
-                    if inspect is None:
-                        continue
-                    Container.resume(inspect)
-            return self
-
-        # resume all paused containers in an image
-        if container_tag is None:
-            image = self.tags.get(image_tag)
-            if image is None:
-                return None
-            for c in image.containers.values():
-                inspect = c.inspect()
-                if inspect is None:
-                    continue
-                Container.resume(inspect)
-            return image
-
-        # resume a specific container in an image
-        image = self.tags.get(image_tag)
+    @staticmethod
+    def image(
+        *,
+        env: Environment,
+        image_tag: str,
+        **kwargs: Any
+    ) -> Image:
+        image = env.tags.get(image_tag)
         if image is None:
-            return None
+            raise KeyError(f"no image found for tag: '{image_tag}'")
+        image_inspect = image.inspect()
+        if image_inspect is None:
+            raise OSError(f"failed to inspect image '{image_tag}'")
+        for container in image.containers.values():
+            inspect = container.inspect()
+            if inspect is not None:
+                Container.pause(inspect)
+        return image
+
+    @staticmethod
+    def environment(
+        *,
+        env: Environment,
+        **kwargs: Any
+    ) -> Environment:
+        for image in env.tags.values():
+            for container in image.containers.values():
+                inspect = container.inspect()
+                if inspect is not None:
+                    Container.pause(inspect)
+        return env
+
+    @staticmethod
+    def all(
+        **kwargs: Any
+    ) -> None:
+        if confirm(
+            "This will pause all running Bertrand containers on this system.\n"
+            "Are you sure you want to continue? [y/N] "
+        ):
+            for env_path in Ls.list_all(recursive=False):
+                try:
+                    with Environment(Path(env_path)) as env:
+                        Pause.environment(env=env, **kwargs)
+                except Exception as err:
+                    print(err, file=sys.stderr)
+
+
+@dataclass
+class Resume(_Command):
+    """Resume paused Bertrand containers within an environment, scoping to specific
+    images and containers if desired.
+    """
+
+    @staticmethod
+    def container(
+        *,
+        env: Environment,
+        image_tag: str,
+        container_tag: str,
+        **kwargs: Any
+    ) -> Container:
+        image = env.tags.get(image_tag)
+        if image is None:
+            raise KeyError(f"no image found for tag: '{image_tag}'")
         container = image.containers.get(container_tag)
         if container is None:
-            return None
+            raise KeyError(f"no container found for tag: '{container_tag}'")
         inspect = container.inspect()
         if inspect is None:
-            return None
+            raise OSError(
+                f"failed to inspect container '{container_tag}' in image '{image_tag}'"
+            )
         Container.resume(inspect)
         return container
 
-    def _prune_container(self, image_tag: str, container_tag: str) -> None:
-        image = self.tags.get(image_tag)
+    @staticmethod
+    def image(
+        *,
+        env: Environment,
+        image_tag: str,
+        **kwargs: Any
+    ) -> Image:
+        image = env.tags.get(image_tag)
         if image is None:
-            return None
-        container = image.containers.get(container_tag)
-        if container is None:
-            return None
-        inspect = container.inspect()
-        if inspect is None or Container.relocated(self.root, inspect):
-            self._rm_container(image_tag, container_tag)
-            return
-
-    def _prune_image(self, image_tag: str) -> None:
-        image = self.tags.get(image_tag)
-        if image is None:
-            return
-        if image.inspect() is None:
-            self._rm_image(image_tag)
-            return
-        for container_tag, container in list(image.containers.items()):
+            raise KeyError(f"no image found for tag: '{image_tag}'")
+        image_inspect = image.inspect()
+        if image_inspect is None:
+            raise OSError(f"failed to inspect image '{image_tag}'")
+        for container in image.containers.values():
             inspect = container.inspect()
-            if inspect is None or Container.relocated(self.root, inspect):
-                self._rm_container(image_tag, container_tag)
+            if inspect is not None:
+                Container.resume(inspect)
+        return image
 
-    def _prune_all(self) -> None:
-        for image_tag, image in list(self.tags.items()):
-            if image.inspect() is None:
-                self._rm_image(image_tag)
-                continue
-            for container_tag, container in list(image.containers.items()):
+    @staticmethod
+    def environment(
+        *,
+        env: Environment,
+        **kwargs: Any
+    ) -> Environment:
+        for image in env.tags.values():
+            for container in image.containers.values():
                 inspect = container.inspect()
-                if inspect is None or Container.relocated(self.root, inspect):
-                    self._rm_container(image_tag, container_tag)
+                if inspect is not None:
+                    Container.resume(inspect)
+        return env
 
-    def prune(self, image_tag: str | None = None, container_tag: str | None = None) -> None:
-        """Delete stale images and/or containers from this environment.
+    @staticmethod
+    def all(
+        **kwargs: Any
+    ) -> None:
+        if confirm(
+            "This will resume all paused Bertrand containers on this system.\n"
+            "Are you sure you want to continue? [y/N] "
+        ):
+            for env_path in Ls.list_all(recursive=False):
+                try:
+                    with Environment(Path(env_path)) as env:
+                        Resume.environment(env=env, **kwargs)
+                except Exception as err:
+                    print(err, file=sys.stderr)
 
-        Parameters
-        ----------
-        image_tag : str | None, optional
-            An optional image tag to prune.  If None (the default), all images and
-            containers in this environment will be pruned.
-        container_tag : str | None, optional
-            An optional container tag to prune.  If None (the default), all containers
-            in the indicated image (or whole environment if `image_tag` is None) will
-            be pruned.
 
-        Raises
-        ------
-        OSError
-            If the environment has not been acquired as a context manager, or if this
-            method is invoked from within a Bertrand container.
-        TypeError
-            If `image_tag` is None but `container_tag` is not.
-        """
-        if self._lock.depth < 1:
-            raise OSError("environment must be acquired as a context manager before accessing")
-        if Environment.current() is not None:
-            raise OSError("cannot invoke podman from within a Bertrand container")
+@dataclass
+class Restart(_Command):
+    """Restart running or paused Bertrand containers within an environment, scoping to
+    specific images and containers if desired.  If an image or container is out of
+    date, then it will be rebuilt before restarting.
+    """
 
-        # prune all images
-        if image_tag is None:
-            if container_tag is not None:
-                raise TypeError("cannot specify a container when pruning all images")
-            self._prune_all()
-            return
-
-        # prune all containers in an image
-        if container_tag is None:
-            self._prune_image(image_tag)
-            return
-
-        # prune specific container in an image
-        self._prune_container(image_tag, container_tag)
-
-    def _restart_container(self, image_tag: str, container_tag: str) -> Container:
-        image = self.tags.get(image_tag)
+    @staticmethod
+    def container(
+        *,
+        env: Environment,
+        image_tag: str,
+        container_tag: str,
+        timeout: int,
+        **kwargs: Any
+    ) -> Container:
+        image = env.tags.get(image_tag)
         if image is None:
             raise KeyError(f"no image found for tag: '{image_tag}'")
         container = image.containers.get(container_tag)
         if container is None:
             raise KeyError(f"no container found for tag: '{container_tag}'")
 
-        # detect whether the current container is running
+        # detect whether the container is currently running
         inspect = container.inspect()
         if inspect is None:
-            image.containers.pop(container_tag)
             running = False
         else:
             running = Container.running(inspect)
 
         # possibly rebuild the parent image and all downstream containers
-        image = self._build_image(image_tag, None)
+        image = Build.image(env=env, image_tag=image_tag, args=[], **kwargs)
 
         # if the container was previously running, restart it
-        container = image.containers.get(container_tag)
-        assert container is not None, (
-            f"failed to build container '{container_tag}' in image '{image_tag}'"
-        )
+        container = image.containers.get(container_tag)  # may have drifted
+        if container is None:
+            raise KeyError(f"no container found for tag: '{container_tag}' after rebuild")
         inspect = container.inspect()
-        assert inspect is not None, (
-            f"failed to build container '{container_tag}' in image '{image_tag}'"
-        )
+        if inspect is None:
+            raise OSError(
+                f"failed to inspect container '{container_tag}' in image '{image_tag}' "
+                "after rebuild"
+            )
         if running:
-            if Container.new(inspect):
+            if Container.new(inspect):  # newly-rebuilt
                 Container.start(inspect)
             else:
-                Container.restart(inspect, self.timeout)
+                Container.restart(inspect, timeout=timeout)  # still running
         return container
 
-    def _restart_image(self, image_tag: str) -> Image:
-        image = self.tags.get(image_tag)
+    @staticmethod
+    def image(
+        *,
+        env: Environment,
+        image_tag: str,
+        timeout: int,
+        **kwargs: Any
+    ) -> Image:
+        image = env.tags.get(image_tag)
         if image is None:
             raise KeyError(f"no image found for tag: '{image_tag}'")
 
-        # record all running containers before rebuilding
-        running: list[str] = []
+        # detect whether any containers are currently running
+        running: set[str] = set()
         for container_tag, c in image.containers.items():
             inspect = c.inspect()
             if inspect is not None and Container.running(inspect):
-                running.append(container_tag)
+                running.add(container_tag)
 
-        # rebuild the image and all downstream containers
-        image = self._build_image(image_tag, None)
+        # possibly rebuild the image and all downstream containers
+        image = Build.image(env=env, image_tag=image_tag, args=[], **kwargs)
 
-        # restart previously running containers
+        # restart any previously-running containers
         for container_tag in running:
-            container = image.containers.get(container_tag)
-            assert container is not None, (
-                f"failed to build container '{container_tag}' in image '{image_tag}'"
-            )
+            container = image.containers.get(container_tag)  # may have drifted
+            if container is None:
+                continue  # container was removed during rebuild, skip it
             inspect = container.inspect()
-            assert inspect is not None, (
-                f"failed to build container '{container_tag}' in image '{image_tag}'"
-            )
-            if Container.new(inspect):
+            if inspect is None:
+                continue  # container was removed during rebuild, skip it
+            if Container.new(inspect):  # newly-rebuilt
                 Container.start(inspect)
             else:
-                Container.restart(inspect, self.timeout)
+                Container.restart(inspect, timeout=timeout)  # still running
 
         return image
 
-    def _restart_all(self) -> Environment:
-        for image_tag in list(self.tags):
-            self._restart_image(image_tag)
-        return self
+    @staticmethod
+    def environment(
+        *,
+        env: Environment,
+        timeout: int,
+        **kwargs: Any
+    ) -> Environment:
+        for image_tag in env.tags:
+            Restart.image(env=env, image_tag=image_tag, timeout=timeout, **kwargs)
+        return env
 
-    @overload
-    def restart(self, image_tag: str, container_tag: str) -> Container | None: ...
-    @overload
-    def restart(self, image_tag: str, container_tag: None = None) -> Image | None: ...
-    @overload
-    def restart(self, image_tag: None = None, container_tag: None = None) -> Environment | None: ...
-    def restart(
-        self,
-        image_tag: str | None = None,
-        container_tag: str | None = None
-    ) -> Environment | Image | Container | None:
-        """Restart running containers within this environment, possibly rebuilding any
-        that are out of date.
+    @staticmethod
+    def all(
+        *,
+        timeout: int,
+        **kwargs: Any
+    ) -> None:
+        if confirm(
+            "This will restart all running Bertrand containers on this system.  This may "
+            "take a long time depending on the number and complexity of the environments.\n"
+            "Are you sure you want to continue? [y/N] "
+        ):
+            for env_path in Ls.list_all(recursive=False):
+                try:
+                    with Environment(Path(env_path)) as env:
+                        Restart.environment(env=env, timeout=timeout, **kwargs)
+                except Exception as err:
+                    print(err, file=sys.stderr)
 
-        Parameters
-        ----------
-        image_tag : str | None, optional
-            An optional image tag to restart containers within.  If None (the default),
-            all running containers in this environment will be restarted.
-        container_tag : str | None, optional
-            An optional container tag to restart within the indicated image.  If None
-            (the default), all running containers in the indicated image (or whole
-            environment if `image_tag` is None) will be restarted.
 
-        Returns
-        -------
-        Environment | Image | Container | None
-            The top-level environment, image, or container metadata that was restarted,
-            or None if no matching tag could be found.
+@dataclass
+class Prune(_Command):
+    """Remove all stopped Bertrand images and containers within an environment, scoping
+    to specific images and containers if desired.
+    
+    This command only deletes images and containers, and never alters the host
+    filesystem or existing tags.  Any images or containers that are removed will be
+    rebuilt the next time they are started.
+    """
 
-        Raises
-        ------
-        OSError
-            If the environment has not been acquired as a context manager, or if this
-            method is invoked from within a Bertrand container.
-        TypeError
-            If `image_tag` is None but `container_tag` is not.
-        KeyError
-            If an image or container tag is provided but could not be found.
-        """
-        if self._lock.depth < 1:
-            raise OSError("environment must be acquired as a context manager before accessing")
-        if Environment.current() is not None:
-            raise OSError("cannot invoke podman from within a Bertrand container")
+    @staticmethod
+    def container(
+        *,
+        env: Environment,
+        image_tag: str,
+        container_tag: str,
+        **kwargs: Any
+    ) -> None:
+        image = env.tags.get(image_tag)
+        if image is None:
+            return None
+        container = image.containers.get(container_tag)
+        if container is None:
+            return None
+        inspect = container.inspect()
+        if inspect is not None and Container.stopped(inspect):
+            container.remove(force=True, timeout=env.timeout, missing_ok=True)
 
-        # restart all containers in the environment
-        if image_tag is None:
-            if container_tag is not None:
-                raise TypeError("cannot specify a container when stopping all images")
-            return self._restart_all()
+    @staticmethod
+    def image(
+        *,
+        env: Environment,
+        image_tag: str,
+        **kwargs: Any
+    ) -> None:
+        image = env.tags.get(image_tag)
+        if image is None:
+            return None
 
-        # restart all containers in an image
-        if container_tag is None:
-            return self._restart_image(image_tag)
+        # remove any stopped containers for this image
+        for container in image.containers.values():
+            inspect = container.inspect()
+            if inspect is not None and Container.stopped(inspect):
+                container.remove(force=True, timeout=env.timeout, missing_ok=True)
 
-        # restart a specific container in an image
-        return self._restart_container(image_tag, container_tag)
+        # check whether the image is now dangling
+        containers = list(podman_cmd([
+            "container",
+            "ls",
+            "-a",
+            "-q",
+            "--no-trunc",
+            "--filter", f"ancestor={image.id}",
+        ], capture_output=True).stdout.splitlines())
+        if not containers:
+            podman_cmd(["image", "rm", "-f", "i", image.id])
 
-    class Info(TypedDict):
+        # remove any now-dangling volumes
+        _remove_dangling_volumes(force=True, missing_ok=True)
+
+    @staticmethod
+    def environment(
+        *,
+        env: Environment,
+        **kwargs: Any
+    ) -> None:
+        for image_tag in env.tags:
+            Prune.image(env=env, image_tag=image_tag, **kwargs)
+
+    @staticmethod
+    def all(**kwargs: Any) -> None:
+        if confirm(
+            "This will prune all stopped Bertrand containers and dangling images on this "
+            "system.  This may take a long time depending on the number and complexity "
+            "of the environments.\n"
+            "Are you sure you want to continue? [y/N] "
+        ):
+            for env_path in Ls.list_all(recursive=False):
+                try:
+                    with Environment(Path(env_path)) as env:
+                        Prune.environment(env=env, **kwargs)
+                except Exception as err:
+                    print(err, file=sys.stderr)
+
+
+@dataclass
+class Info(_Command):
+    """Gather status information for all containers in a Bertrand environment, scoping
+    to specific images and containers if desired.
+
+    If `parse` is True, then the output will be parsed and returned as a list of JSON
+    dictionaries, one per container.  Otherwise, all information will be printed to
+    stdout in a human-readable table format, and nothing will be returned by this
+    function.
+    """
+    class JSON(TypedDict):
         """Type hint for the json output of `podman container ls`."""
         ID: str
         Names: str
@@ -2606,7 +2868,19 @@ RUN --mount=type=cache,target={TMP}/.cache/pip,sharing=locked \
         Command: str
         RunningFor: str
 
-    def _info(self, cmd: list[str], *, parse: bool) -> list[Environment.Info] | None:
+    parse = bool
+
+    @staticmethod
+    def _format(labels: list[str], *, parse: bool) -> list[Info.JSON] | None:
+        cmd = [
+            "container",
+            "ls",
+            "--all",
+            "--size",
+            *labels,
+        ]
+
+        # parse JSON
         if parse:
             cmd.append("--no-trunc")
             cmd.append("--format=json")
@@ -2616,6 +2890,7 @@ RUN --mount=type=cache,target={TMP}/.cache/pip,sharing=locked \
                 out = [out]
             return out
 
+        # print table
         cmd.append(
             "--format=table {{.Names}}\t{{.CreatedAt}}\t{{.State}}\t{{.Command}}\t"
             "{{.RunningFor}}\t{{.Status}}\t{{.Size}}\t{{.Ports}}"
@@ -2623,90 +2898,80 @@ RUN --mount=type=cache,target={TMP}/.cache/pip,sharing=locked \
         podman_cmd(cmd)
         return None
 
-    @overload
-    def info(
-        self,
-        image_tag: str | None = None,
-        container_tag: str | None = None,
+    @staticmethod
+    def container(
         *,
-        parse: Literal[True] = ...
-    ) -> list[Environment.Info]: ...
-    @overload
-    def info(
-        self,
-        image_tag: str | None = None,
-        container_tag: str | None = None,
+        env: Environment,
+        image_tag: str,
+        container_tag: str,
+        parse: bool,
+        **kwargs: Any
+    ) -> list[Info.JSON] | None:
+        image = env.tags.get(image_tag)
+        if image is None:
+            raise KeyError(f"no image found for tag: '{image_tag}'")
+        container = image.containers.get(container_tag)
+        if container is None:
+            raise KeyError(f"no container found for tag: '{container_tag}'")
+        return Info._format([
+            "--filter", "label=BERTRAND=1",
+            "--filter", f"label=BERTRAND_ENV={env.id}",
+            "--filter", f"label=BERTRAND_IMAGE={image_tag}",
+            "--filter", f"label=BERTRAND_CONTAINER={container_tag}",
+        ], parse=parse)
+
+    @staticmethod
+    def image(
         *,
-        parse: Literal[False],
-    ) -> None: ...
-    def info(
-        self,
-        image_tag: str | None = None,
-        container_tag: str | None = None,
+        env: Environment,
+        image_tag: str,
+        parse: bool,
+        **kwargs: Any
+    ) -> list[Info.JSON] | None:
+        image = env.tags.get(image_tag)
+        if image is None:
+            raise KeyError(f"no image found for tag: '{image_tag}'")
+        return Info._format([
+            "--filter", "label=BERTRAND=1",
+            "--filter", f"label=BERTRAND_ENV={env.id}",
+            "--filter", f"label=BERTRAND_IMAGE={image_tag}",
+        ], parse=parse)
+
+    @staticmethod
+    def environment(
         *,
-        parse: bool = True
-    ) -> list[Environment.Info] | None:
-        """Gather status information for containers within this environment.
+        env: Environment,
+        parse: bool,
+        **kwargs: Any
+    ) -> list[Info.JSON] | None:
+        return Info._format([
+            "--filter", "label=BERTRAND=1",
+            "--filter", f"label=BERTRAND_ENV={env.id}",
+        ], parse=parse)
 
-        Parameters
-        ----------
-        image_tag : str | None, optional
-            An optional image tag to gather information for.  If None (the default),
-            information will be gathered for all containers in this environment.
-        container_tag : str | None, optional
-            An optional container tag to gather information for.  If None (the default),
-            information will be gathered for all containers in the indicated image (or
-            whole environment if `image_tag` is None).
-        parse : bool, optional
-            Whether to parse the output as JSON and return it as a list of dictionaries.
-            If false, the output will be printed to stdout in a human-readable table
-            format, and nothing will be returned by this method.  Default is True.
+    @staticmethod
+    def all(
+        *,
+        parse: bool,
+        **kwargs: Any
+    ) -> list[Info.JSON] | None:
+        return Info._format([
+            "--filter", "label=BERTRAND=1",
+        ], parse=parse)
 
-        Returns
-        -------
-        list[Environment.Info] | None
-            If `parse` is True, then a list of dictionaries containing status information
-            for each matching container.  If `parse` is False, then None.
 
-        Raises
-        ------
-        OSError
-            If the environment has not been acquired as a context manager, or if this
-            method is invoked from within a Bertrand container.
-        TypeError
-            If `image_tag` is None but `container_tag` is not.
-        """
-        if self._lock.depth < 1:
-            raise OSError("environment must be acquired as a context manager before accessing")
-        if Environment.current() is not None:
-            raise OSError("cannot invoke podman from within a Bertrand container")
+@dataclass
+class Stats(_Command):
+    """Gather resource utilization statistics for all containers in a Bertrand
+    environment, scoping to specific images and containers if desired.
 
-        cmd = [
-            "container",
-            "ls",
-            "--all",
-            "--size",
-            "--filter", f"label=BERTRAND_ENV={self.id}",
-        ]
-
-        # gather info for all containers in the environment
-        if image_tag is None:
-            if container_tag is not None:
-                raise TypeError("cannot specify a container when listing all images")
-            return self._info(cmd, parse=parse)
-
-        # gather info for all containers in an image
-        cmd.append("--filter")
-        cmd.append(f"label=BERTRAND_IMAGE={image_tag}")
-        if container_tag is None:
-            return self._info(cmd, parse=parse)
-
-        # gather info for a specific container in an image
-        cmd.append("--filter")
-        cmd.append(f"label=BERTRAND_CONTAINER={container_tag}")
-        return self._info(cmd, parse=parse)
-
-    class Stats(TypedDict):
+    If `parse` is True, then the output will be parsed and returned as a list of JSON
+    dictionaries, one per container.  Otherwise, all information will be printed to
+    stdout in a human-readable table format, and nothing will be returned by this
+    function.  `parse` is incompatible with `stream`, which continuously updates the
+    printed output in a streaming format.
+    """
+    class JSON(TypedDict):
         """Type hint for the json output of `podman stats`."""
         Container: str
         ID: str
@@ -2718,17 +2983,28 @@ RUN --mount=type=cache,target={TMP}/.cache/pip,sharing=locked \
         BlockIO: str
         PIDs: str
 
-    def _stats(
-        self,
-        ids: Iterable[str],
-        *,
-        parse: bool,
-        stream: bool
-    ) -> list[Environment.Stats] | None:
+    parse = bool
+    stream = bool
+
+    @staticmethod
+    def _format(labels: list[str], *, parse: bool, stream: bool) -> list[Stats.JSON] | None:
+        # first, get the container ids for all labels
+        ids = list(podman_cmd([
+            "container",
+            "ls",
+            "-a",
+            "-q",
+            *labels,
+        ], capture_output=True).stdout.strip().splitlines())
+        if not ids:
+            return [] if parse else None
+
+        # build stats command with appropriate flags
         cmd = ["container", "stats"]
         if not stream:
             cmd.append("--no-stream")
 
+        # parse JSON
         if parse:
             cmd.append("--no-trunc")
             cmd.append("--format=json")
@@ -2739,6 +3015,7 @@ RUN --mount=type=cache,target={TMP}/.cache/pip,sharing=locked \
                 return [out]
             return out
 
+        # print table
         if platform.system() == "Windows":
             cmd.append(
                 "--format=table {{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.NetIO}}\t"
@@ -2749,562 +3026,150 @@ RUN --mount=type=cache,target={TMP}/.cache/pip,sharing=locked \
                 "--format=table {{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.MemPerc}}\t"
                 "{{.NetIO}}\t{{.BlockIO}}\t{{.PIDs}}"
             )
-        cmd.extend(ids)
+            cmd.extend(ids)
         podman_cmd(cmd)
         return None
 
-    @overload
-    def stats(
-        self,
-        image_tag: str | None = None,
-        container_tag: str | None = None,
+    @staticmethod
+    def container(
         *,
-        parse: Literal[True] = ...,
-        stream: bool = ...
-    ) -> list[Environment.Stats]: ...
-    @overload
-    def stats(
-        self,
-        image_tag: str | None = None,
-        container_tag: str | None = None,
-        *,
-        parse: Literal[False],
-        stream: bool = ...
-    ) -> None: ...
-    def stats(
-        self,
-        image_tag: str | None = None,
-        container_tag: str | None = None,
-        *,
-        parse: bool = True,
-        stream: bool = False
-    ) -> list[Environment.Stats] | None:
-        """Gather resource utilization statistics for containers within this
-        environment.
-
-        Parameters
-        ----------
-        image_tag : str | None, optional
-            An optional image tag to gather statistics for.  If None (the default),
-            statistics will be gathered for all containers in this environment.
-        container_tag : str | None, optional
-            An optional container tag to gather statistics for.  If None (the default),
-            statistics will be gathered for all containers in the indicated image (or
-            whole environment if `image_tag` is None).
-        parse : bool, optional
-            Whether to parse the output as JSON and return it as a list of dictionaries.
-            If false, the output will be printed to stdout in a human-readable table
-            format, and nothing will be returned by this method.  Default is True.
-        stream : bool, optional
-            Whether to continuously update the printed output in a streaming format.
-            Incompatible with `parse=True`.  Default is False.
-
-        Returns
-        -------
-        list[Environment.Stats] | None
-            If `parse` is True, then a list of dictionaries containing resource
-            utilization statistics for each matching container.  If `parse` is False,
-            then None.
-
-        Raises
-        ------
-        OSError
-            If the environment has not been acquired as a context manager, or if this
-            method is invoked from within a Bertrand container.
-        TypeError
-            If `image_tag` is None but `container_tag` is not, or if both `parse` and
-            `stream` are True.
-        """
-        if self._lock.depth < 1:
-            raise OSError("environment must be acquired as a context manager before accessing")
-        if Environment.current() is not None:
-            raise OSError("cannot invoke podman from within a Bertrand container")
-        if parse and stream:
-            raise TypeError("cannot stream output in json format")
-
-        search = [
-            "container",
-            "ls",
-            "--format", "{{.ID}}",
-            "--filter", f"label=BERTRAND_ENV={self.id}",
-        ]
-
-        # gather stats for all containers in the environment
-        if image_tag is None:
-            if container_tag is not None:
-                raise TypeError("cannot specify a container when listing all images")
-            ids = podman_cmd(search, capture_output=True)
-            return self._stats(ids.stdout.strip().splitlines(), parse=parse, stream=stream)
-
-        # gather stats for all containers in an image
-        search.append(f"--filter=label=BERTRAND_IMAGE={image_tag}")
-        if container_tag is None:
-            ids = podman_cmd(search, capture_output=True)
-            return self._stats(ids.stdout.strip().splitlines(), parse=parse, stream=stream)
-
-        # gather stats for a specific container in an image
-        search.append(f"--filter=label=BERTRAND_CONTAINER={container_tag}")
-        ids = podman_cmd(search, capture_output=True)
-        return self._stats(ids.stdout.strip().splitlines(), parse=parse, stream=stream)
-
-    def top(self, image_tag: str, container_tag: str) -> None:
-        """Print the running processes within a specific container in this
-        environment.
-
-        Parameters
-        ----------
-        image_tag : str
-            The image tag containing the container to inspect.
-        container_tag : str
-            The container tag to inspect.
-
-        Raises
-        ------
-        OSError
-            If the environment has not been acquired as a context manager, or if this
-            method is invoked from within a Bertrand container.
-        KeyError
-            If the specified image or container tag could not be found.
-        """
-        if self._lock.depth < 1:
-            raise OSError("environment must be acquired as a context manager before accessing")
-        if Environment.current() is not None:
-            raise OSError("cannot invoke podman from within a Bertrand container")
-
-        image = self.tags.get(image_tag)
+        env: Environment,
+        image_tag: str,
+        container_tag: str,
+        parse: bool,
+        stream: bool,
+        **kwargs: Any
+    ) -> list[Stats.JSON] | None:
+        image = env.tags.get(image_tag)
         if image is None:
             raise KeyError(f"no image found for tag: '{image_tag}'")
         container = image.containers.get(container_tag)
         if container is None:
             raise KeyError(f"no container found for tag: '{container_tag}'")
-        podman_cmd(["container", "top", f"{container.id}"])
+        return Stats._format([
+            "--filter", "label=BERTRAND=1",
+            "--filter", f"label=BERTRAND_ENV={env.id}",
+            "--filter", f"label=BERTRAND_IMAGE={image_tag}",
+            "--filter", f"label=BERTRAND_CONTAINER={container_tag}",
+        ], parse=parse, stream=stream)
+
+    @staticmethod
+    def image(
+        *,
+        env: Environment,
+        image_tag: str,
+        parse: bool,
+        stream: bool,
+        **kwargs: Any
+    ) -> list[Stats.JSON] | None:
+        image = env.tags.get(image_tag)
+        if image is None:
+            raise KeyError(f"no image found for tag: '{image_tag}'")
+        return Stats._format([
+            "--filter", "label=BERTRAND=1",
+            "--filter", f"label=BERTRAND_ENV={env.id}",
+            "--filter", f"label=BERTRAND_IMAGE={image_tag}",
+        ], parse=parse, stream=stream)
+
+    @staticmethod
+    def environment(
+        *,
+        env: Environment,
+        parse: bool,
+        stream: bool,
+        **kwargs: Any
+    ) -> list[Stats.JSON] | None:
+        return Stats._format([
+            "--filter", "label=BERTRAND=1",
+            "--filter", f"label=BERTRAND_ENV={env.id}",
+        ], parse=parse, stream=stream)
+
+    @staticmethod
+    def all(
+        *,
+        parse: bool,
+        stream: bool,
+        **kwargs: Any
+    ) -> list[Stats.JSON] | None:
+        return Stats._format([
+            "--filter", "label=BERTRAND=1",
+        ], parse=parse, stream=stream)
 
 
-def ls_global() -> list[str]:
-    """Return a list of paths to all Bertrand environments on the system.
+@dataclass
+class Top(_Command):
+    """Display the running processes for a specific container in a Bertrand
+    environment.
 
-    Returns
-    -------
-    list[str]
-        A list of paths to all Bertrand environments found on the system.
-
-    Raises
-    ------
-    OSError
-        If this function is invoked from within a Bertrand container.
+    Note that this command does not scope to images or environments, and always prints
+    to stdout in a human-readable table format.
     """
-    if Environment.current() is not None:
-        raise OSError("cannot invoke podman from within a Bertrand container")
 
-    # find all Bertrand containers on the system
-    out = list(podman_cmd([
-        "container",
-        "ls",
-        "--all",
-        "--filter", "label=BERTRAND=1",
-        "--no-trunc",
-        "--format={{.ID}}"
-    ], capture_output=True).stdout.strip().splitlines())
-    if not out:
-        return []
+    @staticmethod
+    def container(
+        *,
+        env: Environment,
+        image_tag: str,
+        container_tag: str,
+        **kwargs: Any
+    ) -> None:
+        image = env.tags.get(image_tag)
+        if image is None:
+            raise KeyError(f"no image found for tag: '{image_tag}'")
+        container = image.containers.get(container_tag)
+        if container is None:
+            raise KeyError(f"no container found for tag: '{container_tag}'")
+        podman_cmd([
+            "container",
+            "top",
+            container.id,
+        ])
 
-    # inspect all containers to find their mount points
-    inspects = json.loads(podman_cmd(["container", "inspect", *out], capture_output=True).stdout)
-    assert isinstance(inspects, list)
-    seen: set[Path] = set()
-    result: list[str] = []
-    for inspect in inspects:
-        assert isinstance(inspect, dict)
-        mount = Container.mount(inspect)  # type: ignore[arg-type]
-        if mount is not None and mount not in seen:
-            seen.add(mount)
-            result.append(str(mount))
-    return result
-
-
-def rm_global(*, assume_yes: bool = False) -> None:
-    """Delete all Bertrand environments on the system.
-
-    Parameters
-    ----------
-    assume_yes : bool, optional
-        If True, do not prompt for confirmation before deleting all environments.
-        Default is False.
-
-    Raises
-    ------
-    OSError
-        If this function is invoked from within a Bertrand container.
-    """
-    if Environment.current() is not None:
-        raise OSError("cannot invoke podman from within a Bertrand container")
-
-    if confirm(
-        "This will delete all Bertrand environments, images, and containers on this "
-        "system.  This action cannot be undone.\n"
-        "Are you sure you want to continue? [y/N]: ",
-        assume_yes=assume_yes
-    ):
-        for env_path in ls_global():
-            try:
-                with Environment(Path(env_path)) as env:
-                    env.rm()
-            except Exception:
-                pass
-
-
-def build_global(*, assume_yes: bool = False) -> None:
-    """Build all Bertrand environments on the system.
-
-    Parameters
-    ----------
-    assume_yes : bool, optional
-        If True, do not prompt for confirmation before building all environments.
-        Default is False.
-
-    Raises
-    ------
-    OSError
-        If this function is invoked from within a Bertrand container.
-    """
-    if Environment.current() is not None:
-        raise OSError("cannot invoke podman from within a Bertrand container")
-
-    if confirm(
-        "This will build all Bertrand environments on this system.  This may take "
-        "a long time depending on the number and complexity of the environments.\n"
-        "Are you sure you want to continue? [y/N]: ",
-        assume_yes=assume_yes
-    ):
-        for env_path in ls_global():
-            try:
-                with Environment(Path(env_path)) as env:
-                    env.build()
-            except Exception:
-                pass
-
-
-def start_global(*, assume_yes: bool = False) -> None:
-    """Start all stopped Bertrand containers on the system.
-
-    Parameters
-    ----------
-    assume_yes : bool, optional
-        If True, do not prompt for confirmation before starting all containers.
-        Default is False.
-
-    Raises
-    ------
-    OSError
-        If this function is invoked from within a Bertrand container.
-    """
-    if Environment.current() is not None:
-        raise OSError("cannot invoke podman from within a Bertrand container")
-
-    if confirm(
-        "This will start all stopped Bertrand containers on this system.\n"
-        "Are you sure you want to continue? [y/N]: ",
-        assume_yes=assume_yes
-    ):
-        for env_path in ls_global():
-            try:
-                with Environment(Path(env_path)) as env:
-                    env.start()
-            except Exception:
-                pass
-
-
-def run_global(argv: list[str] | None = None, *, assume_yes: bool = False) -> None:
-    """Run all stopped Bertrand containers on the system.
-
-    Parameters
-    ----------
-    argv : list[str] | None, optional
-        An optional list of command-line arguments to pass to each container
-        when running.  If None (the default), the default command for each container
-        will be used.
-    assume_yes : bool, optional
-        If True, do not prompt for confirmation before running all containers.
-        Default is False.
-
-    Raises
-    ------
-    OSError
-        If this function is invoked from within a Bertrand container.
-    """
-    if Environment.current() is not None:
-        raise OSError("cannot invoke podman from within a Bertrand container")
-
-    if confirm(
-        "This will run all Bertrand containers on this system.\n"
-        "Are you sure you want to continue? [y/N]: ",
-        assume_yes=assume_yes
-    ):
-        for env_path in ls_global():
-            try:
-                with Environment(Path(env_path)) as env:
-                    env.run(argv=argv)
-            except Exception:
-                pass
-
-
-def stop_global(*, assume_yes: bool = False) -> None:
-    """Stop all running Bertrand containers on the system.
-
-    Parameters
-    ----------
-    assume_yes : bool, optional
-        If True, do not prompt for confirmation before stopping all containers.
-        Default is False.
-
-    Raises
-    ------
-    OSError
-        If this function is invoked from within a Bertrand container.
-    """
-    if Environment.current() is not None:
-        raise OSError("cannot invoke podman from within a Bertrand container")
-
-    if confirm(
-        "This will stop all running Bertrand containers on this system.\n"
-        "Are you sure you want to continue? [y/N]: ",
-        assume_yes=assume_yes
-    ):
-        for env_path in ls_global():
-            try:
-                with Environment(Path(env_path)) as env:
-                    env.stop()
-            except Exception:
-                pass
-
-
-def pause_global(*, assume_yes: bool = False) -> None:
-    """Pause all running Bertrand containers on the system.
-
-    Parameters
-    ----------
-    assume_yes : bool, optional
-        If True, do not prompt for confirmation before pausing all containers.
-        Default is False.
-
-    Raises
-    ------
-    OSError
-        If this function is invoked from within a Bertrand container.
-    """
-    if Environment.current() is not None:
-        raise OSError("cannot invoke podman from within a Bertrand container")
-
-    if confirm(
-        "This will pause all running Bertrand containers on this system.\n"
-        "Are you sure you want to continue? [y/N]: ",
-        assume_yes=assume_yes
-    ):
-        for env_path in ls_global():
-            try:
-                with Environment(Path(env_path)) as env:
-                    env.pause()
-            except Exception:
-                pass
-
-
-def resume_global(*, assume_yes: bool = False) -> None:
-    """Resume all paused Bertrand containers on the system.
-
-    Parameters
-    ----------
-    assume_yes : bool, optional
-        If True, do not prompt for confirmation before resuming all containers.
-        Default is False.
-
-    Raises
-    ------
-    OSError
-        If this function is invoked from within a Bertrand container.
-    """
-    if Environment.current() is not None:
-        raise OSError("cannot invoke podman from within a Bertrand container")
-
-    if confirm(
-        "This will resume all paused Bertrand containers on this system.\n"
-        "Are you sure you want to continue? [y/N]: ",
-        assume_yes=assume_yes
-    ):
-        for env_path in ls_global():
-            try:
-                with Environment(Path(env_path)) as env:
-                    env.resume()
-            except Exception:
-                pass
-
-
-def prune_global() -> None:
-    """Delete all stale Bertrand images and containers on the system.
-
-    Raises
-    ------
-    OSError
-        If this function is invoked from within a Bertrand container.
-    """
-    if Environment.current() is not None:
-        raise OSError("cannot invoke podman from within a Bertrand container")
-
-    for env_path in ls_global():
-        try:
-            with Environment(Path(env_path)) as env:
-                env.prune()
-        except Exception:
-            pass
-
-
-def restart_global(*, assume_yes: bool = False) -> None:
-    """Restart all running Bertrand containers on the system.
-
-    Parameters
-    ----------
-    assume_yes : bool, optional
-        If True, do not prompt for confirmation before restarting all containers.
-        Default is False.
-
-    Raises
-    ------
-    OSError
-        If this function is invoked from within a Bertrand container.
-    """
-    if Environment.current() is not None:
-        raise OSError("cannot invoke podman from within a Bertrand container")
-
-    if confirm(
-        "This will restart all running Bertrand containers on this system.\n"
-        "Are you sure you want to continue? [y/N]: ",
-        assume_yes=assume_yes
-    ):
-        for env_path in ls_global():
-            try:
-                with Environment(Path(env_path)) as env:
-                    env.restart()
-            except Exception:
-                pass
-
-
-@overload
-def info_global(*, parse: Literal[True] = ...) -> list[Environment.Info]: ...
-@overload
-def info_global(*, parse: Literal[False]) -> None: ...
-def info_global(*, parse: bool = True) -> list[Environment.Info] | None:
-    """Gather status information for all containers in all Bertrand environments
-    on the system.
-
-    Parameters
-    ----------
-    parse : bool, optional
-        Whether to parse the output as JSON and return it as a list of dictionaries.
-        If false, the output will be printed to stdout in a human-readable table
-        format, and nothing will be returned by this function.  Default is True.
-
-    Returns
-    -------
-    list[Environment.Info] | None
-        If `parse` is True, then a list of dictionaries containing status information
-        for each container in all Bertrand environments.  If `parse` is False, then
-        None.
-
-    Raises
-    ------
-    OSError
-        If this function is invoked from within a Bertrand container.
-    """
-    if Environment.current() is not None:
-        raise OSError("cannot invoke podman from within a Bertrand container")
-
-    cmd = [
-        "container",
-        "ls",
-        "--all",
-        "--size",
-        "--filter", "label=BERTRAND=1",
-    ]
-
-    if parse:
-        cmd.append("--no-trunc")
-        cmd.append("--format=json")
-        result = podman_cmd(cmd, capture_output=True)
-        out = json.loads(result.stdout)
-        if not isinstance(out, list):
-            out = [out]
-        return out
-
-    cmd.append(
-        "--format=table {{.Names}}\t{{.CreatedAt}}\t{{.State}}\t{{.Command}}\t"
-        "{{.RunningFor}}\t{{.Status}}\t{{.Size}}\t{{.Ports}}"
-    )
-    podman_cmd(cmd)
-    return None
-
-
-@overload
-def stats_global(*, parse: Literal[True] = ..., stream: bool = ...) -> list[Environment.Stats]: ...
-@overload
-def stats_global(*, parse: Literal[False], stream: bool = ...) -> None: ...
-def stats_global(*, parse: bool = True, stream: bool = False) -> list[Environment.Stats] | None:
-    """Gather resource utilization statistics for all containers in all Bertrand
-    environments on the system.
-
-    Parameters
-    ----------
-    parse : bool, optional
-        Whether to parse the output as JSON and return it as a list of dictionaries.
-        If false, the output will be printed to stdout in a human-readable table
-        format, and nothing will be returned by this function.  Default is True.
-    stream : bool, optional
-        Whether to continuously update the printed output in a streaming format.
-        Incompatible with `parse=True`.  Default is False.
-
-    Returns
-    -------
-    list[Environment.Stats] | None
-        If `parse` is True, then a list of dictionaries containing resource
-        utilization statistics for each container in all Bertrand environments.  If
-        `parse` is False, then None.
-
-    Raises
-    ------
-    OSError
-        If this function is invoked from within a Bertrand container.
-    TypeError
-        If both `parse` and `stream` are True.
-    """
-    if Environment.current() is not None:
-        raise OSError("cannot invoke podman from within a Bertrand container")
-    if parse and stream:
-        raise TypeError("cannot stream output in json format")
-
-    cmd = [
-        "container",
-        "stats",
-        "--no-trunc",
-        "--filter", "label=BERTRAND=1",
-    ]
-    if not stream:
-        cmd.append("--no-stream")
-
-    if parse:
-        cmd.append("--format=json")
-        result = podman_cmd(cmd, capture_output=True)
-        out = json.loads(result.stdout)
-        if not isinstance(out, list):
-            return [out]
-        return out
-
-    if platform.system() == "Windows":
-        cmd.append(
-            "--format=table {{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.NetIO}}\t"
-            "{{.BlockIO}}"
+    @staticmethod
+    def image(
+        *,
+        env: Environment,
+        image_tag: str,
+        **kwargs: Any
+    ) -> None:
+        Top.container(
+            env=env,
+            image_tag=image_tag,
+            container_tag="",  # default container
+            **kwargs
         )
-    else:
-        cmd.append(
-            "--format=table {{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.MemPerc}}\t"
-            "{{.NetIO}}\t{{.BlockIO}}\t{{.PIDs}}"
+
+    @staticmethod
+    def environment(
+        *,
+        env: Environment,
+        **kwargs: Any
+    ) -> None:
+        Top.container(
+            env=env,
+            image_tag="",  # default image
+            container_tag="",  # default container
+            **kwargs
         )
-    podman_cmd(cmd)
-    return None
+
+    @staticmethod
+    def all(
+        **kwargs: Any
+    ) -> None:
+        raise TypeError("must specify a container to view processes for")
+
+
+podman_ls: Ls = on_ls(Ls(), ephemeral=True)
+podman_rm: Rm = on_rm(Rm(), ephemeral=True)
+podman_build: Build = on_build(Build(), ephemeral=True)
+podman_start: Start = on_start(Start(), ephemeral=True)
+podman_enter: Enter = on_enter(Enter(), ephemeral=True)
+podman_run: Run = on_run(Run(), ephemeral=True)
+podman_stop: Stop = on_stop(Stop(), ephemeral=True)
+podman_pause: Pause = on_pause(Pause(), ephemeral=True)
+podman_resume: Resume = on_resume(Resume(), ephemeral=True)
+podman_restart: Restart = on_restart(Restart(), ephemeral=True)
+podman_prune: Prune = on_prune(Prune(), ephemeral=True)
+podman_info: Info = on_info(Info(), ephemeral=True)
+podman_stats: Stats = on_stats(Stats(), ephemeral=True)
+podman_top: Top = on_top(Top(), ephemeral=True)

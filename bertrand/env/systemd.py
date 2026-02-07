@@ -90,7 +90,7 @@ class StartService:
     user: bool = False
     env: dict[str, str] | None = None
 
-    def apply(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+    def do(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
         if os.name != "posix":
             raise OSError("systemd operations require a POSIX system.")
         name = self.name
@@ -188,7 +188,7 @@ class StopService:
     user: bool = False
     env: dict[str, str] | None = None
 
-    def apply(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+    def do(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
         if os.name != "posix":
             raise OSError("systemd operations require a POSIX system.")
         name = self.name
@@ -291,7 +291,7 @@ class RestartService:
     user: bool = False
     env: dict[str, str] | None = None
 
-    def apply(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+    def do(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
         if os.name != "posix":
             raise OSError("systemd operations require a POSIX system.")
         name = self.name
@@ -339,7 +339,7 @@ class EnableService:
     user: bool = False
     env: dict[str, str] | None = None
 
-    def apply(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+    def do(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
         if os.name != "posix":
             raise OSError("systemd operations require a POSIX system.")
         name = self.name
@@ -415,7 +415,7 @@ class DisableService:
     user: bool = False
     env: dict[str, str] | None = None
 
-    def apply(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+    def do(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
         if os.name != "posix":
             raise OSError("systemd operations require a POSIX system.")
         name = self.name
@@ -487,7 +487,7 @@ class ReloadDaemon:
     user: bool = False
     env: dict[str, str] | None = None
 
-    def apply(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+    def do(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
         if os.name != "posix":
             raise OSError("systemd operations require a POSIX system.")
         user = self.user
@@ -531,7 +531,7 @@ class DelegateUserControllers:
     prompt: str
     assume_yes: bool = False
 
-    def apply(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+    def do(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
         if os.name != "posix":
             raise OSError("systemd operations require a POSIX system.")
         if not shutil.which("systemctl"):

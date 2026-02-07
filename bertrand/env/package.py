@@ -539,7 +539,7 @@ class InstallPackage:
     assume_yes: bool = False
     refresh: bool = True
 
-    def apply(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+    def do(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
         if os.name != "posix":
             raise OSError("Package manager operations require a POSIX system.")
         _valid_install_manager(self.manager)
@@ -710,7 +710,7 @@ class UninstallPackage:
     assume_yes: bool = False
     refresh: bool = False
 
-    def apply(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+    def do(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
         if os.name != "posix":
             raise OSError("Package manager operations require a POSIX system.")
         _valid_install_manager(self.manager)
@@ -1004,7 +1004,7 @@ class AddRepository:
             url=self.url,
             target=repo_path,
             replace=self.replace,
-        ).apply(ctx, repo_payload)
+        ).do(ctx, repo_payload)
 
         # if a key URL is given, attempt to infer the key path from the repo file
         if self.key_url is not None:
@@ -1034,7 +1034,7 @@ class AddRepository:
                 target=key_path,
                 replace=self.replace,
                 sha256=self.key_sha256,
-            ).apply(ctx, download_payload)
+            ).do(ctx, download_payload)
 
             # verify key fingerprint if given
             if self.key_fingerprint is not None:
@@ -1084,7 +1084,7 @@ class AddRepository:
                 target=key_path,
                 replace=self.replace,
                 sha256=self.key_sha256,
-            ).apply(ctx, download_payload)
+            ).do(ctx, download_payload)
 
             # verify key fingerprint if given
             if self.key_fingerprint is not None:
@@ -1110,9 +1110,9 @@ class AddRepository:
             repo_path,
             self._repo_text(suite, components, arch, key_path),
             replace=self.replace
-        ).apply(ctx, write_payload)
+        ).do(ctx, write_payload)
 
-    def apply(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+    def do(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
         if os.name != "posix":
             raise OSError("Package manager operations require a POSIX system.")
         if os.geteuid() != 0:
@@ -1252,7 +1252,7 @@ class InstallCACert:
     replace: bool = False
     refresh: bool = True
 
-    def apply(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+    def do(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
         if os.name != "posix":
             raise OSError("Package manager operations require a POSIX system.")
         if os.geteuid() != 0:
@@ -1286,7 +1286,7 @@ class InstallCACert:
         write_payload: dict[str, JSONValue] = {}
         payload["write"] = write_payload
         ctx.dump()
-        WriteBytes(target, data, replace=self.replace).apply(ctx, write_payload)
+        WriteBytes(target, data, replace=self.replace).do(ctx, write_payload)
 
         # refresh trust store if requested and supported
         if self.refresh and spec.refresh:

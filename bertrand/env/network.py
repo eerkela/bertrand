@@ -46,7 +46,7 @@ class Download:
     replace: bool = False
     sha256: str | None = None
 
-    def apply(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+    def do(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
         target = self.target.absolute()
         if self.replace:
             _stash_existing(ctx, payload, target)
