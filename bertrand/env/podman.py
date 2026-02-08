@@ -61,6 +61,10 @@ from .pipeline import (
     on_monitor,
     on_log,
     on_top,
+    on_import,
+    on_export,
+    on_publish,
+    on_clean,
 )
 from .run import (
     CommandError,
@@ -351,6 +355,11 @@ def delegate_controllers(ctx: Pipeline.InProgress) -> None:
                         "resource limits may be unavailable.",
                         file=sys.stderr
                     )
+
+
+# TODO: I need an on_clean() step to forcibly undo the above steps, and then delete
+# the state directory, for a true uninstallation command.
+
 
 
 DOCKER_ENV_VARS = (
@@ -1654,7 +1663,8 @@ RUN --mount=type=cache,target={TMP}/.cache/pip,sharing=locked \
         _remove_dangling_volumes(force=force, missing_ok=missing_ok)
 
 
-# pylint: disable=missing-function-docstring, missing-return-doc, unused-argument
+# pylint: disable=missing-function-docstring, missing-param-doc
+# pylint: disable=missing-return-doc, unused-argument
 
 
 def _list_containers(env: Environment, image_tag: str, container_tag: str) -> list[str]:
@@ -3333,3 +3343,58 @@ podman_ls: Ls = on_ls(Ls(), ephemeral=True)
 podman_monitor: Monitor = on_monitor(Monitor(), ephemeral=True)
 podman_top: Top = on_top(Top(), ephemeral=True)
 podman_log: Log = on_log(Log(), ephemeral=True)
+# podman_import: Import = on_import(Import(), ephemeral=True)
+# podman_export: Export = on_export(Export(), ephemeral=True)
+# podman_publish: Publish = on_publish(Publish(), ephemeral=True)
+
+
+@on_clean(requires=[], ephemeral=True)
+def clean_distribution(ctx: Pipeline.InProgress) -> None:
+    """Clean up the state directories for the 'import', 'export', and 'publish'
+    pipelines on uninstallation.  These commands are related to distribution, and can
+    be cleaned up first, without worrying about dependencies, since they don't affect
+    other parts of the system.
+    """
+    for pipe in (on_import, on_export, on_publish):
+        pipe.undo()
+        shutil.rmtree(pipe.state_dir, ignore_errors=True)
+
+
+@on_clean(requires=[clean_distribution], ephemeral=True)
+def clean_info(ctx: Pipeline.InProgress) -> None:
+    """Clean up the state directories for the 'ls', 'monitor', 'log', and 'top'
+    pipelines on uninstallation.  These commands are purely informational, and can
+    therefore be cleaned up after the distribution commands, without interfering with
+    later steps.
+    """
+    for pipe in (on_ls, on_monitor, on_log, on_top):
+        pipe.undo()
+        shutil.rmtree(pipe.state_dir, ignore_errors=True)
+
+
+@on_clean(requires=[clean_info], ephemeral=True)
+def clean_runtime(ctx: Pipeline.InProgress) -> None:
+    """Clean up the state directories for the 'build', 'start', 'enter', 'run', 'stop',
+    'pause', 'resume', 'restart', 'prune', and 'rm' pipelines on uninstallation.  These
+    commands control the lifecycles of images and containers, and must therefore be
+    cleaned up in a particular order to ensure that the uninstallation pipeline never
+    leaves the system in an inconsistent state.
+    """
+    on_rm.undo()
+    on_prune.undo()
+    on_stop.undo()
+    on_pause.undo()
+    on_resume.undo()
+    on_restart.undo()
+    on_enter.undo()
+    on_start.undo()
+    on_build.undo()
+    shutil.rmtree(on_rm.state_dir, ignore_errors=True)
+    shutil.rmtree(on_prune.state_dir, ignore_errors=True)
+    shutil.rmtree(on_restart.state_dir, ignore_errors=True)
+    shutil.rmtree(on_resume.state_dir, ignore_errors=True)
+    shutil.rmtree(on_pause.state_dir, ignore_errors=True)
+    shutil.rmtree(on_stop.state_dir, ignore_errors=True)
+    shutil.rmtree(on_start.state_dir, ignore_errors=True)
+    shutil.rmtree(on_enter.state_dir, ignore_errors=True)
+    shutil.rmtree(on_build.state_dir, ignore_errors=True)

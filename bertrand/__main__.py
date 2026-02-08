@@ -1,9 +1,12 @@
 """Run Bertrand from the command line to get include directory, version number, etc.
 """
 import argparse
+import json as json_parser
+import shutil
 from typing import Callable
 
 from .env.pipeline import (
+    Pipeline,
     on_init,
     on_build,
     on_start,
@@ -19,6 +22,7 @@ from .env.pipeline import (
     on_monitor,
     on_top,
     on_log,
+    on_clean,
 )
 from .env.podman import Environment
 from . import __version__
@@ -606,6 +610,62 @@ class External:
                     "option has no effect if used in conjunction with '--images'.",
             )
 
+        # TODO: code()
+        # TODO: freeze()
+        # TODO: unfreeze()
+        # TODO: import_()
+        # TODO: export()
+        # TODO: publish()
+
+        def journal(self) -> None:
+            """Add the 'journal' command to the parser."""
+            command = self.commands.add_parser(
+                "journal",
+                help=
+                    "Run a predefined pipeline of commands within a Bertrand virtual "
+                    "environment at the specified path.  This is similar to 'bertrand "
+                    "run', but executes a sequence of commands defined in a JSON file "
+                    "within the environment directory, rather than a single arbitrary "
+                    "command passed directly from the command line.  This allows for "
+                    "more complex workflows and automation, while still providing some "
+                    "level of abstraction and safety compared to 'bertrand run'.",
+            )
+            command.add_argument(
+                "command",
+                nargs=1,
+                help=
+                    "The command to dump the journal of.  This should correspond to "
+                    "another 'bertrand' command (e.g. 'build', 'start', 'enter', etc.) "
+                    "which records a journal of its activity.  Such journals allow "
+                    "Bertrand to safely resume or undo the effects of a command, and "
+                    "provide a limited form of logging in order to debug issues with "
+                    "Bertrand itself."
+            )
+
+        def clean(self) -> None:
+            """Add the 'clean' command to the parser."""
+            command = self.commands.add_parser(
+                "clean",
+                help=
+                    "Completely remove all traces of Bertrand from the host system, "
+                    "including all images and containers it is managing, but leaving "
+                    "environment directories intact.  This command will also attempt "
+                    "to uninstall Bertrand's container engine (if it was installed by "
+                    "'bertrand init') and replace any configurations it overwrote, "
+                    "making a best-effort attempt to restore the system to its "
+                    "previous state.  The container engine and configuration changes "
+                    "will be reinstalled by a future 'bertrand init' command if "
+                    "needed.",
+            )
+            command.add_argument(
+                "-y", "--yes",
+                action="store_true",
+                help=
+                    "Bypass confirmation prompts and proceed with cleaning all "
+                    "Bertrand images, containers, and the container engine itself.  "
+                    "Use with caution.",
+            )
+
         def __call__(self) -> argparse.Namespace:
             """Run the command-line parser.
 
@@ -630,6 +690,7 @@ class External:
             self.monitor()
             self.top()
             self.log()
+            self.journal()
             return self.root.parse_args()
 
     @staticmethod
@@ -900,6 +961,60 @@ class External:
             until=args.until,
         )
 
+    pipelines: dict[str, Pipeline] = {
+        "init": on_init,
+        "build": on_build,
+        "start": on_start,
+        "enter": on_enter,
+        "run": on_run,
+        "stop": on_stop,
+        "pause": on_pause,
+        "resume": on_resume,
+        "restart": on_restart,
+        "prune": on_prune,
+        "rm": on_rm,
+        "ls": on_ls,
+        "monitor": on_monitor,
+        "top": on_top,
+        "log": on_log,
+    }
+
+    @staticmethod
+    def journal(args: argparse.Namespace) -> None:
+        """Execute the `bertrand journal` CLI command.
+
+        Parameters
+        ----------
+        args : argparse.Namespace
+            The parsed command-line arguments.
+
+        Raises
+        ------
+        KeyError
+            If the specified command is invalid or not recognized.
+        """
+        pipe = External.pipelines.get(args.command, None)
+        if pipe is None:
+            raise KeyError(f"Invalid command '{args.command}'.")
+
+        # load journal for the specified pipeline and dump it to stdout in JSON format
+        with pipe:
+            journal = pipe.state_dir / "journal.json"
+            data = json_parser.loads(journal.read_text())
+            print(json_parser.dumps(data, indent=2))
+
+    @staticmethod
+    def clean(args: argparse.Namespace) -> None:
+        """Execute the `bertrand clean` CLI command.
+
+        Parameters
+        ----------
+        args : argparse.Namespace
+            The parsed command-line arguments.
+        """
+        on_clean.do()
+        shutil.rmtree(on_clean.state_dir)
+
     commands: dict[str, Callable[[argparse.Namespace], None]] = {
         "version": version,
         "init": init,
@@ -917,6 +1032,7 @@ class External:
         "monitor": monitor,
         "top": top,
         "log": log,
+        "journal": journal,
     }
 
     def __call__(self) -> None:
