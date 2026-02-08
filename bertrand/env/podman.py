@@ -3,9 +3,8 @@ CLI.
 """
 from __future__ import annotations
 
-import json
+import json as json_parser
 import os
-import platform
 import re
 import shlex
 import shutil
@@ -59,8 +58,8 @@ from .pipeline import (
     on_resume,
     on_restart,
     on_prune,
-    on_info,
-    on_stats,
+    on_monitor,
+    on_log,
     on_top,
 )
 from .run import (
@@ -699,7 +698,7 @@ class Container(BaseModel):
         result = podman_cmd(["container", "inspect", self.id], check=False, capture_output=True)
         if result.returncode != 0 or not result.stdout:
             return None
-        data = json.loads(result.stdout)
+        data = json_parser.loads(result.stdout)
         return data[0] if data else None
 
     @staticmethod
@@ -1006,7 +1005,7 @@ class Image(BaseModel):
         result = podman_cmd(["image", "inspect", self.id], check=False, capture_output=True)
         if result.returncode != 0 or not result.stdout:
             return None
-        data = json.loads(result.stdout)
+        data = json_parser.loads(result.stdout)
         return data[0] if data else None
 
     def build(
@@ -1222,7 +1221,7 @@ class Environment:
         # try to load existing metadata if possible
         env_file = _env_file(self.root)
         if env_file.exists():
-            data = json.loads(env_file.read_text(encoding="utf-8"))
+            data = json_parser.loads(env_file.read_text(encoding="utf-8"))
             if not isinstance(data, dict):
                 raise ValueError("environment metadata must be a JSON mapping")
             try:
@@ -1356,7 +1355,7 @@ RUN --mount=type=cache,target={TMP}/.cache/pip,sharing=locked \
         self._json = self.JSON.model_validate(self._json.model_dump(mode="python"))
         atomic_write_text(
             _env_file(self.root),
-            json.dumps(self._json.model_dump(mode="json"), indent=2) + "\n"
+            json_parser.dumps(self._json.model_dump(mode="json"), indent=2) + "\n"
         )
 
         # release lock
@@ -1658,6 +1657,60 @@ RUN --mount=type=cache,target={TMP}/.cache/pip,sharing=locked \
 # pylint: disable=missing-function-docstring, missing-return-doc, unused-argument
 
 
+def _list_containers(env: Environment, image_tag: str, container_tag: str) -> list[str]:
+    image = env.tags.get(image_tag)
+    if image is None:
+        return []
+    container = image.containers.get(container_tag)
+    if container is None:
+        return []
+    return [f"{env.root}:{image_tag}:{container_tag}"]
+
+
+def _list_images(env: Environment, image_tag: str) -> list[str]:
+    image = env.tags.get(image_tag)
+    if image is None:
+        return []
+    return [f"{env.root}:{image_tag}:{c}" for c in image.containers]
+
+
+def _list_environments(env: Environment) -> list[str]:
+    return [f"{env.root}:{k}" for k in env.tags]
+
+
+def _list_all() -> list[str]:
+    out = list(podman_cmd([
+        "container",
+        "ls",
+        "--all",
+        "--filter", "label=BERTRAND=1",
+        "--no-trunc",
+        "--format={{.ID}}"
+    ], capture_output=True).stdout.strip().splitlines())
+    if not out:
+        return []
+
+    # inspect all containers to find their mount points
+    inspects = json_parser.loads(podman_cmd(
+        ["container", "inspect", *out],
+        capture_output=True
+    ).stdout)
+    assert isinstance(inspects, list)
+    seen: set[Path] = set()
+    result: list[str] = []
+    for inspect in inspects:
+        assert isinstance(inspect, dict)
+        mount = Container.mount(inspect)  # type: ignore[arg-type]
+        if mount is not None and mount not in seen:
+            seen.add(mount)
+            result.append(str(mount))
+
+    return result
+
+
+# TODO: remove timeout argument from all commands and use TIMEOUT instead.
+
+
 @dataclass
 class _Command:
 
@@ -1755,229 +1808,6 @@ class _Command:
 
 
 @dataclass
-class Ls(_Command):
-    """Return a list of qualified paths of Bertrand entities on the system, scoping to
-    images and containers within an environment if desired.
-    """
-    recursive = bool
-
-    @staticmethod
-    def list_containers(
-        *,
-        env: Environment,
-        image_tag: str,
-        container_tag: str,
-    ) -> list[str]:
-        image = env.tags.get(image_tag)
-        if image is None:
-            return []
-        container = image.containers.get(container_tag)
-        if container is None:
-            return []
-        return [f"{env.root}:{image_tag}:{container_tag}"]
-
-    @staticmethod
-    def list_images(
-        *,
-        env: Environment,
-        image_tag: str,
-    ) -> list[str]:
-        image = env.tags.get(image_tag)
-        if image is None:
-            return []
-        return [f"{env.root}:{image_tag}:{c}" for c in image.containers]
-
-    @staticmethod
-    def list_environments(
-        *,
-        env: Environment,
-        recursive: bool
-    ) -> list[str]:
-        if not recursive:
-            return [f"{env.root}:{k}" for k in env.tags]
-        result: list[str] = []
-        for image_tag, image in env.tags.items():
-            result.append(f"{env.root}:{image_tag}")
-            for container_tag in image.containers:
-                result.append(f"{env.root}:{image_tag}:{container_tag}")
-        return result
-
-    @staticmethod
-    def list_all(*, recursive: bool) -> list[str]:
-        out = list(podman_cmd([
-            "container",
-            "ls",
-            "--all",
-            "--filter", "label=BERTRAND=1",
-            "--no-trunc",
-            "--format={{.ID}}"
-        ], capture_output=True).stdout.strip().splitlines())
-        if not out:
-            return []
-
-        # inspect all containers to find their mount points
-        inspects = json.loads(podman_cmd(
-            ["container", "inspect", *out],
-            capture_output=True
-        ).stdout)
-        assert isinstance(inspects, list)
-        seen: set[Path] = set()
-        result: list[str] = []
-        for inspect in inspects:
-            assert isinstance(inspect, dict)
-            mount = Container.mount(inspect)  # type: ignore[arg-type]
-            if mount is not None and mount not in seen:
-                seen.add(mount)
-                result.append(str(mount))
-
-        if not recursive:
-            return result
-
-        # attempt to open each environment and recursively list all images and
-        # containers within it
-        recur: list[str] = []
-        for env_path in result:
-            try:
-                with Environment(Path(env_path)) as env:
-                    for image_tag, image in env.tags.items():
-                        recur.append(f"{env_path}:{image_tag}")
-                        for container_tag in image.containers:
-                            recur.append(f"{env_path}:{image_tag}:{container_tag}")
-            except Exception:
-                pass
-        return recur
-
-    @staticmethod
-    def container(
-        *,
-        env: Environment,
-        image_tag: str,
-        container_tag: str,
-        **kwargs: Any
-    ) -> None:
-        out = Ls.list_containers(
-            env=env,
-            image_tag=image_tag,
-            container_tag=container_tag,
-        )
-        if out:
-            print("\n".join(out))
-
-    @staticmethod
-    def image(
-        *,
-        env: Environment,
-        image_tag: str,
-        recursive: bool,
-        **kwargs: Any
-    ) -> None:
-        out = Ls.list_images(
-            env=env,
-            image_tag=image_tag,
-        )
-        if out:
-            print("\n".join(out))
-
-    @staticmethod
-    def environment(
-        *,
-        env: Environment,
-        recursive: bool,
-        **kwargs: Any
-    ) -> None:
-        out = Ls.list_environments(
-            env=env,
-            recursive=recursive
-        )
-        if out:
-            print("\n".join(out))
-
-    @staticmethod
-    def all(*, recursive: bool, **kwargs: Any) -> None:
-        out = Ls.list_all(recursive=recursive)
-        if out:
-            print("\n".join(out))
-
-
-@dataclass
-class Rm(_Command):
-    """Delete Bertrand entities on the system, scoping to images and containers within
-    an environment if desired.
-
-    This command only deletes images and containers, and never alters the host
-    filesystem.  The environment directory may be safely deleted after invoking this
-    command.
-    """
-    force = bool
-    missing_ok = bool
-
-    @staticmethod
-    def container(
-        *,
-        env: Environment,
-        image_tag: str,
-        container_tag: str,
-        force: bool,
-        timeout: int,
-        **kwargs: Any
-    ) -> None:
-        i = env.tags.get(image_tag)
-        if i is None:
-            return
-        c = i.containers.get(container_tag)
-        if c is None:
-            return
-        c.remove(force=force, timeout=timeout, missing_ok=True)
-        i.containers.pop(container_tag)
-
-    @staticmethod
-    def image(
-        *,
-        env: Environment,
-        image_tag: str,
-        force: bool,
-        timeout: int,
-        **kwargs: Any
-    ) -> None:
-        i = env.tags.get(image_tag)
-        if i is None:
-            return
-        i.remove(force=force, timeout=timeout, missing_ok=True)
-        env.tags.pop(image_tag)
-
-    @staticmethod
-    def environment(
-        *,
-        env: Environment,
-        force: bool,
-        timeout: int,
-        **kwargs: Any
-    ) -> None:
-        env.remove(force=force, timeout=timeout, missing_ok=True)
-        env.tags.clear()
-
-    @staticmethod
-    def all(
-        *,
-        force: bool,
-        timeout: int,
-        **kwargs: Any
-    ) -> None:
-        if confirm(
-            "This will remove all Bertrand images, containers, and volumes on this "
-            "system.  This action cannot be undone.\n"
-            "Are you sure you want to continue? [y/N] "
-        ):
-            for env_path in Ls.list_all(recursive=False):
-                try:
-                    with Environment(Path(env_path)) as env:
-                        env.remove(force=force, timeout=timeout, missing_ok=True)
-                        env.tags.clear()
-                except Exception:
-                    pass
-
-
-@dataclass
 class Build(_Command):
     """Incrementally build Bertrand images/containers within an environment, scoping to
     specific images and containers if desired.  This command does not start any
@@ -2010,17 +1840,9 @@ class Build(_Command):
         args: list[str],
         **kwargs: Any
     ) -> Container:
-        image = env.tags.get(image_tag)
-        if image is None:
-            raise KeyError(f"no image found for tag: '{image_tag}'")
-        if args and not container_tag:
-            raise TypeError("containers with non-default arguments must have a tag")
-        return image.build(
-            env_root=env.root,
-            env_uuid=env.id,
-            image_tag=image_tag,
-            container_tag=container_tag,
-            container_args=args
+        raise OSError(
+            "The 'build' command is reserved for compiling images.  Use 'start' or "
+            "'enter' to run containers from a prebuilt image instead."
         )
 
     @staticmethod
@@ -2032,7 +1854,7 @@ class Build(_Command):
         **kwargs: Any
     ) -> Image:
         if args and not image_tag:
-            raise TypeError("images with non-default arguments must have a tag")
+            raise OSError("images with non-default arguments must have a tag")
 
         existing = env.tags.get(image_tag)
         if not args:
@@ -2059,19 +1881,22 @@ class Build(_Command):
             containers={},
         )
         image_name = f"{_sanitize_name(env.root.name)}.{image_tag}.{env.id[:13]}"
+        build_args: list[str] = []
+        for arg in args:
+            build_args.append(f"--build-arg={arg}")
+            build_args.append(f"--env={arg}")
         iid_file = _iid_file(env.root, image_name)
         try:
             iid_file.parent.mkdir(parents=True, exist_ok=True)
             podman_cmd([
                 "build",
-                *args,
                 "-t", image_name,
                 "-f", str(env.container_file),
                 "--iidfile", str(iid_file),
                 "--label", "BERTRAND=1",
                 "--label", f"BERTRAND_ENV={env.id}",
                 "--label", f"BERTRAND_IMAGE={image_tag}",
-                str(env.root),
+                *build_args,
             ])
             image.id = iid_file.read_text(encoding="utf-8").strip()  # build returns image ID
         finally:
@@ -2106,9 +1931,12 @@ class Build(_Command):
         **kwargs: Any
     ) -> Environment:
         if args:
-            raise TypeError("cannot specify arguments when building a whole environment")
-        for tag in env.tags:
-            Build.image(env=env, image_tag=tag, args=args, **kwargs)
+            raise OSError(
+                "An environment's default image cannot have arguments.  Either specify "
+                "an image tag to assign to these arguments, or set the appropriate "
+                "defaults in the environment's Containerfile instead."
+            )
+        Build.image(env=env, image_tag="", args=args, **kwargs)
         return env
 
     @staticmethod
@@ -2117,21 +1945,7 @@ class Build(_Command):
         args: list[str],
         **kwargs: Any
     ) -> None:
-        if args:
-            raise TypeError("cannot specify arguments when building all environments")
-
-        if confirm(
-            "This will build all Bertrand environments on this system.  This may take "
-            "a long time depending on the number and complexity of the environments.\n"
-            "Are you sure you want to continue? [y/N] "
-        ):
-            for env_path in Ls.list_all(recursive=False):
-                try:
-                    with Environment(Path(env_path)) as env:
-                        for tag in env.tags:
-                            Build.image(env=env, image_tag=tag, args=args, **kwargs)
-                except Exception as err:
-                    print(err, file=sys.stderr)
+        raise OSError("cannot build all environments")
 
 
 @dataclass
@@ -2179,7 +1993,7 @@ class Start(_Command):
         if image is None:
             raise KeyError(f"no image found for tag: '{image_tag}'")
         if args:
-            raise TypeError("cannot specify arguments when starting an image")
+            raise OSError("cannot specify arguments when starting an image")
         image = Build.image(env=env, image_tag=image_tag, args=args, **kwargs)
         for container_tag, container in image.containers.items():
             inspect = container.inspect()
@@ -2198,7 +2012,7 @@ class Start(_Command):
         **kwargs: Any
     ) -> Environment:
         if args:
-            raise TypeError("cannot specify arguments when starting a whole environment")
+            raise OSError("cannot specify arguments when starting a whole environment")
         Build.environment(env=env, args=args, **kwargs)
         for image_tag, image in env.tags.items():
             for container_tag, container in image.containers.items():
@@ -2217,14 +2031,14 @@ class Start(_Command):
         **kwargs: Any
     ) -> None:
         if args:
-            raise TypeError("cannot specify arguments when starting all environments")
+            raise OSError("cannot specify arguments when starting all environments")
 
         if confirm(
             "This will start all Bertrand containers on this system.  This may take "
             "a long time depending on the number and complexity of the environments.\n"
             "Are you sure you want to continue? [y/N] "
         ):
-            for env_path in Ls.list_all(recursive=False):
+            for env_path in _list_all():
                 try:
                     with Environment(Path(env_path)) as env:
                         for image_tag, image in env.tags.items():
@@ -2322,7 +2136,7 @@ class Enter(_Command):
         args: list[str],
         **kwargs: Any
     ) -> None:
-        raise TypeError("must specify a container to enter")
+        raise OSError("must specify a container to enter")
 
 
 @dataclass
@@ -2404,7 +2218,7 @@ class Run(_Command):
         args: list[str],
         **kwargs: Any
     ) -> None:
-        raise TypeError("must specify a container to run a command in")
+        raise OSError("must specify a container to run a command in")
 
 
 @dataclass
@@ -2480,7 +2294,7 @@ class Stop(_Command):
             "This will stop all running Bertrand containers on this system.\n"
             "Are you sure you want to continue? [y/N] "
         ):
-            for env_path in Ls.list_all(recursive=False):
+            for env_path in _list_all():
                 try:
                     with Environment(Path(env_path)) as env:
                         Stop.environment(env=env, timeout=timeout, **kwargs)
@@ -2556,7 +2370,7 @@ class Pause(_Command):
             "This will pause all running Bertrand containers on this system.\n"
             "Are you sure you want to continue? [y/N] "
         ):
-            for env_path in Ls.list_all(recursive=False):
+            for env_path in _list_all():
                 try:
                     with Environment(Path(env_path)) as env:
                         Pause.environment(env=env, **kwargs)
@@ -2632,7 +2446,7 @@ class Resume(_Command):
             "This will resume all paused Bertrand containers on this system.\n"
             "Are you sure you want to continue? [y/N] "
         ):
-            for env_path in Ls.list_all(recursive=False):
+            for env_path in _list_all():
                 try:
                     with Environment(Path(env_path)) as env:
                         Resume.environment(env=env, **kwargs)
@@ -2749,7 +2563,7 @@ class Restart(_Command):
             "take a long time depending on the number and complexity of the environments.\n"
             "Are you sure you want to continue? [y/N] "
         ):
-            for env_path in Ls.list_all(recursive=False):
+            for env_path in _list_all():
                 try:
                     with Environment(Path(env_path)) as env:
                         Restart.environment(env=env, timeout=timeout, **kwargs)
@@ -2834,7 +2648,7 @@ class Prune(_Command):
             "of the environments.\n"
             "Are you sure you want to continue? [y/N] "
         ):
-            for env_path in Ls.list_all(recursive=False):
+            for env_path in _list_all():
                 try:
                     with Environment(Path(env_path)) as env:
                         Prune.environment(env=env, **kwargs)
@@ -2843,7 +2657,85 @@ class Prune(_Command):
 
 
 @dataclass
-class Info(_Command):
+class Rm(_Command):
+    """Delete Bertrand entities on the system, scoping to images and containers within
+    an environment if desired.
+
+    This command only deletes images and containers, and never alters the host
+    filesystem.  The environment directory may be safely deleted after invoking this
+    command.
+    """
+    force = bool
+    missing_ok = bool
+
+    @staticmethod
+    def container(
+        *,
+        env: Environment,
+        image_tag: str,
+        container_tag: str,
+        force: bool,
+        timeout: int,
+        **kwargs: Any
+    ) -> None:
+        i = env.tags.get(image_tag)
+        if i is None:
+            return
+        c = i.containers.get(container_tag)
+        if c is None:
+            return
+        c.remove(force=force, timeout=timeout, missing_ok=True)
+        i.containers.pop(container_tag)
+
+    @staticmethod
+    def image(
+        *,
+        env: Environment,
+        image_tag: str,
+        force: bool,
+        timeout: int,
+        **kwargs: Any
+    ) -> None:
+        i = env.tags.get(image_tag)
+        if i is None:
+            return
+        i.remove(force=force, timeout=timeout, missing_ok=True)
+        env.tags.pop(image_tag)
+
+    @staticmethod
+    def environment(
+        *,
+        env: Environment,
+        force: bool,
+        timeout: int,
+        **kwargs: Any
+    ) -> None:
+        env.remove(force=force, timeout=timeout, missing_ok=True)
+        env.tags.clear()
+
+    @staticmethod
+    def all(
+        *,
+        force: bool,
+        timeout: int,
+        **kwargs: Any
+    ) -> None:
+        if confirm(
+            "This will remove all Bertrand images, containers, and volumes on this "
+            "system.  This action cannot be undone.\n"
+            "Are you sure you want to continue? [y/N] "
+        ):
+            for env_path in _list_all():
+                try:
+                    with Environment(Path(env_path)) as env:
+                        env.remove(force=force, timeout=timeout, missing_ok=True)
+                        env.tags.clear()
+                except Exception:
+                    pass
+
+
+@dataclass
+class Ls(_Command):
     """Gather status information for all containers in a Bertrand environment, scoping
     to specific images and containers if desired.
 
@@ -2868,24 +2760,83 @@ class Info(_Command):
         Command: str
         RunningFor: str
 
-    parse = bool
+    json = bool
+    images = bool
+    running = bool
+    stopped = bool
 
     @staticmethod
-    def _format(labels: list[str], *, parse: bool) -> list[Info.JSON] | None:
-        cmd = [
-            "container",
-            "ls",
-            "--all",
-            "--size",
-            *labels,
-        ]
+    def _format_images(
+        labels: list[str],
+        *,
+        json: bool,
+        running: bool,
+        stopped: bool,
+    ) -> list[Ls.JSON] | None:
+        cmd = ["image", "ls", "-a", *labels]
+
+        # filter by running/stopped status of descendant containers
+        if running and not stopped:
+            cmd.extend(["--filter", "containers=true"])
+        if stopped and not running:
+            cmd.extend(["--filter", "containers=false"])
 
         # parse JSON
-        if parse:
+        if json:
             cmd.append("--no-trunc")
             cmd.append("--format=json")
             result = podman_cmd(cmd, capture_output=True)
-            out = json.loads(result.stdout)
+            out = json_parser.loads(result.stdout)
+            if not isinstance(out, list):
+                out = [out]
+            return out
+
+        # print table
+        cmd.append(
+            "--format=table {{.Names}}\t{{.CreatedAt}}\t{{.Containers}}\t"
+            "{{.ReadOnly}}\t{{.Size}}\t{{.History}}"
+        )
+        podman_cmd(cmd)
+        return None
+
+    @staticmethod
+    def _format_containers(
+        labels: list[str],
+        *,
+        json: bool,
+        running: bool,
+        stopped: bool,
+    ) -> list[Ls.JSON] | None:
+        cmd = ["container", "ls", "-a", "--size", *labels]
+
+        # filter by running/stopped status
+        if running and not stopped:
+            cmd.extend([
+                "--filter",
+                "status=running",
+                "--filter",
+                "status=paused",
+                "--filter",
+                "status=restarting",
+            ])
+        if stopped and not running:
+            cmd.extend([
+                "--filter",
+                "status=created",
+                "--filter",
+                "status=removing",
+                "--filter",
+                "status=exited",
+                "--filter",
+                "status=dead",
+            ])
+
+        # parse JSON
+        if json:
+            cmd.append("--no-trunc")
+            cmd.append("--format=json")
+            result = podman_cmd(cmd, capture_output=True)
+            out = json_parser.loads(result.stdout)
             if not isinstance(out, list):
                 out = [out]
             return out
@@ -2893,7 +2844,8 @@ class Info(_Command):
         # print table
         cmd.append(
             "--format=table {{.Names}}\t{{.CreatedAt}}\t{{.State}}\t{{.Command}}\t"
-            "{{.RunningFor}}\t{{.Status}}\t{{.Size}}\t{{.Ports}}"
+            "{{.RunningFor}}\t{{.Status}}\t{{.Restarts}}\t{{.Size}}\t{{.Mounts}}\t"
+            "{{.Networks}}\t{{.Ports}}"
         )
         podman_cmd(cmd)
         return None
@@ -2904,72 +2856,152 @@ class Info(_Command):
         env: Environment,
         image_tag: str,
         container_tag: str,
-        parse: bool,
+        json: bool,
+        images: bool,
+        running: bool,
+        stopped: bool,
         **kwargs: Any
-    ) -> list[Info.JSON] | None:
+    ) -> None:
         image = env.tags.get(image_tag)
         if image is None:
             raise KeyError(f"no image found for tag: '{image_tag}'")
         container = image.containers.get(container_tag)
         if container is None:
             raise KeyError(f"no container found for tag: '{container_tag}'")
-        return Info._format([
-            "--filter", "label=BERTRAND=1",
-            "--filter", f"label=BERTRAND_ENV={env.id}",
-            "--filter", f"label=BERTRAND_IMAGE={image_tag}",
-            "--filter", f"label=BERTRAND_CONTAINER={container_tag}",
-        ], parse=parse)
+
+        # if we're listing images, then we want to show the parent image of this
+        # container
+        if images:
+            out = Ls._format_images(
+                [
+                    "--filter", "label=BERTRAND=1",
+                    "--filter", f"label=BERTRAND_ENV={env.id}",
+                    "--filter", f"label=BERTRAND_IMAGE={image_tag}",
+                ],
+                json=json,
+                running=running,
+                stopped=stopped,
+            )
+        else:
+            out = Ls._format_containers(
+                [
+                    "--filter", "label=BERTRAND=1",
+                    "--filter", f"label=BERTRAND_ENV={env.id}",
+                    "--filter", f"label=BERTRAND_IMAGE={image_tag}",
+                    "--filter", f"label=BERTRAND_CONTAINER={container_tag}",
+                ],
+                json=json,
+                running=running,
+                stopped=stopped,
+            )
+        if json:
+            print(json_parser.dumps(out, indent=2))
 
     @staticmethod
     def image(
         *,
         env: Environment,
         image_tag: str,
-        parse: bool,
+        json: bool,
+        images: bool,
+        running: bool,
+        stopped: bool,
         **kwargs: Any
-    ) -> list[Info.JSON] | None:
+    ) -> None:
         image = env.tags.get(image_tag)
         if image is None:
             raise KeyError(f"no image found for tag: '{image_tag}'")
-        return Info._format([
+        labels = [
             "--filter", "label=BERTRAND=1",
             "--filter", f"label=BERTRAND_ENV={env.id}",
             "--filter", f"label=BERTRAND_IMAGE={image_tag}",
-        ], parse=parse)
+        ]
+        if images:
+            out = Ls._format_images(
+                labels,
+                json=json,
+                running=running,
+                stopped=stopped,
+            )
+        else:
+            out = Ls._format_containers(
+                labels,
+                json=json,
+                running=running,
+                stopped=stopped,
+            )
+        if json:
+            print(json_parser.dumps(out, indent=2))
 
     @staticmethod
     def environment(
         *,
         env: Environment,
-        parse: bool,
+        json: bool,
+        images: bool,
+        running: bool,
+        stopped: bool,
         **kwargs: Any
-    ) -> list[Info.JSON] | None:
-        return Info._format([
+    ) -> None:
+        labels = [
             "--filter", "label=BERTRAND=1",
             "--filter", f"label=BERTRAND_ENV={env.id}",
-        ], parse=parse)
+        ]
+        if images:
+            out = Ls._format_images(
+                labels,
+                json=json,
+                running=running,
+                stopped=stopped,
+            )
+        else:
+            out = Ls._format_containers(
+                labels,
+                json=json,
+                running=running,
+                stopped=stopped,
+            )
+        if json:
+            print(json_parser.dumps(out, indent=2))
 
     @staticmethod
     def all(
         *,
-        parse: bool,
+        json: bool,
+        images: bool,
+        running: bool,
+        stopped: bool,
         **kwargs: Any
-    ) -> list[Info.JSON] | None:
-        return Info._format([
-            "--filter", "label=BERTRAND=1",
-        ], parse=parse)
+    ) -> None:
+        labels = ["--filter", "label=BERTRAND=1"]
+        if images:
+            out = Ls._format_images(
+                labels,
+                json=json,
+                running=running,
+                stopped=stopped,
+            )
+        else:
+            out = Ls._format_containers(
+                labels,
+                json=json,
+                running=running,
+                stopped=stopped,
+            )
+        if json:
+            print(json_parser.dumps(out, indent=2))
 
 
 @dataclass
-class Stats(_Command):
+class Monitor(_Command):
     """Gather resource utilization statistics for all containers in a Bertrand
     environment, scoping to specific images and containers if desired.
 
-    If `parse` is True, then the output will be parsed and returned as a list of JSON
+    If `json` is True, then the output will be parsed and returned as a list of JSON
     dictionaries, one per container.  Otherwise, all information will be printed to
     stdout in a human-readable table format, and nothing will be returned by this
-    function.  `parse` is incompatible with `stream`, which continuously updates the
-    printed output in a streaming format.
+    function.  `json` is incompatible with `interval`, which continuously updates the
+    printed output in a streaming format if set to a non-zero value.
     """
     class JSON(TypedDict):
         """Type hint for the json output of `podman stats`."""
@@ -2983,11 +3015,23 @@ class Stats(_Command):
         BlockIO: str
         PIDs: str
 
-    parse = bool
-    stream = bool
+    @staticmethod
+    def _validate_interval(json: bool, interval: int) -> None:
+        if interval < 0:
+            raise ValueError("interval must be non-negative")
+        if json and interval:
+            raise ValueError("cannot use 'json' and 'interval' together")
+
+    json = bool
+    interval = _validate_interval
 
     @staticmethod
-    def _format(labels: list[str], *, parse: bool, stream: bool) -> list[Stats.JSON] | None:
+    def _format(
+        labels: list[str],
+        *,
+        json: bool,
+        interval: int
+    ) -> list[Monitor.JSON] | None:
         # first, get the container ids for all labels
         ids = list(podman_cmd([
             "container",
@@ -2997,36 +3041,32 @@ class Stats(_Command):
             *labels,
         ], capture_output=True).stdout.strip().splitlines())
         if not ids:
-            return [] if parse else None
+            return [] if json else None
 
         # build stats command with appropriate flags
         cmd = ["container", "stats"]
-        if not stream:
+        if not interval:
             cmd.append("--no-stream")
+        else:
+            cmd.append(f"--interval={interval}")
 
         # parse JSON
-        if parse:
+        if json:
             cmd.append("--no-trunc")
             cmd.append("--format=json")
             cmd.extend(ids)
             result = podman_cmd(cmd, capture_output=True)
-            out = json.loads(result.stdout)
+            out = json_parser.loads(result.stdout)
             if not isinstance(out, list):
                 return [out]
             return out
 
         # print table
-        if platform.system() == "Windows":
-            cmd.append(
-                "--format=table {{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.NetIO}}\t"
-                "{{.BlockIO}}"
-            )
-        else:
-            cmd.append(
-                "--format=table {{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.MemPerc}}\t"
-                "{{.NetIO}}\t{{.BlockIO}}\t{{.PIDs}}"
-            )
-            cmd.extend(ids)
+        cmd.append(
+            "--format=table {{.Name}}\t{{.AVGCPU}}\t{{.CPUPerc}}\t{{.PIDs}}\t"
+            "{{.MemUsage}}\t{{.NetIO}}\t{{.BlockIO}}"
+        )
+        cmd.extend(ids)
         podman_cmd(cmd)
         return None
 
@@ -3036,64 +3076,72 @@ class Stats(_Command):
         env: Environment,
         image_tag: str,
         container_tag: str,
-        parse: bool,
-        stream: bool,
+        json: bool,
+        interval: int,
         **kwargs: Any
-    ) -> list[Stats.JSON] | None:
+    ) -> None:
         image = env.tags.get(image_tag)
         if image is None:
             raise KeyError(f"no image found for tag: '{image_tag}'")
         container = image.containers.get(container_tag)
         if container is None:
             raise KeyError(f"no container found for tag: '{container_tag}'")
-        return Stats._format([
+        out = Monitor._format([
             "--filter", "label=BERTRAND=1",
             "--filter", f"label=BERTRAND_ENV={env.id}",
             "--filter", f"label=BERTRAND_IMAGE={image_tag}",
             "--filter", f"label=BERTRAND_CONTAINER={container_tag}",
-        ], parse=parse, stream=stream)
+        ], json=json, interval=interval)
+        if json:
+            print(json_parser.dumps(out, indent=2))
 
     @staticmethod
     def image(
         *,
         env: Environment,
         image_tag: str,
-        parse: bool,
-        stream: bool,
+        json: bool,
+        interval: int,
         **kwargs: Any
-    ) -> list[Stats.JSON] | None:
+    ) -> None:
         image = env.tags.get(image_tag)
         if image is None:
             raise KeyError(f"no image found for tag: '{image_tag}'")
-        return Stats._format([
+        out = Monitor._format([
             "--filter", "label=BERTRAND=1",
             "--filter", f"label=BERTRAND_ENV={env.id}",
             "--filter", f"label=BERTRAND_IMAGE={image_tag}",
-        ], parse=parse, stream=stream)
+        ], json=json, interval=interval)
+        if json:
+            print(json_parser.dumps(out, indent=2))
 
     @staticmethod
     def environment(
         *,
         env: Environment,
-        parse: bool,
-        stream: bool,
+        json: bool,
+        interval: int,
         **kwargs: Any
-    ) -> list[Stats.JSON] | None:
-        return Stats._format([
+    ) -> None:
+        out = Monitor._format([
             "--filter", "label=BERTRAND=1",
             "--filter", f"label=BERTRAND_ENV={env.id}",
-        ], parse=parse, stream=stream)
+        ], json=json, interval=interval)
+        if json:
+            print(json_parser.dumps(out, indent=2))
 
     @staticmethod
     def all(
         *,
-        parse: bool,
-        stream: bool,
+        json: bool,
+        interval: int,
         **kwargs: Any
-    ) -> list[Stats.JSON] | None:
-        return Stats._format([
+    ) -> None:
+        out = Monitor._format([
             "--filter", "label=BERTRAND=1",
-        ], parse=parse, stream=stream)
+        ], json=json, interval=interval)
+        if json:
+            print(json_parser.dumps(out, indent=2))
 
 
 @dataclass
@@ -3156,11 +3204,121 @@ class Top(_Command):
     def all(
         **kwargs: Any
     ) -> None:
-        raise TypeError("must specify a container to view processes for")
+        raise OSError("must specify a container to view processes for")
 
 
-podman_ls: Ls = on_ls(Ls(), ephemeral=True)
-podman_rm: Rm = on_rm(Rm(), ephemeral=True)
+@dataclass
+class Log(_Command):
+    """View the logs for a specific image or container in a Bertrand environment.
+    Note that this command does not scope to environments, and always prints to stdout
+    in a human-readable format.
+    """
+
+    @staticmethod
+    def _format_container(
+        container: Container,
+        since: str | None,
+        until: str | None,
+    ) -> None:
+        cmd = [
+            "container",
+            "logs",
+            "--color",
+            "--follow",
+            "--names",
+            "--timestamps",
+            container.id,
+        ]
+        if since is not None:
+            cmd.extend(["--since", since])
+        if until is not None:
+            cmd.extend(["--until", until])
+        podman_cmd(cmd, capture_output=True)
+
+    @staticmethod
+    def _format_image(image: Image) -> None:
+        podman_cmd([
+            "image",
+            "history",
+            "--human",
+            (
+                "--format=table {{.CreatedAt}}\t{{.CreatedSince}}\t{{.CreatedBy}}\t"
+                "{{.Size}}\t{{.Comment}}"
+            )
+        ])
+
+    @staticmethod
+    def container(
+        *,
+        env: Environment,
+        image_tag: str,
+        container_tag: str,
+        images: bool,
+        since: str | None,
+        until: str | None,
+        **kwargs: Any
+    ) -> None:
+        image = env.tags.get(image_tag)
+        if image is None:
+            raise KeyError(f"no image found for tag: '{image_tag}'")
+        if images:
+            Log._format_image(image)
+        else:
+            container = image.containers.get(container_tag)
+            if container is None:
+                raise KeyError(f"no container found for tag: '{container_tag}'")
+            Log._format_container(container, since=since, until=until)
+
+    @staticmethod
+    def image(
+        *,
+        env: Environment,
+        image_tag: str,
+        images: bool,
+        since: str | None,
+        until: str | None,
+        **kwargs: Any
+    ) -> None:
+        image = env.tags.get(image_tag)
+        if image is None:
+            raise KeyError(f"no image found for tag: '{image_tag}'")
+        if images:
+            Log._format_image(image)
+        else:
+            container = image.containers.get("")
+            if container is None:
+                raise KeyError("no container found for tag: ''")
+            Log._format_container(container, since=since, until=until)
+
+    @staticmethod
+    def environment(
+        *,
+        env: Environment,
+        images: bool,
+        since: str | None,
+        until: str | None,
+        **kwargs: Any
+    ) -> None:
+        return Log.image(
+            env=env,
+            image_tag="",  # default image
+            images=images,
+            since=since,
+            until=until,
+            **kwargs
+        )
+
+    @staticmethod
+    def all(
+        *,
+        images: bool,
+        since: str | None,
+        until: str | None,
+        **kwargs: Any
+    ) -> None:
+        raise OSError("must specify an image or container to view logs for")
+
+
 podman_build: Build = on_build(Build(), ephemeral=True)
 podman_start: Start = on_start(Start(), ephemeral=True)
 podman_enter: Enter = on_enter(Enter(), ephemeral=True)
@@ -3170,6 +3328,8 @@ podman_pause: Pause = on_pause(Pause(), ephemeral=True)
 podman_resume: Resume = on_resume(Resume(), ephemeral=True)
 podman_restart: Restart = on_restart(Restart(), ephemeral=True)
 podman_prune: Prune = on_prune(Prune(), ephemeral=True)
-podman_info: Info = on_info(Info(), ephemeral=True)
-podman_stats: Stats = on_stats(Stats(), ephemeral=True)
+podman_rm: Rm = on_rm(Rm(), ephemeral=True)
+podman_ls: Ls = on_ls(Ls(), ephemeral=True)
+podman_monitor: Monitor = on_monitor(Monitor(), ephemeral=True)
 podman_top: Top = on_top(Top(), ephemeral=True)
+podman_log: Log = on_log(Log(), ephemeral=True)
