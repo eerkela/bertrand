@@ -622,7 +622,7 @@ class InstallPackage:
             ctx.dump()
 
     @staticmethod
-    def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+    def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
         if os.name != "posix":
             raise OSError("Package manager operations require a POSIX system.")
         manager = payload.get("manager")
@@ -630,6 +630,7 @@ class InstallPackage:
         if not isinstance(manager, str) or not isinstance(installed, list):
             return  # didn't get far enough to install packages
 
+        # Conservative force policy: keep eligibility checks, suppress undo errors.
         # validate manager and check availability
         _valid_install_manager(manager)
         spec = INSTALL_MANAGERS[manager]
@@ -680,8 +681,8 @@ class InstallPackage:
             except Exception as e:
                 errors.append(str(e))
 
-        # raise if any issues occurred
-        if errors:
+        # raise if any issues occurred (force suppresses undo errors)
+        if errors and not force:
             raise OSError(f"Errors occurred during package undo:\n{'\n'.join(errors)}")
 
 
@@ -793,7 +794,7 @@ class UninstallPackage:
             ctx.dump()
 
     @staticmethod
-    def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+    def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
         if os.name != "posix":
             raise OSError("Package manager operations require a POSIX system.")
         manager = payload.get("manager")
@@ -801,6 +802,7 @@ class UninstallPackage:
         if not isinstance(manager, str) or not isinstance(removed, list):
             return
 
+        # Conservative force policy: keep eligibility checks, suppress undo errors.
         # validate manager and check availability
         _valid_install_manager(manager)
         spec = INSTALL_MANAGERS[manager]
@@ -861,7 +863,7 @@ class UninstallPackage:
                     errors.append(f"[{name}] version mismatch after undo: {current} != {version}")
 
         # raise if any issues occurred
-        if errors:
+        if errors and not force:
             raise OSError(f"Errors occurred during package undo:\n{'\n'.join(errors)}")
 
 
@@ -1194,7 +1196,7 @@ class AddRepository:
             run(cmd, env=env)
 
     @staticmethod
-    def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+    def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
         manager = payload.get("manager")
         if not isinstance(manager, str):
             return
@@ -1207,7 +1209,7 @@ class AddRepository:
         write_payload = payload.get("write")
         if isinstance(write_payload, dict):
             try:
-                WriteText.undo(ctx, write_payload)
+                WriteText.undo(ctx, write_payload, force=force)
             except Exception:
                 pass
 
@@ -1215,7 +1217,7 @@ class AddRepository:
         repo_payload = payload.get("repo_download")
         if isinstance(repo_payload, dict):
             try:
-                Download.undo(ctx, repo_payload)
+                Download.undo(ctx, repo_payload, force=force)
             except Exception:
                 pass
 
@@ -1223,7 +1225,7 @@ class AddRepository:
         download_payload = payload.get("download")
         if isinstance(download_payload, dict):
             try:
-                Download.undo(ctx, download_payload)
+                Download.undo(ctx, download_payload, force=force)
             except Exception:
                 pass
 
@@ -1302,11 +1304,11 @@ class InstallCACert:
             run(cmd, env=_cmd_env(spec.noninteractive_env, False))
 
     @staticmethod
-    def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+    def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
         manager = payload.get("manager")
         if not isinstance(manager, str):
             return
-    
+
         # validate manager (best-effort)
         if manager not in CA_CERT_MANAGERS:
             return
@@ -1315,7 +1317,7 @@ class InstallCACert:
         write_payload = payload.get("write")
         if isinstance(write_payload, dict):
             try:
-                WriteBytes.undo(ctx, write_payload)
+                WriteBytes.undo(ctx, write_payload, force=force)
             except Exception:
                 pass
 

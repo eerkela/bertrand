@@ -17,6 +17,7 @@ from .filesystem import (
     _exists,
     _is_file,
     _record_id,
+    _remove_path,
     _stash_existing,
     _unstash_existing,
 )
@@ -99,16 +100,21 @@ class Download:
         ctx.dump()
 
     @staticmethod
-    def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+    def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
         target_str = payload.get("target")
         if not isinstance(target_str, str):
             _clear_id(ctx, payload)
-            _unstash_existing(ctx, payload)
+            _unstash_existing(ctx, payload, force=force)
             return
 
         # remove downloaded file if it can be verified
         target = Path(target_str)
-        if _exists(target):
+        if force:
+            if _exists(target):
+                _remove_path(target, force=True)
+            payload.pop("fingerprint", None)
+            _clear_id(ctx, payload)
+        elif _exists(target):
             if not _is_file(target):
                 raise FileExistsError(f"Cannot remove downloaded file; path occupied: {target}")
             check = _check_id(target, payload)
@@ -141,4 +147,4 @@ class Download:
                     pass
 
         # restore stashed file (if any)
-        _unstash_existing(ctx, payload)
+        _unstash_existing(ctx, payload, force=force)

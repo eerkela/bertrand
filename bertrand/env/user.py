@@ -288,7 +288,7 @@ class EnsureSubIDs:
             raise OSError("Failed to provision subuid/subgid ranges correctly.")
 
     @staticmethod
-    def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+    def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
         return  # no-op
 
 
@@ -357,7 +357,7 @@ class EnsureUserNamespaces:
             raise OSError("Failed to enable unprivileged user namespaces.")
 
     @staticmethod
-    def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+    def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
         return  # no-op
 
 
@@ -395,7 +395,7 @@ class AddUserToGroup:
             raise OSError(f"Failed to add user '{user}' to group '{group}'.")
 
     @staticmethod
-    def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+    def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
         user = payload.get("user")
         group = payload.get("group")
         was_member = payload.get("was_member")
@@ -451,7 +451,7 @@ class RemoveUserFromGroup:
             raise OSError(f"Failed to remove user '{user}' from group '{group}'.")
 
     @staticmethod
-    def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+    def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
         user = payload.get("user")
         group = payload.get("group")
         was_member = payload.get("was_member")
@@ -528,7 +528,7 @@ class EnableLinger:
         run([*sudo, "loginctl", "enable-linger", user])
 
     @staticmethod
-    def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+    def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
         return  # no-op
 
 
@@ -587,7 +587,7 @@ class DisableLinger:
         run([*sudo, "loginctl", "disable-linger", user])
 
     @staticmethod
-    def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+    def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
         return  # no-op
 
 
@@ -644,7 +644,7 @@ class CreateGroup:
         ctx.dump()
 
     @staticmethod
-    def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+    def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
         name = payload.get("name")
         was_present = payload.get("was_present")
         gid = payload.get("gid")
@@ -666,12 +666,19 @@ class CreateGroup:
             return
 
         # delete group
+        # Conservative force policy: keep checks, suppress undo errors.
         sudo = sudo_prefix()
         if os.name == "posix" and os.geteuid() != 0 and not sudo:
+            if force:
+                return
             raise PermissionError(
                 "Removing groups requires root privileges; no sudo available."
             )
-        run([*sudo, "groupdel", name])
+        try:
+            run([*sudo, "groupdel", name])
+        except Exception:
+            if not force:
+                raise
 
 
 @atomic
@@ -750,7 +757,7 @@ class CreateUser:
         ctx.dump()
 
     @staticmethod
-    def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+    def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
         name = payload.get("name")
         was_present = payload.get("was_present")
         uid = payload.get("uid")
@@ -773,12 +780,18 @@ class CreateUser:
 
         sudo = sudo_prefix()
         if os.name == "posix" and os.geteuid() != 0 and not sudo:
+            if force:
+                return
             raise PermissionError(
                 "Removing users requires root privileges; no sudo available."
             )
 
         # delete user and optionally home directory if empty
-        run([*sudo, "userdel", name])
+        try:
+            run([*sudo, "userdel", name])
+        except Exception:
+            if not force:
+                raise
         if create_home and isinstance(home, str):
             home_path = Path(home)
             try:
@@ -835,7 +848,7 @@ class SetUserShell:
             raise OSError(f"Failed to set shell for user '{name}'.")
 
     @staticmethod
-    def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+    def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
         name = payload.get("name")
         was_changed = payload.get("was_changed")
         uid = payload.get("uid")
@@ -861,10 +874,16 @@ class SetUserShell:
         # revert shell
         sudo = sudo_prefix()
         if os.name == "posix" and os.geteuid() != 0 and not sudo:
+            if force:
+                return
             raise PermissionError(
                 "Modifying user shells requires root privileges; no sudo available."
             )
-        run([*sudo, "usermod", "-s", old_shell, name])
+        try:
+            run([*sudo, "usermod", "-s", old_shell, name])
+        except Exception:
+            if not force:
+                raise
 
 
 @atomic
@@ -912,7 +931,7 @@ class LockUser:
             raise OSError(f"Failed to lock user '{name}'.")
 
     @staticmethod
-    def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+    def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
         name = payload.get("name")
         was_locked = payload.get("was_locked")
         if not isinstance(name, str):
@@ -928,10 +947,16 @@ class LockUser:
         # unlock user
         sudo = sudo_prefix()
         if os.name == "posix" and os.geteuid() != 0 and not sudo:
+            if force:
+                return
             raise PermissionError(
                 "Unlocking users requires root privileges; no sudo available."
             )
-        run([*sudo, "usermod", "-U", name])
+        try:
+            run([*sudo, "usermod", "-U", name])
+        except Exception:
+            if not force:
+                raise
 
 
 @atomic
@@ -979,7 +1004,7 @@ class UnlockUser:
             raise OSError(f"Failed to unlock user '{name}'.")
 
     @staticmethod
-    def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+    def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
         name = payload.get("name")
         was_locked = payload.get("was_locked")
         if not isinstance(name, str):
@@ -995,10 +1020,16 @@ class UnlockUser:
         # lock user
         sudo = sudo_prefix()
         if os.name == "posix" and os.geteuid() != 0 and not sudo:
+            if force:
+                return
             raise PermissionError(
                 "Locking users requires root privileges; no sudo available."
             )
-        run([*sudo, "usermod", "-L", name])
+        try:
+            run([*sudo, "usermod", "-L", name])
+        except Exception:
+            if not force:
+                raise
 
 
 @atomic
@@ -1061,7 +1092,7 @@ class CreateHomeDir:
         ctx.dump()
 
     @staticmethod
-    def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+    def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
         name = payload.get("name")
         created = payload.get("created")
         home = payload.get("home")
@@ -1099,10 +1130,16 @@ class CreateHomeDir:
         # delete home directory with root privileges
         sudo = sudo_prefix()
         if os.name == "posix" and os.geteuid() != 0 and not sudo:
+            if force:
+                return
             raise PermissionError(
                 "Removing home directories requires root privileges; no sudo available."
             )
-        run([*sudo, "rmdir", str(home_path)])
+        try:
+            run([*sudo, "rmdir", str(home_path)])
+        except Exception:
+            if not force:
+                raise
 
 
 @atomic
@@ -1169,7 +1206,7 @@ class InstallSSHKey:
         run(["chmod", "600", str(auth_keys)])
 
     @staticmethod
-    def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+    def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
         user = payload.get("user")
         key = payload.get("key")
         path = payload.get("authorized_keys_path")
@@ -1188,12 +1225,16 @@ class InstallSSHKey:
             current = _read_authorized_keys(auth_keys)
             if current != [str(p) for p in installed]:
                 return
-            info = _ensure_user(user)
-            _require_root_or_user(
-                info.pw_uid,
-                "Modifying authorized_keys requires root privileges or the target user."
-            )
-            _write_authorized_keys(auth_keys, [str(p) for p in previous])
+            try:
+                info = _ensure_user(user)
+                _require_root_or_user(
+                    info.pw_uid,
+                    "Modifying authorized_keys requires root privileges or the target user."
+                )
+                _write_authorized_keys(auth_keys, [str(p) for p in previous])
+            except Exception:
+                if not force:
+                    raise
             return
 
         # otherwise, just remove the key line
@@ -1203,12 +1244,16 @@ class InstallSSHKey:
         if key not in current:
             return
         new_lines = [line for line in current if line != key]
-        info = _ensure_user(user)
-        _require_root_or_user(
-            info.pw_uid,
-            "Modifying authorized_keys requires root privileges or the target user."
-        )
-        _write_authorized_keys(auth_keys, new_lines)
+        try:
+            info = _ensure_user(user)
+            _require_root_or_user(
+                info.pw_uid,
+                "Modifying authorized_keys requires root privileges or the target user."
+            )
+            _write_authorized_keys(auth_keys, new_lines)
+        except Exception:
+            if not force:
+                raise
 
 
 @atomic
@@ -1257,7 +1302,7 @@ class RemoveSSHKey:
         _write_authorized_keys(auth_keys, new_lines)
 
     @staticmethod
-    def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+    def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
         user = payload.get("user")
         key = payload.get("key")
         path = payload.get("authorized_keys_path")
@@ -1270,15 +1315,19 @@ class RemoveSSHKey:
         # recreate .ssh directory if needed
         auth_keys = Path(path)
         ssh_dir = auth_keys.parent
-        info = _ensure_user(user)
-        _ensure_ssh_dir(ssh_dir, info.pw_uid, info.pw_gid)
+        try:
+            info = _ensure_user(user)
+            _ensure_ssh_dir(ssh_dir, info.pw_uid, info.pw_gid)
 
-        # re-add the key if not present
-        current = _read_authorized_keys(auth_keys)
-        if key in current:
-            return
-        _require_root_or_user(
-            info.pw_uid,
-            "Modifying authorized_keys requires root privileges or the target user."
-        )
-        _write_authorized_keys(auth_keys, [*current, key])
+            # re-add the key if not present
+            current = _read_authorized_keys(auth_keys)
+            if key in current:
+                return
+            _require_root_or_user(
+                info.pw_uid,
+                "Modifying authorized_keys requires root privileges or the target user."
+            )
+            _write_authorized_keys(auth_keys, [*current, key])
+        except Exception:
+            if not force:
+                raise

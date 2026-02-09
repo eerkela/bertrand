@@ -1,8 +1,11 @@
 """Run Bertrand from the command line to get include directory, version number, etc.
 """
+from __future__ import annotations
+
 import argparse
 import json as json_parser
 import shutil
+import sys
 from typing import Callable
 
 from .env.pipeline import (
@@ -22,9 +25,9 @@ from .env.pipeline import (
     on_monitor,
     on_top,
     on_log,
-    on_clean,
 )
 from .env.podman import Environment
+from .env.run import confirm
 from . import __version__
 
 # pylint: disable=unused-argument
@@ -47,6 +50,13 @@ from . import __version__
 #         print("Cleaning up swap file...")
 #         run([*sudo, "swapoff", str(swapfile)], check=False)
 #         swapfile.unlink(missing_ok=True)
+
+
+def _parse(path: str | None) -> tuple[str | None, str, str]:
+    if path is None:
+        return (None, "", "")
+    else:
+        return Environment.parse(path)
 
 
 class External:
@@ -631,7 +641,7 @@ class External:
                     "level of abstraction and safety compared to 'bertrand run'.",
             )
             command.add_argument(
-                "command",
+                "subcommand",
                 nargs=1,
                 help=
                     "The command to dump the journal of.  This should correspond to "
@@ -691,6 +701,7 @@ class External:
             self.top()
             self.log()
             self.journal()
+            self.clean()
             return self.root.parse_args()
 
     @staticmethod
@@ -713,9 +724,9 @@ class External:
         args : argparse.Namespace
             The parsed command-line arguments.
         """
-        env_root, image_tag, container_tag = Environment.parse(args.path[0])
+        env, image_tag, container_tag = _parse(args.path[0])
         on_init.do(
-            env_root=env_root,
+            env=env,
             image_tag=image_tag,
             container_tag=container_tag,
             shell=args.shell[0],
@@ -731,9 +742,9 @@ class External:
         args : argparse.Namespace
             The parsed command-line arguments.
         """
-        env_root, image_tag, container_tag = Environment.parse(args.path[0])
+        env, image_tag, container_tag = _parse(args.path[0])
         on_build.do(
-            env_root=env_root,
+            env=env,
             image_tag=image_tag,
             container_tag=container_tag,
             args=args.args,
@@ -748,9 +759,9 @@ class External:
         args : argparse.Namespace
             The parsed command-line arguments.
         """
-        env_root, image_tag, container_tag = Environment.parse(args.path)
+        env, image_tag, container_tag = _parse(args.path)
         on_start.do(
-            env_root=env_root,
+            env=env,
             image_tag=image_tag,
             container_tag=container_tag,
             args=args.args,
@@ -765,9 +776,9 @@ class External:
         args : argparse.Namespace
             The parsed command-line arguments.
         """
-        env_root, image_tag, container_tag = Environment.parse(args.path[0])
+        env, image_tag, container_tag = _parse(args.path[0])
         on_enter.do(
-            env_root=env_root,
+            env=env,
             image_tag=image_tag,
             container_tag=container_tag,
         )
@@ -781,9 +792,9 @@ class External:
         args : argparse.Namespace
             The parsed command-line arguments.
         """
-        env_root, image_tag, container_tag = Environment.parse(args.path[0])
+        env, image_tag, container_tag = _parse(args.path[0])
         on_run.do(
-            env_root=env_root,
+            env=env,
             image_tag=image_tag,
             container_tag=container_tag,
             cmd=args.cmd,
@@ -798,9 +809,9 @@ class External:
         args : argparse.Namespace
             The parsed command-line arguments.
         """
-        env_root, image_tag, container_tag = Environment.parse(args.path)
+        env, image_tag, container_tag = _parse(args.path)
         on_stop.do(
-            env_root=env_root,
+            env=env,
             image_tag=image_tag,
             container_tag=container_tag,
             timeout=args.timeout,
@@ -815,9 +826,9 @@ class External:
         args : argparse.Namespace
             The parsed command-line arguments.
         """
-        env_root, image_tag, container_tag = Environment.parse(args.path)
+        env, image_tag, container_tag = _parse(args.path)
         on_pause.do(
-            env_root=env_root,
+            env=env,
             image_tag=image_tag,
             container_tag=container_tag,
         )
@@ -831,9 +842,9 @@ class External:
         args : argparse.Namespace
             The parsed command-line arguments.
         """
-        env_root, image_tag, container_tag = Environment.parse(args.path)
+        env, image_tag, container_tag = _parse(args.path)
         on_resume.do(
-            env_root=env_root,
+            env=env,
             image_tag=image_tag,
             container_tag=container_tag,
         )
@@ -847,9 +858,9 @@ class External:
         args : argparse.Namespace
             The parsed command-line arguments.
         """
-        env_root, image_tag, container_tag = Environment.parse(args.path)
+        env, image_tag, container_tag = _parse(args.path)
         on_restart.do(
-            env_root=env_root,
+            env=env,
             image_tag=image_tag,
             container_tag=container_tag,
             timeout=args.timeout,
@@ -864,9 +875,9 @@ class External:
         args : argparse.Namespace
             The parsed command-line arguments.
         """
-        env_root, image_tag, container_tag = Environment.parse(args.path)
+        env, image_tag, container_tag = _parse(args.path)
         on_prune.do(
-            env_root=env_root,
+            env=env,
             image_tag=image_tag,
             container_tag=container_tag,
         )
@@ -880,9 +891,9 @@ class External:
         args : argparse.Namespace
             The parsed command-line arguments.
         """
-        env_root, image_tag, container_tag = Environment.parse(args.path)
+        env, image_tag, container_tag = _parse(args.path)
         on_rm.do(
-            env_root=env_root,
+            env=env,
             image_tag=image_tag,
             container_tag=container_tag,
             force=args.force,
@@ -897,9 +908,9 @@ class External:
         args : argparse.Namespace
             The parsed command-line arguments.
         """
-        env_root, image_tag, container_tag = Environment.parse(args.path)
+        env, image_tag, container_tag = _parse(args.path)
         on_ls.do(
-            env_root=env_root,
+            env=env,
             image_tag=image_tag,
             container_tag=container_tag,
             images=args.images,
@@ -917,9 +928,9 @@ class External:
         args : argparse.Namespace
             The parsed command-line arguments.
         """
-        env_root, image_tag, container_tag = Environment.parse(args.path)
+        env, image_tag, container_tag = _parse(args.path)
         on_monitor.do(
-            env_root=env_root,
+            env=env,
             image_tag=image_tag,
             container_tag=container_tag,
             interval=args.interval,
@@ -935,9 +946,9 @@ class External:
         args : argparse.Namespace
             The parsed command-line arguments.
         """
-        env_root, image_tag, container_tag = Environment.parse(args.path[0])
+        env, image_tag, container_tag = _parse(args.path[0])
         on_top.do(
-            env_root=env_root,
+            env=env,
             image_tag=image_tag,
             container_tag=container_tag,
         )
@@ -951,9 +962,9 @@ class External:
         args : argparse.Namespace
             The parsed command-line arguments.
         """
-        env_root, image_tag, container_tag = Environment.parse(args.path[0])
+        env, image_tag, container_tag = _parse(args.path[0])
         on_log.do(
-            env_root=env_root,
+            env=env,
             image_tag=image_tag,
             container_tag=container_tag,
             images=args.images,
@@ -993,13 +1004,19 @@ class External:
         KeyError
             If the specified command is invalid or not recognized.
         """
-        pipe = External.pipelines.get(args.command, None)
+        pipe = External.pipelines.get(args.subcommand[0], None)
         if pipe is None:
-            raise KeyError(f"Invalid command '{args.command}'.")
+            raise KeyError(f"Invalid subcommand '{args.subcommand[0]}'.")
 
         # load journal for the specified pipeline and dump it to stdout in JSON format
         with pipe:
             journal = pipe.state_dir / "journal.json"
+            if not journal.exists():
+                print(
+                    f"bertrand: no journal found for '{args.subcommand[0]}'",
+                    file=sys.stderr
+                )
+                return
             data = json_parser.loads(journal.read_text())
             print(json_parser.dumps(data, indent=2))
 
@@ -1011,9 +1028,50 @@ class External:
         ----------
         args : argparse.Namespace
             The parsed command-line arguments.
+
+        Raises
+        ------
+        OSError
+            If the user declines the prompt.
         """
-        on_clean.do()
-        shutil.rmtree(on_clean.state_dir)
+        if not confirm(
+            "This will permanently delete all Bertrand images, containers, and the "
+            "container engine itself from the host system.\nAre you sure you want to "
+            "proceed? [y/N] ",
+            assume_yes=args.yes,
+        ):
+            raise OSError("clean declined by user.")
+
+        def _clean(pipe: Pipeline) -> None:
+            try:
+                pipe.undo(force=True)
+                shutil.rmtree(pipe.state_dir, ignore_errors=True)
+            except Exception as e:  # pylint: disable=broad-exception-caught
+                print(f"bertrand: error during cleanup: {e}", file=sys.stderr)
+
+        # NOTE: a specific ordering is necessary to ensure that pipelines are undone
+        # in a safe manner, and never leave the system in a broken state.
+        for pipe in (
+            # on_publish,
+            # on_export,
+            # on_import,
+            on_top,
+            on_log,
+            on_monitor,
+            on_ls,
+            on_rm,
+            on_prune,
+            on_stop,
+            on_pause,
+            on_resume,
+            on_restart,
+            on_run,
+            on_enter,
+            on_start,
+            on_build,
+            on_init,
+        ):
+            _clean(pipe)
 
     commands: dict[str, Callable[[argparse.Namespace], None]] = {
         "version": version,
@@ -1033,6 +1091,7 @@ class External:
         "top": top,
         "log": log,
         "journal": journal,
+        "clean": clean,
     }
 
     def __call__(self) -> None:

@@ -136,7 +136,7 @@ class StartService:
             ctx.dump()
 
     @staticmethod
-    def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+    def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
         name = payload.get("name")
         user = payload.get("user")
         env = payload.get("env")
@@ -157,15 +157,22 @@ class StartService:
             return
 
         # stop the service only if we can verify identity
+        # Conservative force policy: keep checks, suppress undo errors.
         cmd_prefix = _systemctl_base(user)
         if not user:
             sudo = sudo_prefix()
             if os.geteuid() != 0 and not sudo:
+                if force:
+                    return
                 raise PermissionError(
                     "Stopping system services requires root privileges; no sudo available."
                 )
             cmd_prefix = [*sudo, *cmd_prefix]
-        run([*cmd_prefix, "stop", name], env=cast(dict[str, str], env))
+        try:
+            run([*cmd_prefix, "stop", name], env=cast(dict[str, str], env))
+        except Exception:
+            if not force:
+                raise
 
 
 @atomic
@@ -240,7 +247,7 @@ class StopService:
             ctx.dump()
 
     @staticmethod
-    def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+    def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
         name = payload.get("name")
         user = payload.get("user")
         env = payload.get("env")
@@ -265,11 +272,17 @@ class StopService:
         if not user:
             sudo = sudo_prefix()
             if os.geteuid() != 0 and not sudo:
+                if force:
+                    return
                 raise PermissionError(
                     "Starting system services requires root privileges; no sudo available."
                 )
             cmd_prefix = [*sudo, *cmd_prefix]
-        run([*cmd_prefix, "start", name], env=cast(dict[str, str], env))
+        try:
+            run([*cmd_prefix, "start", name], env=cast(dict[str, str], env))
+        except Exception:
+            if not force:
+                raise
 
 
 @atomic
@@ -315,7 +328,7 @@ class RestartService:
         run([*cmd_prefix, "try-restart", name], env=env)
 
     @staticmethod
-    def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+    def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
         return  # no-op
 
 
@@ -370,7 +383,7 @@ class EnableService:
         run([*cmd_prefix, "enable", name], env=env)
 
     @staticmethod
-    def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+    def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
         name = payload.get("name")
         user = payload.get("user")
         env = payload.get("env")
@@ -385,6 +398,8 @@ class EnableService:
         if not user:
             sudo = sudo_prefix()
             if os.geteuid() != 0 and not sudo:
+                if force:
+                    return
                 raise PermissionError(
                     "Disabling system services requires root privileges; no sudo available."
                 )
@@ -446,7 +461,7 @@ class DisableService:
         run([*cmd_prefix, "disable", name], env=env)
 
     @staticmethod
-    def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+    def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
         name = payload.get("name")
         user = payload.get("user")
         env = payload.get("env")
@@ -461,6 +476,8 @@ class DisableService:
         if not user:
             sudo = sudo_prefix()
             if os.geteuid() != 0 and not sudo:
+                if force:
+                    return
                 raise PermissionError(
                     "Enabling system services requires root privileges; no sudo available."
                 )
@@ -509,7 +526,7 @@ class ReloadDaemon:
         run([*cmd_prefix, "daemon-reload"], env=env)
 
     @staticmethod
-    def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+    def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
         return  # no-op
 
 
@@ -571,5 +588,5 @@ class DelegateUserControllers:
         run([*sudo, "systemctl", "daemon-reload"])
 
     @staticmethod
-    def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+    def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
         return  # no-op

@@ -111,6 +111,19 @@ def _only_dirs(root: Path) -> bool:
         return True
 
 
+def _remove_path(path: Path, force: bool) -> None:
+    if not _exists(path):
+        return
+    try:
+        if _is_dir(path):
+            shutil.rmtree(path)
+        else:
+            path.unlink()
+    except OSError:
+        if not force:
+            raise
+
+
 def _stash_existing(
     ctx: Pipeline.InProgress,
     payload: dict[str, JSONValue],
@@ -124,11 +137,12 @@ def _stash_existing(
 
 def _unstash_existing(
     ctx: Pipeline.InProgress,
-    payload: dict[str, JSONValue]
+    payload: dict[str, JSONValue],
+    force: bool
 ) -> None:
     existing = payload.get("existing")
     if isinstance(existing, dict):
-        Stash.undo(ctx, existing)
+        Stash.undo(ctx, existing, force=force)
         payload.pop("existing", None)
         ctx.dump()
 
@@ -203,7 +217,7 @@ class Remove:
             src.unlink()
 
     @staticmethod
-    def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+    def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
         return  # no-op
 
 
@@ -239,7 +253,7 @@ class Stash:
         _move_preserve_lstat(src, dst)
 
     @staticmethod
-    def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+    def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
         src_str = payload.get("source")
         dst_str = payload.get("stashed_at")
         if not isinstance(src_str, str) or not isinstance(dst_str, str):
@@ -256,11 +270,20 @@ class Stash:
         # if both exist, restoring would clobber - raise an error to halt rollback
         src = Path(src_str)
         if _exists(src):
-            raise FileExistsError(f"Cannot restore stashed path; target exists: {src}")
+            if not force:
+                raise FileExistsError(f"Cannot restore stashed path; target exists: {src}")
+            _remove_path(src, force=True)
+            if _exists(src):
+                return
 
         # restore stashed path
         src.parent.mkdir(parents=True, exist_ok=True)
-        _move_preserve_lstat(dst, src)
+        try:
+            _move_preserve_lstat(dst, src)
+        except Exception:
+            if not force:
+                raise
+            return
         payload.clear()
         ctx.dump()
 
@@ -326,7 +349,7 @@ class Mkdir:
             _record_id(ctx, payload, path)
 
     @staticmethod
-    def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+    def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
         path_str = payload.get("path")
         private = payload.get("private")
         created = payload.get("created")
@@ -336,7 +359,7 @@ class Mkdir:
             not isinstance(created, bool)
         ):
             _clear_id(ctx, payload)
-            _unstash_existing(ctx, payload)
+            _unstash_existing(ctx, payload, force=force)
             return
         rmtree = payload.get("rmtree")
         if not isinstance(rmtree, bool):
@@ -346,22 +369,26 @@ class Mkdir:
         path = Path(path_str)
         if _exists(path):
             if created:
-                if not _is_dir(path) or not _check_id(path, payload):
-                    raise FileExistsError(
-                        f"Cannot remove created directory; path occupied: {path}"
-                    )
-                if not rmtree and not _only_dirs(path):
-                    raise FileExistsError(
-                        f"Cannot remove created directory; path occupied: {path}"
-                    )
-                shutil.rmtree(path)
-                _clear_id(ctx, payload)
+                if force:
+                    _remove_path(path, force=True)
+                    _clear_id(ctx, payload)
+                else:
+                    if not _is_dir(path) or not _check_id(path, payload):
+                        raise FileExistsError(
+                            f"Cannot remove created directory; path occupied: {path}"
+                        )
+                    if not rmtree and not _only_dirs(path):
+                        raise FileExistsError(
+                            f"Cannot remove created directory; path occupied: {path}"
+                        )
+                    shutil.rmtree(path)
+                    _clear_id(ctx, payload)
 
             # if we didn't create the directory, but we did change its permissions,
             # try to restore them
             elif private:
                 permissions = payload.get("old_permissions")
-                if isinstance(permissions, int) and _check_id(path, payload) is not False:
+                if isinstance(permissions, int) and (force or _check_id(path, payload) is not False):
                     try:
                         path.chmod(permissions)
                         _clear_id(ctx, payload)
@@ -370,7 +397,7 @@ class Mkdir:
                         pass
 
         # step 2: restore whatever was there before
-        _unstash_existing(ctx, payload)
+        _unstash_existing(ctx, payload, force=force)
 
 
 @atomic
@@ -414,33 +441,37 @@ class WriteBytes:
         _record_id(ctx, payload, path)
 
     @staticmethod
-    def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+    def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
         # delete written file
         path_str = payload.get("path")
         if not isinstance(path_str, str):
             _clear_id(ctx, payload)
-            _unstash_existing(ctx, payload)
+            _unstash_existing(ctx, payload, force=force)
             return
 
         # step 1: remove the file we wrote, but only if it's the same one
         path = Path(path_str)
         if _exists(path):
-            if not _is_file(path) or not _check_id(path, payload):
-                raise FileExistsError(f"Cannot remove written file; path occupied: {path}")
+            if force:
+                _remove_path(path, force=True)
+                _clear_id(ctx, payload)
+            else:
+                if not _is_file(path) or not _check_id(path, payload):
+                    raise FileExistsError(f"Cannot remove written file; path occupied: {path}")
 
-            # fall back to content fingerprint to ensure we don't clobber edits
-            fingerprint = payload.get("fingerprint")
-            if isinstance(fingerprint, str):
-                cur = hashlib.sha256(path.read_bytes()).hexdigest()
-                if cur != fingerprint:
-                    raise FileExistsError(
-                        f"Cannot remove written file; contents have changed: {path}"
-                    )
-            path.unlink()
-            _clear_id(ctx, payload)
+                # fall back to content fingerprint to ensure we don't clobber edits
+                fingerprint = payload.get("fingerprint")
+                if isinstance(fingerprint, str):
+                    cur = hashlib.sha256(path.read_bytes()).hexdigest()
+                    if cur != fingerprint:
+                        raise FileExistsError(
+                            f"Cannot remove written file; contents have changed: {path}"
+                        )
+                path.unlink()
+                _clear_id(ctx, payload)
 
         # step 2: restore whatever was there before, if stashed
-        _unstash_existing(ctx, payload)
+        _unstash_existing(ctx, payload, force=force)
 
 
 @atomic
@@ -470,16 +501,6 @@ class WriteText:
     private: bool = False
 
     def do(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
-        """Write the text to the file, moving any conflicting file to a stash location.
-
-        Parameters
-        ----------
-        ctx : Pipeline.InProgress
-            The in-progress pipeline context.
-        payload : dict[str, JSONValue]
-            A mutable dictionary that can be populated with any JSON-serializable state
-            needed to undo the operation later.
-        """
         payload["encoding"] = self.encoding
         WriteBytes(
             path=self.path,
@@ -489,17 +510,8 @@ class WriteText:
         ).do(ctx, payload)
 
     @staticmethod
-    def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
-        """Delete the written file and restore any stashed file back to its original
-        location.
-
-        Parameters
-        ----------
-        ctx : Pipeline.InProgress
-        payload : dict[str, JSONValue]
-            The payload returned by `do()`.
-        """
-        WriteBytes.undo(ctx, payload)
+    def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
+        WriteBytes.undo(ctx, payload, force=force)
 
 
 @atomic
@@ -625,9 +637,43 @@ class Copy:
         ctx: Pipeline.InProgress,
         payload: dict[str, JSONValue],
         target: Path,
-        errors: list[str]
+        errors: list[str],
+        force: bool,
     ) -> None:
         kind = payload.get("kind")
+        if force:
+            if not isinstance(kind, str) or kind not in ("symlink", "file", "dir"):
+                _clear_id(ctx, payload)
+                _unstash_existing(ctx, payload, force=True)
+                return
+            if not _exists(target):
+                _clear_id(ctx, payload)
+                _unstash_existing(ctx, payload, force=True)
+                return
+            if kind in ("symlink", "file"):
+                _remove_path(target, force=True)
+                payload.pop("fingerprint", None)
+                _clear_id(ctx, payload)
+            elif kind == "dir":
+                if _is_dir(target):
+                    contents = payload.get("contents")
+                    if isinstance(contents, list):
+                        for item_payload in reversed(contents):
+                            if not isinstance(item_payload, dict):
+                                continue
+                            item_target_str = item_payload.get("target")
+                            if isinstance(item_target_str, str):
+                                item_target = Path(item_target_str)
+                                Copy._undo(ctx, item_payload, item_target, errors, force=True)
+                else:
+                    _remove_path(target, force=True)
+                created = payload.get("created")
+                if isinstance(created, bool) and created:
+                    _remove_path(target, force=True)
+                    _clear_id(ctx, payload)
+            _unstash_existing(ctx, payload, force=True)
+            return
+
         if not isinstance(kind, str):
             errors.append(f"missing file kind: {target}")
             return
@@ -639,7 +685,7 @@ class Copy:
         if not _exists(target):
             _clear_id(ctx, payload)
             try:
-                _unstash_existing(ctx, payload)
+                _unstash_existing(ctx, payload, force=force)
             except Exception as e:
                 errors.append(f"[{kind}] error unstashing previous target: {e}")
             return
@@ -705,7 +751,7 @@ class Copy:
                     item_target_str = item_payload.get("target")
                     if isinstance(item_target_str, str):
                         item_target = Path(item_target_str)
-                        Copy._undo(ctx, item_payload, item_target, errors)
+                        Copy._undo(ctx, item_payload, item_target, errors, force)
 
             # avoid clobbering if we didn't create the directory
             created = payload.get("created")
@@ -719,21 +765,21 @@ class Copy:
 
         # restore whatever was there before
         try:
-            _unstash_existing(ctx, payload)
+            _unstash_existing(ctx, payload, force=force)
         except Exception as e:
             errors.append(f"[{kind}] error unstashing previous target: {e}")
 
     @staticmethod
-    def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+    def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
         target_str = payload.get("target")
         if isinstance(target_str, str):
             errors: list[str] = []
-            Copy._undo(ctx, payload, Path(target_str), errors)
-            if errors:
+            Copy._undo(ctx, payload, Path(target_str), errors, force)
+            if errors and not force:
                 raise OSError(f"Errors occurred during copy undo:\n{'\n'.join(errors)}")
         else:
             _clear_id(ctx, payload)
-            _unstash_existing(ctx, payload)
+            _unstash_existing(ctx, payload, force=force)
 
 
 @atomic
@@ -869,8 +915,50 @@ class Move:
         source: Path,
         target: Path,
         errors: list[str],
+        force: bool,
     ) -> None:
         kind = payload.get("kind")
+        if force:
+            if not isinstance(kind, str) or kind not in ("symlink", "file", "dir"):
+                _clear_id(ctx, payload)
+                _unstash_existing(ctx, payload, force=True)
+                return
+            if not _exists(target):
+                _clear_id(ctx, payload)
+                _unstash_existing(ctx, payload, force=True)
+                return
+            if kind in ("symlink", "file"):
+                if _exists(source):
+                    _remove_path(source, force=True)
+                try:
+                    _move_preserve_lstat(target, source)
+                except Exception:
+                    pass
+                payload.pop("fingerprint", None)
+                _clear_id(ctx, payload)
+            elif kind == "dir":
+                source.mkdir(parents=True, exist_ok=True)
+                if _is_dir(target):
+                    contents = payload.get("contents")
+                    if isinstance(contents, list):
+                        for item_payload in reversed(contents):
+                            if not isinstance(item_payload, dict):
+                                continue
+                            item_source_str = item_payload.get("source")
+                            item_target_str = item_payload.get("target")
+                            if isinstance(item_source_str, str) and isinstance(item_target_str, str):
+                                item_source = Path(item_source_str)
+                                item_target = Path(item_target_str)
+                                Move._undo(ctx, item_payload, item_source, item_target, errors, force=True)
+                else:
+                    _remove_path(target, force=True)
+                created = payload.get("created")
+                if isinstance(created, bool) and created:
+                    _remove_path(target, force=True)
+                    _clear_id(ctx, payload)
+            _unstash_existing(ctx, payload, force=True)
+            return
+
         if not isinstance(kind, str):
             errors.append(f"missing file kind: {target}")
             return
@@ -882,7 +970,7 @@ class Move:
         if not _exists(target):
             _clear_id(ctx, payload)
             try:
-                _unstash_existing(ctx, payload)
+                _unstash_existing(ctx, payload, force=force)
             except Exception as e:
                 errors.append(f"[{kind}] error unstashing previous target: {e}")
             return
@@ -962,7 +1050,7 @@ class Move:
                     if isinstance(item_source_str, str) and isinstance(item_target_str, str):
                         item_source = Path(item_source_str)
                         item_target = Path(item_target_str)
-                        Move._undo(ctx, item_payload, item_source, item_target, errors)
+                        Move._undo(ctx, item_payload, item_source, item_target, errors, force)
 
             # avoid clobbering if we didn't create the directory
             created = payload.get("created")
@@ -976,28 +1064,22 @@ class Move:
 
         # restore whatever was there before
         try:
-            _unstash_existing(ctx, payload)
+            _unstash_existing(ctx, payload, force=force)
         except Exception as e:
             errors.append(f"[unstash] error unstashing existing: {e}")
 
     @staticmethod
-    def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+    def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
         source_str = payload.get("source")
         target_str = payload.get("target")
         if isinstance(source_str, str) and isinstance(target_str, str):
             errors: list[str] = []
-            Move._undo(
-                ctx,
-                payload,
-                Path(source_str),
-                Path(target_str),
-                errors,
-            )
-            if errors:
+            Move._undo(ctx, payload, Path(source_str), Path(target_str), errors, force)
+            if errors and not force:
                 raise OSError(f"Errors occurred during move undo:\n{'\n'.join(errors)}")
         else:
             _clear_id(ctx, payload)
-            _unstash_existing(ctx, payload)
+            _unstash_existing(ctx, payload, force=force)
 
 
 @atomic
@@ -1044,30 +1126,34 @@ class Symlink:
         _record_id(ctx, payload, target)
 
     @staticmethod
-    def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+    def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
         target_str = payload.get("target")
         if not isinstance(target_str, str):
             _clear_id(ctx, payload)
-            _unstash_existing(ctx, payload)
+            _unstash_existing(ctx, payload, force=force)
             return
 
         # step 1: remove the symlink we created, but only if it's the same one
         target = Path(target_str)
         if _exists(target):
-            source_str = payload.get("source")
-            if (
-                not _is_symlink(target) or
-                (isinstance(source_str, str) and target.readlink() != Path(source_str)) or
-                not _check_id(target, payload)
-            ):
-                raise FileExistsError(
-                    f"Cannot remove created symlink; path occupied: {target}"
-                )
-            target.unlink()
-            _clear_id(ctx, payload)
+            if force:
+                _remove_path(target, force=True)
+                _clear_id(ctx, payload)
+            else:
+                source_str = payload.get("source")
+                if (
+                    not _is_symlink(target) or
+                    (isinstance(source_str, str) and target.readlink() != Path(source_str)) or
+                    not _check_id(target, payload)
+                ):
+                    raise FileExistsError(
+                        f"Cannot remove created symlink; path occupied: {target}"
+                    )
+                target.unlink()
+                _clear_id(ctx, payload)
 
         # step 2: restore whatever was there before
-        _unstash_existing(ctx, payload)
+        _unstash_existing(ctx, payload, force=force)
 
 
 @atomic
@@ -1106,7 +1192,7 @@ class Swap:
         _move_preserve_lstat(temp, second)
 
     @staticmethod
-    def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+    def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
         first_str = payload.get("first")
         second_str = payload.get("second")
         if not isinstance(first_str, str) or not isinstance(second_str, str):
@@ -1115,6 +1201,24 @@ class Swap:
         # do nothing if the paths are the same
         first = Path(first_str)
         second = Path(second_str)
+        if force:
+            if not _exists(first) or not _exists(second):
+                return
+            try:
+                if os.path.samefile(first, second):
+                    return
+            except OSError:
+                return
+            stash_root = ctx.state_dir / "stash"
+            temp = stash_root / uuid.uuid4().hex
+            mkdir_private(stash_root)
+            try:
+                _move_preserve_lstat(first, temp)
+                _move_preserve_lstat(second, first)
+                _move_preserve_lstat(temp, second)
+            except OSError:
+                return
+            return
         if os.path.samefile(first, second):
             return
 
@@ -1176,7 +1280,7 @@ class Chmod:
         path.chmod(self.mode)
 
     @staticmethod
-    def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+    def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
         if payload.get("symlink", False):
             return  # no-op on symlinks
 
@@ -1191,10 +1295,12 @@ class Chmod:
 
         if _is_symlink(path):
             # somehow the path became a symlink; skip chmod
+            if force:
+                return
             raise FileExistsError(f"Cannot undo chmod; path is now a symlink: {path}")
 
         # verify identity to avoid clobbering
-        if not _check_id(path, payload):
+        if not force and not _check_id(path, payload):
             raise FileExistsError(f"Cannot undo chmod; path occupied: {path}")
 
         # restore old mode
@@ -1247,7 +1353,7 @@ class Chown:
         )
 
     @staticmethod
-    def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+    def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
         if payload.get("symlink", False):
             return  # no-op on symlinks
 
@@ -1266,10 +1372,12 @@ class Chown:
             return
 
         if _is_symlink(path):
+            if force:
+                return
             raise FileExistsError(f"Cannot undo chown; path is now a symlink: {path}")
 
         # verify identity to avoid clobbering
-        if not _check_id(path, payload):
+        if not force and not _check_id(path, payload):
             raise FileExistsError(f"Cannot undo chown; path occupied: {path}")
 
         os.chown(path, old_uid, old_gid)
@@ -1324,7 +1432,7 @@ class Touch:
         os.utime(path, ns=(atime_ns, mtime_ns))
 
     @staticmethod
-    def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+    def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
         if payload.get("symlink", False):
             return  # no-op on symlinks
 
@@ -1343,10 +1451,12 @@ class Touch:
             return
 
         if _is_symlink(path):
+            if force:
+                return
             raise FileExistsError(f"Cannot undo touch; path is now a symlink: {path}")
 
         # verify identity to avoid clobbering
-        if not _check_id(path, payload):
+        if not force and not _check_id(path, payload):
             raise FileExistsError(f"Cannot undo touch; path occupied: {path}")
 
         os.utime(path, ns=(old_atime_ns, old_mtime_ns))
@@ -1398,11 +1508,11 @@ class Extract:
         shutil.rmtree(temp, ignore_errors=True)
 
     @staticmethod
-    def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+    def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
         # undo move
         move_payload = payload.get("move")
         if isinstance(move_payload, dict):
-            Move.undo(ctx, move_payload)
+            Move.undo(ctx, move_payload, force=force)
 
         # delete temporary directory
         temp_str = payload.get("temp")

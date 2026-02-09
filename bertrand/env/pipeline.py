@@ -11,6 +11,7 @@ dependencies.
 """
 from __future__ import annotations
 
+import functools
 import json
 import hashlib
 import inspect
@@ -43,7 +44,7 @@ SYNTAX: int = 1
 STATE_DIR = User().home / ".local" / "share" / "bertrand" / "pipelines"
 SANITIZE: re.Pattern[str] = re.compile(r"[^a-zA-Z0-9_.-]")
 MISSING: Literal["<missing>"] = "<missing>"  # not a valid SHA-256 hexdigest
-ATOMIC_UNDO: dict[str, Callable[[Pipeline.InProgress, dict[str, JSONValue]], None]] = {}
+ATOMIC_UNDO: dict[str, Callable[[Pipeline.InProgress, dict[str, JSONValue], bool], None]] = {}
 QualName = Annotated[str, Field(pattern=r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*$")]
 UUID4Hex = Annotated[str, Field(pattern=r"^[a-f0-9]{32}$")]
 Hash256 = Annotated[str, Field(pattern=r"^[a-f0-9]{64}$")]
@@ -95,7 +96,7 @@ class Atomic(Protocol):
         """
 
     @staticmethod
-    def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+    def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
         """Undo the operation within the given `Pipeline`, using the payload populated
         by the original `do()` call.
 
@@ -106,6 +107,8 @@ class Atomic(Protocol):
             any facts that have been recorded so far, which are immutable.
         payload : dict[str, JSONValue]
             The payload populated by the original `do()` call.
+        force : bool
+            If True, operations may suppress errors and continue a best-effort undo.
         """
 
 
@@ -134,6 +137,7 @@ def atomic(t: type[Atomic]) -> type[Atomic]:
         raise TypeError(f"Atomic operation must have a unique class name: {kind}")
     ATOMIC_UNDO[kind] = t.undo
     return t
+
 
 @dataclass
 class Pipeline:
@@ -181,6 +185,8 @@ class Pipeline:
     """
     class Function(Protocol):
         """A type hint for a function that can be decorated as a pipeline step."""
+        __qualname__: str
+        __module__: str
         def __call__(self, ctx: Pipeline.InProgress) -> None: ...
 
     @dataclass(frozen=True)
@@ -389,9 +395,36 @@ class Pipeline:
         data = JournalAdapter.dump_python(self._records, mode="json")
         atomic_write_text(self.state_dir / "journal.json", self._json(data) + "\n", private=True)
 
+    @staticmethod
+    def _inspect_target(obj: Any) -> Any:
+        # unwrap decorated functions if possible
+        try:
+            obj = inspect.unwrap(obj)
+        except Exception:
+            pass
+
+        # unwrap functools.partial
+        if isinstance(obj, functools.partial):
+            obj = obj.func
+
+        # if already inspectable, return directly
+        if (
+            inspect.ismodule(obj) or inspect.isclass(obj) or inspect.isfunction(obj) or
+            inspect.ismethod(obj) or inspect.istraceback(obj) or inspect.isframe(obj) or
+            inspect.iscode(obj) or inspect.isbuiltin(obj)
+        ):
+            return obj
+
+        # fall back to the object's type (covers callable instances)
+        return type(obj)
+
     def _module_hash(self, obj: Any) -> str:
         # find originating source file
-        source = inspect.getsourcefile(obj) or inspect.getfile(obj)
+        target = self._inspect_target(obj)
+        try:
+            source = inspect.getsourcefile(target) or inspect.getfile(target)
+        except TypeError:
+            return MISSING
         if not source:
             return MISSING
 
@@ -462,8 +495,8 @@ class Pipeline:
         else:
             step.error = f"partial rollback failure:\n{error}"
 
-    def _rollback_step(self, step: Pipeline.StepRecord) -> None:
-        # undo operations in reverse order, stopping on first failure
+    def _rollback_step(self, step: Pipeline.StepRecord, force: bool) -> None:
+        # undo operations in reverse order, stopping on first failure unless forced
         with Pipeline.UndoStep(ephemeral=True, pipeline=self, record=step) as ctx:
             while step.ops:
                 op = step.ops.pop()  # destroy as we go
@@ -473,23 +506,27 @@ class Pipeline:
                 # lookup undo handler
                 undo = ATOMIC_UNDO.get(op.kind)
                 if not undo:
-                    step.ops.append(op)
                     self._rollback_fail_error(step, f"unknown atomic operation kind '{op.kind}'")
-                    break
+                    if not force:
+                        step.ops.append(op)
+                        break  # stop at first failure
+                    continue  # swallow error and keep going
 
                 # attempt undo
                 try:
-                    undo(ctx, op.payload)
+                    undo(ctx, op.payload, force)
                 except Exception as err:
-                    step.ops.append(op)
                     self._rollback_fail_error(step, str(err))
-                    break
+                    if not force:
+                        step.ops.append(op)
+                        break  # stop at first failure
+                    continue  # swallow error and keep going
 
     def _rollback_in_progress(self) -> bool:
         changed = False
         for s in reversed(self._records):
             if s.status == "in_progress":
-                self._rollback_step(s)
+                self._rollback_step(s, force=False)
                 changed = True
         return changed
 
@@ -593,17 +630,15 @@ class Pipeline:
         finally:
             self._lock.__exit__(exc_type, exc_value, traceback)
 
-    T = TypeVar("T", bound=Pipeline.Function)
-
     @overload
     def __call__(
         self,
-        func: T,
+        func: Pipeline.Function,
         *,
         requires: Iterable[Pipeline.Function] | None = ...,
         enable: bool = ...,
         ephemeral: bool = ...,
-    ) -> T: ...
+    ) -> Pipeline.Function: ...
     @overload
     def __call__(
         self,
@@ -612,15 +647,15 @@ class Pipeline:
         requires: Iterable[Pipeline.Function] | None = ...,
         enable: bool = ...,
         ephemeral: bool = ...,
-    ) -> Callable[[T], T]: ...
+    ) -> Callable[[Pipeline.Function], Pipeline.Function]: ...
     def __call__(
         self,
-        func: T | None = None,
+        func: Pipeline.Function | None = None,
         *,
         requires: Iterable[Pipeline.Function] | None = None,
         enable: bool = True,
         ephemeral: bool = False,
-    ) -> T | Callable[[T], T]:
+    ) -> Pipeline.Function | Callable[[Pipeline.Function], Pipeline.Function]:
         """Register a step function with the given dependencies.
 
         Parameters
@@ -641,7 +676,7 @@ class Pipeline:
 
         Returns
         -------
-        func
+        func : Pipeline.Function
             The decorated step function, which will execute the step with the given
             `Pipeline.InProgress` context.  The `ctx.do()` method should be used within
             the function to record mutating operations in the journal, so that they can
@@ -663,7 +698,7 @@ class Pipeline:
         if not enable:  # no-op
             return func if func is not None else lambda func: func
 
-        def _decorator(func: Pipeline.T) -> Pipeline.T:
+        def _decorator(func: Pipeline.Function) -> Pipeline.Function:
             name = _qualname(func)
             if name in self._lookup:
                 raise TypeError(f"Pipeline step function must be unique: '{name}'")
@@ -1146,7 +1181,7 @@ class Pipeline:
                     exc_traceback = getattr(err, "__traceback__", None)
 
             # roll back step on error
-            self.pipeline._rollback_step(self.record)
+            self.pipeline._rollback_step(self.record, force=False)
             if self.record.error:
                 self.record.error = f"{self.record.error}; {exc_type.__name__}: {exc_value}"
             else:
@@ -1196,12 +1231,12 @@ class Pipeline:
                 self.record.ended_at = datetime.now(timezone.utc)
             self.pipeline._dump()
 
-    def do(self, **kwargs: Any) -> dict[str, JSONView]:
+    def do(self, **kwargs: JSONValue) -> dict[str, JSONView]:
         """Run the pipeline with the given keyword arguments.
 
         Parameters
         ----------
-        **kwargs : Any
+        **kwargs : JSONValue
             Keyword arguments that can be accessed by `Pipeline.InProgress` steps
             during execution via the subscript interface.  Each value must be
             JSON-serializable, and a hash + read-only view of its serialized value will
@@ -1287,7 +1322,7 @@ class Pipeline:
                 if s.status == "completed":
                     target = self._lookup.get(s.name)
                     if target is None or target in invalid:
-                        self._rollback_step(s)
+                        self._rollback_step(s, force=False)
                         if s.error:
                             s.error = f"{s.error}; step invalidated due to dependency change"
                         else:
@@ -1305,7 +1340,12 @@ class Pipeline:
             # return final set of facts as read-only views
             return {k: v.value for k, v in self._facts.items()}
 
-    def undo(self, steps: Iterable[Pipeline.Function] | None = None) -> None:
+    def undo(
+        self,
+        steps: Iterable[Pipeline.Function] | None = None,
+        *,
+        force: bool = False
+    ) -> None:
         """Replay the journal in reverse order to undo changes.
 
         Parameters
@@ -1314,6 +1354,13 @@ class Pipeline:
             An optional sequence of step functions which should be rolled back, along
             with any steps that depend on them.  If None (the default), all completed
             steps will be rolled back.
+        force : bool, optional
+            If True, continue rolling back even if individual undo operations fail.
+            This is intended to be used in a `clean` command, which uninstalls all
+            changes immediately before deleting the state directory.  Operations should
+            therefore make sure not to leave important data in the state directory if
+            this flag is set, since it may be permanently lost after the `clean`
+            command finishes.
 
         Raises
         ------
@@ -1330,7 +1377,7 @@ class Pipeline:
             with self:
                 for s in reversed(self._records):
                     if s.status == "completed":
-                        self._rollback_step(s)
+                        self._rollback_step(s, force=force)
             return
 
         # convert step functions into dotted names
@@ -1358,7 +1405,7 @@ class Pipeline:
             # roll back all steps that provide or require an invalidated capability
             for s in reversed(completed):
                 if s.name in invalid:
-                    self._rollback_step(s)
+                    self._rollback_step(s, force=force)
 
 
 JournalAdapter = TypeAdapter(list[Pipeline.StepRecord])
@@ -1382,4 +1429,3 @@ on_top = Pipeline(state_dir=STATE_DIR / "top", keep=5)
 on_import = Pipeline(state_dir=STATE_DIR / "import", keep=5)
 on_export = Pipeline(state_dir=STATE_DIR / "export", keep=5)
 on_publish = Pipeline(state_dir=STATE_DIR / "publish", keep=5)
-on_clean = Pipeline(state_dir=STATE_DIR / "clean", keep=5)

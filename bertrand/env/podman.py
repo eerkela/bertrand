@@ -11,7 +11,7 @@ import shutil
 import sys
 import uuid
 
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
 from datetime import datetime, timezone
 from pathlib import Path
 from resource import getpagesize
@@ -19,6 +19,7 @@ from types import TracebackType
 from typing import (
     Annotated,
     Any,
+    Callable,
     Iterable,
     Literal,
     TypeAlias,
@@ -39,13 +40,12 @@ from pydantic import (
     model_validator,
 )
 
-from .package import (
-    InstallPackage,
-    detect_package_manager
-)
+from .package import InstallPackage, detect_package_manager
 from .pipeline import (
+    JSONValue,
     JSONView,
     Pipeline,
+    atomic,
     on_init,
     on_ls,
     on_rm,
@@ -61,10 +61,9 @@ from .pipeline import (
     on_monitor,
     on_log,
     on_top,
-    on_import,
-    on_export,
-    on_publish,
-    on_clean,
+    # on_import,
+    # on_export,
+    # on_publish,
 )
 from .run import (
     CommandError,
@@ -76,9 +75,7 @@ from .run import (
     mkdir_private,
     run,
 )
-from .systemd import (
-    DelegateUserControllers,
-)
+from .systemd import DelegateUserControllers
 from .user import EnsureSubIDs, EnsureUserNamespaces
 from .version import __version__
 
@@ -98,6 +95,111 @@ PACKAGE_MANAGER = "package_manager"
 DISTRO_ID = "distro_id"
 DISTRO_VERSION = "distro_version"
 DISTRO_CODENAME = "distro_codename"
+
+
+@atomic
+@dataclass(frozen=True)
+class PurgeBertrandArtifacts:
+    """Clean up Bertrand containers, images, and volumes before uninstalling podman
+    itself.
+    """
+    # pylint: disable=missing-function-docstring, broad-exception-caught, unused-argument
+
+    def do(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+        return  # no-op; cleanup is handled in undo
+
+    @staticmethod
+    def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
+        if not shutil.which("podman"):
+            return
+        try:
+            containers = _list_podman_ids([
+                "container",
+                "ls",
+                "-a",
+                "-q",
+                "--no-trunc",
+                "--filter", "label=BERTRAND=1",
+            ])
+            if containers:
+                podman_cmd([
+                    "container",
+                    "rm",
+                    "--depend",
+                    "-f",
+                    "-i",
+                    "-v",
+                    "-t", str(TIMEOUT),
+                    *containers
+                ], check=False)
+            images = _list_podman_ids([
+                "image",
+                "ls",
+                "-a",
+                "-q",
+                "--no-trunc",
+                "--filter", "label=BERTRAND=1",
+            ])
+            if images:
+                podman_cmd(["image", "rm", "-f", "-i", *images], check=False)
+            volumes = _list_podman_ids([
+                "volume",
+                "ls",
+                "-q",
+                "--filter", "label=BERTRAND=1",
+            ])
+            if volumes:
+                podman_cmd(["volume", "rm", "-f", "-i", *volumes], check=False)
+        except Exception:
+            pass
+
+
+@atomic
+@dataclass(frozen=True)
+class InstallPodman(InstallPackage):
+    """Install podman and its dependencies via the detected package manager.  The undo
+    step will first check host podman storage for any containers/images/volumes that
+    aren't managed by Bertrand.  If host queries fail or any such objects are found,
+    uninstallation is skipped to avoid accidentally removing user data.
+    """
+    # pylint: disable=missing-function-docstring, broad-exception-caught, unused-argument
+
+    @staticmethod
+    def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
+        # Conservative: if host state is unknown or in use, skip uninstall to avoid
+        # clobbering user-managed podman resources.
+        try:
+            containers = _list_podman_ids_host([
+                "container",
+                "ls",
+                "-a",
+                "-q",
+                "--no-trunc",
+                "--filter", "label!=BERTRAND=1",
+            ])
+            if containers is None or containers:
+                return
+            images = _list_podman_ids_host([
+                "image",
+                "ls",
+                "-a",
+                "-q",
+                "--no-trunc",
+                "--filter", "label!=BERTRAND=1",
+            ])
+            if images is None or images:
+                return
+            volumes = _list_podman_ids_host([
+                "volume",
+                "ls",
+                "-q",
+                "--filter", "label!=BERTRAND=1",
+            ])
+            if volumes is None or volumes:
+                return
+            InstallPackage.undo(ctx, payload, force)
+        except Exception:
+            return
 
 
 @on_init(requires=[])
@@ -140,6 +242,9 @@ def install_container_cli(ctx: Pipeline.InProgress) -> None:
     # check if podman CLI is already present
     cli = shutil.which("podman")
     if cli:
+        # remember to delete all Bertrand-owned images/containers/artifacts, but do
+        # not remove podman itself, since it was pre-installed.
+        ctx.do(PurgeBertrandArtifacts())
         return
 
     # prompt to install dependencies
@@ -167,7 +272,7 @@ def install_container_cli(ctx: Pipeline.InProgress) -> None:
         packages.append("shadow-utils")
     else:
         raise OSError(f"Unknown package manager: '{package_manager}'")
-    ctx.do(InstallPackage(
+    ctx.do(InstallPodman(
         manager=package_manager,
         packages=packages,
         refresh=True
@@ -180,6 +285,9 @@ def install_container_cli(ctx: Pipeline.InProgress) -> None:
             "Installation completed, but 'podman' is still not found.  Please "
             "investigate the issue and ensure the required packages are installed."
         )
+
+    # remember to delete all images/containers/artifacts on `clean`
+    ctx.do(PurgeBertrandArtifacts())
 
 
 @on_init(requires=[install_container_cli])
@@ -357,11 +465,6 @@ def delegate_controllers(ctx: Pipeline.InProgress) -> None:
                     )
 
 
-# TODO: I need an on_clean() step to forcibly undo the above steps, and then delete
-# the state directory, for a true uninstallation command.
-
-
-
 DOCKER_ENV_VARS = (
     "DOCKER_CONTEXT",
     "DOCKER_HOST",
@@ -373,11 +476,8 @@ DOCKER_ENV_VARS = (
 )
 
 
-def _podman_env(ctx: Pipeline | Pipeline.InProgress) -> dict[str, str]:
+def _podman_env(ctx: Pipeline) -> dict[str, str]:
     env = os.environ.copy()
-    uid = ctx.get(UID)
-    if not isinstance(uid, int):
-        raise OSError(f"Invalid UID: {uid}")
 
     # set up state directories
     data = ctx.state_dir / "container_data"
@@ -388,7 +488,7 @@ def _podman_env(ctx: Pipeline | Pipeline.InProgress) -> dict[str, str]:
     # isolate podman configuration under pipeline state
     env["XDG_DATA_HOME"] = str(data)
     env["XDG_CONFIG_HOME"] = str(config)
-    env.setdefault("XDG_RUNTIME_DIR", f"/run/user/{uid}")
+    env.setdefault("XDG_RUNTIME_DIR", f"/run/user/{User().uid}")
     for k in DOCKER_ENV_VARS:
         env.pop(k, None)
     return env
@@ -440,6 +540,55 @@ def podman_cmd(
     )
 
 
+def podman_cmd_host(
+    args: list[str],
+    *,
+    check: bool = True,
+    capture_output: bool | None = False,
+    input: str | None = None,
+    cwd: Path | None = None,
+) -> CompletedProcess:
+    """Run a podman command against the host's default storage/config.  This avoids
+    passing the modified environment variables that isolate podman state under the
+    pipeline state directory, and is intended for checking for pre-existing containers
+    that aren't managed by Bertrand.
+
+    Parameters
+    ----------
+    args : list[str]
+        The podman command arguments (excluding the 'podman' executable).
+    check : bool, optional
+        If True, raise CommandError on non-zero exit code.  Default is True.
+    capture_output : bool | None, optional
+        If True, capture stdout/stderr in the returned `CompletedProcess` or
+        `CommandError`.  If False, do not capture output.  If None, tee output to both
+        the console and the returned objects.
+    input : str | None, optional
+        Input to send to the command's stdin (default is None).
+    cwd : Path | None, optional
+        An optional working directory to run the command in.  If None (the default),
+        then the current working directory will be used.
+
+    Returns
+    -------
+    CompletedProcess
+        The completed process result.
+
+    Raises
+    ------
+    CommandError
+        If the command fails and `check` is True.
+    """
+    return run(
+        ["podman", *args],
+        check=check,
+        capture_output=capture_output,
+        input=input,
+        cwd=cwd,
+        env=None,
+    )
+
+
 def podman_exec(args: list[str]) -> None:
     """Run a podman command by replacing the current process.  This is intended for
     interactive use cases like `bertrand enter` where we want to drop the user into a
@@ -456,6 +605,54 @@ def podman_exec(args: list[str]) -> None:
         If execution fails.
     """
     os.execvpe("podman", ["podman", *args], _podman_env(on_init))
+
+
+def _list_podman_ids(args: list[str]) -> list[str]:
+    result = podman_cmd(args, check=False, capture_output=True)
+    if result.returncode != 0 or not result.stdout:
+        return []
+    return [line for line in result.stdout.splitlines() if line.strip()]
+
+
+def _list_podman_ids_host(args: list[str]) -> list[str] | None:
+    try:
+        result = podman_cmd_host(args, check=False, capture_output=True)
+    except Exception:
+        return None
+    if result.returncode != 0:
+        return None
+    return [line for line in result.stdout.splitlines() if line.strip()]
+
+
+def _remove_dangling_volumes(*, force: bool, missing_ok: bool) -> None:
+    volumes = list(podman_cmd([
+        "volume",
+        "ls",
+        "-q",
+        "--filter", "label=BERTRAND=1",
+        "--filter", "dangling=true",
+    ], capture_output=True).stdout.splitlines())
+    if volumes:
+        cmd = ["volume", "rm"]
+        if force:
+            cmd.append("-f")
+        if missing_ok:
+            cmd.append("-i")
+        podman_cmd([*cmd, *volumes])
+
+
+def _ensure_cache_volume(name: str, env_uuid: str, kind: str) -> None:
+    try:
+        podman_cmd([
+            "volume",
+            "create",
+            "--label", "BERTRAND=1",
+            "--label", f"BERTRAND_ENV={env_uuid}",
+            "--label", f"BERTRAND_VOLUME={kind}",
+            name,
+        ], check=False)
+    except Exception:
+        pass
 
 
 ###################
@@ -574,23 +771,6 @@ EntryPoint: TypeAlias = Annotated[
     list[Annotated[str, StringConstraints(min_length=1)]],
     BeforeValidator(_check_entry_point_field)
 ]
-
-
-def _remove_dangling_volumes(*, force: bool, missing_ok: bool) -> None:
-    volumes = list(podman_cmd([
-        "volume",
-        "ls",
-        "-q",
-        "--filter", "label=BERTRAND=1",
-        "--filter", "dangling=true",
-    ], capture_output=True).stdout.splitlines())
-    if volumes:
-        cmd = ["volume", "rm"]
-        if force:
-            cmd.append("-f")
-        if missing_ok:
-            cmd.append("-i")
-        podman_cmd([*cmd, *volumes])
 
 
 class Container(BaseModel):
@@ -1091,6 +1271,12 @@ class Image(BaseModel):
         )
         cid_file = _cid_file(env_root, container_name)
         cache_prefix = f"bertrand-{env_uuid[:13]}"
+        pip_volume = f"{cache_prefix}-pip"
+        bertrand_volume = f"{cache_prefix}-bertrand"
+        ccache_volume = f"{cache_prefix}-ccache"
+        _ensure_cache_volume(pip_volume, env_uuid, "pip")
+        _ensure_cache_volume(bertrand_volume, env_uuid, "bertrand")
+        _ensure_cache_volume(ccache_volume, env_uuid, "ccache")
         try:
             cid_file.parent.mkdir(parents=True, exist_ok=True)
             podman_cmd([
@@ -1110,9 +1296,9 @@ class Image(BaseModel):
                 "-v", f"{str(env_root)}:{MOUNT}",
 
                 # persistent caches for incremental builds
-                "--mount", f"type=volume,src={cache_prefix}-pip,dst={TMP}/.cache/pip",
-                "--mount", f"type=volume,src={cache_prefix}-bertrand,dst={TMP}/.cache/bertrand",
-                "--mount", f"type=volume,src={cache_prefix}-ccache,dst={TMP}/.cache/ccache",
+                "--mount", f"type=volume,src={pip_volume},dst={TMP}/.cache/pip",
+                "--mount", f"type=volume,src={bertrand_volume},dst={TMP}/.cache/bertrand",
+                "--mount", f"type=volume,src={ccache_volume},dst={TMP}/.cache/ccache",
                 "-e", f"PIP_CACHE_DIR={TMP}/.cache/pip",
                 "-e", f"BERTRAND_CACHE={TMP}/.cache/bertrand",
                 "-e", f"CCACHE_DIR={TMP}/.cache/ccache",
@@ -1400,7 +1586,7 @@ RUN --mount=type=cache,target={TMP}/.cache/pip,sharing=locked \
         return None
 
     @staticmethod
-    def parse(spec: str) -> tuple[Path, str, str]:
+    def parse(spec: str) -> tuple[str, str, str]:
         """Parse a string of the form `<env_root>[:<image_tag>[:<container_tag>]]` into
         its constituent parts.
 
@@ -1412,7 +1598,7 @@ RUN --mount=type=cache,target={TMP}/.cache/pip,sharing=locked \
 
         Returns
         -------
-        tuple[Path, str, str]
+        tuple[str, str, str]
             A tuple containing the environment root path, image tag, and container tag.
             The environment root path is expanded and resolved into an absolute path.
             The image and container tags will be empty strings if not provided.
@@ -1426,7 +1612,7 @@ RUN --mount=type=cache,target={TMP}/.cache/pip,sharing=locked \
         # resolve rightmost tag
         prev, sep, tag1 = spec.rpartition(":")
         if not sep or os.path.sep in tag1:
-            return Path(spec.strip()).expanduser().resolve(), "", ""
+            return str(Path(spec.strip()).expanduser().resolve()), "", ""
         tag1 = tag1.strip()
         if not tag1:
             raise OSError(f"tag must not be empty: '{spec}'")
@@ -1439,7 +1625,7 @@ RUN --mount=type=cache,target={TMP}/.cache/pip,sharing=locked \
         # resolve middle tag
         prev, sep, tag2 = prev.rpartition(":")
         if not sep or os.path.sep in tag2:
-            return Path(prev.strip()).expanduser().resolve(), san1, ""
+            return str(Path(prev.strip()).expanduser().resolve()), san1, ""
         tag2 = tag2.strip()
         if not tag2:
             raise OSError(f"tag must not be empty: '{spec}'")
@@ -1448,7 +1634,7 @@ RUN --mount=type=cache,target={TMP}/.cache/pip,sharing=locked \
             raise OSError(
                 f"tag contains invalid characters: '{tag2}' (sanitizes to: '{san2}')"
             )
-        return Path(prev.strip()).expanduser().resolve(), san2, san1
+        return str(Path(prev.strip()).expanduser().resolve()), san2, san1
 
     @property
     def timeout(self) -> int:
@@ -1718,7 +1904,15 @@ def _list_all() -> list[str]:
     return result
 
 
-# TODO: remove timeout argument from all commands and use TIMEOUT instead.
+Validator: TypeAlias = Callable[[JSONView], Any]
+
+
+def _validate_args(x: JSONView) -> list[str]:
+    if x is None:
+        return []
+    if isinstance(x, tuple) and all(isinstance(i, str) for i in x):
+        return list(cast(tuple[str, ...], x))
+    raise TypeError("args must be a list of strings")
 
 
 @dataclass
@@ -1763,20 +1957,9 @@ class _Command:
             )
         return x
 
-    @staticmethod
-    def _validate_timeout(x: JSONView) -> int:
-        if x is None:
-            return TIMEOUT
-        if not isinstance(x, int):
-            raise TypeError("timeout must be an integer")
-        if x < -1:
-            raise ValueError("timeout must be non-negative or -1 for no timeout")
-        return x
-
-    env = _validate_env
-    image_tag = _validate_image
-    container_tag = _validate_container
-    timeout = _validate_timeout
+    env: Validator = field(default=_validate_env)
+    image_tag: Validator = field(default=_validate_image)
+    container_tag: Validator = field(default=_validate_container)
 
     def _call(self, ctx: Pipeline.InProgress) -> None:
         # pylint: disable=no-member
@@ -1785,26 +1968,26 @@ class _Command:
 
         # if no environment is given, call the subclass's `all()` method
         env_root = kwargs.pop("env")
-        if env_root is None:
+        if not env_root:
             if kwargs["image_tag"] or kwargs["container_tag"]:
-                raise TypeError("cannot specify image or container tag when environment is None")
+                raise TypeError("cannot specify image or container tag without environment")
             kwargs["env"] = None
             self.all(**kwargs)  # type: ignore[attr-defined]
             return
 
         # load environment metadata
-        with Environment(env_root, timeout=kwargs["timeout"]) as env:
+        with Environment(env_root, timeout=TIMEOUT) as env:
             kwargs["env"] = env
 
             # if no image tag is given, call the subclass's `environment()` method
-            if kwargs["image_tag"]:
+            if not kwargs["image_tag"]:
                 if kwargs["container_tag"]:
                     raise TypeError("cannot specify a container when image tag is None")
                 self.environment(**kwargs)  # type: ignore[attr-defined]
                 return
 
             # if no container tag is given, call the subclass's `image()`
-            if kwargs["container_tag"]:
+            if not kwargs["container_tag"]:
                 self.image(**kwargs)  # type: ignore[attr-defined]
                 return
 
@@ -1830,16 +2013,7 @@ class Build(_Command):
     and all images in the environment will be built using their currently-tagged
     arguments.
     """
-
-    @staticmethod
-    def _validate_args(x: JSONView) -> list[str]:
-        if x is None:
-            return []
-        if isinstance(x, tuple) and all(isinstance(i, str) for i in x):
-            return list(cast(tuple[str, ...], x))
-        raise TypeError("args must be a list of strings")
-
-    args = _validate_args
+    args: Validator = field(default=_validate_args)
 
     @staticmethod
     def container(
@@ -1964,6 +2138,7 @@ class Start(_Command):
     containers if desired.  This is equivalent to `Build` followed by a
     `podman container start` command on all referenced containers.
     """
+    args: Validator = field(default=_validate_args)
 
     @staticmethod
     def container(
@@ -2071,6 +2246,7 @@ class Enter(_Command):
     followed by a `podman container exec {shell}` command on a single container,
     where `{shell}` is set by the parent environment.
     """
+    args: Validator = field(default=_validate_args)
 
     @staticmethod
     def container(
@@ -2155,6 +2331,7 @@ class Run(_Command):
     as necessary.  This is equivalent to `Start` followed by a `podman container exec`
     command on a single container, forwarding any arguments to the `exec` portion.
     """
+    args: Validator = field(default=_validate_args)
 
     @staticmethod
     def container(
@@ -2236,6 +2413,17 @@ class Stop(_Command):
     """Stop running Bertrand containers within an environment, scoping to specific images
     and containers if desired.
     """
+    @staticmethod
+    def _validate_timeout(x: JSONView) -> int:
+        if x is None:
+            return TIMEOUT
+        if not isinstance(x, int):
+            raise TypeError("timeout must be an integer")
+        if x < -1:
+            raise ValueError("timeout must be non-negative or -1 for no timeout")
+        return x
+
+    timeout: Validator = field(default=_validate_timeout)
 
     @staticmethod
     def container(
@@ -2470,6 +2658,17 @@ class Restart(_Command):
     specific images and containers if desired.  If an image or container is out of
     date, then it will be rebuilt before restarting.
     """
+    @staticmethod
+    def _validate_timeout(x: JSONView) -> int:
+        if x is None:
+            return TIMEOUT
+        if not isinstance(x, int):
+            raise TypeError("timeout must be an integer")
+        if x < -1:
+            raise ValueError("timeout must be non-negative or -1 for no timeout")
+        return x
+
+    timeout: Validator = field(default=_validate_timeout)
 
     @staticmethod
     def container(
@@ -2636,7 +2835,7 @@ class Prune(_Command):
             "--filter", f"ancestor={image.id}",
         ], capture_output=True).stdout.splitlines())
         if not containers:
-            podman_cmd(["image", "rm", "-f", "i", image.id])
+            podman_cmd(["image", "rm", "-f", "-i", image.id])
 
         # remove any now-dangling volumes
         _remove_dangling_volumes(force=True, missing_ok=True)
@@ -2675,8 +2874,18 @@ class Rm(_Command):
     filesystem.  The environment directory may be safely deleted after invoking this
     command.
     """
-    force = bool
-    missing_ok = bool
+    @staticmethod
+    def _validate_timeout(x: JSONView) -> int:
+        if x is None:
+            return TIMEOUT
+        if not isinstance(x, int):
+            raise TypeError("timeout must be an integer")
+        if x < -1:
+            raise ValueError("timeout must be non-negative or -1 for no timeout")
+        return x
+
+    force: Validator = field(default=bool)
+    timeout: Validator = field(default=_validate_timeout)
 
     @staticmethod
     def container(
@@ -2770,10 +2979,10 @@ class Ls(_Command):
         Command: str
         RunningFor: str
 
-    json = bool
-    images = bool
-    running = bool
-    stopped = bool
+    json: Validator = field(default=bool)
+    images: Validator = field(default=bool)
+    running: Validator = field(default=bool)
+    stopped: Validator = field(default=bool)
 
     @staticmethod
     def _format_images(
@@ -3026,14 +3235,17 @@ class Monitor(_Command):
         PIDs: str
 
     @staticmethod
-    def _validate_interval(json: bool, interval: int) -> None:
-        if interval < 0:
+    def _validate_interval(x: JSONView) -> int:
+        if x is None:
+            return 0
+        if not isinstance(x, int):
+            raise TypeError("interval must be an integer")
+        if x < 0:
             raise ValueError("interval must be non-negative")
-        if json and interval:
-            raise ValueError("cannot use 'json' and 'interval' together")
+        return x
 
-    json = bool
-    interval = _validate_interval
+    json: Validator = field(default=bool)
+    interval: Validator = field(default=_validate_interval)
 
     @staticmethod
     def _format(
@@ -3042,6 +3254,9 @@ class Monitor(_Command):
         json: bool,
         interval: int
     ) -> list[Monitor.JSON] | None:
+        if json and interval:
+            raise ValueError("cannot use 'json' and 'interval' together")
+
         # first, get the container ids for all labels
         ids = list(podman_cmd([
             "container",
@@ -3225,6 +3440,19 @@ class Log(_Command):
     """
 
     @staticmethod
+    def _validate_time(x: JSONView) -> str | None:
+        if x is None:
+            return None
+        if not isinstance(x, str):
+            raise TypeError("timestamp must be a string")
+        x = x.strip()
+        return x or None
+
+    images: Validator = field(default=bool)
+    since: Validator = field(default=_validate_time)
+    until: Validator = field(default=_validate_time)
+
+    @staticmethod
     def _format_container(
         container: Container,
         since: str | None,
@@ -3243,7 +3471,7 @@ class Log(_Command):
             cmd.extend(["--since", since])
         if until is not None:
             cmd.extend(["--until", until])
-        podman_cmd(cmd, capture_output=True)
+        podman_cmd(cmd)
 
     @staticmethod
     def _format_image(image: Image) -> None:
@@ -3254,7 +3482,8 @@ class Log(_Command):
             (
                 "--format=table {{.CreatedAt}}\t{{.CreatedSince}}\t{{.CreatedBy}}\t"
                 "{{.Size}}\t{{.Comment}}"
-            )
+            ),
+            image.id,
         ])
 
     @staticmethod
@@ -3329,72 +3558,86 @@ class Log(_Command):
         raise OSError("must specify an image or container to view logs for")
 
 
-podman_build: Build = on_build(Build(), ephemeral=True)
-podman_start: Start = on_start(Start(), ephemeral=True)
-podman_enter: Enter = on_enter(Enter(), ephemeral=True)
-podman_run: Run = on_run(Run(), ephemeral=True)
-podman_stop: Stop = on_stop(Stop(), ephemeral=True)
-podman_pause: Pause = on_pause(Pause(), ephemeral=True)
-podman_resume: Resume = on_resume(Resume(), ephemeral=True)
-podman_restart: Restart = on_restart(Restart(), ephemeral=True)
-podman_prune: Prune = on_prune(Prune(), ephemeral=True)
-podman_rm: Rm = on_rm(Rm(), ephemeral=True)
-podman_ls: Ls = on_ls(Ls(), ephemeral=True)
-podman_monitor: Monitor = on_monitor(Monitor(), ephemeral=True)
-podman_top: Top = on_top(Top(), ephemeral=True)
-podman_log: Log = on_log(Log(), ephemeral=True)
-# podman_import: Import = on_import(Import(), ephemeral=True)
-# podman_export: Export = on_export(Export(), ephemeral=True)
-# podman_publish: Publish = on_publish(Publish(), ephemeral=True)
+@on_build(ephemeral=True)
+def podman_build(ctx: Pipeline.InProgress) -> None:
+    return Build()(ctx)
 
 
-@on_clean(requires=[], ephemeral=True)
-def clean_distribution(ctx: Pipeline.InProgress) -> None:
-    """Clean up the state directories for the 'import', 'export', and 'publish'
-    pipelines on uninstallation.  These commands are related to distribution, and can
-    be cleaned up first, without worrying about dependencies, since they don't affect
-    other parts of the system.
-    """
-    for pipe in (on_import, on_export, on_publish):
-        pipe.undo()
-        shutil.rmtree(pipe.state_dir, ignore_errors=True)
+@on_start(ephemeral=True)
+def podman_start(ctx: Pipeline.InProgress) -> None:
+    return Start()(ctx)
 
 
-@on_clean(requires=[clean_distribution], ephemeral=True)
-def clean_info(ctx: Pipeline.InProgress) -> None:
-    """Clean up the state directories for the 'ls', 'monitor', 'log', and 'top'
-    pipelines on uninstallation.  These commands are purely informational, and can
-    therefore be cleaned up after the distribution commands, without interfering with
-    later steps.
-    """
-    for pipe in (on_ls, on_monitor, on_log, on_top):
-        pipe.undo()
-        shutil.rmtree(pipe.state_dir, ignore_errors=True)
+@on_enter(ephemeral=True)
+def podman_enter(ctx: Pipeline.InProgress) -> None:
+    return Enter()(ctx)
 
 
-@on_clean(requires=[clean_info], ephemeral=True)
-def clean_runtime(ctx: Pipeline.InProgress) -> None:
-    """Clean up the state directories for the 'build', 'start', 'enter', 'run', 'stop',
-    'pause', 'resume', 'restart', 'prune', and 'rm' pipelines on uninstallation.  These
-    commands control the lifecycles of images and containers, and must therefore be
-    cleaned up in a particular order to ensure that the uninstallation pipeline never
-    leaves the system in an inconsistent state.
-    """
-    on_rm.undo()
-    on_prune.undo()
-    on_stop.undo()
-    on_pause.undo()
-    on_resume.undo()
-    on_restart.undo()
-    on_enter.undo()
-    on_start.undo()
-    on_build.undo()
-    shutil.rmtree(on_rm.state_dir, ignore_errors=True)
-    shutil.rmtree(on_prune.state_dir, ignore_errors=True)
-    shutil.rmtree(on_restart.state_dir, ignore_errors=True)
-    shutil.rmtree(on_resume.state_dir, ignore_errors=True)
-    shutil.rmtree(on_pause.state_dir, ignore_errors=True)
-    shutil.rmtree(on_stop.state_dir, ignore_errors=True)
-    shutil.rmtree(on_start.state_dir, ignore_errors=True)
-    shutil.rmtree(on_enter.state_dir, ignore_errors=True)
-    shutil.rmtree(on_build.state_dir, ignore_errors=True)
+@on_run(ephemeral=True)
+def podman_run(ctx: Pipeline.InProgress) -> None:
+    return Run()(ctx)
+
+
+@on_stop(ephemeral=True)
+def podman_stop(ctx: Pipeline.InProgress) -> None:
+    return Stop()(ctx)
+
+
+@on_pause(ephemeral=True)
+def podman_pause(ctx: Pipeline.InProgress) -> None:
+    return Pause()(ctx)
+
+
+@on_resume(ephemeral=True)
+def podman_resume(ctx: Pipeline.InProgress) -> None:
+    return Resume()(ctx)
+
+
+@on_restart(ephemeral=True)
+def podman_restart(ctx: Pipeline.InProgress) -> None:
+    return Restart()(ctx)
+
+
+@on_prune(ephemeral=True)
+def podman_prune(ctx: Pipeline.InProgress) -> None:
+    return Prune()(ctx)
+
+
+@on_rm(ephemeral=True)
+def podman_rm(ctx: Pipeline.InProgress) -> None:
+    return Rm()(ctx)
+
+
+@on_ls(ephemeral=True)
+def podman_ls(ctx: Pipeline.InProgress) -> None:
+    return Ls()(ctx)
+
+
+@on_monitor(ephemeral=True)
+def podman_monitor(ctx: Pipeline.InProgress) -> None:
+    return Monitor()(ctx)
+
+
+@on_top(ephemeral=True)
+def podman_top(ctx: Pipeline.InProgress) -> None:
+    return Top()(ctx)
+
+
+@on_log(ephemeral=True)
+def podman_log(ctx: Pipeline.InProgress) -> None:
+    return Log()(ctx)
+
+
+# @on_publish(ephemeral=True)
+# def podman_publish(ctx: Pipeline.InProgress) -> None:
+#     raise NotImplementedError("publishing is not yet implemented for the podman backend")
+
+
+# @on_import(ephemeral=True)
+# def podman_import(ctx: Pipeline.InProgress) -> None:
+#     raise NotImplementedError("importing is not yet implemented for the podman backend")
+
+
+# @on_export(ephemeral=True)
+# def podman_export(ctx: Pipeline.InProgress) -> None:
+#     raise NotImplementedError("exporting is not yet implemented for the podman backend")
