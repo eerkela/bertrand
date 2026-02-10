@@ -41,7 +41,17 @@ from pydantic import (
     model_validator,
 )
 
-from .code import EDITORS
+from .code import (
+    EDITORS,
+    CODE_SOCKET_DIR,
+    CONTAINER_SOCKET_DIR,
+    CONTAINER_SOCKET,
+    SOCKET_ENV,
+    HOST_ENV,
+    CONTAINER_ID_ENV,
+    WORKSPACE_ENV,
+    WORKSPACE_MOUNT,
+)
 from .filesystem import WriteText
 from .package import InstallPackage, detect_package_manager
 from .pipeline import (
@@ -181,7 +191,7 @@ class InstallPodman(InstallPackage):
         # Conservative: if host state is unknown or in use, skip uninstall to avoid
         # clobbering user-managed podman resources.
         try:
-            containers = _list_podman_ids_host([
+            containers = _list_podman_ids([
                 "container",
                 "ls",
                 "-a",
@@ -191,7 +201,7 @@ class InstallPodman(InstallPackage):
             ])
             if containers is None or containers:
                 return
-            images = _list_podman_ids_host([
+            images = _list_podman_ids([
                 "image",
                 "ls",
                 "-a",
@@ -201,7 +211,7 @@ class InstallPodman(InstallPackage):
             ])
             if images is None or images:
                 return
-            volumes = _list_podman_ids_host([
+            volumes = _list_podman_ids([
                 "volume",
                 "ls",
                 "-q",
@@ -588,35 +598,6 @@ def start_code_service(ctx: Pipeline.InProgress) -> None:
     ctx.do(StartService(name=CODE_SERVICE_NAME, user=True), undo=False)
 
 
-DOCKER_ENV_VARS = (
-    "DOCKER_CONTEXT",
-    "DOCKER_HOST",
-    "DOCKER_TLS_VERIFY",
-    "DOCKER_CERT_PATH",
-    "DOCKER_MACHINE_NAME",
-    "DOCKER_CONFIG",
-    "DOCKER_BUILDKIT",
-)
-
-
-def _podman_env(ctx: Pipeline) -> dict[str, str]:
-    env = os.environ.copy()
-
-    # set up state directories
-    data = ctx.state_dir / "container_data"
-    config = ctx.state_dir / "container_config"
-    mkdir_private(data)
-    mkdir_private(config)
-
-    # isolate podman configuration under pipeline state
-    env["XDG_DATA_HOME"] = str(data)
-    env["XDG_CONFIG_HOME"] = str(config)
-    env.setdefault("XDG_RUNTIME_DIR", f"/run/user/{User().uid}")
-    for k in DOCKER_ENV_VARS:
-        env.pop(k, None)
-    return env
-
-
 def podman_cmd(
     args: list[str],
     *,
@@ -626,55 +607,6 @@ def podman_cmd(
     cwd: Path | None = None
 ) -> CompletedProcess:
     """Run a podman command.
-
-    Parameters
-    ----------
-    args : list[str]
-        The podman command arguments (excluding the 'podman' executable).
-    check : bool, optional
-        If True, raise CommandError on non-zero exit code.  Default is True.
-    capture_output : bool | None, optional
-        If True, capture stdout/stderr in the returned `CompletedProcess` or
-        `CommandError`.  If False, do not capture output.  If None, tee output to both
-        the console and the returned objects.
-    input : str | None, optional
-        Input to send to the command's stdin (default is None).
-    cwd : Path | None, optional
-        An optional working directory to run the command in.  If None (the default),
-        then the current working directory will be used.
-
-    Returns
-    -------
-    CompletedProcess
-        The completed process result.
-
-    Raises
-    ------
-    CommandError
-        If the command fails and `check` is True.
-    """
-    return run(
-        ["podman", *args],
-        check=check,
-        capture_output=capture_output,
-        input=input,
-        cwd=cwd,
-        env=_podman_env(on_init),
-    )
-
-
-def podman_cmd_host(
-    args: list[str],
-    *,
-    check: bool = True,
-    capture_output: bool | None = False,
-    input: str | None = None,
-    cwd: Path | None = None,
-) -> CompletedProcess:
-    """Run a podman command against the host's default storage/config.  This avoids
-    passing the modified environment variables that isolate podman state under the
-    pipeline state directory, and is intended for checking for pre-existing containers
-    that aren't managed by Bertrand.
 
     Parameters
     ----------
@@ -727,19 +659,12 @@ def podman_exec(args: list[str]) -> None:
     OSError
         If execution fails.
     """
-    os.execvpe("podman", ["podman", *args], _podman_env(on_init))
+    os.execvp("podman", ["podman", *args])
 
 
-def _list_podman_ids(args: list[str]) -> list[str]:
-    result = podman_cmd(args, check=False, capture_output=True)
-    if result.returncode != 0 or not result.stdout:
-        return []
-    return [line for line in result.stdout.splitlines() if line.strip()]
-
-
-def _list_podman_ids_host(args: list[str]) -> list[str] | None:
+def _list_podman_ids(args: list[str]) -> list[str] | None:
     try:
-        result = podman_cmd_host(args, check=False, capture_output=True)
+        result = podman_cmd(args, check=False, capture_output=True)
     except Exception:
         return None
     if result.returncode != 0:
@@ -784,7 +709,6 @@ def _ensure_cache_volume(name: str, env_uuid: str, kind: str) -> None:
 
 
 VERSION: int = 1
-MOUNT: str = "/env"
 TMP: str = "/tmp"
 TIMEOUT: int = 30
 SHELLS: dict[str, tuple[str, ...]] = {
@@ -1052,7 +976,7 @@ class Container(BaseModel):
         """
         mounts = inspect.get("Mounts") or []
         for m in mounts:
-            if m.get("Type") == "bind" and m.get("Destination") == MOUNT:
+            if m.get("Type") == "bind" and m.get("Destination") == WORKSPACE_MOUNT:
                 src = m.get("Source")
                 if src:
                     return Path(src).expanduser().resolve()
@@ -1397,6 +1321,7 @@ class Image(BaseModel):
         _ensure_cache_volume(pip_volume, env_uuid, "pip")
         _ensure_cache_volume(bertrand_volume, env_uuid, "bertrand")
         _ensure_cache_volume(ccache_volume, env_uuid, "ccache")
+        mkdir_private(CODE_SOCKET_DIR)
         try:
             cid_file.parent.mkdir(parents=True, exist_ok=True)
             podman_cmd([
@@ -1413,7 +1338,14 @@ class Image(BaseModel):
                 "--label", f"BERTRAND_CONTAINER={container_tag}",
 
                 # mount environment directory
-                "-v", f"{str(env_root)}:{MOUNT}",
+                "-v", f"{str(env_root)}:{WORKSPACE_MOUNT}",
+                "--mount",
+                (
+                    "type=bind,"
+                    f"src={str(CODE_SOCKET_DIR)},"
+                    f"dst={str(CONTAINER_SOCKET_DIR)},"
+                    "ro=true"
+                ),
 
                 # persistent caches for incremental builds
                 "--mount", f"type=volume,src={pip_volume},dst={TMP}/.cache/pip",
@@ -1428,6 +1360,7 @@ class Image(BaseModel):
                 "-e", f"BERTRAND_ENV={env_uuid}",
                 "-e", f"BERTRAND_IMAGE={image_tag}",
                 "-e", f"BERTRAND_CONTAINER={container_tag}",
+                "-e", f"{SOCKET_ENV}={str(CONTAINER_SOCKET)}",
 
                 # any additional user-specified args
                 *container_args,
@@ -1479,13 +1412,13 @@ ARG CPUS={os.cpu_count() or 1}
 FROM bertrand:${{BERTRAND}}.${{DEBUG}}.${{DEV}}.${{CPUS}}.{getpagesize() // 1024}
 
 # set cwd to the mounted environment directory
-WORKDIR {MOUNT}
+WORKDIR {WORKSPACE_MOUNT}
 
 # set up incremental builds
 ENV PIP_CACHE_DIR={TMP}/.cache/pip
 ENV BERTRAND_CACHE={TMP}/.cache/bertrand
 ENV CCACHE_DIR={TMP}/.cache/ccache
-COPY . {MOUNT}
+COPY . {WORKSPACE_MOUNT}
 
 # you can extend this file in order to create a reproducible image that others can pull
 # from in their own Dockerfiles.  For example:
@@ -1828,7 +1761,7 @@ class Environment:
             "BERTRAND_IMAGE" in os.environ and
             "BERTRAND_CONTAINER" in os.environ
         ):
-            return Environment(root=Path(MOUNT))
+            return Environment(root=Path(WORKSPACE_MOUNT))
         return None
 
     @staticmethod
@@ -1926,15 +1859,17 @@ class Environment:
         return SHELLS[self._json.shell]
 
     @property
-    def code(self) -> tuple[str, ...]:
+    def code(self) -> str:
         """
         Returns
         -------
-        tuple[str, ...]
-            The default host command invoked by `bertrand code` while within the
-            container, as specified in the environment metadata.
+        str
+            The host text editor invoked by `code` within the container, as specified
+            in the environment metadata.  Note that this is not a literal shell
+            command, in order to avoid remote code execution and ensure proper mounting
+            of the container's internal toolchain.
         """
-        return EDITORS[self._json.code]
+        return self._json.code
 
     @property
     def tags(self) -> dict[str, Image]:
@@ -2542,7 +2477,10 @@ class Enter(_Command):
         podman_exec([
             "exec",
             "-it",
-            "-w", MOUNT,
+            "-w", WORKSPACE_MOUNT,
+            "-e", f"{HOST_ENV}={str(env.root)}",
+            "-e", f"{CONTAINER_ID_ENV}={container.id}",
+            "-e", f"{WORKSPACE_ENV}={WORKSPACE_MOUNT}",
             container.id,
             *env.shell,
         ])
@@ -2588,6 +2526,71 @@ class Enter(_Command):
 
 
 @dataclass
+class Code(_Command):
+    """Launch a host-side editor by invoking the internal `bertrand code` command
+    within a running container context.
+    """
+    @staticmethod
+    def container(
+        *,
+        env: Environment,
+        image_tag: str,
+        container_tag: str,
+        **kwargs: Any
+    ) -> None:
+        container = Start.container(
+            env=env,
+            image_tag=image_tag,
+            container_tag=container_tag,
+            args=[],
+            **kwargs
+        )
+        podman_cmd([
+            "exec",
+            "-i",
+            "-w", WORKSPACE_MOUNT,
+            "-e", f"{HOST_ENV}={str(env.root)}",
+            "-e", f"{CONTAINER_ID_ENV}={container.id}",
+            "-e", f"{WORKSPACE_ENV}={WORKSPACE_MOUNT}",
+            container.id,
+            "bertrand", "code",  # delegate to in-container implementation
+        ])
+
+    @staticmethod
+    def image(
+        *,
+        env: Environment,
+        image_tag: str,
+        **kwargs: Any
+    ) -> None:
+        Code.container(
+            env=env,
+            image_tag=image_tag,
+            container_tag="",  # default container
+            **kwargs
+        )
+
+    @staticmethod
+    def environment(
+        *,
+        env: Environment,
+        **kwargs: Any
+    ) -> None:
+        Code.container(
+            env=env,
+            image_tag="",  # default image
+            container_tag="",  # default container
+            **kwargs
+        )
+
+    @staticmethod
+    def all(
+        **kwargs: Any
+    ) -> None:
+        raise OSError("must specify a container to run 'code' in")
+
+
+@dataclass
 class Run(_Command):
     """Run an arbitrary command inside a container's context, starting or rebuilding it
     as necessary.  This is equivalent to `Start` followed by a `podman container exec`
@@ -2625,7 +2628,7 @@ class Run(_Command):
         podman_cmd([
             "exec",
             *cmd,
-            "-w", MOUNT,
+            "-w", WORKSPACE_MOUNT,
             container.id,
             *args
         ])
@@ -3837,6 +3840,11 @@ def podman_build(ctx: Pipeline.InProgress) -> None:
 @on_start(ephemeral=True)
 def podman_start(ctx: Pipeline.InProgress) -> None:
     Start()(ctx)
+
+
+@on_code(requires=[start_code_service], ephemeral=True)
+def podman_code(ctx: Pipeline.InProgress) -> None:
+    Code()(ctx)
 
 
 @on_enter(requires=[start_code_service], ephemeral=True)

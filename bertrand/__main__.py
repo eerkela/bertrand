@@ -4,10 +4,20 @@ from __future__ import annotations
 
 import argparse
 import json as json_parser
+import os
 import shutil
 import sys
+from pathlib import Path
 from typing import Callable
 
+from .env.code import (
+    SOCKET_ENV,
+    HOST_ENV,
+    CONTAINER_ID_ENV,
+    WORKSPACE_ENV,
+    WORKSPACE_MOUNT,
+    request_open_editor,
+)
 from .env.pipeline import (
     Pipeline,
     on_init,
@@ -719,6 +729,7 @@ class External:
             self.build()
             self.start()
             self.enter()
+            self.code()
             self.run()
             self.stop()
             self.pause()
@@ -1113,6 +1124,7 @@ class External:
             on_resume,
             on_restart,
             on_run,
+            on_code,
             on_enter,
             on_start,
             on_build,
@@ -1211,6 +1223,7 @@ class Internal:
                 The parsed command-line arguments.
             """
             self.version()
+            self.code()
             return self.root.parse_args()
 
     @staticmethod
@@ -1234,8 +1247,73 @@ class Internal:
         ----------
         args : argparse.Namespace
             The parsed command-line arguments.
+
+        Raises
+        ------
+        OSError
+            If there is an error with the RPC communication or the editor
+            configuration.
         """
-        raise NotImplementedError("the 'bertrand code' command is not yet implemented.")
+        # get environment variables for RPC communication, which should have been set
+        # by `bertrand enter` when we opened the container shell
+        socket_path = os.environ.get(SOCKET_ENV, "").strip()
+        if not socket_path:
+            raise OSError(
+                "missing RPC socket path.  Enter this environment with `bertrand enter` "
+                f"to populate '{SOCKET_ENV}'."
+            )
+        host_env_root = os.environ.get(HOST_ENV, "").strip()
+        if not host_env_root:
+            raise OSError(
+                "missing host environment root for RPC request.  Enter this environment "
+                f"with `bertrand enter` to populate '{HOST_ENV}'."
+            )
+        container_id = os.environ.get(CONTAINER_ID_ENV, "").strip()
+        if not container_id:
+            raise OSError(
+                "missing container identity for RPC request.  Enter this environment "
+                f"with `bertrand enter` to populate '{CONTAINER_ID_ENV}'."
+            )
+        workspace_in_container = (
+            os.environ.get(WORKSPACE_ENV, WORKSPACE_MOUNT).strip() or WORKSPACE_MOUNT
+        )
+
+        # locate bind-mounted RPC socket
+        rpc_socket = Path(socket_path)
+        if not rpc_socket.is_absolute():
+            raise OSError(f"RPC socket path must be absolute: {rpc_socket}")
+        if not rpc_socket.exists():
+            raise OSError(f"RPC socket not found at expected path: {rpc_socket}")
+        if not rpc_socket.is_socket():
+            raise OSError(f"RPC socket path is not a socket: {rpc_socket}")
+
+        # extract environment root directory to open host editor at
+        env_root = Path(host_env_root)
+        if not env_root.is_absolute():
+            raise OSError(f"host environment root must be absolute: {env_root}")
+        if not Path(workspace_in_container).is_absolute():
+            raise OSError(
+                "container workspace path must be absolute: "
+                f"{workspace_in_container!r}"
+            )
+
+        # determine editor command from environment configuration
+        env = Environment.current()
+        if env is None:
+            raise OSError("`bertrand code` internal command must be run in a container.")
+        with env:
+            editor_name = env.code
+        if not editor_name:
+            raise OSError(f"unsupported editor: {editor_name}")
+
+        # send request to RPC server
+        request_open_editor(
+            editor=editor_name,
+            env_root=env_root,
+            container_id=container_id,
+            workspace_in_container=workspace_in_container,
+            socket_path=rpc_socket,
+        )
 
     commands: dict[str, Callable[[argparse.Namespace], None]] = {
         "version": version,
