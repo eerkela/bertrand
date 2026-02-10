@@ -22,6 +22,7 @@ from typing import (
     Callable,
     Iterable,
     Literal,
+    Protocol,
     TypeAlias,
     TypedDict,
     cast,
@@ -40,6 +41,8 @@ from pydantic import (
     model_validator,
 )
 
+from .code import EDITORS
+from .filesystem import WriteText
 from .package import InstallPackage, detect_package_manager
 from .pipeline import (
     JSONValue,
@@ -52,6 +55,7 @@ from .pipeline import (
     on_build,
     on_start,
     on_enter,
+    on_code,
     on_run,
     on_stop,
     on_pause,
@@ -75,7 +79,7 @@ from .run import (
     mkdir_private,
     run,
 )
-from .systemd import DelegateUserControllers
+from .systemd import DelegateUserControllers, ReloadDaemon, EnableService, StartService
 from .user import EnsureSubIDs, EnsureUserNamespaces
 from .version import __version__
 
@@ -112,6 +116,14 @@ class PurgeBertrandArtifacts:
     def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
         if not shutil.which("podman"):
             return
+
+        # do the same as rm -f to remove all environments as well as their internal
+        # artifacts
+        Rm._all(force=force, timeout=TIMEOUT)  # pylint: disable=protected-access
+
+        # clean up any dangling images/containers/volumes that weren't removed by
+        # rm -f, which can occur if the environment has no containers, but does have
+        # images/volumes, which prevent us from discovering their mount points.
         try:
             containers = _list_podman_ids([
                 "container",
@@ -465,6 +477,117 @@ def delegate_controllers(ctx: Pipeline.InProgress) -> None:
                     )
 
 
+CODE_SERVICE_NAME = "bertrand-code-rpc.service"
+CODE_SERVICE_DIR = User().home / ".config" / "systemd" / "user"
+CODE_SERVICE_FILE = CODE_SERVICE_DIR / CODE_SERVICE_NAME
+
+
+@on_init(requires=[delegate_controllers])
+def configure_code_service(ctx: Pipeline.InProgress) -> None:
+    """Set up a systemd service to launch the RPC server for in-container
+    `bertrand code` commands.
+
+    Parameters
+    ----------
+    ctx : Pipeline.InProgress
+        The in-flight pipeline context.
+
+    Raises
+    ------
+    OSError
+        If the server's entry point cannot be found.
+    """
+    exec_str = shutil.which("bertrand-code-rpc")
+    if exec_str is None:
+        raise OSError(
+            "'bertrand-code-rpc' executable not found on PATH.  Ensure Bertrand is "
+            "installed with console scripts before running 'bertrand init'."
+        )
+    exec_path = Path(exec_str)
+    if not exec_path.is_absolute():
+        raise OSError(f"'bertrand-code-rpc' resolved to a non-absolute path: {exec_path}")
+
+    exec_path.resolve()
+    ctx.do(WriteText(
+        path=CODE_SERVICE_FILE,
+        text=f"""[Unit]
+Description=Bertrand Code RPC Listener
+
+[Service]
+Type=simple
+ExecStart={shlex.quote(str(exec_path))}
+Restart=on-failure
+RestartSec=1
+
+[Install]
+WantedBy=default.target
+""",
+        replace=True
+    ))
+    ctx.do(ReloadDaemon(user=True))
+    ctx.do(EnableService(name=CODE_SERVICE_NAME, user=True))
+    ctx.do(StartService(name=CODE_SERVICE_NAME, user=True))
+
+
+@on_init(requires=[configure_code_service], ephemeral=True)
+def init_environment(ctx: Pipeline.InProgress) -> None:
+    """Initialize an environment directory with template configuration files if they
+    are not already present.
+
+    Parameters
+    ----------
+    ctx : Pipeline.InProgress
+        The in-flight pipeline context.
+
+    Raises
+    ------
+    OSError
+        If the environment specifier is invalid.
+    TypeError
+        If the 'env', 'shell', or 'code' facts are not valid strings.
+    """
+    env = ctx["env"]
+    if not isinstance(env, str):
+        raise TypeError("environment path must be a string")
+
+    if ctx["image_tag"] or ctx["container_tag"]:
+        raise OSError(
+            "cannot specify image or container tag when initializing an environment "
+            "directory."
+        )
+
+    shell = ctx["shell"]
+    if not isinstance(shell, str):
+        raise TypeError("shell must be a string")
+    code = ctx["code"]
+    if not isinstance(code, str):
+        raise TypeError("code must be a string")
+
+    Environment.init(
+        Path(env),
+        shell=shell,  # type: ignore[arg-type]
+        code=code,  # type: ignore[arg-type]
+        containerfile=Containerfile(),
+        containerignore=Containerignore(),
+        pyproject=PyProject()
+    )
+
+
+@on_code(ephemeral=True)
+@on_enter(ephemeral=True)
+def start_code_service(ctx: Pipeline.InProgress) -> None:
+    """Start the code RPC service when launching `bertrand code` outside an
+    environment, or upon entering an environment, to ensure it's running before any
+    in-container `bertrand code` commands are issued.
+
+    Parameters
+    ----------
+    ctx : Pipeline.InProgress
+        The in-flight pipeline context.
+    """
+    ctx.do(StartService(name=CODE_SERVICE_NAME, user=True), undo=False)
+
+
 DOCKER_ENV_VARS = (
     "DOCKER_CONTEXT",
     "DOCKER_HOST",
@@ -666,9 +789,6 @@ TMP: str = "/tmp"
 TIMEOUT: int = 30
 SHELLS: dict[str, tuple[str, ...]] = {
     "bash": ("bash", "-l"),
-}
-EDITORS: dict[str, tuple[str, ...]] = {
-    "vscode": ("code",),
 }
 
 
@@ -1329,154 +1449,15 @@ class Image(BaseModel):
         return container
 
 
-class Environment:
-    """On-disk metadata representing environment-level data structures, which map from
-    human-readable, stable tags to the corresponding images and containers built within
-    this environment directory.
-
-    This class is meant to be used as a context manager, which will automatically
-    acquire and release a lock on the environment directory in order to prevent
-    concurrent modifications.  The environment metadata will be loaded upon entering
-    the outermost context, and written back to disk upon exiting it, in order to
-    synchronize any changes made during the context's lifetime.
-
-    Parameters
-    ----------
-    root : Path
-        The root path of the environment directory.
-    timeout : int, optional
-        The maximum time in seconds to wait for acquiring the environment lock.
-        Defaults to `TIMEOUT`, which equates to 30 seconds.
-    shell : list[str] | None, optional
-        The shell command to execute during `bertrand enter`.  If None, defaults to
-        `["bash", "-l"]`.
-    code : list[str] | None, optional
-        The default host command invoked by `code` within the container.  If None,
-        defaults to `["vscode"]`.
-
-    Attributes
-    ----------
-    root : Path
-        An absolute root path to the environment directory.  This is not stored in the
-        on-disk JSON in order to allow relocation of the environment directory..
+class Containerfile:
+    """Emit a formatted Containerfile that orchestrates the build process for Bertrand
+    images.
     """
-    class JSON(BaseModel):
-        """Pydantic model representing JSON metadata for a Bertrand environment."""
-        model_config = ConfigDict(extra="forbid", validate_assignment=True)
-        version: PositiveInt
-        id: EnvironmentId
-        shell: Annotated[str, AfterValidator(_check_shell)]
-        code: Annotated[str, AfterValidator(_check_code)]
-        tags: dict[str, Image]
+    # pylint: disable=line-too-long, missing-function-docstring, missing-return-doc
+    # pylint: disable=unused-argument
 
-        @model_validator(mode="after")
-        def _check_tags(self) -> Environment.JSON:
-            cleaned: dict[str, Image] = {}
-            for tag, image in self.tags.items():
-                if not isinstance(tag, str):
-                    raise ValueError(f"invalid image tag in environment metadata: {tag}")
-                tag = tag.strip()
-                sanitized = _sanitize_name(tag)
-                if tag != sanitized:
-                    raise ValueError(
-                        f"invalid characters in image tag '{tag}' (sanitizes to: '{sanitized}')"
-                    )
-                if tag in cleaned:
-                    raise ValueError(f"duplicate image tag in environment metadata: {tag}")
-                cleaned[tag] = image
-            self.tags = cleaned
-            return self
-
-    root: Path
-    _json: JSON
-    _lock: LockDir
-
-    def __init__(
-        self,
-        root: Path,
-        timeout: int = TIMEOUT,
-        shell: Literal["bash"] = "bash",
-        code: Literal["vscode"] = "vscode"
-    ) -> None:
-        self.root = root.expanduser().resolve()
-        self._json = self.JSON.model_construct(
-            version=0,
-            id="",
-            shell=shell,
-            code=code,
-            tags={}
-        )
-        self._lock = LockDir(_env_dir(self.root) / ".lock", timeout=timeout)
-
-    def __enter__(self) -> Environment:
-        self._lock.__enter__()
-        if self._lock.depth > 1:
-            return self  # re-entrant case
-
-        # try to load existing metadata if possible
-        env_file = _env_file(self.root)
-        if env_file.exists():
-            data = json_parser.loads(env_file.read_text(encoding="utf-8"))
-            if not isinstance(data, dict):
-                raise ValueError("environment metadata must be a JSON mapping")
-            try:
-                self._json = self.JSON.model_validate(data)
-            except ValidationError as err:
-                raise ValueError(f"invalid environment metadata: {err}") from err
-            return self
-
-        # initialize new metadata if needed
-        self._json = self.JSON(
-            version=VERSION,
-            id=uuid.uuid4().hex,
-            shell=self._json.shell,
-            code=self._json.code,
-            tags={},
-        )
-
-        # init .containerignore
-        container_ignore = self.container_ignore
-        if not container_ignore.exists():
-            container_ignore.parent.mkdir(parents=True, exist_ok=True)
-            atomic_write_text(container_ignore, r"""# Bertrand internal state
-.bertrand/
-**/.bertrand/
-
-# Python
-__pycache__/
-*.py[cod]
-*.egg-info/
-.dist/
-.build/
-.eggs/
-.venv/
-venv/
-
-# C/C++
-build/
-out/
-*.o
-*.obj
-*.a
-*.lib
-*.so
-*.dylib
-*.dll
-
-# VCS / IDE
-.git/
-.gitignore
-.vscode/
-.idea/
-.DS_Store
-""")
-
-        # init Containerfile
-        container_file = self.container_file
-        if not container_file.exists():
-            container_file.parent.mkdir(parents=True, exist_ok=True)
-            # pylint:disable=line-too-long
-            atomic_write_text(container_file, rf"""# Bertrand requires a minimal set of arguments to be provided at compile time, which
+    def render(self, env: Environment) -> str:
+        return rf"""# Bertrand requires a minimal set of arguments to be provided at compile time, which
 # are baked into its reproducible images to avoid lengthy recompilation.  These
 # arguments may be overridden by passing `<arg>=<value>` options to the
 # `bertrand build`, `bertrand start`, or `bertrand enter` commands, which are then
@@ -1532,7 +1513,272 @@ RUN --mount=type=cache,target={TMP}/.cache/pip,sharing=locked \
 # official Containerfile documentation for a comprehensive reference, and the Bertrand
 # toolchain documentation for more details on how this fits into the overall build
 # process, as well as tips for your own Containerfiles.
-""")
+
+# `sleep infinity` is used to keep the container alive indefinitely after startup, so
+# that users can `bertrand enter` into it and use it as a normal shell environment.
+# You can change this to run a different command or entry point if you'd like, but be
+# aware that doing so may interfere with `bertrand enter` and other runtime commands.
+ENTRYPOINT ["sleep", "infinity"]
+"""
+
+
+class Containerignore:
+    """Emit a formatted .containerignore that filters files and directories from the
+    build context for Bertrand images.
+    """
+    # pylint: disable=line-too-long, missing-function-docstring, missing-return-doc
+    # pylint: disable=unused-argument
+
+    def render(self, env: Environment) -> str:
+        return r"""# Bertrand internal state
+.bertrand/
+**/.bertrand/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.dist/
+.build/
+.eggs/
+.venv/
+venv/
+
+# C/C++
+build/
+out/
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.dylib
+*.dll
+
+# VCS / IDE
+.git/
+.gitignore
+.vscode/
+.idea/
+.DS_Store
+"""
+
+
+class PyProject:
+    """Emit a formatted pyproject.toml that configures the build system for Bertrand's
+    pip-based build process.
+    """
+    # pylint: disable=line-too-long, missing-function-docstring, missing-return-doc
+    # pylint: disable=unused-argument
+
+    # TODO: define this content later, when writing the PEP517 backend
+
+    def render(self, env: Environment) -> str:
+        return ""
+
+
+class Environment:
+    """On-disk metadata representing environment-level data structures, which map from
+    human-readable, stable tags to the corresponding images and containers built within
+    this environment directory.
+
+    This class is meant to be used as a context manager, which will automatically
+    acquire and release a lock on the environment directory in order to prevent
+    concurrent modifications.  The environment metadata will be loaded upon entering
+    the outermost context, and written back to disk upon exiting it, in order to
+    synchronize any changes made during the context's lifetime.
+
+    Parameters
+    ----------
+    root : Path
+        The root path of the environment directory.
+    timeout : int, optional
+        The maximum time in seconds to wait for acquiring the environment lock.
+        Defaults to `TIMEOUT`, which equates to 30 seconds.
+    shell : list[str] | None, optional
+        The shell command to execute during `bertrand enter`.  If None, defaults to
+        `["bash", "-l"]`.
+    code : list[str] | None, optional
+        The default host command invoked by `code` within the container.  If None,
+        defaults to `["vscode"]`.
+
+    Attributes
+    ----------
+    root : Path
+        An absolute root path to the environment directory.  This is not stored in the
+        on-disk JSON in order to allow relocation of the environment directory..
+    """
+    class Renderer(Protocol):
+        """A class protocol representing a renderer for configuration files in the
+        environment directory.  These are used to render content for the
+        `Containerfile`, `.containerignore`, and `pyproject.toml` files.
+        """
+        def render(self, env: Environment) -> str:
+            """Generate the content to write to the corresponding configuration file.
+
+            Parameters
+            ----------
+            env : Environment
+                The parent environment in which to place the configuration file.
+
+            Returns
+            -------
+            str
+                The formatted content of the configuration file.
+            """
+
+    class JSON(BaseModel):
+        """Pydantic model representing JSON metadata for a Bertrand environment."""
+        model_config = ConfigDict(extra="forbid", validate_assignment=True)
+        version: PositiveInt
+        id: EnvironmentId
+        shell: Annotated[str, AfterValidator(_check_shell)]
+        code: Annotated[str, AfterValidator(_check_code)]
+        tags: dict[str, Image]
+
+        @model_validator(mode="after")
+        def _check_tags(self) -> Environment.JSON:
+            cleaned: dict[str, Image] = {}
+            for tag, image in self.tags.items():
+                if not isinstance(tag, str):
+                    raise ValueError(f"invalid image tag in environment metadata: {tag}")
+                tag = tag.strip()
+                sanitized = _sanitize_name(tag)
+                if tag != sanitized:
+                    raise ValueError(
+                        f"invalid characters in image tag '{tag}' (sanitizes to: '{sanitized}')"
+                    )
+                if tag in cleaned:
+                    raise ValueError(f"duplicate image tag in environment metadata: {tag}")
+                cleaned[tag] = image
+            self.tags = cleaned
+            return self
+
+    root: Path
+    _json: JSON
+    _lock: LockDir
+
+    def __init__(self, root: Path, timeout: int = TIMEOUT) -> None:
+        self.root = root.expanduser().resolve()
+        self._json = self.JSON.model_construct(
+            version=0,
+            id="",
+            shell="",
+            code="",
+            tags={}
+        )
+        self._lock = LockDir(_env_dir(self.root) / ".lock", timeout=timeout)
+
+    @classmethod
+    def init(
+        cls,
+        root: Path,
+        *,
+        shell: Literal["bash"],
+        code: Literal["vscode"],
+        containerfile: Environment.Renderer,
+        containerignore: Environment.Renderer,
+        pyproject: Environment.Renderer,
+    ) -> Environment:
+        """Initialize a new environment at the given root path with the specified
+        shell.  Does nothing if the environment is already initialized.
+
+        Parameters
+        ----------
+        root : Path
+            The root path of the environment directory to initialize.  This directory
+            must not already exist, and its parent directory must be writable.
+        shell : Literal["bash"]
+            The shell to execute during `bertrand enter`.  Currently, the only
+            supported shell is "bash", which maps to `["bash", "-l"]`.
+        code : Literal["vscode"]
+            The host text editor invoked by `code` within the container.  Currently,
+            the only supported editor is "vscode", which attempts to mount the
+            container's internal toolchain via the remote container extension, so that
+            users can take advantage of its internal LSPs, AI assistants, and more.
+        containerfile : Environment.Renderer
+            A renderer for the default `Containerfile` configuration file, which
+            defines the base image and build instructions for the environment's
+            compiled images if no custom `Containerfile` is present in the environment
+            directory.
+        containerignore : Environment.Renderer
+            A renderer for the default `.containerignore` configuration file, which
+            defines files and directories to ignore when building the environment's
+            compiled images if no custom `.containerignore` is present in the
+            environment directory.
+        pyproject : Environment.Renderer
+            A renderer for the default `pyproject.toml` configuration file, which
+            defines the Python dependencies and build configuration for the
+            environment if no custom `pyproject.toml` is present in the environment
+            directory.
+
+        Returns
+        -------
+        Environment
+            The initialized `Environment` object with the specified root and shell.
+            Note that the result is disengaged until it is acquired as a context
+            manager, which synchronizes its state.
+
+        Raises
+        ------
+        KeyError
+            If the specified shell or code command is not supported.
+        """
+        root = root.expanduser().resolve()
+        if shell not in SHELLS:
+            raise KeyError(f"unsupported shell: {shell}")
+        if code not in EDITORS:
+            raise KeyError(f"unsupported code command: {code}")
+
+        # init env.json
+        env = cls(root)
+        if not _env_file(root).exists():
+            env._json = env.JSON(
+                version=VERSION,
+                id=uuid.uuid4().hex,
+                shell=shell,
+                code=code,
+                tags={},
+            )
+            atomic_write_text(
+                _env_file(env.root),
+                json_parser.dumps(env._json.model_dump(mode="json"), indent=2) + "\n"
+            )
+
+        # init Containerfile
+        if not env.container_file.exists():
+            env.container_file.parent.mkdir(parents=True, exist_ok=True)
+            atomic_write_text(env.container_file, containerfile.render(env))
+
+        # init .containerignore
+        if not env.container_ignore.exists():
+            env.container_ignore.parent.mkdir(parents=True, exist_ok=True)
+            atomic_write_text(env.container_ignore, containerignore.render(env))
+
+        # init pyproject.toml
+        if not env.pyproject_file.exists():
+            env.pyproject_file.parent.mkdir(parents=True, exist_ok=True)
+            atomic_write_text(env.pyproject_file, pyproject.render(env))
+
+        return env
+
+    def __enter__(self) -> Environment:
+        self._lock.__enter__()
+        if self._lock.depth > 1:
+            return self  # re-entrant case
+
+        # try to load existing metadata if possible
+        env_file = _env_file(self.root)
+        if not env_file.exists():
+            raise FileNotFoundError(f"environment metadata file not found: {env_file}")
+
+        data = json_parser.loads(env_file.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            raise ValueError("environment metadata must be a JSON mapping")
+        try:
+            self._json = self.JSON.model_validate(data)
+        except ValidationError as err:
+            raise ValueError(f"invalid environment metadata: {err}") from err
         return self
 
     def __exit__(
@@ -1541,12 +1787,12 @@ RUN --mount=type=cache,target={TMP}/.cache/pip,sharing=locked \
         exc_value: BaseException | None,
         traceback: TracebackType | None
     ) -> None:
-        if self._lock.depth > 1:
+        env_dir = _env_dir(self.root)
+        if self._lock.depth > 1 or not env_dir.exists():
             self._lock.__exit__(exc_type, exc_value, traceback)
-            return  # re-entrant case
+            return  # re-entrant/dangling case
 
         # write changes
-        _env_dir(self.root).mkdir(parents=True, exist_ok=True)
         self._json = self.JSON.model_validate(self._json.model_dump(mode="python"))
         atomic_write_text(
             _env_file(self.root),
@@ -1554,7 +1800,7 @@ RUN --mount=type=cache,target={TMP}/.cache/pip,sharing=locked \
         )
 
         # release lock
-        shutil.rmtree(_env_dir(self.root) / ".lock", ignore_errors=True)
+        shutil.rmtree(env_dir / ".lock", ignore_errors=True)
 
     def __hash__(self) -> int:
         return hash(self.root)
@@ -1725,6 +1971,16 @@ RUN --mount=type=cache,target={TMP}/.cache/pip,sharing=locked \
         """
         return self.root / ".containerignore"
 
+    @property
+    def pyproject_file(self) -> Path:
+        """
+        Returns
+        -------
+        Path
+            The path to the `pyproject.toml` file within the environment root.
+        """
+        return self.root / "pyproject.toml"
+
     @overload
     def __getitem__(self, args: tuple[str, str]) -> Container | None: ...
     @overload
@@ -1847,6 +2103,12 @@ RUN --mount=type=cache,target={TMP}/.cache/pip,sharing=locked \
 
         # remove any now-dangling volumes
         _remove_dangling_volumes(force=force, missing_ok=missing_ok)
+
+        # remove environment metadata and lock
+        try:
+            shutil.rmtree(_env_dir(self.root) / self.id, ignore_errors=True)
+        except Exception:
+            pass
 
 
 # pylint: disable=missing-function-docstring, missing-param-doc
@@ -2933,6 +3195,21 @@ class Rm(_Command):
         env.tags.clear()
 
     @staticmethod
+    def _all(
+        *,
+        force: bool,
+        timeout: int,
+        **kwargs: Any
+    ) -> None:
+        for env_path in _list_all():
+            try:
+                with Environment(Path(env_path)) as env:
+                    env.remove(force=force, timeout=timeout, missing_ok=True)
+                    env.tags.clear()
+            except Exception as err:
+                print(err, file=sys.stderr)
+
+    @staticmethod
     def all(
         *,
         force: bool,
@@ -2944,13 +3221,7 @@ class Rm(_Command):
             "system.  This action cannot be undone.\n"
             "Are you sure you want to continue? [y/N] "
         ):
-            for env_path in _list_all():
-                try:
-                    with Environment(Path(env_path)) as env:
-                        env.remove(force=force, timeout=timeout, missing_ok=True)
-                        env.tags.clear()
-                except Exception:
-                    pass
+            Rm._all(force=force, timeout=timeout, **kwargs)
 
 
 @dataclass
@@ -3560,72 +3831,72 @@ class Log(_Command):
 
 @on_build(ephemeral=True)
 def podman_build(ctx: Pipeline.InProgress) -> None:
-    return Build()(ctx)
+    Build()(ctx)
 
 
 @on_start(ephemeral=True)
 def podman_start(ctx: Pipeline.InProgress) -> None:
-    return Start()(ctx)
+    Start()(ctx)
 
 
-@on_enter(ephemeral=True)
+@on_enter(requires=[start_code_service], ephemeral=True)
 def podman_enter(ctx: Pipeline.InProgress) -> None:
-    return Enter()(ctx)
+    Enter()(ctx)
 
 
 @on_run(ephemeral=True)
 def podman_run(ctx: Pipeline.InProgress) -> None:
-    return Run()(ctx)
+    Run()(ctx)
 
 
 @on_stop(ephemeral=True)
 def podman_stop(ctx: Pipeline.InProgress) -> None:
-    return Stop()(ctx)
+    Stop()(ctx)
 
 
 @on_pause(ephemeral=True)
 def podman_pause(ctx: Pipeline.InProgress) -> None:
-    return Pause()(ctx)
+    Pause()(ctx)
 
 
 @on_resume(ephemeral=True)
 def podman_resume(ctx: Pipeline.InProgress) -> None:
-    return Resume()(ctx)
+    Resume()(ctx)
 
 
 @on_restart(ephemeral=True)
 def podman_restart(ctx: Pipeline.InProgress) -> None:
-    return Restart()(ctx)
+    Restart()(ctx)
 
 
 @on_prune(ephemeral=True)
 def podman_prune(ctx: Pipeline.InProgress) -> None:
-    return Prune()(ctx)
+    Prune()(ctx)
 
 
 @on_rm(ephemeral=True)
 def podman_rm(ctx: Pipeline.InProgress) -> None:
-    return Rm()(ctx)
+    Rm()(ctx)
 
 
 @on_ls(ephemeral=True)
 def podman_ls(ctx: Pipeline.InProgress) -> None:
-    return Ls()(ctx)
+    Ls()(ctx)
 
 
 @on_monitor(ephemeral=True)
 def podman_monitor(ctx: Pipeline.InProgress) -> None:
-    return Monitor()(ctx)
+    Monitor()(ctx)
 
 
 @on_top(ephemeral=True)
 def podman_top(ctx: Pipeline.InProgress) -> None:
-    return Top()(ctx)
+    Top()(ctx)
 
 
 @on_log(ephemeral=True)
 def podman_log(ctx: Pipeline.InProgress) -> None:
-    return Log()(ctx)
+    Log()(ctx)
 
 
 # @on_publish(ephemeral=True)

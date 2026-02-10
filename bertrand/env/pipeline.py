@@ -29,7 +29,6 @@ from typing import (
     Literal,
     Protocol,
     TypeAlias,
-    TypeVar,
     overload,
 )
 
@@ -1415,6 +1414,7 @@ on_init = Pipeline(state_dir=STATE_DIR / "init", keep=5)
 on_build = Pipeline(state_dir=STATE_DIR / "build", keep=5)
 on_start = Pipeline(state_dir=STATE_DIR / "start", keep=5)
 on_enter = Pipeline(state_dir=STATE_DIR / "enter", keep=5)
+on_code = Pipeline(state_dir=STATE_DIR / "code", keep=5)
 on_run = Pipeline(state_dir=STATE_DIR / "run", keep=5)
 on_stop = Pipeline(state_dir=STATE_DIR / "stop", keep=5)
 on_pause = Pipeline(state_dir=STATE_DIR / "pause", keep=5)

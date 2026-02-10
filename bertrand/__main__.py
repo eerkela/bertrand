@@ -14,6 +14,7 @@ from .env.pipeline import (
     on_build,
     on_start,
     on_enter,
+    on_code,
     on_run,
     on_stop,
     on_pause,
@@ -620,7 +621,36 @@ class External:
                     "option has no effect if used in conjunction with '--images'.",
             )
 
-        # TODO: code()
+        def code(self) -> None:
+            """Add the 'code' command to the parser."""
+            command = self.commands.add_parser(
+                "code",
+                help=
+                    "Launch a text editor rooted at a Bertrand environment directory "
+                    "and mount its local toolchain using remote development "
+                    "extensions.  Note that the editor is launched on the host system "
+                    "rather than within the container, and no editor is actually "
+                    "bundled inside the container.  This necessitates an RPC service "
+                    "to communicate between the container and host contexts, which is "
+                    "managed via systemd.  Currently only supports vscode and its "
+                    "Remote Containers extension, but other editors may be added in "
+                    "the future.",
+            )
+            command.add_argument(
+                "path",
+                nargs=1,
+                help=
+                    "A path to the specified environment directory.  This may be an "
+                    "absolute or relative path, and must point to an environment "
+                    "directory produced by 'bertrand init'.  The path may include "
+                    "optional image and container tags (e.g. "
+                    "'/path/to/env:image:container'), which determine the exact "
+                    "container whose toolchain will be mounted.  If no image or "
+                    "container tag is given, then the default container for the parent "
+                    "environment or image will be used.  Otherwise, the container tag "
+                    "must correspond to a previous 'bertrand start' command.",
+            )
+
         # TODO: freeze()
         # TODO: unfreeze()
         # TODO: import_()
@@ -972,11 +1002,28 @@ class External:
             until=args.until,
         )
 
+    @staticmethod
+    def code(args: argparse.Namespace) -> None:
+        """Execute the `bertrand code` CLI command.
+
+        Parameters
+        ----------
+        args : argparse.Namespace
+            The parsed command-line arguments.
+        """
+        env, image_tag, container_tag = _parse(args.path[0])
+        on_code.do(
+            env=env,
+            image_tag=image_tag,
+            container_tag=container_tag,
+        )
+
     pipelines: dict[str, Pipeline] = {
         "init": on_init,
         "build": on_build,
         "start": on_start,
         "enter": on_enter,
+        "code": on_code,
         "run": on_run,
         "stop": on_stop,
         "pause": on_pause,
@@ -1079,6 +1126,7 @@ class External:
         "build": build,
         "start": start,
         "enter": enter,
+        "code": code,
         "run": run,
         "stop": stop,
         "pause": pause,
@@ -1139,6 +1187,21 @@ class Internal:
                 version=__version__
             )
 
+        def code(self) -> None:
+            """Add the 'code' command to the parser."""
+            self.commands.add_parser(
+                "code",
+                help=
+                    "Launch a text editor rooted at this container's environment "
+                    "directory and mount its internal toolchain using remote "
+                    "development extensions.  Note that the editor choice is "
+                    "determined by the environment configuration, and the editor "
+                    "process is owned by the host system and not this container.  "
+                    "An RPC service managed by systemd enables this communication.  "
+                    "Currently only supports vscode and its Remote Containers "
+                    "extension, but other editors may be added in the future.",
+            )
+
         def __call__(self) -> argparse.Namespace:
             """Run the command-line parser.
 
@@ -1150,8 +1213,33 @@ class Internal:
             self.version()
             return self.root.parse_args()
 
-    commands: dict[str, Callable[[argparse.Namespace], None]] = {
+    @staticmethod
+    def version(args: argparse.Namespace) -> None:
+        """Execute the `bertrand --version` CLI command from within a containerized
+        environment.
 
+        Parameters
+        ----------
+        args : argparse.Namespace
+            The parsed command-line arguments.
+        """
+        print(__version__)
+
+    @staticmethod
+    def code(args: argparse.Namespace) -> None:
+        """Execute the `bertrand code` CLI command from within a containerized
+        environment.
+
+        Parameters
+        ----------
+        args : argparse.Namespace
+            The parsed command-line arguments.
+        """
+        raise NotImplementedError("the 'bertrand code' command is not yet implemented.")
+
+    commands: dict[str, Callable[[argparse.Namespace], None]] = {
+        "version": version,
+        "code": code,
     }
 
     def __call__(self) -> None:
@@ -1164,5 +1252,13 @@ class Internal:
             parser.root.print_help()
 
 
+def main() -> None:
+    """Run the Bertrand CLI."""
+    if Environment.current() is None:
+        External()()
+    else:
+        Internal()()
+
+
 if __name__ == "__main__":
-    External()()
+    main()

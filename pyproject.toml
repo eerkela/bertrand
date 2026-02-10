@@ -71,7 +71,7 @@ dependencies = [
     # "pytz",
     # "regex",
     # "requests",
-    "setuptools",
+    # "setuptools",
     # "tqdm",
     # "tomlkit",
     # "tzlocal",
@@ -80,6 +80,7 @@ requires-python = ">=3.12"
 
 [project.scripts]
 bertrand = "bertrand.__main__:main"
+bertrand-code-rpc = "bertrand.env.code:main"
 
 [project.optional-dependencies]
 dev = [
