@@ -1274,7 +1274,7 @@ class Internal:
                 "missing container identity for RPC request.  Enter this environment "
                 f"with `bertrand enter` to populate '{CONTAINER_ID_ENV}'."
             )
-        workspace_in_container = (
+        container_workspace = (
             os.environ.get(WORKSPACE_ENV, WORKSPACE_MOUNT).strip() or WORKSPACE_MOUNT
         )
 
@@ -1291,10 +1291,10 @@ class Internal:
         env_root = Path(host_env_root)
         if not env_root.is_absolute():
             raise OSError(f"host environment root must be absolute: {env_root}")
-        if not Path(workspace_in_container).is_absolute():
+        if not Path(container_workspace).is_absolute():
             raise OSError(
                 "container workspace path must be absolute: "
-                f"{workspace_in_container!r}"
+                f"{container_workspace!r}"
             )
 
         # determine editor command from environment configuration
@@ -1311,7 +1311,7 @@ class Internal:
             editor=editor_name,
             env_root=env_root,
             container_id=container_id,
-            workspace_in_container=workspace_in_container,
+            container_workspace=container_workspace,
             socket_path=rpc_socket,
         )
 

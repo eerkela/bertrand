@@ -46,6 +46,9 @@ from .code import (
     CODE_SOCKET_DIR,
     CONTAINER_SOCKET_DIR,
     CONTAINER_SOCKET,
+    VSCODE_EXECUTABLE_CANDIDATES,
+    EDITOR_BIN_ENV,
+    CONTAINER_BIN_ENV,
     SOCKET_ENV,
     HOST_ENV,
     CONTAINER_ID_ENV,
@@ -490,6 +493,55 @@ def delegate_controllers(ctx: Pipeline.InProgress) -> None:
 CODE_SERVICE_NAME = "bertrand-code-rpc.service"
 CODE_SERVICE_DIR = User().home / ".config" / "systemd" / "user"
 CODE_SERVICE_FILE = CODE_SERVICE_DIR / CODE_SERVICE_NAME
+CODE_SERVICE_BASE_PATHS: tuple[str, ...] = (
+    str(User().home / ".local" / "bin"),
+    "/usr/local/sbin",
+    "/usr/local/bin",
+    "/usr/sbin",
+    "/usr/bin",
+    "/sbin",
+    "/bin",
+    "/snap/bin",
+)
+CODE_SERVICE_FLATPAK_PATHS: tuple[str, ...] = (
+    str(User().home / ".local" / "share" / "flatpak" / "exports" / "bin"),
+    "/var/lib/flatpak/exports/bin",
+)
+
+
+def _systemd_environment_line(key: str, value: str) -> str:
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+    return f'Environment="{key}={escaped}"'
+
+
+def _compose_code_service_path() -> str:
+    parts: list[str] = []
+    seen: set[str] = set()
+
+    def add(entry: str) -> None:
+        entry = entry.strip()
+        if not entry or entry in seen:
+            return
+        seen.add(entry)
+        parts.append(entry)
+
+    current_path = os.environ.get("PATH", "")
+    for entry in current_path.split(os.pathsep):
+        add(entry)
+    for entry in (*CODE_SERVICE_BASE_PATHS, *CODE_SERVICE_FLATPAK_PATHS):
+        add(entry)
+
+    return os.pathsep.join(parts)
+
+
+def _resolve_executable_on_path(name: str, *, path: str) -> Path | None:
+    value = shutil.which(name, path=path)
+    if value is None:
+        return None
+    candidate = Path(value)
+    if not candidate.is_absolute():
+        return None
+    return candidate.resolve()
 
 
 @on_init(requires=[delegate_controllers])
@@ -507,17 +559,42 @@ def configure_code_service(ctx: Pipeline.InProgress) -> None:
     OSError
         If the server's entry point cannot be found.
     """
-    exec_str = shutil.which("bertrand-code-rpc")
-    if exec_str is None:
+    service_path = _compose_code_service_path()
+
+    exec_path = _resolve_executable_on_path("bertrand-code-rpc", path=service_path)
+    if exec_path is None:
         raise OSError(
             "'bertrand-code-rpc' executable not found on PATH.  Ensure Bertrand is "
             "installed with console scripts before running 'bertrand init'."
         )
-    exec_path = Path(exec_str)
-    if not exec_path.is_absolute():
-        raise OSError(f"'bertrand-code-rpc' resolved to a non-absolute path: {exec_path}")
 
-    exec_path.resolve()
+    # record path to podman and code executables in the service environment so they
+    # never drift within the service context
+    podman_path = _resolve_executable_on_path("podman", path=service_path)
+    if podman_path is None:
+        raise OSError(
+            "'podman' executable not found on PATH.  Ensure podman is installed before "
+            "running 'bertrand init'."
+        )
+
+    code_path: Path | None = None
+    for candidate in VSCODE_EXECUTABLE_CANDIDATES:
+        code_path = _resolve_executable_on_path(candidate, path=service_path)
+        if code_path is not None:
+            break
+
+    # use an explicit environment block to ensure the service has a consistent PATH and
+    # can always find podman and code, even if the user's login shell configuration is
+    # non-standard or broken
+    env_lines = [
+        _systemd_environment_line("PATH", service_path),
+        _systemd_environment_line(CONTAINER_BIN_ENV, str(podman_path)),
+    ]
+    if code_path is not None:
+        env_lines.append(_systemd_environment_line(EDITOR_BIN_ENV, str(code_path)))
+    env_block = "\n".join(env_lines)
+
+    # write unit file, reload, enable, and then start service
     ctx.do(WriteText(
         path=CODE_SERVICE_FILE,
         text=f"""[Unit]
@@ -528,6 +605,7 @@ Type=simple
 ExecStart={shlex.quote(str(exec_path))}
 Restart=on-failure
 RestartSec=1
+{env_block}
 
 [Install]
 WantedBy=default.target

@@ -6,10 +6,13 @@ used by future in-container `bertrand code` clients.
 from __future__ import annotations
 
 import json
+import os
+import shlex
 import shutil
 import socket
 import stat
 import subprocess
+import time
 import urllib.parse
 
 from dataclasses import dataclass, field
@@ -18,11 +21,15 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, ValidationError
 
-from .run import User, atomic_write_text, mkdir_private, run
+from .run import User, atomic_write_text, mkdir_private
 
 # pylint: disable=broad-exception-caught
 
 
+CODE_LAUNCH_TIMEOUT: float = 10.0
+CODE_PROBE_TIMEOUT: float = 10.0
+CODE_RPC_CLIENT_HEADROOM: float = 2.0
+CODE_RPC_CLIENT_TIMEOUT: float = CODE_LAUNCH_TIMEOUT + CODE_RPC_CLIENT_HEADROOM
 CODE_SOCKET_VERSION: int = 1
 CODE_SOCKET_OP_OPEN: str = "open_editor"
 CODE_SOCKET_DIR: Path = User().home / ".local" / "share" / "bertrand" / "code-rpc"
@@ -30,12 +37,30 @@ CODE_SOCKET: Path = CODE_SOCKET_DIR / "listener.sock"
 MAX_REQUEST_BYTES: int = 1024 * 1024  # 1 MiB
 CONTAINER_SOCKET_DIR: Path = Path("/run/bertrand/code-rpc")
 CONTAINER_SOCKET: Path = CONTAINER_SOCKET_DIR / "listener.sock"
+CONTAINER_ID_ENV: str = "BERTRAND_CONTAINER_ID"
+CONTAINER_BIN_ENV: str = "BERTRAND_CODE_PODMAN_BIN"
+EDITOR_BIN_ENV: str = "BERTRAND_CODE_EDITOR_BIN"
 SOCKET_ENV: str = "BERTRAND_CODE_SOCKET"
 HOST_ENV: str = "BERTRAND_HOST_ENV"
-CONTAINER_ID_ENV: str = "BERTRAND_CONTAINER_ID"
 WORKSPACE_ENV: str = "BERTRAND_WORKSPACE"
 WORKSPACE_MOUNT: str = "/env"
+
+VSCODE_MANAGED_WORKSPACE_FILE: Path = Path(".bertrand") / "vscode" / "bertrand.code-workspace"
+VSCODE_MANAGED_WORKSPACE_FILE_POSIX: PurePosixPath = (
+    PurePosixPath(".bertrand") / "vscode" / "bertrand.code-workspace"
+)
 VSCODE_REMOTE_EXTENSION = "ms-vscode-remote.remote-containers"
+VSCODE_CLANGD_EXTENSION = "llvm-vs-code-extensions.vscode-clangd"
+VSCODE_EXECUTABLE_CANDIDATES: tuple[str, ...] = (
+    "code",
+    "com.visualstudio.code",
+    "code-insiders",
+    "com.visualstudio.code-insiders",
+)
+VSCODE_RECOMMENDED_EXTENSIONS: list[str] = [
+    VSCODE_REMOTE_EXTENSION,
+    VSCODE_CLANGD_EXTENSION,
+]
 VSCODE_MANAGED_SETTINGS: dict[str, Any] = {
     "C_Cpp.intelliSenseEngine": "disabled",
     "clangd.path": "clangd",
@@ -46,6 +71,7 @@ VSCODE_MANAGED_SETTINGS: dict[str, Any] = {
         "--header-insertion=iwyu",
     ],
 }
+
 EDITORS: dict[str, tuple[str, ...]] = {
     "vscode": ("code",),
 }
@@ -105,7 +131,7 @@ def send_request(
     request: CodeServer.Request,
     *,
     socket_path: Path = CODE_SOCKET,
-    timeout: float = 10.0,
+    timeout: float = CODE_RPC_CLIENT_TIMEOUT,
 ) -> CodeServer.Response:
     """Send a single request to the code RPC server and wait for a single response.
 
@@ -117,11 +143,11 @@ def send_request(
     socket_path : Path, optional
         The path to the server's Unix socket file.  Defaults to `CODE_SOCKET`, which is
         a host path to the socket file.  If executing in-container, this should be
-        replaced with `CODE_CONTAINER_SOCKET`, which is the corresponding path to the
+        replaced with `CONTAINER_SOCKET`, which is the corresponding path to the
         bind-mounted socket file inside the container context.
     timeout : float, optional
         The maximum number of seconds to wait for a response from the server before
-        raising a timeout error.  Defaults to 10 seconds.
+        raising a timeout error.  Defaults to `CODE_RPC_CLIENT_TIMEOUT`.
 
     Returns
     -------
@@ -174,7 +200,7 @@ def request_open_editor(
     container_id: str,
     container_workspace: str = WORKSPACE_MOUNT,
     socket_path: Path = CODE_SOCKET,
-    timeout: float = 10.0,
+    timeout: float = CODE_RPC_CLIENT_TIMEOUT,
 ) -> None:
     """Request that the host-side RPC server launch an editor for `env_root`.
 
@@ -196,11 +222,11 @@ def request_open_editor(
     socket_path : Path, optional
         The path to the server's Unix socket file.  Defaults to `CODE_SOCKET`, which
         is a host path to the socket file.  If executing in-container, this should be
-        replaced with `CODE_CONTAINER_SOCKET`, which is the corresponding path to the
+        replaced with `CONTAINER_SOCKET`, which is the corresponding path to the
         bind-mounted socket file inside the container context.
     timeout : float, optional
         The maximum number of seconds to wait for a response from the server before
-        raising a timeout error.  Defaults to 10 seconds.
+        raising a timeout error.  Defaults to `CODE_RPC_CLIENT_TIMEOUT`.
 
     Raises
     ------
@@ -231,11 +257,47 @@ def request_open_editor(
         raise OSError(f"RPC request failed: {response.error}")
 
 
-def _require_executable(name: str) -> str:
-    executable = shutil.which(name)
-    if executable is None:
+def _resolve_executable(
+    name: str,
+    env_var: str,
+    *,
+    candidates: tuple[str, ...] | None = None,
+) -> str:
+    # check for explicit environment variable override
+    override = os.environ.get(env_var, "").strip()
+    if override:
+        path = Path(override).expanduser()
+        if not path.is_absolute():
+            raise LaunchError(
+                "prereq_missing",
+                f"{env_var} must be an absolute path: {path}",
+            )
+        path = path.resolve()
+        if not path.exists():
+            raise LaunchError(
+                "prereq_missing",
+                f"{env_var} points to a missing executable: {path}",
+            )
+        if not path.is_file() or not os.access(path, os.X_OK):
+            raise LaunchError(
+                "prereq_missing",
+                f"{env_var} is not executable: {path}",
+            )
+        return str(path)
+
+    # test alternatives
+    names = candidates or (name,)
+    for candidate in names:
+        executable = shutil.which(candidate)
+        if executable is not None:
+            return executable
+    if len(names) == 1:
         raise LaunchError("prereq_missing", f"required executable '{name}' not found on PATH")
-    return executable
+    tried = ", ".join(names)
+    raise LaunchError(
+        "prereq_missing",
+        f"required executable '{name}' not found on PATH (tried: {tried})",
+    )
 
 
 def _normalize_workspace(container_workspace: str) -> str:
@@ -248,11 +310,55 @@ def _normalize_workspace(container_workspace: str) -> str:
     return str(workspace)
 
 
-def _ensure_running_container(podman_bin: str, container_id: str) -> None:
-    result = run(
+def _launch_deadline(seconds: float) -> float:
+    return time.monotonic() + seconds
+
+
+def _remaining_probe_timeout(deadline: float, *, timeout_category: str, step: str) -> float:
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise LaunchError(
+            timeout_category,
+            f"launch budget exhausted before probe step '{step}' could run",
+        )
+    return min(CODE_PROBE_TIMEOUT, remaining)
+
+
+def _run_probe(
+    argv: list[str],
+    *,
+    timeout: float,
+    timeout_category: str,
+) -> subprocess.CompletedProcess[str]:
+    try:
+        return subprocess.run(
+            argv,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as err:
+        raise LaunchError(
+            timeout_category,
+            f"probe timed out after {timeout:.1f}s: {' '.join(shlex.quote(a) for a in argv)}",
+        ) from err
+    except OSError as err:
+        raise LaunchError(
+            "prereq_missing",
+            f"failed to execute probe: {' '.join(shlex.quote(a) for a in argv)}: {err}",
+        ) from err
+
+
+def _ensure_running_container(podman_bin: str, container_id: str, *, deadline: float) -> None:
+    result = _run_probe(
         [podman_bin, "container", "inspect", "--format", "{{.State.Status}}", container_id],
-        check=False,
-        capture_output=True,
+        timeout=_remaining_probe_timeout(
+            deadline,
+            timeout_category="container_probe_timeout",
+            step="container inspect",
+        ),
+        timeout_category="container_probe_timeout",
     )
     stdout = result.stdout.strip()
     stderr = result.stderr.strip()
@@ -275,11 +381,15 @@ def _ensure_running_container(podman_bin: str, container_id: str) -> None:
         )
 
 
-def _resolve_container_clangd(podman_bin: str, container_id: str) -> str:
-    result = run(
+def _resolve_container_clangd(podman_bin: str, container_id: str, *, deadline: float) -> str:
+    result = _run_probe(
         [podman_bin, "exec", container_id, "sh", "-lc", "command -v clangd"],
-        check=False,
-        capture_output=True,
+        timeout=_remaining_probe_timeout(
+            deadline,
+            timeout_category="clangd_probe_timeout",
+            step="clangd lookup",
+        ),
+        timeout_category="clangd_probe_timeout",
     )
     stdout = result.stdout.strip()
     stderr = result.stderr.strip()
@@ -293,8 +403,16 @@ def _resolve_container_clangd(podman_bin: str, container_id: str) -> str:
     return stdout
 
 
-def _ensure_vscode_extension(code_bin: str) -> None:
-    result = run([code_bin, "--list-extensions"], check=False, capture_output=True)
+def _ensure_vscode_extension(code_bin: str, *, deadline: float) -> None:
+    result = _run_probe(
+        [code_bin, "--list-extensions"],
+        timeout=_remaining_probe_timeout(
+            deadline,
+            timeout_category="vscode_probe_timeout",
+            step="vscode extension listing",
+        ),
+        timeout_category="vscode_probe_timeout",
+    )
     if result.returncode != 0:
         detail = result.stderr.strip() or result.stdout.strip()
         suffix = f": {detail}" if detail else ""
@@ -314,72 +432,62 @@ def _ensure_vscode_extension(code_bin: str) -> None:
         )
 
 
-def _ensure_workspace_settings(env_root: Path) -> None:
-    settings_path = env_root / ".vscode" / "settings.json"
-    current: dict[str, Any] = {}
+def _render_managed_workspace(container_workspace: str) -> str:
+    payload = {
+        "folders": [{"path": container_workspace}],
+        "settings": VSCODE_MANAGED_SETTINGS,
+        "extensions": {"recommendations": VSCODE_RECOMMENDED_EXTENSIONS},
+    }
+    return json.dumps(payload, indent=2, sort_keys=True) + "\n"
 
-    # if settings.json already exists, only modify the keys we manage and preserve any
-    # user-managed settings and comments as much as possible
-    if settings_path.exists():
-        if not settings_path.is_file():
+
+def _ensure_managed_workspace_file(
+    env_root: Path,
+    container_workspace: str,
+) -> tuple[Path, str]:
+    # reconcile host and container paths to managed workspace file
+    host_workspace_file = env_root / VSCODE_MANAGED_WORKSPACE_FILE
+    container_workspace_file = str(
+        PurePosixPath(container_workspace) / VSCODE_MANAGED_WORKSPACE_FILE_POSIX
+    )
+
+    # write workspace file to host filesystem
+    text = _render_managed_workspace(container_workspace)
+    if host_workspace_file.exists():
+        if not host_workspace_file.is_file():
             raise LaunchError(
                 "config_write_failure",
-                f"settings path is not a file: {settings_path}",
+                f"managed workspace path is not a file: {host_workspace_file}",
             )
         try:
-            text = settings_path.read_text(encoding="utf-8")
+            current = host_workspace_file.read_text(encoding="utf-8")
         except OSError as err:
             raise LaunchError(
                 "config_write_failure",
-                f"failed to read workspace settings: {settings_path}: {err}",
+                f"failed to read managed workspace file: {host_workspace_file}: {err}",
             ) from err
+        if current == text:
+            return host_workspace_file, container_workspace_file
 
-        # parse JSON (conservative)
-        if text.strip():
-            try:
-                parsed = json.loads(text)
-            except json.JSONDecodeError as err:
-                raise LaunchError(
-                    "config_write_failure",
-                    f"invalid JSON in workspace settings: {settings_path}: {err.msg}",
-                ) from err
-            if not isinstance(parsed, dict):
-                raise LaunchError(
-                    "config_write_failure",
-                    f"workspace settings must contain a JSON object: {settings_path}",
-                )
-            current = parsed
-
-    # merge the new keys
-    merged = dict(current)
-    changed = not settings_path.exists()
-    for key, value in VSCODE_MANAGED_SETTINGS.items():
-        if merged.get(key) != value:
-            merged[key] = value
-            changed = True
-    if not changed:
-        return
-
-    # write the merged settings back to disk, overwriting the existing file
-    text = json.dumps(merged, indent=2, sort_keys=True) + "\n"
     try:
-        atomic_write_text(settings_path, text, encoding="utf-8")
+        atomic_write_text(host_workspace_file, text, encoding="utf-8")
     except OSError as err:
         raise LaunchError(
             "config_write_failure",
-            f"failed to write workspace settings: {settings_path}: {err}",
+            f"failed to write managed workspace file: {host_workspace_file}: {err}",
         ) from err
+    return host_workspace_file, container_workspace_file
 
 
-def _vscode_folder_uri(container_id: str, container_workspace: str) -> str:
-    # NOTE: this URI endpoint allows VSCode to manually attach to the running container
-    # context, but is not technically a public API and could potentially break in
-    # future versions of the Remote Containers extension.  This is unlikely, since it
-    # is well-documented in VSCode issues, and if it breaks, there is likely to be a
-    # replacement mechanism provided by the extension maintainers.
+def _vscode_workspace_uri(container_id: str, container_workspace_file: str) -> str:
+    # NOTE: this URI allows the VSCode Remote Containers extension to attach to a
+    # running container by ID, but is not technically part of the public API.  It is
+    # well-documented in various issues and discussions, but may be subject to change
+    # without notice.  If this breaks, it should have been replaced by something more
+    # stable that we can use instead.
     encoded_id = urllib.parse.quote(container_id, safe="")
-    encoded_workspace = urllib.parse.quote(container_workspace, safe="/")
-    return f"vscode-remote://attached-container+{encoded_id}{encoded_workspace}"
+    encoded_workspace_file = urllib.parse.quote(container_workspace_file, safe="/")
+    return f"vscode-remote://attached-container+{encoded_id}{encoded_workspace_file}"
 
 
 def _launch_editor(
@@ -406,24 +514,30 @@ def _launch_editor(
     workspace = _normalize_workspace(container_workspace)
 
     # find host editor and podman executables
-    code_bin = _require_executable(command[0])
-    podman_bin = _require_executable("podman")
+    code_bin = _resolve_executable(
+        command[0],
+        EDITOR_BIN_ENV,
+        candidates=VSCODE_EXECUTABLE_CANDIDATES,
+    )
+    podman_bin = _resolve_executable("podman", CONTAINER_BIN_ENV)
+    deadline = _launch_deadline(CODE_LAUNCH_TIMEOUT)
 
     # ensure we can remotely attach to the container
-    _ensure_vscode_extension(code_bin)
+    _ensure_vscode_extension(code_bin, deadline=deadline)
 
     # ensure container is running and tools are available inside it
-    _ensure_running_container(podman_bin, container_id)
-    _resolve_container_clangd(podman_bin, container_id)
+    _ensure_running_container(podman_bin, container_id, deadline=deadline)
+    _resolve_container_clangd(podman_bin, container_id, deadline=deadline)
 
-    # write toolchain configuration to mounted workspace to wire LSPs, etc. into the editor
-    _ensure_workspace_settings(env_root)
+    # write bertrand-managed settings to a dedicated workspace file and leave any
+    # user-owned .vscode/settings.json untouched.
+    _, container_workspace_file = _ensure_managed_workspace_file(env_root, workspace)
 
     # open editor in detached (non-blocking) process
-    folder_uri = _vscode_folder_uri(container_id, workspace)
+    workspace_uri = _vscode_workspace_uri(container_id, container_workspace_file)
     try:
         subprocess.Popen(
-            [code_bin, *command[1:], "--folder-uri", folder_uri],
+            [code_bin, *command[1:], "--file-uri", workspace_uri],
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
