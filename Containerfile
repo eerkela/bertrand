@@ -254,13 +254,14 @@ ARG RUFF_VERSION=0.8.4
 ARG TY_VERSION=0.0.1a1
 ARG PYTEST_VERSION=8.3.4
 ENV DEBIAN_FRONTEND=noninteractive
+ENV UV_PYTHON=/opt/python/bin/python
 
 # Install pinned Python tooling into /opt/python using uv as the primary installer.
 RUN --mount=type=cache,target=/root/.cache/uv,sharing=locked \
     set -eux; \
     /opt/python/bin/pip install --no-cache-dir "uv==${UV_VERSION}"; \
     /opt/python/bin/uv --version; \
-    /opt/python/bin/uv pip install --python /opt/python/bin/python --no-cache-dir \
+    /opt/python/bin/uv pip install --no-cache-dir \
         "ruff==${RUFF_VERSION}" \
         "ty==${TY_VERSION}" \
         "pytest==${PYTEST_VERSION}"; \
@@ -288,7 +289,7 @@ ENV CONAN_USER_HOME=/opt/conan
 # Install Conan into /opt/python using uv.
 RUN --mount=type=cache,target=/root/.cache/uv,sharing=locked \
     set -eux; \
-    /opt/python/bin/uv pip install --python /opt/python/bin/python --no-cache-dir \
+    /opt/python/bin/uv pip install --no-cache-dir \
         "conan==${CONAN_VERSION}"; \
     /opt/python/bin/conan --version; \
     /opt/python/bin/python -m pip check
@@ -389,7 +390,7 @@ COPY --link bertrand /src/bertrand
 RUN --mount=type=cache,target=/root/.cache/uv,sharing=locked \
     set -eux; \
     # install into /opt/python
-    /opt/python/bin/uv pip install --python /opt/python/bin/python --no-cache-dir /src; \
+    /opt/python/bin/uv pip install --no-cache-dir /src; \
     /opt/python/bin/python -m pip check; \
     \
     # Verify: console script must exist in the image
@@ -438,6 +439,8 @@ COPY --link --from=bertrand_install /opt/python /opt/python
 COPY --link --from=cpp_tools /opt/conan /opt/conan
 ENV CONAN_HOME=/opt/conan
 ENV CONAN_USER_HOME=/opt/conan
+ENV BERTRAND=1
+ENV UV_PYTHON=/opt/python/bin/python
 ENV UV_CACHE_DIR=/tmp/.cache/uv
 ENV BERTRAND_CACHE=/tmp/.cache/bertrand
 ENV CCACHE_DIR=/tmp/.cache/ccache
@@ -469,6 +472,9 @@ RUN set -eux; \
 RUN clang --version \
     && cc --version \
     && c++ --version \
+    && clang-format --version \
+    && clang-tidy --version \
+    && (clangd --version || true) \
     && ccache --version \
     && ninja --version \
     && cmake --version \

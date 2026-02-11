@@ -42,7 +42,6 @@ from pydantic import (
 )
 
 from .code import (
-    EDITORS,
     CODE_SOCKET_DIR,
     CONTAINER_SOCKET_DIR,
     CONTAINER_SOCKET,
@@ -54,6 +53,17 @@ from .code import (
     CONTAINER_ID_ENV,
     WORKSPACE_ENV,
     WORKSPACE_MOUNT,
+)
+from .config import (
+    Config,
+    DEFAULT_EDITOR,
+    DEFAULT_SHELL,
+    DEFAULT_AGENT,
+    DEFAULT_ASSIST,
+    SHELLS,
+    EDITORS,
+    AGENTS,
+    ASSISTS,
 )
 from .filesystem import WriteText
 from .package import InstallPackage, detect_package_manager
@@ -632,7 +642,7 @@ def init_environment(ctx: Pipeline.InProgress) -> None:
     OSError
         If the environment specifier is invalid.
     TypeError
-        If the 'env', 'shell', or 'code' facts are not valid strings.
+        If the 'env', 'code', 'agent', or 'assist' facts are not valid strings.
     """
     env = ctx["env"]
     if not isinstance(env, str):
@@ -644,20 +654,21 @@ def init_environment(ctx: Pipeline.InProgress) -> None:
             "directory."
         )
 
-    shell = ctx["shell"]
-    if not isinstance(shell, str):
-        raise TypeError("shell must be a string")
     code = ctx["code"]
     if not isinstance(code, str):
         raise TypeError("code must be a string")
+    agent = ctx["agent"]
+    if not isinstance(agent, str):
+        raise TypeError("agent must be a string")
+    assist = ctx["assist"]
+    if not isinstance(assist, str):
+        raise TypeError("assist must be a string")
 
     Environment.init(
         Path(env),
-        shell=shell,  # type: ignore[arg-type]
-        code=code,  # type: ignore[arg-type]
         containerfile=Containerfile(),
         containerignore=Containerignore(),
-        pyproject=PyProject()
+        pyproject=PyProject(code=code, agent=agent, assist=assist)
     )
 
 
@@ -789,9 +800,6 @@ def _ensure_cache_volume(name: str, env_uuid: str, kind: str) -> None:
 VERSION: int = 1
 TMP: str = "/tmp"
 TIMEOUT: int = 30
-SHELLS: dict[str, tuple[str, ...]] = {
-    "bash": ("bash", "-l"),
-}
 
 
 def _env_dir(env_root: Path) -> Path:
@@ -860,18 +868,6 @@ def _check_uuid_str(value: str) -> str:
         uuid.UUID(value)
     except Exception as err:
         raise ValueError(f"'id' must be a valid UUID: {value}") from err
-    return value
-
-
-def _check_shell(value: str) -> str:
-    if value not in SHELLS:
-        raise ValueError(f"unsupported shell: {value}")
-    return value
-
-
-def _check_code(value: str) -> str:
-    if value not in EDITORS:
-        raise ValueError(f"unsupported code command: {value}")
     return value
 
 
@@ -1506,31 +1502,30 @@ RUN --mount=type=cache,target={TMP}/.cache/uv,sharing=locked \
     --mount=type=cache,target={TMP}/.cache/bertrand,sharing=locked \
     --mount=type=cache,target={TMP}/.cache/ccache,sharing=locked \
     --mount=type=cache,target=/opt/conan,sharing=locked \
-    uv pip install --python /opt/python/bin/python .
+    bertrand build
 
-# The base image intentionally stays lean.  Install optional tools in downstream
-# Containerfiles as needed, for example:
-# RUN uv pip install --python /opt/python/bin/python <tool1> <tool2>
+# A `bertrand build` command of that form will incrementally compile the contents of
+# the local environment directory (WORKDIR) and install them into the base image as
+# Python packages, C++ modules, and/or executable binaries on the container's PATH.  If
+# you then upload this image to an external repository, downstream users will be able
+# to use `FROM <your-image>` in their own Containerfiles in order to inherit
+# Bertrand's toolchain along with your built artifacts and dependencies without needing
+# to recompile them from scratch.  This can be useful for large projects where build
+# time is significant, or which have external dependencies or build configurations that
+# are otherwise difficult to install.  Small projects without significant
+# configuration needs are encouraged to use the bundled package managers instead, and
+# leave this file alone.
+
+# In most cases, `bertrand build` and `pyproject.toml` is all you need.
+# C++ tooling rules are sourced from `[tool.conan]`, `[tool.clang_format]`,
+# `[tool.clang_tidy]`, and `[tool.clangd]` in pyproject.toml, then emitted as generated
+# `.clang-*` files at command runtime.  `pyproject.toml` is the single source of truth
+# for dependencies and tooling configuration across both languages.  If you'd like to
+# add your own tools outside of `pyproject.toml`, you can still use raw `uv` or
+# `apt-get` commands directly in this file (although doing so is discouraged).  For
+# example:
+# RUN uv pip install <tool1> <tool2>
 # RUN apt-get update && apt-get install -y --no-install-recommends <pkg1> <pkg2>
-#
-# A `uv pip install --python /opt/python/bin/python .` command of that form will
-# incrementally compile the contents of the local environment directory (WORKDIR) and
-# install them into the base image as Python packages, C++ modules, and/or executable
-# binaries on the container's PATH.  If you then upload this image to an external
-# repository, downstream users will be able to use `FROM <your-image>` in their own
-# Containerfiles in order to inherit Bertrand's toolchain along with your built
-# artifacts and dependencies without needing to recompile them from scratch.  This can
-# be useful for large projects where build time is significant, or which have external
-# dependencies or build configurations that are otherwise difficult to install.  Small
-# projects without significant configuration needs are encouraged to use the bundled
-# package managers instead, and leave this file alone.
-
-# In most cases, `uv pip install ...` is all you need, but if you'd like to add your
-# own compilation flags or install additional system dependencies outside of
-# `pyproject.toml`, then you can do so using standard Containerfile commands.  See the
-# official Containerfile documentation for a comprehensive reference, and the Bertrand
-# toolchain documentation for more details on how this fits into the overall build
-# process, as well as tips for your own Containerfiles.
 
 # `sleep infinity` is used to keep the container alive indefinitely after startup, so
 # that users can `bertrand enter` into it and use it as a normal shell environment.
@@ -1582,6 +1577,7 @@ out/
 """
 
 
+@dataclass(frozen=True)
 class PyProject:
     """Emit a formatted pyproject.toml that configures the build system for Bertrand's
     pip-based build process.
@@ -1589,10 +1585,79 @@ class PyProject:
     # pylint: disable=line-too-long, missing-function-docstring, missing-return-doc
     # pylint: disable=unused-argument
 
-    # TODO: define this content later, when writing the PEP517 backend
+    shell: str = DEFAULT_SHELL
+    code: str = DEFAULT_EDITOR
+    agent: str = DEFAULT_AGENT
+    assist: str = DEFAULT_ASSIST
+
+    def __post_init__(self) -> None:
+        if self.shell not in SHELLS:
+            raise KeyError(f"unsupported shell: {self.shell}")
+        if self.code not in EDITORS:
+            raise KeyError(f"unsupported code command: {self.code}")
+        if self.agent not in AGENTS:
+            raise KeyError(f"unsupported agent: {self.agent}")
+        if self.assist not in ASSISTS:
+            raise KeyError(f"unsupported assist: {self.assist}")
 
     def render(self, env: Environment) -> str:
-        return ""
+        project_name = _sanitize_name(env.root.name).lower().replace("_", "-")
+        if not project_name:
+            project_name = "bertrand-project"
+
+        return f"""[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "{project_name}"
+version = "0.1.0"
+description = "Bertrand project"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = []
+
+[tool.bertrand]
+shell = "{self.shell}"
+code = "{self.code}"
+agent = "{self.agent}"
+assist = "{self.assist}"
+
+[tool.clang_format]
+style = {{ BasedOnStyle = "LLVM", IndentWidth = 4, ColumnLimit = 100 }}
+
+[tool.clang_tidy]
+checks = [
+    "clang-analyzer-*",
+    "bugprone-*",
+    "performance-*",
+    "readability-*",
+]
+warnings_as_errors = []
+header_filter_regex = ".*"
+options = {{}}
+
+[tool.clangd]
+arguments = [
+    "--background-index",
+    "--clang-tidy",
+    "--completion-style=detailed",
+    "--header-insertion=iwyu",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+
+[tool.ty]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]
+"""
 
 
 class Environment:
@@ -1613,12 +1678,6 @@ class Environment:
     timeout : int, optional
         The maximum time in seconds to wait for acquiring the environment lock.
         Defaults to `TIMEOUT`, which equates to 30 seconds.
-    shell : list[str] | None, optional
-        The shell command to execute during `bertrand enter`.  If None, defaults to
-        `["bash", "-l"]`.
-    code : list[str] | None, optional
-        The default host command invoked by `code` within the container.  If None,
-        defaults to `["vscode"]`.
 
     Attributes
     ----------
@@ -1650,8 +1709,6 @@ class Environment:
         model_config = ConfigDict(extra="forbid", validate_assignment=True)
         version: PositiveInt
         id: EnvironmentId
-        shell: Annotated[str, AfterValidator(_check_shell)]
-        code: Annotated[str, AfterValidator(_check_code)]
         tags: dict[str, Image]
 
         @model_validator(mode="after")
@@ -1681,8 +1738,6 @@ class Environment:
         self._json = self.JSON.model_construct(
             version=0,
             id="",
-            shell="",
-            code="",
             tags={}
         )
         self._lock = LockDir(_env_dir(self.root) / ".lock", timeout=timeout)
@@ -1692,28 +1747,18 @@ class Environment:
         cls,
         root: Path,
         *,
-        shell: Literal["bash"],
-        code: Literal["vscode"],
         containerfile: Environment.Renderer,
         containerignore: Environment.Renderer,
         pyproject: Environment.Renderer,
     ) -> Environment:
         """Initialize a new environment at the given root path with the specified
-        shell.  Does nothing if the environment is already initialized.
+        defaults.  Does nothing if the environment is already initialized.
 
         Parameters
         ----------
         root : Path
             The root path of the environment directory to initialize.  This directory
             must not already exist, and its parent directory must be writable.
-        shell : Literal["bash"]
-            The shell to execute during `bertrand enter`.  Currently, the only
-            supported shell is "bash", which maps to `["bash", "-l"]`.
-        code : Literal["vscode"]
-            The host text editor invoked by `code` within the container.  Currently,
-            the only supported editor is "vscode", which attempts to mount the
-            container's internal toolchain via the remote container extension, so that
-            users can take advantage of its internal LSPs, AI assistants, and more.
         containerfile : Environment.Renderer
             A renderer for the default `Containerfile` configuration file, which
             defines the base image and build instructions for the environment's
@@ -1733,20 +1778,16 @@ class Environment:
         Returns
         -------
         Environment
-            The initialized `Environment` object with the specified root and shell.
+            The initialized `Environment` object with the specified root.
             Note that the result is disengaged until it is acquired as a context
             manager, which synchronizes its state.
 
         Raises
         ------
         KeyError
-            If the specified shell or code command is not supported.
+            If the configured defaults in the given renderers are unsupported.
         """
         root = root.expanduser().resolve()
-        if shell not in SHELLS:
-            raise KeyError(f"unsupported shell: {shell}")
-        if code not in EDITORS:
-            raise KeyError(f"unsupported code command: {code}")
 
         # init env.json
         env = cls(root)
@@ -1754,8 +1795,6 @@ class Environment:
             env._json = env.JSON(
                 version=VERSION,
                 id=uuid.uuid4().hex,
-                shell=shell,
-                code=code,
                 tags={},
             )
             atomic_write_text(
@@ -1931,30 +1970,6 @@ class Environment:
             containers associated with this environment, to allow for easy lookup.
         """
         return self._json.id
-
-    @property
-    def shell(self) -> tuple[str, ...]:
-        """
-        Returns
-        -------
-        tuple[str, ...]
-            The shell command to execute during `bertrand enter`, as specified in the
-            environment metadata.
-        """
-        return SHELLS[self._json.shell]
-
-    @property
-    def code(self) -> str:
-        """
-        Returns
-        -------
-        str
-            The host text editor invoked by `code` within the container, as specified
-            in the environment metadata.  Note that this is not a literal shell
-            command, in order to avoid remote code execution and ensure proper mounting
-            of the container's internal toolchain.
-        """
-        return self._json.code
 
     @property
     def tags(self) -> dict[str, Image]:
@@ -2552,6 +2567,7 @@ class Enter(_Command):
                 stderr="'bertrand enter' requires both stdin and stdout to be a TTY."
             )
 
+        # start container if necessary
         container = Start.container(
             env=env,
             image_tag=image_tag,
@@ -2559,6 +2575,23 @@ class Enter(_Command):
             args=args,
             **kwargs
         )
+
+        # load shell command from pyproject.toml
+        with Config(env.root) as config:
+            shell_name = config["tool", "bertrand", "shell"]
+        if not isinstance(shell_name, str):
+            raise OSError("'tool.bertrand.shell' in pyproject.toml must be a string")
+        shell_name = shell_name.strip()
+        if not shell_name:
+            raise OSError("'tool.bertrand.shell' in pyproject.toml cannot be empty")
+        shell = SHELLS.get(shell_name)
+        if shell is None:
+            raise OSError(
+                f"unsupported 'tool.bertrand.shell' in pyproject.toml: '{shell_name}'\n"
+                f"must be one of: {', '.join(SHELLS.keys())}"
+            )
+
+        # exec into container with appropriate shell and `code`-related environment variables
         podman_exec([
             "exec",
             "-it",
@@ -2567,7 +2600,7 @@ class Enter(_Command):
             "-e", f"{CONTAINER_ID_ENV}={container.id}",
             "-e", f"{WORKSPACE_ENV}={WORKSPACE_MOUNT}",
             container.id,
-            *env.shell,
+            *shell,
         ])
 
     @staticmethod

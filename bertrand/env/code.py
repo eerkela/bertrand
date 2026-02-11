@@ -21,6 +21,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from .config import EDITORS, AGENTS, ASSISTS, Config
 from .run import User, atomic_write_text, mkdir_private
 
 # pylint: disable=broad-exception-caught
@@ -51,7 +52,6 @@ VSCODE_MANAGED_WORKSPACE_FILE_POSIX: PurePosixPath = (
 )
 VSCODE_REMOTE_EXTENSION = "ms-vscode-remote.remote-containers"
 VSCODE_CLANGD_EXTENSION = "llvm-vs-code-extensions.vscode-clangd"
-VSCODE_CLAUDE_EXTENSION = "anthropic.claude-code"
 VSCODE_PYTHON_EXTENSION = "ms-python.python"
 VSCODE_RUFF_EXTENSION = "charliermarsh.ruff"
 VSCODE_TY_EXTENSION = "astral-sh.ty"
@@ -61,10 +61,9 @@ VSCODE_EXECUTABLE_CANDIDATES: tuple[str, ...] = (
     "code-insiders",
     "com.visualstudio.code-insiders",
 )
-VSCODE_RECOMMENDED_EXTENSIONS: list[str] = [
+VSCODE_BASE_RECOMMENDED_EXTENSIONS: list[str] = [
     VSCODE_REMOTE_EXTENSION,
     VSCODE_CLANGD_EXTENSION,
-    VSCODE_CLAUDE_EXTENSION,
     VSCODE_PYTHON_EXTENSION,
     VSCODE_RUFF_EXTENSION,
     VSCODE_TY_EXTENSION,
@@ -72,12 +71,6 @@ VSCODE_RECOMMENDED_EXTENSIONS: list[str] = [
 VSCODE_MANAGED_SETTINGS: dict[str, Any] = {
     "C_Cpp.intelliSenseEngine": "disabled",
     "clangd.path": "clangd",
-    "clangd.arguments": [
-        "--background-index",
-        "--clang-tidy",
-        "--completion-style=detailed",
-        "--header-insertion=iwyu",
-    ],
     "[python]": {
         "editor.defaultFormatter": VSCODE_RUFF_EXTENSION,
         "editor.formatOnSave": True,
@@ -126,11 +119,6 @@ VSCODE_MANAGED_TASKS: dict[str, Any] = {
         }
     ],
 }
-
-EDITORS: dict[str, tuple[str, ...]] = {
-    "vscode": ("code",),
-}
-
 
 class LaunchError(OSError):
     """A structured error used to keep RPC failure categories stable."""
@@ -442,7 +430,7 @@ def _ensure_running_container(podman_bin: str, container_id: str, *, deadline: f
         )
 
 
-def _require_container_tool(
+def _required_container_tool(
     podman_bin: str,
     container_id: str,
     tool: str,
@@ -472,7 +460,7 @@ def _require_container_tool(
     return stdout
 
 
-def _optional_container_tool_warning(
+def _optional_container_tool(
     podman_bin: str,
     container_id: str,
     tool: str,
@@ -483,7 +471,7 @@ def _optional_container_tool_warning(
     warning_hint: str,
 ) -> str | None:
     try:
-        _require_container_tool(
+        _required_container_tool(
             podman_bin,
             container_id,
             tool,
@@ -525,11 +513,37 @@ def _ensure_vscode_extension(code_bin: str, *, deadline: float) -> None:
         )
 
 
-def _render_managed_workspace(container_workspace: str) -> str:
+def _recommended_extensions(env_root: Path) -> list[str]:
+    try:
+        with Config(env_root) as config:
+            agent = config["tool", "bertrand", "agent"]  # validated on enter
+            assist = config["tool", "bertrand", "assist"]  # validated on enter
+            exts: list[str] = []
+            for ext in (*VSCODE_BASE_RECOMMENDED_EXTENSIONS, *AGENTS[agent], *ASSISTS[assist]):
+                if ext not in exts:
+                    exts.append(ext)
+            return exts
+    except KeyError as err:
+        raise LaunchError(
+            "config_write_failure",
+            f"unsupported configuration option in pyproject.toml: {err}"
+        ) from err
+    except OSError as err:
+        raise LaunchError("config_write_failure", str(err)) from err
+
+
+def _render_managed_workspace(
+    container_workspace: str,
+    *,
+    clangd_arguments: list[str],
+    recommended_extensions: list[str],
+) -> str:
+    settings = dict(VSCODE_MANAGED_SETTINGS)
+    settings["clangd.arguments"] = clangd_arguments
     payload = {
         "folders": [{"path": container_workspace}],
-        "settings": VSCODE_MANAGED_SETTINGS,
-        "extensions": {"recommendations": VSCODE_RECOMMENDED_EXTENSIONS},
+        "settings": settings,
+        "extensions": {"recommendations": recommended_extensions},
         "tasks": VSCODE_MANAGED_TASKS,
     }
     return json.dumps(payload, indent=2, sort_keys=True) + "\n"
@@ -538,6 +552,9 @@ def _render_managed_workspace(container_workspace: str) -> str:
 def _ensure_managed_workspace_file(
     env_root: Path,
     container_workspace: str,
+    *,
+    clangd_arguments: list[str],
+    recommended_extensions: list[str],
 ) -> tuple[Path, str]:
     # reconcile host and container paths to managed workspace file
     host_workspace_file = env_root / VSCODE_MANAGED_WORKSPACE_FILE
@@ -546,7 +563,13 @@ def _ensure_managed_workspace_file(
     )
 
     # write workspace file to host filesystem
-    text = _render_managed_workspace(container_workspace)
+    text = _render_managed_workspace(
+        container_workspace,
+        clangd_arguments=clangd_arguments,
+        recommended_extensions=recommended_extensions,
+    )
+
+    # don't write if content is unchanged
     if host_workspace_file.exists():
         if not host_workspace_file.is_file():
             raise LaunchError(
@@ -563,6 +586,7 @@ def _ensure_managed_workspace_file(
         if current == text:
             return host_workspace_file, container_workspace_file
 
+    # write new content atomically
     try:
         atomic_write_text(host_workspace_file, text, encoding="utf-8")
     except OSError as err:
@@ -622,54 +646,41 @@ def _launch_editor(
     # ensure container is running and tools are available inside it
     _ensure_running_container(podman_bin, container_id, deadline=deadline)
     warnings: list[str] = []
-    warning = _optional_container_tool_warning(
-        podman_bin,
-        container_id,
-        "clangd",
-        deadline=deadline,
-        timeout_category="clangd_probe_timeout",
-        missing_category="clangd_missing",
-        warning_hint="C/C++ language features may be degraded in this editor session.",
-    )
-    if warning is not None:
-        warnings.append(warning)
-    warning = _optional_container_tool_warning(
-        podman_bin,
-        container_id,
-        "ruff",
-        deadline=deadline,
-        timeout_category="ruff_probe_timeout",
-        missing_category="ruff_missing",
-        warning_hint="Python linting/formatting features may be degraded in this editor session.",
-    )
-    if warning is not None:
-        warnings.append(warning)
-    warning = _optional_container_tool_warning(
-        podman_bin,
-        container_id,
-        "ty",
-        deadline=deadline,
-        timeout_category="ty_probe_timeout",
-        missing_category="ty_missing",
-        warning_hint="Python type-checking/language-service features may be degraded in this editor session.",
-    )
-    if warning is not None:
-        warnings.append(warning)
-    warning = _optional_container_tool_warning(
-        podman_bin,
-        container_id,
-        "pytest",
-        deadline=deadline,
-        timeout_category="pytest_probe_timeout",
-        missing_category="pytest_missing",
-        warning_hint="Python test discovery/execution features may be degraded in this editor session.",
-    )
-    if warning is not None:
-        warnings.append(warning)
+    for tool, warning_hint in (
+        ("clangd", "C/C++ language features may be degraded in this editor session."),
+        ("ruff", "Python linting/formatting features may be degraded in this editor session."),
+        ("ty", (
+            "Python type-checking/language-service features may be degraded in "
+            "this editor session."
+        )),
+        ("pytest", (
+            "Python test discovery/execution features may be degraded in this "
+            "editor session."
+        )),
+    ):
+        warning = _optional_container_tool(
+            podman_bin,
+            container_id,
+            tool,
+            deadline=deadline,
+            timeout_category=f"{tool}_probe_timeout",
+            missing_category=f"{tool}_missing",
+            warning_hint=warning_hint,
+        )
+        if warning is not None:
+            warnings.append(warning)
 
     # write bertrand-managed settings to a dedicated workspace file and leave any
     # user-owned .vscode/settings.json untouched.
-    _, container_workspace_file = _ensure_managed_workspace_file(env_root, workspace)
+    with Config(env_root) as config:
+        clangd_arguments = config["tool", "clangd", "arguments"]  # validated on enter
+    recommended_extensions = _recommended_extensions(env_root)
+    _, container_workspace_file = _ensure_managed_workspace_file(
+        env_root,
+        workspace,
+        clangd_arguments=clangd_arguments,
+        recommended_extensions=recommended_extensions,
+    )
 
     # open editor in detached (non-blocking) process
     workspace_uri = _vscode_workspace_uri(container_id, container_workspace_file)
