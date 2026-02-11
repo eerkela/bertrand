@@ -6,6 +6,7 @@ import argparse
 import json as json_parser
 import os
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 from typing import Callable
@@ -1214,6 +1215,21 @@ class Internal:
                     "extension, but other editors may be added in the future.",
             )
 
+        def build(self) -> None:
+            """Add the 'build' command to the parser."""
+            command = self.commands.add_parser(
+                "build",
+                help=
+                    "Build and install the current workspace into this container "
+                    "using Bertrand's default uv install command.  Any extra "
+                    "arguments are forwarded directly to `uv pip install`.",
+            )
+            command.add_argument(
+                "args",
+                nargs=argparse.REMAINDER,
+                help="Additional arguments to pass through to `uv pip install`.",
+            )
+
         def __call__(self) -> argparse.Namespace:
             """Run the command-line parser.
 
@@ -1224,7 +1240,14 @@ class Internal:
             """
             self.version()
             self.code()
-            return self.root.parse_args()
+            self.build()
+            args, extras = self.root.parse_known_args()
+            if args.command == "build":
+                args.args = [*getattr(args, "args", []), *extras]
+                return args
+            if extras:
+                self.root.error(f"unrecognized arguments: {' '.join(extras)}")
+            return args
 
     @staticmethod
     def version(args: argparse.Namespace) -> None:
@@ -1307,17 +1330,47 @@ class Internal:
             raise OSError(f"unsupported editor: {editor_name}")
 
         # send request to RPC server
-        request_open_editor(
+        warnings = request_open_editor(
             editor=editor_name,
             env_root=env_root,
             container_id=container_id,
             container_workspace=container_workspace,
             socket_path=rpc_socket,
         )
+        for warning in warnings:
+            print(f"bertrand: warning: {warning}", file=sys.stderr)
+
+    @staticmethod
+    def build(args: argparse.Namespace) -> None:
+        """Execute the `bertrand build` CLI command from within a containerized
+        environment.
+
+        Parameters
+        ----------
+        args : argparse.Namespace
+            The parsed command-line arguments.
+        """
+        passthrough = list(getattr(args, "args", []))
+        if passthrough and passthrough[0] == "--":
+            passthrough = passthrough[1:]
+
+        cmd = [
+            "uv",
+            "pip",
+            "install",
+            "--python",
+            "/opt/python/bin/python",
+            ".",
+            *passthrough,
+        ]
+        result = subprocess.run(cmd, check=False)
+        if result.returncode != 0:
+            raise SystemExit(result.returncode)
 
     commands: dict[str, Callable[[argparse.Namespace], None]] = {
         "version": version,
         "code": code,
+        "build": build,
     }
 
     def __call__(self) -> None:

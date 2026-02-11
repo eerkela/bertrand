@@ -19,8 +19,6 @@ RUN apt-get update \
         ca-certificates \
         curl \
         python3 \
-        xz-utils \
-        unzip \
         cmake \
         pkg-config \
         zlib1g-dev \
@@ -30,8 +28,6 @@ RUN apt-get update \
         libncurses5-dev \
         libtinfo-dev \
         clang lld libc++-dev libc++abi-dev \
-        make \
-        git \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /tmp/build
@@ -190,6 +186,7 @@ RUN apt-get update \
         # toolchain helpers
         make \
         perl \
+        xz-utils \
         # core libs for stdlib modules
         libssl-dev \
         libffi-dev \
@@ -248,10 +245,35 @@ RUN set -eux; \
     /opt/python/bin/pip --version
 
 
-#############################################
-####    Stage 4: C++ Package Managers    ####
-#############################################
-FROM python AS pkg
+#######################################
+####    Stage 4: Python Tooling    ####
+#######################################
+FROM python AS python_tools
+ARG UV_VERSION=0.5.31
+ARG RUFF_VERSION=0.8.4
+ARG TY_VERSION=0.0.1a1
+ARG PYTEST_VERSION=8.3.4
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install pinned Python tooling into /opt/python using uv as the primary installer.
+RUN --mount=type=cache,target=/root/.cache/uv,sharing=locked \
+    set -eux; \
+    /opt/python/bin/pip install --no-cache-dir "uv==${UV_VERSION}"; \
+    /opt/python/bin/uv --version; \
+    /opt/python/bin/uv pip install --python /opt/python/bin/python --no-cache-dir \
+        "ruff==${RUFF_VERSION}" \
+        "ty==${TY_VERSION}" \
+        "pytest==${PYTEST_VERSION}"; \
+    /opt/python/bin/ruff --version; \
+    /opt/python/bin/ty --version; \
+    /opt/python/bin/pytest --version; \
+    /opt/python/bin/python -m pip check
+
+
+####################################
+####    Stage 5: C++ Tooling    ####
+####################################
+FROM python_tools AS cpp_tools
 ARG CONAN_VERSION=2.24.0
 ARG CXX_STD=23
 ENV DEBIAN_FRONTEND=noninteractive
@@ -263,10 +285,13 @@ ENV PATH="/opt/llvm/bin:/opt/cmake/bin:/opt/python/bin:${PATH}"
 ENV CONAN_HOME=/opt/conan
 ENV CONAN_USER_HOME=/opt/conan
 
-# Install Conan into /opt/python
-RUN set -eux; \
-    /opt/python/bin/pip install --no-cache-dir --upgrade pip setuptools wheel; \
-    /opt/python/bin/pip install --no-cache-dir "conan==${CONAN_VERSION}"
+# Install Conan into /opt/python using uv.
+RUN --mount=type=cache,target=/root/.cache/uv,sharing=locked \
+    set -eux; \
+    /opt/python/bin/uv pip install --python /opt/python/bin/python --no-cache-dir \
+        "conan==${CONAN_VERSION}"; \
+    /opt/python/bin/conan --version; \
+    /opt/python/bin/python -m pip check
 
 # Create a sane default profile for clang/libc++ and Ninja (Conan 2.x)
 RUN set -eux; \
@@ -330,12 +355,15 @@ def set_kv(lines, section, key, value):
 
 txt = ensure_section(txt, "settings")
 txt = ensure_section(txt, "conf")
+txt = ensure_section(txt, "buildenv")
 txt = set_kv(txt, "settings", "compiler.libcxx", "libc++")
 txt = set_kv(txt, "settings", "build_type", "Release")
 txt = set_kv(txt, "settings", "compiler.cppstd", cxx_std)
 txt = set_kv(txt, "conf", "tools.cmake.cmaketoolchain:generator", "Ninja")
 txt = set_kv(txt, "conf", "tools.build:compiler_executables",
              '{"c":"/opt/llvm/bin/clang","cpp":"/opt/llvm/bin/clang++"}')
+txt = set_kv(txt, "buildenv", "CC", "ccache /opt/llvm/bin/clang")
+txt = set_kv(txt, "buildenv", "CXX", "ccache /opt/llvm/bin/clang++")
 
 p.write_text("\n".join(txt) + "\n")
 print(p.read_text())
@@ -343,35 +371,10 @@ PY
 
 
 #################################
-####    Stage 5: AI Tools    ####
-#################################
-FROM pkg AS ai
-ARG CLAUDE_CODE_VERSION=stable
-ENV DEBIAN_FRONTEND=noninteractive
-
-# Ensure toolchain is discoverable by configure probes (e.g., llvm-ar)
-ENV PATH="/opt/llvm/bin:/opt/cmake/bin:${PATH}"
-
-# Disable background auto-updates in immutable container images
-ENV DISABLE_AUTOUPDATER=1
-
-# Install Claude Code (native installer) and relocate to /opt/claude for global use
-RUN set -eux; \
-    curl -fsSL https://claude.ai/install.sh | bash -s "${CLAUDE_CODE_VERSION}"; \
-    \
-    install -d /opt/claude/bin /opt/claude/share; \
-    install -m 0755 /root/.local/bin/claude /opt/claude/bin/claude; \
-    if [ -d /root/.local/share/claude ]; then cp -a /root/.local/share/claude /opt/claude/share/; fi; \
-    \
-    /opt/claude/bin/claude --version || true
-
-
-#################################
 ####    Stage 6: Bertrand    ####
 #################################
-FROM ai AS bertrand_install
+FROM cpp_tools AS bertrand_install
 USER root
-ENV PATH="/opt/llvm/bin:/opt/cmake/bin:/opt/python/bin:${PATH}"
 
 # Make user-installs impossible/ignored during image build
 ENV HOME=/root \
@@ -380,13 +383,15 @@ ENV HOME=/root \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
 WORKDIR /src
-COPY pyproject.toml /src/
-COPY bertrand /src/bertrand
+COPY --link pyproject.toml /src/
+COPY --link bertrand /src/bertrand
 
-RUN set -eux; \
-    /opt/python/bin/python -m pip install --no-cache-dir --upgrade pip setuptools wheel; \
-    # Hard force: no user scheme, install into /opt/python
-    /opt/python/bin/python -m pip install --no-cache-dir --no-user /src; \
+RUN --mount=type=cache,target=/root/.cache/uv,sharing=locked \
+    set -eux; \
+    # install into /opt/python
+    /opt/python/bin/uv pip install --python /opt/python/bin/python --no-cache-dir /src; \
+    /opt/python/bin/python -m pip check; \
+    \
     # Verify: console script must exist in the image
     test -x /opt/python/bin/bertrand; \
     /opt/python/bin/bertrand --help >/dev/null
@@ -398,10 +403,10 @@ RUN set -eux; \
 FROM ${BASE_IMAGE} AS bertrand
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Configure libnss-wrapper to allow non-root users for containers
+# Bertrand runs rootless containers on the host; container root does not imply
+# host root escalation
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-        libnss-wrapper \
         ca-certificates \
         libedit2 \
         libtinfo6 \
@@ -422,22 +427,24 @@ RUN apt-get update \
         libexpat1 \
         ripgrep \
         git \
-    && ldconfig \
+        ccache \
     && rm -rf /var/lib/apt/lists/*
 
 # Bring in final toolchain
-COPY --from=llvm /usr/bin/ninja /usr/bin/ninja
-COPY --from=llvm /opt/llvm /opt/llvm
-COPY --from=cmake /opt/cmake /opt/cmake
-COPY --from=bertrand_install /opt/python /opt/python
-COPY --from=pkg /opt/conan /opt/conan
-COPY --from=ai  /opt/claude /opt/claude
+COPY --link --from=llvm /usr/bin/ninja /usr/bin/ninja
+COPY --link --from=llvm /opt/llvm /opt/llvm
+COPY --link --from=cmake /opt/cmake /opt/cmake
+COPY --link --from=bertrand_install /opt/python /opt/python
+COPY --link --from=cpp_tools /opt/conan /opt/conan
 ENV CONAN_HOME=/opt/conan
 ENV CONAN_USER_HOME=/opt/conan
-ENV DISABLE_AUTOUPDATER=1
-ENV PATH="/opt/llvm/bin:/opt/cmake/bin:/opt/python/bin:/opt/claude/bin:${PATH}"
+ENV UV_CACHE_DIR=/tmp/.cache/uv
+ENV BERTRAND_CACHE=/tmp/.cache/bertrand
+ENV CCACHE_DIR=/tmp/.cache/ccache
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1
+ENV PATH="/opt/llvm/bin:/opt/cmake/bin:/opt/python/bin:${PATH}"
 
-# Symlink tools into container filesystem and configure dynamic linker
+# Configure dynamic linker and add compatibility aliases for generic tool names
 RUN set -eux; \
     # Dynamic linker search paths (LLVM + Python)
     { \
@@ -450,127 +457,28 @@ RUN set -eux; \
     } > /etc/ld.so.conf.d/bertrand-python.conf; \
     ldconfig; \
     \
-    # LLVM toolchain entrypoints
-    for t in clang clang++ clang-cpp clang-cl lld ld.lld llvm-ar llvm-nm llvm-ranlib llvm-config; do \
-        [ -x "/opt/llvm/bin/$t" ] && ln -sf "/opt/llvm/bin/$t" "/usr/bin/$t"; \
-    done; \
+    # Generic compiler/linker aliases for ecosystem compatibility
     ln -sf /opt/llvm/bin/clang   /usr/bin/cc; \
     ln -sf /opt/llvm/bin/clang++ /usr/bin/c++; \
     ln -sf /opt/llvm/bin/ld.lld  /usr/bin/ld; \
     ln -sf /opt/llvm/bin/llvm-ar /usr/bin/ar; \
     ln -sf /opt/llvm/bin/llvm-nm /usr/bin/nm; \
-    ln -sf /opt/llvm/bin/llvm-ranlib /usr/bin/ranlib; \
-    \
-    # CMake entrypoints
-    ln -sf /opt/cmake/bin/cmake /usr/bin/cmake; \
-    ln -sf /opt/cmake/bin/ctest /usr/bin/ctest; \
-    ln -sf /opt/cmake/bin/cpack /usr/bin/cpack; \
-    \
-    # Python entrypoints
-    ln -sf /opt/python/bin/python3 /usr/bin/python3; \
-    ln -sf /opt/python/bin/python  /usr/bin/python; \
-    ln -sf /opt/python/bin/pip3    /usr/bin/pip3; \
-    ln -sf /opt/python/bin/pip     /usr/bin/pip; \
-    \
-    # Conan entrypoint
-    ln -sf /opt/python/bin/conan /usr/bin/conan; \
-    \
-    # Claude Code entrypoint
-    ln -sf /opt/claude/bin/claude /usr/bin/claude; \
-    \
-    # Bertrand entrypoint
-    ln -sf /opt/python/bin/bertrand /usr/bin/bertrand
-
-# Configure text editor integrations
-RUN set -eux; \
-    install -d /opt/bertrand/templates/devcontainer/.devcontainer; \
-    install -d /opt/bertrand/templates/devcontainer/.vscode; \
-    \
-    cat >/opt/bertrand/templates/devcontainer/.devcontainer/devcontainer.json <<'JSON'
-{
-  "name": "Bertrand",
-  "image": "${BASE_IMAGE}",
-  "workspaceFolder": "/workspaces/${localWorkspaceFolderBasename}",
-  "mounts": [
-    "source=${localWorkspaceFolder},target=/workspaces/${localWorkspaceFolderBasename},type=bind,consistency=cached"
-  ],
-  "remoteUser": "root",
-  "containerEnv": {
-    "PATH": "/opt/llvm/bin:/opt/cmake/bin:/opt/python/bin:/opt/claude/bin:${containerEnv:PATH}",
-    "CONAN_HOME": "/opt/conan",
-    "CONAN_USER_HOME": "/opt/conan",
-    "DISABLE_AUTOUPDATER": "1"
-  },
-  "customizations": {
-    "vscode": {
-      "extensions": [
-        "ms-vscode-remote.remote-containers",
-        "llvm-vs-code-extensions.vscode-clangd",
-        "ms-vscode.cmake-tools",
-        "twxs.cmake",
-        "ms-python.python"
-      ],
-      "settings": {
-        "clangd.path": "/opt/llvm/bin/clangd",
-        "clangd.arguments": [
-          "--background-index",
-          "--clang-tidy",
-          "--completion-style=detailed",
-          "--header-insertion=iwyu"
-        ],
-        "cmake.generator": "Ninja",
-        "cmake.configureOnOpen": true,
-        "terminal.integrated.defaultProfile.linux": "bash"
-      }
-    }
-  },
-  "postCreateCommand": "bash .devcontainer/postCreate.sh"
-}
-JSON \
-    cat >/opt/bertrand/templates/devcontainer/.devcontainer/postCreate.sh <<'SH'
-#!/usr/bin/env bash
-set -euo pipefail
-if [[ -f "CMakeLists.txt" ]]; then
-  cmake -S . -B build -G Ninja -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
-  ln -sf build/compile_commands.json compile_commands.json
-fi
-clang --version | head -n 1 || true
-clangd --version || true
-cmake --version | head -n 1 || true
-python --version || true
-claude --version || true
-SH
-    \
-    chmod +x /opt/bertrand/templates/devcontainer/.devcontainer/postCreate.sh; \
-    \
-    cat >/opt/bertrand/templates/devcontainer/.vscode/tasks.json <<'JSON'
-{
-  "version": "2.0.0",
-  "tasks": [
-    {
-        "label": "Claude: Open (interactive)",
-        "type": "shell",
-        "command": "claude",
-        "problemMatcher": []
-    }
-  ]
-}
-JSON \
-    cat >/opt/bertrand/templates/devcontainer/.vscode/settings.json <<'JSON'
-{
-  "C_Cpp.intelliSenseEngine": "disabled",
-  "clangd.path": "/opt/llvm/bin/clangd",
-  "cmake.generator": "Ninja"
-}
-JSON
+    ln -sf /opt/llvm/bin/llvm-ranlib /usr/bin/ranlib
 
 # Sanity check
 RUN clang --version \
     && cc --version \
     && c++ --version \
+    && ccache --version \
     && ninja --version \
     && cmake --version \
     && python --version \
     && pip --version \
     && conan --version \
-    && claude --version
+    && uv --version \
+    && ruff --version \
+    && ty --version \
+    && pytest --version
+
+# sleep infinity allows `bertrand enter` to keep the container alive indefinitely
+ENTRYPOINT ["sleep", "infinity"]

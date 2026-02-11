@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from .run import User, atomic_write_text, mkdir_private
 
@@ -51,6 +51,10 @@ VSCODE_MANAGED_WORKSPACE_FILE_POSIX: PurePosixPath = (
 )
 VSCODE_REMOTE_EXTENSION = "ms-vscode-remote.remote-containers"
 VSCODE_CLANGD_EXTENSION = "llvm-vs-code-extensions.vscode-clangd"
+VSCODE_CLAUDE_EXTENSION = "anthropic.claude-code"
+VSCODE_PYTHON_EXTENSION = "ms-python.python"
+VSCODE_RUFF_EXTENSION = "charliermarsh.ruff"
+VSCODE_TY_EXTENSION = "astral-sh.ty"
 VSCODE_EXECUTABLE_CANDIDATES: tuple[str, ...] = (
     "code",
     "com.visualstudio.code",
@@ -60,6 +64,10 @@ VSCODE_EXECUTABLE_CANDIDATES: tuple[str, ...] = (
 VSCODE_RECOMMENDED_EXTENSIONS: list[str] = [
     VSCODE_REMOTE_EXTENSION,
     VSCODE_CLANGD_EXTENSION,
+    VSCODE_CLAUDE_EXTENSION,
+    VSCODE_PYTHON_EXTENSION,
+    VSCODE_RUFF_EXTENSION,
+    VSCODE_TY_EXTENSION,
 ]
 VSCODE_MANAGED_SETTINGS: dict[str, Any] = {
     "C_Cpp.intelliSenseEngine": "disabled",
@@ -69,6 +77,53 @@ VSCODE_MANAGED_SETTINGS: dict[str, Any] = {
         "--clang-tidy",
         "--completion-style=detailed",
         "--header-insertion=iwyu",
+    ],
+    "[python]": {
+        "editor.defaultFormatter": VSCODE_RUFF_EXTENSION,
+        "editor.formatOnSave": True,
+        "editor.codeActionsOnSave": {
+            "source.fixAll.ruff": "explicit",
+            "source.organizeImports.ruff": "explicit",
+        },
+    },
+    "ty.serverMode": "languageServer",
+    "ty.disableLanguageServices": True,
+    "python.testing.pytestEnabled": True,
+    "python.testing.unittestEnabled": False,
+    "python.testing.pytestPath": "pytest",
+    "python.testing.pytestArgs": ["."],
+}
+VSCODE_MANAGED_TASKS: dict[str, Any] = {
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Bertrand: pytest",
+            "type": "shell",
+            "command": "pytest -q",
+            "options": {"cwd": "${workspaceFolder}"},
+            "problemMatcher": [],
+        },
+        {
+            "label": "Bertrand: ruff check",
+            "type": "shell",
+            "command": "ruff check .",
+            "options": {"cwd": "${workspaceFolder}"},
+            "problemMatcher": [],
+        },
+        {
+            "label": "Bertrand: ruff format",
+            "type": "shell",
+            "command": "ruff format .",
+            "options": {"cwd": "${workspaceFolder}"},
+            "problemMatcher": [],
+        },
+        {
+            "label": "Bertrand: ty check",
+            "type": "shell",
+            "command": "ty check .",
+            "options": {"cwd": "${workspaceFolder}"},
+            "problemMatcher": [],
+        }
     ],
 }
 
@@ -201,7 +256,7 @@ def request_open_editor(
     container_workspace: str = WORKSPACE_MOUNT,
     socket_path: Path = CODE_SOCKET,
     timeout: float = CODE_RPC_CLIENT_TIMEOUT,
-) -> None:
+) -> list[str]:
     """Request that the host-side RPC server launch an editor for `env_root`.
 
     Parameters
@@ -227,6 +282,11 @@ def request_open_editor(
     timeout : float, optional
         The maximum number of seconds to wait for a response from the server before
         raising a timeout error.  Defaults to `CODE_RPC_CLIENT_TIMEOUT`.
+
+    Returns
+    -------
+    list[str]
+        Non-fatal warnings returned by the host-side launch flow.
 
     Raises
     ------
@@ -255,6 +315,7 @@ def request_open_editor(
     )
     if not response.ok:
         raise OSError(f"RPC request failed: {response.error}")
+    return response.warnings
 
 
 def _resolve_executable(
@@ -381,15 +442,23 @@ def _ensure_running_container(podman_bin: str, container_id: str, *, deadline: f
         )
 
 
-def _resolve_container_clangd(podman_bin: str, container_id: str, *, deadline: float) -> str:
+def _require_container_tool(
+    podman_bin: str,
+    container_id: str,
+    tool: str,
+    *,
+    deadline: float,
+    timeout_category: str,
+    missing_category: str,
+) -> str:
     result = _run_probe(
-        [podman_bin, "exec", container_id, "sh", "-lc", "command -v clangd"],
+        [podman_bin, "exec", container_id, "sh", "-lc", f"command -v {shlex.quote(tool)}"],
         timeout=_remaining_probe_timeout(
             deadline,
-            timeout_category="clangd_probe_timeout",
-            step="clangd lookup",
+            timeout_category=timeout_category,
+            step=f"{tool} lookup",
         ),
-        timeout_category="clangd_probe_timeout",
+        timeout_category=timeout_category,
     )
     stdout = result.stdout.strip()
     stderr = result.stderr.strip()
@@ -397,10 +466,34 @@ def _resolve_container_clangd(podman_bin: str, container_id: str, *, deadline: f
         detail = stderr or stdout
         suffix = f": {detail}" if detail else ""
         raise LaunchError(
-            "clangd_missing",
-            f"clangd is not available in container '{container_id}'{suffix}",
+            missing_category,
+            f"{tool} is not available in container '{container_id}'{suffix}",
         )
     return stdout
+
+
+def _optional_container_tool_warning(
+    podman_bin: str,
+    container_id: str,
+    tool: str,
+    *,
+    deadline: float,
+    timeout_category: str,
+    missing_category: str,
+    warning_hint: str,
+) -> str | None:
+    try:
+        _require_container_tool(
+            podman_bin,
+            container_id,
+            tool,
+            deadline=deadline,
+            timeout_category=timeout_category,
+            missing_category=missing_category,
+        )
+        return None
+    except LaunchError as err:
+        return f"{err}; {warning_hint}"
 
 
 def _ensure_vscode_extension(code_bin: str, *, deadline: float) -> None:
@@ -437,6 +530,7 @@ def _render_managed_workspace(container_workspace: str) -> str:
         "folders": [{"path": container_workspace}],
         "settings": VSCODE_MANAGED_SETTINGS,
         "extensions": {"recommendations": VSCODE_RECOMMENDED_EXTENSIONS},
+        "tasks": VSCODE_MANAGED_TASKS,
     }
     return json.dumps(payload, indent=2, sort_keys=True) + "\n"
 
@@ -495,7 +589,7 @@ def _launch_editor(
     env_root: Path,
     container_id: str,
     container_workspace: str,
-) -> None:
+) -> list[str]:
     command = EDITORS.get(editor)
     if command is None or editor != "vscode":
         raise LaunchError("prereq_missing", f"unsupported editor: '{editor}'")
@@ -527,7 +621,51 @@ def _launch_editor(
 
     # ensure container is running and tools are available inside it
     _ensure_running_container(podman_bin, container_id, deadline=deadline)
-    _resolve_container_clangd(podman_bin, container_id, deadline=deadline)
+    warnings: list[str] = []
+    warning = _optional_container_tool_warning(
+        podman_bin,
+        container_id,
+        "clangd",
+        deadline=deadline,
+        timeout_category="clangd_probe_timeout",
+        missing_category="clangd_missing",
+        warning_hint="C/C++ language features may be degraded in this editor session.",
+    )
+    if warning is not None:
+        warnings.append(warning)
+    warning = _optional_container_tool_warning(
+        podman_bin,
+        container_id,
+        "ruff",
+        deadline=deadline,
+        timeout_category="ruff_probe_timeout",
+        missing_category="ruff_missing",
+        warning_hint="Python linting/formatting features may be degraded in this editor session.",
+    )
+    if warning is not None:
+        warnings.append(warning)
+    warning = _optional_container_tool_warning(
+        podman_bin,
+        container_id,
+        "ty",
+        deadline=deadline,
+        timeout_category="ty_probe_timeout",
+        missing_category="ty_missing",
+        warning_hint="Python type-checking/language-service features may be degraded in this editor session.",
+    )
+    if warning is not None:
+        warnings.append(warning)
+    warning = _optional_container_tool_warning(
+        podman_bin,
+        container_id,
+        "pytest",
+        deadline=deadline,
+        timeout_category="pytest_probe_timeout",
+        missing_category="pytest_missing",
+        warning_hint="Python test discovery/execution features may be degraded in this editor session.",
+    )
+    if warning is not None:
+        warnings.append(warning)
 
     # write bertrand-managed settings to a dedicated workspace file and leave any
     # user-owned .vscode/settings.json untouched.
@@ -548,6 +686,7 @@ def _launch_editor(
             "vscode_attach_failed",
             f"failed to launch VS Code container attach session: {err}",
         ) from err
+    return warnings
 
 
 @dataclass
@@ -574,6 +713,7 @@ class CodeServer:
         model_config = ConfigDict(extra="forbid")
         ok: bool
         error: str
+        warnings: list[str] = Field(default_factory=list)
 
     socket_path: Path = field(default=CODE_SOCKET)
     _sock: socket.socket | None = field(default=None, init=False, repr=False)
@@ -658,13 +798,13 @@ class CodeServer:
 
         # launch editor
         try:
-            _launch_editor(
+            warnings = _launch_editor(
                 request.editor,
                 Path(request.env_root),
                 request.container_id,
                 request.container_workspace,
             )
-            return CodeServer.Response(ok=True, error="")
+            return CodeServer.Response(ok=True, error="", warnings=warnings)
         except LaunchError as err:
             return CodeServer.Response(ok=False, error=str(err))
         except Exception as err:

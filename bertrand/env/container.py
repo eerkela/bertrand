@@ -1393,12 +1393,14 @@ class Image(BaseModel):
         )
         cid_file = _cid_file(env_root, container_name)
         cache_prefix = f"bertrand-{env_uuid[:13]}"
-        pip_volume = f"{cache_prefix}-pip"
+        uv_volume = f"{cache_prefix}-uv"
         bertrand_volume = f"{cache_prefix}-bertrand"
         ccache_volume = f"{cache_prefix}-ccache"
-        _ensure_cache_volume(pip_volume, env_uuid, "pip")
+        conan_volume = f"{cache_prefix}-conan"
+        _ensure_cache_volume(uv_volume, env_uuid, "uv")
         _ensure_cache_volume(bertrand_volume, env_uuid, "bertrand")
         _ensure_cache_volume(ccache_volume, env_uuid, "ccache")
+        _ensure_cache_volume(conan_volume, env_uuid, "conan")
         mkdir_private(CODE_SOCKET_DIR)
         try:
             cid_file.parent.mkdir(parents=True, exist_ok=True)
@@ -1426,12 +1428,10 @@ class Image(BaseModel):
                 ),
 
                 # persistent caches for incremental builds
-                "--mount", f"type=volume,src={pip_volume},dst={TMP}/.cache/pip",
+                "--mount", f"type=volume,src={uv_volume},dst={TMP}/.cache/uv",
                 "--mount", f"type=volume,src={bertrand_volume},dst={TMP}/.cache/bertrand",
                 "--mount", f"type=volume,src={ccache_volume},dst={TMP}/.cache/ccache",
-                "-e", f"PIP_CACHE_DIR={TMP}/.cache/pip",
-                "-e", f"BERTRAND_CACHE={TMP}/.cache/bertrand",
-                "-e", f"CCACHE_DIR={TMP}/.cache/ccache",
+                "--mount", f"type=volume,src={conan_volume},dst=/opt/conan",
 
                 # environment variables for Bertrand runtime
                 "-e", "BERTRAND=1",
@@ -1493,33 +1493,40 @@ FROM bertrand:${{BERTRAND}}.${{DEBUG}}.${{DEV}}.${{CPUS}}.{getpagesize() // 1024
 WORKDIR {WORKSPACE_MOUNT}
 
 # set up incremental builds
-ENV PIP_CACHE_DIR={TMP}/.cache/pip
+ENV UV_CACHE_DIR={TMP}/.cache/uv
 ENV BERTRAND_CACHE={TMP}/.cache/bertrand
 ENV CCACHE_DIR={TMP}/.cache/ccache
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1
 COPY . {WORKSPACE_MOUNT}
 
 # you can extend this file in order to create a reproducible image that others can pull
 # from in their own Dockerfiles.  For example:
 
-RUN --mount=type=cache,target={TMP}/.cache/pip,sharing=locked \
+RUN --mount=type=cache,target={TMP}/.cache/uv,sharing=locked \
     --mount=type=cache,target={TMP}/.cache/bertrand,sharing=locked \
     --mount=type=cache,target={TMP}/.cache/ccache,sharing=locked \
-    pip install .
+    --mount=type=cache,target=/opt/conan,sharing=locked \
+    uv pip install --python /opt/python/bin/python .
 
-# A `pip install .` command of that form will incrementally compile the contents of the
-# local environment directory (WORKDIR) and install them into the base image as Python
-# packages, C++ modules, and/or executable binaries on the container's PATH.  If you
-# then upload this image to an external repository, downstream users will be able to
-# use `FROM <your-image>` in their own Containerfiles in order to inherit Bertrand's
-# toolchain along with your built artifacts and dependencies without needing to
-# recompile them from scratch.  This can be useful for large projects where build time
-# is significant, or which have external dependencies or build configurations that are
-# otherwise difficult to install.  Small projects without significant configuration
-# needs are encouraged to use the bundled package managers instead, and leave this file
-# alone.
+# The base image intentionally stays lean.  Install optional tools in downstream
+# Containerfiles as needed, for example:
+# RUN uv pip install --python /opt/python/bin/python <tool1> <tool2>
+# RUN apt-get update && apt-get install -y --no-install-recommends <pkg1> <pkg2>
+#
+# A `uv pip install --python /opt/python/bin/python .` command of that form will
+# incrementally compile the contents of the local environment directory (WORKDIR) and
+# install them into the base image as Python packages, C++ modules, and/or executable
+# binaries on the container's PATH.  If you then upload this image to an external
+# repository, downstream users will be able to use `FROM <your-image>` in their own
+# Containerfiles in order to inherit Bertrand's toolchain along with your built
+# artifacts and dependencies without needing to recompile them from scratch.  This can
+# be useful for large projects where build time is significant, or which have external
+# dependencies or build configurations that are otherwise difficult to install.  Small
+# projects without significant configuration needs are encouraged to use the bundled
+# package managers instead, and leave this file alone.
 
-# In most cases, `pip install .` is all you need, but if you'd like to add your own
-# compilation flags or install additional system dependencies outside of
+# In most cases, `uv pip install ...` is all you need, but if you'd like to add your
+# own compilation flags or install additional system dependencies outside of
 # `pyproject.toml`, then you can do so using standard Containerfile commands.  See the
 # official Containerfile documentation for a comprehensive reference, and the Bertrand
 # toolchain documentation for more details on how this fits into the overall build
