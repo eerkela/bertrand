@@ -240,7 +240,7 @@ class InstallPodman(InstallPackage):
             return
 
 
-@on_init(requires=[])
+@on_init(requires=[], version=1)
 def detect_platform(ctx: Pipeline.InProgress) -> None:
     """Detect the host platform and package manager to use when installing the
     container backend.  These are persisted as facts in the pipeline context.
@@ -262,7 +262,7 @@ def detect_platform(ctx: Pipeline.InProgress) -> None:
     ctx[DISTRO_CODENAME] = detect.codename
 
 
-@on_init(requires=[detect_platform])
+@on_init(requires=[detect_platform], version=1)
 def install_container_cli(ctx: Pipeline.InProgress) -> None:
     """Install the base packages required for the container backend via the detected
     package manager.  This will prompt the user for confirmation before
@@ -328,7 +328,7 @@ def install_container_cli(ctx: Pipeline.InProgress) -> None:
     ctx.do(PurgeBertrandArtifacts())
 
 
-@on_init(requires=[install_container_cli])
+@on_init(requires=[install_container_cli], version=1)
 def enable_user_namespaces(ctx: Pipeline.InProgress) -> None:
     """Ensure unprivileged user namespaces are enabled on the host system, which are
     required for the rootless container cli.
@@ -348,7 +348,7 @@ def enable_user_namespaces(ctx: Pipeline.InProgress) -> None:
     ))
 
 
-@on_init(requires=[install_container_cli])
+@on_init(requires=[install_container_cli], version=1)
 def provision_subids(ctx: Pipeline.InProgress) -> None:
     """Ensure subordinate UID/GID ranges are allocated for the host user in
     /etc/subuid and /etc/subgid, which are required for rootless Podman operation.
@@ -428,7 +428,7 @@ def _dropin_delegate_controllers(path: Path) -> set[str] | None:
     return set()
 
 
-@on_init(requires=[provision_subids, enable_user_namespaces])
+@on_init(requires=[provision_subids, enable_user_namespaces], version=1)
 def delegate_controllers(ctx: Pipeline.InProgress) -> None:
     """Configure systemd controller delegation for the rootless container CLI, if not
     already configured.  This allows the container CLI to manage resource limits on
@@ -559,7 +559,7 @@ def _resolve_executable_on_path(name: str, *, path: str) -> Path | None:
     return candidate.resolve()
 
 
-@on_init(requires=[delegate_controllers])
+@on_init(requires=[delegate_controllers], version=1)
 def configure_code_service(ctx: Pipeline.InProgress) -> None:
     """Set up a systemd service to launch the RPC server for in-container
     `bertrand code` commands.

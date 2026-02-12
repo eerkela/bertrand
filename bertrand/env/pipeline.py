@@ -6,15 +6,13 @@ operations that can be rolled back in case of failure, or as part of an uninstal
 procedure.  Steps can require other steps as dependencies; the pipeline will precompute
 a topological ordering to execute them in the correct sequence.  Steps will also be
 recorded in a persistent journal file so that they can be resumed or rolled back
-between runs and invalidated after changes to their source code, inputs, or
-dependencies.
+between runs and invalidated after changes to their explicit contract versions, inputs,
+or dependencies.
 """
 from __future__ import annotations
 
-import functools
 import json
 import hashlib
-import inspect
 import re
 import uuid
 from dataclasses import dataclass, field
@@ -32,7 +30,15 @@ from typing import (
     overload,
 )
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    PositiveInt,
+    TypeAdapter,
+    ValidationError,
+    model_validator,
+)
 from typing_extensions import Annotated
 
 from .run import LockDir, User, atomic_write_text, mkdir_private
@@ -176,11 +182,10 @@ class Pipeline:
     before propagating the error.
 
     Steps are always ordered according to their `requires` capabilities, with ties
-    broken by their registration order.  If a step is added or removed from the
-    pipeline or its originating module is changed in any way, then all dependent steps
-    will be rolled back and re-executed on the next run.  The `undo()` method also
-    allows users to roll back steps by dependency, or all at once, by replaying the
-    journal in reverse order.
+    broken by their registration order.  If a step is added/removed or its explicit
+    contract version is changed, then all dependent steps will be rolled back and
+    re-executed on the next run.  The `undo()` method also allows users to roll back
+    steps by dependency, or all at once, by replaying the journal in reverse order.
     """
     class Function(Protocol):
         """A type hint for a function that can be decorated as a pipeline step."""
@@ -199,9 +204,9 @@ class Pipeline:
             context and uses it to record mutating operations in the journal.  The
             function's fully-qualified (dotted) name will be used as the step name, and
             must be unique within the pipeline.
-        version : Hash256
-            A current version specifier for the function's enclosing module, which
-            will be cross-checked against the journal to detect changes.
+        version : PositiveInt
+            The explicit contract version for this step.  Trivially set to 1 and
+            ignored for ephemeral steps.
         ephemeral : bool
             If False, the step's effects will be recorded in the journal and persisted
             between runs (subject to invalidation).  Otherwise, the step will always be
@@ -214,7 +219,7 @@ class Pipeline:
             error will be raised during registration.
         """
         func: Pipeline.Function
-        version: Hash256
+        version: PositiveInt
         ephemeral: bool
         requires: frozenset[Pipeline.Target]
 
@@ -264,12 +269,10 @@ class Pipeline:
         ended_at : datetime | None
             The ISO timestamp when the step completed execution or was successfully
             rolled back, or None if the step is still in-progress.
-        version : Hash256
-            The version specifier (hash) of the step's originating module for basic
-            change detection.  Note that this will not cover calls to functions
-            imported from other modules, so steps should either be self-contained
-            within a module or be manually invalidated when their dependencies change.
-            This is a best-effort mechanism, not a guarantee.
+        version : PositiveInt
+            The explicit contract version for this step.  Trivially set to 1 and
+            ignored for ephemeral steps, since they never transition to the "completed"
+            state.
         accesses : dict[str, Hash256 | Literal["<missing>"]]
             A mapping that tracks the arguments and global facts that were accessed
             during this step, where each key is an argument/fact name and each value is
@@ -298,7 +301,7 @@ class Pipeline:
         status: Literal["in_progress", "completed", "rolled_back"]
         started_at: datetime
         ended_at: datetime | None
-        version: Hash256
+        version: PositiveInt
         accesses: dict[str, Hash256 | Literal["<missing>"]]
         requires: list[QualName]
         facts: dict[str, JSONValue]
@@ -307,7 +310,7 @@ class Pipeline:
 
         @model_validator(mode="after")
         def _check_syntax(self) -> Pipeline.StepRecord:
-            if self.syntax != 1:
+            if self.syntax != SYNTAX:
                 raise ValueError(f"unsupported journal syntax version: {self.syntax}")
             return self
 
@@ -354,13 +357,12 @@ class Pipeline:
     _targets: list[Pipeline.Target] = field(default_factory=list, repr=False)
     _ordered: bool = field(default=False, repr=False)
     _lookup: dict[QualName, Pipeline.Target] = field(default_factory=dict, repr=False)
-    _modules: dict[str, Hash256] = field(default_factory=dict, repr=False)
 
     # context
     _lock: LockDir = field(init=False, repr=False)
     _records: list[Pipeline.StepRecord] = field(default_factory=list, repr=False)
     _facts: dict[str, Pipeline.Fact] = field(default_factory=dict, repr=False)
-    _completed: dict[Pipeline.Target, Hash256] = field(default_factory=dict, repr=False)
+    _completed: dict[Pipeline.Target, PositiveInt] = field(default_factory=dict, repr=False)
     _run_id: UUID4Hex = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -393,56 +395,6 @@ class Pipeline:
     def _dump(self) -> None:
         data = JournalAdapter.dump_python(self._records, mode="json")
         atomic_write_text(self.state_dir / "journal.json", self._json(data) + "\n", private=True)
-
-    @staticmethod
-    def _inspect_target(obj: Any) -> Any:
-        # unwrap decorated functions if possible
-        try:
-            obj = inspect.unwrap(obj)
-        except Exception:
-            pass
-
-        # unwrap functools.partial
-        if isinstance(obj, functools.partial):
-            obj = obj.func
-
-        # if already inspectable, return directly
-        if (
-            inspect.ismodule(obj) or inspect.isclass(obj) or inspect.isfunction(obj) or
-            inspect.ismethod(obj) or inspect.istraceback(obj) or inspect.isframe(obj) or
-            inspect.iscode(obj) or inspect.isbuiltin(obj)
-        ):
-            return obj
-
-        # fall back to the object's type (covers callable instances)
-        return type(obj)
-
-    def _module_hash(self, obj: Any) -> str:
-        # find originating source file
-        target = self._inspect_target(obj)
-        try:
-            source = inspect.getsourcefile(target) or inspect.getfile(target)
-        except TypeError:
-            return MISSING
-        if not source:
-            return MISSING
-
-        # check cache
-        cached = self._modules.get(source)
-        if cached is not None:
-            return cached
-
-        # compute hash of source file
-        path = Path(source)
-        result: Hash256 | Literal["<missing>"]
-        if not path.exists() or not path.is_file():
-            result = MISSING
-        else:
-            result = hashlib.sha256(path.read_bytes()).hexdigest()
-
-        # cache result
-        self._modules[source] = result
-        return result
 
     def _plan(self) -> None:
         if self._ordered:
@@ -637,6 +589,7 @@ class Pipeline:
         requires: Iterable[Pipeline.Function] | None = ...,
         enable: bool = ...,
         ephemeral: bool = ...,
+        version: PositiveInt | None = ...,
     ) -> Pipeline.Function: ...
     @overload
     def __call__(
@@ -646,6 +599,7 @@ class Pipeline:
         requires: Iterable[Pipeline.Function] | None = ...,
         enable: bool = ...,
         ephemeral: bool = ...,
+        version: PositiveInt | None = ...,
     ) -> Callable[[Pipeline.Function], Pipeline.Function]: ...
     def __call__(
         self,
@@ -654,6 +608,7 @@ class Pipeline:
         requires: Iterable[Pipeline.Function] | None = None,
         enable: bool = True,
         ephemeral: bool = False,
+        version: int | None = None,
     ) -> Pipeline.Function | Callable[[Pipeline.Function], Pipeline.Function]:
         """Register a step function with the given dependencies.
 
@@ -672,6 +627,12 @@ class Pipeline:
             rolled back successful completion (True).  Default is False.  If any
             persistent step depends on an ephemeral one, an error will be raised during
             registration.
+        version : int | None, optional
+            Explicit contract version for this step.  Persistent steps must provide a
+            positive integer version.  Ephemeral steps must not provide a version.
+            Users should increment versions when a step's externally-observable
+            contract changes (e.g. facts or side effects), not for internal refactors
+            that don't meaningfully change the behavior.
 
         Returns
         -------
@@ -716,7 +677,8 @@ class Pipeline:
                     _r.add(dep_target)
                 r = frozenset(_r)
 
-            # validate cache dependencies
+            # validate cache dependencies and explicit contract versioning
+            step_version = 1
             if not ephemeral:
                 for t in r:
                     if t.ephemeral:
@@ -724,18 +686,33 @@ class Pipeline:
                             f"Persistent pipeline step '{name}' cannot depend on ephemeral "
                             f"step '{t}'."
                         )
-
-            # hash originating module
-            version = self._module_hash(func)
-            if version == MISSING:
+                if not isinstance(version, int) or isinstance(version, bool) or version < 1:
+                    raise TypeError(
+                        f"Persistent pipeline step '{name}' must declare a positive "
+                        "integer contract version via version=<int>."
+                    )
+                step_version = version
+            elif version is not None:
                 raise TypeError(
-                    f"Pipeline step hash could not be determined: '{name}'.  The "
-                    "originating module must be available on disk and its content "
-                    "hashable for the function to be a valid step."
+                    f"Ephemeral pipeline step '{name}' cannot declare version={version}. "
+                    "Ephemeral steps must omit version."
+                )
+            if (
+                not isinstance(step_version, int) or
+                isinstance(step_version, bool) or
+                step_version < 1
+            ):
+                raise TypeError(
+                    f"Invalid contract version for pipeline step '{name}': {step_version}"
                 )
 
             # register step
-            target = Pipeline.Target(func=func, version=version, ephemeral=ephemeral, requires=r)
+            target = Pipeline.Target(
+                func=func,
+                version=step_version,
+                ephemeral=ephemeral,
+                requires=r
+            )
             self._targets.append(target)
             self._lookup[name] = target
             self._ordered = False  # re-plan on next run
