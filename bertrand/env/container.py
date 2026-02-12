@@ -668,6 +668,9 @@ def init_environment(ctx: Pipeline.InProgress) -> None:
     if not isinstance(assist, str):
         raise TypeError("assist must be a string")
 
+    # add to global environment registry
+    _reconcile_registry(Path(env))
+
     # initialize environment directory and configuration files
     Environment.init(
         Path(env),
@@ -675,9 +678,6 @@ def init_environment(ctx: Pipeline.InProgress) -> None:
         containerignore=Containerignore(),
         pyproject=PyProject(code=code, agent=agent, assist=assist)
     )
-
-    # add to global environment registry
-    _reconcile_registry(Path(env))
 
 
 def _warn_code_server_unavailable(reason: str) -> None:
@@ -845,7 +845,7 @@ def _ensure_cache_volume(name: str, env_uuid: str, kind: str) -> None:
 
 
 VERSION: int = 1
-TMP: str = "/tmp"
+CACHES: str = "/tmp/.cache"
 TIMEOUT: int = 30
 ENV_REGISTRY_FILE = "env-registry.json"
 ENV_REGISTRY_LOCK = "env-registry.lock"
@@ -869,6 +869,10 @@ def _iid_file(env_root: Path, name: str) -> Path:
 
 def _env_file(env_root: Path) -> Path:
     return _env_dir(env_root) / "env.json"
+
+
+def _container_file(env_root: Path) -> Path:
+    return env_root / "Containerfile"
 
 
 def _registry_file() -> Path:
@@ -987,10 +991,6 @@ def _reconcile_registry(add: Path | None) -> list[Path]:
             )
 
         return entries
-
-
-def _container_file(env_root: Path) -> Path:
-    return env_root / "Containerfile"
 
 
 def _sanitize_name(name: str) -> str:
@@ -1193,21 +1193,24 @@ class Container(BaseModel):
         return None
 
     @staticmethod
-    def start(inspect: Container.Inspect) -> None:
+    def start(inspect: Container.Inspect, check: bool = True) -> None:
         """Start a container if it is not already running.
 
         Parameters
         ----------
         inspect : Container.Inspect
             The output of `Container.inspect()` for the container to start.
+        check : bool, optional
+            If True, raise CommandError if the container fails to start.  Default is
+            True.
         """
         state = inspect["State"]
         if state["Running"] or state["Restarting"]:
             return
         if state["Paused"]:
-            podman_cmd(["container", "unpause", inspect["Id"]])
+            podman_cmd(["container", "unpause", inspect["Id"]], check=check)
         else:
-            podman_cmd(["container", "start", inspect["Id"]])
+            podman_cmd(["container", "start", inspect["Id"]], check=check)
 
 
 class Image(BaseModel):
@@ -1433,9 +1436,9 @@ class Image(BaseModel):
                 ),
 
                 # persistent caches for incremental builds
-                "--mount", f"type=volume,src={uv_volume},dst={TMP}/.cache/uv",
-                "--mount", f"type=volume,src={bertrand_volume},dst={TMP}/.cache/bertrand",
-                "--mount", f"type=volume,src={ccache_volume},dst={TMP}/.cache/ccache",
+                "--mount", f"type=volume,src={uv_volume},dst={CACHES}/uv",
+                "--mount", f"type=volume,src={bertrand_volume},dst={CACHES}/bertrand",
+                "--mount", f"type=volume,src={ccache_volume},dst={CACHES}/ccache",
                 "--mount", f"type=volume,src={conan_volume},dst=/opt/conan",
 
                 # environment variables for Bertrand runtime
@@ -1498,18 +1501,18 @@ FROM bertrand:${{BERTRAND}}.${{DEBUG}}.${{DEV}}.${{CPUS}}.{getpagesize() // 1024
 WORKDIR {WORKSPACE_MOUNT}
 
 # set up incremental builds
-ENV UV_CACHE_DIR={TMP}/.cache/uv
-ENV BERTRAND_CACHE={TMP}/.cache/bertrand
-ENV CCACHE_DIR={TMP}/.cache/ccache
+ENV UV_CACHE_DIR={CACHES}/uv
+ENV BERTRAND_CACHE={CACHES}/bertrand
+ENV CCACHE_DIR={CACHES}/ccache
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1
 COPY . {WORKSPACE_MOUNT}
 
 # you can extend this file in order to create a reproducible image that others can pull
 # from in their own Dockerfiles.  For example:
 
-RUN --mount=type=cache,target={TMP}/.cache/uv,sharing=locked \
-    --mount=type=cache,target={TMP}/.cache/bertrand,sharing=locked \
-    --mount=type=cache,target={TMP}/.cache/ccache,sharing=locked \
+RUN --mount=type=cache,target={CACHES}/uv,sharing=locked \
+    --mount=type=cache,target={CACHES}/bertrand,sharing=locked \
+    --mount=type=cache,target={CACHES}/ccache,sharing=locked \
     --mount=type=cache,target=/opt/conan,sharing=locked \
     bertrand build
 
@@ -2298,7 +2301,7 @@ class Build(_Command):
         container_tag: str,
         args: list[str],
         **kwargs: Any
-    ) -> Container:
+    ) -> None:
         raise OSError(
             "The 'build' command is reserved for compiling images.  Use 'start' or "
             "'enter' to run containers from a prebuilt image instead."
@@ -2311,7 +2314,7 @@ class Build(_Command):
         image_tag: str,
         args: list[str],
         **kwargs: Any
-    ) -> Image:
+    ) -> None:
         if args and not image_tag:
             raise OSError("images with non-default arguments must have a tag")
 
@@ -2359,7 +2362,7 @@ class Build(_Command):
         finally:
             iid_file.unlink(missing_ok=True)
         if existing is not None and image.id == existing.id:
-            return existing
+            return
 
         # rebuild downstream containers for new image
         if existing is not None:
@@ -2381,7 +2384,6 @@ class Build(_Command):
 
         # register new image
         env.tags[image_tag] = image
-        return image
 
     @staticmethod
     def environment(
@@ -2389,7 +2391,7 @@ class Build(_Command):
         env: Environment,
         args: list[str],
         **kwargs: Any
-    ) -> Environment:
+    ) -> None:
         if args:
             raise OSError(
                 "An environment's default image cannot have arguments.  Either specify "
@@ -2397,7 +2399,6 @@ class Build(_Command):
                 "defaults in the environment's Containerfile instead."
             )
         Build.image(env=env, image_tag="", args=args, **kwargs)
-        return env
 
     @staticmethod
     def all(
@@ -2424,13 +2425,16 @@ class Start(_Command):
         container_tag: str,
         args: list[str],
         **kwargs: Any
-    ) -> Container:
-        image = Build.image(
+    ) -> None:
+        Build.image(
             env=env,
             image_tag=image_tag,
             args=[],
             **kwargs
         )
+        image = env[image_tag]
+        if image is None:
+            raise OSError(f"unable to build image '{image_tag}'")
         container = image.build(
             env_root=env.root,
             env_uuid=env.id,
@@ -2440,11 +2444,9 @@ class Start(_Command):
         )
         inspect = container.inspect()
         if inspect is None:
-            raise OSError(
-                f"failed to build container '{container_tag}' in image '{image_tag}'"
-            )
-        Container.start(inspect)
-        return container
+            image.containers.pop(container_tag)
+        else:
+            Container.start(inspect)
 
     @staticmethod
     def image(
@@ -2453,21 +2455,22 @@ class Start(_Command):
         image_tag: str,
         args: list[str],
         **kwargs: Any
-    ) -> Image:
+    ) -> None:
         image = env.tags.get(image_tag)
         if image is None:
             raise KeyError(f"no image found for tag: '{image_tag}'")
         if args:
             raise OSError("cannot specify arguments when starting an image")
-        image = Build.image(env=env, image_tag=image_tag, args=args, **kwargs)
-        for container_tag, container in image.containers.items():
+        Build.image(env=env, image_tag=image_tag, args=args, **kwargs)
+        image = env[image_tag]
+        if image is None:
+            raise OSError(f"unable to build image '{image_tag}'")
+        for container_tag, container in list(image.containers.items()):
             inspect = container.inspect()
             if inspect is None:
-                raise OSError(
-                    f"failed to build container '{container_tag}' in image '{image_tag}'"
-                )
-            Container.start(inspect)
-        return image
+                image.containers.pop(container_tag)
+            else:
+                Container.start(inspect)
 
     @staticmethod
     def environment(
@@ -2475,19 +2478,17 @@ class Start(_Command):
         env: Environment,
         args: list[str],
         **kwargs: Any
-    ) -> Environment:
+    ) -> None:
         if args:
             raise OSError("cannot specify arguments when starting a whole environment")
         Build.environment(env=env, args=args, **kwargs)
-        for image_tag, image in env.tags.items():
-            for container_tag, container in image.containers.items():
+        for image in env.tags.values():
+            for container_tag, container in list(image.containers.items()):
                 inspect = container.inspect()
-                if not inspect:
-                    raise OSError(
-                        f"failed to build container '{container_tag}' in image '{image_tag}'"
-                    )
-                Container.start(inspect)
-        return env
+                if inspect is None:
+                    image.containers.pop(container_tag)
+                else:
+                    Container.start(inspect)
 
     @staticmethod
     def all(
@@ -2506,15 +2507,13 @@ class Start(_Command):
             for env_path in _all_environments():
                 try:
                     with Environment(env_path) as env:
-                        for image_tag, image in env.tags.items():
-                            for container_tag, container in image.containers.items():
+                        for image in env.tags.values():
+                            for container_tag, container in list(image.containers.items()):
                                 inspect = container.inspect()
                                 if inspect is None:
-                                    raise OSError(
-                                        f"failed to build container '{container_tag}' in "
-                                        f"image '{image_tag}'"
-                                    )
-                                Container.start(inspect)
+                                    image.containers.pop(container_tag)
+                                else:
+                                    Container.start(inspect, check=False)
                 except Exception as err:
                     print(err, file=sys.stderr)
 
@@ -2566,13 +2565,18 @@ class Enter(_Command):
             )
 
         # start container if necessary
-        container = Start.container(
+        Start.container(
             env=env,
             image_tag=image_tag,
             container_tag=container_tag,
             args=args,
             **kwargs
         )
+        container = env[image_tag, container_tag]
+        if container is None:
+            raise OSError(
+                f"unable to start container '{container_tag}' in image '{image_tag}'"
+            )
 
         # load shell command from pyproject.toml
         with Config(env.root) as config:
@@ -2657,13 +2661,18 @@ class Code(_Command):
         container_tag: str,
         **kwargs: Any
     ) -> None:
-        container = Start.container(
+        Start.container(
             env=env,
             image_tag=image_tag,
             container_tag=container_tag,
             args=[],
             **kwargs
         )
+        container = env[image_tag, container_tag]
+        if container is None:
+            raise OSError(
+                f"unable to start container '{container_tag}' in image '{image_tag}'"
+            )
         podman_cmd([
             "exec",
             "-i",
@@ -2727,13 +2736,18 @@ class Run(_Command):
         args: list[str],
         **kwargs: Any
     ) -> None:
-        container = Start.container(
+        Start.container(
             env=env,
             image_tag=image_tag,
             container_tag=container_tag,
             args=[],
             **kwargs
         )
+        container = env[image_tag, container_tag]
+        if container is None:
+            raise OSError(
+                f"unable to start container '{container_tag}' in image '{image_tag}'"
+            )
 
         # always run in interactive mode, but only add a TTY if we're currently attached
         # to one
@@ -2854,7 +2868,7 @@ class Stop(_Command):
         container_tag: str,
         timeout: int,
         **kwargs: Any
-    ) -> Container:
+    ) -> None:
         image = env.tags.get(image_tag)
         if image is None:
             raise KeyError(f"no image found for tag: '{image_tag}'")
@@ -2863,13 +2877,11 @@ class Stop(_Command):
             raise KeyError(f"no container found for tag: '{container_tag}'")
         inspect = container.inspect()
         if inspect is None:
-            raise OSError(
-                f"failed to inspect container '{container_tag}' in image '{image_tag}'"
-            )
-        state = inspect["State"]
-        if state["Running"] or state["Restarting"] or state["Paused"]:
-            podman_cmd(["container", "stop", inspect["Id"], "-t", str(timeout)])
-        return container
+            image.containers.pop(container_tag, None)
+        else:
+            state = inspect["State"]
+            if state["Running"] or state["Restarting"] or state["Paused"]:
+                podman_cmd(["container", "stop", inspect["Id"], "-t", str(timeout)])
 
     @staticmethod
     def image(
@@ -2878,7 +2890,7 @@ class Stop(_Command):
         image_tag: str,
         timeout: int,
         **kwargs: Any
-    ) -> Image:
+    ) -> None:
         image = env.tags.get(image_tag)
         if image is None:
             raise KeyError(f"no image found for tag: '{image_tag}'")
@@ -2889,7 +2901,6 @@ class Stop(_Command):
             labels=["BERTRAND=1", f"BERTRAND_ENV={env.id}", f"BERTRAND_IMAGE={image_tag}"],
             timeout=timeout
         )
-        return image
 
     @staticmethod
     def environment(
@@ -2897,12 +2908,11 @@ class Stop(_Command):
         env: Environment,
         timeout: int,
         **kwargs: Any
-    ) -> Environment:
+    ) -> None:
         Stop._batch(
             labels=["BERTRAND=1", f"BERTRAND_ENV={env.id}"],
             timeout=timeout
         )
-        return env
 
     @staticmethod
     def all(
@@ -2959,7 +2969,7 @@ class Pause(_Command):
         image_tag: str,
         container_tag: str,
         **kwargs: Any
-    ) -> Container:
+    ) -> None:
         image = env.tags.get(image_tag)
         if image is None:
             raise KeyError(f"no image found for tag: '{image_tag}'")
@@ -2968,13 +2978,11 @@ class Pause(_Command):
             raise KeyError(f"no container found for tag: '{container_tag}'")
         inspect = container.inspect()
         if inspect is None:
-            raise OSError(
-                f"failed to inspect container '{container_tag}' in image '{image_tag}'"
-            )
-        state = inspect["State"]
-        if state["Running"] or state["Restarting"]:
-            podman_cmd(["container", "pause", inspect["Id"]])
-        return container
+            image.containers.pop(container_tag, None)
+        else:
+            state = inspect["State"]
+            if state["Running"] or state["Restarting"]:
+                podman_cmd(["container", "pause", inspect["Id"]])
 
     @staticmethod
     def image(
@@ -2982,7 +2990,7 @@ class Pause(_Command):
         env: Environment,
         image_tag: str,
         **kwargs: Any
-    ) -> Image:
+    ) -> None:
         image = env.tags.get(image_tag)
         if image is None:
             raise KeyError(f"no image found for tag: '{image_tag}'")
@@ -2991,16 +2999,14 @@ class Pause(_Command):
             f"BERTRAND_ENV={env.id}",
             f"BERTRAND_IMAGE={image_tag}"
         ])
-        return image
 
     @staticmethod
     def environment(
         *,
         env: Environment,
         **kwargs: Any
-    ) -> Environment:
+    ) -> None:
         Pause._batch(labels=["BERTRAND=1", f"BERTRAND_ENV={env.id}"])
-        return env
 
     @staticmethod
     def all(
@@ -3046,7 +3052,7 @@ class Resume(_Command):
         image_tag: str,
         container_tag: str,
         **kwargs: Any
-    ) -> Container:
+    ) -> None:
         image = env.tags.get(image_tag)
         if image is None:
             raise KeyError(f"no image found for tag: '{image_tag}'")
@@ -3055,12 +3061,9 @@ class Resume(_Command):
             raise KeyError(f"no container found for tag: '{container_tag}'")
         inspect = container.inspect()
         if inspect is None:
-            raise OSError(
-                f"failed to inspect container '{container_tag}' in image '{image_tag}'"
-            )
-        if inspect["State"]["Paused"]:
+            image.containers.pop(container_tag, None)
+        elif inspect["State"]["Paused"]:
             podman_cmd(["container", "unpause", inspect["Id"]])
-        return container
 
     @staticmethod
     def image(
@@ -3068,7 +3071,7 @@ class Resume(_Command):
         env: Environment,
         image_tag: str,
         **kwargs: Any
-    ) -> Image:
+    ) -> None:
         image = env.tags.get(image_tag)
         if image is None:
             raise KeyError(f"no image found for tag: '{image_tag}'")
@@ -3077,16 +3080,14 @@ class Resume(_Command):
             f"BERTRAND_ENV={env.id}",
             f"BERTRAND_IMAGE={image_tag}"
         ])
-        return image
 
     @staticmethod
     def environment(
         *,
         env: Environment,
         **kwargs: Any
-    ) -> Environment:
+    ) -> None:
         Resume._batch(labels=["BERTRAND=1", f"BERTRAND_ENV={env.id}"])
-        return env
 
     @staticmethod
     def all(
@@ -3126,7 +3127,7 @@ class Restart(_Command):
         container_tag: str,
         timeout: int,
         **kwargs: Any
-    ) -> Container:
+    ) -> None:
         image = env.tags.get(image_tag)
         if image is None:
             raise KeyError(f"no image found for tag: '{image_tag}'")
@@ -3140,10 +3141,13 @@ class Restart(_Command):
             running = False
         else:
             state = inspect["State"]
-            running = state["Running"] or state["Restarting"]
+            running = state["Running"] or state["Restarting"] or state["Paused"]
 
         # possibly rebuild the parent image and all downstream containers
-        image = Build.image(env=env, image_tag=image_tag, args=[], **kwargs)
+        Build.image(env=env, image_tag=image_tag, args=[], **kwargs)
+        image = env[image_tag]
+        if image is None:
+            raise OSError(f"unable to build image '{image_tag}'")
 
         # if the container was previously running, restart it
         container = image.containers.get(container_tag)  # may have drifted
@@ -3151,18 +3155,14 @@ class Restart(_Command):
             raise KeyError(f"no container found for tag: '{container_tag}' after rebuild")
         inspect = container.inspect()
         if inspect is None:
-            raise OSError(
-                f"failed to inspect container '{container_tag}' in image '{image_tag}' "
-                "after rebuild"
-            )
-        if running:
+            image.containers.pop(container_tag, None)
+        elif running:
             if inspect["State"]["Status"] == "created":  # newly-rebuilt
                 Container.start(inspect)
             else:  # still running
                 state = inspect["State"]
                 if state["Running"] or state["Paused"]:
                     podman_cmd(["container", "restart", inspect["Id"], "-t", str(timeout)])
-        return container
 
     @staticmethod
     def image(
@@ -3171,7 +3171,7 @@ class Restart(_Command):
         image_tag: str,
         timeout: int,
         **kwargs: Any
-    ) -> Image:
+    ) -> None:
         image = env.tags.get(image_tag)
         if image is None:
             raise KeyError(f"no image found for tag: '{image_tag}'")
@@ -3182,11 +3182,14 @@ class Restart(_Command):
             inspect = c.inspect()
             if inspect is not None:
                 state = inspect["State"]
-                if state["Running"] or state["Restarting"]:
+                if state["Running"] or state["Restarting"] or state["Paused"]:
                     running.add(container_tag)
 
         # possibly rebuild the image and all downstream containers
-        image = Build.image(env=env, image_tag=image_tag, args=[], **kwargs)
+        Build.image(env=env, image_tag=image_tag, args=[], **kwargs)
+        image = env[image_tag]
+        if image is None:
+            raise OSError(f"unable to build image '{image_tag}'")
 
         # restart any previously-running containers
         for container_tag in running:
@@ -3203,18 +3206,15 @@ class Restart(_Command):
                 if state["Running"] or state["Paused"]:
                     podman_cmd(["container", "restart", inspect["Id"], "-t", str(timeout)])
 
-        return image
-
     @staticmethod
     def environment(
         *,
         env: Environment,
         timeout: int,
         **kwargs: Any
-    ) -> Environment:
+    ) -> None:
         for image_tag in env.tags:
             Restart.image(env=env, image_tag=image_tag, timeout=timeout, **kwargs)
-        return env
 
     @staticmethod
     def all(
