@@ -344,10 +344,25 @@ class LockDir:
                 owner_pid = owner.get("pid")
                 owner_start = owner.get("pid_start")
                 tolerance = 0.001  # tolerate floating point precision issues
-                if isinstance(owner_pid, int) and isinstance(owner_start, (int, float)) and (
-                    not psutil.pid_exists(owner_pid) or
-                    psutil.Process(owner_pid).create_time() > (owner_start + tolerance)
-                ):
+                owner_stale = False
+                if isinstance(owner_pid, int) and isinstance(owner_start, (int, float)):
+                    if not psutil.pid_exists(owner_pid):
+                        owner_stale = True
+                    else:
+                        owner_create_time: float | None = None
+                        try:
+                            owner_create_time = psutil.Process(owner_pid).create_time()
+                        except (psutil.AccessDenied, psutil.ZombieProcess):
+                            owner_create_time = None
+                        except psutil.NoSuchProcess:
+                            owner_stale = True
+                        if (
+                            not owner_stale and
+                            owner_create_time is not None and
+                            owner_create_time > (owner_start + tolerance)
+                        ):
+                            owner_stale = True
+                if owner_stale:
                     shutil.rmtree(self.path, ignore_errors=True)
                     continue
 

@@ -521,13 +521,12 @@ class External:
             command = self.commands.add_parser(
                 "prune",
                 help=
-                    "Remove stopped Bertrand containers and dangling images at the "
-                    "specified path, scoping to specific images or containers if "
-                    "desired.  This is similar to 'bertrand rm', but only applies to "
-                    "stopped containers, and only deletes images if no container "
-                    "references them.  Note that the environment directory is "
-                    "unaffected, but any data stored in a container's writable layer "
-                    "will be permanently lost.",
+                    "Remove stopped Bertrand containers at the specified path, scoping "
+                    "to specific images or containers if desired.  This is similar to "
+                    "'bertrand rm', but only applies to stopped containers, and never "
+                    "affects images.  Note that the environment directory is "
+                    "unaffected, but any data stored in a stopped container's writable "
+                    "layer will be permanently lost.",
             )
             command.add_argument(
                 "path",

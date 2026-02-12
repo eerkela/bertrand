@@ -529,22 +529,21 @@ def _systemd_environment_line(key: str, value: str) -> str:
     return f'Environment="{key}={escaped}"'
 
 
-def _compose_code_service_path() -> str:
+def _code_service_path() -> str:
     parts: list[str] = []
     seen: set[str] = set()
 
-    def add(entry: str) -> None:
+    current_path = os.environ.get("PATH", "")
+    for entry in (
+        *current_path.split(os.pathsep),
+        *CODE_SERVICE_BASE_PATHS,
+        *CODE_SERVICE_FLATPAK_PATHS,
+    ):
         entry = entry.strip()
         if not entry or entry in seen:
-            return
+            continue
         seen.add(entry)
         parts.append(entry)
-
-    current_path = os.environ.get("PATH", "")
-    for entry in current_path.split(os.pathsep):
-        add(entry)
-    for entry in (*CODE_SERVICE_BASE_PATHS, *CODE_SERVICE_FLATPAK_PATHS):
-        add(entry)
 
     return os.pathsep.join(parts)
 
@@ -574,7 +573,7 @@ def configure_code_service(ctx: Pipeline.InProgress) -> None:
     OSError
         If the server's entry point cannot be found.
     """
-    service_path = _compose_code_service_path()
+    service_path = _code_service_path()
 
     exec_path = _resolve_executable_on_path("bertrand-code-rpc", path=service_path)
     if exec_path is None:
@@ -669,12 +668,16 @@ def init_environment(ctx: Pipeline.InProgress) -> None:
     if not isinstance(assist, str):
         raise TypeError("assist must be a string")
 
+    # initialize environment directory and configuration files
     Environment.init(
         Path(env),
         containerfile=Containerfile(),
         containerignore=Containerignore(),
         pyproject=PyProject(code=code, agent=agent, assist=assist)
     )
+
+    # add to global environment registry
+    _reconcile_registry(Path(env))
 
 
 def _warn_code_server_unavailable(reason: str) -> None:
@@ -844,6 +847,8 @@ def _ensure_cache_volume(name: str, env_uuid: str, kind: str) -> None:
 VERSION: int = 1
 TMP: str = "/tmp"
 TIMEOUT: int = 30
+ENV_REGISTRY_FILE = "env-registry.json"
+ENV_REGISTRY_LOCK = "env-registry.lock"
 
 
 def _env_dir(env_root: Path) -> Path:
@@ -864,6 +869,124 @@ def _iid_file(env_root: Path, name: str) -> Path:
 
 def _env_file(env_root: Path) -> Path:
     return _env_dir(env_root) / "env.json"
+
+
+def _registry_file() -> Path:
+    return on_init.state_dir / ENV_REGISTRY_FILE
+
+
+def _registry_lock() -> Path:
+    return on_init.state_dir / ENV_REGISTRY_LOCK
+
+
+def _is_valid_environment_root(path: Path) -> bool:
+    root = path.expanduser().resolve()
+    if not root.exists() or not root.is_dir():
+        return False
+    env_file = _env_file(root)
+    if not env_file.exists() or not env_file.is_file():
+        return False
+    try:
+        data = json_parser.loads(env_file.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            return False
+        Environment.JSON.model_validate(data)
+        return True
+    except Exception:
+        return False
+
+
+def _discover_environment_mounts() -> list[Path]:
+    container_ids = _list_podman_ids([
+        "container",
+        "ls",
+        "-a",
+        "-q",
+        "--filter", "label=BERTRAND=1",
+        "--no-trunc",
+    ])
+    if not container_ids:
+        return []
+
+    # inspect all containers
+    try:
+        inspects = json_parser.loads(podman_cmd(
+            ["container", "inspect", *container_ids],
+            capture_output=True
+        ).stdout)
+    except Exception:
+        return []
+    if not isinstance(inspects, list):
+        return []
+
+    # retrieve unique bind mounts
+    seen: set[Path] = set()
+    result: list[Path] = []
+    for inspect in inspects:
+        if not isinstance(inspect, dict):
+            continue
+        try:
+            mount = Container.mount(inspect)  # type: ignore[arg-type]
+        except Exception:
+            continue
+        if mount is None or mount in seen:
+            continue
+        seen.add(mount)
+        result.append(mount)
+
+    return result
+
+
+def _reconcile_registry(add: Path | None) -> list[Path]:
+    if add is not None:
+        add = add.expanduser().resolve()
+
+    # acquire global environment registry lock
+    with LockDir(_registry_lock(), timeout=TIMEOUT):
+        # create empty registry if missing
+        path = _registry_file()
+        if not path.exists():
+            atomic_write_text(path, "[]\n", encoding="utf-8", private=True)
+
+        # try to load and normalize registry list
+        raw = path.read_text(encoding="utf-8")
+        try:
+            data = json_parser.loads(raw)
+            if not isinstance(data, list) or not all(isinstance(i, str) for i in data):
+                raise ValueError("registry JSON must be an array of strings")
+            raw_entries = [Path(i).expanduser().resolve() for i in data]
+            changed = False
+
+        # if JSON is corrupted, recover using container bind mounts (best-effort)
+        except Exception:
+            raw_entries = _discover_environment_mounts()
+            changed = True
+
+        # remove any duplicate/invalid entries and scan for the new entry if provided
+        seen: set[Path] = set()
+        entries: list[Path] = []
+        for entry in raw_entries:
+            if entry not in seen and _is_valid_environment_root(entry):
+                seen.add(entry)
+                entries.append(entry)
+        if len(entries) != len(raw_entries):
+            changed = True
+
+        # add new entry if provided and not already found
+        if add is not None and add not in seen:
+            entries.append(add)
+            changed = True
+
+        # if changed, write back to registry
+        if changed:
+            atomic_write_text(
+                _registry_file(),
+                json_parser.dumps([str(path) for path in entries], indent=2) + "\n",
+                encoding="utf-8",
+                private=True
+            )
+
+        return entries
 
 
 def _container_file(env_root: Path) -> Path:
@@ -1037,34 +1160,13 @@ class Container(BaseModel):
             A JSON response from podman or None if the container could not be found.
         """
         result = podman_cmd(["container", "inspect", self.id], check=False, capture_output=True)
-        if result.returncode != 0 or not result.stdout:
+        if result.returncode != 0:
             return None
-        data = json_parser.loads(result.stdout)
+        stdout = result.stdout.strip()
+        if not stdout:
+            return None
+        data = json_parser.loads(stdout)
         return data[0] if data else None
-
-    @staticmethod
-    def relocated(env_root: Path, inspect: Container.Inspect) -> bool:
-        """Detect whether a container's mounted environment path has drifted from the
-        environment's true root directory.
-
-        Parameters
-        ----------
-        env_root : Path
-            An absolute host path to the environment directory.
-        inspect : Container.Inspect
-            The output of `Container.inspect()` for the container to query.
-
-        Returns
-        -------
-        bool
-            True if the container's mounted environment path differs from `env_root`,
-            False otherwise.
-        """
-        mount = Container.mount(inspect)
-        try:
-            return mount is None or not os.path.samefile(mount, env_root)
-        except OSError:
-            return True
 
     @staticmethod
     def mount(inspect: Container.Inspect) -> Path | None:
@@ -1091,73 +1193,6 @@ class Container(BaseModel):
         return None
 
     @staticmethod
-    def new(inspect: Container.Inspect) -> bool:
-        """Check whether a container has been newly created (i.e. has never been
-        started).
-
-        Parameters
-        ----------
-        inspect : Container.Inspect
-            The output of `Container.inspect()` for the container to query.
-
-        Returns
-        -------
-        bool
-            True if the container is newly created, False otherwise.
-        """
-        return inspect["State"]["Status"] == "created"
-
-    @staticmethod
-    def running(inspect: Container.Inspect) -> bool:
-        """Check whether a container is currently running.
-
-        Parameters
-        ----------
-        inspect : Container.Inspect
-            The output of `Container.inspect()` for the container to query.
-
-        Returns
-        -------
-        bool
-            True if the container is currently running, False otherwise.
-        """
-        state = inspect["State"]
-        return state["Running"] or state["Restarting"]
-
-    @staticmethod
-    def paused(inspect: Container.Inspect) -> bool:
-        """Check whether a container is currently paused.
-
-        Parameters
-        ----------
-        inspect : Container.Inspect
-            The output of `Container.inspect()` for the container to query.
-
-        Returns
-        -------
-        bool
-            True if the container is currently paused, False otherwise.
-        """
-        return inspect["State"]["Paused"]
-
-    @staticmethod
-    def stopped(inspect: Container.Inspect) -> bool:
-        """Check whether a container is currently stopped.
-
-        Parameters
-        ----------
-        inspect : Container.Inspect
-            The output of `Container.inspect()` for the container to query.
-
-        Returns
-        -------
-        bool
-            True if the container is currently stopped, False otherwise.
-        """
-        state = inspect["State"]
-        return not (state["Running"] or state["Restarting"] or state["Paused"])
-
-    @staticmethod
     def start(inspect: Container.Inspect) -> None:
         """Start a container if it is not already running.
 
@@ -1170,72 +1205,9 @@ class Container(BaseModel):
         if state["Running"] or state["Restarting"]:
             return
         if state["Paused"]:
-            podman_cmd(["container", "unpause", inspect["Id"]], check=False)
+            podman_cmd(["container", "unpause", inspect["Id"]])
         else:
-            podman_cmd(["container", "start", inspect["Id"]], check=False)
-
-    @staticmethod
-    def stop(inspect: Container.Inspect, timeout: int = TIMEOUT) -> None:
-        """Stop a container if it is currently running.
-
-        Parameters
-        ----------
-        inspect : Container.Inspect
-            The output of `Container.inspect()` for the container to stop.
-        timeout : int, optional
-            The maximum time in seconds to wait for the container to stop before
-            forcefully killing it.  Default is `TIMEOUT`, which equates to 30 seconds.
-        """
-        state = inspect["State"]
-        if state["Running"] or state["Restarting"] or state["Paused"]:
-            podman_cmd(
-                ["container", "stop", inspect["Id"], "-t", str(timeout)],
-                check=False
-            )
-
-    @staticmethod
-    def pause(inspect: Container.Inspect) -> None:
-        """Pause a container if it is currently running.
-
-        Parameters
-        ----------
-        inspect : Container.Inspect
-            The output of `Container.inspect()` for the container to pause.
-        """
-        state = inspect["State"]
-        if state["Running"] or state["Restarting"]:
-            podman_cmd(["container", "pause", inspect["Id"]], check=False)
-
-    @staticmethod
-    def resume(inspect: Container.Inspect) -> None:
-        """Resume a container if it is currently paused.
-
-        Parameters
-        ----------
-        inspect : Container.Inspect
-            The output of `Container.inspect()` for the container to resume.
-        """
-        if inspect["State"]["Paused"]:
-            podman_cmd(["container", "unpause", inspect["Id"]], check=False)
-
-    @staticmethod
-    def restart(inspect: Container.Inspect, timeout: int = TIMEOUT) -> None:
-        """Restart a container.
-
-        Parameters
-        ----------
-        inspect : Container.Inspect
-            The output of `Container.inspect()` for the container to restart.
-        timeout : int, optional
-            The maximum time in seconds to wait for the container to stop before
-            forcefully killing it.  Default is `TIMEOUT`, which equates to 30 seconds.
-        """
-        state = inspect["State"]
-        if state["Running"] or state["Paused"]:
-            podman_cmd(
-                ["container", "restart", inspect["Id"], "-t", str(timeout)],
-                check=False
-            )
+            podman_cmd(["container", "start", inspect["Id"]])
 
 
 class Image(BaseModel):
@@ -1405,8 +1377,13 @@ class Image(BaseModel):
         # reuse container if args match and container has not been relocated
         if existing is not None and existing.args == container_args:
             inspect = existing.inspect()
-            if inspect is not None and not Container.relocated(env_root, inspect):
-                return existing
+            if inspect is not None:
+                mount = Container.mount(inspect)
+                try:
+                    if mount is not None and os.path.samefile(mount, env_root):
+                        return existing
+                except OSError:
+                    pass
 
         # build new container
         container = Container.model_construct(
@@ -1868,6 +1845,15 @@ class Environment:
             self._json = self.JSON.model_validate(data)
         except ValidationError as err:
             raise ValueError(f"invalid environment metadata: {err}") from err
+
+        # opportunistically keep global environment registry up to date
+        try:
+            _reconcile_registry(self.root)
+        except OSError as err:
+            print(
+                f"bertrand: warning: failed to reconcile global environment registry: {err}",
+                file=sys.stderr
+            )
         return self
 
     def __exit__(
@@ -2173,7 +2159,7 @@ class Environment:
 
         # remove environment metadata and lock
         try:
-            shutil.rmtree(_env_dir(self.root) / self.id, ignore_errors=True)
+            shutil.rmtree(_env_dir(self.root), ignore_errors=True)
         except Exception:
             pass
 
@@ -2182,55 +2168,15 @@ class Environment:
 # pylint: disable=missing-return-doc, unused-argument
 
 
-def _list_containers(env: Environment, image_tag: str, container_tag: str) -> list[str]:
-    image = env.tags.get(image_tag)
-    if image is None:
+def _all_environments() -> list[Path]:
+    try:
+        return _reconcile_registry(None)
+    except OSError as err:
+        print(
+            f"bertrand: warning: failed to load global environment registry: {err}",
+            file=sys.stderr
+        )
         return []
-    container = image.containers.get(container_tag)
-    if container is None:
-        return []
-    return [f"{env.root}:{image_tag}:{container_tag}"]
-
-
-def _list_images(env: Environment, image_tag: str) -> list[str]:
-    image = env.tags.get(image_tag)
-    if image is None:
-        return []
-    return [f"{env.root}:{image_tag}:{c}" for c in image.containers]
-
-
-def _list_environments(env: Environment) -> list[str]:
-    return [f"{env.root}:{k}" for k in env.tags]
-
-
-def _list_all() -> list[str]:
-    out = list(podman_cmd([
-        "container",
-        "ls",
-        "--all",
-        "--filter", "label=BERTRAND=1",
-        "--no-trunc",
-        "--format={{.ID}}"
-    ], capture_output=True).stdout.strip().splitlines())
-    if not out:
-        return []
-
-    # inspect all containers to find their mount points
-    inspects = json_parser.loads(podman_cmd(
-        ["container", "inspect", *out],
-        capture_output=True
-    ).stdout)
-    assert isinstance(inspects, list)
-    seen: set[Path] = set()
-    result: list[str] = []
-    for inspect in inspects:
-        assert isinstance(inspect, dict)
-        mount = Container.mount(inspect)  # type: ignore[arg-type]
-        if mount is not None and mount not in seen:
-            seen.add(mount)
-            result.append(str(mount))
-
-    return result
 
 
 Validator: TypeAlias = Callable[[JSONView], Any]
@@ -2408,7 +2354,7 @@ class Build(_Command):
                 "--label", f"BERTRAND_ENV={env.id}",
                 "--label", f"BERTRAND_IMAGE={image_tag}",
                 *build_args,
-            ])
+            ], cwd=env.root)
             image.id = iid_file.read_text(encoding="utf-8").strip()  # build returns image ID
         finally:
             iid_file.unlink(missing_ok=True)
@@ -2557,9 +2503,9 @@ class Start(_Command):
             "a long time depending on the number and complexity of the environments.\n"
             "Are you sure you want to continue? [y/N] "
         ):
-            for env_path in _list_all():
+            for env_path in _all_environments():
                 try:
-                    with Environment(Path(env_path)) as env:
+                    with Environment(env_path) as env:
                         for image_tag, image in env.tags.items():
                             for container_tag, container in image.containers.items():
                                 inspect = container.inspect()
@@ -2866,6 +2812,41 @@ class Stop(_Command):
     timeout: Validator = field(default=_validate_timeout)
 
     @staticmethod
+    def _batch(labels: list[str], timeout: int) -> None:
+        cmd = [
+            "container",
+            "ls",
+            "-a",
+            "-q",
+            "--no-trunc",
+        ]
+        for label in labels:
+            cmd.extend(["--filter", f"label={label}"])
+
+        running = list(podman_cmd(
+            [*cmd, "--filter", "status=running"],
+            capture_output=True
+        ).stdout.strip().splitlines())
+        restarting = list(podman_cmd(
+            [*cmd, "--filter", "status=restarting"],
+            capture_output=True
+        ).stdout.strip().splitlines())
+        paused = list(podman_cmd(
+            [*cmd, "--filter", "status=paused"],
+            capture_output=True
+        ).stdout.strip().splitlines())
+
+        if running or restarting or paused:
+            podman_cmd([
+                "container",
+                "stop",
+                "-t", str(timeout),
+                *running,
+                *restarting,
+                *paused,
+            ], check=False)
+
+    @staticmethod
     def container(
         *,
         env: Environment,
@@ -2885,7 +2866,9 @@ class Stop(_Command):
             raise OSError(
                 f"failed to inspect container '{container_tag}' in image '{image_tag}'"
             )
-        Container.stop(inspect, timeout=timeout)
+        state = inspect["State"]
+        if state["Running"] or state["Restarting"] or state["Paused"]:
+            podman_cmd(["container", "stop", inspect["Id"], "-t", str(timeout)])
         return container
 
     @staticmethod
@@ -2902,10 +2885,10 @@ class Stop(_Command):
         image_inspect = image.inspect()
         if image_inspect is None:
             raise OSError(f"failed to inspect image '{image_tag}'")
-        for container in image.containers.values():
-            inspect = container.inspect()
-            if inspect is not None:
-                Container.stop(inspect, timeout=timeout)
+        Stop._batch(
+            labels=["BERTRAND=1", f"BERTRAND_ENV={env.id}", f"BERTRAND_IMAGE={image_tag}"],
+            timeout=timeout
+        )
         return image
 
     @staticmethod
@@ -2915,11 +2898,10 @@ class Stop(_Command):
         timeout: int,
         **kwargs: Any
     ) -> Environment:
-        for image in env.tags.values():
-            for container in image.containers.values():
-                inspect = container.inspect()
-                if inspect is not None:
-                    Container.stop(inspect, timeout=timeout)
+        Stop._batch(
+            labels=["BERTRAND=1", f"BERTRAND_ENV={env.id}"],
+            timeout=timeout
+        )
         return env
 
     @staticmethod
@@ -2932,12 +2914,7 @@ class Stop(_Command):
             "This will stop all running Bertrand containers on this system.\n"
             "Are you sure you want to continue? [y/N] "
         ):
-            for env_path in _list_all():
-                try:
-                    with Environment(Path(env_path)) as env:
-                        Stop.environment(env=env, timeout=timeout, **kwargs)
-                except Exception as err:
-                    print(err, file=sys.stderr)
+            Stop._batch(labels=["BERTRAND=1"], timeout=timeout)
 
 
 @dataclass
@@ -2945,6 +2922,35 @@ class Pause(_Command):
     """Pause running Bertrand containers within an environment, scoping to specific
     images and containers if desired.
     """
+
+    @staticmethod
+    def _batch(labels: list[str]) -> None:
+        cmd = [
+            "container",
+            "ls",
+            "-a",
+            "-q",
+            "--no-trunc",
+        ]
+        for label in labels:
+            cmd.extend(["--filter", f"label={label}"])
+
+        running = list(podman_cmd(
+            [*cmd, "--filter", "status=running"],
+            capture_output=True
+        ).stdout.strip().splitlines())
+        restarting = list(podman_cmd(
+            [*cmd, "--filter", "status=restarting"],
+            capture_output=True
+        ).stdout.strip().splitlines())
+
+        if running or restarting:
+            podman_cmd([
+                "container",
+                "pause",
+                *running,
+                *restarting,
+            ], check=False)
 
     @staticmethod
     def container(
@@ -2965,7 +2971,9 @@ class Pause(_Command):
             raise OSError(
                 f"failed to inspect container '{container_tag}' in image '{image_tag}'"
             )
-        Container.pause(inspect)
+        state = inspect["State"]
+        if state["Running"] or state["Restarting"]:
+            podman_cmd(["container", "pause", inspect["Id"]])
         return container
 
     @staticmethod
@@ -2978,13 +2986,11 @@ class Pause(_Command):
         image = env.tags.get(image_tag)
         if image is None:
             raise KeyError(f"no image found for tag: '{image_tag}'")
-        image_inspect = image.inspect()
-        if image_inspect is None:
-            raise OSError(f"failed to inspect image '{image_tag}'")
-        for container in image.containers.values():
-            inspect = container.inspect()
-            if inspect is not None:
-                Container.pause(inspect)
+        Pause._batch(labels=[
+            "BERTRAND=1",
+            f"BERTRAND_ENV={env.id}",
+            f"BERTRAND_IMAGE={image_tag}"
+        ])
         return image
 
     @staticmethod
@@ -2993,11 +2999,7 @@ class Pause(_Command):
         env: Environment,
         **kwargs: Any
     ) -> Environment:
-        for image in env.tags.values():
-            for container in image.containers.values():
-                inspect = container.inspect()
-                if inspect is not None:
-                    Container.pause(inspect)
+        Pause._batch(labels=["BERTRAND=1", f"BERTRAND_ENV={env.id}"])
         return env
 
     @staticmethod
@@ -3008,12 +3010,7 @@ class Pause(_Command):
             "This will pause all running Bertrand containers on this system.\n"
             "Are you sure you want to continue? [y/N] "
         ):
-            for env_path in _list_all():
-                try:
-                    with Environment(Path(env_path)) as env:
-                        Pause.environment(env=env, **kwargs)
-                except Exception as err:
-                    print(err, file=sys.stderr)
+            Pause._batch(labels=["BERTRAND=1"])
 
 
 @dataclass
@@ -3021,6 +3018,26 @@ class Resume(_Command):
     """Resume paused Bertrand containers within an environment, scoping to specific
     images and containers if desired.
     """
+
+    @staticmethod
+    def _batch(labels: list[str]) -> None:
+        cmd = [
+            "container",
+            "ls",
+            "-a",
+            "-q",
+            "--no-trunc",
+        ]
+        for label in labels:
+            cmd.extend(["--filter", f"label={label}"])
+
+        paused = list(podman_cmd(
+            [*cmd, "--filter", "status=paused"],
+            capture_output=True
+        ).stdout.strip().splitlines())
+
+        if paused:
+            podman_cmd(["container", "unpause", *paused], check=False)
 
     @staticmethod
     def container(
@@ -3041,7 +3058,8 @@ class Resume(_Command):
             raise OSError(
                 f"failed to inspect container '{container_tag}' in image '{image_tag}'"
             )
-        Container.resume(inspect)
+        if inspect["State"]["Paused"]:
+            podman_cmd(["container", "unpause", inspect["Id"]])
         return container
 
     @staticmethod
@@ -3054,13 +3072,11 @@ class Resume(_Command):
         image = env.tags.get(image_tag)
         if image is None:
             raise KeyError(f"no image found for tag: '{image_tag}'")
-        image_inspect = image.inspect()
-        if image_inspect is None:
-            raise OSError(f"failed to inspect image '{image_tag}'")
-        for container in image.containers.values():
-            inspect = container.inspect()
-            if inspect is not None:
-                Container.resume(inspect)
+        Resume._batch(labels=[
+            "BERTRAND=1",
+            f"BERTRAND_ENV={env.id}",
+            f"BERTRAND_IMAGE={image_tag}"
+        ])
         return image
 
     @staticmethod
@@ -3069,11 +3085,7 @@ class Resume(_Command):
         env: Environment,
         **kwargs: Any
     ) -> Environment:
-        for image in env.tags.values():
-            for container in image.containers.values():
-                inspect = container.inspect()
-                if inspect is not None:
-                    Container.resume(inspect)
+        Resume._batch(labels=["BERTRAND=1", f"BERTRAND_ENV={env.id}"])
         return env
 
     @staticmethod
@@ -3084,12 +3096,7 @@ class Resume(_Command):
             "This will resume all paused Bertrand containers on this system.\n"
             "Are you sure you want to continue? [y/N] "
         ):
-            for env_path in _list_all():
-                try:
-                    with Environment(Path(env_path)) as env:
-                        Resume.environment(env=env, **kwargs)
-                except Exception as err:
-                    print(err, file=sys.stderr)
+            Resume._batch(labels=["BERTRAND=1"])
 
 
 @dataclass
@@ -3132,7 +3139,8 @@ class Restart(_Command):
         if inspect is None:
             running = False
         else:
-            running = Container.running(inspect)
+            state = inspect["State"]
+            running = state["Running"] or state["Restarting"]
 
         # possibly rebuild the parent image and all downstream containers
         image = Build.image(env=env, image_tag=image_tag, args=[], **kwargs)
@@ -3148,10 +3156,12 @@ class Restart(_Command):
                 "after rebuild"
             )
         if running:
-            if Container.new(inspect):  # newly-rebuilt
+            if inspect["State"]["Status"] == "created":  # newly-rebuilt
                 Container.start(inspect)
-            else:
-                Container.restart(inspect, timeout=timeout)  # still running
+            else:  # still running
+                state = inspect["State"]
+                if state["Running"] or state["Paused"]:
+                    podman_cmd(["container", "restart", inspect["Id"], "-t", str(timeout)])
         return container
 
     @staticmethod
@@ -3170,8 +3180,10 @@ class Restart(_Command):
         running: set[str] = set()
         for container_tag, c in image.containers.items():
             inspect = c.inspect()
-            if inspect is not None and Container.running(inspect):
-                running.add(container_tag)
+            if inspect is not None:
+                state = inspect["State"]
+                if state["Running"] or state["Restarting"]:
+                    running.add(container_tag)
 
         # possibly rebuild the image and all downstream containers
         image = Build.image(env=env, image_tag=image_tag, args=[], **kwargs)
@@ -3184,10 +3196,12 @@ class Restart(_Command):
             inspect = container.inspect()
             if inspect is None:
                 continue  # container was removed during rebuild, skip it
-            if Container.new(inspect):  # newly-rebuilt
+            if inspect["State"]["Status"] == "created":  # newly-rebuilt
                 Container.start(inspect)
-            else:
-                Container.restart(inspect, timeout=timeout)  # still running
+            else:  # still running
+                state = inspect["State"]
+                if state["Running"] or state["Paused"]:
+                    podman_cmd(["container", "restart", inspect["Id"], "-t", str(timeout)])
 
         return image
 
@@ -3213,9 +3227,9 @@ class Restart(_Command):
             "take a long time depending on the number and complexity of the environments.\n"
             "Are you sure you want to continue? [y/N] "
         ):
-            for env_path in _list_all():
+            for env_path in _all_environments():
                 try:
-                    with Environment(Path(env_path)) as env:
+                    with Environment(env_path) as env:
                         Restart.environment(env=env, timeout=timeout, **kwargs)
                 except Exception as err:
                     print(err, file=sys.stderr)
@@ -3223,12 +3237,12 @@ class Restart(_Command):
 
 @dataclass
 class Prune(_Command):
-    """Remove all stopped Bertrand images and containers within an environment, scoping
-    to specific images and containers if desired.
-    
-    This command only deletes images and containers, and never alters the host
-    filesystem or existing tags.  Any images or containers that are removed will be
-    rebuilt the next time they are started.
+    """Remove all stopped Bertrand containers within an environment, scoping to
+    specific images and containers if desired.
+
+    This command only deletes containers, never images or anything on the host
+    filesystem.  Any containers that are removed will be rebuilt the next time they are
+    started.
     """
 
     @staticmethod
@@ -3246,8 +3260,15 @@ class Prune(_Command):
         if container is None:
             return None
         inspect = container.inspect()
-        if inspect is not None and Container.stopped(inspect):
-            container.remove(force=True, timeout=env.timeout, missing_ok=True)
+        if inspect is not None:
+            state = inspect["State"]
+            if not state["Running"] and not state["Restarting"] and not state["Paused"]:
+                container.remove(force=True, timeout=env.timeout, missing_ok=True)
+                image.containers.pop(container_tag, None)
+
+    # NOTE: do NOT delete dangling images.  Purge is a container-level operation, and
+    # deleting images would cause the user to explicitly rebuild them, providing their
+    # exact arguments once again.
 
     @staticmethod
     def image(
@@ -3261,25 +3282,13 @@ class Prune(_Command):
             return None
 
         # remove any stopped containers for this image
-        for container in image.containers.values():
+        for container_tag, container in list(image.containers.items()):
             inspect = container.inspect()
-            if inspect is not None and Container.stopped(inspect):
-                container.remove(force=True, timeout=env.timeout, missing_ok=True)
-
-        # check whether the image is now dangling
-        containers = list(podman_cmd([
-            "container",
-            "ls",
-            "-a",
-            "-q",
-            "--no-trunc",
-            "--filter", f"ancestor={image.id}",
-        ], capture_output=True).stdout.splitlines())
-        if not containers:
-            podman_cmd(["image", "rm", "-f", "-i", image.id])
-
-        # remove any now-dangling volumes
-        _remove_dangling_volumes(force=True, missing_ok=True)
+            if inspect is not None:
+                state = inspect["State"]
+                if not state["Running"] and not state["Restarting"] and not state["Paused"]:
+                    container.remove(force=True, timeout=env.timeout, missing_ok=True)
+                    image.containers.pop(container_tag, None)
 
     @staticmethod
     def environment(
@@ -3293,14 +3302,12 @@ class Prune(_Command):
     @staticmethod
     def all(**kwargs: Any) -> None:
         if confirm(
-            "This will prune all stopped Bertrand containers and dangling images on this "
-            "system.  This may take a long time depending on the number and complexity "
-            "of the environments.\n"
+            "This will remove all stopped Bertrand containers on this system.\n"
             "Are you sure you want to continue? [y/N] "
         ):
-            for env_path in _list_all():
+            for env_path in _all_environments():
                 try:
-                    with Environment(Path(env_path)) as env:
+                    with Environment(env_path) as env:
                         Prune.environment(env=env, **kwargs)
                 except Exception as err:
                     print(err, file=sys.stderr)
@@ -3381,9 +3388,9 @@ class Rm(_Command):
         timeout: int,
         **kwargs: Any
     ) -> None:
-        for env_path in _list_all():
+        for env_path in _all_environments():
             try:
-                with Environment(Path(env_path)) as env:
+                with Environment(env_path) as env:
                     env.remove(force=force, timeout=timeout, missing_ok=True)
                     env.tags.clear()
             except Exception as err:
