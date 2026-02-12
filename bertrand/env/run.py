@@ -311,6 +311,8 @@ class LockDir:
 
         # attempt to acquire lock
         start = time.time()
+        unreadable_owner_since: float | None = None
+        unreadable_owner_grace = 5.0
         while True:
             try:
                 self.path.mkdir(parents=True)  # atomic
@@ -321,14 +323,22 @@ class LockDir:
                     owner = json.loads(self.lock.read_text(encoding="utf-8"))
                     if not isinstance(owner, dict):
                         shutil.rmtree(self.path, ignore_errors=True)
+                        unreadable_owner_since = None
                         continue
                 except Exception:  # pylint: disable=broad-except
+                    if unreadable_owner_since is None:
+                        unreadable_owner_since = now
+                    if (now - unreadable_owner_since) > unreadable_owner_grace:
+                        shutil.rmtree(self.path, ignore_errors=True)
+                        unreadable_owner_since = None
+                        continue
                     if (now - start) > self.timeout:
                         raise TimeoutError(
                             f"could not acquire environment lock within {self.timeout} seconds"
                         ) from err
                     time.sleep(0.1)
                     continue
+                unreadable_owner_since = None
 
                 # check whether owning process is still alive
                 owner_pid = owner.get("pid")

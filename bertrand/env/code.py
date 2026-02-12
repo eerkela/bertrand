@@ -31,6 +31,7 @@ CODE_LAUNCH_TIMEOUT: float = 10.0
 CODE_PROBE_TIMEOUT: float = 10.0
 CODE_RPC_CLIENT_HEADROOM: float = 2.0
 CODE_RPC_CLIENT_TIMEOUT: float = CODE_LAUNCH_TIMEOUT + CODE_RPC_CLIENT_HEADROOM
+CODE_RPC_READ_TIMEOUT: float = CODE_RPC_CLIENT_TIMEOUT
 CODE_SOCKET_VERSION: int = 1
 CODE_SOCKET_OP_OPEN: str = "open_editor"
 CODE_SOCKET_DIR: Path = User().home / ".local" / "share" / "bertrand" / "code-rpc"
@@ -42,6 +43,7 @@ CONTAINER_ID_ENV: str = "BERTRAND_CONTAINER_ID"
 CONTAINER_BIN_ENV: str = "BERTRAND_CODE_PODMAN_BIN"
 EDITOR_BIN_ENV: str = "BERTRAND_CODE_EDITOR_BIN"
 SOCKET_ENV: str = "BERTRAND_CODE_SOCKET"
+CODE_SERVER_ENV: str = "BERTRAND_CODE_SERVER"
 HOST_ENV: str = "BERTRAND_HOST_ENV"
 WORKSPACE_ENV: str = "BERTRAND_WORKSPACE"
 WORKSPACE_MOUNT: str = "/env"
@@ -234,6 +236,55 @@ def send_request(
         client.close()
 
     return _parse_response_line(line)
+
+
+def probe_code_server(
+    *,
+    socket_path: Path = CODE_SOCKET,
+    timeout: float = CODE_PROBE_TIMEOUT,
+    interval: float = 0.1,
+) -> bool:
+    """Check whether the RPC server socket is reachable within a bounded timeout.
+
+    Parameters
+    ----------
+    socket_path : Path, optional
+        The path to the server's Unix socket file.  Defaults to `CODE_SOCKET`.
+    timeout : float, optional
+        Maximum time in seconds to wait for the server to become reachable.
+    interval : float, optional
+        Delay in seconds between failed connection attempts.
+
+    Returns
+    -------
+    bool
+        True if the socket accepted a connection before timeout, otherwise False.
+
+    Raises
+    ------
+    OSError
+        If `socket_path` is not absolute.
+    """
+    path = socket_path.expanduser()
+    if not path.is_absolute():
+        raise OSError(f"RPC socket path must be absolute: {path}")
+
+    # spin while trying to connect to socket until timeout expires
+    timeout = max(timeout, 0.0)
+    deadline = time.monotonic() + timeout
+    while True:
+        client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        remaining = max(0.0, deadline - time.monotonic())
+        client.settimeout(max(remaining, 0.001))
+        try:
+            client.connect(str(path))
+            return True
+        except OSError:
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(min(max(interval, 0.0), max(0.0, deadline - time.monotonic())))
+        finally:
+            client.close()
 
 
 def request_open_editor(
@@ -752,19 +803,24 @@ class CodeServer:
         self._ensure_listening()
         assert self._sock is not None
 
-        # accept a single connection and read a line of input
-        conn, _ = self._sock.accept()
-        try:
-            reader = conn.makefile("r", encoding="utf-8", newline="\n")  # newline-terminated
+        # accept one connection at a time; drop stalled/broken clients without
+        # taking down the listener loop.
+        while True:
+            conn, _ = self._sock.accept()
+            conn.settimeout(CODE_RPC_READ_TIMEOUT)
             try:
-                line = reader.readline(MAX_REQUEST_BYTES + 1)  # enforce max request size
-            finally:
-                reader.close()
-        except Exception:
-            conn.close()
-            raise
-
-        return conn, line
+                reader = conn.makefile("r", encoding="utf-8", newline="\n")
+                try:
+                    line = reader.readline(MAX_REQUEST_BYTES + 1)  # enforce max request size
+                finally:
+                    reader.close()
+                return conn, line
+            except (TimeoutError, socket.timeout, OSError, UnicodeError):
+                conn.close()
+                continue
+            except Exception:
+                conn.close()
+                raise
 
     def _handle_request_line(self, line: str) -> CodeServer.Response:
         if not line:

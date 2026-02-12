@@ -20,7 +20,6 @@ from typing import (
     Annotated,
     Any,
     Callable,
-    Iterable,
     Literal,
     Protocol,
     TypeAlias,
@@ -43,16 +42,19 @@ from pydantic import (
 
 from .code import (
     CODE_SOCKET_DIR,
+    CODE_SOCKET,
     CONTAINER_SOCKET_DIR,
     CONTAINER_SOCKET,
     VSCODE_EXECUTABLE_CANDIDATES,
     EDITOR_BIN_ENV,
     CONTAINER_BIN_ENV,
     SOCKET_ENV,
+    CODE_SERVER_ENV,
     HOST_ENV,
     CONTAINER_ID_ENV,
     WORKSPACE_ENV,
     WORKSPACE_MOUNT,
+    probe_code_server,
 )
 from .config import (
     Config,
@@ -122,6 +124,7 @@ PACKAGE_MANAGER = "package_manager"
 DISTRO_ID = "distro_id"
 DISTRO_VERSION = "distro_version"
 DISTRO_CODENAME = "distro_codename"
+CODE_SERVER_AVAILABLE = "code_server_available"
 
 
 @atomic
@@ -517,6 +520,8 @@ CODE_SERVICE_FLATPAK_PATHS: tuple[str, ...] = (
     str(User().home / ".local" / "share" / "flatpak" / "exports" / "bin"),
     "/var/lib/flatpak/exports/bin",
 )
+CODE_SERVICE_PROBE_TIMEOUT_STRICT = 10.0
+CODE_SERVICE_PROBE_TIMEOUT_ENTER = 5.0
 
 
 def _systemd_environment_line(key: str, value: str) -> str:
@@ -672,19 +677,58 @@ def init_environment(ctx: Pipeline.InProgress) -> None:
     )
 
 
-@on_code(ephemeral=True)
-@on_enter(ephemeral=True)
-def start_code_service(ctx: Pipeline.InProgress) -> None:
-    """Start the code RPC service when launching `bertrand code` outside an
-    environment, or upon entering an environment, to ensure it's running before any
-    in-container `bertrand code` commands are issued.
+def _warn_code_server_unavailable(reason: str) -> None:
+    print(
+        "bertrand: warning: failed to reach the code RPC service; entering with "
+        f"{CODE_SERVER_ENV}=0 ({reason}).  In-container `bertrand code` will fail "
+        "until you exit and re-enter after the service is healthy.",
+        file=sys.stderr
+    )
 
-    Parameters
-    ----------
-    ctx : Pipeline.InProgress
-        The in-flight pipeline context.
-    """
-    ctx.do(StartService(name=CODE_SERVICE_NAME, user=True), undo=False)
+
+def _start_and_probe_code_service(ctx: Pipeline.InProgress, *, strict: bool) -> bool:
+    # start code service and error/warn if it fails
+    try:
+        ctx.do(StartService(name=CODE_SERVICE_NAME, user=True), undo=False)
+    except Exception as err:
+        message = (
+            f"failed to start '{CODE_SERVICE_NAME}'.  Check "
+            f"`systemctl --user status {CODE_SERVICE_NAME}`."
+        )
+        if strict:
+            raise OSError(f"{message} ({err})") from err
+        _warn_code_server_unavailable(str(err))
+        return False
+
+    # if code service doesn't become reachable within timeout, error/warn
+    try:
+        probe_timeout = (
+            CODE_SERVICE_PROBE_TIMEOUT_STRICT
+            if strict else
+            CODE_SERVICE_PROBE_TIMEOUT_ENTER
+        )
+        reachable = probe_code_server(socket_path=CODE_SOCKET, timeout=probe_timeout)
+    except Exception as err:
+        message = (
+            f"failed to probe RPC socket at {CODE_SOCKET}.  Check "
+            f"`systemctl --user status {CODE_SERVICE_NAME}`."
+        )
+        if strict:
+            raise OSError(f"{message} ({err})") from err
+        _warn_code_server_unavailable(str(err))
+        return False
+    if reachable:
+        return True
+
+    # error/warn
+    message = (
+        f"code RPC socket remained unreachable at {CODE_SOCKET} after startup.  Check "
+        f"`systemctl --user status {CODE_SERVICE_NAME}`."
+    )
+    if strict:
+        raise OSError(message)
+    _warn_code_server_unavailable(message)
+    return False
 
 
 def podman_cmd(
@@ -836,20 +880,10 @@ def _sanitize_name(name: str) -> str:
     return "".join(out).strip("_")
 
 
-def _normalize_args(args: Iterable[str]) -> list[str]:
-    out: list[str] = []
-    for s in args:
-        if any(c.isspace() for c in s):
-            out.extend(shlex.split(s))
-        else:
-            out.append(s)
-    return out
-
-
 def _check_list_field(value: object, field: str) -> list[str]:
     if not isinstance(value, list) or not all(isinstance(x, str) for x in value):
         raise ValueError(f"missing or invalid '{field}' field: {value}")
-    return _normalize_args(value)
+    return value
 
 
 def _check_args_field(value: object) -> list[str]:
@@ -1367,8 +1401,6 @@ class Image(BaseModel):
                 container_args = []  # empty tag implies empty args
             else:
                 container_args = existing.args  # reuse existing args
-        else:
-            container_args = _normalize_args(container_args)  # define new args
 
         # reuse container if args match and container has not been relocated
         if existing is not None and existing.args == container_args:
@@ -1857,7 +1889,7 @@ class Environment:
         )
 
         # release lock
-        shutil.rmtree(env_dir / ".lock", ignore_errors=True)
+        self._lock.__exit__(exc_type, exc_value, traceback)
 
     def __hash__(self) -> int:
         return hash(self.root)
@@ -2345,8 +2377,6 @@ class Build(_Command):
                 args = []  # empty tag implies empty args
             else:
                 args = existing.args  # reuse existing args
-        else:
-            args = _normalize_args(args)  # define new args
 
         # build new image
         # NOTE: podman + BuildAh will automatically reuse cached layers as long as
@@ -2385,22 +2415,25 @@ class Build(_Command):
         if existing is not None and image.id == existing.id:
             return existing
 
-        # rebuild downstream containers for new image, then replace existing image
-        try:
-            for container_tag, container in existing.containers.items() if existing else []:
-                image.build(
-                    env_root=env.root,
-                    env_uuid=env.id,
-                    image_tag=image_tag,
-                    container_tag=container_tag,
-                    container_args=container.args
-                )
-            image.remove(force=True, timeout=env.timeout, missing_ok=True)
-        except Exception as err:
-            for container in image.containers.values():
-                podman_cmd(["container", "rm", "-f", container.id], check=False)
-            podman_cmd(["image", "rm", "-f", image.id], check=False)
-            raise err
+        # rebuild downstream containers for new image
+        if existing is not None:
+            try:
+                for container_tag, container in existing.containers.items():
+                    image.build(
+                        env_root=env.root,
+                        env_uuid=env.id,
+                        image_tag=image_tag,
+                        container_tag=container_tag,
+                        container_args=container.args
+                    )
+                existing.remove(force=True, timeout=env.timeout, missing_ok=True)
+            except Exception:
+                for container in image.containers.values():
+                    podman_cmd(["container", "rm", "-f", container.id], check=False)
+                podman_cmd(["image", "rm", "-f", image.id], check=False)
+                raise
+
+        # register new image
         env.tags[image_tag] = image
         return image
 
@@ -2446,14 +2479,18 @@ class Start(_Command):
         args: list[str],
         **kwargs: Any
     ) -> Container:
-        image = env.tags.get(image_tag)
-        if image is None:
-            raise KeyError(f"no image found for tag: '{image_tag}'")
-        container = Build.container(
+        image = Build.image(
             env=env,
             image_tag=image_tag,
+            args=[],
+            **kwargs
+        )
+        container = image.build(
+            env_root=env.root,
+            env_uuid=env.id,
+            image_tag=image_tag,
             container_tag=container_tag,
-            args=args,
+            container_args=args if args else None,
         )
         inspect = container.inspect()
         if inspect is None:
@@ -2542,8 +2579,22 @@ class Enter(_Command):
     container, starting or rebuilding it as necessary.  This is equivalent to `Start`
     followed by a `podman container exec {shell}` command on a single container,
     where `{shell}` is set by the parent environment.
+
+    Code RPC startup is best-effort for this command.  Shell entry always continues,
+    and `BERTRAND_CODE_SERVER=0|1` is injected to describe whether in-container
+    `bertrand code` is expected to work.
     """
+
+    @staticmethod
+    def _validate_code_server_available(x: JSONView) -> bool:
+        if x is None:
+            return False
+        if isinstance(x, bool):
+            return x
+        raise TypeError(f"invalid '{CODE_SERVER_AVAILABLE}' fact type: {type(x).__name__}")
+
     args: Validator = field(default=_validate_args)
+    code_server_available: Validator = field(default=_validate_code_server_available)
 
     @staticmethod
     def container(
@@ -2552,6 +2603,7 @@ class Enter(_Command):
         image_tag: str,
         container_tag: str,
         args: list[str],
+        code_server_available: bool,
         **kwargs: Any
     ) -> None:
         if not sys.stdin.isatty() or not sys.stdout.isatty():
@@ -2599,6 +2651,7 @@ class Enter(_Command):
             "-e", f"{HOST_ENV}={str(env.root)}",
             "-e", f"{CONTAINER_ID_ENV}={container.id}",
             "-e", f"{WORKSPACE_ENV}={WORKSPACE_MOUNT}",
+            "-e", f"{CODE_SERVER_ENV}={'1' if code_server_available else '0'}",
             container.id,
             *shell,
         ])
@@ -2646,8 +2699,10 @@ class Enter(_Command):
 @dataclass
 class Code(_Command):
     """Launch a host-side editor by invoking the internal `bertrand code` command
-    within a running container context.
+    within a running container context.  This command requires the host RPC service
+    to be reachable before it proceeds.
     """
+
     @staticmethod
     def container(
         *,
@@ -2670,6 +2725,7 @@ class Code(_Command):
             "-e", f"{HOST_ENV}={str(env.root)}",
             "-e", f"{CONTAINER_ID_ENV}={container.id}",
             "-e", f"{WORKSPACE_ENV}={WORKSPACE_MOUNT}",
+            "-e", f"{CODE_SERVER_ENV}=1",
             container.id,
             "bertrand", "code",  # delegate to in-container implementation
         ])
@@ -2796,6 +2852,7 @@ class Stop(_Command):
     """Stop running Bertrand containers within an environment, scoping to specific images
     and containers if desired.
     """
+
     @staticmethod
     def _validate_timeout(x: JSONView) -> int:
         if x is None:
@@ -3041,6 +3098,7 @@ class Restart(_Command):
     specific images and containers if desired.  If an image or container is out of
     date, then it will be rebuilt before restarting.
     """
+
     @staticmethod
     def _validate_timeout(x: JSONView) -> int:
         if x is None:
@@ -3257,6 +3315,7 @@ class Rm(_Command):
     filesystem.  The environment directory may be safely deleted after invoking this
     command.
     """
+
     @staticmethod
     def _validate_timeout(x: JSONView) -> int:
         if x is None:
@@ -3355,6 +3414,7 @@ class Ls(_Command):
     stdout in a human-readable table format, and nothing will be returned by this
     function.
     """
+
     class JSON(TypedDict):
         """Type hint for the json output of `podman container ls`."""
         ID: str
@@ -3614,6 +3674,7 @@ class Monitor(_Command):
     function.  `json` is incompatible with `interval`, which continuously updates the
     printed output in a streaming format if set to a non-zero value.
     """
+
     class JSON(TypedDict):
         """Type hint for the json output of `podman stats`."""
         Container: str
@@ -3960,13 +4021,15 @@ def podman_start(ctx: Pipeline.InProgress) -> None:
     Start()(ctx)
 
 
-@on_code(requires=[start_code_service], ephemeral=True)
+@on_code(ephemeral=True)
 def podman_code(ctx: Pipeline.InProgress) -> None:
+    ctx[CODE_SERVER_AVAILABLE] = _start_and_probe_code_service(ctx, strict=True)
     Code()(ctx)
 
 
-@on_enter(requires=[start_code_service], ephemeral=True)
+@on_enter(ephemeral=True)
 def podman_enter(ctx: Pipeline.InProgress) -> None:
+    ctx[CODE_SERVER_AVAILABLE] = _start_and_probe_code_service(ctx, strict=False)
     Enter()(ctx)
 
 

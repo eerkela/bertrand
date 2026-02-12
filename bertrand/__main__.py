@@ -13,6 +13,7 @@ from typing import Callable
 
 from .env.code import (
     SOCKET_ENV,
+    CODE_SERVER_ENV,
     HOST_ENV,
     CONTAINER_ID_ENV,
     WORKSPACE_ENV,
@@ -350,9 +351,11 @@ class External:
                 help=
                     "Launch an interactive shell session within a Bertrand virtual "
                     "environment at the specified path.  If the container is not "
-                    "already running, it will be started automatically.  Use 'exit' "
-                    "(without a 'bertrand' prefix) to leave the shell and return to "
-                    "the host system.",
+                    "already running, it will be started automatically.  If the host "
+                    "code RPC service is unavailable, Bertrand will warn on entrance "
+                    "and disable the `bertrand code` command within the shell context.  "
+                    "Use 'exit' (without a 'bertrand' prefix) to leave the shell and "
+                    "return to the host system.",
             )
             command.add_argument(
                 "path",
@@ -764,9 +767,11 @@ class External:
                     "rather than within the container, and no editor is actually "
                     "bundled inside the container.  This necessitates an RPC service "
                     "to communicate between the container and host contexts, which is "
-                    "managed via systemd.  Currently only supports vscode and its "
-                    "Remote Containers extension, but other editors may be added in "
-                    "the future.",
+                    "managed via systemd.  Bertrand performs a strict startup/probe "
+                    "before launching, and fails fast if the RPC service is "
+                    "unreachable.  Currently only supports vscode and its Remote "
+                    "Containers extension, but other editors may be added in the "
+                    "future.",
             )
             command.add_argument(
                 "path",
@@ -1331,10 +1336,10 @@ class Internal:
                     "directory and mount its internal toolchain using remote "
                     "development extensions.  Note that the editor choice is "
                     "determined by the environment configuration, and the editor "
-                    "process is owned by the host system and not this container.  "
-                    "An RPC service managed by systemd enables this communication.  "
-                    "Currently only supports vscode and its Remote Containers "
-                    "extension, but other editors may be added in the future.",
+                    "process is owned by the host system, not this container.  An RPC "
+                    "service managed by systemd enables this communication.  Currently "
+                    "only supports vscode and its Remote Containers extension, but "
+                    "other editors may be added in the future.",
             )
 
         def build(self) -> None:
@@ -1419,6 +1424,17 @@ class Internal:
             raise OSError(
                 "`bertrand code` requires a live container context.  Run "
                 "`bertrand enter` first."
+            )
+
+        # check whether the RPC service was able to be reached when we entered the container
+        # shell and provide an informative error if not
+        code_server_status = os.environ.get(CODE_SERVER_ENV, "").strip()
+        if not code_server_status or code_server_status != "1":
+            raise OSError(
+                "Code server not available.  This likely means that you entered the "
+                "shell by means other than `bertrand enter`, or systemd was unable to "
+                "start the RPC service for some reason.  Please exit the environment and "
+                "re-enter, or call `bertrand code` externally to start the RPC service."
             )
 
         # sync .clang-* files with config in `pyproject.toml` so editor can reuse them
@@ -1541,10 +1557,11 @@ class Internal:
         """
         # ensure .clang-* files are upt to date with respect to pyproject.toml config
         _sync_cpp_tool_configs()
+        root = _project_root()
 
         # Python static checks
         for cmd in (["ruff", "check", "."], ["ty", "check", "."]):
-            result = subprocess.run(cmd, check=False)
+            result = subprocess.run(cmd, check=False, cwd=root)
             if result.returncode != 0:
                 raise SystemExit(result.returncode)
 
@@ -1556,7 +1573,8 @@ class Internal:
         for source in files:
             result = subprocess.run(
                 ["clang-tidy", "-p", build_dir, str(source)],
-                check=False
+                check=False,
+                cwd=root,
             )
             if result.returncode != 0:
                 raise SystemExit(result.returncode)
@@ -1576,7 +1594,7 @@ class Internal:
         SystemExit
             If the test process exits non-zero.
         """
-        result = subprocess.run(["pytest", "-q"], check=False)
+        result = subprocess.run(["pytest", "-q"], check=False, cwd=_project_root())
         if result.returncode != 0:
             raise SystemExit(result.returncode)
 
@@ -1599,16 +1617,17 @@ class Internal:
         """
         # ensure .clang-* files are upt to date with respect to pyproject.toml config
         _sync_cpp_tool_configs()
+        root = _project_root()
 
         # Python formatting
-        result = subprocess.run(["ruff", "format", "."], check=False)
+        result = subprocess.run(["ruff", "format", "."], check=False, cwd=root)
         if result.returncode != 0:
             raise SystemExit(result.returncode)
 
         # C++ formatting: require compile_commands.json in project root
         _, files = _compile_commands_sources()
         for source in files:
-            result = subprocess.run(["clang-format", "-i", str(source)], check=False)
+            result = subprocess.run(["clang-format", "-i", str(source)], check=False, cwd=root)
             if result.returncode != 0:
                 raise SystemExit(result.returncode)
 
