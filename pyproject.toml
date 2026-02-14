@@ -60,6 +60,7 @@ keywords = [
 ]
 dependencies = [
     "conan",
+    "mcp==1.9.4",
     "numpy",
     "packaging",
     # "pandas >= 2.0.0",
@@ -82,6 +83,7 @@ requires-python = ">=3.12"
 [project.scripts]
 bertrand = "bertrand.__main__:main"
 bertrand-code-rpc = "bertrand.env.code:main"
+bertrand-mcp = "bertrand.env.mcp:main"
 
 [project.optional-dependencies]
 dev = [

@@ -21,7 +21,16 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from .config import EDITORS, AGENTS, ASSISTS, Config
+from .config import (
+    AGENTS,
+    ASSISTS,
+    CONTAINER_BIN_ENV,
+    EDITOR_BIN_ENV,
+    EDITORS,
+    MOUNT,
+    Config
+)
+from .mcp import sync_vscode_mcp_config
 from .run import User, atomic_write_text, mkdir_private
 
 # pylint: disable=broad-exception-caught
@@ -34,19 +43,10 @@ CODE_RPC_CLIENT_TIMEOUT: float = CODE_LAUNCH_TIMEOUT + CODE_RPC_CLIENT_HEADROOM
 CODE_RPC_READ_TIMEOUT: float = CODE_RPC_CLIENT_TIMEOUT
 CODE_SOCKET_VERSION: int = 1
 CODE_SOCKET_OP_OPEN: str = "open_editor"
-CODE_SOCKET_DIR: Path = User().home / ".local" / "share" / "bertrand" / "code-rpc"
-CODE_SOCKET: Path = CODE_SOCKET_DIR / "listener.sock"
+CODE_SOCKET: Path = User().home / ".local" / "share" / "bertrand" / "code-rpc" / "listener.sock"
 MAX_REQUEST_BYTES: int = 1024 * 1024  # 1 MiB
 CONTAINER_SOCKET_DIR: Path = Path("/run/bertrand/code-rpc")
 CONTAINER_SOCKET: Path = CONTAINER_SOCKET_DIR / "listener.sock"
-CONTAINER_ID_ENV: str = "BERTRAND_CONTAINER_ID"
-CONTAINER_BIN_ENV: str = "BERTRAND_CODE_PODMAN_BIN"
-EDITOR_BIN_ENV: str = "BERTRAND_CODE_EDITOR_BIN"
-SOCKET_ENV: str = "BERTRAND_CODE_SOCKET"
-CODE_SERVER_ENV: str = "BERTRAND_CODE_SERVER"
-HOST_ENV: str = "BERTRAND_HOST_ENV"
-WORKSPACE_ENV: str = "BERTRAND_WORKSPACE"
-WORKSPACE_MOUNT: str = "/env"
 
 VSCODE_MANAGED_WORKSPACE_FILE: Path = Path(".bertrand") / "vscode" / "bertrand.code-workspace"
 VSCODE_MANAGED_WORKSPACE_FILE_POSIX: PurePosixPath = (
@@ -131,54 +131,14 @@ class LaunchError(OSError):
         super().__init__(f"{category}: {message}")
 
 
-def _prepare_socket(path: Path) -> Path:
-    path = path.expanduser().resolve()
-    mkdir_private(path.parent)
-    if not path.exists():
-        return path
-
-    mode = path.lstat().st_mode
-    if not stat.S_ISSOCK(mode):
-        raise OSError(f"socket path occupied: {path}")
-    path.unlink(missing_ok=True)
-    return path
-
-
-def _parse_response_line(line: str) -> CodeServer.Response:
-    if not line:
-        raise OSError("empty response from RPC server")
-    if len(line) > MAX_REQUEST_BYTES:
-        raise OSError("RPC response exceeds maximum size")
-    if not line.endswith("\n"):
-        raise OSError("RPC response must be newline-terminated")
-
-    # strip newline delimiter and whitespace
-    text = line.removesuffix("\n").strip()
-    if not text:
-        raise OSError("empty response from RPC server")
-
-    # parse JSON
-    try:
-        payload = json.loads(text)
-    except json.JSONDecodeError as err:
-        raise OSError(f"malformed RPC response: {err.msg}") from err
-    if not isinstance(payload, dict):
-        raise OSError("RPC response must be a JSON object")
-
-    # validate schema
-    try:
-        return CodeServer.Response.model_validate(payload)
-    except ValidationError as err:
-        raise OSError(f"invalid RPC response: {err}") from err
-
-
 def send_request(
     request: CodeServer.Request,
     *,
     socket_path: Path = CODE_SOCKET,
     timeout: float = CODE_RPC_CLIENT_TIMEOUT,
 ) -> CodeServer.Response:
-    """Send a single request to the code RPC server and wait for a single response.
+    """Send a single request to the code RPC server from inside a container context and
+    wait for a single response.
 
     Parameters
     ----------
@@ -231,14 +191,37 @@ def send_request(
         finally:
             reader.close()
 
-    # close client socket and return response
+    # close client socket
     finally:
         client.close()
 
-    return _parse_response_line(line)
+    # validate response format
+    if not line:
+        raise OSError("empty response from RPC server")
+    if len(line) > MAX_REQUEST_BYTES:
+        raise OSError("RPC response exceeds maximum size")
+    if not line.endswith("\n"):
+        raise OSError("RPC response must be newline-terminated")
+    text = line.removesuffix("\n").strip()
+    if not text:
+        raise OSError("empty response from RPC server")
+
+    # parse JSON
+    try:
+        response = json.loads(text)
+    except json.JSONDecodeError as err:
+        raise OSError(f"malformed RPC response: {err.msg}") from err
+    if not isinstance(response, dict):
+        raise OSError("RPC response must be a JSON object")
+
+    # validate schema
+    try:
+        return CodeServer.Response.model_validate(response)
+    except ValidationError as err:
+        raise OSError(f"invalid RPC response: {err}") from err
 
 
-def probe_code_server(
+def code_server_reachable(
     *,
     socket_path: Path = CODE_SOCKET,
     timeout: float = CODE_PROBE_TIMEOUT,
@@ -292,7 +275,7 @@ def request_open_editor(
     editor: str,
     env_root: Path,
     container_id: str,
-    container_workspace: str = WORKSPACE_MOUNT,
+    container_workspace: str = str(MOUNT),
     socket_path: Path = CODE_SOCKET,
     timeout: float = CODE_RPC_CLIENT_TIMEOUT,
 ) -> list[str]:
@@ -401,7 +384,7 @@ def _resolve_executable(
 
 
 def _normalize_workspace(container_workspace: str) -> str:
-    workspace = PurePosixPath(container_workspace.strip() or WORKSPACE_MOUNT)
+    workspace = PurePosixPath(container_workspace.strip() or MOUNT)
     if not workspace.is_absolute():
         raise LaunchError(
             "invalid_request",
@@ -708,6 +691,9 @@ def _launch_editor(
             "Python test discovery/execution features may be degraded in this "
             "editor session."
         )),
+        ("bertrand-mcp", (
+            "MCP server integration may be unavailable in this editor session."
+        )),
     ):
         warning = _optional_container_tool(
             podman_bin,
@@ -732,6 +718,12 @@ def _launch_editor(
         clangd_arguments=clangd_arguments,
         recommended_extensions=recommended_extensions,
     )
+
+    # merge Bertrand's MCP entry into workspace-level VS Code MCP config without
+    # touching user-managed server entries.
+    mcp_warning = sync_vscode_mcp_config(env_root)
+    if mcp_warning is not None:
+        warnings.append(mcp_warning)
 
     # open editor in detached (non-blocking) process
     workspace_uri = _vscode_workspace_uri(container_id, container_workspace_file)
@@ -768,7 +760,7 @@ class CodeServer:
         editor: str
         env_root: str
         container_id: str
-        container_workspace: str = WORKSPACE_MOUNT
+        container_workspace: str = str(MOUNT)
 
     class Response(BaseModel):
         """JSON response schema for the code RPC service."""
@@ -785,7 +777,13 @@ class CodeServer:
             return  # already listening
 
         # make private directory and clear existing socket file if needed
-        path = _prepare_socket(self.socket_path)
+        path = self.socket_path.expanduser().resolve()
+        mkdir_private(path.parent)
+        if path.exists():
+            mode = path.lstat().st_mode
+            if not stat.S_ISSOCK(mode):
+                raise OSError(f"socket path occupied: {path}")
+            path.unlink(missing_ok=True)
 
         # create Unix socket with restrictive permissions and bind to path
         server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -929,8 +927,8 @@ class CodeServer:
 
 
 def main() -> None:
-    """Console entry point for the code RPC listener, which starts the server and
-    begins listening for requests.
+    """Entry point for the code RPC listener, which starts the server and begins
+    listening for editor requests.
     """
     try:
         server = CodeServer(CODE_SOCKET)

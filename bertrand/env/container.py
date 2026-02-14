@@ -41,39 +41,45 @@ from pydantic import (
 )
 
 from .code import (
-    CODE_SOCKET_DIR,
+    CODE_PROBE_TIMEOUT,
     CODE_SOCKET,
     CONTAINER_SOCKET_DIR,
     CONTAINER_SOCKET,
     VSCODE_EXECUTABLE_CANDIDATES,
-    EDITOR_BIN_ENV,
-    CONTAINER_BIN_ENV,
-    SOCKET_ENV,
-    CODE_SERVER_ENV,
-    HOST_ENV,
-    CONTAINER_ID_ENV,
-    WORKSPACE_ENV,
-    WORKSPACE_MOUNT,
-    probe_code_server,
+    code_server_reachable,
 )
 from .config import (
-    Config,
+    AGENTS,
+    ASSISTS,
+    CODE_SERVER_ENV,
+    CONTAINER_BIN_ENV,
+    CONTAINER_ID_ENV,
     DEFAULT_EDITOR,
     DEFAULT_SHELL,
     DEFAULT_AGENT,
     DEFAULT_ASSIST,
-    SHELLS,
+    EDITOR_BIN_ENV,
     EDITORS,
-    AGENTS,
-    ASSISTS,
+    HOST_ENV,
+    SHELLS,
+    SOCKET_ENV,
+    MOUNT,
+    Config,
 )
-from .filesystem import WriteText
-from .package import InstallPackage, detect_package_manager
 from .pipeline import (
+    DelegateUserControllers,
+    EnableService,
+    EnsureSubIDs,
+    EnsureUserNamespaces,
+    InstallPackage,
     JSONValue,
     JSONView,
     Pipeline,
+    ReloadDaemon,
+    StartService,
+    WriteText,
     atomic,
+    detect_package_manager,
     on_init,
     on_ls,
     on_rm,
@@ -104,8 +110,6 @@ from .run import (
     mkdir_private,
     run,
 )
-from .systemd import DelegateUserControllers, ReloadDaemon, EnableService, StartService
-from .user import EnsureSubIDs, EnsureUserNamespaces
 from .version import __version__
 
 #pylint: disable=redefined-builtin, redefined-outer-name, broad-except
@@ -520,8 +524,6 @@ CODE_SERVICE_FLATPAK_PATHS: tuple[str, ...] = (
     str(User().home / ".local" / "share" / "flatpak" / "exports" / "bin"),
     "/var/lib/flatpak/exports/bin",
 )
-CODE_SERVICE_PROBE_TIMEOUT_STRICT = 10.0
-CODE_SERVICE_PROBE_TIMEOUT_ENTER = 5.0
 
 
 def _systemd_environment_line(key: str, value: str) -> str:
@@ -678,60 +680,6 @@ def init_environment(ctx: Pipeline.InProgress) -> None:
         containerignore=Containerignore(),
         pyproject=PyProject(code=code, agent=agent, assist=assist)
     )
-
-
-def _warn_code_server_unavailable(reason: str) -> None:
-    print(
-        "bertrand: warning: failed to reach the code RPC service; entering with "
-        f"{CODE_SERVER_ENV}=0 ({reason}).  In-container `bertrand code` will fail "
-        "until you exit and re-enter after the service is healthy.",
-        file=sys.stderr
-    )
-
-
-def _start_and_probe_code_service(ctx: Pipeline.InProgress, *, strict: bool) -> bool:
-    # start code service and error/warn if it fails
-    try:
-        ctx.do(StartService(name=CODE_SERVICE_NAME, user=True), undo=False)
-    except Exception as err:
-        message = (
-            f"failed to start '{CODE_SERVICE_NAME}'.  Check "
-            f"`systemctl --user status {CODE_SERVICE_NAME}`."
-        )
-        if strict:
-            raise OSError(f"{message} ({err})") from err
-        _warn_code_server_unavailable(str(err))
-        return False
-
-    # if code service doesn't become reachable within timeout, error/warn
-    try:
-        probe_timeout = (
-            CODE_SERVICE_PROBE_TIMEOUT_STRICT
-            if strict else
-            CODE_SERVICE_PROBE_TIMEOUT_ENTER
-        )
-        reachable = probe_code_server(socket_path=CODE_SOCKET, timeout=probe_timeout)
-    except Exception as err:
-        message = (
-            f"failed to probe RPC socket at {CODE_SOCKET}.  Check "
-            f"`systemctl --user status {CODE_SERVICE_NAME}`."
-        )
-        if strict:
-            raise OSError(f"{message} ({err})") from err
-        _warn_code_server_unavailable(str(err))
-        return False
-    if reachable:
-        return True
-
-    # error/warn
-    message = (
-        f"code RPC socket remained unreachable at {CODE_SOCKET} after startup.  Check "
-        f"`systemctl --user status {CODE_SERVICE_NAME}`."
-    )
-    if strict:
-        raise OSError(message)
-    _warn_code_server_unavailable(message)
-    return False
 
 
 def podman_cmd(
@@ -1186,7 +1134,7 @@ class Container(BaseModel):
         """
         mounts = inspect.get("Mounts") or []
         for m in mounts:
-            if m.get("Type") == "bind" and m.get("Destination") == WORKSPACE_MOUNT:
+            if m.get("Type") == "bind" and m.get("Destination") == str(MOUNT):
                 src = m.get("Source")
                 if src:
                     return Path(src).expanduser().resolve()
@@ -1409,7 +1357,7 @@ class Image(BaseModel):
         _ensure_cache_volume(bertrand_volume, env_uuid, "bertrand")
         _ensure_cache_volume(ccache_volume, env_uuid, "ccache")
         _ensure_cache_volume(conan_volume, env_uuid, "conan")
-        mkdir_private(CODE_SOCKET_DIR)
+        mkdir_private(CODE_SOCKET.parent)
         try:
             cid_file.parent.mkdir(parents=True, exist_ok=True)
             podman_cmd([
@@ -1426,11 +1374,11 @@ class Image(BaseModel):
                 "--label", f"BERTRAND_CONTAINER={container_tag}",
 
                 # mount environment directory
-                "-v", f"{str(env_root)}:{WORKSPACE_MOUNT}",
+                "-v", f"{str(env_root)}:{str(MOUNT)}",
                 "--mount",
                 (
                     "type=bind,"
-                    f"src={str(CODE_SOCKET_DIR)},"
+                    f"src={str(CODE_SOCKET.parent)},"
                     f"dst={str(CONTAINER_SOCKET_DIR)},"
                     "ro=true"
                 ),
@@ -1498,14 +1446,14 @@ ARG CPUS={os.cpu_count() or 1}
 FROM bertrand:${{BERTRAND}}.${{DEBUG}}.${{DEV}}.${{CPUS}}.{getpagesize() // 1024}
 
 # set cwd to the mounted environment directory
-WORKDIR {WORKSPACE_MOUNT}
+WORKDIR {str(MOUNT)}
 
 # set up incremental builds
 ENV UV_CACHE_DIR={CACHES}/uv
 ENV BERTRAND_CACHE={CACHES}/bertrand
 ENV CCACHE_DIR={CACHES}/ccache
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1
-COPY . {WORKSPACE_MOUNT}
+COPY . {str(MOUNT)}
 
 # you can extend this file in order to create a reproducible image that others can pull
 # from in their own Dockerfiles.  For example:
@@ -1529,8 +1477,8 @@ RUN --mount=type=cache,target={CACHES}/uv,sharing=locked \
 # leave this file alone.
 
 # In most cases, `bertrand build` and `pyproject.toml` is all you need.
-# C++ tooling rules are sourced from `[tool.conan]`, `[tool.clang_format]`,
-# `[tool.clang_tidy]`, and `[tool.clangd]` in pyproject.toml, then emitted as generated
+# C++ tooling rules are sourced from `[tool.conan]`, `[tool.clang-format]`,
+# `[tool.clang-tidy]`, and `[tool.clangd]` in pyproject.toml, then emitted as generated
 # `.clang-*` files at command runtime.  `pyproject.toml` is the single source of truth
 # for dependencies and tooling configuration across both languages.  If you'd like to
 # add your own tools outside of `pyproject.toml`, you can still use raw `uv` or
@@ -1635,10 +1583,10 @@ code = "{self.code}"
 agent = "{self.agent}"
 assist = "{self.assist}"
 
-[tool.clang_format]
+[tool.clang-format]
 style = {{ BasedOnStyle = "LLVM", IndentWidth = 4, ColumnLimit = 100 }}
 
-[tool.clang_tidy]
+[tool.clang-tidy]
 checks = [
     "clang-analyzer-*",
     "bugprone-*",
@@ -1906,7 +1854,7 @@ class Environment:
             "BERTRAND_IMAGE" in os.environ and
             "BERTRAND_CONTAINER" in os.environ
         ):
-            return Environment(root=Path(WORKSPACE_MOUNT))
+            return Environment(root=MOUNT)
         return None
 
     @staticmethod
@@ -2357,6 +2305,7 @@ class Build(_Command):
                 "--label", f"BERTRAND_ENV={env.id}",
                 "--label", f"BERTRAND_IMAGE={image_tag}",
                 *build_args,
+                str(env.root)
             ], cwd=env.root)
             image.id = iid_file.read_text(encoding="utf-8").strip()  # build returns image ID
         finally:
@@ -2597,10 +2546,9 @@ class Enter(_Command):
         podman_exec([
             "exec",
             "-it",
-            "-w", WORKSPACE_MOUNT,
+            "-w", str(MOUNT),
             "-e", f"{HOST_ENV}={str(env.root)}",
             "-e", f"{CONTAINER_ID_ENV}={container.id}",
-            "-e", f"{WORKSPACE_ENV}={WORKSPACE_MOUNT}",
             "-e", f"{CODE_SERVER_ENV}={'1' if code_server_available else '0'}",
             container.id,
             *shell,
@@ -2676,10 +2624,9 @@ class Code(_Command):
         podman_cmd([
             "exec",
             "-i",
-            "-w", WORKSPACE_MOUNT,
+            "-w", str(MOUNT),
             "-e", f"{HOST_ENV}={str(env.root)}",
             "-e", f"{CONTAINER_ID_ENV}={container.id}",
-            "-e", f"{WORKSPACE_ENV}={WORKSPACE_MOUNT}",
             "-e", f"{CODE_SERVER_ENV}=1",
             container.id,
             "bertrand", "code",  # delegate to in-container implementation
@@ -2762,7 +2709,7 @@ class Run(_Command):
         podman_cmd([
             "exec",
             *cmd,
-            "-w", WORKSPACE_MOUNT,
+            "-w", str(MOUNT),
             container.id,
             *args
         ])
@@ -4026,6 +3973,55 @@ def podman_build(ctx: Pipeline.InProgress) -> None:
 @on_start(ephemeral=True)
 def podman_start(ctx: Pipeline.InProgress) -> None:
     Start()(ctx)
+
+
+def _warn_code_server_unavailable(reason: str) -> None:
+    print(
+        "bertrand: warning: failed to reach the code RPC service; entering with "
+        f"{CODE_SERVER_ENV}=0 ({reason}).  In-container `bertrand code` will fail "
+        "until you exit and re-enter after the service is healthy.",
+        file=sys.stderr
+    )
+
+
+def _start_and_probe_code_service(ctx: Pipeline.InProgress, *, strict: bool) -> bool:
+    # start code service and error/warn if it fails
+    try:
+        ctx.do(StartService(name=CODE_SERVICE_NAME, user=True), undo=False)
+    except Exception as err:
+        message = (
+            f"failed to start '{CODE_SERVICE_NAME}'.  Check "
+            f"`systemctl --user status {CODE_SERVICE_NAME}`."
+        )
+        if strict:
+            raise OSError(f"{message} ({err})") from err
+        _warn_code_server_unavailable(str(err))
+        return False
+
+    # if code service doesn't become reachable within timeout, error/warn
+    try:
+        reachable = code_server_reachable(socket_path=CODE_SOCKET, timeout=CODE_PROBE_TIMEOUT)
+    except Exception as err:
+        message = (
+            f"failed to probe RPC socket at {CODE_SOCKET}.  Check "
+            f"`systemctl --user status {CODE_SERVICE_NAME}`."
+        )
+        if strict:
+            raise OSError(f"{message} ({err})") from err
+        _warn_code_server_unavailable(str(err))
+        return False
+    if reachable:
+        return True
+
+    # error/warn
+    message = (
+        f"code RPC socket remained unreachable at {CODE_SOCKET} after startup.  Check "
+        f"`systemctl --user status {CODE_SERVICE_NAME}`."
+    )
+    if strict:
+        raise OSError(message)
+    _warn_code_server_unavailable(message)
+    return False
 
 
 @on_code(ephemeral=True)

@@ -41,7 +41,7 @@ from pydantic import (
 )
 from typing_extensions import Annotated
 
-from .run import LockDir, User, atomic_write_text, mkdir_private
+from ..run import LockDir, User, atomic_write_text, mkdir_private
 
 
 #pylint: disable=broad-except

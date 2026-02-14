@@ -13,7 +13,7 @@ from typing import Callable, Literal, cast
 from .pipeline import JSONValue, Pipeline, atomic
 from .filesystem import WriteBytes, WriteText
 from .network import Download
-from .run import run, sudo_prefix
+from ..run import run, sudo_prefix
 
 # pylint: disable=unused-argument, missing-function-docstring, broad-exception-caught
 

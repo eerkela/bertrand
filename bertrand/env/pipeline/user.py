@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import cast
 
 from .pipeline import JSONValue, Pipeline, atomic
-from .run import atomic_write_text, confirm, run, sudo_prefix
+from ..run import atomic_write_text, confirm, run, sudo_prefix
 
 # pylint: disable=unused-argument, missing-function-docstring, broad-exception-caught
 

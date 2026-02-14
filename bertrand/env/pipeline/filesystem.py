@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import cast
 
 from .pipeline import JSONValue, Pipeline, atomic
-from .run import atomic_write_bytes, mkdir_private
+from ..run import atomic_write_bytes, mkdir_private
 
 # pylint: disable=unused-argument, missing-function-docstring, broad-exception-caught
 
@@ -388,7 +388,10 @@ class Mkdir:
             # try to restore them
             elif private:
                 permissions = payload.get("old_permissions")
-                if isinstance(permissions, int) and (force or _check_id(path, payload) is not False):
+                if (
+                    isinstance(permissions, int) and
+                    (force or _check_id(path, payload) is not False)
+                ):
                     try:
                         path.chmod(permissions)
                         _clear_id(ctx, payload)
@@ -946,10 +949,20 @@ class Move:
                                 continue
                             item_source_str = item_payload.get("source")
                             item_target_str = item_payload.get("target")
-                            if isinstance(item_source_str, str) and isinstance(item_target_str, str):
+                            if (
+                                isinstance(item_source_str, str) and
+                                isinstance(item_target_str, str)
+                            ):
                                 item_source = Path(item_source_str)
                                 item_target = Path(item_target_str)
-                                Move._undo(ctx, item_payload, item_source, item_target, errors, force=True)
+                                Move._undo(
+                                    ctx,
+                                    item_payload,
+                                    item_source,
+                                    item_target,
+                                    errors,
+                                    force=True
+                                )
                 else:
                     _remove_path(target, force=True)
                 created = payload.get("created")

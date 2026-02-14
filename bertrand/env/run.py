@@ -368,7 +368,7 @@ class LockDir:
 
                 # error on timeout
                 if (now - start) > self.timeout:
-                    detail = f"\nlock owner: {json.dumps(owner, indent=2)})" if owner else ""
+                    detail = f"\nlock owner: {json.dumps(owner, indent=2)}" if owner else ""
                     raise TimeoutError(
                         f"could not acquire environment lock within {self.timeout} seconds{detail}"
                     ) from err
