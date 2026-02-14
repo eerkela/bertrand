@@ -25,8 +25,8 @@ PYPROJECT_FILE: str = "pyproject.toml"
 SHELLS: dict[str, tuple[str, ...]] = {
     "bash": ("bash", "-l"),
 }
-EDITORS: dict[str, tuple[str, ...]] = {
-    "vscode": ("code",),
+EDITORS: dict[str, str] = {
+    "vscode": "code",
 }
 AGENTS: dict[str, tuple[str, ...]] = {
     "none": (),
@@ -54,8 +54,6 @@ if DEFAULT_ASSIST not in ASSISTS:
 CONTAINER_ID_ENV: str = "BERTRAND_CONTAINER_ID"
 CONTAINER_BIN_ENV: str = "BERTRAND_CODE_PODMAN_BIN"
 EDITOR_BIN_ENV: str = "BERTRAND_CODE_EDITOR_BIN"
-SOCKET_ENV: str = "BERTRAND_CODE_SOCKET"
-CODE_SERVER_ENV: str = "BERTRAND_CODE_SERVER"
 HOST_ENV: str = "BERTRAND_HOST_ENV"
 MOUNT: PosixPath = PosixPath("/env")
 assert MOUNT.is_absolute()
@@ -63,6 +61,9 @@ assert MOUNT.is_absolute()
 CLANG_FORMAT_FILE: str = ".clang-format"
 CLANG_TIDY_FILE: str = ".clang-tidy"
 CLANGD_FILE: str = ".clangd"
+
+
+# TODO: config should really use another pydantic model to handle validation
 
 
 @dataclass
@@ -136,7 +137,8 @@ class Config:
         code = self._validate_string("tool.bertrand.code", code)
         if code not in EDITORS:
             raise OSError(
-                f"unsupported editor in pyproject.toml [tool.bertrand].code: {code}"
+                f"unsupported editor in pyproject.toml [tool.bertrand].code: {code} "
+                f"(supported editors: {', '.join(sorted(EDITORS))})"
             )
 
         # parse tool.bertrand.agent

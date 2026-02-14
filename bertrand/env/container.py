@@ -6,7 +6,6 @@ from __future__ import annotations
 import json as json_parser
 import os
 import re
-import shlex
 import shutil
 import sys
 import uuid
@@ -41,43 +40,33 @@ from pydantic import (
 )
 
 from .code import (
-    CODE_PROBE_TIMEOUT,
+    CODE_SERVICE_ENV,
     CODE_SOCKET,
-    CONTAINER_SOCKET_DIR,
     CONTAINER_SOCKET,
-    VSCODE_EXECUTABLE_CANDIDATES,
-    code_server_reachable,
+    start_code_service,
 )
 from .config import (
     AGENTS,
     ASSISTS,
-    CODE_SERVER_ENV,
-    CONTAINER_BIN_ENV,
     CONTAINER_ID_ENV,
     DEFAULT_EDITOR,
     DEFAULT_SHELL,
     DEFAULT_AGENT,
     DEFAULT_ASSIST,
-    EDITOR_BIN_ENV,
     EDITORS,
     HOST_ENV,
     SHELLS,
-    SOCKET_ENV,
     MOUNT,
     Config,
 )
 from .pipeline import (
     DelegateUserControllers,
-    EnableService,
     EnsureSubIDs,
     EnsureUserNamespaces,
     InstallPackage,
     JSONValue,
     JSONView,
     Pipeline,
-    ReloadDaemon,
-    StartService,
-    WriteText,
     atomic,
     detect_package_manager,
     on_init,
@@ -507,133 +496,7 @@ def delegate_controllers(ctx: Pipeline.InProgress) -> None:
                     )
 
 
-CODE_SERVICE_NAME = "bertrand-code-rpc.service"
-CODE_SERVICE_DIR = User().home / ".config" / "systemd" / "user"
-CODE_SERVICE_FILE = CODE_SERVICE_DIR / CODE_SERVICE_NAME
-CODE_SERVICE_BASE_PATHS: tuple[str, ...] = (
-    str(User().home / ".local" / "bin"),
-    "/usr/local/sbin",
-    "/usr/local/bin",
-    "/usr/sbin",
-    "/usr/bin",
-    "/sbin",
-    "/bin",
-    "/snap/bin",
-)
-CODE_SERVICE_FLATPAK_PATHS: tuple[str, ...] = (
-    str(User().home / ".local" / "share" / "flatpak" / "exports" / "bin"),
-    "/var/lib/flatpak/exports/bin",
-)
-
-
-def _systemd_environment_line(key: str, value: str) -> str:
-    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
-    return f'Environment="{key}={escaped}"'
-
-
-def _code_service_path() -> str:
-    parts: list[str] = []
-    seen: set[str] = set()
-
-    current_path = os.environ.get("PATH", "")
-    for entry in (
-        *current_path.split(os.pathsep),
-        *CODE_SERVICE_BASE_PATHS,
-        *CODE_SERVICE_FLATPAK_PATHS,
-    ):
-        entry = entry.strip()
-        if not entry or entry in seen:
-            continue
-        seen.add(entry)
-        parts.append(entry)
-
-    return os.pathsep.join(parts)
-
-
-def _resolve_executable_on_path(name: str, *, path: str) -> Path | None:
-    value = shutil.which(name, path=path)
-    if value is None:
-        return None
-    candidate = Path(value)
-    if not candidate.is_absolute():
-        return None
-    return candidate.resolve()
-
-
-@on_init(requires=[delegate_controllers], version=1)
-def configure_code_service(ctx: Pipeline.InProgress) -> None:
-    """Set up a systemd service to launch the RPC server for in-container
-    `bertrand code` commands.
-
-    Parameters
-    ----------
-    ctx : Pipeline.InProgress
-        The in-flight pipeline context.
-
-    Raises
-    ------
-    OSError
-        If the server's entry point cannot be found.
-    """
-    service_path = _code_service_path()
-
-    exec_path = _resolve_executable_on_path("bertrand-code-rpc", path=service_path)
-    if exec_path is None:
-        raise OSError(
-            "'bertrand-code-rpc' executable not found on PATH.  Ensure Bertrand is "
-            "installed with console scripts before running 'bertrand init'."
-        )
-
-    # record path to podman and code executables in the service environment so they
-    # never drift within the service context
-    podman_path = _resolve_executable_on_path("podman", path=service_path)
-    if podman_path is None:
-        raise OSError(
-            "'podman' executable not found on PATH.  Ensure podman is installed before "
-            "running 'bertrand init'."
-        )
-
-    code_path: Path | None = None
-    for candidate in VSCODE_EXECUTABLE_CANDIDATES:
-        code_path = _resolve_executable_on_path(candidate, path=service_path)
-        if code_path is not None:
-            break
-
-    # use an explicit environment block to ensure the service has a consistent PATH and
-    # can always find podman and code, even if the user's login shell configuration is
-    # non-standard or broken
-    env_lines = [
-        _systemd_environment_line("PATH", service_path),
-        _systemd_environment_line(CONTAINER_BIN_ENV, str(podman_path)),
-    ]
-    if code_path is not None:
-        env_lines.append(_systemd_environment_line(EDITOR_BIN_ENV, str(code_path)))
-    env_block = "\n".join(env_lines)
-
-    # write unit file, reload, enable, and then start service
-    ctx.do(WriteText(
-        path=CODE_SERVICE_FILE,
-        text=f"""[Unit]
-Description=Bertrand Code RPC Listener
-
-[Service]
-Type=simple
-ExecStart={shlex.quote(str(exec_path))}
-Restart=on-failure
-RestartSec=1
-{env_block}
-
-[Install]
-WantedBy=default.target
-""",
-        replace=True
-    ))
-    ctx.do(ReloadDaemon(user=True))
-    ctx.do(EnableService(name=CODE_SERVICE_NAME, user=True))
-    ctx.do(StartService(name=CODE_SERVICE_NAME, user=True))
-
-
-@on_init(requires=[configure_code_service], ephemeral=True)
+@on_init(requires=[delegate_controllers], ephemeral=True)
 def init_environment(ctx: Pipeline.InProgress) -> None:
     """Initialize an environment directory with template configuration files if they
     are not already present.
@@ -1379,7 +1242,7 @@ class Image(BaseModel):
                 (
                     "type=bind,"
                     f"src={str(CODE_SOCKET.parent)},"
-                    f"dst={str(CONTAINER_SOCKET_DIR)},"
+                    f"dst={str(CONTAINER_SOCKET.parent)},"
                     "ro=true"
                 ),
 
@@ -1394,7 +1257,6 @@ class Image(BaseModel):
                 "-e", f"BERTRAND_ENV={env_uuid}",
                 "-e", f"BERTRAND_IMAGE={image_tag}",
                 "-e", f"BERTRAND_CONTAINER={container_tag}",
-                "-e", f"{SOCKET_ENV}={str(CONTAINER_SOCKET)}",
 
                 # any additional user-specified args
                 *container_args,
@@ -2467,6 +2329,14 @@ class Start(_Command):
                     print(err, file=sys.stderr)
 
 
+def _validate_code_server_available(x: JSONView) -> bool:
+    if x is None:
+        return False
+    if isinstance(x, bool):
+        return x
+    raise TypeError(f"invalid '{CODE_SERVER_AVAILABLE}' fact type: {type(x).__name__}")
+
+
 @dataclass
 class Enter(_Command):
     """Replace the current process with an interactive shell inside the specified
@@ -2478,15 +2348,6 @@ class Enter(_Command):
     and `BERTRAND_CODE_SERVER=0|1` is injected to describe whether in-container
     `bertrand code` is expected to work.
     """
-
-    @staticmethod
-    def _validate_code_server_available(x: JSONView) -> bool:
-        if x is None:
-            return False
-        if isinstance(x, bool):
-            return x
-        raise TypeError(f"invalid '{CODE_SERVER_AVAILABLE}' fact type: {type(x).__name__}")
-
     args: Validator = field(default=_validate_args)
     code_server_available: Validator = field(default=_validate_code_server_available)
 
@@ -2549,7 +2410,7 @@ class Enter(_Command):
             "-w", str(MOUNT),
             "-e", f"{HOST_ENV}={str(env.root)}",
             "-e", f"{CONTAINER_ID_ENV}={container.id}",
-            "-e", f"{CODE_SERVER_ENV}={'1' if code_server_available else '0'}",
+            "-e", f"{CODE_SERVICE_ENV}={'1' if code_server_available else '0'}",
             container.id,
             *shell,
         ])
@@ -2560,6 +2421,7 @@ class Enter(_Command):
         env: Environment,
         image_tag: str,
         args: list[str],
+        code_server_available: bool,
         **kwargs: Any
     ) -> None:
         Enter.container(
@@ -2567,6 +2429,7 @@ class Enter(_Command):
             image_tag=image_tag,
             container_tag="",  # default container
             args=args,
+            code_server_available=code_server_available,
             **kwargs
         )
 
@@ -2575,6 +2438,7 @@ class Enter(_Command):
         *,
         env: Environment,
         args: list[str],
+        code_server_available: bool,
         **kwargs: Any
     ) -> None:
         Enter.container(
@@ -2582,6 +2446,7 @@ class Enter(_Command):
             image_tag="",  # default image
             container_tag="",  # default container
             args=args,
+            code_server_available=code_server_available,
             **kwargs
         )
 
@@ -2589,6 +2454,7 @@ class Enter(_Command):
     def all(
         *,
         args: list[str],
+        code_server_available: bool,
         **kwargs: Any
     ) -> None:
         raise OSError("must specify a container to enter")
@@ -2600,6 +2466,7 @@ class Code(_Command):
     within a running container context.  This command requires the host RPC service
     to be reachable before it proceeds.
     """
+    code_server_available: Validator = field(default=_validate_code_server_available)
 
     @staticmethod
     def container(
@@ -2607,8 +2474,10 @@ class Code(_Command):
         env: Environment,
         image_tag: str,
         container_tag: str,
+        code_server_available: bool,
         **kwargs: Any
     ) -> None:
+        # start container
         Start.container(
             env=env,
             image_tag=image_tag,
@@ -2621,15 +2490,18 @@ class Code(_Command):
             raise OSError(
                 f"unable to start container '{container_tag}' in image '{image_tag}'"
             )
+
+        # delegate to in-container implementation, which will forward to the host RPC
+        # service
         podman_cmd([
             "exec",
             "-i",
             "-w", str(MOUNT),
             "-e", f"{HOST_ENV}={str(env.root)}",
             "-e", f"{CONTAINER_ID_ENV}={container.id}",
-            "-e", f"{CODE_SERVER_ENV}=1",
+            "-e", f"{CODE_SERVICE_ENV}={'1' if code_server_available else '0'}",
             container.id,
-            "bertrand", "code",  # delegate to in-container implementation
+            "bertrand", "code",
         ])
 
     @staticmethod
@@ -2637,12 +2509,14 @@ class Code(_Command):
         *,
         env: Environment,
         image_tag: str,
+        code_server_available: bool,
         **kwargs: Any
     ) -> None:
         Code.container(
             env=env,
             image_tag=image_tag,
             container_tag="",  # default container
+            code_server_available=code_server_available,
             **kwargs
         )
 
@@ -2650,20 +2524,35 @@ class Code(_Command):
     def environment(
         *,
         env: Environment,
+        code_server_available: bool,
         **kwargs: Any
     ) -> None:
         Code.container(
             env=env,
             image_tag="",  # default image
             container_tag="",  # default container
+            code_server_available=code_server_available,
             **kwargs
         )
 
     @staticmethod
     def all(
+        *,
+        code_server_available: bool,
         **kwargs: Any
     ) -> None:
         raise OSError("must specify a container to run 'code' in")
+
+    def __call__(self, ctx: Pipeline.InProgress) -> None:
+        if Environment.current() is not None:
+            raise OSError("cannot invoke podman from within a Bertrand container")
+
+        # TODO: I have to pass the environment root into `start_code_service` in
+        # order to read the right editor configuration in pyproject.toml
+
+        # start/refresh systemd code service
+        ctx[CODE_SERVER_AVAILABLE] = start_code_service(ctx, strict=True)
+        self._call(ctx)
 
 
 @dataclass
@@ -3975,64 +3864,14 @@ def podman_start(ctx: Pipeline.InProgress) -> None:
     Start()(ctx)
 
 
-def _warn_code_server_unavailable(reason: str) -> None:
-    print(
-        "bertrand: warning: failed to reach the code RPC service; entering with "
-        f"{CODE_SERVER_ENV}=0 ({reason}).  In-container `bertrand code` will fail "
-        "until you exit and re-enter after the service is healthy.",
-        file=sys.stderr
-    )
-
-
-def _start_and_probe_code_service(ctx: Pipeline.InProgress, *, strict: bool) -> bool:
-    # start code service and error/warn if it fails
-    try:
-        ctx.do(StartService(name=CODE_SERVICE_NAME, user=True), undo=False)
-    except Exception as err:
-        message = (
-            f"failed to start '{CODE_SERVICE_NAME}'.  Check "
-            f"`systemctl --user status {CODE_SERVICE_NAME}`."
-        )
-        if strict:
-            raise OSError(f"{message} ({err})") from err
-        _warn_code_server_unavailable(str(err))
-        return False
-
-    # if code service doesn't become reachable within timeout, error/warn
-    try:
-        reachable = code_server_reachable(socket_path=CODE_SOCKET, timeout=CODE_PROBE_TIMEOUT)
-    except Exception as err:
-        message = (
-            f"failed to probe RPC socket at {CODE_SOCKET}.  Check "
-            f"`systemctl --user status {CODE_SERVICE_NAME}`."
-        )
-        if strict:
-            raise OSError(f"{message} ({err})") from err
-        _warn_code_server_unavailable(str(err))
-        return False
-    if reachable:
-        return True
-
-    # error/warn
-    message = (
-        f"code RPC socket remained unreachable at {CODE_SOCKET} after startup.  Check "
-        f"`systemctl --user status {CODE_SERVICE_NAME}`."
-    )
-    if strict:
-        raise OSError(message)
-    _warn_code_server_unavailable(message)
-    return False
-
-
 @on_code(ephemeral=True)
 def podman_code(ctx: Pipeline.InProgress) -> None:
-    ctx[CODE_SERVER_AVAILABLE] = _start_and_probe_code_service(ctx, strict=True)
     Code()(ctx)
 
 
 @on_enter(ephemeral=True)
 def podman_enter(ctx: Pipeline.InProgress) -> None:
-    ctx[CODE_SERVER_AVAILABLE] = _start_and_probe_code_service(ctx, strict=False)
+    ctx[CODE_SERVER_AVAILABLE] = start_code_service(ctx, strict=False)
     Enter()(ctx)
 
 

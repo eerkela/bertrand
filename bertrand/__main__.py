@@ -11,7 +11,7 @@ import sys
 from pathlib import Path
 from typing import Callable
 
-from .env.code import request_open_editor
+from .env.code import CodeError, open_editor
 from .env.pipeline import (
     Pipeline,
     on_init,
@@ -35,12 +35,7 @@ from .env.container import Environment
 from .env.config import (
     AGENTS,
     ASSISTS,
-    CODE_SERVER_ENV,
-    CONTAINER_ID_ENV,
-    EDITORS,
-    HOST_ENV,
     MOUNT,
-    SOCKET_ENV,
     Config,
     compile_commands_sources,
 )
@@ -1344,88 +1339,17 @@ class Internal:
 
         Raises
         ------
-        OSError
+        CodeError
             If there is an error with the RPC communication or the editor
             configuration.
         """
         if not inside_container():
-            raise OSError(
+            raise CodeError(
+                "invalid_service_environment",
                 "`bertrand code` requires a live container context.  Run "
                 "`bertrand enter` first."
             )
-
-        # check whether the RPC service was able to be reached when we entered the container
-        # shell and provide an informative error if not
-        code_server_status = os.environ.get(CODE_SERVER_ENV, "").strip()
-        if not code_server_status or code_server_status != "1":
-            raise OSError(
-                "Code server not available.  This likely means that you entered the "
-                "shell by means other than `bertrand enter`, or systemd was unable to "
-                "start the RPC service for some reason.  Please exit the environment and "
-                "re-enter, or call `bertrand code` externally to start the RPC service."
-            )
-
-        # sync tooling files with `pyproject.toml` so editor can reuse them
-        with Config(MOUNT) as config:
-            config.sync()
-
-        # get environment variables for RPC communication, which should have been set
-        # by `bertrand enter` when we opened the container shell
-        socket_path = os.environ.get(SOCKET_ENV, "").strip()
-        if not socket_path:
-            raise OSError(
-                "missing RPC socket path.  Enter this environment with `bertrand enter` "
-                f"to populate '{SOCKET_ENV}'."
-            )
-        host_env_root = os.environ.get(HOST_ENV, "").strip()
-        if not host_env_root:
-            raise OSError(
-                "missing host environment root for RPC request.  Enter this environment "
-                f"with `bertrand enter` to populate '{HOST_ENV}'."
-            )
-        container_id = os.environ.get(CONTAINER_ID_ENV, "").strip()
-        if not container_id:
-            raise OSError(
-                "missing container identity for RPC request.  Enter this environment "
-                f"with `bertrand enter` to populate '{CONTAINER_ID_ENV}'."
-            )
-
-        # locate bind-mounted RPC socket
-        rpc_socket = Path(socket_path)
-        if not rpc_socket.is_absolute():
-            raise OSError(f"RPC socket path must be absolute: {rpc_socket}")
-        if not rpc_socket.exists():
-            raise OSError(f"RPC socket not found at expected path: {rpc_socket}")
-        if not rpc_socket.is_socket():
-            raise OSError(f"RPC socket path is not a socket: {rpc_socket}")
-
-        # extract environment root directory to open host editor at
-        env_root = Path(host_env_root)
-        if not env_root.is_absolute():
-            raise OSError(f"host environment root must be absolute: {env_root}")
-
-        # determine editor command from pyproject configuration
-        with Config(MOUNT) as config:
-            editor_name = config["tool", "bertrand", "code"]
-        if not isinstance(editor_name, str):
-            raise OSError("'tool.bertrand.code' in pyproject.toml must be a string")
-        editor_name = editor_name.strip()
-        if not editor_name:
-            raise OSError("'tool.bertrand.code' in pyproject.toml cannot be empty")
-        if editor_name not in EDITORS:
-            raise OSError(
-                f"unsupported 'tool.bertrand.code' editor in pyproject.toml: '{editor_name}'\n"
-                f"must be one of: {', '.join(EDITORS)}"
-            )
-
-        # send request to RPC server
-        warnings = request_open_editor(
-            editor=editor_name,
-            env_root=env_root,
-            container_id=container_id,
-            container_workspace=str(MOUNT),
-            socket_path=rpc_socket,
-        )
+        warnings = open_editor()
         for warning in warnings:
             print(f"bertrand: warning: {warning}", file=sys.stderr)
 

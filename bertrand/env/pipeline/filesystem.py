@@ -403,6 +403,10 @@ class Mkdir:
         _unstash_existing(ctx, payload, force=force)
 
 
+# TODO: all replace attributes should be tri-state with None overwriting conflicts
+# in-place.
+
+
 @atomic
 @dataclass(frozen=True)
 class WriteBytes:
@@ -415,23 +419,25 @@ class WriteBytes:
         The file path to write to.
     data : bytes
         The data to write to the file.
-    replace : bool, optional
+    replace : bool | None, optional
         Whether to write the file even if it already exists, stashing the existing
-        file.  Otherwise, an error is raised if the file exists.  Defaults to False.
+        file (if True) or overwriting it in-place (if None).  Otherwise, an error is
+        raised if the file exists.  Defaults to False.
     private : bool, optional
         Whether to write the file with private permissions (0600).  Defaults to False.
     """
     path: Path
     data: bytes
-    replace: bool = False
+    replace: bool | None = False
     private: bool = False
 
     def do(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
         path = self.path.absolute()
-        if self.replace:
-            _stash_existing(ctx, payload, path)
-        elif _exists(path):
-            raise FileExistsError(f"could not write file; path occupied: {path}")
+        if self.replace is not None:
+            if self.replace:
+                _stash_existing(ctx, payload, path)
+            elif _exists(path):
+                raise FileExistsError(f"could not write file; path occupied: {path}")
 
         # write new file
         payload["path"] = str(path)
@@ -491,16 +497,17 @@ class WriteText:
         The text to write to the file.
     encoding : str, optional
         The text encoding to use when writing the file.  Defaults to "utf-8".
-    replace : bool, optional
+    replace : bool | None, optional
         Whether to write the file even if it already exists, stashing the existing
-        file.  Otherwise, an error is raised if the file exists.  Defaults to False
+        file (if True) or overwriting it in-place (if None).  Otherwise, an error is
+        raised if the file exists.  Defaults to False.
     private : bool, optional
         Whether to write the file with private permissions (0600).  Defaults to False.
     """
     path: Path
     text: str
     encoding: str = "utf-8"
-    replace: bool = False
+    replace: bool | None = False
     private: bool = False
 
     def do(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:

@@ -50,6 +50,25 @@ class CommandError(subprocess.CalledProcessError):
         return "\n\n".join(out)
 
 
+class TimeoutExpired(subprocess.TimeoutExpired):
+    """A subclass of `subprocess.TimeoutExpired` that prints the command and any captured
+    output when converted to a string.
+    """
+    def __init__(self, cmd: list[str], timeout: float, stdout: str, stderr: str) -> None:
+        super().__init__(cmd, timeout, stdout, stderr)
+
+    def __str__(self) -> str:
+        out = [
+            f"Command timed out after {self.timeout} seconds:\n\n"
+            f"    {' '.join(shlex.quote(a) for a in self.cmd)}"
+        ]
+        if self.output:
+            out.append(self.output.strip())
+        if self.stderr:
+            out.append(str(self.stderr.strip()))
+        return "\n\n".join(out)
+
+
 def confirm(prompt: str, *, assume_yes: bool = False) -> bool:
     """Ask the user for a yes/no confirmation for a given prompt.
 
@@ -83,12 +102,28 @@ def _tee(src: TextIO, sink: TextIO, buf_list: list[str]) -> None:
     src.close()
 
 
+def _write_stdin(dst: TextIO | None, data: str) -> None:
+    if dst is None:
+        return
+    try:
+        dst.write(data)
+        dst.flush()
+    except (BrokenPipeError, OSError):
+        pass
+    finally:
+        try:
+            dst.close()
+        except OSError:
+            pass
+
+
 def run(
     argv: list[str],
     *,
     check: bool = True,
     capture_output: bool | None = False,
     input: str | None = None,
+    timeout: float | None = None,
     cwd: Path | None = None,
     env: Mapping[str, str] | None = None,
 ) -> CompletedProcess:
@@ -112,6 +147,10 @@ def run(
         may break TTY behavior for some commands.
     input : str | None, optional
         Input to send to the command's stdin (default is None).
+    timeout : float | None, optional
+        An optional timeout in seconds to wait for the command to complete before
+        raising a `subprocess.TimeoutExpired` exception.  Default is None, which means
+        to wait indefinitely.
     cwd : Path | None, optional
         An optional working directory to run the command in.  If None (the default),
         then the current working directory will be used.
@@ -129,6 +168,10 @@ def run(
     CommandError
         If the command fails and `check` is True.  The text of the error reflects
         the error code, original command, and captured output from stderr and stdout.
+    TimeoutExpired
+        If the command does not complete within the specified timeout.
+    OSError
+        If we failed to open the subprocess or its output streams.
     """
     try:
         if capture_output is not None:
@@ -138,6 +181,7 @@ def run(
                 capture_output=capture_output,
                 text=True,
                 input=input,
+                timeout=timeout,
                 cwd=cwd,
                 env=env,
             )
@@ -149,7 +193,11 @@ def run(
             )
 
         # tee stdout/stderr to console while capturing both for error reporting
-        with subprocess.Popen(
+        # streams are consumed in dedicated threads to avoid pipe deadlocks
+        stdout_lines: list[str] = []
+        stderr_lines: list[str] = []
+        rc: int | None = None
+        p = subprocess.Popen(
             argv,
             stdin=subprocess.PIPE if input is not None else None,
             stdout=subprocess.PIPE,
@@ -159,41 +207,72 @@ def run(
             bufsize=1,  # line-buffered in text mode
             cwd=cwd,
             env=env,
-        ) as p:
-            stdout_lines: list[str] = []
-            stderr_lines: list[str] = []
-            if input is not None and p.stdin is not None:
-                try:
-                    p.stdin.write(input)
-                finally:
-                    p.stdin.close()
+        )
+        try:
+            if p.stdout is None or p.stderr is None:
+                raise OSError("failed to open subprocess output streams")
 
-            # read both streams without deadlock
-            t_out = threading.Thread(
-                target=_tee,
-                args=(p.stdout, sys.stdout, stdout_lines),
-                daemon=True
-            )
-            t_err = threading.Thread(
-                target=_tee,
-                args=(p.stderr, sys.stderr, stderr_lines),
-                daemon=True
-            )
-            t_out.start()
-            t_err.start()
-            rc = p.wait()
-            t_out.join()
-            t_err.join()
+            # start reader threads immediately so child output is drained live
+            threads = [
+                threading.Thread(
+                    target=_tee,
+                    args=(p.stdout, sys.stdout, stdout_lines),
+                    daemon=True
+                ),
+                threading.Thread(
+                    target=_tee,
+                    args=(p.stderr, sys.stderr, stderr_lines),
+                    daemon=True
+                )
+            ]
+            for t in threads:
+                t.start()
 
-            result = CompletedProcess(
-                argv,
-                rc,
-                "".join(stdout_lines),
-                "".join(stderr_lines),
-            )
+            # feed stdin asynchronously if provided so reads/writes do not block each other
+            if input is not None:
+                t_in = threading.Thread(
+                    target=_write_stdin,
+                    args=(p.stdin, input),
+                    daemon=True
+                )
+                threads.append(t_in)
+                t_in.start()
+
+            # wait for process completion or timeout while output is being drained
+            try:
+                rc = p.wait(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                p.kill()
+                rc = p.wait()
+                raise
+            finally:
+                for t in threads:
+                    t.join()
+
+        # close process
+        finally:
+            if p.poll() is None:
+                p.kill()
+                p.wait()
+
+    except subprocess.TimeoutExpired as err:
+        raise TimeoutExpired(
+            cmd=argv,
+            timeout=err.timeout,
+            stdout=err.output or "".join(stdout_lines),
+            stderr=str(err.stderr) or "".join(stderr_lines),
+        ) from err
     except subprocess.CalledProcessError as err:
-        raise CommandError(err.returncode, argv, err.stdout or "", err.stderr or "") from err
+        raise CommandError(
+            returncode=err.returncode,
+            cmd=argv,
+            stdout=err.stdout or "".join(stdout_lines),
+            stderr=err.stderr or "".join(stderr_lines),
+        ) from err
 
+    # construct result
+    assert rc is not None
+    result = CompletedProcess(argv, rc, "".join(stdout_lines), "".join(stderr_lines))
     if check and rc != 0:
         raise CommandError(rc, argv, result.stdout, result.stderr)
     return result
