@@ -12,7 +12,7 @@ import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path, PosixPath
 from types import TracebackType
-from typing import Any
+from typing import Any, Protocol
 
 import yaml
 
@@ -63,7 +63,71 @@ CLANG_TIDY_FILE: str = ".clang-tidy"
 CLANGD_FILE: str = ".clangd"
 
 
-# TODO: config should really use another pydantic model to handle validation
+# TODO: layout may also want to be a pydantic model
+
+
+@dataclass(frozen=True)
+class Layout:
+    """Defines the layout of the environment directory, including paths to the
+    `Containerfile`, `pyproject.toml`, and generated configuration files.  Usually,
+    the layout of an environment is fixed by the `--layout` option passed to
+    `bertrand init`.
+
+    Attributes
+    ----------
+    root : Path
+        The root directory of the environment.  All other paths must be relative to
+        this directory.
+    containerfile : Renderer
+        A callable that renders the `Containerfile` template for this layout.
+    containerignore : Renderer
+        A callable that renders the `.containerignore` template for this layout.
+    pyproject : Renderer
+        A callable that renders the `pyproject.toml` template for this layout.
+    clang_format : Renderer
+        A callable that renders the `.clang-format` template for this layout.
+    clang_tidy : Renderer
+        A callable that renders the `.clang-tidy` template for this layout.
+    clangd : Renderer
+        A callable that renders the `.clangd` template for this layout.
+    src : Renderer
+        A callable that renders the `src/` directory template for this layout.
+    docs : Renderer
+        A callable that renders the `docs/` directory template for this layout.
+    tests : Renderer
+        A callable that renders the `tests/` directory template for this layout.
+    """
+    class Renderer(Protocol):
+        """A type hint for callables that can write templates of the generated
+        configuration files.
+        """
+        path: Path
+        def __call__(self, layout: Layout) -> str: ...
+
+    # TODO: centralize all the paths we might need to read or write in the environment,
+    # and then figure out how to plumb this into `bertrand init` and all subsequent
+    # operations.
+
+    root: Path
+    containerfile: Renderer
+    containerignore: Renderer
+    pyproject: Renderer
+    clang_format: Renderer
+    clang_tidy: Renderer
+    clangd: Renderer
+    src: Renderer
+    docs: Renderer
+    tests: Renderer
+
+
+
+
+# TODO: config should really use another pydantic model to handle validation if
+# possible.
+
+
+# TODO: I should also add a separate Layout class that defines the layout to use for
+# the environment directory
 
 
 @dataclass
@@ -72,8 +136,7 @@ class Config:
     toolchain.  The configuration is loaded on demand when entering the context
     manager, and cached for the duration of the context.  No writes will be persisted.
     """
-
-    root: Path = field(default=MOUNT)
+    root: Path = field()
     _data: dict[str, Any] | None = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:

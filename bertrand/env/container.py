@@ -2060,7 +2060,7 @@ class _Command:
             if kwargs["image_tag"] or kwargs["container_tag"]:
                 raise TypeError("cannot specify image or container tag without environment")
             kwargs["env"] = None
-            self.all(**kwargs)  # type: ignore[attr-defined]
+            self.all(ctx, **kwargs)  # type: ignore[attr-defined]
             return
 
         # load environment metadata
@@ -2071,16 +2071,16 @@ class _Command:
             if not kwargs["image_tag"]:
                 if kwargs["container_tag"]:
                     raise TypeError("cannot specify a container when image tag is None")
-                self.environment(**kwargs)  # type: ignore[attr-defined]
+                self.environment(ctx, **kwargs)  # type: ignore[attr-defined]
                 return
 
             # if no container tag is given, call the subclass's `image()`
             if not kwargs["container_tag"]:
-                self.image(**kwargs)  # type: ignore[attr-defined]
+                self.image(ctx, **kwargs)  # type: ignore[attr-defined]
                 return
 
             # otherwise, call the subclass's `container()` method
-            self.container(**kwargs)  # type: ignore[attr-defined]
+            self.container(ctx, **kwargs)  # type: ignore[attr-defined]
 
     def __call__(self, ctx: Pipeline.InProgress) -> None:
         if Environment.current() is not None:
@@ -2105,6 +2105,7 @@ class Build(_Command):
 
     @staticmethod
     def container(
+        ctx: Pipeline.InProgress,
         *,
         env: Environment,
         image_tag: str,
@@ -2119,6 +2120,7 @@ class Build(_Command):
 
     @staticmethod
     def image(
+        ctx: Pipeline.InProgress,
         *,
         env: Environment,
         image_tag: str,
@@ -2198,6 +2200,7 @@ class Build(_Command):
 
     @staticmethod
     def environment(
+        ctx: Pipeline.InProgress,
         *,
         env: Environment,
         args: list[str],
@@ -2209,10 +2212,11 @@ class Build(_Command):
                 "an image tag to assign to these arguments, or set the appropriate "
                 "defaults in the environment's Containerfile instead."
             )
-        Build.image(env=env, image_tag="", args=args, **kwargs)
+        Build.image(ctx, env=env, image_tag="", args=args, **kwargs)
 
     @staticmethod
     def all(
+        ctx: Pipeline.InProgress,
         *,
         args: list[str],
         **kwargs: Any
@@ -2230,6 +2234,7 @@ class Start(_Command):
 
     @staticmethod
     def container(
+        ctx: Pipeline.InProgress,
         *,
         env: Environment,
         image_tag: str,
@@ -2238,6 +2243,7 @@ class Start(_Command):
         **kwargs: Any
     ) -> None:
         Build.image(
+            ctx,
             env=env,
             image_tag=image_tag,
             args=[],
@@ -2261,6 +2267,7 @@ class Start(_Command):
 
     @staticmethod
     def image(
+        ctx: Pipeline.InProgress,
         *,
         env: Environment,
         image_tag: str,
@@ -2272,7 +2279,7 @@ class Start(_Command):
             raise KeyError(f"no image found for tag: '{image_tag}'")
         if args:
             raise OSError("cannot specify arguments when starting an image")
-        Build.image(env=env, image_tag=image_tag, args=args, **kwargs)
+        Build.image(ctx, env=env, image_tag=image_tag, args=args, **kwargs)
         image = env[image_tag]
         if image is None:
             raise OSError(f"unable to build image '{image_tag}'")
@@ -2285,6 +2292,7 @@ class Start(_Command):
 
     @staticmethod
     def environment(
+        ctx: Pipeline.InProgress,
         *,
         env: Environment,
         args: list[str],
@@ -2292,7 +2300,7 @@ class Start(_Command):
     ) -> None:
         if args:
             raise OSError("cannot specify arguments when starting a whole environment")
-        Build.environment(env=env, args=args, **kwargs)
+        Build.environment(ctx, env=env, args=args, **kwargs)
         for image in env.tags.values():
             for container_tag, container in list(image.containers.items()):
                 inspect = container.inspect()
@@ -2303,6 +2311,7 @@ class Start(_Command):
 
     @staticmethod
     def all(
+        ctx: Pipeline.InProgress,
         *,
         args: list[str],
         **kwargs: Any
@@ -2353,6 +2362,7 @@ class Enter(_Command):
 
     @staticmethod
     def container(
+        ctx: Pipeline.InProgress,
         *,
         env: Environment,
         image_tag: str,
@@ -2374,8 +2384,12 @@ class Enter(_Command):
                 stderr="'bertrand enter' requires both stdin and stdout to be a TTY."
             )
 
+        # start/refresh systemd code service, but do not fail if it is unavailable
+        ctx[CODE_SERVER_AVAILABLE] = start_code_service(ctx, env_root=env.root, strict=False)
+
         # start container if necessary
         Start.container(
+            ctx,
             env=env,
             image_tag=image_tag,
             container_tag=container_tag,
@@ -2417,6 +2431,7 @@ class Enter(_Command):
 
     @staticmethod
     def image(
+        ctx: Pipeline.InProgress,
         *,
         env: Environment,
         image_tag: str,
@@ -2425,6 +2440,7 @@ class Enter(_Command):
         **kwargs: Any
     ) -> None:
         Enter.container(
+            ctx,
             env=env,
             image_tag=image_tag,
             container_tag="",  # default container
@@ -2435,6 +2451,7 @@ class Enter(_Command):
 
     @staticmethod
     def environment(
+        ctx: Pipeline.InProgress,
         *,
         env: Environment,
         args: list[str],
@@ -2442,6 +2459,7 @@ class Enter(_Command):
         **kwargs: Any
     ) -> None:
         Enter.container(
+            ctx,
             env=env,
             image_tag="",  # default image
             container_tag="",  # default container
@@ -2452,6 +2470,7 @@ class Enter(_Command):
 
     @staticmethod
     def all(
+        ctx: Pipeline.InProgress,
         *,
         args: list[str],
         code_server_available: bool,
@@ -2470,6 +2489,7 @@ class Code(_Command):
 
     @staticmethod
     def container(
+        ctx: Pipeline.InProgress,
         *,
         env: Environment,
         image_tag: str,
@@ -2477,8 +2497,12 @@ class Code(_Command):
         code_server_available: bool,
         **kwargs: Any
     ) -> None:
+        # start/refresh systemd code service
+        ctx[CODE_SERVER_AVAILABLE] = start_code_service(ctx, env_root=env.root, strict=True)
+
         # start container
         Start.container(
+            ctx,
             env=env,
             image_tag=image_tag,
             container_tag=container_tag,
@@ -2506,6 +2530,7 @@ class Code(_Command):
 
     @staticmethod
     def image(
+        ctx: Pipeline.InProgress,
         *,
         env: Environment,
         image_tag: str,
@@ -2513,6 +2538,7 @@ class Code(_Command):
         **kwargs: Any
     ) -> None:
         Code.container(
+            ctx,
             env=env,
             image_tag=image_tag,
             container_tag="",  # default container
@@ -2522,12 +2548,14 @@ class Code(_Command):
 
     @staticmethod
     def environment(
+        ctx: Pipeline.InProgress,
         *,
         env: Environment,
         code_server_available: bool,
         **kwargs: Any
     ) -> None:
         Code.container(
+            ctx,
             env=env,
             image_tag="",  # default image
             container_tag="",  # default container
@@ -2537,22 +2565,12 @@ class Code(_Command):
 
     @staticmethod
     def all(
+        ctx: Pipeline.InProgress,
         *,
         code_server_available: bool,
         **kwargs: Any
     ) -> None:
         raise OSError("must specify a container to run 'code' in")
-
-    def __call__(self, ctx: Pipeline.InProgress) -> None:
-        if Environment.current() is not None:
-            raise OSError("cannot invoke podman from within a Bertrand container")
-
-        # TODO: I have to pass the environment root into `start_code_service` in
-        # order to read the right editor configuration in pyproject.toml
-
-        # start/refresh systemd code service
-        ctx[CODE_SERVER_AVAILABLE] = start_code_service(ctx, strict=True)
-        self._call(ctx)
 
 
 @dataclass
@@ -2565,6 +2583,7 @@ class Run(_Command):
 
     @staticmethod
     def container(
+        ctx: Pipeline.InProgress,
         *,
         env: Environment,
         image_tag: str,
@@ -2573,6 +2592,7 @@ class Run(_Command):
         **kwargs: Any
     ) -> None:
         Start.container(
+            ctx,
             env=env,
             image_tag=image_tag,
             container_tag=container_tag,
@@ -2605,6 +2625,7 @@ class Run(_Command):
 
     @staticmethod
     def image(
+        ctx: Pipeline.InProgress,
         *,
         env: Environment,
         image_tag: str,
@@ -2612,6 +2633,7 @@ class Run(_Command):
         **kwargs: Any
     ) -> None:
         Run.container(
+            ctx,
             env=env,
             image_tag=image_tag,
             container_tag="",  # default container
@@ -2621,12 +2643,14 @@ class Run(_Command):
 
     @staticmethod
     def environment(
+        ctx: Pipeline.InProgress,
         *,
         env: Environment,
         args: list[str],
         **kwargs: Any
     ) -> None:
         Run.container(
+            ctx,
             env=env,
             image_tag="",  # default image
             container_tag="",  # default container
@@ -2698,6 +2722,7 @@ class Stop(_Command):
 
     @staticmethod
     def container(
+        ctx: Pipeline.InProgress,
         *,
         env: Environment,
         image_tag: str,
@@ -2721,6 +2746,7 @@ class Stop(_Command):
 
     @staticmethod
     def image(
+        ctx: Pipeline.InProgress,
         *,
         env: Environment,
         image_tag: str,
@@ -2740,6 +2766,7 @@ class Stop(_Command):
 
     @staticmethod
     def environment(
+        ctx: Pipeline.InProgress,
         *,
         env: Environment,
         timeout: int,
@@ -2752,6 +2779,7 @@ class Stop(_Command):
 
     @staticmethod
     def all(
+        ctx: Pipeline.InProgress,
         *,
         timeout: int,
         **kwargs: Any
@@ -2800,6 +2828,7 @@ class Pause(_Command):
 
     @staticmethod
     def container(
+        ctx: Pipeline.InProgress,
         *,
         env: Environment,
         image_tag: str,
@@ -2822,6 +2851,7 @@ class Pause(_Command):
 
     @staticmethod
     def image(
+        ctx: Pipeline.InProgress,
         *,
         env: Environment,
         image_tag: str,
@@ -2838,6 +2868,7 @@ class Pause(_Command):
 
     @staticmethod
     def environment(
+        ctx: Pipeline.InProgress,
         *,
         env: Environment,
         **kwargs: Any
@@ -2846,6 +2877,7 @@ class Pause(_Command):
 
     @staticmethod
     def all(
+        ctx: Pipeline.InProgress,
         **kwargs: Any
     ) -> None:
         if confirm(
@@ -2883,6 +2915,7 @@ class Resume(_Command):
 
     @staticmethod
     def container(
+        ctx: Pipeline.InProgress,
         *,
         env: Environment,
         image_tag: str,
@@ -2903,6 +2936,7 @@ class Resume(_Command):
 
     @staticmethod
     def image(
+        ctx: Pipeline.InProgress,
         *,
         env: Environment,
         image_tag: str,
@@ -2919,6 +2953,7 @@ class Resume(_Command):
 
     @staticmethod
     def environment(
+        ctx: Pipeline.InProgress,
         *,
         env: Environment,
         **kwargs: Any
@@ -2927,6 +2962,7 @@ class Resume(_Command):
 
     @staticmethod
     def all(
+        ctx: Pipeline.InProgress,
         **kwargs: Any
     ) -> None:
         if confirm(
@@ -2957,6 +2993,7 @@ class Restart(_Command):
 
     @staticmethod
     def container(
+        ctx: Pipeline.InProgress,
         *,
         env: Environment,
         image_tag: str,
@@ -2980,7 +3017,7 @@ class Restart(_Command):
             running = state["Running"] or state["Restarting"] or state["Paused"]
 
         # possibly rebuild the parent image and all downstream containers
-        Build.image(env=env, image_tag=image_tag, args=[], **kwargs)
+        Build.image(ctx, env=env, image_tag=image_tag, args=[], **kwargs)
         image = env[image_tag]
         if image is None:
             raise OSError(f"unable to build image '{image_tag}'")
@@ -3002,6 +3039,7 @@ class Restart(_Command):
 
     @staticmethod
     def image(
+        ctx: Pipeline.InProgress,
         *,
         env: Environment,
         image_tag: str,
@@ -3022,7 +3060,7 @@ class Restart(_Command):
                     running.add(container_tag)
 
         # possibly rebuild the image and all downstream containers
-        Build.image(env=env, image_tag=image_tag, args=[], **kwargs)
+        Build.image(ctx, env=env, image_tag=image_tag, args=[], **kwargs)
         image = env[image_tag]
         if image is None:
             raise OSError(f"unable to build image '{image_tag}'")
@@ -3044,16 +3082,18 @@ class Restart(_Command):
 
     @staticmethod
     def environment(
+        ctx: Pipeline.InProgress,
         *,
         env: Environment,
         timeout: int,
         **kwargs: Any
     ) -> None:
         for image_tag in env.tags:
-            Restart.image(env=env, image_tag=image_tag, timeout=timeout, **kwargs)
+            Restart.image(ctx, env=env, image_tag=image_tag, timeout=timeout, **kwargs)
 
     @staticmethod
     def all(
+        ctx: Pipeline.InProgress,
         *,
         timeout: int,
         **kwargs: Any
@@ -3066,7 +3106,7 @@ class Restart(_Command):
             for env_path in _all_environments():
                 try:
                     with Environment(env_path) as env:
-                        Restart.environment(env=env, timeout=timeout, **kwargs)
+                        Restart.environment(ctx, env=env, timeout=timeout, **kwargs)
                 except Exception as err:
                     print(err, file=sys.stderr)
 
@@ -3083,6 +3123,7 @@ class Prune(_Command):
 
     @staticmethod
     def container(
+        ctx: Pipeline.InProgress,
         *,
         env: Environment,
         image_tag: str,
@@ -3108,6 +3149,7 @@ class Prune(_Command):
 
     @staticmethod
     def image(
+        ctx: Pipeline.InProgress,
         *,
         env: Environment,
         image_tag: str,
@@ -3128,15 +3170,19 @@ class Prune(_Command):
 
     @staticmethod
     def environment(
+        ctx: Pipeline.InProgress,
         *,
         env: Environment,
         **kwargs: Any
     ) -> None:
         for image_tag in env.tags:
-            Prune.image(env=env, image_tag=image_tag, **kwargs)
+            Prune.image(ctx, env=env, image_tag=image_tag, **kwargs)
 
     @staticmethod
-    def all(**kwargs: Any) -> None:
+    def all(
+        ctx: Pipeline.InProgress,
+        **kwargs: Any
+    ) -> None:
         if confirm(
             "This will remove all stopped Bertrand containers on this system.\n"
             "Are you sure you want to continue? [y/N] "
@@ -3144,7 +3190,7 @@ class Prune(_Command):
             for env_path in _all_environments():
                 try:
                     with Environment(env_path) as env:
-                        Prune.environment(env=env, **kwargs)
+                        Prune.environment(ctx, env=env, **kwargs)
                 except Exception as err:
                     print(err, file=sys.stderr)
 
@@ -3174,6 +3220,7 @@ class Rm(_Command):
 
     @staticmethod
     def container(
+        ctx: Pipeline.InProgress,
         *,
         env: Environment,
         image_tag: str,
@@ -3193,6 +3240,7 @@ class Rm(_Command):
 
     @staticmethod
     def image(
+        ctx: Pipeline.InProgress,
         *,
         env: Environment,
         image_tag: str,
@@ -3208,6 +3256,7 @@ class Rm(_Command):
 
     @staticmethod
     def environment(
+        ctx: Pipeline.InProgress,
         *,
         env: Environment,
         force: bool,
@@ -3234,6 +3283,7 @@ class Rm(_Command):
 
     @staticmethod
     def all(
+        ctx: Pipeline.InProgress,
         *,
         force: bool,
         timeout: int,
@@ -3366,6 +3416,7 @@ class Ls(_Command):
 
     @staticmethod
     def container(
+        ctx: Pipeline.InProgress,
         *,
         env: Environment,
         image_tag: str,
@@ -3413,6 +3464,7 @@ class Ls(_Command):
 
     @staticmethod
     def image(
+        ctx: Pipeline.InProgress,
         *,
         env: Environment,
         image_tag: str,
@@ -3449,6 +3501,7 @@ class Ls(_Command):
 
     @staticmethod
     def environment(
+        ctx: Pipeline.InProgress,
         *,
         env: Environment,
         json: bool,
@@ -3480,6 +3533,7 @@ class Ls(_Command):
 
     @staticmethod
     def all(
+        ctx: Pipeline.InProgress,
         *,
         json: bool,
         images: bool,
@@ -3593,6 +3647,7 @@ class Monitor(_Command):
 
     @staticmethod
     def container(
+        ctx: Pipeline.InProgress,
         *,
         env: Environment,
         image_tag: str,
@@ -3618,6 +3673,7 @@ class Monitor(_Command):
 
     @staticmethod
     def image(
+        ctx: Pipeline.InProgress,
         *,
         env: Environment,
         image_tag: str,
@@ -3638,6 +3694,7 @@ class Monitor(_Command):
 
     @staticmethod
     def environment(
+        ctx: Pipeline.InProgress,
         *,
         env: Environment,
         json: bool,
@@ -3653,6 +3710,7 @@ class Monitor(_Command):
 
     @staticmethod
     def all(
+        ctx: Pipeline.InProgress,
         *,
         json: bool,
         interval: int,
@@ -3676,6 +3734,7 @@ class Top(_Command):
 
     @staticmethod
     def container(
+        ctx: Pipeline.InProgress,
         *,
         env: Environment,
         image_tag: str,
@@ -3696,12 +3755,14 @@ class Top(_Command):
 
     @staticmethod
     def image(
+        ctx: Pipeline.InProgress,
         *,
         env: Environment,
         image_tag: str,
         **kwargs: Any
     ) -> None:
         Top.container(
+            ctx,
             env=env,
             image_tag=image_tag,
             container_tag="",  # default container
@@ -3710,11 +3771,13 @@ class Top(_Command):
 
     @staticmethod
     def environment(
+        ctx: Pipeline.InProgress,
         *,
         env: Environment,
         **kwargs: Any
     ) -> None:
         Top.container(
+            ctx,
             env=env,
             image_tag="",  # default image
             container_tag="",  # default container
@@ -3723,6 +3786,7 @@ class Top(_Command):
 
     @staticmethod
     def all(
+        ctx: Pipeline.InProgress,
         **kwargs: Any
     ) -> None:
         raise OSError("must specify a container to view processes for")
@@ -3784,6 +3848,7 @@ class Log(_Command):
 
     @staticmethod
     def container(
+        ctx: Pipeline.InProgress,
         *,
         env: Environment,
         image_tag: str,
@@ -3806,6 +3871,7 @@ class Log(_Command):
 
     @staticmethod
     def image(
+        ctx: Pipeline.InProgress,
         *,
         env: Environment,
         image_tag: str,
@@ -3827,6 +3893,7 @@ class Log(_Command):
 
     @staticmethod
     def environment(
+        ctx: Pipeline.InProgress,
         *,
         env: Environment,
         images: bool,
@@ -3835,6 +3902,7 @@ class Log(_Command):
         **kwargs: Any
     ) -> None:
         return Log.image(
+            ctx,
             env=env,
             image_tag="",  # default image
             images=images,
@@ -3845,6 +3913,7 @@ class Log(_Command):
 
     @staticmethod
     def all(
+        ctx: Pipeline.InProgress,
         *,
         images: bool,
         since: str | None,
@@ -3871,7 +3940,6 @@ def podman_code(ctx: Pipeline.InProgress) -> None:
 
 @on_enter(ephemeral=True)
 def podman_enter(ctx: Pipeline.InProgress) -> None:
-    ctx[CODE_SERVER_AVAILABLE] = start_code_service(ctx, strict=False)
     Enter()(ctx)
 
 

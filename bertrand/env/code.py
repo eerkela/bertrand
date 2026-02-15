@@ -749,13 +749,9 @@ def _service_path(key: str, path: str) -> str:
     return f'Environment="{key}={escaped}"'
 
 
-def _render_code_service() -> str:
-    # TODO: I can't read MOUNT here - this executes on the host, not inside a container,
-    # so I have to pass env_root into this context in order to read the config
-    # correctly.
-
-    # read editor choice from pyproject.tom
-    with Config(MOUNT) as config:
+def _render_code_service(env_root: Path) -> str:
+    # read editor choice from pyproject.toml
+    with Config(env_root) as config:
         editor = config["tool", "bertrand", "code"]  # validated on config enter
 
     # find RPC server, editor, and container executables on PATH
@@ -839,7 +835,7 @@ def _code_service_reachable(
     return True
 
 
-def start_code_service(ctx: Pipeline.InProgress, *, strict: bool) -> bool:
+def start_code_service(ctx: Pipeline.InProgress, *, env_root: Path, strict: bool) -> bool:
     """Start the code RPC listener as a systemd user service, and verify that it
     becomes reachable within a bounded timeout.
 
@@ -848,6 +844,10 @@ def start_code_service(ctx: Pipeline.InProgress, *, strict: bool) -> bool:
     ctx : Pipeline.InProgress
         The current pipeline context, used to record the atomic operations used to
         start the service.
+    env_root : Path
+        The root path of the environment, used to read the editor choice from
+        `pyproject.toml` and render the systemd unit file with the correct executable
+        paths.
     strict : bool
         If true, raise a hard OSError if the service fails to start or become
         reachable.  Otherwise, print a warning to stderr and return False.
@@ -874,7 +874,7 @@ def start_code_service(ctx: Pipeline.InProgress, *, strict: bool) -> bool:
     """
     try:
         # render up-to-date unit file
-        unit_text = _render_code_service()
+        unit_text = _render_code_service(env_root)
         if (
             not CODE_SERVICE_FILE.exists() or
             CODE_SERVICE_FILE.read_text(encoding="utf-8") != unit_text
