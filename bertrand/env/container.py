@@ -1554,6 +1554,7 @@ class Environment:
     root: Path
     _json: JSON
     _lock: Lock
+    _entered: int
 
     def __init__(self, root: Path, timeout: int = TIMEOUT) -> None:
         self.root = root.expanduser().resolve()
@@ -1563,6 +1564,7 @@ class Environment:
             tags={}
         )
         self._lock = lock_env(self.root, timeout=timeout)
+        self._entered = 0
 
     @classmethod
     def init(
@@ -1643,7 +1645,7 @@ class Environment:
 
     def __enter__(self) -> Environment:
         # NOTE: lock order is registry > env lock to avoid deadlocks
-        if self._lock.depth == 0:
+        if self._entered == 0:
             try:
                 _reconcile_registry(self.root)
             except OSError as err:
@@ -1653,22 +1655,25 @@ class Environment:
                 )
 
         self._lock.__enter__()
-        if self._lock.depth > 1:
+        self._entered += 1
+        if self._entered > 1:
             return self  # re-entrant case
 
-        # try to load existing metadata if possible
-        env_file = _env_file(self.root)
-        if not env_file.exists():
-            raise FileNotFoundError(f"environment metadata file not found: {env_file}")
-
-        data = json_parser.loads(env_file.read_text(encoding="utf-8"))
-        if not isinstance(data, dict):
-            raise ValueError("environment metadata must be a JSON mapping")
         try:
+            # try to load existing metadata if possible
+            env_file = _env_file(self.root)
+            if not env_file.exists():
+                raise FileNotFoundError(f"environment metadata file not found: {env_file}")
+            data = json_parser.loads(env_file.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                raise ValueError("environment metadata must be a JSON mapping")
             self._json = self.JSON.model_validate(data)
-        except ValidationError as err:
-            raise ValueError(f"invalid environment metadata: {err}") from err
-        return self
+            return self
+
+        except Exception as err:
+            self._entered -= 1
+            self._lock.__exit__(type(err), err, getattr(err, "__traceback__", None))
+            raise
 
     def __exit__(
         self,
@@ -1676,20 +1681,23 @@ class Environment:
         exc_value: BaseException | None,
         traceback: TracebackType | None
     ) -> None:
-        env_dir = _env_dir(self.root)
-        if self._lock.depth > 1 or not env_dir.exists():
+        if self._entered < 1:
+            raise RuntimeError("environment context manager was not entered")
+
+        try:
+            env_dir = _env_dir(self.root)
+            if self._entered == 1 and env_dir.exists():
+                # write changes
+                self._json = self.JSON.model_validate(self._json.model_dump(mode="python"))
+                atomic_write_text(
+                    _env_file(self.root),
+                    json_parser.dumps(self._json.model_dump(mode="json"), indent=2) + "\n"
+                )
+
+        # always release the lock and local context depth
+        finally:
+            self._entered -= 1
             self._lock.__exit__(exc_type, exc_value, traceback)
-            return  # re-entrant/dangling case
-
-        # write changes
-        self._json = self.JSON.model_validate(self._json.model_dump(mode="python"))
-        atomic_write_text(
-            _env_file(self.root),
-            json_parser.dumps(self._json.model_dump(mode="json"), indent=2) + "\n"
-        )
-
-        # release lock
-        self._lock.__exit__(exc_type, exc_value, traceback)
 
     def __hash__(self) -> int:
         return hash(self.root)
@@ -1877,7 +1885,7 @@ class Environment:
         TypeError
             If the arguments are not of the expected types.
         """
-        if self._lock.depth < 1:
+        if self._entered < 1:
             raise OSError("environment must be acquired as a context manager before accessing")
         if isinstance(args, str):
             image_tag = args

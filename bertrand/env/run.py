@@ -352,22 +352,6 @@ class Lock:
         same path, and will always reflect the maximum timeout across all acquisitions
         of that lock within the process.
 
-    Attributes
-    ----------
-    path : Path
-        The path to the directory to use for the lock.
-    lock : Path
-        The path to the lock file within the lock directory.
-    pid : int
-        The process ID of the owning process.
-    create_time : float
-        The creation time for the owning process.
-    timeout : float
-        The maximum number of seconds to wait for the lock to be acquired.
-    depth : int
-        The current depth of nested context managers using this lock, in order to allow
-        re-entrant locking within the same process.
-
     Raises
     ------
     OSError
@@ -378,11 +362,12 @@ class Lock:
         the context manager.
     """
     path: Path
-    lock: Path
-    pid: int
-    create_time: float
     timeout: float
-    depth: int
+    _lock: Path
+    _pid: int
+    _create_time: float
+    _owner_tid: int | None
+    _depth: int
 
     def __new__(cls, path: Path, timeout: float = LOCK_TIMEOUT) -> Lock:
         if path.exists():
@@ -401,24 +386,38 @@ class Lock:
             if self is None:
                 self = super().__new__(cls)
                 self.path = path
-                self.lock = path / "lock.json"
-                self.pid = os.getpid()
-                self.create_time = psutil.Process(self.pid).create_time()
                 self.timeout = timeout
-                self.depth = 0
+                self._lock = path / "lock.json"
+                self._pid = os.getpid()
+                self._create_time = psutil.Process(self._pid).create_time()
+                self._owner_tid = None
+                self._depth = 0
                 LOCKS[path_str] = self
             elif self.timeout < timeout:
                 self.timeout = timeout  # use max timeout
         return self
 
     def __enter__(self) -> None:
-        # allow nested context managers without deadlocking
-        self.depth += 1
-        if self.depth > 1:
-            return
-
-        # attempt to acquire lock
+        tid = threading.get_ident()
         start = time.time()
+
+        # Fast path for in-process ownership.  If another thread in this process holds
+        # the lock, wait for it to release instead of touching lock files
+        while True:
+            with LOCK_GUARD:
+                if self._owner_tid is None:
+                    break
+                if self._owner_tid == tid:
+                    self._depth += 1
+                    return
+            if (time.time() - start) > self.timeout:
+                raise TimeoutError(
+                    f"could not acquire environment lock within {self.timeout} seconds"
+                )
+            time.sleep(0.1)
+
+        # slow path for acquiring lock across processes, which requires filesystem
+        # access
         unreadable_owner_since: float | None = None
         unreadable_owner_grace = 5.0
         while True:
@@ -428,7 +427,7 @@ class Lock:
                 # another process holds the lock - check if it's stale
                 now = time.time()
                 try:
-                    owner = json.loads(self.lock.read_text(encoding="utf-8"))
+                    owner = json.loads(self._lock.read_text(encoding="utf-8"))
                     if not isinstance(owner, dict):
                         shutil.rmtree(self.path, ignore_errors=True)
                         unreadable_owner_since = None
@@ -453,7 +452,9 @@ class Lock:
                 owner_start = owner.get("pid_start")
                 tolerance = 0.001  # tolerate floating point precision issues
                 owner_stale = False
-                if isinstance(owner_pid, int) and isinstance(owner_start, (int, float)):
+                if owner_pid == self._pid:
+                    owner_stale = False
+                elif isinstance(owner_pid, int) and isinstance(owner_start, (int, float)):
                     if not psutil.pid_exists(owner_pid):
                         owner_stale = True
                     else:
@@ -484,10 +485,20 @@ class Lock:
                 # wait and retry
                 time.sleep(0.1)
 
-            self.lock.write_text(json.dumps({
-                "pid": self.pid,
-                "pid_start": self.create_time,
-            }, indent=2) + "\n", encoding="utf-8")
+            # take ownership of lock
+            try:
+                self._lock.write_text(json.dumps({
+                    "pid": self._pid,
+                    "pid_start": self._create_time,
+                }, indent=2) + "\n", encoding="utf-8")
+            except Exception:
+                shutil.rmtree(self.path, ignore_errors=True)
+                raise
+
+            # only set depth after acquiring the lock
+            with LOCK_GUARD:
+                self._owner_tid = tid
+                self._depth = 1
             break
 
     def __exit__(
@@ -496,18 +507,26 @@ class Lock:
         exc_value: BaseException | None,
         traceback: TracebackType | None
     ) -> None:
-        # allow nested context managers without deadlocking
-        self.depth -= 1
-        if self.depth > 0:
-            return
-
-        # release lock
-        shutil.rmtree(self.path, ignore_errors=True)
+        # only release lock on outermost exit
+        tid = threading.get_ident()
         with LOCK_GUARD:
-            LOCKS.pop(str(self.path.resolve()), None)
+            if self._owner_tid != tid or self._depth < 1:
+                raise RuntimeError("lock is not held by the current thread")
+            self._depth -= 1
+            if self._depth > 0:
+                return
+            self._owner_tid = None
+
+        # release lock and clean up registry
+        try:
+            shutil.rmtree(self.path, ignore_errors=True)
+        finally:
+            with LOCK_GUARD:
+                LOCKS.pop(str(self.path.resolve()), None)
 
     def __bool__(self) -> bool:
-        return self.depth > 0
+        with LOCK_GUARD:
+            return self._depth > 0
 
     def __repr__(self) -> str:
         return f"Lock(path={repr(self.path)}, timeout={self.timeout})"

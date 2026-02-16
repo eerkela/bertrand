@@ -280,7 +280,10 @@ def lock_env(root: Path, timeout: float = LOCK_TIMEOUT) -> Lock:
     Lock
          A lock instance representing the acquired lock on the environment directory.
     """
-    return Lock(_env_dir(root) / ENV_LOCK_NAME, timeout=timeout)
+    # NOTE: pre-touching the lock's parent ensures that lock acquisition is atomic
+    lock_dir = _env_dir(root)
+    lock_dir.mkdir(parents=True, exist_ok=True)
+    return Lock(lock_dir / ENV_LOCK_NAME, timeout=timeout)
 
 
 def _read_env_json(env_root: Path, *, missing_ok: bool = False) -> dict[str, Any]:

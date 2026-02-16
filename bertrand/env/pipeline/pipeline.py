@@ -367,6 +367,8 @@ class Pipeline:
     _facts: dict[str, Pipeline.Fact] = field(default_factory=dict, repr=False)
     _completed: dict[Pipeline.Target, PositiveInt] = field(default_factory=dict, repr=False)
     _run_id: UUID4Hex = field(init=False, repr=False)
+    # Context ownership is object-local, not inferred from shared lock recursion.
+    _entered: int = field(default=0, init=False, repr=False)
 
     def __post_init__(self) -> None:
         if self.keep < 1:
@@ -487,7 +489,8 @@ class Pipeline:
     def __enter__(self) -> Pipeline:
         # acquire lock
         self._lock.__enter__()
-        if self._lock.depth > 1:
+        self._entered += 1
+        if self._entered > 1:
             return self  # re-entrant case
 
         try:
@@ -543,6 +546,7 @@ class Pipeline:
 
         # ensure lock is properly released on error
         except Exception as err:
+            self._entered -= 1
             self._lock.__exit__(type(err), err, getattr(err, "__traceback__", None))
             raise
 
@@ -552,36 +556,37 @@ class Pipeline:
         exc_value: BaseException | None,
         traceback: TracebackType | None
     ) -> None:
-        if self._lock.depth > 1:
-            self._lock.__exit__(exc_type, exc_value, traceback)
-            return  # re-entrant case
+        if self._entered < 1:
+            raise RuntimeError("pipeline context manager was not entered")
 
         try:
-            # roll back any in-progress steps, including ephemeral steps if there is an error
-            self._rollback_in_progress()
+            if self._entered == 1:
+                # roll back any in-progress steps, including ephemeral steps if there is an error
+                self._rollback_in_progress()
 
-            # compact the journal to keep only the last N attempts per step
-            compacted: list[Pipeline.StepRecord] = []
-            seen: dict[QualName, int] = {}
-            for step in reversed(self._records):
-                if step.status == "rolled_back":
-                    count = seen.get(step.name, 0)
-                    if count < self.keep:
+                # compact the journal to keep only the last N attempts per step
+                compacted: list[Pipeline.StepRecord] = []
+                seen: dict[QualName, int] = {}
+                for step in reversed(self._records):
+                    if step.status == "rolled_back":
+                        count = seen.get(step.name, 0)
+                        if count < self.keep:
+                            compacted.append(step)
+                            seen[step.name] = count + 1
+                    else:  # preserve completed and in-progress steps
                         compacted.append(step)
-                        seen[step.name] = count + 1
-                else:  # preserve completed and in-progress steps
-                    compacted.append(step)
-            self._records = compacted
-            self._records.reverse()
+                self._records = compacted
+                self._records.reverse()
 
-            # always synchronize journal state on exit
-            self._dump()
-            self._records.clear()
-            self._facts.clear()
-            self._completed.clear()
+                # always synchronize journal state on exit
+                self._dump()
+                self._records.clear()
+                self._facts.clear()
+                self._completed.clear()
 
         # always release lock
         finally:
+            self._entered -= 1
             self._lock.__exit__(exc_type, exc_value, traceback)
 
     @overload
@@ -655,7 +660,7 @@ class Pipeline:
         OSError
             If the pipeline context is currently active.
         """
-        if self._lock.depth > 0:
+        if self._entered > 0:
             raise OSError("cannot register pipeline steps while within its context")
 
         if not enable:  # no-op
@@ -763,7 +768,7 @@ class Pipeline:
         OSError
             If the pipeline context is not currently active.
         """
-        if self._lock.depth < 1:
+        if self._entered < 1:
             raise OSError("must acquire pipeline context before accessing facts")
         return key in self._facts
 
@@ -793,7 +798,7 @@ class Pipeline:
         KeyError
             If the requested fact is not found in the global context.
         """
-        if self._lock.depth < 1:
+        if self._entered < 1:
             raise OSError("must acquire pipeline context before accessing facts")
         return self._facts[key].value
 
@@ -821,7 +826,7 @@ class Pipeline:
         OSError
             If the pipeline context is not currently active.
         """
-        if self._lock.depth < 1:
+        if self._entered < 1:
             raise OSError("must acquire pipeline context before accessing facts")
         if key in self._facts:
             return self._facts[key].value
@@ -1240,7 +1245,7 @@ class Pipeline:
             If any step in the pipeline execution fails.  The type of the exception
             will depend on the underlying error.
         """
-        if self._lock.depth > 0:
+        if self._entered > 0:
             raise OSError("cannot run a pipeline while within its context")
 
         # compute topological order
@@ -1348,7 +1353,7 @@ class Pipeline:
         KeyError
             If any specified capability is not found in the pipeline.
         """
-        if self._lock.depth > 0:
+        if self._entered > 0:
             raise OSError("cannot undo a pipeline while within its context")
 
         # roll back all completed steps in reverse order
