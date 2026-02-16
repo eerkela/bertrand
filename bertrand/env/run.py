@@ -1,4 +1,6 @@
 """Utility functions for running subprocesses and handling command-line interactions."""
+from __future__ import annotations
+
 import json
 import os
 import pwd
@@ -7,15 +9,17 @@ import shlex
 import shutil
 import subprocess
 import sys
-import threading
 import time
+import threading
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import TracebackType
 from typing import Mapping, TextIO
 
+
 import psutil
+
 
 #pylint: disable=redefined-builtin
 
@@ -321,47 +325,16 @@ def sudo_prefix() -> list[str]:
     return ["sudo", f"--preserve-env={preserve}"]
 
 
-@dataclass(frozen=True)
-class User:
-    """A simple structure representing a user identity by user ID and group ID.
-
-    Attributes
-    ----------
-    uid : int
-        The numeric user ID.
-    gid : int
-        The numeric group ID.
-    name : str
-        The username.
-    home : Path
-        The path to the user's home directory.
-    """
-    uid: int = field(init=False)
-    gid: int = field(init=False)
-    name: str = field(init=False)
-    home: Path = field(init=False)
-
-    def __post_init__(self) -> None:
-        euid = os.geteuid()
-        sudo_uid = os.environ.get("SUDO_UID")
-        sudo_user = os.environ.get("SUDO_USER")
-        if euid == 0 and sudo_uid:
-            object.__setattr__(self, 'uid', int(sudo_uid))
-            pw = pwd.getpwuid(self.uid)
-            object.__setattr__(self, 'gid', pw.pw_gid)
-            object.__setattr__(self, 'name', sudo_user or pw.pw_name)
-            object.__setattr__(self, 'home', Path(pw.pw_dir))
-        else:
-            object.__setattr__(self, 'uid', os.getuid())
-            pw = pwd.getpwuid(self.uid)
-            object.__setattr__(self, 'gid', pw.pw_gid)
-            object.__setattr__(self, 'name', pw.pw_name)
-            object.__setattr__(self, 'home', Path(pw.pw_dir))
+LOCK_GUARD = threading.RLock()
+LOCK_TIMEOUT: float = 30.0
+LOCKS: dict[str, Lock] = {}
 
 
-class LockDir:
+class Lock:
     """A simple context manager that implements a file-based, cross-platform mutual
-    exclusion lock for atomic file operations.
+    exclusion lock for atomic file operations.  An overloaded `__new__()` method
+    ensures that the same lock instance is returned for identical paths within the same
+    process, allowing for re-entrant locking without extra syscalls.
 
     Parameters
     ----------
@@ -369,10 +342,15 @@ class LockDir:
         The path to use for the lock.  This should be a directory that does not
         already exist.  A `lock.json` file will be created within this directory to
         track the owning process and clear stale locks.  The directory and its
-        contents will be removed when the lock is released.
-    timeout : int, optional
+        contents will be removed when the outermost lock in this process is released.
+    timeout : float, optional
         The maximum number of seconds to wait for the lock to be acquired before
-        raising a `TimeoutError`.  Default is 30 seconds.
+        raising a `TimeoutError`.  Default is 30.0 seconds.  Note that due to the
+        shared lock instances across the process, this timeout may be ignored in
+        favor of a larger timeout from a previous lock acquisition with the same path.
+        The result is that the timeout will monotonically increase for locks with the
+        same path, and will always reflect the maximum timeout across all acquisitions
+        of that lock within the process.
 
     Attributes
     ----------
@@ -384,27 +362,54 @@ class LockDir:
         The process ID of the owning process.
     create_time : float
         The creation time for the owning process.
-    timeout : int
+    timeout : float
         The maximum number of seconds to wait for the lock to be acquired.
     depth : int
         The current depth of nested context managers using this lock, in order to allow
         re-entrant locking within the same process.
+
+    Raises
+    ------
+    OSError
+        If the lock path already exists and is not a directory, or if it contains files
+        other than `lock.json`.
+    TimeoutError
+        If the lock cannot be acquired within the specified timeout period upon entering
+        the context manager.
     """
     path: Path
     lock: Path
     pid: int
     create_time: float
-    timeout: int
+    timeout: float
     depth: int
 
-    def __init__(self, path: Path, timeout: int = 30) -> None:
-        assert not path.exists() or path.is_dir(), "Lock path must be a directory"
-        self.path = path
-        self.lock = path / "lock.json"
-        self.pid = os.getpid()
-        self.create_time = psutil.Process(self.pid).create_time()
-        self.timeout = timeout
-        self.depth = 0
+    def __new__(cls, path: Path, timeout: float = LOCK_TIMEOUT) -> Lock:
+        if path.exists():
+            if not path.is_dir():
+                raise OSError(f"Lock path must be a directory: {path}")
+            for child in path.iterdir():
+                if child != path / "lock.json":
+                    raise OSError(
+                        f"Lock path must be a directory containing only 'lock.json': {path}"
+                    )
+
+        path = path.expanduser().resolve()
+        path_str = str(path)
+        with LOCK_GUARD:
+            self = LOCKS.get(path_str)
+            if self is None:
+                self = super().__new__(cls)
+                self.path = path
+                self.lock = path / "lock.json"
+                self.pid = os.getpid()
+                self.create_time = psutil.Process(self.pid).create_time()
+                self.timeout = timeout
+                self.depth = 0
+                LOCKS[path_str] = self
+            elif self.timeout < timeout:
+                self.timeout = timeout  # use max timeout
+        return self
 
     def __enter__(self) -> None:
         # allow nested context managers without deadlocking
@@ -498,13 +503,52 @@ class LockDir:
 
         # release lock
         shutil.rmtree(self.path, ignore_errors=True)
+        with LOCK_GUARD:
+            LOCKS.pop(str(self.path.resolve()), None)
 
     def __bool__(self) -> bool:
         return self.depth > 0
 
     def __repr__(self) -> str:
-        return f"Lock(path={self.path!r}, timeout={self.timeout})"
+        return f"Lock(path={repr(self.path)}, timeout={self.timeout})"
 
+
+@dataclass(frozen=True)
+class User:
+    """A simple structure representing a user identity by user ID and group ID.
+
+    Attributes
+    ----------
+    uid : int
+        The numeric user ID.
+    gid : int
+        The numeric group ID.
+    name : str
+        The username.
+    home : Path
+        The path to the user's home directory.
+    """
+    uid: int = field(init=False)
+    gid: int = field(init=False)
+    name: str = field(init=False)
+    home: Path = field(init=False)
+
+    def __post_init__(self) -> None:
+        euid = os.geteuid()
+        sudo_uid = os.environ.get("SUDO_UID")
+        sudo_user = os.environ.get("SUDO_USER")
+        if euid == 0 and sudo_uid:
+            object.__setattr__(self, 'uid', int(sudo_uid))
+            pw = pwd.getpwuid(self.uid)
+            object.__setattr__(self, 'gid', pw.pw_gid)
+            object.__setattr__(self, 'name', sudo_user or pw.pw_name)
+            object.__setattr__(self, 'home', Path(pw.pw_dir))
+        else:
+            object.__setattr__(self, 'uid', os.getuid())
+            pw = pwd.getpwuid(self.uid)
+            object.__setattr__(self, 'gid', pw.pw_gid)
+            object.__setattr__(self, 'name', pw.pw_name)
+            object.__setattr__(self, 'home', Path(pw.pw_dir))
 
 def mkdir_private(path: Path) -> None:
     """Create a directory with private permissions (0700) if it does not already exist.

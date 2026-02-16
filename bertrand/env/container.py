@@ -4,6 +4,7 @@ CLI.
 from __future__ import annotations
 
 import json as json_parser
+import math
 import os
 import re
 import shutil
@@ -59,6 +60,7 @@ from .config import (
     MOUNT,
     Config,
 )
+from .layout import lock_env
 from .pipeline import (
     DelegateUserControllers,
     EnsureSubIDs,
@@ -92,7 +94,7 @@ from .pipeline import (
 from .run import (
     CommandError,
     CompletedProcess,
-    LockDir,
+    Lock,
     User,
     atomic_write_text,
     confirm,
@@ -699,15 +701,21 @@ def _is_valid_environment_root(path: Path) -> bool:
     root = path.expanduser().resolve()
     if not root.exists() or not root.is_dir():
         return False
+    env_dir = _env_dir(root)
+    if not env_dir.exists() or not env_dir.is_dir():
+        return False
     env_file = _env_file(root)
     if not env_file.exists() or not env_file.is_file():
         return False
+
+    # acquire environment lock and validate env.json
     try:
-        data = json_parser.loads(env_file.read_text(encoding="utf-8"))
-        if not isinstance(data, dict):
-            return False
-        Environment.JSON.model_validate(data)
-        return True
+        with lock_env(root, timeout=TIMEOUT):
+            data = json_parser.loads(env_file.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                return False
+            Environment.JSON.model_validate(data)
+            return True
     except Exception:
         return False
 
@@ -757,8 +765,9 @@ def _reconcile_registry(add: Path | None) -> list[Path]:
     if add is not None:
         add = add.expanduser().resolve()
 
-    # acquire global environment registry lock
-    with LockDir(_registry_lock(), timeout=TIMEOUT):
+    # NOTE: lock ordering is registry > environment.  `_is_valid_environment_root()`
+    # takes per-environment locks while this registry lock is held.
+    with Lock(_registry_lock(), timeout=TIMEOUT):
         # create empty registry if missing
         path = _registry_file()
         if not path.exists():
@@ -1544,7 +1553,7 @@ class Environment:
 
     root: Path
     _json: JSON
-    _lock: LockDir
+    _lock: Lock
 
     def __init__(self, root: Path, timeout: int = TIMEOUT) -> None:
         self.root = root.expanduser().resolve()
@@ -1553,7 +1562,7 @@ class Environment:
             id="",
             tags={}
         )
-        self._lock = LockDir(_env_dir(self.root) / ".lock", timeout=timeout)
+        self._lock = lock_env(self.root, timeout=timeout)
 
     @classmethod
     def init(
@@ -1601,38 +1610,48 @@ class Environment:
             If the configured defaults in the given renderers are unsupported.
         """
         root = root.expanduser().resolve()
+        with lock_env(root, timeout=TIMEOUT):
+            # init env.json
+            env = cls(root)
+            if not _env_file(root).exists():
+                env._json = env.JSON(
+                    version=VERSION,
+                    id=uuid.uuid4().hex,
+                    tags={},
+                )
+                atomic_write_text(
+                    _env_file(env.root),
+                    json_parser.dumps(env._json.model_dump(mode="json"), indent=2) + "\n"
+                )
 
-        # init env.json
-        env = cls(root)
-        if not _env_file(root).exists():
-            env._json = env.JSON(
-                version=VERSION,
-                id=uuid.uuid4().hex,
-                tags={},
-            )
-            atomic_write_text(
-                _env_file(env.root),
-                json_parser.dumps(env._json.model_dump(mode="json"), indent=2) + "\n"
-            )
+            # init Containerfile
+            if not env.container_file.exists():
+                env.container_file.parent.mkdir(parents=True, exist_ok=True)
+                atomic_write_text(env.container_file, containerfile.render(env))
 
-        # init Containerfile
-        if not env.container_file.exists():
-            env.container_file.parent.mkdir(parents=True, exist_ok=True)
-            atomic_write_text(env.container_file, containerfile.render(env))
+            # init .containerignore
+            if not env.container_ignore.exists():
+                env.container_ignore.parent.mkdir(parents=True, exist_ok=True)
+                atomic_write_text(env.container_ignore, containerignore.render(env))
 
-        # init .containerignore
-        if not env.container_ignore.exists():
-            env.container_ignore.parent.mkdir(parents=True, exist_ok=True)
-            atomic_write_text(env.container_ignore, containerignore.render(env))
+            # init pyproject.toml
+            if not env.pyproject_file.exists():
+                env.pyproject_file.parent.mkdir(parents=True, exist_ok=True)
+                atomic_write_text(env.pyproject_file, pyproject.render(env))
 
-        # init pyproject.toml
-        if not env.pyproject_file.exists():
-            env.pyproject_file.parent.mkdir(parents=True, exist_ok=True)
-            atomic_write_text(env.pyproject_file, pyproject.render(env))
-
-        return env
+            return env
 
     def __enter__(self) -> Environment:
+        # NOTE: lock order is registry > env lock to avoid deadlocks
+        if self._lock.depth == 0:
+            try:
+                _reconcile_registry(self.root)
+            except OSError as err:
+                print(
+                    f"bertrand: warning: failed to reconcile global environment registry: {err}",
+                    file=sys.stderr
+                )
+
         self._lock.__enter__()
         if self._lock.depth > 1:
             return self  # re-entrant case
@@ -1649,15 +1668,6 @@ class Environment:
             self._json = self.JSON.model_validate(data)
         except ValidationError as err:
             raise ValueError(f"invalid environment metadata: {err}") from err
-
-        # opportunistically keep global environment registry up to date
-        try:
-            _reconcile_registry(self.root)
-        except OSError as err:
-            print(
-                f"bertrand: warning: failed to reconcile global environment registry: {err}",
-                file=sys.stderr
-            )
         return self
 
     def __exit__(
@@ -1769,7 +1779,7 @@ class Environment:
         int
             The maximum time in seconds to wait for acquiring the environment lock.
         """
-        return self._lock.timeout
+        return math.ceil(self._lock.timeout)
 
     @property
     def version(self) -> int:

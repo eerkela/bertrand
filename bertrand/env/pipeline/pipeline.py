@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import json
 import hashlib
-import re
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -41,12 +40,13 @@ from pydantic import (
 )
 from typing_extensions import Annotated
 
-from ..run import LockDir, User, atomic_write_text, mkdir_private
+from ..run import LOCK_TIMEOUT, Lock, User, atomic_write_text, mkdir_private
 
 
 #pylint: disable=broad-except
 SYNTAX: int = 1
 STATE_DIR = User().home / ".local" / "share" / "bertrand" / "pipelines"
+STATE_LOCK = STATE_DIR / ".lock"
 MISSING: Literal["<missing>"] = "<missing>"  # not a valid SHA-256 hexdigest
 ATOMIC_UNDO: dict[str, Callable[[Pipeline.InProgress, dict[str, JSONValue], bool], None]] = {}
 QualName = Annotated[str, Field(pattern=r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*$")]
@@ -151,10 +151,14 @@ class Pipeline:
     ----------
     state_dir : Path
         The base directory for storing pipeline state, including the lock, journal,
-        and any other files stored by one of its operations.
-    timeout : int, optional
+        and any other files stored by one of its operations.  This lock domain is
+        independent from per-environment metadata locks, and instead represents a
+        command-level lock that prevents multiple processes from executing the same
+        pipeline at the same time, even across different environments.
+    timeout : float, optional
         The timeout in seconds for acquiring the pipeline lock.  May also be used by
-        operations that need to wait for external resources.  Defaults to 30 seconds.
+        operations that need to wait for external resources.  See `Lock` for the
+        default value.
     keep : int, optional
         The number of previous attempts to keep in the journal for each step.  Defaults
         to 3.
@@ -349,7 +353,7 @@ class Pipeline:
 
     # pipeline-wide config
     state_dir: Path
-    timeout: int = 30
+    timeout: float = LOCK_TIMEOUT
     keep: int = 3
 
     # registration
@@ -358,7 +362,7 @@ class Pipeline:
     _lookup: dict[QualName, Pipeline.Target] = field(default_factory=dict, repr=False)
 
     # context
-    _lock: LockDir = field(init=False, repr=False)
+    _lock: Lock = field(init=False, repr=False)
     _records: list[Pipeline.StepRecord] = field(default_factory=list, repr=False)
     _facts: dict[str, Pipeline.Fact] = field(default_factory=dict, repr=False)
     _completed: dict[Pipeline.Target, PositiveInt] = field(default_factory=dict, repr=False)
@@ -368,7 +372,7 @@ class Pipeline:
         if self.keep < 1:
             raise ValueError("pipeline must keep at least one attempt per step")
         mkdir_private(self.state_dir)
-        self._lock = LockDir(path=self.state_dir / ".lock", timeout=self.timeout)
+        self._lock = Lock(path=STATE_LOCK, timeout=self.timeout)
 
     @staticmethod
     def _json(obj: Any) -> str:
@@ -857,11 +861,11 @@ class Pipeline:
             return self.pipeline._run_id
 
         @property
-        def timeout(self) -> int:
+        def timeout(self) -> float:
             """
             Returns
             -------
-            int
+            float
                 The timeout in seconds for acquiring the pipeline lock.
             """
             return self.pipeline.timeout

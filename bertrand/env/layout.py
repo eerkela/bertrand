@@ -33,13 +33,14 @@ from pydantic import (
 
 from .config import DEFAULT_SHELL, MOUNT
 from .pipeline import Mkdir, Pipeline, WriteText
-from .run import sanitize_name
+from .run import LOCK_TIMEOUT, Lock, sanitize_name
 from .version import __version__
 
 
 LAYOUT_SCHEMA_VERSION: int = 1
 ENV_DIR_NAME: str = ".bertrand"
 ENV_FILE_NAME: str = "env.json"
+ENV_LOCK_NAME: str = ".lock"
 ENV_LAYOUT_KEY: str = "layout"
 
 
@@ -262,6 +263,26 @@ def _env_file(root: Path) -> Path:
     return _env_dir(root) / ENV_FILE_NAME
 
 
+def lock_env(root: Path, timeout: float = LOCK_TIMEOUT) -> Lock:
+    """Lock an environment directory for exclusive access, hiding the lock inside the
+    environment metadata directory.
+
+    Parameters
+    ----------
+    root : Path
+        The root path of the environment to lock.
+    timeout : float, optional
+        The maximum number of seconds to wait for the lock to be acquired before
+        raising a `TimeoutError`.  See `Lock()` for the default value.
+
+    Returns
+    -------
+    Lock
+         A lock instance representing the acquired lock on the environment directory.
+    """
+    return Lock(_env_dir(root) / ENV_LOCK_NAME, timeout=timeout)
+
+
 def _read_env_json(env_root: Path, *, missing_ok: bool = False) -> dict[str, Any]:
     env_file = _env_file(env_root)
     if not env_file.exists():
@@ -482,21 +503,23 @@ class Layout:
             If the manifest file is missing, malformed, or contains an unsupported
             schema version.
         """
-        data = _read_env_json(env_root)
-        layout = data.get(ENV_LAYOUT_KEY)
-        if layout is None:
-            raise OSError(
-                f"missing '{ENV_LAYOUT_KEY}' in environment metadata at {_env_file(env_root)}"
-            )
-        try:
-            return cls(
-                root=env_root,
-                manifest=Manifest.model_validate(layout)
-            )
-        except ValidationError as err:
-            raise OSError(
-                f"invalid layout manifest in environment metadata at {_env_file(env_root)}: {err}"
-            ) from err
+        root = env_root.expanduser().resolve()
+        with lock_env(root):
+            data = _read_env_json(root)
+            layout = data.get(ENV_LAYOUT_KEY)
+            if layout is None:
+                raise OSError(
+                    f"missing '{ENV_LAYOUT_KEY}' in environment metadata at {_env_file(root)}"
+                )
+            try:
+                return cls(
+                    root=root,
+                    manifest=Manifest.model_validate(layout)
+                )
+            except ValidationError as err:
+                raise OSError(
+                    f"invalid layout manifest in environment metadata at {_env_file(root)}: {err}"
+                ) from err
 
     @classmethod
     def init(
@@ -784,63 +807,64 @@ class Layout:
             or if any required resources are missing or have an invalid type after
             applying the layout.
         """
-        rendered = self.render(ctx)
+        with lock_env(self.root, timeout=ctx.timeout):
+            rendered = self.render(ctx)
 
-        # serialize layout to env.json
-        data = _read_env_json(self.root, missing_ok=True)
-        data[ENV_LAYOUT_KEY] = self.manifest.model_dump(mode="json")
-        env_file = _env_file(self.root)
-        try:
-            ctx.do(WriteText(
-                path=env_file,
-                text=json.dumps(data, indent=2) + "\n",
-                replace=None
-            ), undo=False)
-        except Exception as err:
-            raise OSError(
-                f"failed to serialize environment metadata for {env_file}: {err}"
-            ) from err
+            # serialize layout to env.json
+            data = _read_env_json(self.root, missing_ok=True)
+            data[ENV_LAYOUT_KEY] = self.manifest.model_dump(mode="json")
+            env_file = _env_file(self.root)
+            try:
+                ctx.do(WriteText(
+                    path=env_file,
+                    text=json.dumps(data, indent=2) + "\n",
+                    replace=None
+                ), undo=False)
+            except Exception as err:
+                raise OSError(
+                    f"failed to serialize environment metadata for {env_file}: {err}"
+                ) from err
 
-        # create directory resources
-        for resource_id in self.manifest.resources:
-            resource = self.manifest.resources[resource_id]
-            if resource.kind == "dir" and resource.managed:
-                ctx.do(Mkdir(path=self.path(resource_id), replace=False), undo=False)
+            # create directory resources
+            for resource_id in self.manifest.resources:
+                resource = self.manifest.resources[resource_id]
+                if resource.kind == "dir" and resource.managed:
+                    ctx.do(Mkdir(path=self.path(resource_id), replace=False), undo=False)
 
-        # write missing files in deterministic order
-        for resource_id, text in rendered.items():
-            target = self.path(resource_id)
-            if not target.exists():
-                ctx.do(WriteText(path=target, text=text, replace=False), undo=False)
+            # write missing files in deterministic order
+            for resource_id, text in rendered.items():
+                target = self.path(resource_id)
+                if not target.exists():
+                    ctx.do(WriteText(path=target, text=text, replace=False), undo=False)
 
-        # ensure required resources exist with the expected kind
-        errors: list[str] = []
-        for resource_id in sorted(self.manifest.resources):
-            resource = self.resource(resource_id)
-            if not resource.required:
-                continue
+            # ensure required resources exist with the expected kind
+            errors: list[str] = []
+            for resource_id in sorted(self.manifest.resources):
+                resource = self.resource(resource_id)
+                if not resource.required:
+                    continue
 
-            # verify required resource exists
-            target = self.path(resource_id)
-            if not target.exists():
-                errors.append(
-                    f"- missing required {resource.kind} '{resource_id}' at {target}"
+                # verify required resource exists
+                target = self.path(resource_id)
+                if not target.exists():
+                    errors.append(
+                        f"- missing required {resource.kind} '{resource_id}' at {target}"
+                    )
+                    continue
+
+                # verify required resource has expected type
+                if resource.kind == "file" and not target.is_file():
+                    errors.append(
+                        f"- required file '{resource_id}' has wrong type at {target}"
+                    )
+                elif resource.kind == "dir" and not target.is_dir():
+                    errors.append(
+                        f"- required dir '{resource_id}' has wrong type at {target}"
+                    )
+
+            # if any required resources are missing, merge them into a single error message
+            if errors:
+                raise OSError(
+                    "layout application left required resources missing or invalid:\n"
+                    f"{'\n'.join(errors)}"
                 )
-                continue
-
-            # verify required resource has expected type
-            if resource.kind == "file" and not target.is_file():
-                errors.append(
-                    f"- required file '{resource_id}' has wrong type at {target}"
-                )
-            elif resource.kind == "dir" and not target.is_dir():
-                errors.append(
-                    f"- required dir '{resource_id}' has wrong type at {target}"
-                )
-
-        # if any required resources are missing, merge them into a single error message
-        if errors:
-            raise OSError(
-                "layout application left required resources missing or invalid:\n"
-                f"{'\n'.join(errors)}"
-            )
