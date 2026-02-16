@@ -98,6 +98,10 @@ def _move_preserve_lstat(source: Path, dest: Path) -> None:
 
 
 def _only_dirs(root: Path) -> bool:
+    """Return True only if every descendant can be inspected and is a directory.
+
+    Any traversal/inspection failure is treated as unsafe and returns False.
+    """
     try:
         for p in root.rglob("*"):
             try:
@@ -108,7 +112,7 @@ def _only_dirs(root: Path) -> bool:
                 return False
         return True
     except OSError:
-        return True
+        return False
 
 
 def _remove_path(path: Path, force: bool) -> None:
@@ -191,6 +195,51 @@ def _clear_id(
     b = payload.pop(ino_key, None)
     if a is not None or b is not None:
         ctx.dump()
+
+
+def _resolve_conflict(
+    ctx: Pipeline.InProgress,
+    payload: dict[str, JSONValue],
+    path: Path,
+    replace: bool | None,
+    *,
+    error_message: str,
+) -> None:
+    """Resolve an occupied target path according to tri-state replace semantics."""
+    if not _exists(path):
+        return
+    if replace is True:
+        _stash_existing(ctx, payload, path)
+        return
+    if replace is None:
+        _remove_path(path, force=False)
+        return
+    raise FileExistsError(error_message)
+
+
+def _resolve_write_conflict(
+    ctx: Pipeline.InProgress,
+    payload: dict[str, JSONValue],
+    path: Path,
+    replace: bool | None,
+    *,
+    error_message: str,
+) -> None:
+    """Resolve conflicts before atomic file writes.
+
+    For `replace=None`, keep file/symlink replacement atomic by only pre-removing
+    directory conflicts that cannot be replaced in place.
+    """
+    if not _exists(path):
+        return
+    if replace is True:
+        _stash_existing(ctx, payload, path)
+        return
+    if replace is None:
+        if _is_dir(path):
+            _remove_path(path, force=False)
+        return
+    raise FileExistsError(error_message)
 
 
 @atomic
@@ -298,10 +347,10 @@ class Mkdir:
     ----------
     path : Path
         The directory path to create.
-    replace : bool, optional
-        If true, stash any existing content at the path before creating the directory.
-        Otherwise, if the path exists and is not a directory, raise an error.  Defaults
-        to false.
+    replace : bool | None, optional
+        Conflict behavior when the path exists and is not a directory.  If false, raise
+        an error.  If true, stash conflicting content before creating the directory.
+        If None, overwrite conflicting content in place.  Defaults to false.
     private : bool, optional
         Whether to create the directory with private permissions (0700).  Defaults to
         False.  If `replace` is False and the directory already exists, enabling
@@ -312,32 +361,40 @@ class Mkdir:
         the full subtree even if it is non-empty.  Defaults to False.
     """
     path: Path
-    replace: bool = False
+    replace: bool | None = False
     private: bool = False
     rmtree: bool = False
 
     def do(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
         path = self.path.absolute()
         created = True
-        if self.replace:
-            _stash_existing(ctx, payload, path)
-        elif _exists(path):
+        if _exists(path):
             if not _is_dir(path):
-                raise FileExistsError(f"could not create directory; path occupied: {path}")
+                _resolve_conflict(
+                    ctx,
+                    payload,
+                    path,
+                    self.replace,
+                    error_message=f"could not create directory; path occupied: {path}",
+                )
+            else:
+                created = False
+                if self.private:
+                    try:
+                        payload["old_permissions"] = _permissions(path)
+                        if not _record_id(ctx, payload, path):
+                            payload.pop("old_permissions", None)
+                    except OSError:
+                        pass
+        if _exists(path):
             created = False
-            if self.private:
-                try:
-                    payload["old_permissions"] = _permissions(path)
-                    if not _record_id(ctx, payload, path):
-                        payload.pop("old_permissions", None)
-                except OSError:
-                    pass
 
         # create new directory
         payload["path"] = str(path)
         payload["private"] = self.private
         payload["rmtree"] = self.rmtree
         payload["created"] = created
+        payload["replace"] = self.replace
         ctx.dump()
         if self.private:
             mkdir_private(path)
@@ -403,10 +460,6 @@ class Mkdir:
         _unstash_existing(ctx, payload, force=force)
 
 
-# TODO: all replace attributes should be tri-state with None overwriting conflicts
-# in-place.
-
-
 @atomic
 @dataclass(frozen=True)
 class WriteBytes:
@@ -433,16 +486,19 @@ class WriteBytes:
 
     def do(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
         path = self.path.absolute()
-        if self.replace is not None:
-            if self.replace:
-                _stash_existing(ctx, payload, path)
-            elif _exists(path):
-                raise FileExistsError(f"could not write file; path occupied: {path}")
+        _resolve_write_conflict(
+            ctx,
+            payload,
+            path,
+            self.replace,
+            error_message=f"could not write file; path occupied: {path}",
+        )
 
         # write new file
         payload["path"] = str(path)
         payload["fingerprint"] = hashlib.sha256(self.data).hexdigest()
         payload["private"] = self.private
+        payload["replace"] = self.replace
         ctx.dump()
         atomic_write_bytes(path, self.data, private=self.private)
 
@@ -532,8 +588,8 @@ class Copy:
 
     If the source is a directory, then the entire directory tree will be copied and
     merged into the target location.  If the target is another directory, then this
-    will not disturb any existing contents unless `replace` is set to true, in which
-    case only the conflicting paths will be stashed.
+    will not disturb any existing contents unless conflicting child paths are present,
+    in which case `replace` controls whether they error, stash, or overwrite.
 
     Attributes
     ----------
@@ -541,14 +597,14 @@ class Copy:
         The source file/directory path to copy.
     target : Path
         The target file/directory path to copy to.
-    replace : bool, optional
-        If true, stash any conflicting files/directories/symlinks at the target path
-        before copying.  Otherwise, raise an error if the target already exists.
-        Defaults to false.
+    replace : bool | None, optional
+        Conflict behavior when a target path already exists.  If false, raise an error.
+        If true, stash conflicts.  If None, overwrite conflicts in place.  Defaults to
+        false.
     """
     source: Path
     target: Path
-    replace: bool = False
+    replace: bool | None = False
 
     def _stash(
         self,
@@ -556,10 +612,13 @@ class Copy:
         payload: dict[str, JSONValue],
         path: Path
     ) -> None:
-        if self.replace:
-            _stash_existing(ctx, payload, path)
-        elif _exists(path):
-            raise FileExistsError(f"could not copy to target; path occupied: {path}")
+        _resolve_conflict(
+            ctx,
+            payload,
+            path,
+            self.replace,
+            error_message=f"could not copy to target; path occupied: {path}",
+        )
 
     def _do(
         self,
@@ -801,8 +860,8 @@ class Move:
 
     If the source is a directory, then the entire directory tree will be moved and
     merged into the target location.  If the target is another directory, then this
-    will not disturb any existing contents unless `replace` is set to true, in which
-    case only the conflicting paths will be stashed.
+    will not disturb any existing contents unless conflicting child paths are present,
+    in which case `replace` controls whether they error, stash, or overwrite.
 
     Attributes
     ----------
@@ -810,14 +869,14 @@ class Move:
         The source file/directory path to move.
     target : Path
         The target file/directory path to move to.
-    replace : bool, optional
-        If true, stash any existing file/directory/symlink at the target path before
-        moving.  Otherwise, raise an error if the target already exists.  Defaults to
+    replace : bool | None, optional
+        Conflict behavior when a target path already exists.  If false, raise an error.
+        If true, stash conflicts.  If None, overwrite conflicts in place.  Defaults to
         false.
     """
     source: Path
     target: Path
-    replace: bool = False
+    replace: bool | None = False
 
     def _stash(
         self,
@@ -825,10 +884,13 @@ class Move:
         payload: dict[str, JSONValue],
         path: Path
     ) -> None:
-        if self.replace:
-            _stash_existing(ctx, payload, path)
-        elif _exists(path):
-            raise FileExistsError(f"could not move to target; path occupied: {path}")
+        _resolve_conflict(
+            ctx,
+            payload,
+            path,
+            self.replace,
+            error_message=f"could not move to target; path occupied: {path}",
+        )
 
     def _do(
         self,
@@ -1114,23 +1176,26 @@ class Symlink:
         The source file/directory path the symlink points to.
     target : Path
         The path at which to create the symlink.
-    replace : bool, optional
-        If true, stash any existing file/directory/symlink at the target path before
-        creating the symlink.  Otherwise, raise an error if the target already exists.
+    replace : bool | None, optional
+        Conflict behavior when the target path already exists.  If false, raise an
+        error.  If true, stash conflicts.  If None, overwrite conflicts in place.
         Defaults to false.
     """
     source: Path
     target: Path
-    replace: bool = False
+    replace: bool | None = False
 
     def do(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
         # resolve cwd, but not symlinks
         source = self.source
         target = self.target.absolute()
-        if self.replace:
-            _stash_existing(ctx, payload, target)
-        elif _exists(target):
-            raise FileExistsError(f"could not create symlink; path occupied: {target}")
+        _resolve_conflict(
+            ctx,
+            payload,
+            target,
+            self.replace,
+            error_message=f"could not create symlink; path occupied: {target}",
+        )
 
         # persist intent before mutating
         payload["source"] = str(source)
@@ -1493,13 +1558,14 @@ class Extract:
         The archive to extract.
     target : Path
         The target directory to move extracted contents into.
-    replace : bool, optional
-        If true, stash conflicting paths in the target during the move.  Otherwise,
-        raise an error if a conflict is encountered.  Defaults to false.
+    replace : bool | None, optional
+        Conflict behavior in the target during the final move.  If false, raise on
+        conflicts.  If true, stash conflicts.  If None, overwrite conflicts in place.
+        Defaults to false.
     """
     archive: Path
     target: Path
-    replace: bool = False
+    replace: bool | None = False
 
     def do(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
         archive = self.archive.absolute()

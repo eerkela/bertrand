@@ -98,6 +98,7 @@ from .run import (
     confirm,
     mkdir_private,
     run,
+    sanitize_name,
 )
 from .version import __version__
 
@@ -804,16 +805,6 @@ def _reconcile_registry(add: Path | None) -> list[Path]:
         return entries
 
 
-def _sanitize_name(name: str) -> str:
-    out = []
-    for char in name:
-        if char.isalnum() or char in "._":
-            out.append(char)
-        else:
-            out.append("_")
-    return "".join(out).strip("_")
-
-
 def _check_list_field(value: object, field: str) -> list[str]:
     if not isinstance(value, list) or not all(isinstance(x, str) for x in value):
         raise ValueError(f"missing or invalid '{field}' field: {value}")
@@ -1208,7 +1199,7 @@ class Image(BaseModel):
             entry_point=[],  # default entry point
         )
         container_name = (
-            f"{_sanitize_name(env_root.name)}.{image_tag}.{container_tag}.{env_uuid[:13]}"
+            f"{sanitize_name(env_root.name)}.{image_tag}.{container_tag}.{env_uuid[:13]}"
         )
         cid_file = _cid_file(env_root, container_name)
         cache_prefix = f"bertrand-{env_uuid[:13]}"
@@ -1423,7 +1414,7 @@ class PyProject:
             raise KeyError(f"unsupported assist: {self.assist}")
 
     def render(self, env: Environment) -> str:
-        project_name = _sanitize_name(env.root.name).lower().replace("_", "-")
+        project_name = sanitize_name(env.root.name, replace="-").lower()
         if not project_name:
             project_name = "bertrand-project"
 
@@ -1540,7 +1531,7 @@ class Environment:
                 if not isinstance(tag, str):
                     raise ValueError(f"invalid image tag in environment metadata: {tag}")
                 tag = tag.strip()
-                sanitized = _sanitize_name(tag)
+                sanitized = sanitize_name(tag)
                 if tag != sanitized:
                     raise ValueError(
                         f"invalid characters in image tag '{tag}' (sanitizes to: '{sanitized}')"
@@ -1750,7 +1741,7 @@ class Environment:
         tag1 = tag1.strip()
         if not tag1:
             raise OSError(f"tag must not be empty: '{spec}'")
-        san1 = _sanitize_name(tag1)
+        san1 = sanitize_name(tag1)
         if tag1 != san1:
             raise OSError(
                 f"tag contains invalid characters: '{tag1}' (sanitizes to: '{san1}')"
@@ -1763,7 +1754,7 @@ class Environment:
         tag2 = tag2.strip()
         if not tag2:
             raise OSError(f"tag must not be empty: '{spec}'")
-        san2 = _sanitize_name(tag2)
+        san2 = sanitize_name(tag2)
         if tag2 != san2:
             raise OSError(
                 f"tag contains invalid characters: '{tag2}' (sanitizes to: '{san2}')"
@@ -2024,7 +2015,7 @@ class _Command:
         if not isinstance(x, str):
             raise TypeError("image tag must be a string")
         x = x.strip()
-        sanitized = _sanitize_name(x)
+        sanitized = sanitize_name(x)
         if x != sanitized:
             raise ValueError(
                 f"invalid image tag: '{x}' (must contain only alphanumerics, '_', or '.')"
@@ -2038,7 +2029,7 @@ class _Command:
         if not isinstance(x, str):
             raise TypeError("container tag must be a string")
         x = x.strip()
-        sanitized = _sanitize_name(x)
+        sanitized = sanitize_name(x)
         if x != sanitized:
             raise ValueError(
                 f"invalid container tag: '{x}' (must contain only alphanumerics, '_', or '.')"
@@ -2152,7 +2143,7 @@ class Build(_Command):
             args=args,
             containers={},
         )
-        image_name = f"{_sanitize_name(env.root.name)}.{image_tag}.{env.id[:13]}"
+        image_name = f"{sanitize_name(env.root.name)}.{image_tag}.{env.id[:13]}"
         build_args: list[str] = []
         for arg in args:
             build_args.append(f"--build-arg={arg}")

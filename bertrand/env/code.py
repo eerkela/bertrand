@@ -203,23 +203,23 @@ def _editor_bin() -> Path:
 
 def _validate_version(version: int) -> None:
     if version != CODE_SOCKET_VERSION:
-        raise ValidationError(f"unsupported protocol version: {version}")
+        raise ValueError(f"unsupported protocol version: {version}")
 
 
 def _validate_env_root(env_root: str) -> None:
     path = Path(env_root)
     if not path.is_absolute():
-        raise ValidationError(f"env_root must be an absolute path: {env_root}")
+        raise ValueError(f"env_root must be an absolute path: {env_root}")
     if not path.exists():
-        raise ValidationError(f"env_root does not exist: {path}")
+        raise ValueError(f"env_root does not exist: {path}")
     if not path.is_dir():
-        raise ValidationError(f"env_root must be a directory: {path}")
+        raise ValueError(f"env_root must be a directory: {path}")
 
 
 def _validate_container_id(container_id: str) -> None:
     container_id = container_id.strip()
     if not container_id:
-        raise ValidationError("container_id must be non-empty")
+        raise ValueError("container_id must be non-empty")
 
 
 Version = Annotated[int, AfterValidator(_validate_version)]

@@ -3,7 +3,7 @@ include README.rst CHANGELOG.rst LICENSE
 include docs/Makefile docs/make.bat
 recursive-include docs/source *
 recursive-include tests *.py
-recursive-include bertrand *.h *.cpp *.pyx *.pxd *.pyi py.typed
+recursive-include bertrand *.h *.cpp *.pyx *.pxd *.pyi *.j2 py.typed
 
 global-exclude *Zone.Identifier *.pyc
 recursive-exclude bertrand *.c

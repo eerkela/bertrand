@@ -1,0 +1,68 @@
+# Bertrand requires a minimal set of arguments to be provided at compile time, which
+# are baked into its reproducible images to avoid lengthy recompilation.  These
+# arguments may be overridden by passing `<arg>=<value>` options to the
+# `bertrand build`, `bertrand start`, or `bertrand enter` commands, which are then
+# forwarded to this Containerfile.  Otherwise, the default values will be used.
+
+# toolchain version to install (defaults to host Bertrand version)
+ARG BERTRAND={{ bertrand_version }}
+
+# enable stack traces + debug assertions to prevent undefined behavior
+ARG DEBUG=true
+
+# include developer tools (language servers, sanitizers, debuggers, AI assistants) in base image
+ARG DEV=true
+
+# number of hardware threads for concurrent runtime (>= 1, defaults to host CPU count)
+ARG CPUS={{ cpus }}
+
+# pull base Bertrand image with the specified configuration
+FROM bertrand:${BERTRAND}.${DEBUG}.${DEV}.${CPUS}.{{ page_size_kib }}
+
+# set cwd to the mounted environment directory
+WORKDIR {{ mount_path }}
+
+# set up incremental builds
+ENV UV_CACHE_DIR={{ cache_dir }}/uv
+ENV BERTRAND_CACHE={{ cache_dir }}/bertrand
+ENV CCACHE_DIR={{ cache_dir }}/ccache
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1
+COPY . {{ mount_path }}
+
+# you can extend this file in order to create a reproducible image that others can pull
+# from in their own Dockerfiles.  For example:
+
+RUN --mount=type=cache,target={{ cache_dir }}/uv,sharing=locked \
+    --mount=type=cache,target={{ cache_dir }}/bertrand,sharing=locked \
+    --mount=type=cache,target={{ cache_dir }}/ccache,sharing=locked \
+    --mount=type=cache,target=/opt/conan,sharing=locked \
+    bertrand build
+
+# A `bertrand build` command of that form will incrementally compile the contents of
+# the local environment directory (WORKDIR) and install them into the base image as
+# Python packages, C++ modules, and/or executable binaries on the container's PATH.  If
+# you then upload this image to an external repository, downstream users will be able
+# to use `FROM <your-image>` in their own Containerfiles in order to inherit
+# Bertrand's toolchain along with your built artifacts and dependencies without needing
+# to recompile them from scratch.  This can be useful for large projects where build
+# time is significant, or which have external dependencies or build configurations that
+# are otherwise difficult to install.  Small projects without significant
+# configuration needs are encouraged to use the bundled package managers instead, and
+# leave this file alone.
+
+# In most cases, `bertrand build` and `pyproject.toml` is all you need.
+# C++ tooling rules are sourced from `[tool.conan]`, `[tool.clang-format]`,
+# `[tool.clang-tidy]`, and `[tool.clangd]` in pyproject.toml, then emitted as generated
+# `.clang-*` files at command runtime.  `pyproject.toml` is the single source of truth
+# for dependencies and tooling configuration across both languages.  If you'd like to
+# add your own tools outside of `pyproject.toml`, you can still use raw `uv` or
+# `apt-get` commands directly in this file (although doing so is discouraged).  For
+# example:
+# RUN uv pip install <tool1> <tool2>
+# RUN apt-get update && apt-get install -y --no-install-recommends <pkg1> <pkg2>
+
+# `sleep infinity` is used to keep the container alive indefinitely after startup, so
+# that users can `bertrand enter` into it and use it as a normal shell environment.
+# You can change this to run a different command or entry point if you'd like, but be
+# aware that doing so may interfere with `bertrand enter` and other runtime commands.
+ENTRYPOINT ["sleep", "infinity"]

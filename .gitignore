@@ -25,6 +25,7 @@
 !/bertrand/**/*.pyi
 !/bertrand/**/*.pyx
 !/bertrand/**/*.pxd
+!/bertrand/**/*.j2
 
 # tests...
 !/test/**/py.typed

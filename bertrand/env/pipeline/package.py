@@ -894,8 +894,12 @@ class AddRepository:
         APT components (required for APT).  Ignored for RPM managers.
     arch : str | None, optional
         APT architecture (auto-detected if omitted).  Ignored for RPM managers.
-    replace : bool, optional
-        Whether to replace existing repo/key files.  Defaults to false.
+    replace : bool | None, optional
+        Conflict behavior for repo/key writes.
+        - False: raise on occupied targets.
+        - True: stash occupied targets and restore on undo.
+        - None: overwrite/remove occupied targets without stashing.
+        Defaults to false.
     refresh : bool, optional
         Whether to refresh repository metadata after adding.  Defaults to true.
     assume_yes : bool, optional
@@ -922,7 +926,7 @@ class AddRepository:
     suite: str | None = None
     components: list[str] | None = None
     arch: str | None = None
-    replace: bool = False
+    replace: bool | None = False
     refresh: bool = True
     assume_yes: bool = False
     key_url: str | None = None
@@ -1243,15 +1247,19 @@ class InstallCACert:
         The local PEM/CRT file to install.
     name : str | None, optional
         Optional override for the target filename.
-    replace : bool, optional
-        Whether to replace an existing cert at the target path. Defaults to false.
+    replace : bool | None, optional
+        Conflict behavior for the target certificate path.
+        - False: raise on occupied target.
+        - True: stash occupied target and restore on undo.
+        - None: overwrite/remove occupied target without stashing.
+        Defaults to false.
     refresh : bool, optional
         Whether to refresh the trust store after installing. Defaults to true.
     """
     manager: str
     source: Path
     name: str | None = None
-    replace: bool = False
+    replace: bool | None = False
     refresh: bool = True
 
     def do(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:

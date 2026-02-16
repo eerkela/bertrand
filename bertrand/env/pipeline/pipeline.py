@@ -47,7 +47,6 @@ from ..run import LockDir, User, atomic_write_text, mkdir_private
 #pylint: disable=broad-except
 SYNTAX: int = 1
 STATE_DIR = User().home / ".local" / "share" / "bertrand" / "pipelines"
-SANITIZE: re.Pattern[str] = re.compile(r"[^a-zA-Z0-9_.-]")
 MISSING: Literal["<missing>"] = "<missing>"  # not a valid SHA-256 hexdigest
 ATOMIC_UNDO: dict[str, Callable[[Pipeline.InProgress, dict[str, JSONValue], bool], None]] = {}
 QualName = Annotated[str, Field(pattern=r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*$")]

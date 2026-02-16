@@ -15,7 +15,7 @@ build-backend = "setuptools.build_meta:__legacy__"
 include = ["bertrand*"]
 
 [tool.setuptools.package-data]
-bertrand = ["py.typed"]
+bertrand = ["py.typed", "env/templates/**/*.j2"]
 
 [project]
 name = "bertrand"

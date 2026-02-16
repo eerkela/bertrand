@@ -7,13 +7,17 @@ This module is intentionally scoped to a minimal, ctx-driven backend for
 2. Persist it in `.bertrand/env.json` under top-level `layout`.
 3. Render and write managed bootstrap resources in deterministic phases.
 
-Template rendering is delegated to `bertrand.env.layout.template`.
+Canonical templates are packaged with Bertrand and lazily hydrated into
+`on_init` pipeline state under `templates/...` before rendering.
 """
 from __future__ import annotations
 
 import json
+import os
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, field
+from importlib import resources
+from importlib.resources.abc import Traversable
 from pathlib import Path, PosixPath
 from typing import Any, Literal, Self
 
@@ -27,7 +31,10 @@ from pydantic import (
     model_validator,
 )
 
-from .pipeline import Pipeline, WriteText
+from .config import DEFAULT_SHELL, MOUNT
+from .pipeline import Mkdir, Pipeline, WriteText
+from .run import sanitize_name
+from .version import __version__
 
 
 LAYOUT_SCHEMA_VERSION: int = 1
@@ -39,9 +46,9 @@ ENV_LAYOUT_KEY: str = "layout"
 class TemplateRef(BaseModel):
     """Stable template reference used by layout resources.
 
-    Templates are stored under the `templates` directory in the `on_init` pipeline
-    state, under a convention of `{namespace}/{name}/{version}.j2`, and a reference
-    is used to link a managed resource to its template without hardcoding paths.
+    Canonical templates are packaged with Bertrand under `env/templates` and addressed
+    by stable `{namespace}/{name}/{version}` references.  They are lazily hydrated into
+    the `on_init` state cache before rendering.
     """
     model_config = ConfigDict(extra="forbid")
     namespace: str = Field(description="Template namespace, e.g. 'core'.")
@@ -58,8 +65,24 @@ class TemplateRef(BaseModel):
     def _validate_non_empty(cls, value: str) -> str:
         text = value.strip()
         if not text:
-            raise ValidationError("template reference fields must be non-empty")
+            raise ValueError("template reference fields must be non-empty")
         return text
+
+    def packaged_path(self) -> Traversable:
+        """Return a path to the version of this template that is packaged with
+        Bertrand itself, which will be hydrated into the `on_init` state cache during
+        layout application if not already present.
+
+        Returns
+        -------
+        Traversable
+            A path to the packaged template file corresponding to this reference.
+        """
+        return resources.files("bertrand.env").joinpath("templates").joinpath(
+            self.namespace,
+            self.name,
+            f"{self.version}.j2",
+        )
 
 
 class Resource(BaseModel):
@@ -81,21 +104,21 @@ class Resource(BaseModel):
             "Whether this resource is managed by the layout system.  Managed resources "
             "will be rendered during layout application, and must have a matching "
             "template if they are files.  Unmanaged resources are not automatically "
-            "created or modified by the layout system, but can be referenced by other "
-            "resources and lazily created if necessary.",
+            "created or modified by the layout system.",
     )
     required: bool = Field(
         default=True,
         description=
             "Whether this resource is required to be present in the environment.  If "
             "True, then the layout application process will raise an error if the "
-            "resource is missing after rendering.",
+            "resource is missing or has the wrong type after applying the layout.",
     )
     template: TemplateRef | None = Field(
         default=None,
         description=
             "An optional reference to a template used to render the contents of a "
-            "managed file resource.  Must be None for non-file resources.",
+            "managed file resource.  Must be None for non-file resources.  Managed "
+            "file resources must define one.",
     )
 
     @field_validator("path")
@@ -111,6 +134,8 @@ class Resource(BaseModel):
 
     @model_validator(mode="after")
     def _validate(self) -> Self:
+        if self.kind != "file" and self.template is not None:
+            raise ValueError("non-file layout resources must not define a template reference")
         if self.managed and self.kind == "file" and self.template is None:
             raise ValueError("managed file resources must define a template reference")
         return self
@@ -195,6 +220,37 @@ class Manifest(BaseModel):
                 f"unsupported layout schema version: {self.schema_version} "
                 f"(expected {LAYOUT_SCHEMA_VERSION})"
             )
+
+        # validate no duplicate paths
+        by_parts: dict[tuple[str, ...], tuple[str, Resource]] = {}
+        for resource_id in self.resources:
+            resource = self.resources[resource_id]
+            parts = resource.path.parts
+            existing = by_parts.get(parts)
+            if existing is not None:
+                existing_id, _ = existing
+                raise ValueError(
+                    f"layout path collision between resource IDs '{existing_id}' and "
+                    f"'{resource_id}' at '{resource.path}'"
+                )
+            by_parts[parts] = (resource_id, resource)
+
+        # validate no file ancestors in paths
+        for resource_id in self.resources:
+            resource = self.resources[resource_id]
+            parts = resource.path.parts
+            for depth in range(1, len(parts)):
+                parent_parts = parts[:depth]
+                parent = by_parts.get(parent_parts)
+                if parent is None:
+                    continue
+                parent_id, parent_resource = parent
+                if parent_resource.kind == "file":
+                    parent_path = PosixPath(*parent_parts)
+                    raise ValueError(
+                        f"layout resource '{resource_id}' at '{resource.path}' cannot be nested "
+                        f"under file resource '{parent_id}' at '{parent_path}'"
+                    )
         return self
 
 
@@ -234,12 +290,8 @@ def _expect_str(name: str, ctx: Pipeline.InProgress) -> str:
     return text
 
 
-def _template_root(ctx: Pipeline.InProgress) -> Path:
-    return ctx.state_dir / "templates"
-
-
 def _template_path(ctx: Pipeline.InProgress, ref: TemplateRef) -> Path:
-    return _template_root(ctx) / ref.namespace / ref.name / f"{ref.version}.j2"
+    return ctx.state_dir / "templates" / ref.namespace / ref.name / f"{ref.version}.j2"
 
 
 LAYOUT_PROFILES: dict[str, dict[str, Resource]] = {
@@ -344,32 +396,27 @@ LAYOUT_CAPABILITIES: dict[str, dict[str, Resource]] = {
         # NOTE: configuration centralized in pyproject.toml
     },
     "cpp": {
+        # NOTE: these are generated from pyproject at runtime, not init-time templates
         "clang_format": Resource(
             kind="file",
             path=PosixPath(".clang-format"),
-            template=TemplateRef(
-                namespace="core",
-                name="clang-format",
-                version="2026-02-15"
-            ),
+            managed=False,
+            required=False,
+            template=None,
         ),
         "clang_tidy": Resource(
             kind="file",
             path=PosixPath(".clang-tidy"),
-            template=TemplateRef(
-                namespace="core",
-                name="clang-tidy",
-                version="2026-02-15"
-            ),
+            managed=False,
+            required=False,
+            template=None,
         ),
         "clangd": Resource(
             kind="file",
             path=PosixPath(".clangd"),
-            template=TemplateRef(
-                namespace="core",
-                name="clangd",
-                version="2026-02-15"
-            ),
+            managed=False,
+            required=False,
+            template=None,
         ),
     },
 }
@@ -381,6 +428,33 @@ class Layout:
     together with the environment root path in which to apply it.  This is the main
     entry point for layout rendering and application logic.
     """
+    @dataclass(frozen=True)
+    class Facts:
+        """Jinja context for rendering layout resources."""
+        @staticmethod
+        def _page_size_kib() -> int:
+            try:
+                page_size = os.sysconf("SC_PAGESIZE")
+                if isinstance(page_size, int) and page_size > 0:
+                    return max(1, page_size // 1024)
+            except (AttributeError, OSError, ValueError):
+                pass
+            return 4
+
+        env: str = field()
+        manifest: dict[str, Any] = field()
+        paths: dict[str, str] = field()
+        project_name: str = field()
+        code: str = field()
+        agent: str = field()
+        assist: str = field()
+        shell: str = field(default=DEFAULT_SHELL)
+        bertrand_version: str = field(default=__version__)
+        cpus: int = field(default_factory=lambda: os.cpu_count() or 1)
+        page_size_kib: int = field(default_factory=_page_size_kib)
+        mount_path: str = field(default=str(MOUNT))
+        cache_dir: str = field(default="/tmp/.cache")
+
     root: Path
     manifest: Manifest
 
@@ -456,8 +530,8 @@ class Layout:
         ------
         ValueError
             If the specified profile is unknown, if any specified capability is
-            unknown, or if there are any resource ID collisions when merging the
-            profile and capabilities.
+            unknown, or if there are any invalid resource collisions (including path
+            collisions) when merging the profile and capabilities.
         """
         # merge profile resources
         profile_key = profile.strip().lower()
@@ -549,6 +623,46 @@ class Layout:
         """
         return self.root / Path(self.resource(resource_id).path)
 
+    def _facts(self, ctx: Pipeline.InProgress) -> Layout.Facts:
+        """Build a Jinja context from pipeline facts, which can be used to render
+        layout resources.
+
+        Parameters
+        ----------
+        ctx : Pipeline.InProgress
+            The current pipeline context, whose state directory holds layout
+            templates and whose facts record CLI input.
+
+        Returns
+        -------
+        Layout.Facts
+            A Facts instance containing the relevant context for layout rendering.
+
+        Raises
+        ------
+        OSError
+            If the environment path in pipeline facts does not match this layout's
+            root path.
+        """
+        env = Path(_expect_str("env", ctx)).expanduser().resolve()
+        if env != self.root:
+            raise OSError(
+                f"layout context mismatch for environment root: layout={self.root}, ctx={env}"
+            )
+
+        return Layout.Facts(
+            env=str(self.root),
+            manifest=self.manifest.model_dump(mode="python"),
+            paths={
+                resource_id: str(self.path(resource_id))
+                for resource_id in sorted(self.manifest.resources)
+            },
+            project_name=sanitize_name(self.root.name, replace="-"),
+            code=_expect_str("code", ctx),
+            agent=_expect_str("agent", ctx),
+            assist=_expect_str("assist", ctx),
+        )
+
     def render(self, ctx: Pipeline.InProgress) -> dict[str, str]:
         """Render managed file resources in deterministic resource-id order.
 
@@ -567,9 +681,9 @@ class Layout:
         Raises
         ------
         OSError
-            If any required resource is missing after rendering, or if there are any
-            errors during template loading or rendering.
+            If there are any errors during template loading or rendering.
         """
+        # gather jinja context
         jinja = Environment(
             autoescape=False,
             undefined=StrictUndefined,
@@ -577,8 +691,44 @@ class Layout:
             trim_blocks=False,
             lstrip_blocks=False,
         )
+        replacements = asdict(self._facts(ctx))
 
-        # render managed resources in deterministic order
+        # collect template references from managed file resources
+        refs: dict[tuple[str, str, str], TemplateRef] = {}
+        for resource_id in sorted(self.manifest.resources):
+            resource = self.resource(resource_id)
+            if resource.kind != "file" or not resource.managed or resource.template is None:
+                continue
+            ref = resource.template
+            refs[(ref.namespace, ref.name, ref.version)] = ref
+
+        # hydrate any missing templates from packaged Bertrand sources
+        for _, ref in sorted(refs.items()):
+            target = _template_path(ctx, ref)
+            if target.exists():
+                if not target.is_file():
+                    raise OSError(f"template cache path is not a file: {target}")
+                continue  # already hydrated, skip
+
+            # load template from packaged resources
+            source = ref.packaged_path()
+            if not source.is_file():
+                raise FileNotFoundError(
+                    "missing packaged template for layout reference "
+                    f"{ref.namespace}/{ref.name}/{ref.version}: {source}"
+                )
+            try:
+                text = source.read_text(encoding="utf-8")
+            except OSError as err:
+                raise OSError(
+                    "failed to read packaged template for layout reference "
+                    f"{ref.namespace}/{ref.name}/{ref.version} at {source}: {err}"
+                ) from err
+
+            # write template to state cache for rendering
+            ctx.do(WriteText(path=target, text=text, replace=False), undo=False)
+
+        # render managed resources with Jinja context
         out: dict[str, str] = {}
         for resource_id in sorted(self.manifest.resources):
             resource = self.resource(resource_id)
@@ -592,36 +742,21 @@ class Layout:
                     f"missing template for layout resource '{resource_id}': {path}"
                 )
             try:
-                source = path.read_text(encoding="utf-8")
+                text = path.read_text(encoding="utf-8")
             except OSError as err:
                 raise OSError(
                     f"failed to read template for layout resource '{resource_id}' at "
                     f"{path}: {err}"
                 ) from err
 
-            # render template with manifest and facts
+            # render template and store output
             try:
-                rendered = jinja.from_string(source).render(
-                    env_root=str(self.root),
-                    manifest=self.manifest.model_dump(mode="python"),
-                    paths={
-                        resource_id: str(self.path(resource_id))
-                        for resource_id in sorted(self.manifest.resources)
-                    },
-                    vars={
-                        "env": str(Path(_expect_str("env", ctx)).expanduser().resolve()),
-                        "code": _expect_str("code", ctx),
-                        "agent": _expect_str("agent", ctx),
-                        "assist": _expect_str("assist", ctx),
-                    },
-                )
+                rendered = jinja.from_string(text).render(**replacements)
             except Exception as err:
                 raise OSError(
                     f"failed to render template for layout resource '{resource_id}' at {path}: "
                     f"{err}"
                 ) from err
-
-            # store rendered text
             if not isinstance(rendered, str):
                 raise OSError(
                     f"template render returned non-string for layout resource '{resource_id}' "
@@ -633,7 +768,8 @@ class Layout:
 
     def apply(self, ctx: Pipeline.InProgress) -> None:
         """Apply the layout to the environment directory by rendering managed resources
-        and writing them to disk.
+        and writing them to disk.  Unmanaged resources are validated only through
+        `required` checks.
 
         Parameters
         ----------
@@ -644,10 +780,10 @@ class Layout:
         Raises
         ------
         OSError
-            If any required resource is missing after rendering, or if there are any
-            filesystem errors when writing rendered resources to disk.
+            If there are any filesystem errors when writing rendered resources to disk,
+            or if any required resources are missing or have an invalid type after
+            applying the layout.
         """
-        # render templates ahead of time in case of error
         rendered = self.render(ctx)
 
         # serialize layout to env.json
@@ -659,21 +795,52 @@ class Layout:
                 path=env_file,
                 text=json.dumps(data, indent=2) + "\n",
                 replace=None
-            ))
+            ), undo=False)
         except Exception as err:
             raise OSError(
                 f"failed to serialize environment metadata for {env_file}: {err}"
             ) from err
 
         # create directory resources
-        for resource_id, resource in self.manifest.resources.items():
-            if resource.kind == "dir":
-                target = self.path(resource_id)
-                if not target.exists():
-                    ctx.do(WriteText(path=target, text="", replace=False))
+        for resource_id in self.manifest.resources:
+            resource = self.manifest.resources[resource_id]
+            if resource.kind == "dir" and resource.managed:
+                ctx.do(Mkdir(path=self.path(resource_id), replace=False), undo=False)
 
         # write missing files in deterministic order
         for resource_id, text in rendered.items():
             target = self.path(resource_id)
             if not target.exists():
-                ctx.do(WriteText(path=target, text=text, replace=False))
+                ctx.do(WriteText(path=target, text=text, replace=False), undo=False)
+
+        # ensure required resources exist with the expected kind
+        errors: list[str] = []
+        for resource_id in sorted(self.manifest.resources):
+            resource = self.resource(resource_id)
+            if not resource.required:
+                continue
+
+            # verify required resource exists
+            target = self.path(resource_id)
+            if not target.exists():
+                errors.append(
+                    f"- missing required {resource.kind} '{resource_id}' at {target}"
+                )
+                continue
+
+            # verify required resource has expected type
+            if resource.kind == "file" and not target.is_file():
+                errors.append(
+                    f"- required file '{resource_id}' has wrong type at {target}"
+                )
+            elif resource.kind == "dir" and not target.is_dir():
+                errors.append(
+                    f"- required dir '{resource_id}' has wrong type at {target}"
+                )
+
+        # if any required resources are missing, merge them into a single error message
+        if errors:
+            raise OSError(
+                "layout application left required resources missing or invalid:\n"
+                f"{'\n'.join(errors)}"
+            )

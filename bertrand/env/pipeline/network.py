@@ -18,7 +18,7 @@ from .filesystem import (
     _is_file,
     _record_id,
     _remove_path,
-    _stash_existing,
+    _resolve_write_conflict,
     _unstash_existing,
 )
 
@@ -36,23 +36,29 @@ class Download:
         The URL to download.
     target : Path
         The local file path to write to.
-    replace : bool, optional
-        If true, stash any existing file at the target path before downloading.
-        Otherwise, raise an error if the target already exists.  Defaults to false.
+    replace : bool | None, optional
+        Controls conflict behavior at the target path.
+        - False: raise if occupied.
+        - True: stash existing content and restore it during undo.
+        - None: overwrite/remove existing content in place without stashing.
+        Defaults to false.
     sha256 : str | None, optional
         If provided, verify the downloaded content hash matches this value.
     """
     url: str
     target: Path
-    replace: bool = False
+    replace: bool | None = False
     sha256: str | None = None
 
     def do(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
         target = self.target.absolute()
-        if self.replace:
-            _stash_existing(ctx, payload, target)
-        elif _exists(target):
-            raise FileExistsError(f"could not download; path occupied: {target}")
+        _resolve_write_conflict(
+            ctx,
+            payload,
+            target,
+            self.replace,
+            error_message=f"could not download; path occupied: {target}"
+        )
 
         payload["url"] = self.url
         payload["target"] = str(target)

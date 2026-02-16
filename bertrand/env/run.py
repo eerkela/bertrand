@@ -2,6 +2,7 @@
 import json
 import os
 import pwd
+import re
 import shlex
 import shutil
 import subprocess
@@ -276,6 +277,29 @@ def run(
     if check and rc != 0:
         raise CommandError(rc, argv, result.stdout, result.stderr)
     return result
+
+
+SANITIZE = re.compile(r"[^a-zA-Z0-9._]+")
+
+
+def sanitize_name(name: str, *, replace: str = "_") -> str:
+    """Replace any characters in the given name that are not alphanumeric, '.', or '_'
+    with the specified replacement character, and then strip leading and trailing
+    replacement characters from the result.
+
+    Parameters
+    ----------
+    name : str
+        The name to sanitize.
+    replace : str, optional
+        The character to use as a replacement for invalid characters.  Default is '_'.
+
+    Returns
+    -------
+    str
+        The sanitized name.
+    """
+    return SANITIZE.sub(replace, name).strip(replace)
 
 
 # TODO: sudo_prefix should maybe be rethought to be more reliable and ideally just
