@@ -60,6 +60,7 @@ keywords = [
 ]
 dependencies = [
     "conan",
+    "jinja2",
     "mcp==1.9.4",
     "numpy",
     "packaging",
