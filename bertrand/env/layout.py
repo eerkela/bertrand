@@ -31,17 +31,55 @@ from pydantic import (
     model_validator,
 )
 
-from .config import DEFAULT_SHELL, MOUNT
 from .pipeline import Mkdir, Pipeline, WriteText
 from .run import LOCK_TIMEOUT, Lock, sanitize_name
 from .version import __version__
 
 
-LAYOUT_SCHEMA_VERSION: int = 1
+# Canonical path and name definitions for shared resources
 ENV_DIR_NAME: str = ".bertrand"
 ENV_FILE_NAME: str = "env.json"
 ENV_LOCK_NAME: str = ".lock"
 ENV_LAYOUT_KEY: str = "layout"
+LAYOUT_SCHEMA_VERSION: int = 1
+MOUNT: PosixPath = PosixPath("/env")
+assert MOUNT.is_absolute()
+
+
+# semantic role names for resource discovery by other subsystems
+ROLE_CONFIG_PRIMARY: str = "config.primary"
+ROLE_ARTIFACT_CPP: str = "artifact.cpp"
+ROLES: set[str] = {ROLE_CONFIG_PRIMARY, ROLE_ARTIFACT_CPP}
+
+
+# CLI options that affect template rendering
+AGENTS: dict[str, tuple[str, ...]] = {
+    "none": (),
+    "claude": ("anthropic.claude-code",),
+    "codex": ("openai.chatgpt",),
+}
+ASSISTS: dict[str, tuple[str, ...]] = {
+    "none": (),
+    "copilot": ("GitHub.copilot", "GitHub.copilot-chat"),
+}
+EDITORS: dict[str, str] = {
+    "vscode": "code",
+}
+SHELLS: dict[str, tuple[str, ...]] = {
+    "bash": ("bash", "-l"),
+}
+DEFAULT_AGENT: str = "none"
+DEFAULT_ASSIST: str = "none"
+DEFAULT_EDITOR: str = "vscode"
+DEFAULT_SHELL: str = "bash"
+if DEFAULT_AGENT not in AGENTS:
+    raise RuntimeError(f"default agent is unsupported: {DEFAULT_AGENT}")
+if DEFAULT_ASSIST not in ASSISTS:
+    raise RuntimeError(f"default assist is unsupported: {DEFAULT_ASSIST}")
+if DEFAULT_EDITOR not in EDITORS:
+    raise RuntimeError(f"default editor is unsupported: {DEFAULT_EDITOR}")
+if DEFAULT_SHELL not in SHELLS:
+    raise RuntimeError(f"default shell is unsupported: {DEFAULT_SHELL}")
 
 
 class TemplateRef(BaseModel):
@@ -146,7 +184,10 @@ class Manifest(BaseModel):
     """Serializable resource manifest persisted in environment metadata.
 
     A manifest of this form is stored in `env.json` under the top-level `layout` key,
-    and can be loaded to reconstruct the layout after initialization.
+    and can be loaded to reconstruct the layout after initialization.  Roles map
+    semantic names (e.g. "config.primary") to concrete resource IDs, allowing other
+    subsystems to resolve canonical configuration sources and derived artifacts without
+    hardcoding filenames.
     """
     model_config = ConfigDict(extra="forbid")
     schema_version: int = Field(
@@ -171,6 +212,12 @@ class Manifest(BaseModel):
             "arbitrary strings that serve as stable identifiers for resources, and "
             "should generally match the `name` portion of a corresponding template."
     )
+    roles: dict[str, list[str]] = Field(
+        default_factory=dict,
+        description=
+            "Mapping of semantic role names to ordered resource IDs.  Role targets "
+            "must reference resources defined in this manifest."
+    )
 
     @field_validator("profile")
     @classmethod
@@ -183,6 +230,7 @@ class Manifest(BaseModel):
     @field_validator("capabilities")
     @classmethod
     def _validate_capabilities(cls, values: list[str]) -> list[str]:
+        # capability names must be non-empty strings with no duplicates
         out: list[str] = []
         seen: set[str] = set()
         for raw in values:
@@ -200,6 +248,8 @@ class Manifest(BaseModel):
     def _validate_resources(cls, value: Any) -> Any:
         if not isinstance(value, dict):
             return value
+
+        # resource ids must be non-empty strings with no duplicates
         normalized: dict[str, Any] = {}
         seen: set[str] = set()
         for raw_id, spec in value.items():
@@ -212,6 +262,51 @@ class Manifest(BaseModel):
                 raise ValueError(f"duplicate layout resource ID: {resource_id}")
             seen.add(resource_id)
             normalized[resource_id] = spec
+        return normalized
+
+    @field_validator("roles", mode="before")
+    @classmethod
+    def _validate_roles(cls, value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+
+        # role names must be non-empty strings with no duplicates
+        normalized: dict[str, list[str]] = {}
+        seen_roles: set[str] = set()
+        for raw_name, raw_ids in value.items():
+            if not isinstance(raw_name, str):
+                raise ValueError("layout role names must be strings")
+            role_name = raw_name.strip()
+            if not role_name:
+                raise ValueError("layout role names must be non-empty")
+            if role_name in seen_roles:
+                raise ValueError(f"duplicate layout role name: {role_name}")
+            seen_roles.add(role_name)
+
+            # role targets must be non-empty lists of resource IDs
+            if not isinstance(raw_ids, list):
+                raise ValueError(f"layout role targets must be lists: {role_name}")
+            ids: list[str] = []
+            seen_ids: set[str] = set()
+            for raw_id in raw_ids:
+                if not isinstance(raw_id, str):
+                    raise ValueError(
+                        f"layout role resource IDs must be strings: {role_name}"
+                    )
+                resource_id = raw_id.strip()
+                if not resource_id:
+                    raise ValueError(
+                        f"layout role resource IDs must be non-empty: {role_name}"
+                    )
+                if resource_id in seen_ids:
+                    raise ValueError(
+                        f"duplicate resource ID '{resource_id}' in layout role '{role_name}'"
+                    )
+                seen_ids.add(resource_id)
+                ids.append(resource_id)
+            if not ids:
+                raise ValueError(f"layout role must reference at least one resource: {role_name}")
+            normalized[role_name] = ids
         return normalized
 
     @model_validator(mode="after")
@@ -252,7 +347,27 @@ class Manifest(BaseModel):
                         f"layout resource '{resource_id}' at '{resource.path}' cannot be nested "
                         f"under file resource '{parent_id}' at '{parent_path}'"
                     )
+
+        # validate role targets point to known resources
+        for role_name in self.roles:
+            for resource_id in self.roles[role_name]:
+                if resource_id not in self.resources:
+                    raise ValueError(
+                        f"layout role '{role_name}' references unknown resource ID: "
+                        f"'{resource_id}'"
+                    )
         return self
+
+
+class Capability(BaseModel):
+    """Profile-specific contribution from a capability.
+
+    This bundles both resource specs and semantic role bindings, so capabilities can
+    provide profile-aware paths and role memberships in one place.
+    """
+    model_config = ConfigDict(extra="forbid")
+    resources: dict[str, Resource] = Field(default_factory=dict)
+    roles: dict[str, list[str]] = Field(default_factory=dict)
 
 
 def _env_dir(root: Path) -> Path:
@@ -318,17 +433,13 @@ def _template_path(ctx: Pipeline.InProgress, ref: TemplateRef) -> Path:
     return ctx.state_dir / "templates" / ref.namespace / ref.name / f"{ref.version}.j2"
 
 
-LAYOUT_PROFILES: dict[str, dict[str, Resource]] = {
-    "flat": {
-        "pyproject": Resource(
-            kind="file",
-            path=PosixPath("pyproject.toml"),
-            template=TemplateRef(
-                namespace="core",
-                name="pyproject",
-                version="2026-02-15"
-            ),
-        ),
+# NOTE: "*" indicates a base line, while other keys act as overlay diffs that merge
+# on top to avoid duplication.
+
+
+# Profiles define basic directory layout and minimal bootstrap resources.
+PROFILES: dict[str, dict[str, Resource]] = {
+    "*": {
         "containerfile": Resource(
             kind="file",
             path=PosixPath("Containerfile"),
@@ -362,34 +473,8 @@ LAYOUT_PROFILES: dict[str, dict[str, Resource]] = {
             template=None,
         ),
     },
+    "flat": {},
     "src": {
-        "pyproject": Resource(
-            kind="file",
-            path=PosixPath("pyproject.toml"),
-            template=TemplateRef(
-                namespace="core",
-                name="pyproject",
-                version="2026-02-15"
-            ),
-        ),
-        "containerfile": Resource(
-            kind="file",
-            path=PosixPath("Containerfile"),
-            template=TemplateRef(
-                namespace="core",
-                name="containerfile",
-                version="2026-02-15"
-            ),
-        ),
-        "containerignore": Resource(
-            kind="file",
-            path=PosixPath(".containerignore"),
-            template=TemplateRef(
-                namespace="core",
-                name="containerignore",
-                version="2026-02-15"
-            ),
-        ),
         "src": Resource(
             kind="dir",
             path=PosixPath("src"),
@@ -397,52 +482,64 @@ LAYOUT_PROFILES: dict[str, dict[str, Resource]] = {
             required=False,
             template=None,
         ),
-        "docs": Resource(
-            kind="dir",
-            path=PosixPath("docs"),
-            managed=False,
-            required=False,
-            template=None,
-        ),
-        "tests": Resource(
-            kind="dir",
-            path=PosixPath("tests"),
-            managed=False,
-            required=False,
-            template=None,
-        ),
     },
 }
 
 
-LAYOUT_CAPABILITIES: dict[str, dict[str, Resource]] = {
+# Capabilities define language-specific resources and role bindings for later
+# discovery and generation.
+CAPABILITIES: dict[str, dict[str, Capability]] = {
     "python": {
-        # NOTE: configuration centralized in pyproject.toml
+        "*": Capability(
+            resources={
+                "pyproject": Resource(
+                    kind="file",
+                    path=PosixPath("pyproject.toml"),
+                    template=TemplateRef(
+                        namespace="core",
+                        name="pyproject",
+                        version="2026-02-15"
+                    ),
+                ),
+            },
+            roles={
+                ROLE_CONFIG_PRIMARY: ["pyproject"],
+            },
+        ),
     },
     "cpp": {
-        # NOTE: these are generated from pyproject at runtime, not init-time templates
-        "clang_format": Resource(
-            kind="file",
-            path=PosixPath(".clang-format"),
-            managed=False,
-            required=False,
-            template=None,
-        ),
-        "clang_tidy": Resource(
-            kind="file",
-            path=PosixPath(".clang-tidy"),
-            managed=False,
-            required=False,
-            template=None,
-        ),
-        "clangd": Resource(
-            kind="file",
-            path=PosixPath(".clangd"),
-            managed=False,
-            required=False,
-            template=None,
+        "*": Capability(
+            resources={
+                "clang_format": Resource(
+                    kind="file",
+                    path=PosixPath(".clang-format"),
+                    managed=False,
+                    required=False,
+                    template=None,
+                ),
+                "clang_tidy": Resource(
+                    kind="file",
+                    path=PosixPath(".clang-tidy"),
+                    managed=False,
+                    required=False,
+                    template=None,
+                ),
+                "clangd": Resource(
+                    kind="file",
+                    path=PosixPath(".clangd"),
+                    managed=False,
+                    required=False,
+                    template=None,
+                ),
+            },
+            roles={
+                ROLE_ARTIFACT_CPP: ["clang_format", "clang_tidy", "clangd"],
+            },
         ),
     },
+    # TODO: we may want other capabilities related to editors or language-specific
+    # tools, such as the managed workspace file for vscode, etc.  We'll have to
+    # revisit this later down the line.
 }
 
 
@@ -450,7 +547,9 @@ LAYOUT_CAPABILITIES: dict[str, dict[str, Resource]] = {
 class Layout:
     """Read-only view representing the deserialized contents of a layout manifest,
     together with the environment root path in which to apply it.  This is the main
-    entry point for layout rendering and application logic.
+    entry point for layout rendering and application logic, and provides role-based
+    resolution APIs for consumers that need stable access to configuration sources and
+    derived artifacts.
     """
     @dataclass(frozen=True)
     class Facts:
@@ -524,6 +623,67 @@ class Layout:
                     f"invalid layout manifest in environment metadata at {_env_file(root)}: {err}"
                 ) from err
 
+    @staticmethod
+    def _merge_resource_maps(
+        base: dict[str, Resource],
+        overlay: dict[str, Resource],
+    ) -> dict[str, Resource]:
+        merged = {
+            resource_id: resource.model_copy(deep=True)
+            for resource_id, resource in base.items()
+        }
+        for resource_id, resource in overlay.items():
+            merged[resource_id] = resource.model_copy(deep=True)
+        return merged
+
+    @staticmethod
+    def _merge_role_maps(
+        base: dict[str, list[str]],
+        overlay: dict[str, list[str]],
+    ) -> dict[str, list[str]]:
+        merged = {
+            role_name: role_ids.copy()
+            for role_name, role_ids in base.items()
+        }
+        for role_name, role_ids in overlay.items():
+            target = merged.setdefault(role_name, [])
+            for resource_id in role_ids:
+                if resource_id not in target:
+                    target.append(resource_id)
+        return merged
+
+    @staticmethod
+    def _resolve_profile(profile: str) -> dict[str, Resource]:
+        base = PROFILES.get("*")
+        if base is None:
+            raise ValueError("missing wildcard baseline in PROFILES: '*'")
+        overlay = PROFILES.get(profile)
+        if overlay is None:
+            raise ValueError(
+                f"unknown layout profile: {profile} (supported: "
+                f"{', '.join(sorted(profile for profile in PROFILES if profile != "*"))})"
+            )
+        return Layout._merge_resource_maps(base, overlay)
+
+    @staticmethod
+    def _resolve_capability(capability: str, profile: str) -> Capability:
+        variants = CAPABILITIES.get(capability)
+        if variants is None:
+            raise ValueError(
+                f"unknown layout capability: {capability} (supported: "
+                f"{', '.join(sorted(CAPABILITIES))})"
+            )
+        base = variants.get("*")
+        if base is None:
+            raise ValueError(
+                f"layout capability '{capability}' is missing wildcard baseline '*'"
+            )
+        overlay = variants.get(profile, Capability())
+        return Capability(
+            resources=Layout._merge_resource_maps(base.resources, overlay.resources),
+            roles=Layout._merge_role_maps(base.roles, overlay.roles),
+        )
+
     @classmethod
     def init(
         cls,
@@ -532,8 +692,7 @@ class Layout:
         profile: str,
         capabilities: list[str] | None = None
     ) -> Self:
-        """Build a layout reflecting the given profile and capabilities, using the
-        definitions in `LAYOUT_PROFILES` and `LAYOUT_CAPABILITIES`.
+        """Build a layout reflecting the given profile and capabilities.
 
         Parameters
         ----------
@@ -556,21 +715,21 @@ class Layout:
         ------
         ValueError
             If the specified profile is unknown, if any specified capability is
-            unknown, or if there are any invalid resource collisions (including path
-            collisions) when merging the profile and capabilities.
+            unknown, if wildcard baselines are missing, if `config.primary` is
+            missing, or if there are any invalid resource collisions (including path
+            collisions) when merging.
         """
-        # merge profile resources
+        # normalize and validate profile
         profile_key = profile.strip().lower()
-        profile_resources = LAYOUT_PROFILES.get(profile_key)
-        if profile_resources is None:
+        supported = sorted(profile for profile in PROFILES if profile != "*")
+        if profile_key not in supported:
             raise ValueError(
-                f"unknown layout profile: {profile} (supported: "
-                f"{', '.join(sorted(LAYOUT_PROFILES))})"
+                f"unknown layout profile: {profile} (supported: {', '.join(supported)})"
             )
-        merged = {
-            resource_id: resource.model_copy(deep=True)
-            for resource_id, resource in profile_resources.items()
-        }
+
+        # merge profile resources
+        merged = cls._resolve_profile(profile_key)
+        merged_roles: dict[str, list[str]] = {}
 
         # normalize and validate capabilities
         seen: set[str] = set()
@@ -581,17 +740,19 @@ class Layout:
                 if not cap:
                     raise ValueError("layout capabilities must be non-empty")
                 if cap not in seen:
-                    if cap not in LAYOUT_CAPABILITIES:
+                    if cap not in CAPABILITIES:
                         raise ValueError(
                             f"unknown layout capability: {cap} (supported: "
-                            f"{', '.join(sorted(LAYOUT_CAPABILITIES))})"
+                            f"{', '.join(sorted(CAPABILITIES))})"
                         )
                     seen.add(cap)
                     caps.append(cap)
 
-        # merge capability resources, checking for collisions
+        # merge resolved capability resources/roles, checking for collisions
         for cap in caps:
-            for resource_id, resource in LAYOUT_CAPABILITIES[cap].items():
+            variant = cls._resolve_capability(cap, profile_key)
+            for resource_id in variant.resources:
+                resource = variant.resources[resource_id]
                 existing = merged.get(resource_id)
                 if existing is None:
                     merged[resource_id] = resource.model_copy(deep=True)
@@ -601,6 +762,16 @@ class Layout:
                         f"layout resource collision for '{resource_id}' while applying "
                         f"capability '{cap}'"
                     )
+            merged_roles = cls._merge_role_maps(merged_roles, variant.roles)
+
+        # validate that the merged layout includes a primary config source, which is
+        # required for later configuration loading and artifact generation
+        primary = merged_roles.get(ROLE_CONFIG_PRIMARY)
+        if primary is None or len(primary) == 0:
+            raise ValueError(
+                f"layout requires role '{ROLE_CONFIG_PRIMARY}' for profile '{profile_key}' "
+                f"and capabilities {caps}"
+            )
 
         return cls(
             root=env_root,
@@ -609,6 +780,7 @@ class Layout:
                 profile=profile_key,
                 capabilities=caps,
                 resources=merged,
+                roles=merged_roles,
             )
         )
 
@@ -648,6 +820,34 @@ class Layout:
             An absolute path to the resource within the environment root directory.
         """
         return self.root / Path(self.resource(resource_id).path)
+
+    def role(self, name: str) -> tuple[str, ...]:
+        """Resolve a semantic role to its ordered resource IDs.
+
+        Parameters
+        ----------
+        name : str
+            The semantic role name to resolve.
+
+        Returns
+        -------
+        tuple[str, ...]
+            Ordered, immutable resource IDs for this role.  This may be empty if the
+            role is not present, but will never be empty otherwise.
+
+        Raises
+        ------
+        ValueError
+            If the role name is unknown (i.e. not in the `ROLES` set).
+        """
+        name = name.strip()
+        if name not in ROLES:
+            raise ValueError(
+                f"unknown layout role: '{name}' (supported: {', '.join(sorted(ROLES))})"
+            )
+        if name in self.manifest.roles:
+            return tuple(self.manifest.roles[name])
+        return ()
 
     def _facts(self, ctx: Pipeline.InProgress) -> Layout.Facts:
         """Build a Jinja context from pipeline facts, which can be used to render

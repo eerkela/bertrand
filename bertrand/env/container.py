@@ -46,21 +46,23 @@ from .code import (
     CONTAINER_SOCKET,
     start_code_service,
 )
-from .config import (
+from .layout import (
     AGENTS,
     ASSISTS,
-    CONTAINER_ID_ENV,
     DEFAULT_EDITOR,
     DEFAULT_SHELL,
     DEFAULT_AGENT,
     DEFAULT_ASSIST,
     EDITORS,
-    HOST_ENV,
     SHELLS,
     MOUNT,
+    lock_env
+)
+from .config import (
+    CONTAINER_ID_ENV,
+    HOST_ENV,
     Config,
 )
-from .layout import lock_env
 from .pipeline import (
     DelegateUserControllers,
     EnsureSubIDs,

@@ -10,11 +10,19 @@ import json
 import tomllib
 
 from dataclasses import dataclass, field
-from pathlib import Path, PosixPath
+from pathlib import Path
 from types import TracebackType
 from typing import Any
 
 import yaml
+
+from .layout import (
+    AGENTS,
+    ASSISTS,
+    EDITORS,
+    SHELLS,
+    MOUNT,
+)
 
 from .run import atomic_write_text
 
@@ -22,41 +30,13 @@ from .run import atomic_write_text
 
 
 PYPROJECT_FILE: str = "pyproject.toml"
-SHELLS: dict[str, tuple[str, ...]] = {
-    "bash": ("bash", "-l"),
-}
-EDITORS: dict[str, str] = {
-    "vscode": "code",
-}
-AGENTS: dict[str, tuple[str, ...]] = {
-    "none": (),
-    "claude": ("anthropic.claude-code",),
-    "codex": ("openai.chatgpt",),
-}
-ASSISTS: dict[str, tuple[str, ...]] = {
-    "none": (),
-    "copilot": ("GitHub.copilot", "GitHub.copilot-chat"),
-}
 
-DEFAULT_SHELL: str = "bash"
-DEFAULT_EDITOR: str = "vscode"
-DEFAULT_AGENT: str = "none"
-DEFAULT_ASSIST: str = "none"
-if DEFAULT_SHELL not in SHELLS:
-    raise RuntimeError(f"default shell is unsupported: {DEFAULT_SHELL}")
-if DEFAULT_EDITOR not in EDITORS:
-    raise RuntimeError(f"default editor is unsupported: {DEFAULT_EDITOR}")
-if DEFAULT_AGENT not in AGENTS:
-    raise RuntimeError(f"default agent is unsupported: {DEFAULT_AGENT}")
-if DEFAULT_ASSIST not in ASSISTS:
-    raise RuntimeError(f"default assist is unsupported: {DEFAULT_ASSIST}")
 
 CONTAINER_ID_ENV: str = "BERTRAND_CONTAINER_ID"
 CONTAINER_BIN_ENV: str = "BERTRAND_CODE_PODMAN_BIN"
 EDITOR_BIN_ENV: str = "BERTRAND_CODE_EDITOR_BIN"
 HOST_ENV: str = "BERTRAND_HOST_ENV"
-MOUNT: PosixPath = PosixPath("/env")
-assert MOUNT.is_absolute()
+
 
 CLANG_FORMAT_FILE: str = ".clang-format"
 CLANG_TIDY_FILE: str = ".clang-tidy"
