@@ -19,7 +19,7 @@ from dataclasses import asdict, dataclass, field
 from importlib import resources
 from importlib.resources.abc import Traversable
 from pathlib import Path, PosixPath
-from typing import Any, Literal, Self
+from typing import Any, Callable, Literal, Self
 
 from jinja2 import Environment, StrictUndefined
 from pydantic import (
@@ -49,7 +49,12 @@ assert MOUNT.is_absolute()
 # semantic role names for resource discovery by other subsystems
 ROLE_CONFIG_PRIMARY: str = "config.primary"
 ROLE_ARTIFACT_CPP: str = "artifact.cpp"
-ROLES: set[str] = {ROLE_CONFIG_PRIMARY, ROLE_ARTIFACT_CPP}
+ROLE_SOURCE_CPP_COMPILE_COMMANDS: str = "source.cpp.compile_commands"
+ROLES: set[str] = {
+    ROLE_CONFIG_PRIMARY,
+    ROLE_ARTIFACT_CPP,
+    ROLE_SOURCE_CPP_COMPILE_COMMANDS,
+}
 
 
 # CLI options that affect template rendering
@@ -82,7 +87,7 @@ if DEFAULT_SHELL not in SHELLS:
     raise RuntimeError(f"default shell is unsupported: {DEFAULT_SHELL}")
 
 
-class TemplateRef(BaseModel):
+class Template(BaseModel):
     """Stable template reference used by layout resources.
 
     Canonical templates are packaged with Bertrand under `env/templates` and addressed
@@ -124,60 +129,117 @@ class TemplateRef(BaseModel):
         )
 
 
-class Resource(BaseModel):
-    """A single file or directory entry in a layout manifest, which may be created
-    in the environment root when the layout is applied.
+# TODO: implement `__enter__` / `__exit__` on `Layout` for config snapshot loading
+# and cleanup, then add a layout-driven `sync()` path for derived artifacts.
+
+
+@dataclass(frozen=True)
+class Resource:
+    """A single file or directory being managed by the layout system.
+
+    This is the canonical extension unit for Bertrand's layout engine.  Each resource
+    in `RESOURCE_CATALOG` defines behavior and metadata defaults (kind, roles,
+    template, parse/render hooks).  Profiles and capabilities contribute only placement
+    paths for these resource IDs.
+
+    Attributes
+    ----------
+    kind : Literal["file", "dir"]
+        The type of this resource, which determines how it is rendered and applied.
+    roles : set[str]
+        Semantic roles that this resource fulfills, used for later discovery and
+        generation.  This is a set of role names from the `ROLES` constant, and may be
+        empty if the resource does not fulfill any special roles.
+    template : Template | None, optional
+        An optional reference to a Jinja template for this resource, which will be
+        used to initialize its content during `Layout.init()`.  If none is given, then
+        the resource will not be written during layout initialization.
+    parse : Callable[[Layout], dict[str, Any]] | None, optional
+        A parser function that can extract structured data from this resource after
+        the layout is applied.  This is used to load configuration sources into shared
+        state for later artifact generation, without coupling to any particular config
+        schema.  If none is given, then this resource will not be parsed.
+    sources : Callable[[Layout], list[Path]] | None, optional
+        A parser function that can resolve source files referenced by this resource,
+        so that we can reconstruct a compilation database from files like
+        `compile_commands.json` without coupling to any particular schema.
+    render : Callable[[Layout], str] | None, optional
+        A renderer function that can produce text content for this resource based on
+        shared state after the layout is applied.  This is used to generate derived
+        artifacts from the layout, without coupling to any particular schema.  If none
+        is given, then this resource will not be rendered.
     """
-    model_config = ConfigDict(extra="forbid")
-    kind: Literal["file", "dir"] = Field(
-        description="The type of resource, either 'file' or 'dir'."
-    )
-    path: PosixPath = Field(
-        description=
-            "The relative path of the resource starting from the environment root.  "
-            "Always stored as a POSIX path."
-    )
-    managed: bool = Field(
-        default=True,
-        description=
-            "Whether this resource is managed by the layout system.  Managed resources "
-            "will be rendered during layout application, and must have a matching "
-            "template if they are files.  Unmanaged resources are not automatically "
-            "created or modified by the layout system.",
-    )
-    required: bool = Field(
-        default=True,
-        description=
-            "Whether this resource is required to be present in the environment.  If "
-            "True, then the layout application process will raise an error if the "
-            "resource is missing or has the wrong type after applying the layout.",
-    )
-    template: TemplateRef | None = Field(
-        default=None,
-        description=
-            "An optional reference to a template used to render the contents of a "
-            "managed file resource.  Must be None for non-file resources.  Managed "
-            "file resources must define one.",
-    )
+    class JSON(BaseModel):
+        """Serialized representation of a Resource, which is stored inside an
+        environment's layout manifest and used to reconstruct the Resource during
+        layout loading.
+        """
+        model_config = ConfigDict(extra="forbid")
+        kind: Literal["file", "dir"] = Field(
+            description="The type of resource, either 'file' or 'dir'."
+        )
+        path: PosixPath = Field(
+            description=
+                "The relative path of the resource starting from the environment root.  "
+                "Always stored as a POSIX path."
+        )
+        template: Template | None = Field(
+            default=None,
+            description=
+                "An optional reference to a template used to render the contents of a "
+                "managed file resource.  Must be None for non-file resources.  Managed "
+                "file resources must define one.",
+        )
 
-    @field_validator("path")
-    @classmethod
-    def _validate_path(cls, value: PosixPath) -> PosixPath:
-        if value.is_absolute():
-            raise ValueError(f"layout resource paths must be relative: {value}")
-        if value == PosixPath("."):
-            raise ValueError("layout resource path must not be empty")
-        if any(part == ".." for part in value.parts):
-            raise ValueError(f"layout resource path must not traverse parents: {value}")
-        return value
+        @field_validator("path")
+        @classmethod
+        def _validate_path(cls, value: PosixPath) -> PosixPath:
+            if value.is_absolute():
+                raise ValueError(f"layout resource paths must be relative: {value}")
+            if value == PosixPath("."):
+                raise ValueError("layout resource path must not be empty")
+            if any(part == ".." for part in value.parts):
+                raise ValueError(f"layout resource path must not traverse parents: {value}")
+            return value
 
-    @model_validator(mode="after")
-    def _validate(self) -> Self:
-        if self.kind != "file" and self.template is not None:
-            raise ValueError("non-file layout resources must not define a template reference")
-        if self.managed and self.kind == "file" and self.template is None:
-            raise ValueError("managed file resources must define a template reference")
-        return self
+        @model_validator(mode="after")
+        def _validate(self) -> Self:
+            if self.kind != "file" and self.template is not None:
+                raise ValueError(
+                    "non-file layout resources must not define a template reference"
+                )
+            return self
+
+    kind: Literal["file", "dir"] = field()
+    roles: set[str] = field(default_factory=set)
+    template: Template | None = field(default=None)
+    parse: Callable[[Layout], dict[str, Any]] | None = field(default=None)
+    render: Callable[[Layout], str] | None = field(default=None)
+    sources: Callable[[Layout], list[Path]] | None = field(default=None)
+
+    def to_json(self, path: PosixPath) -> Resource.JSON:
+        """Materialize this catalog resource into a persisted manifest entry.
+
+        Parameters
+        ----------
+        path : PosixPath
+            The relative path at which this resource is placed in the layout, used for
+            validation and manifest storage.
+
+        Returns
+        -------
+        Resource.JSON
+            A JSON-serializable representation of this resource, suitable for storage
+            in a layout manifest.
+        """
+        return Resource.JSON(
+            kind=self.kind,
+            path=path,
+            template=(
+                self.template.model_copy(deep=True)
+                if self.template is not None else None
+            ),
+        )
 
 
 class Manifest(BaseModel):
@@ -205,7 +267,7 @@ class Manifest(BaseModel):
             "List of language capabilities included in this layout, e.g. 'python' "
             "and 'cpp'.  This field is reserved for future use with other languages."
     )
-    resources: dict[str, Resource] = Field(
+    resources: dict[str, Resource.JSON] = Field(
         default_factory=dict,
         description=
             "Mapping of resource IDs to their specifications.  Resource IDs are "
@@ -318,7 +380,7 @@ class Manifest(BaseModel):
             )
 
         # validate no duplicate paths
-        by_parts: dict[tuple[str, ...], tuple[str, Resource]] = {}
+        by_parts: dict[tuple[str, ...], tuple[str, Resource.JSON]] = {}
         for resource_id in self.resources:
             resource = self.resources[resource_id]
             parts = resource.path.parts
@@ -359,15 +421,8 @@ class Manifest(BaseModel):
         return self
 
 
-class Capability(BaseModel):
-    """Profile-specific contribution from a capability.
-
-    This bundles both resource specs and semantic role bindings, so capabilities can
-    provide profile-aware paths and role memberships in one place.
-    """
-    model_config = ConfigDict(extra="forbid")
-    resources: dict[str, Resource] = Field(default_factory=dict)
-    roles: dict[str, list[str]] = Field(default_factory=dict)
+def _template_path(ctx: Pipeline.InProgress, ref: Template) -> Path:
+    return ctx.state_dir / "templates" / ref.namespace / ref.name / f"{ref.version}.j2"
 
 
 def _env_dir(root: Path) -> Path:
@@ -429,113 +484,102 @@ def _expect_str(name: str, ctx: Pipeline.InProgress) -> str:
     return text
 
 
-def _template_path(ctx: Pipeline.InProgress, ref: TemplateRef) -> Path:
-    return ctx.state_dir / "templates" / ref.namespace / ref.name / f"{ref.version}.j2"
+# NOTE: "*" indicates a baseline, while other keys act as overlay diffs that merge on
+# top to avoid duplication.
 
 
-# NOTE: "*" indicates a base line, while other keys act as overlay diffs that merge
-# on top to avoid duplication.
+RESOURCE_CATALOG: dict[str,  Resource] = {
+    "containerfile": Resource(
+        kind="file",
+        template=Template(
+            namespace="core",
+            name="containerfile",
+            version="2026-02-15"
+        ),
+    ),
+    "containerignore": Resource(
+        kind="file",
+        template=Template(
+            namespace="core",
+            name="containerignore",
+            version="2026-02-15"
+        ),
+    ),
+    "docs": Resource(kind="dir"),
+    "tests": Resource(kind="dir"),
+    "src": Resource(kind="dir"),
+    "pyproject": Resource(
+        kind="file",
+        roles={ROLE_CONFIG_PRIMARY},
+        template=Template(
+            namespace="core",
+            name="pyproject",
+            version="2026-02-15"
+        ),
+        # TODO: add parse field
+    ),
+    "compile_commands": Resource(
+        kind="file",
+        roles={ROLE_SOURCE_CPP_COMPILE_COMMANDS},
+        template=Template(
+            namespace="core",
+            name="compile_commands",
+            version="2026-02-15"
+        ),
+        # TODO: add parse and sources fields
+    ),
+    "clang_format": Resource(
+        kind="file",
+        roles={ROLE_ARTIFACT_CPP},
+        # TODO: add parse and render fields
+    ),
+    "clang_tidy": Resource(
+        kind="file",
+        roles={ROLE_ARTIFACT_CPP},
+        # TODO: add parse and render fields
+    ),
+    "clangd": Resource(
+        kind="file",
+        roles={ROLE_ARTIFACT_CPP},
+        # TODO: add parse and render fields
+    ),
+}
 
 
-# Profiles define basic directory layout and minimal bootstrap resources.
-PROFILES: dict[str, dict[str, Resource]] = {
+# Profiles define only resource placement paths: wildcard baseline + profile diffs.
+PROFILES: dict[str, dict[str, PosixPath]] = {
     "*": {
-        "containerfile": Resource(
-            kind="file",
-            path=PosixPath("Containerfile"),
-            template=TemplateRef(
-                namespace="core",
-                name="containerfile",
-                version="2026-02-15"
-            ),
-        ),
-        "containerignore": Resource(
-            kind="file",
-            path=PosixPath(".containerignore"),
-            template=TemplateRef(
-                namespace="core",
-                name="containerignore",
-                version="2026-02-15"
-            ),
-        ),
-        "docs": Resource(
-            kind="dir",
-            path=PosixPath("docs"),
-            managed=False,
-            required=False,
-            template=None,
-        ),
-        "tests": Resource(
-            kind="dir",
-            path=PosixPath("tests"),
-            managed=False,
-            required=False,
-            template=None,
-        ),
+        "containerfile": PosixPath("Containerfile"),
+        "containerignore": PosixPath(".containerignore"),
+        "docs": PosixPath("docs"),
+        "tests": PosixPath("tests"),
     },
     "flat": {},
     "src": {
-        "src": Resource(
-            kind="dir",
-            path=PosixPath("src"),
-            managed=False,
-            required=False,
-            template=None,
-        ),
+        "src": PosixPath("src"),
     },
 }
 
 
-# Capabilities define language-specific resources and role bindings for later
-# discovery and generation.
-CAPABILITIES: dict[str, dict[str, Capability]] = {
+# Capabilities define only language/tool resource placement paths: wildcard baseline
+# + profile-specific diffs.
+CAPABILITIES: dict[str, dict[str, dict[str, PosixPath]]] = {
     "python": {
-        "*": Capability(
-            resources={
-                "pyproject": Resource(
-                    kind="file",
-                    path=PosixPath("pyproject.toml"),
-                    template=TemplateRef(
-                        namespace="core",
-                        name="pyproject",
-                        version="2026-02-15"
-                    ),
-                ),
-            },
-            roles={
-                ROLE_CONFIG_PRIMARY: ["pyproject"],
-            },
-        ),
+        "*": {
+            "pyproject": PosixPath("pyproject.toml"),
+        },
+        "flat": {},
+        "src": {},
     },
     "cpp": {
-        "*": Capability(
-            resources={
-                "clang_format": Resource(
-                    kind="file",
-                    path=PosixPath(".clang-format"),
-                    managed=False,
-                    required=False,
-                    template=None,
-                ),
-                "clang_tidy": Resource(
-                    kind="file",
-                    path=PosixPath(".clang-tidy"),
-                    managed=False,
-                    required=False,
-                    template=None,
-                ),
-                "clangd": Resource(
-                    kind="file",
-                    path=PosixPath(".clangd"),
-                    managed=False,
-                    required=False,
-                    template=None,
-                ),
-            },
-            roles={
-                ROLE_ARTIFACT_CPP: ["clang_format", "clang_tidy", "clangd"],
-            },
-        ),
+        "*": {
+            "compile_commands": PosixPath("compile_commands.json"),
+            "clang_format": PosixPath(".clang-format"),
+            "clang_tidy": PosixPath(".clang-tidy"),
+            "clangd": PosixPath(".clangd"),
+        },
+        "flat": {},
+        "src": {},
     },
     # TODO: we may want other capabilities related to editors or language-specific
     # tools, such as the managed workspace file for vscode, etc.  We'll have to
@@ -624,36 +668,20 @@ class Layout:
                 ) from err
 
     @staticmethod
-    def _merge_resource_maps(
-        base: dict[str, Resource],
-        overlay: dict[str, Resource],
-    ) -> dict[str, Resource]:
+    def _merge_placement_maps(
+        base: dict[str, PosixPath],
+        overlay: dict[str, PosixPath],
+    ) -> dict[str, PosixPath]:
         merged = {
-            resource_id: resource.model_copy(deep=True)
-            for resource_id, resource in base.items()
+            resource_id: path
+            for resource_id, path in base.items()
         }
-        for resource_id, resource in overlay.items():
-            merged[resource_id] = resource.model_copy(deep=True)
+        for resource_id, path in overlay.items():
+            merged[resource_id] = path
         return merged
 
     @staticmethod
-    def _merge_role_maps(
-        base: dict[str, list[str]],
-        overlay: dict[str, list[str]],
-    ) -> dict[str, list[str]]:
-        merged = {
-            role_name: role_ids.copy()
-            for role_name, role_ids in base.items()
-        }
-        for role_name, role_ids in overlay.items():
-            target = merged.setdefault(role_name, [])
-            for resource_id in role_ids:
-                if resource_id not in target:
-                    target.append(resource_id)
-        return merged
-
-    @staticmethod
-    def _resolve_profile(profile: str) -> dict[str, Resource]:
+    def _resolve_profile(profile: str) -> dict[str, PosixPath]:
         base = PROFILES.get("*")
         if base is None:
             raise ValueError("missing wildcard baseline in PROFILES: '*'")
@@ -663,10 +691,10 @@ class Layout:
                 f"unknown layout profile: {profile} (supported: "
                 f"{', '.join(sorted(profile for profile in PROFILES if profile != "*"))})"
             )
-        return Layout._merge_resource_maps(base, overlay)
+        return Layout._merge_placement_maps(base, overlay)
 
     @staticmethod
-    def _resolve_capability(capability: str, profile: str) -> Capability:
+    def _resolve_capability(capability: str, profile: str) -> dict[str, PosixPath]:
         variants = CAPABILITIES.get(capability)
         if variants is None:
             raise ValueError(
@@ -678,11 +706,8 @@ class Layout:
             raise ValueError(
                 f"layout capability '{capability}' is missing wildcard baseline '*'"
             )
-        overlay = variants.get(profile, Capability())
-        return Capability(
-            resources=Layout._merge_resource_maps(base.resources, overlay.resources),
-            roles=Layout._merge_role_maps(base.roles, overlay.roles),
-        )
+        overlay = variants.get(profile, {})
+        return Layout._merge_placement_maps(base, overlay)
 
     @classmethod
     def init(
@@ -703,8 +728,8 @@ class Layout:
             set of resources to include in the layout.
         capabilities : list[str] | None
             An optional list of language capabilities to include, e.g. 'python' and
-            'cpp'.  Capabilities define additional resources to include based on the
-            languages used in the project.
+            'cpp'.  Capabilities define additional resource placements to include
+            based on the languages used in the project.
 
         Returns
         -------
@@ -716,8 +741,9 @@ class Layout:
         ValueError
             If the specified profile is unknown, if any specified capability is
             unknown, if wildcard baselines are missing, if `config.primary` is
-            missing, or if there are any invalid resource collisions (including path
-            collisions) when merging.
+            missing, if any placement references an unknown catalog resource ID, or
+            if there are any invalid resource collisions (including path collisions)
+            when merging.
         """
         # normalize and validate profile
         profile_key = profile.strip().lower()
@@ -727,9 +753,8 @@ class Layout:
                 f"unknown layout profile: {profile} (supported: {', '.join(supported)})"
             )
 
-        # merge profile resources
-        merged = cls._resolve_profile(profile_key)
-        merged_roles: dict[str, list[str]] = {}
+        # merge profile resource placements
+        merged_paths = cls._resolve_profile(profile_key)
 
         # normalize and validate capabilities
         seen: set[str] = set()
@@ -748,21 +773,37 @@ class Layout:
                     seen.add(cap)
                     caps.append(cap)
 
-        # merge resolved capability resources/roles, checking for collisions
+        # merge resolved capability resource placements, checking for collisions
         for cap in caps:
             variant = cls._resolve_capability(cap, profile_key)
-            for resource_id in variant.resources:
-                resource = variant.resources[resource_id]
-                existing = merged.get(resource_id)
+            for resource_id, path in variant.items():
+                existing = merged_paths.get(resource_id)
                 if existing is None:
-                    merged[resource_id] = resource.model_copy(deep=True)
+                    merged_paths[resource_id] = path
                     continue
-                if existing.model_dump(mode="python") != resource.model_dump(mode="python"):
+                if existing != path:
                     raise ValueError(
-                        f"layout resource collision for '{resource_id}' while applying "
-                        f"capability '{cap}'"
+                        f"layout resource path collision for '{resource_id}' while applying "
+                        f"capability '{cap}': {existing} != {path}"
                     )
-            merged_roles = cls._merge_role_maps(merged_roles, variant.roles)
+
+        # materialize manifest resources and role bindings from catalog defaults
+        merged_resources: dict[str, Resource.JSON] = {}
+        merged_roles: dict[str, list[str]] = {}
+        for resource_id, path in merged_paths.items():
+            resource = RESOURCE_CATALOG.get(resource_id)
+            if resource is None:
+                raise ValueError(f"unknown layout resource ID: '{resource_id}'")
+            merged_resources[resource_id] = resource.to_json(path)
+            for role_name in sorted(resource.roles):
+                if role_name not in ROLES:
+                    raise ValueError(
+                        f"resource '{resource_id}' references unknown role: '{role_name}' "
+                        f"(supported: {', '.join(sorted(ROLES))})"
+                    )
+                role_targets = merged_roles.setdefault(role_name, [])
+                if resource_id not in role_targets:
+                    role_targets.append(resource_id)
 
         # validate that the merged layout includes a primary config source, which is
         # required for later configuration loading and artifact generation
@@ -779,12 +820,12 @@ class Layout:
                 schema_version=LAYOUT_SCHEMA_VERSION,
                 profile=profile_key,
                 capabilities=caps,
-                resources=merged,
+                resources=merged_resources,
                 roles=merged_roles,
             )
         )
 
-    def resource(self, resource_id: str) -> Resource:
+    def resource(self, resource_id: str) -> Resource.JSON:
         """Retrieve the resource specification for the given resource ID.
 
         Parameters
@@ -795,7 +836,7 @@ class Layout:
 
         Returns
         -------
-        Resource
+        Resource.JSON
             The resource specification associated with the given resource ID.
 
         Raises
@@ -920,10 +961,10 @@ class Layout:
         replacements = asdict(self._facts(ctx))
 
         # collect template references from managed file resources
-        refs: dict[tuple[str, str, str], TemplateRef] = {}
+        refs: dict[tuple[str, str, str], Template] = {}
         for resource_id in sorted(self.manifest.resources):
             resource = self.resource(resource_id)
-            if resource.kind != "file" or not resource.managed or resource.template is None:
+            if resource.kind != "file" or resource.template is None:
                 continue
             ref = resource.template
             refs[(ref.namespace, ref.name, ref.version)] = ref
@@ -958,7 +999,7 @@ class Layout:
         out: dict[str, str] = {}
         for resource_id in sorted(self.manifest.resources):
             resource = self.resource(resource_id)
-            if resource.kind != "file" or not resource.managed or resource.template is None:
+            if resource.kind != "file" or resource.template is None:
                 continue
 
             # load template
@@ -994,8 +1035,7 @@ class Layout:
 
     def apply(self, ctx: Pipeline.InProgress) -> None:
         """Apply the layout to the environment directory by rendering managed resources
-        and writing them to disk.  Unmanaged resources are validated only through
-        `required` checks.
+        and writing them to disk.
 
         Parameters
         ----------
@@ -1006,9 +1046,7 @@ class Layout:
         Raises
         ------
         OSError
-            If there are any filesystem errors when writing rendered resources to disk,
-            or if any required resources are missing or have an invalid type after
-            applying the layout.
+            If there are any filesystem errors when writing rendered resources to disk.
         """
         with lock_env(self.root, timeout=ctx.timeout):
             rendered = self.render(ctx)
@@ -1031,7 +1069,7 @@ class Layout:
             # create directory resources
             for resource_id in self.manifest.resources:
                 resource = self.manifest.resources[resource_id]
-                if resource.kind == "dir" and resource.managed:
+                if resource.kind == "dir":
                     ctx.do(Mkdir(path=self.path(resource_id), replace=False), undo=False)
 
             # write missing files in deterministic order
@@ -1039,35 +1077,3 @@ class Layout:
                 target = self.path(resource_id)
                 if not target.exists():
                     ctx.do(WriteText(path=target, text=text, replace=False), undo=False)
-
-            # ensure required resources exist with the expected kind
-            errors: list[str] = []
-            for resource_id in sorted(self.manifest.resources):
-                resource = self.resource(resource_id)
-                if not resource.required:
-                    continue
-
-                # verify required resource exists
-                target = self.path(resource_id)
-                if not target.exists():
-                    errors.append(
-                        f"- missing required {resource.kind} '{resource_id}' at {target}"
-                    )
-                    continue
-
-                # verify required resource has expected type
-                if resource.kind == "file" and not target.is_file():
-                    errors.append(
-                        f"- required file '{resource_id}' has wrong type at {target}"
-                    )
-                elif resource.kind == "dir" and not target.is_dir():
-                    errors.append(
-                        f"- required dir '{resource_id}' has wrong type at {target}"
-                    )
-
-            # if any required resources are missing, merge them into a single error message
-            if errors:
-                raise OSError(
-                    "layout application left required resources missing or invalid:\n"
-                    f"{'\n'.join(errors)}"
-                )
