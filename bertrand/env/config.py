@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+import tomllib
 
 from dataclasses import asdict, dataclass, field
 from importlib import resources
@@ -31,6 +32,7 @@ from pydantic import (
     field_validator,
     model_validator,
 )
+import yaml
 
 from .pipeline import Mkdir, Pipeline, WriteText
 from .run import LOCK_TIMEOUT, Lock, atomic_write_text, sanitize_name
@@ -410,6 +412,305 @@ def _expect_str(name: str, ctx: Pipeline.InProgress) -> str:
     return text
 
 
+def _require_dict(value: Any, *, where: str) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise OSError(f"expected mapping at '{where}', got {type(value).__name__}")
+    out: dict[str, Any] = {}
+    for key, item in value.items():
+        if not isinstance(key, str):
+            raise OSError(f"expected string keys at '{where}', got {type(key).__name__}")
+        out[key] = item
+    return out
+
+
+def _require_str_value(value: Any, *, where: str, allow_empty: bool = False) -> str:
+    if not isinstance(value, str):
+        raise OSError(f"expected string at '{where}', got {type(value).__name__}")
+    text = value.strip()
+    if not allow_empty and not text:
+        raise OSError(f"expected non-empty string at '{where}'")
+    return text
+
+
+def _require_str_list(value: Any, *, where: str) -> list[str]:
+    if not isinstance(value, list):
+        raise OSError(f"expected list[str] at '{where}', got {type(value).__name__}")
+    out: list[str] = []
+    for idx, item in enumerate(value):
+        out.append(_require_str_value(item, where=f"{where}[{idx}]"))
+    return out
+
+
+def _require_supported(
+    value: str,
+    *,
+    where: str,
+    supported: dict[str, Any],
+    description: str,
+) -> str:
+    if value not in supported:
+        choices = ", ".join(sorted(supported))
+        raise OSError(
+            f"unsupported {description} at '{where}': '{value}' (supported: {choices})"
+        )
+    return value
+
+
+def _dump_yaml(payload: dict[str, Any], *, resource_id: str) -> str:
+    try:
+        text = yaml.safe_dump(
+            payload,
+            default_flow_style=False,
+            sort_keys=False,
+            allow_unicode=False,
+        )
+    except yaml.YAMLError as err:
+        raise OSError(
+            f"failed to serialize YAML payload for resource '{resource_id}': {err}"
+        ) from err
+    if not text.endswith("\n"):
+        text += "\n"
+    return text
+
+
+def _require_toml_tool_section(
+    pyproject: dict[str, Any],
+    *,
+    resource_id: str
+) -> dict[str, Any]:
+    tool_raw = pyproject.get("tool")
+    if tool_raw is None:
+        raise OSError(f"missing '[tool]' table in resource '{resource_id}'")
+    return _require_dict(tool_raw, where="tool")
+
+
+def _parse_pyproject(config: Config) -> dict[str, Any]:
+    resource_id = "pyproject"
+    path = config.path(resource_id)
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as err:
+        raise OSError(f"failed to read pyproject at {path}: {err}") from err
+    try:
+        parsed = tomllib.loads(text)
+    except tomllib.TOMLDecodeError as err:
+        raise OSError(f"failed to parse pyproject TOML at {path}: {err}") from err
+    pyproject = _require_dict(parsed, where="pyproject")
+    tool = _require_toml_tool_section(pyproject, resource_id=resource_id)
+
+    # validate `[tool.bertrand]`
+    bertrand = _require_dict(tool.get("bertrand"), where="tool.bertrand")
+    shell = _require_supported(
+        _require_str_value(bertrand.get("shell"), where="tool.bertrand.shell"),
+        where="tool.bertrand.shell",
+        supported=SHELLS,
+        description="shell",
+    )
+    code = _require_supported(
+        _require_str_value(bertrand.get("code"), where="tool.bertrand.code"),
+        where="tool.bertrand.code",
+        supported=EDITORS,
+        description="editor",
+    )
+    agent = _require_supported(
+        _require_str_value(bertrand.get("agent"), where="tool.bertrand.agent"),
+        where="tool.bertrand.agent",
+        supported=AGENTS,
+        description="agent",
+    )
+    assist = _require_supported(
+        _require_str_value(bertrand.get("assist"), where="tool.bertrand.assist"),
+        where="tool.bertrand.assist",
+        supported=ASSISTS,
+        description="assist",
+    )
+    parsed_tool: dict[str, Any] = {
+        "bertrand": {
+            "shell": shell,
+            "code": code,
+            "agent": agent,
+            "assist": assist,
+        }
+    }
+
+    # TODO: I may want a more generic way to handle arbitrary `[tool.*]` sections in
+    # pyproject.toml that avoids coupling to specific tools or schemas.
+
+    # parse [tool.clang-format]
+    if "clang_format" in config.manifest.resources:
+        parsed_tool["clang-format"] = _require_dict(
+            tool.get("clang-format"),
+            where="tool.clang-format",
+        )
+
+    # parse [tool.clang-tidy]
+    if "clang_tidy" in config.manifest.resources:
+        parsed_tool["clang-tidy"] = _require_dict(
+            tool.get("clang-tidy"),
+            where="tool.clang-tidy",
+        )
+
+    # parse [tool.clangd]
+    if "clangd" in config.manifest.resources:
+        clangd = _require_dict(tool.get("clangd"), where="tool.clangd")
+        clangd["arguments"] = _require_str_list(
+            clangd.get("arguments"),
+            where="tool.clangd.arguments",
+        )
+        parsed_tool["clangd"] = clangd
+
+    return {"tool": parsed_tool}
+
+
+def _render_clang_format(config: Config) -> str:
+    section = _require_dict(
+        config["tool", "clang-format"],
+        where="tool.clang-format",
+    )
+    payload: dict[str, Any] = {}
+    if "style" in section:
+        style = _require_dict(section["style"], where="tool.clang-format.style")
+        payload.update(style)
+    for key, value in section.items():
+        if key == "style":
+            continue
+        if key in payload:
+            raise OSError(
+                "duplicate '.clang-format' key after style expansion: "
+                f"'{key}'"
+            )
+        payload[key] = value
+    if not payload:
+        raise OSError("empty [tool.clang-format] cannot render .clang-format")
+    return _dump_yaml(payload, resource_id="clang_format")
+
+
+def _clang_tidy_join_checks(value: Any, *, where: str) -> str:
+    if isinstance(value, str):
+        return _require_str_value(value, where=where)
+    checks = _require_str_list(value, where=where)
+    return ",".join(checks)
+
+
+def _render_clang_tidy(config: Config) -> str:
+    section = _require_dict(
+        config["tool", "clang-tidy"],
+        where="tool.clang-tidy",
+    )
+
+    payload: dict[str, Any] = {}
+    for key, value in section.items():
+        if key == "checks":
+            payload["Checks"] = _clang_tidy_join_checks(
+                value,
+                where="tool.clang-tidy.checks",
+            )
+        elif key == "warnings_as_errors":
+            payload["WarningsAsErrors"] = _clang_tidy_join_checks(
+                value,
+                where="tool.clang-tidy.warnings_as_errors",
+            )
+        elif key == "header_filter_regex":
+            payload["HeaderFilterRegex"] = _require_str_value(
+                value,
+                where="tool.clang-tidy.header_filter_regex",
+            )
+        elif key == "options":
+            options = _require_dict(value, where="tool.clang-tidy.options")
+            payload["CheckOptions"] = {
+                option_name: str(option_value)
+                for option_name, option_value in options.items()
+            }
+        else:
+            payload[key] = value
+
+    if not payload:
+        raise OSError("empty [tool.clang-tidy] cannot render .clang-tidy")
+    return _dump_yaml(payload, resource_id="clang_tidy")
+
+
+def _render_clangd(config: Config) -> str:
+    section = _require_dict(config["tool", "clangd"], where="tool.clangd")
+    payload: dict[str, Any] = {}
+    arguments: list[str] | None = None
+
+    for key, value in section.items():
+        if key == "arguments":
+            arguments = _require_str_list(value, where="tool.clangd.arguments")
+            continue
+        payload[key] = value
+
+    if arguments is not None:
+        compile_flags = payload.get("CompileFlags")
+        if compile_flags is None:
+            payload["CompileFlags"] = {"Add": arguments}
+        else:
+            compile_flags_map = _require_dict(
+                compile_flags,
+                where="tool.clangd.CompileFlags",
+            )
+            if "Add" in compile_flags_map:
+                raise OSError(
+                    "tool.clangd cannot define both 'arguments' and 'CompileFlags.Add'"
+                )
+            merged = dict(compile_flags_map)
+            merged["Add"] = arguments
+            payload["CompileFlags"] = merged
+
+    if not payload:
+        raise OSError("empty [tool.clangd] cannot render .clangd")
+    return _dump_yaml(payload, resource_id="clangd")
+
+
+def _sources_compile_commands(config: Config) -> list[Path]:
+    resource_id = "compile_commands"
+    path = config.path(resource_id)
+
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as err:
+        raise OSError(f"failed to read compile database at {path}: {err}") from err
+
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError as err:
+        raise OSError(f"failed to parse compile database JSON at {path}: {err}") from err
+
+    if not isinstance(payload, list):
+        raise OSError(
+            f"compile database at {path} must be a JSON list, got {type(payload).__name__}"
+        )
+
+    out: list[Path] = []
+    seen: set[Path] = set()
+    for idx, raw_entry in enumerate(payload):
+        entry = _require_dict(raw_entry, where=f"compile_commands[{idx}]")
+        file_raw = entry.get("file")
+        directory_raw = entry.get("directory")
+
+        file_rel = Path(_require_str_value(file_raw, where=f"compile_commands[{idx}].file"))
+        if directory_raw is None:
+            base = config.root
+        else:
+            base = Path(_require_str_value(
+                directory_raw,
+                where=f"compile_commands[{idx}].directory"
+            ))
+            if not base.is_absolute():
+                base = config.root / base
+
+        source = file_rel if file_rel.is_absolute() else base / file_rel
+        normalized = source.expanduser().resolve()
+        if not normalized.exists() or not normalized.is_file():
+            continue
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        out.append(normalized)
+
+    return out
+
+
 # Global resource catalog.  Extensions can add resources here with associated behavior,
 # and then update the capabilities and/or profiles to place them in the generated
 # layouts, without needing to change any of the core layout application logic.
@@ -440,7 +741,7 @@ CATALOG: dict[str,  Resource] = {
             name="pyproject",
             version="2026-02-15"
         ),
-        # TODO: add parse field
+        parse=_parse_pyproject,
     ),
     "compile_commands": Resource(
         kind="file",
@@ -449,19 +750,19 @@ CATALOG: dict[str,  Resource] = {
             name="compile_commands",
             version="2026-02-15"
         ),
-        # TODO: add parse and sources fields
+        sources=_sources_compile_commands,
     ),
     "clang_format": Resource(
         kind="file",
-        # TODO: add parse and render fields
+        render=_render_clang_format,
     ),
     "clang_tidy": Resource(
         kind="file",
-        # TODO: add parse and render fields
+        render=_render_clang_tidy,
     ),
     "clangd": Resource(
         kind="file",
-        # TODO: add parse and render fields
+        render=_render_clangd,
     ),
 }
 
@@ -1269,3 +1570,13 @@ class Config:
                     out.append(normalized)
 
         return out
+
+    def capabilities(self) -> tuple[str, ...]:
+        """Return the list of active capabilities in this layout config.
+
+        Returns
+        -------
+        tuple[str, ...]
+            The list of active capabilities declared in the manifest.
+        """
+        return tuple(self.manifest.capabilities)
