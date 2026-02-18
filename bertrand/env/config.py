@@ -5,7 +5,7 @@ This module is intentionally scoped to a minimal, ctx-driven backend for
 
 1. Build a deterministic layout manifest.
 2. Persist it in `.bertrand/env.json` under top-level `layout`.
-3. Render and write managed bootstrap resources in deterministic phases.
+3. Render and write templated bootstrap resources in deterministic phases.
 
 Canonical templates are packaged with Bertrand and lazily hydrated into
 `on_init` pipeline state under `templates/...` before rendering.
@@ -19,6 +19,7 @@ from dataclasses import asdict, dataclass, field
 from importlib import resources
 from importlib.resources.abc import Traversable
 from pathlib import Path, PosixPath
+from types import TracebackType
 from typing import Any, Callable, Literal, Self
 
 from jinja2 import Environment, StrictUndefined
@@ -32,7 +33,7 @@ from pydantic import (
 )
 
 from .pipeline import Mkdir, Pipeline, WriteText
-from .run import LOCK_TIMEOUT, Lock, sanitize_name
+from .run import LOCK_TIMEOUT, Lock, atomic_write_text, sanitize_name
 from .version import __version__
 
 
@@ -44,17 +45,6 @@ ENV_LAYOUT_KEY: str = "layout"
 LAYOUT_SCHEMA_VERSION: int = 1
 MOUNT: PosixPath = PosixPath("/env")
 assert MOUNT.is_absolute()
-
-
-# semantic role names for resource discovery by other subsystems
-ROLE_CONFIG_PRIMARY: str = "config.primary"
-ROLE_ARTIFACT_CPP: str = "artifact.cpp"
-ROLE_SOURCE_CPP_COMPILE_COMMANDS: str = "source.cpp.compile_commands"
-ROLES: set[str] = {
-    ROLE_CONFIG_PRIMARY,
-    ROLE_ARTIFACT_CPP,
-    ROLE_SOURCE_CPP_COMPILE_COMMANDS,
-}
 
 
 # CLI options that affect template rendering
@@ -85,6 +75,14 @@ if DEFAULT_EDITOR not in EDITORS:
     raise RuntimeError(f"default editor is unsupported: {DEFAULT_EDITOR}")
 if DEFAULT_SHELL not in SHELLS:
     raise RuntimeError(f"default shell is unsupported: {DEFAULT_SHELL}")
+
+
+# In-container environment variables for relevant configuration, for use in upstream
+# subsystems like the container runtime and editor integration.
+CONTAINER_ID_ENV: str = "BERTRAND_CONTAINER_ID"
+CONTAINER_BIN_ENV: str = "BERTRAND_CODE_PODMAN_BIN"
+EDITOR_BIN_ENV: str = "BERTRAND_CODE_EDITOR_BIN"
+HOST_ENV: str = "BERTRAND_HOST_ENV"
 
 
 class Template(BaseModel):
@@ -129,41 +127,33 @@ class Template(BaseModel):
         )
 
 
-# TODO: implement `__enter__` / `__exit__` on `Layout` for config snapshot loading
-# and cleanup, then add a layout-driven `sync()` path for derived artifacts.
-
-
 @dataclass(frozen=True)
 class Resource:
     """A single file or directory being managed by the layout system.
 
     This is the canonical extension unit for Bertrand's layout engine.  Each resource
-    in `RESOURCE_CATALOG` defines behavior and metadata defaults (kind, roles,
-    template, parse/render hooks).  Profiles and capabilities contribute only placement
+    in `CATALOG` defines behavior and metadata defaults (kind, template,
+    parse/render/sources hooks).  Profiles and capabilities contribute only placement
     paths for these resource IDs.
 
     Attributes
     ----------
     kind : Literal["file", "dir"]
         The type of this resource, which determines how it is rendered and applied.
-    roles : set[str]
-        Semantic roles that this resource fulfills, used for later discovery and
-        generation.  This is a set of role names from the `ROLES` constant, and may be
-        empty if the resource does not fulfill any special roles.
     template : Template | None, optional
         An optional reference to a Jinja template for this resource, which will be
-        used to initialize its content during `Layout.init()`.  If none is given, then
+        used to initialize its content during `Config.init()`.  If none is given, then
         the resource will not be written during layout initialization.
-    parse : Callable[[Layout], dict[str, Any]] | None, optional
+    parse : Callable[[Config], dict[str, Any]] | None, optional
         A parser function that can extract structured data from this resource after
         the layout is applied.  This is used to load configuration sources into shared
         state for later artifact generation, without coupling to any particular config
         schema.  If none is given, then this resource will not be parsed.
-    sources : Callable[[Layout], list[Path]] | None, optional
+    sources : Callable[[Config], list[Path]] | None, optional
         A parser function that can resolve source files referenced by this resource,
         so that we can reconstruct a compilation database from files like
         `compile_commands.json` without coupling to any particular schema.
-    render : Callable[[Layout], str] | None, optional
+    render : Callable[[Config], str] | None, optional
         A renderer function that can produce text content for this resource based on
         shared state after the layout is applied.  This is used to generate derived
         artifacts from the layout, without coupling to any particular schema.  If none
@@ -187,8 +177,7 @@ class Resource:
             default=None,
             description=
                 "An optional reference to a template used to render the contents of a "
-                "managed file resource.  Must be None for non-file resources.  Managed "
-                "file resources must define one.",
+                "file resource.  Must be None for non-file resources.",
         )
 
         @field_validator("path")
@@ -211,11 +200,10 @@ class Resource:
             return self
 
     kind: Literal["file", "dir"] = field()
-    roles: set[str] = field(default_factory=set)
     template: Template | None = field(default=None)
-    parse: Callable[[Layout], dict[str, Any]] | None = field(default=None)
-    render: Callable[[Layout], str] | None = field(default=None)
-    sources: Callable[[Layout], list[Path]] | None = field(default=None)
+    parse: Callable[[Config], dict[str, Any]] | None = field(default=None)
+    render: Callable[[Config], str] | None = field(default=None)
+    sources: Callable[[Config], list[Path]] | None = field(default=None)
 
     def to_json(self, path: PosixPath) -> Resource.JSON:
         """Materialize this catalog resource into a persisted manifest entry.
@@ -246,10 +234,7 @@ class Manifest(BaseModel):
     """Serializable resource manifest persisted in environment metadata.
 
     A manifest of this form is stored in `env.json` under the top-level `layout` key,
-    and can be loaded to reconstruct the layout after initialization.  Roles map
-    semantic names (e.g. "config.primary") to concrete resource IDs, allowing other
-    subsystems to resolve canonical configuration sources and derived artifacts without
-    hardcoding filenames.
+    and can be loaded to reconstruct the layout after initialization.
     """
     model_config = ConfigDict(extra="forbid")
     schema_version: int = Field(
@@ -273,12 +258,6 @@ class Manifest(BaseModel):
             "Mapping of resource IDs to their specifications.  Resource IDs are "
             "arbitrary strings that serve as stable identifiers for resources, and "
             "should generally match the `name` portion of a corresponding template."
-    )
-    roles: dict[str, list[str]] = Field(
-        default_factory=dict,
-        description=
-            "Mapping of semantic role names to ordered resource IDs.  Role targets "
-            "must reference resources defined in this manifest."
     )
 
     @field_validator("profile")
@@ -326,51 +305,6 @@ class Manifest(BaseModel):
             normalized[resource_id] = spec
         return normalized
 
-    @field_validator("roles", mode="before")
-    @classmethod
-    def _validate_roles(cls, value: Any) -> Any:
-        if not isinstance(value, dict):
-            return value
-
-        # role names must be non-empty strings with no duplicates
-        normalized: dict[str, list[str]] = {}
-        seen_roles: set[str] = set()
-        for raw_name, raw_ids in value.items():
-            if not isinstance(raw_name, str):
-                raise ValueError("layout role names must be strings")
-            role_name = raw_name.strip()
-            if not role_name:
-                raise ValueError("layout role names must be non-empty")
-            if role_name in seen_roles:
-                raise ValueError(f"duplicate layout role name: {role_name}")
-            seen_roles.add(role_name)
-
-            # role targets must be non-empty lists of resource IDs
-            if not isinstance(raw_ids, list):
-                raise ValueError(f"layout role targets must be lists: {role_name}")
-            ids: list[str] = []
-            seen_ids: set[str] = set()
-            for raw_id in raw_ids:
-                if not isinstance(raw_id, str):
-                    raise ValueError(
-                        f"layout role resource IDs must be strings: {role_name}"
-                    )
-                resource_id = raw_id.strip()
-                if not resource_id:
-                    raise ValueError(
-                        f"layout role resource IDs must be non-empty: {role_name}"
-                    )
-                if resource_id in seen_ids:
-                    raise ValueError(
-                        f"duplicate resource ID '{resource_id}' in layout role '{role_name}'"
-                    )
-                seen_ids.add(resource_id)
-                ids.append(resource_id)
-            if not ids:
-                raise ValueError(f"layout role must reference at least one resource: {role_name}")
-            normalized[role_name] = ids
-        return normalized
-
     @model_validator(mode="after")
     def _validate(self) -> Manifest:
         if self.schema_version != LAYOUT_SCHEMA_VERSION:
@@ -410,14 +344,6 @@ class Manifest(BaseModel):
                         f"under file resource '{parent_id}' at '{parent_path}'"
                     )
 
-        # validate role targets point to known resources
-        for role_name in self.roles:
-            for resource_id in self.roles[role_name]:
-                if resource_id not in self.resources:
-                    raise ValueError(
-                        f"layout role '{role_name}' references unknown resource ID: "
-                        f"'{resource_id}'"
-                    )
         return self
 
 
@@ -484,11 +410,10 @@ def _expect_str(name: str, ctx: Pipeline.InProgress) -> str:
     return text
 
 
-# NOTE: "*" indicates a baseline, while other keys act as overlay diffs that merge on
-# top to avoid duplication.
-
-
-RESOURCE_CATALOG: dict[str,  Resource] = {
+# Global resource catalog.  Extensions can add resources here with associated behavior,
+# and then update the capabilities and/or profiles to place them in the generated
+# layouts, without needing to change any of the core layout application logic.
+CATALOG: dict[str,  Resource] = {
     "containerfile": Resource(
         kind="file",
         template=Template(
@@ -510,7 +435,6 @@ RESOURCE_CATALOG: dict[str,  Resource] = {
     "src": Resource(kind="dir"),
     "pyproject": Resource(
         kind="file",
-        roles={ROLE_CONFIG_PRIMARY},
         template=Template(
             namespace="core",
             name="pyproject",
@@ -520,7 +444,6 @@ RESOURCE_CATALOG: dict[str,  Resource] = {
     ),
     "compile_commands": Resource(
         kind="file",
-        roles={ROLE_SOURCE_CPP_COMPILE_COMMANDS},
         template=Template(
             namespace="core",
             name="compile_commands",
@@ -530,20 +453,21 @@ RESOURCE_CATALOG: dict[str,  Resource] = {
     ),
     "clang_format": Resource(
         kind="file",
-        roles={ROLE_ARTIFACT_CPP},
         # TODO: add parse and render fields
     ),
     "clang_tidy": Resource(
         kind="file",
-        roles={ROLE_ARTIFACT_CPP},
         # TODO: add parse and render fields
     ),
     "clangd": Resource(
         kind="file",
-        roles={ROLE_ARTIFACT_CPP},
         # TODO: add parse and render fields
     ),
 }
+
+
+# NOTE: "*" indicates a baseline, while other keys act as overlay diffs that merge on
+# top to avoid duplication.
 
 
 # Profiles define only resource placement paths: wildcard baseline + profile diffs.
@@ -588,12 +512,10 @@ CAPABILITIES: dict[str, dict[str, dict[str, PosixPath]]] = {
 
 
 @dataclass
-class Layout:
+class Config:
     """Read-only view representing the deserialized contents of a layout manifest,
     together with the environment root path in which to apply it.  This is the main
-    entry point for layout rendering and application logic, and provides role-based
-    resolution APIs for consumers that need stable access to configuration sources and
-    derived artifacts.
+    entry point for layout rendering and application logic.
     """
     @dataclass(frozen=True)
     class Facts:
@@ -624,13 +546,20 @@ class Layout:
 
     root: Path
     manifest: Manifest
+    _entered: int = field(default=0, init=False, repr=False)
+    _snapshot: dict[str, Any] | None = field(default=None, init=False, repr=False)
+    _snapshot_key_owner: dict[tuple[str, ...], str] = field(
+        default_factory=dict,
+        init=False,
+        repr=False,
+    )
 
     def __post_init__(self) -> None:
         self.root = self.root.expanduser().resolve()
 
     @classmethod
     def load(cls, env_root: Path) -> Self:
-        """Load layout manifest from `env_root` and return a resolved Layout.
+        """Load layout manifest from `env_root` and return a resolved `Config`.
 
         Parameters
         ----------
@@ -641,7 +570,7 @@ class Layout:
         Returns
         -------
         Self
-            A resolved Layout instance containing the manifest and root path.
+            A resolved `Config` instance containing the manifest and root path.
 
         Raises
         ------
@@ -691,7 +620,7 @@ class Layout:
                 f"unknown layout profile: {profile} (supported: "
                 f"{', '.join(sorted(profile for profile in PROFILES if profile != "*"))})"
             )
-        return Layout._merge_placement_maps(base, overlay)
+        return Config._merge_placement_maps(base, overlay)
 
     @staticmethod
     def _resolve_capability(capability: str, profile: str) -> dict[str, PosixPath]:
@@ -707,7 +636,7 @@ class Layout:
                 f"layout capability '{capability}' is missing wildcard baseline '*'"
             )
         overlay = variants.get(profile, {})
-        return Layout._merge_placement_maps(base, overlay)
+        return Config._merge_placement_maps(base, overlay)
 
     @classmethod
     def init(
@@ -734,16 +663,15 @@ class Layout:
         Returns
         -------
         Self
-            A Layout instance containing the environment root and generated manifest.
+            A Config instance containing the environment root and generated manifest.
 
         Raises
         ------
         ValueError
             If the specified profile is unknown, if any specified capability is
-            unknown, if wildcard baselines are missing, if `config.primary` is
-            missing, if any placement references an unknown catalog resource ID, or
-            if there are any invalid resource collisions (including path collisions)
-            when merging.
+            unknown, if wildcard baselines are missing, if any placement references
+            an unknown catalog resource ID, or if there are any invalid resource
+            collisions (including path collisions) when merging.
         """
         # normalize and validate profile
         profile_key = profile.strip().lower()
@@ -787,32 +715,13 @@ class Layout:
                         f"capability '{cap}': {existing} != {path}"
                     )
 
-        # materialize manifest resources and role bindings from catalog defaults
+        # materialize manifest resources from catalog defaults
         merged_resources: dict[str, Resource.JSON] = {}
-        merged_roles: dict[str, list[str]] = {}
         for resource_id, path in merged_paths.items():
-            resource = RESOURCE_CATALOG.get(resource_id)
+            resource = CATALOG.get(resource_id)
             if resource is None:
                 raise ValueError(f"unknown layout resource ID: '{resource_id}'")
             merged_resources[resource_id] = resource.to_json(path)
-            for role_name in sorted(resource.roles):
-                if role_name not in ROLES:
-                    raise ValueError(
-                        f"resource '{resource_id}' references unknown role: '{role_name}' "
-                        f"(supported: {', '.join(sorted(ROLES))})"
-                    )
-                role_targets = merged_roles.setdefault(role_name, [])
-                if resource_id not in role_targets:
-                    role_targets.append(resource_id)
-
-        # validate that the merged layout includes a primary config source, which is
-        # required for later configuration loading and artifact generation
-        primary = merged_roles.get(ROLE_CONFIG_PRIMARY)
-        if primary is None or len(primary) == 0:
-            raise ValueError(
-                f"layout requires role '{ROLE_CONFIG_PRIMARY}' for profile '{profile_key}' "
-                f"and capabilities {caps}"
-            )
 
         return cls(
             root=env_root,
@@ -821,22 +730,20 @@ class Layout:
                 profile=profile_key,
                 capabilities=caps,
                 resources=merged_resources,
-                roles=merged_roles,
             )
         )
 
-    def resource(self, resource_id: str) -> Resource.JSON:
+    def resource(self, resource_id: str) -> Resource:
         """Retrieve the resource specification for the given resource ID.
 
         Parameters
         ----------
         resource_id : str
-            The stable identifier of the resource to retrieve, as defined in the
-            manifest.
+            The stable identifier of the resource to retrieve, as defined in `CATALOG`.
 
         Returns
         -------
-        Resource.JSON
+        Resource
             The resource specification associated with the given resource ID.
 
         Raises
@@ -844,7 +751,9 @@ class Layout:
         KeyError
             If the given resource ID is not defined in the manifest.
         """
-        return self.manifest.resources[resource_id]
+        if resource_id not in self.manifest.resources:
+            raise KeyError(f"unknown resource ID: '{resource_id}'")
+        return CATALOG[resource_id]
 
     def path(self, resource_id: str) -> Path:
         """Resolve an absolute path to the given resource within the environment root.
@@ -860,37 +769,173 @@ class Layout:
         Path
             An absolute path to the resource within the environment root directory.
         """
-        return self.root / Path(self.resource(resource_id).path)
+        return self.root / Path(self.manifest.resources[resource_id].path)
 
-    def role(self, name: str) -> tuple[str, ...]:
-        """Resolve a semantic role to its ordered resource IDs.
-
-        Parameters
-        ----------
-        name : str
-            The semantic role name to resolve.
-
-        Returns
-        -------
-        tuple[str, ...]
-            Ordered, immutable resource IDs for this role.  This may be empty if the
-            role is not present, but will never be empty otherwise.
-
-        Raises
-        ------
-        ValueError
-            If the role name is unknown (i.e. not in the `ROLES` set).
-        """
-        name = name.strip()
-        if name not in ROLES:
-            raise ValueError(
-                f"unknown layout role: '{name}' (supported: {', '.join(sorted(ROLES))})"
+    def _require_snapshot(self) -> dict[str, Any]:
+        if self._entered < 1 or self._snapshot is None:
+            raise RuntimeError(
+                "layout config snapshot is unavailable outside an active layout context"
             )
-        if name in self.manifest.roles:
-            return tuple(self.manifest.roles[name])
-        return ()
+        return self._snapshot
 
-    def _facts(self, ctx: Pipeline.InProgress) -> Layout.Facts:
+    def _parse_snapshot(self) -> tuple[dict[str, Any], dict[tuple[str, ...], str]]:
+        snapshot: dict[str, Any] = {}
+        key_owner: dict[tuple[str, ...], str] = {}
+        for resource_id in self.manifest.resources:
+            from_manifest = self.manifest.resources[resource_id]
+            from_catalog = CATALOG.get(resource_id)
+            if from_catalog is None:
+                raise OSError(
+                    f"layout manifest references unknown resource ID: '{resource_id}'"
+                )
+
+            # get + validate parse method for this resource, if any
+            parser = from_catalog.parse
+            if parser is None:
+                continue
+            path = self.path(resource_id)
+            if not path.exists():
+                continue
+            if from_manifest.kind == "file" and not path.is_file():
+                raise OSError(
+                    f"parse resource '{resource_id}' expected file but found non-file: {path}"
+                )
+            if from_manifest.kind == "dir" and not path.is_dir():
+                raise OSError(
+                    f"parse resource '{resource_id}' expected directory but found non-dir: "
+                    f"{path}"
+                )
+
+            # invoke parser to extract config fragment
+            try:
+                fragment = parser(self)
+            except Exception as err:
+                raise OSError(
+                    f"failed to parse resource '{resource_id}' at {path}: {err}"
+                ) from err
+            if not isinstance(fragment, dict) or not all(isinstance(k, str) for k in fragment):
+                raise OSError(
+                    f"parse hook for resource '{resource_id}' must return a string mapping: "
+                    f"{fragment}"
+                )
+
+            # merge fragment into snapshot, checking for key collisions
+            self._merge_snapshot_fragment(
+                resource_id,
+                fragment,
+                snapshot,
+                key_owner=key_owner,
+            )
+
+        return snapshot, key_owner
+
+    def _merge_snapshot_fragment(
+        self,
+        resource_id: str,
+        fragment: dict[str, Any],
+        snapshot: dict[str, Any],
+        *,
+        key_owner: dict[tuple[str, ...], str],
+        path_prefix: tuple[str, ...] = (),
+    ) -> None:
+        for raw_key, value in fragment.items():
+            if not isinstance(raw_key, str):  # defensive check
+                if path_prefix:  # type: ignore[unreachable]
+                    parent = ".".join(path_prefix)
+                else:
+                    parent = "<root>"
+                raise OSError(
+                    f"parse hook for resource '{resource_id}' returned non-string key "
+                    f"under '{parent}': '{raw_key}'"
+                )
+
+            # insert value if key is new, and recurse if value is a nested dict
+            key_path = path_prefix + (raw_key,)
+            if raw_key not in snapshot:
+                if isinstance(value, dict):
+                    child: dict[str, Any] = {}
+                    snapshot[raw_key] = child
+                    key_owner[key_path] = resource_id
+                    self._merge_snapshot_fragment(
+                        resource_id,
+                        value,
+                        child,
+                        path_prefix=key_path,
+                        key_owner=key_owner,
+                    )
+                else:
+                    snapshot[raw_key] = value
+                    key_owner[key_path] = resource_id
+                continue
+
+            # if an existing key is present, and both the key and value are nested
+            # dicts, then merge recursively
+            existing = snapshot[raw_key]
+            existing_owner = key_owner.get(key_path, "<unknown>")
+            if isinstance(existing, dict) and isinstance(value, dict):
+                self._merge_snapshot_fragment(
+                    resource_id,
+                    value,
+                    existing,
+                    path_prefix=key_path,
+                    key_owner=key_owner,
+                )
+                continue
+
+            # otherwise, this is a collision
+            raise OSError(
+                f"config parse key collision at '{'.'.join(key_path)}' between "
+                f"resources '{existing_owner}' and '{resource_id}'"
+            )
+
+    def __enter__(self) -> Self:
+        """Load a context-scoped config snapshot from parse-capable resources."""
+        if self._entered == 0:
+            with lock_env(self.root):
+                try:
+                    snapshot, owner = self._parse_snapshot()
+                except Exception:
+                    self._snapshot = None
+                    self._snapshot_key_owner = {}
+                    raise
+            self._snapshot = snapshot
+            self._snapshot_key_owner = owner
+        self._entered += 1
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        """Release one context level and clear snapshot on outermost exit."""
+        del exc_type, exc, traceback
+        if self._entered == 0:
+            raise RuntimeError("layout context is not active")
+        self._entered -= 1
+        if self._entered == 0:
+            self._snapshot = None
+            self._snapshot_key_owner = {}
+
+    def __getitem__(self, key: str | tuple[str, ...]) -> Any:
+        snapshot = self._require_snapshot()
+        if isinstance(key, str):
+            return snapshot[key]
+
+        if isinstance(key, tuple):
+            value: Any = snapshot
+            for part in key:
+                if not isinstance(part, str):
+                    raise TypeError(f"invalid key type: {type(part)}")
+                if not isinstance(value, dict):
+                    raise KeyError(key)
+                value = value[part]
+            return value
+
+        raise TypeError(f"invalid key type: {type(key)}")
+
+    def _facts(self, ctx: Pipeline.InProgress) -> Config.Facts:
         """Build a Jinja context from pipeline facts, which can be used to render
         layout resources.
 
@@ -902,7 +947,7 @@ class Layout:
 
         Returns
         -------
-        Layout.Facts
+        Config.Facts
             A Facts instance containing the relevant context for layout rendering.
 
         Raises
@@ -917,7 +962,7 @@ class Layout:
                 f"layout context mismatch for environment root: layout={self.root}, ctx={env}"
             )
 
-        return Layout.Facts(
+        return Config.Facts(
             env=str(self.root),
             manifest=self.manifest.model_dump(mode="python"),
             paths={
@@ -931,7 +976,7 @@ class Layout:
         )
 
     def render(self, ctx: Pipeline.InProgress) -> dict[str, str]:
-        """Render managed file resources in deterministic resource-id order.
+        """Render templated file resources in deterministic resource-id order.
 
         This function renders text only.  Callers are responsible for filesystem writes.
 
@@ -960,7 +1005,7 @@ class Layout:
         )
         replacements = asdict(self._facts(ctx))
 
-        # collect template references from managed file resources
+        # collect template references from templated file resources
         refs: dict[tuple[str, str, str], Template] = {}
         for resource_id in sorted(self.manifest.resources):
             resource = self.resource(resource_id)
@@ -995,7 +1040,7 @@ class Layout:
             # write template to state cache for rendering
             ctx.do(WriteText(path=target, text=text, replace=False), undo=False)
 
-        # render managed resources with Jinja context
+        # render templated resources with Jinja context
         out: dict[str, str] = {}
         for resource_id in sorted(self.manifest.resources):
             resource = self.resource(resource_id)
@@ -1034,8 +1079,8 @@ class Layout:
         return out
 
     def apply(self, ctx: Pipeline.InProgress) -> None:
-        """Apply the layout to the environment directory by rendering managed resources
-        and writing them to disk.
+        """Apply the layout to the environment directory by rendering templated file
+        resources and writing missing outputs to disk.
 
         Parameters
         ----------
@@ -1077,3 +1122,150 @@ class Layout:
                 target = self.path(resource_id)
                 if not target.exists():
                     ctx.do(WriteText(path=target, text=text, replace=False), undo=False)
+
+    def sync(self) -> None:
+        """Render and write derived artifact resources from active context snapshot.
+
+        This requires an active layout context (`with layout:`), because render hooks
+        are expected to read parsed snapshot values through `__getitem__`.
+
+        Raises
+        ------
+        RuntimeError
+            If called outside an active layout context.
+        OSError
+            If render hooks fail, return invalid output, or if any filesystem I/O
+            fails during artifact synchronization.
+        """
+        self._require_snapshot()
+        with lock_env(self.root):
+            for resource_id in self.manifest.resources:
+                manifest_resource = self.manifest.resources[resource_id]
+                catalog_resource = CATALOG.get(resource_id)
+                if catalog_resource is None:
+                    raise OSError(
+                        f"layout manifest references unknown resource ID: '{resource_id}'"
+                    )
+
+                # get + validate render method for this resource, if any
+                renderer = catalog_resource.render
+                if renderer is None:
+                    continue
+                if manifest_resource.kind != "file":
+                    raise OSError(
+                        f"sync renderer is only supported for file resources: '{resource_id}'"
+                    )
+
+                # render artifact content and validate output
+                target = self.path(resource_id)
+                try:
+                    text = renderer(self)
+                except Exception as err:
+                    raise OSError(
+                        f"failed to render sync resource '{resource_id}' at {target}: {err}"
+                    ) from err
+                if not isinstance(text, str):
+                    raise OSError(
+                        f"sync renderer returned non-string output for resource "
+                        f"'{resource_id}' at {target}"
+                    )
+
+                # skip write if content is unchanged
+                if target.exists():
+                    if not target.is_file():
+                        raise OSError(
+                            f"cannot write sync output; target is not a file: {target}"
+                        )
+                    try:
+                        current = target.read_text(encoding="utf-8")
+                    except OSError as err:
+                        raise OSError(
+                            f"failed to read sync target for resource '{resource_id}' at "
+                            f"{target}: {err}"
+                        ) from err
+                    if current == text:
+                        continue
+
+                # atomically write rendered content to target path
+                try:
+                    atomic_write_text(target, text, encoding="utf-8")
+                except OSError as err:
+                    raise OSError(
+                        f"failed to write sync output for resource '{resource_id}' at "
+                        f"{target}: {err}"
+                    ) from err
+
+    def sources(self) -> list[Path]:
+        """Resolve and deduplicate source file paths from source-capable resources.
+
+        Returns
+        -------
+        list[Path]
+            Absolute source paths deduplicated in first-seen order.
+
+        Raises
+        ------
+        OSError
+            If a source hook fails, returns invalid output, or if resource kind/path
+            validation fails.
+        """
+        out: list[Path] = []
+        seen: set[Path] = set()
+        with lock_env(self.root):
+            for resource_id in self.manifest.resources:
+                manifest_resource = self.manifest.resources[resource_id]
+                catalog_resource = CATALOG.get(resource_id)
+                if catalog_resource is None:
+                    raise OSError(
+                        f"layout manifest references unknown resource ID: '{resource_id}'"
+                    )
+
+                # get + validate source method for this resource, if any
+                resolver = catalog_resource.sources
+                if resolver is None:
+                    continue
+                source_ref = self.path(resource_id)
+                if not source_ref.exists():
+                    continue
+                if manifest_resource.kind == "file" and not source_ref.is_file():
+                    raise OSError(
+                        f"source resource '{resource_id}' expected file but found non-file: "
+                        f"{source_ref}"
+                    )
+                if manifest_resource.kind == "dir" and not source_ref.is_dir():
+                    raise OSError(
+                        f"source resource '{resource_id}' expected directory but found non-dir: "
+                        f"{source_ref}"
+                    )
+
+                # invoke resolver to extract source paths
+                try:
+                    paths = resolver(self)
+                except Exception as err:
+                    raise OSError(
+                        f"failed to resolve sources for resource '{resource_id}' at "
+                        f"{source_ref}: {err}"
+                    ) from err
+                if not isinstance(paths, list):
+                    raise OSError(
+                        f"source hook for resource '{resource_id}' returned non-list output: "
+                        f"{type(paths)}"
+                    )
+
+                # normalize + deduplicate source paths, checking for validity
+                for raw_path in paths:
+                    if not isinstance(raw_path, Path):
+                        raise OSError(
+                            f"source hook for resource '{resource_id}' returned non-Path "
+                            f"entry: {repr(raw_path)}"
+                        )
+                    normalized = raw_path.expanduser()
+                    if not normalized.is_absolute():
+                        normalized = (self.root / normalized).expanduser()
+                    normalized = normalized.resolve()
+                    if normalized in seen:
+                        continue
+                    seen.add(normalized)
+                    out.append(normalized)
+
+        return out
