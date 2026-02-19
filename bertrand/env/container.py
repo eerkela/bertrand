@@ -37,7 +37,7 @@ from pydantic import (
     PositiveInt,
     StringConstraints,
     ValidationError,
-    model_validator,
+    field_validator,
 )
 
 from .code import (
@@ -1535,13 +1535,16 @@ class Environment:
         id: EnvironmentId
         tags: dict[str, Image]
 
-        @model_validator(mode="after")
-        def _check_tags(self) -> Environment.JSON:
+        @field_validator("tags", mode="after")
+        @classmethod
+        def _check_tags(cls, tags: dict[str, Image]) -> dict[str, Image]:
             cleaned: dict[str, Image] = {}
-            for tag, image in self.tags.items():
-                if not isinstance(tag, str):
-                    raise ValueError(f"invalid image tag in environment metadata: {tag}")
-                tag = tag.strip()
+            for raw_tag, image in tags.items():
+                if not isinstance(raw_tag, str):
+                    raise ValueError(
+                        f"invalid image tag in environment metadata: {raw_tag}"
+                    )
+                tag = raw_tag.strip()
                 sanitized = sanitize_name(tag)
                 if tag != sanitized:
                     raise ValueError(
@@ -1550,8 +1553,7 @@ class Environment:
                 if tag in cleaned:
                     raise ValueError(f"duplicate image tag in environment metadata: {tag}")
                 cleaned[tag] = image
-            self.tags = cleaned
-            return self
+            return cleaned
 
     root: Path
     _json: JSON

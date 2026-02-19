@@ -34,6 +34,7 @@ from pydantic import (
     ConfigDict,
     Field,
     PositiveInt,
+    StringConstraints,
     TypeAdapter,
     ValidationError,
     model_validator,
@@ -49,9 +50,9 @@ STATE_DIR = User().home / ".local" / "share" / "bertrand" / "pipelines"
 STATE_LOCK = STATE_DIR / ".lock"
 MISSING: Literal["<missing>"] = "<missing>"  # not a valid SHA-256 hexdigest
 ATOMIC_UNDO: dict[str, Callable[[Pipeline.InProgress, dict[str, JSONValue], bool], None]] = {}
-QualName = Annotated[str, Field(pattern=r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*$")]
-UUID4Hex = Annotated[str, Field(pattern=r"^[a-f0-9]{32}$")]
-Hash256 = Annotated[str, Field(pattern=r"^[a-f0-9]{64}$")]
+QualName = Annotated[str, StringConstraints(pattern=r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*$")]
+UUID4Hex = Annotated[str, StringConstraints(pattern=r"^[a-f0-9]{32}$")]
+Hash256 = Annotated[str, StringConstraints(pattern=r"^[a-f0-9]{64}$")]
 JSONValue: TypeAlias = (
     None
     | bool
@@ -294,8 +295,9 @@ class Pipeline:
             An ordered list of atomic operations that were performed during this step,
             which will be replayed in reverse order if the step needs to be rolled
             back.
-        error : str | None
-            An informative error message if the step failed.
+        error : str
+            An informative error message if the step failed.  Empty string indicates
+            no error has been recorded.
         """
         model_config = ConfigDict(extra="forbid")  # reject unexpected keys
         syntax: int

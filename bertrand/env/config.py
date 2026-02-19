@@ -22,7 +22,7 @@ from importlib import resources
 from importlib.resources.abc import Traversable
 from pathlib import Path, PosixPath
 from types import MappingProxyType, TracebackType
-from typing import Any, Callable, Literal, Self, TypeVar
+from typing import Annotated, Any, Callable, Iterator, Literal, Self, TypeVar
 
 from jinja2 import Environment, StrictUndefined
 from pydantic import (
@@ -79,6 +79,72 @@ if DEFAULT_EDITOR not in EDITORS:
 if DEFAULT_SHELL not in SHELLS:
     raise RuntimeError(f"default shell is unsupported: {DEFAULT_SHELL}")
 
+# Resource IDs and defaults for editor-specific managed artifacts.
+VSCODE_WORKSPACE_RESOURCE_ID: str = "vscode-workspace"
+_VSCODE_REMOTE_EXTENSION: str = "ms-vscode-remote.remote-containers"
+_VSCODE_CLANGD_EXTENSION: str = "llvm-vs-code-extensions.vscode-clangd"
+_VSCODE_PYTHON_EXTENSION: str = "ms-python.python"
+_VSCODE_RUFF_EXTENSION: str = "charliermarsh.ruff"
+_VSCODE_TY_EXTENSION: str = "astral-sh.ty"
+_VSCODE_BASE_RECOMMENDED_EXTENSIONS: tuple[str, ...] = (
+    _VSCODE_REMOTE_EXTENSION,
+    _VSCODE_CLANGD_EXTENSION,
+    _VSCODE_PYTHON_EXTENSION,
+    _VSCODE_RUFF_EXTENSION,
+    _VSCODE_TY_EXTENSION,
+)
+_VSCODE_MANAGED_SETTINGS: dict[str, Any] = {
+    "C_Cpp.intelliSenseEngine": "disabled",
+    "clangd.path": "clangd",
+    "[python]": {
+        "editor.defaultFormatter": _VSCODE_RUFF_EXTENSION,
+        "editor.formatOnSave": True,
+        "editor.codeActionsOnSave": {
+            "source.fixAll.ruff": "explicit",
+            "source.organizeImports.ruff": "explicit",
+        },
+    },
+    "ty.serverMode": "languageServer",
+    "ty.disableLanguageServices": True,
+    "python.testing.pytestEnabled": True,
+    "python.testing.unittestEnabled": False,
+    "python.testing.pytestPath": "pytest",
+    "python.testing.pytestArgs": ["."],
+}
+_VSCODE_MANAGED_TASKS: dict[str, Any] = {
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Bertrand: pytest",
+            "type": "shell",
+            "command": "pytest -q",
+            "options": {"cwd": "${workspaceFolder}"},
+            "problemMatcher": [],
+        },
+        {
+            "label": "Bertrand: ruff check",
+            "type": "shell",
+            "command": "ruff check .",
+            "options": {"cwd": "${workspaceFolder}"},
+            "problemMatcher": [],
+        },
+        {
+            "label": "Bertrand: ruff format",
+            "type": "shell",
+            "command": "ruff format .",
+            "options": {"cwd": "${workspaceFolder}"},
+            "problemMatcher": [],
+        },
+        {
+            "label": "Bertrand: ty check",
+            "type": "shell",
+            "command": "ty check .",
+            "options": {"cwd": "${workspaceFolder}"},
+            "problemMatcher": [],
+        },
+    ],
+}
+
 
 # In-container environment variables for relevant configuration, for use in upstream
 # subsystems like the container runtime and editor integration.
@@ -103,14 +169,17 @@ class Template(BaseModel):
     the `on_init` state cache before rendering.
     """
     model_config = ConfigDict(extra="forbid")
-    namespace: str = Field(description="Template namespace, e.g. 'core'.")
-    name: str = Field(description="Template resource name, e.g. 'pyproject'.")
-    version: str = Field(
-        description=
-            "Stable template version identifier, e.g. '2026-02-15'.  No specific "
-            "format is required, but a date-based convention is recommended for "
-            "clarity and collision avoidance."
-    )
+    namespace: Annotated[str, Field(description="Template namespace, e.g. 'core'.")]
+    name: Annotated[str, Field(description="Template resource name, e.g. 'pyproject'.")]
+    version: Annotated[
+        str,
+        Field(
+            description=
+                "Stable template version identifier, e.g. '2026-02-15'.  No specific "
+                "format is required, but a date-based convention is recommended for "
+                "clarity and collision avoidance."
+        ),
+    ]
 
     @field_validator("namespace", "name", "version")
     @classmethod
@@ -235,20 +304,26 @@ class Resource:
         environment's layout manifest and used to reconstruct the Resource.
         """
         model_config = ConfigDict(extra="forbid")
-        kind: Literal["file", "dir"] = Field(
-            description="The type of resource, either 'file' or 'dir'."
-        )
-        path: PosixPath = Field(
-            description=
-                "The relative path of the resource starting from the environment root.  "
-                "Always stored as a POSIX path."
-        )
-        template: Template | None = Field(
-            default=None,
-            description=
-                "An optional reference to a template used to render the contents of a "
-                "file resource.  Must be None for non-file resources.",
-        )
+        kind: Annotated[
+            Literal["file", "dir"],
+            Field(description="The type of resource, either 'file' or 'dir'."),
+        ]
+        path: Annotated[
+            PosixPath,
+            Field(
+                description=
+                    "The relative path of the resource starting from the environment root.  "
+                    "Always stored as a POSIX path."
+            ),
+        ]
+        template: Annotated[
+            Template | None,
+            Field(
+                description=
+                    "An optional reference to a template used to render the contents of a "
+                    "file resource.  Must be None for non-file resources.",
+            ),
+        ] = None
 
         @field_validator("path")
         @classmethod
@@ -269,26 +344,14 @@ class Resource:
                 )
             return self
 
-    @dataclass(frozen=True)
-    class Parse:
-        """Structured output returned by a resource parse hook.
-
-        Parsed values are recursively frozen into immutable containers at context
-        entry before being exposed through `config[...]` and `config.raw[...]`.
-        """
-        raw: Any | None
-        normalized: dict[str, Any]
-
     # pylint: disable=unused-argument, redundant-returns-doc
     name: str
     kind: Literal["file", "dir"]
     template: Template | None
 
-    def parse(self, config: Config) -> Resource.Parse | None:
-        """A parser function that can extract structured data from this resource
-        upon entering the `Config` context.  Parse hooks emit both normalized
-        snapshot values and optional raw payloads for schema-agnostic access
-        through `config.raw[...]`.
+    def parse(self, config: Config) -> dict[str, Any] | None:
+        """A parser function that can extract normalized config data from this
+        resource when entering the `Config` context.
 
         Parameters
         ----------
@@ -298,9 +361,9 @@ class Resource:
 
         Returns
         -------
-        Resource.Parse | None
-            Structured data extracted from this resource, or None if no parsing was
-            performed.
+        dict[str, Any] | None
+            Normalized config data extracted from this resource, or None if no parsing
+            was performed.
         """
         return None
 
@@ -351,15 +414,17 @@ class Manifest(BaseModel):
     and can be loaded to reconstruct the layout after initialization.
     """
     model_config = ConfigDict(extra="forbid")
-    schema_version: int = Field(
-        default=LAYOUT_SCHEMA_VERSION,
-        gt=0,
-        description="Version number, for forward compatibility."
-    )
-    profile: str = Field(
-        description=
-            "The layout profile used to generate this manifest, e.g. 'flat' or 'src'."
-    )
+    schema_version: Annotated[
+        int,
+        Field(gt=0, description="Version number, for forward compatibility."),
+    ] = LAYOUT_SCHEMA_VERSION
+    profile: Annotated[
+        str,
+        Field(
+            description=
+                "The layout profile used to generate this manifest, e.g. 'flat' or 'src'."
+        ),
+    ]
     capabilities: list[str] = Field(
         default_factory=list,
         description=
@@ -583,13 +648,39 @@ def _dump_yaml(payload: dict[str, Any], *, resource_id: str) -> str:
     return text
 
 
-def _raw_tool_section(config: Config, section: str, *, resource_id: str) -> dict[str, Any]:
+def _load_pyproject(config: Config, *, resource_id: str) -> dict[str, Any]:
+    path = config.path("pyproject")
     try:
-        raw = config.raw["pyproject"]["tool"][section]
-    except KeyError as err:
+        text = path.read_text(encoding="utf-8")
+    except OSError as err:
         raise OSError(
-            f"missing required [tool.{section}] for resource '{resource_id}'"
+            f"failed to read pyproject for resource '{resource_id}' at {path}: {err}"
         ) from err
+    try:
+        parsed = tomllib.loads(text)
+    except tomllib.TOMLDecodeError as err:
+        raise OSError(
+            f"failed to parse pyproject TOML for resource '{resource_id}' at {path}: {err}"
+        ) from err
+    return _require_dict(parsed, where="pyproject")
+
+
+def _load_tool_section(
+    config: Config,
+    section: str,
+    *,
+    resource_id: str,
+    required: bool,
+) -> dict[str, Any] | None:
+    pyproject = _load_pyproject(config, resource_id=resource_id)
+    tool = _require_dict(pyproject.get("tool"), where="tool")
+    raw = tool.get(section)
+    if raw is None:
+        if required:
+            raise OSError(
+                f"missing required [tool.{section}] for resource '{resource_id}'"
+            )
+        return None
     return _require_dict(raw, where=f"tool.{section}")
 
 
@@ -624,18 +715,9 @@ class PyProject(Resource):
             )
         return value
 
-    def parse(self, config: Config) -> Resource.Parse | None:
+    def parse(self, config: Config) -> dict[str, Any] | None:
         resource_id = "pyproject"
-        path = config.path(resource_id)
-        try:
-            text = path.read_text(encoding="utf-8")
-        except OSError as err:
-            raise OSError(f"failed to read pyproject at {path}: {err}") from err
-        try:
-            parsed = tomllib.loads(text)
-        except tomllib.TOMLDecodeError as err:
-            raise OSError(f"failed to parse pyproject TOML at {path}: {err}") from err
-        pyproject = _require_dict(parsed, where="pyproject")
+        pyproject = _load_pyproject(config, resource_id=resource_id)
         tool = self._require_tool(pyproject, resource_id=resource_id)
 
         # validate `[tool.bertrand]`
@@ -664,12 +746,12 @@ class PyProject(Resource):
             supported=ASSISTS,
             description="assist",
         )
-        return Resource.Parse(raw=pyproject, normalized={
+        return {
             "shell": shell,
             "code": code,
             "agent": agent,
             "assist": assist,
-        })
+        }
 
 
 @resource("compile_commands", kind="file", template="core/compile_commands/2026-02-15")
@@ -738,11 +820,13 @@ class ClangFormat(Resource):
     # pylint: disable=missing-function-docstring, unused-argument, missing-return-doc
 
     def render(self, config: Config) -> str | None:
-        section = _raw_tool_section(
+        section = _load_tool_section(
             config,
             "clang-format",
             resource_id="clang-format",
+            required=True,
         )
+        assert section is not None
         payload: dict[str, Any] = {}
         if "style" in section:
             style = _require_dict(section["style"], where="tool.clang-format.style")
@@ -776,11 +860,13 @@ class ClangTidy(Resource):
         return ",".join(checks)
 
     def render(self, config: Config) -> str | None:
-        section = _raw_tool_section(
+        section = _load_tool_section(
             config,
             "clang-tidy",
             resource_id="clang-tidy",
+            required=True,
         )
+        assert section is not None
 
         payload: dict[str, Any] = {}
         for key, value in section.items():
@@ -820,8 +906,33 @@ class Clangd(Resource):
     """
     # pylint: disable=missing-function-docstring, unused-argument, missing-return-doc
 
+    def parse(self, config: Config) -> dict[str, Any] | None:
+        section = _load_tool_section(
+            config,
+            "clangd",
+            resource_id="clangd",
+            required=False,
+        )
+        if section is None or "arguments" not in section:
+            return None
+
+        return {
+            "clangd": {
+                "arguments": _require_str_list(
+                    section["arguments"],
+                    where="tool.clangd.arguments",
+                ),
+            },
+        }
+
     def render(self, config: Config) -> str | None:
-        section = _raw_tool_section(config, "clangd", resource_id="clangd")
+        section = _load_tool_section(
+            config,
+            "clangd",
+            resource_id="clangd",
+            required=True,
+        )
+        assert section is not None
         payload: dict[str, Any] = {}
         arguments: list[str] | None = None
 
@@ -851,6 +962,44 @@ class Clangd(Resource):
         if not payload:
             raise OSError("empty [tool.clangd] cannot render .clangd")
         return _dump_yaml(payload, resource_id="clangd")
+
+
+@resource(VSCODE_WORKSPACE_RESOURCE_ID, kind="file")
+class VSCodeWorkspace(Resource):
+    """A managed VS Code workspace file used by host-side editor attach flows."""
+    # pylint: disable=missing-function-docstring, unused-argument, missing-return-doc
+
+    def render(self, config: Config) -> str | None:
+        recommended_extensions: list[str] = []
+        seen: set[str] = set()
+        for ext in (
+            *_VSCODE_BASE_RECOMMENDED_EXTENSIONS,
+            *AGENTS[config["agent"]],
+            *ASSISTS[config["assist"]],
+        ):
+            if ext in seen:
+                continue
+            seen.add(ext)
+            recommended_extensions.append(ext)
+
+        settings = dict(_VSCODE_MANAGED_SETTINGS)
+        clangd_cfg = config["clangd"] if "clangd" in config else {}
+        if isinstance(clangd_cfg, Mapping) and "arguments" in clangd_cfg:
+            clangd_arguments = _require_str_list(
+                clangd_cfg["arguments"],
+                where="clangd.arguments",
+            )
+        else:
+            clangd_arguments = []
+        settings["clangd.arguments"] = clangd_arguments
+
+        payload = {
+            "folders": [{"path": str(MOUNT)}],
+            "settings": settings,
+            "extensions": {"recommendations": recommended_extensions},
+            "tasks": _VSCODE_MANAGED_TASKS,
+        }
+        return json.dumps(payload, indent=2, sort_keys=True) + "\n"
 
 
 # NOTE: "*" indicates a baseline, while other keys act as overlay diffs that merge on
@@ -892,9 +1041,13 @@ CAPABILITIES: dict[str, dict[str, dict[str, PosixPath]]] = {
         "flat": {},
         "src": {},
     },
-    # TODO: we may want other capabilities related to editors or language-specific
-    # tools, such as the managed workspace file for vscode, etc.  We'll have to
-    # revisit this later down the line.
+    "vscode": {
+        "*": {
+            VSCODE_WORKSPACE_RESOURCE_ID: PosixPath(".vscode/bertrand.code-workspace"),
+        },
+        "flat": {},
+        "src": {},
+    },
 }
 
 
@@ -935,7 +1088,6 @@ class Config:
     manifest: Manifest
     _entered: int = field(default=0, init=False, repr=False)
     _snapshot: dict[str, Any] | None = field(default=None, init=False, repr=False)
-    _raw_snapshot: dict[str, Any] | None = field(default=None, init=False, repr=False)
     _snapshot_key_owner: dict[tuple[str, ...], str] = field(
         default_factory=dict,
         init=False,
@@ -1103,6 +1255,16 @@ class Config:
                         f"capability '{cap}': {existing} != {path}"
                     )
 
+        # validate cross-resource dependencies for active capabilities.
+        if (
+            VSCODE_WORKSPACE_RESOURCE_ID in merged_paths and
+            "pyproject" not in merged_paths
+        ):
+            raise ValueError(
+                "resource dependency error: "
+                f"'{VSCODE_WORKSPACE_RESOURCE_ID}' requires 'pyproject' to be present"
+            )
+
         # materialize manifest resources from catalog defaults
         merged_resources: dict[str, Resource.JSON] = {}
         for resource_id, path in merged_paths.items():
@@ -1190,7 +1352,6 @@ class Config:
             with lock_env(self.root):
                 try:
                     snapshot: dict[str, Any] = {}
-                    raw_snapshot: dict[str, Any] = {}
                     key_owner: dict[tuple[str, ...], str] = {}
                     for resource_id in self.manifest.resources:
                         r = CATALOG.get(resource_id)
@@ -1210,36 +1371,26 @@ class Config:
                                 f"failed to parse resource '{resource_id}' at "
                                 f"{self.path(resource_id)}: {err}"
                             ) from err
-                        if not isinstance(result, Resource.Parse):
-                            raise OSError(
-                                f"parse hook for resource '{resource_id}' must return "
-                                "Resource.Parse or None"
-                            )
-                        fragment = result.normalized
-                        if not isinstance(fragment, dict) or not all(
-                            isinstance(k, str) for k in fragment
+                        if not isinstance(result, dict) or not all(
+                            isinstance(k, str) for k in result
                         ):
                             raise OSError(
                                 f"parse hook for resource '{resource_id}' must return a "
-                                f"string mapping: {fragment}"
+                                f"string mapping: {result}"
                             )
-                        if result.raw is not None:
-                            raw_snapshot[resource_id] = result.raw
 
                         # merge fragment into snapshot, checking for key collisions
                         self._merge_snapshot_fragment(
                             resource_id,
-                            fragment,
+                            result,
                             snapshot,
                             key_owner=key_owner,
                         )
                 except Exception:
                     self._snapshot = None
-                    self._raw_snapshot = None
                     self._snapshot_key_owner = {}
                     raise
             self._snapshot = _freeze(snapshot)
-            self._raw_snapshot = _freeze(raw_snapshot)
             self._snapshot_key_owner = key_owner
         self._entered += 1
         return self
@@ -1257,7 +1408,6 @@ class Config:
         self._entered -= 1
         if self._entered == 0:
             self._snapshot = None
-            self._raw_snapshot = None
             self._snapshot_key_owner = {}
 
     def __getitem__(self, key: str) -> Any:
@@ -1270,27 +1420,26 @@ class Config:
             raise TypeError(f"invalid key type: {type(key)}")
         return self._snapshot[key]
 
-    @property
-    def raw(self) -> dict[str, Any]:
-        """Accessor for raw, immutable snapshot data from the active context, keyed
-        by resource ID.
-
-        Returns
-        -------
-        dict[str, Any]
-            A mapping of resource IDs to immutable parser outputs for all resources
-            that returned non-None raw data from their parse hooks.
-
-        Raises
-        ------
-        RuntimeError
-            If the raw snapshot is accessed outside of an active layout context.
-        """
-        if self._entered < 1 or self._raw_snapshot is None:
+    def __iter__(self) -> Iterator[str]:
+        """Iterate over keys in the active context snapshot."""
+        if self._entered < 1 or self._snapshot is None:
             raise RuntimeError(
-                "layout raw snapshot is unavailable outside an active layout context"
+                "layout config snapshot is unavailable outside an active layout context"
             )
-        return self._raw_snapshot
+        return iter(self._snapshot)
+
+    def __contains__(self, key: str) -> bool:
+        """Check for the presence of a key in the active context snapshot."""
+        if self._entered < 1 or self._snapshot is None:
+            raise RuntimeError(
+                "layout config snapshot is unavailable outside an active layout context"
+            )
+        if not isinstance(key, str):
+            raise TypeError(f"invalid key type: {type(key)}")
+        return key in self._snapshot
+
+    def __bool__(self) -> bool:
+        return self._entered > 0 and self._snapshot is not None
 
     def resource(self, resource_id: str) -> Resource:
         """Retrieve the resource specification for the given resource ID.
@@ -1644,6 +1793,7 @@ class Config:
 
         return out
 
+    @property
     def capabilities(self) -> tuple[str, ...]:
         """Return the list of active capabilities in this layout config.
 

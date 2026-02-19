@@ -18,19 +18,18 @@ import urllib.parse
 
 from dataclasses import dataclass, field
 from pathlib import Path, PosixPath
-from typing import Any, Annotated, Literal, Self, TypeAlias
+from typing import Annotated, Literal, TypeAlias
 
-from pydantic import AfterValidator, BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, ValidationError
 
 from .config import (
-    AGENTS,
-    ASSISTS,
     CONTAINER_BIN_ENV,
     CONTAINER_ID_ENV,
     EDITOR_BIN_ENV,
     EDITORS,
     HOST_ENV,
     MOUNT,
+    VSCODE_WORKSPACE_RESOURCE_ID,
     Config
 )
 from .mcp import sync_vscode_mcp_config
@@ -44,7 +43,6 @@ from .run import (
     CommandError,
     TimeoutExpired,
     User,
-    atomic_write_text,
     mkdir_private,
     run
 )
@@ -69,76 +67,13 @@ CODE_SERVICE_ENV: str = "BERTRAND_CODE_SERVICE"
 
 
 # vscode integration details
-VSCODE_MANAGED_WORKSPACE_FILE: Path = Path(".vscode") / "bertrand.code-workspace"
 VSCODE_REMOTE_EXTENSION = "ms-vscode-remote.remote-containers"
-VSCODE_CLANGD_EXTENSION = "llvm-vs-code-extensions.vscode-clangd"
-VSCODE_PYTHON_EXTENSION = "ms-python.python"
-VSCODE_RUFF_EXTENSION = "charliermarsh.ruff"
-VSCODE_TY_EXTENSION = "astral-sh.ty"
 VSCODE_EXECUTABLE_CANDIDATES: tuple[str, ...] = (
     "code",
     "com.visualstudio.code",
     "code-insiders",
     "com.visualstudio.code-insiders",
 )
-VSCODE_BASE_RECOMMENDED_EXTENSIONS: list[str] = [
-    VSCODE_REMOTE_EXTENSION,
-    VSCODE_CLANGD_EXTENSION,
-    VSCODE_PYTHON_EXTENSION,
-    VSCODE_RUFF_EXTENSION,
-    VSCODE_TY_EXTENSION,
-]
-VSCODE_MANAGED_SETTINGS: dict[str, Any] = {
-    "C_Cpp.intelliSenseEngine": "disabled",
-    "clangd.path": "clangd",
-    "[python]": {
-        "editor.defaultFormatter": VSCODE_RUFF_EXTENSION,
-        "editor.formatOnSave": True,
-        "editor.codeActionsOnSave": {
-            "source.fixAll.ruff": "explicit",
-            "source.organizeImports.ruff": "explicit",
-        },
-    },
-    "ty.serverMode": "languageServer",
-    "ty.disableLanguageServices": True,
-    "python.testing.pytestEnabled": True,
-    "python.testing.unittestEnabled": False,
-    "python.testing.pytestPath": "pytest",
-    "python.testing.pytestArgs": ["."],
-}
-VSCODE_MANAGED_TASKS: dict[str, Any] = {
-    "version": "2.0.0",
-    "tasks": [
-        {
-            "label": "Bertrand: pytest",
-            "type": "shell",
-            "command": "pytest -q",
-            "options": {"cwd": "${workspaceFolder}"},
-            "problemMatcher": [],
-        },
-        {
-            "label": "Bertrand: ruff check",
-            "type": "shell",
-            "command": "ruff check .",
-            "options": {"cwd": "${workspaceFolder}"},
-            "problemMatcher": [],
-        },
-        {
-            "label": "Bertrand: ruff format",
-            "type": "shell",
-            "command": "ruff format .",
-            "options": {"cwd": "${workspaceFolder}"},
-            "problemMatcher": [],
-        },
-        {
-            "label": "Bertrand: ty check",
-            "type": "shell",
-            "command": "ty check .",
-            "options": {"cwd": "${workspaceFolder}"},
-            "problemMatcher": [],
-        }
-    ],
-}
 
 
 class CodeError(OSError):
@@ -238,10 +173,6 @@ class CodeRequest(BaseModel):
     op: Operation
     env_root: EnvRoot
     container_id: ContainerID
-
-    @model_validator(mode="after")
-    def _validate(self) -> Self:
-        return self
 
 
 class CodeResponse(BaseModel):
@@ -476,76 +407,6 @@ class CodeServer:
             f"required VS Code extension is missing: {VSCODE_REMOTE_EXTENSION}",
         )
 
-    # TODO: check for timeout deadline while writing the workspace file?
-
-    def _ensure_managed_workspace_file(
-        self,
-        env_root: Path,
-    ) -> None:
-        # gather recommended extensions
-        recommended_extensions: list[str] = []
-        clangd_arguments: list[str] = []
-        try:
-            with Config(env_root) as config:
-                # pre-validated on config enter:
-                clangd_arguments = config["tool", "clangd", "arguments"]
-                agent = config["tool", "bertrand", "agent"]
-                assist = config["tool", "bertrand", "assist"]
-                seen: set[str] = set()
-                for ext in (
-                    *VSCODE_BASE_RECOMMENDED_EXTENSIONS,
-                    *AGENTS[agent],
-                    *ASSISTS[assist]
-                ):
-                    if ext not in seen:
-                        seen.add(ext)
-                        recommended_extensions.append(ext)
-        except KeyError as err:
-            raise CodeError(
-                "invalid_config",
-                f"unsupported configuration option in pyproject.toml: {err}"
-            ) from err
-        except OSError as err:
-            raise CodeError("invalid_config", str(err)) from err
-
-        # render managed workspace content
-        file = env_root / VSCODE_MANAGED_WORKSPACE_FILE
-        settings = VSCODE_MANAGED_SETTINGS.copy()
-        settings["clangd.arguments"] = clangd_arguments
-        payload = {
-            "folders": [{"path": str(MOUNT)}],
-            "settings": settings,
-            "extensions": {"recommendations": recommended_extensions},
-            "tasks": VSCODE_MANAGED_TASKS,
-        }
-        text = json.dumps(payload, indent=2, sort_keys=True) + "\n"
-
-        # only write if content changed
-        if file.exists():
-            if not file.is_file():
-                raise CodeError(
-                    "invalid_config",
-                    f"cannot write VS Code workspace file; path occupied: {file}"
-                )
-            try:
-                current = file.read_text(encoding="utf-8")
-            except OSError as err:
-                raise CodeError(
-                    "invalid_config",
-                    f"failed to read managed workspace file: {file}: {err}",
-                ) from err
-            if current == text:
-                return
-
-        # atomically write new content
-        try:
-            atomic_write_text(file, text, encoding="utf-8")
-        except OSError as err:
-            raise CodeError(
-                "invalid_config",
-                f"failed to write managed workspace file: {file}: {err}",
-            ) from err
-
     def _check_for_container_tool(
         self,
         container_bin: Path,
@@ -597,14 +458,14 @@ class CodeServer:
                 f"{tool} is not available in container '{container_id}'{suffix}",
             )
 
-    def _vscode_workspace_uri(self, container_id: str) -> str:
+    def _vscode_workspace_uri(self, container_id: str, workspace: PosixPath) -> str:
         # NOTE: this URI allows the VSCode Remote Containers extension to attach to a
         # running container by ID, but is not technically part of the public API.  It is
         # well-documented in various issues and discussions, but may be subject to change
         # without notice.  If this breaks, it should have been replaced by something more
         # stable that we can use instead.
         container_id = urllib.parse.quote(container_id, safe="")
-        workspace_file = urllib.parse.quote(str(MOUNT / VSCODE_MANAGED_WORKSPACE_FILE), safe="/")
+        workspace_file = urllib.parse.quote(str(MOUNT / workspace), safe="/")
         return f"vscode-remote://attached-container+{container_id}{workspace_file}"
 
     def _launch_editor(self, env_root: Path, container_id: str) -> list[str]:
@@ -618,7 +479,26 @@ class CodeServer:
         # without altering any user-owned .vscode/settings.json
         self._ensure_running_container(container_bin, container_id, deadline=deadline)
         self._ensure_remote_containers_extension(editor_bin, deadline=deadline)
-        self._ensure_managed_workspace_file(env_root)
+        try:
+            with Config.load(env_root) as config:
+                if "vscode" not in config.capabilities:
+                    raise CodeError(
+                        "invalid_config",
+                        "environment is missing required 'vscode' capability for "
+                        "host-side editor attach"
+                    )
+                if VSCODE_WORKSPACE_RESOURCE_ID not in config.manifest.resources:
+                    raise CodeError(
+                        "invalid_config",
+                        "layout manifest is missing required VS Code workspace resource: "
+                        f"'{VSCODE_WORKSPACE_RESOURCE_ID}'"
+                    )
+                workspace = config.manifest.resources[VSCODE_WORKSPACE_RESOURCE_ID].path
+                config.sync()
+        except CodeError:
+            raise
+        except OSError as err:
+            raise CodeError("invalid_config", str(err)) from err
 
         # check for tools inside container and warn if any are missing
         warnings: list[str] = []
@@ -653,15 +533,14 @@ class CodeServer:
         if mcp_warning is not None:
             warnings.append(mcp_warning)
 
-        # sync tooling files with `pyproject.toml` before launching editor, so its
-        # extensions always see the latest config
-        with Config(env_root) as config:
-            config.sync()
-
         # open editor in detached (non-blocking) process
         try:
             subprocess.Popen(
-                [str(editor_bin), "--file-uri", self._vscode_workspace_uri(container_id)],
+                [
+                    str(editor_bin),
+                    "--file-uri",
+                    self._vscode_workspace_uri(container_id, workspace)
+                ],
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
@@ -751,8 +630,8 @@ def _service_path(key: str, path: str) -> str:
 
 def _render_code_service(env_root: Path) -> str:
     # read editor choice from pyproject.toml
-    with Config(env_root) as config:
-        editor = config["tool", "bertrand", "code"]  # validated on config enter
+    with Config.load(env_root) as config:
+        editor = config["code"]  # validated on config enter
 
     # find RPC server, editor, and container executables on PATH
     rpc_bin = shutil.which("bertrand-code-rpc")
