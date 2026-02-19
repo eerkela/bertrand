@@ -79,6 +79,10 @@ if DEFAULT_EDITOR not in EDITORS:
 if DEFAULT_SHELL not in SHELLS:
     raise RuntimeError(f"default shell is unsupported: {DEFAULT_SHELL}")
 
+
+# TODO: would it be better to place these vscode managed workspace details into a
+# template and render it on init only?
+
 # Resource IDs and defaults for editor-specific managed artifacts.
 VSCODE_WORKSPACE_RESOURCE_ID: str = "vscode-workspace"
 _VSCODE_REMOTE_EXTENSION: str = "ms-vscode-remote.remote-containers"
@@ -1478,6 +1482,8 @@ class Config:
             An absolute path to the resource within the environment root directory.
         """
         return self.root / Path(self.manifest.resources[resource_id].path)
+
+    # TODO: figure out a better way to pass and validate CLI arguments from __main__.py
 
     def _facts(self, ctx: Pipeline.InProgress) -> Config.Facts:
         """Build a Jinja context from pipeline facts, which can be used to render

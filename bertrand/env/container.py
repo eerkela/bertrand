@@ -14,14 +14,12 @@ import uuid
 from dataclasses import dataclass, asdict, field
 from datetime import datetime, timezone
 from pathlib import Path
-from resource import getpagesize
 from types import TracebackType
 from typing import (
     Annotated,
     Any,
     Callable,
     Literal,
-    Protocol,
     TypeAlias,
     TypedDict,
     cast,
@@ -36,7 +34,6 @@ from pydantic import (
     ConfigDict,
     PositiveInt,
     StringConstraints,
-    ValidationError,
     field_validator,
 )
 
@@ -46,22 +43,14 @@ from .code import (
     CONTAINER_SOCKET,
     start_code_service,
 )
-from .layout import (
-    AGENTS,
-    ASSISTS,
-    DEFAULT_EDITOR,
-    DEFAULT_SHELL,
-    DEFAULT_AGENT,
-    DEFAULT_ASSIST,
-    EDITORS,
-    SHELLS,
-    MOUNT,
-    lock_env
-)
 from .config import (
+    ENV_LAYOUT_KEY,
+    MOUNT,
+    SHELLS,
     CONTAINER_ID_ENV,
     HOST_ENV,
     Config,
+    lock_env,
 )
 from .pipeline import (
     DelegateUserControllers,
@@ -104,8 +93,6 @@ from .run import (
     run,
     sanitize_name,
 )
-from .version import __version__
-
 #pylint: disable=redefined-builtin, redefined-outer-name, broad-except
 
 
@@ -501,10 +488,106 @@ def delegate_controllers(ctx: Pipeline.InProgress) -> None:
                     )
 
 
+# TODO: review and maybe simplify these helpers
+
+
+def _resolve_profile_from_ctx(ctx: Pipeline.InProgress) -> str | None:
+    raw = ctx.get("profile")
+    if raw is None:
+        return None
+    if not isinstance(raw, str):
+        raise TypeError("profile must be a string")
+    profile = raw.strip().lower()
+    if not profile:
+        raise OSError("profile must be non-empty when provided")
+    return profile
+
+
+def _resolve_capabilities_from_ctx(ctx: Pipeline.InProgress) -> list[str] | None:
+    raw = ctx.get("capabilities")
+    if raw is None:
+        return None
+    if not isinstance(raw, (list, tuple)):
+        raise TypeError("capabilities must be a list or tuple of strings")
+
+    out: list[str] = []
+    seen: set[str] = set()
+    for idx, item in enumerate(raw):
+        if not isinstance(item, str):
+            raise TypeError(
+                f"capabilities[{idx}] must be a string, got {type(item).__name__}"
+            )
+        capability = item.strip().lower()
+        if not capability:
+            raise OSError(
+                f"capabilities[{idx}] must be non-empty when provided"
+            )
+        if capability in seen:
+            continue
+        seen.add(capability)
+        out.append(capability)
+
+    if not out:
+        raise OSError("capabilities must not be empty when provided")
+    return out
+
+
+def _resolve_init_layout_options(
+    ctx: Pipeline.InProgress,
+    env_root: Path
+) -> tuple[str, list[str]]:
+    profile = _resolve_profile_from_ctx(ctx)
+    capabilities = _resolve_capabilities_from_ctx(ctx)
+
+    if profile is not None and capabilities is not None:
+        return profile, capabilities
+
+    missing: list[str] = []
+    if profile is None:
+        missing.append("profile")
+    if capabilities is None:
+        missing.append("capabilities")
+
+    try:
+        existing = Config.load(env_root)
+    except OSError as err:
+        missing_text = ", ".join(missing)
+        raise OSError(
+            f"missing required init fact(s): {missing_text}; and failed to load "
+            f"existing layout manifest from {_env_file(env_root)}: {err}"
+        ) from err
+
+    if profile is None:
+        profile = existing.manifest.profile
+    if capabilities is None:
+        capabilities = list(existing.manifest.capabilities)
+
+    if not capabilities:
+        raise OSError("capabilities must not be empty")
+    return profile, capabilities
+
+
+def _ensure_environment_core_metadata(root: Path) -> None:
+    with lock_env(root, timeout=TIMEOUT):
+        current = _read_env_metadata(root, missing_ok=True)
+        core, extras = _split_env_metadata(current)
+        validated = Environment.JSON.model_validate({
+            "version": core.get("version", VERSION),
+            "id": core.get("id", uuid.uuid4().hex),
+            "tags": core.get("tags", {}),
+        })
+        merged = _merge_env_metadata(validated.model_dump(mode="json"), extras)
+        if merged != current:
+            atomic_write_text(
+                _env_file(root),
+                json_parser.dumps(merged, indent=2) + "\n"
+            )
+
+
 @on_init(requires=[delegate_controllers], ephemeral=True)
 def init_environment(ctx: Pipeline.InProgress) -> None:
-    """Initialize an environment directory with template configuration files if they
-    are not already present.
+    """Initialize an environment directory using the active Config manifest and
+    templates.
 
     Parameters
     ----------
@@ -514,40 +597,32 @@ def init_environment(ctx: Pipeline.InProgress) -> None:
     Raises
     ------
     OSError
-        If the environment specifier is invalid.
+        If required init facts are missing and no existing layout manifest can be
+        loaded for fallback.
     TypeError
-        If the 'env', 'code', 'agent', or 'assist' facts are not valid strings.
+        If init facts are present with invalid types.
     """
     env = ctx["env"]
     if not isinstance(env, str):
         raise TypeError("environment path must be a string")
-
+    root = Path(env).expanduser().resolve()
     if ctx["image_tag"] or ctx["container_tag"]:
         raise OSError(
             "cannot specify image or container tag when initializing an environment "
             "directory."
         )
 
-    code = ctx["code"]
-    if not isinstance(code, str):
-        raise TypeError("code must be a string")
-    agent = ctx["agent"]
-    if not isinstance(agent, str):
-        raise TypeError("agent must be a string")
-    assist = ctx["assist"]
-    if not isinstance(assist, str):
-        raise TypeError("assist must be a string")
+    profile, capabilities = _resolve_init_layout_options(ctx, root)
+
+    # initialize layout-managed resources and persist manifest metadata
+    cfg = Config.init(root, profile=profile, capabilities=capabilities)
+    cfg.apply(ctx)
+
+    # preserve non-core env.json keys (notably `layout`) while ensuring core metadata.
+    _ensure_environment_core_metadata(root)
 
     # add to global environment registry
-    _reconcile_registry(Path(env))
-
-    # initialize environment directory and configuration files
-    Environment.init(
-        Path(env),
-        containerfile=Containerfile(),
-        containerignore=Containerignore(),
-        pyproject=PyProject(code=code, agent=agent, assist=assist)
-    )
+    _reconcile_registry(root)
 
 
 def podman_cmd(
@@ -665,6 +740,7 @@ CACHES: str = "/tmp/.cache"
 TIMEOUT: int = 30
 ENV_REGISTRY_FILE = "env-registry.json"
 ENV_REGISTRY_LOCK = "env-registry.lock"
+ENV_CORE_KEYS: tuple[str, str, str] = ("version", "id", "tags")
 
 
 def _env_dir(env_root: Path) -> Path:
@@ -699,6 +775,46 @@ def _registry_lock() -> Path:
     return on_init.state_dir / ENV_REGISTRY_LOCK
 
 
+def _read_env_metadata(root: Path, *, missing_ok: bool = False) -> dict[str, Any]:
+    env_file = _env_file(root)
+    if not env_file.exists():
+        if missing_ok:
+            return {}
+        raise FileNotFoundError(f"environment metadata file not found: {env_file}")
+    if not env_file.is_file():
+        raise OSError(f"environment metadata path is not a file: {env_file}")
+
+    try:
+        data = json_parser.loads(env_file.read_text(encoding="utf-8"))
+    except Exception as err:
+        raise OSError(
+            f"failed to parse environment metadata at {env_file}: {err}"
+        ) from err
+    if not isinstance(data, dict):
+        raise OSError(f"environment metadata at {env_file} must be a JSON object")
+    return data
+
+
+def _split_env_metadata(data: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    core = {
+        key: value
+        for key, value in data.items()
+        if key in ENV_CORE_KEYS
+    }
+    extras = {
+        key: value
+        for key, value in data.items()
+        if key not in ENV_CORE_KEYS
+    }
+    return core, extras
+
+
+def _merge_env_metadata(core: dict[str, Any], extras: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(extras)
+    merged.update(core)
+    return merged
+
+
 def _is_valid_environment_root(path: Path) -> bool:
     root = path.expanduser().resolve()
     if not root.exists() or not root.is_dir():
@@ -713,10 +829,14 @@ def _is_valid_environment_root(path: Path) -> bool:
     # acquire environment lock and validate env.json
     try:
         with lock_env(root, timeout=TIMEOUT):
-            data = json_parser.loads(env_file.read_text(encoding="utf-8"))
-            if not isinstance(data, dict):
+            data = _read_env_metadata(root)
+            if ENV_LAYOUT_KEY not in data:
                 return False
-            Environment.JSON.model_validate(data)
+            core, _ = _split_env_metadata(data)
+            Environment.JSON.model_validate(core)
+
+            # validate persisted layout metadata while the env lock is held.
+            Config.load(root)
             return True
     except Exception:
         return False
@@ -1280,210 +1400,6 @@ class Image(BaseModel):
         return container
 
 
-class Containerfile:
-    """Emit a formatted Containerfile that orchestrates the build process for Bertrand
-    images.
-    """
-    # pylint: disable=line-too-long, missing-function-docstring, missing-return-doc
-    # pylint: disable=unused-argument
-
-    def render(self, env: Environment) -> str:
-        return rf"""# Bertrand requires a minimal set of arguments to be provided at compile time, which
-# are baked into its reproducible images to avoid lengthy recompilation.  These
-# arguments may be overridden by passing `<arg>=<value>` options to the
-# `bertrand build`, `bertrand start`, or `bertrand enter` commands, which are then
-# forwarded to this Containerfile.  Otherwise, the default values will be used.
-
-# toolchain version to install (defaults to host Bertrand version)
-ARG BERTRAND={__version__}
-
-# enable stack traces + debug assertions to prevent undefined behavior
-ARG DEBUG=true
-
-# include developer tools (language servers, sanitizers, debuggers, AI assistants) in base image
-ARG DEV=true
-
-# number of hardware threads for concurrent runtime (>= 1, defaults to host CPU count)
-ARG CPUS={os.cpu_count() or 1}
-
-# pull base Bertrand image with the specified configuration
-FROM bertrand:${{BERTRAND}}.${{DEBUG}}.${{DEV}}.${{CPUS}}.{getpagesize() // 1024}
-
-# set cwd to the mounted environment directory
-WORKDIR {str(MOUNT)}
-
-# set up incremental builds
-ENV UV_CACHE_DIR={CACHES}/uv
-ENV BERTRAND_CACHE={CACHES}/bertrand
-ENV CCACHE_DIR={CACHES}/ccache
-ENV PIP_DISABLE_PIP_VERSION_CHECK=1
-COPY . {str(MOUNT)}
-
-# you can extend this file in order to create a reproducible image that others can pull
-# from in their own Dockerfiles.  For example:
-
-RUN --mount=type=cache,target={CACHES}/uv,sharing=locked \
-    --mount=type=cache,target={CACHES}/bertrand,sharing=locked \
-    --mount=type=cache,target={CACHES}/ccache,sharing=locked \
-    --mount=type=cache,target=/opt/conan,sharing=locked \
-    bertrand build
-
-# A `bertrand build` command of that form will incrementally compile the contents of
-# the local environment directory (WORKDIR) and install them into the base image as
-# Python packages, C++ modules, and/or executable binaries on the container's PATH.  If
-# you then upload this image to an external repository, downstream users will be able
-# to use `FROM <your-image>` in their own Containerfiles in order to inherit
-# Bertrand's toolchain along with your built artifacts and dependencies without needing
-# to recompile them from scratch.  This can be useful for large projects where build
-# time is significant, or which have external dependencies or build configurations that
-# are otherwise difficult to install.  Small projects without significant
-# configuration needs are encouraged to use the bundled package managers instead, and
-# leave this file alone.
-
-# In most cases, `bertrand build` and `pyproject.toml` is all you need.
-# C++ tooling rules are sourced from `[tool.conan]`, `[tool.clang-format]`,
-# `[tool.clang-tidy]`, and `[tool.clangd]` in pyproject.toml, then emitted as generated
-# `.clang-*` files at command runtime.  `pyproject.toml` is the single source of truth
-# for dependencies and tooling configuration across both languages.  If you'd like to
-# add your own tools outside of `pyproject.toml`, you can still use raw `uv` or
-# `apt-get` commands directly in this file (although doing so is discouraged).  For
-# example:
-# RUN uv pip install <tool1> <tool2>
-# RUN apt-get update && apt-get install -y --no-install-recommends <pkg1> <pkg2>
-
-# `sleep infinity` is used to keep the container alive indefinitely after startup, so
-# that users can `bertrand enter` into it and use it as a normal shell environment.
-# You can change this to run a different command or entry point if you'd like, but be
-# aware that doing so may interfere with `bertrand enter` and other runtime commands.
-ENTRYPOINT ["sleep", "infinity"]
-"""
-
-
-class Containerignore:
-    """Emit a formatted .containerignore that filters files and directories from the
-    build context for Bertrand images.
-    """
-    # pylint: disable=line-too-long, missing-function-docstring, missing-return-doc
-    # pylint: disable=unused-argument
-
-    def render(self, env: Environment) -> str:
-        return r"""# Bertrand internal state
-.bertrand/
-**/.bertrand/
-
-# Python
-__pycache__/
-*.py[cod]
-*.egg-info/
-.dist/
-.build/
-.eggs/
-.venv/
-venv/
-
-# C/C++
-build/
-out/
-*.o
-*.obj
-*.a
-*.lib
-*.so
-*.dylib
-*.dll
-
-# VCS / IDE
-.git/
-.gitignore
-.vscode/
-.idea/
-.DS_Store
-"""
-
-
-@dataclass(frozen=True)
-class PyProject:
-    """Emit a formatted pyproject.toml that configures the build system for Bertrand's
-    pip-based build process.
-    """
-    # pylint: disable=line-too-long, missing-function-docstring, missing-return-doc
-    # pylint: disable=unused-argument
-
-    shell: str = DEFAULT_SHELL
-    code: str = DEFAULT_EDITOR
-    agent: str = DEFAULT_AGENT
-    assist: str = DEFAULT_ASSIST
-
-    def __post_init__(self) -> None:
-        if self.shell not in SHELLS:
-            raise KeyError(f"unsupported shell: {self.shell}")
-        if self.code not in EDITORS:
-            raise KeyError(f"unsupported code command: {self.code}")
-        if self.agent not in AGENTS:
-            raise KeyError(f"unsupported agent: {self.agent}")
-        if self.assist not in ASSISTS:
-            raise KeyError(f"unsupported assist: {self.assist}")
-
-    def render(self, env: Environment) -> str:
-        project_name = sanitize_name(env.root.name, replace="-").lower()
-        if not project_name:
-            project_name = "bertrand-project"
-
-        return f"""[build-system]
-requires = ["setuptools>=69", "wheel"]
-build-backend = "setuptools.build_meta"
-
-[project]
-name = "{project_name}"
-version = "0.1.0"
-description = "Bertrand project"
-readme = "README.md"
-requires-python = ">=3.12"
-dependencies = []
-
-[tool.bertrand]
-shell = "{self.shell}"
-code = "{self.code}"
-agent = "{self.agent}"
-assist = "{self.assist}"
-
-[tool.clang-format]
-style = {{ BasedOnStyle = "LLVM", IndentWidth = 4, ColumnLimit = 100 }}
-
-[tool.clang-tidy]
-checks = [
-    "clang-analyzer-*",
-    "bugprone-*",
-    "performance-*",
-    "readability-*",
-]
-warnings_as_errors = []
-header_filter_regex = ".*"
-options = {{}}
-
-[tool.clangd]
-arguments = [
-    "--background-index",
-    "--clang-tidy",
-    "--completion-style=detailed",
-    "--header-insertion=iwyu",
-]
-
-[tool.ruff]
-line-length = 100
-target-version = "py312"
-
-[tool.ruff.lint]
-select = ["E", "F", "I", "B", "UP"]
-
-[tool.ty]
-
-[tool.pytest.ini_options]
-addopts = "-q"
-testpaths = ["tests"]
-"""
-
-
 class Environment:
     """On-disk metadata representing environment-level data structures, which map from
     human-readable, stable tags to the corresponding images and containers built within
@@ -1509,25 +1425,6 @@ class Environment:
         An absolute root path to the environment directory.  This is not stored in the
         on-disk JSON in order to allow relocation of the environment directory..
     """
-    class Renderer(Protocol):
-        """A class protocol representing a renderer for configuration files in the
-        environment directory.  These are used to render content for the
-        `Containerfile`, `.containerignore`, and `pyproject.toml` files.
-        """
-        def render(self, env: Environment) -> str:
-            """Generate the content to write to the corresponding configuration file.
-
-            Parameters
-            ----------
-            env : Environment
-                The parent environment in which to place the configuration file.
-
-            Returns
-            -------
-            str
-                The formatted content of the configuration file.
-            """
-
     class JSON(BaseModel):
         """Pydantic model representing JSON metadata for a Bertrand environment."""
         model_config = ConfigDict(extra="forbid", validate_assignment=True)
@@ -1570,83 +1467,6 @@ class Environment:
         self._lock = lock_env(self.root, timeout=timeout)
         self._entered = 0
 
-    @classmethod
-    def init(
-        cls,
-        root: Path,
-        *,
-        containerfile: Environment.Renderer,
-        containerignore: Environment.Renderer,
-        pyproject: Environment.Renderer,
-    ) -> Environment:
-        """Initialize a new environment at the given root path with the specified
-        defaults.  Does nothing if the environment is already initialized.
-
-        Parameters
-        ----------
-        root : Path
-            The root path of the environment directory to initialize.  This directory
-            must not already exist, and its parent directory must be writable.
-        containerfile : Environment.Renderer
-            A renderer for the default `Containerfile` configuration file, which
-            defines the base image and build instructions for the environment's
-            compiled images if no custom `Containerfile` is present in the environment
-            directory.
-        containerignore : Environment.Renderer
-            A renderer for the default `.containerignore` configuration file, which
-            defines files and directories to ignore when building the environment's
-            compiled images if no custom `.containerignore` is present in the
-            environment directory.
-        pyproject : Environment.Renderer
-            A renderer for the default `pyproject.toml` configuration file, which
-            defines the Python dependencies and build configuration for the
-            environment if no custom `pyproject.toml` is present in the environment
-            directory.
-
-        Returns
-        -------
-        Environment
-            The initialized `Environment` object with the specified root.
-            Note that the result is disengaged until it is acquired as a context
-            manager, which synchronizes its state.
-
-        Raises
-        ------
-        KeyError
-            If the configured defaults in the given renderers are unsupported.
-        """
-        root = root.expanduser().resolve()
-        with lock_env(root, timeout=TIMEOUT):
-            # init env.json
-            env = cls(root)
-            if not _env_file(root).exists():
-                env._json = env.JSON(
-                    version=VERSION,
-                    id=uuid.uuid4().hex,
-                    tags={},
-                )
-                atomic_write_text(
-                    _env_file(env.root),
-                    json_parser.dumps(env._json.model_dump(mode="json"), indent=2) + "\n"
-                )
-
-            # init Containerfile
-            if not env.container_file.exists():
-                env.container_file.parent.mkdir(parents=True, exist_ok=True)
-                atomic_write_text(env.container_file, containerfile.render(env))
-
-            # init .containerignore
-            if not env.container_ignore.exists():
-                env.container_ignore.parent.mkdir(parents=True, exist_ok=True)
-                atomic_write_text(env.container_ignore, containerignore.render(env))
-
-            # init pyproject.toml
-            if not env.pyproject_file.exists():
-                env.pyproject_file.parent.mkdir(parents=True, exist_ok=True)
-                atomic_write_text(env.pyproject_file, pyproject.render(env))
-
-            return env
-
     def __enter__(self) -> Environment:
         # NOTE: lock order is registry > env lock to avoid deadlocks
         if self._entered == 0:
@@ -1665,13 +1485,18 @@ class Environment:
 
         try:
             # try to load existing metadata if possible
-            env_file = _env_file(self.root)
-            if not env_file.exists():
-                raise FileNotFoundError(f"environment metadata file not found: {env_file}")
-            data = json_parser.loads(env_file.read_text(encoding="utf-8"))
-            if not isinstance(data, dict):
-                raise ValueError("environment metadata must be a JSON mapping")
-            self._json = self.JSON.model_validate(data)
+            data = _read_env_metadata(self.root)
+            if ENV_LAYOUT_KEY not in data:
+                raise OSError(
+                    f"missing '{ENV_LAYOUT_KEY}' in environment metadata at "
+                    f"{_env_file(self.root)}"
+                )
+
+            core, _ = _split_env_metadata(data)
+            self._json = self.JSON.model_validate(core)
+
+            # Ensure layout metadata is valid while the env lock is held.
+            Config.load(self.root)
             return self
 
         except Exception as err:
@@ -1691,11 +1516,14 @@ class Environment:
         try:
             env_dir = _env_dir(self.root)
             if self._entered == 1 and env_dir.exists():
-                # write changes
+                # write validated core metadata while preserving non-core env.json keys.
                 self._json = self.JSON.model_validate(self._json.model_dump(mode="python"))
+                current = _read_env_metadata(self.root, missing_ok=True)
+                _, extras = _split_env_metadata(current)
+                merged = _merge_env_metadata(self._json.model_dump(mode="json"), extras)
                 atomic_write_text(
                     _env_file(self.root),
-                    json_parser.dumps(self._json.model_dump(mode="json"), indent=2) + "\n"
+                    json_parser.dumps(merged, indent=2) + "\n"
                 )
 
         # always release the lock and local context depth
@@ -2415,18 +2243,18 @@ class Enter(_Command):
                 f"unable to start container '{container_tag}' in image '{image_tag}'"
             )
 
-        # load shell command from pyproject.toml
-        with Config(env.root) as config:
-            shell_name = config["tool", "bertrand", "shell"]
+        # load shell command from normalized config snapshot
+        with Config.load(env.root) as config:
+            shell_name = config["shell"]
         if not isinstance(shell_name, str):
-            raise OSError("'tool.bertrand.shell' in pyproject.toml must be a string")
+            raise OSError("'shell' in config snapshot must be a string")
         shell_name = shell_name.strip()
         if not shell_name:
-            raise OSError("'tool.bertrand.shell' in pyproject.toml cannot be empty")
+            raise OSError("'shell' in config snapshot cannot be empty")
         shell = SHELLS.get(shell_name)
         if shell is None:
             raise OSError(
-                f"unsupported 'tool.bertrand.shell' in pyproject.toml: '{shell_name}'\n"
+                f"unsupported shell in config snapshot: '{shell_name}'\n"
                 f"must be one of: {', '.join(SHELLS.keys())}"
             )
 
