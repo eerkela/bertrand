@@ -1,0 +1,77 @@
+{
+  "folders": [
+    {
+      "path": "{{ mount_path }}"
+    }
+  ],
+  "settings": {
+    "C_Cpp.intelliSenseEngine": "disabled",
+    "clangd.path": "clangd",
+    "[python]": {
+      "editor.defaultFormatter": "charliermarsh.ruff",
+      "editor.formatOnSave": true,
+      "editor.codeActionsOnSave": {
+        "source.fixAll.ruff": "explicit",
+        "source.organizeImports.ruff": "explicit"
+      }
+    },
+    "ty.serverMode": "languageServer",
+    "ty.disableLanguageServices": true,
+    "python.testing.pytestEnabled": true,
+    "python.testing.unittestEnabled": false,
+    "python.testing.pytestPath": "pytest",
+    "python.testing.pytestArgs": [
+      "."
+    ]
+  },
+  "extensions": {
+    "recommendations": [
+      "ms-vscode-remote.remote-containers",
+      "llvm-vs-code-extensions.vscode-clangd",
+      "ms-python.python",
+      "charliermarsh.ruff",
+      "astral-sh.ty"
+    ]
+  },
+  "tasks": {
+    "version": "2.0.0",
+    "tasks": [
+      {
+        "label": "Bertrand: pytest",
+        "type": "shell",
+        "command": "pytest -q",
+        "options": {
+          "cwd": "${workspaceFolder}"
+        },
+        "problemMatcher": []
+      },
+      {
+        "label": "Bertrand: ruff check",
+        "type": "shell",
+        "command": "ruff check .",
+        "options": {
+          "cwd": "${workspaceFolder}"
+        },
+        "problemMatcher": []
+      },
+      {
+        "label": "Bertrand: ruff format",
+        "type": "shell",
+        "command": "ruff format .",
+        "options": {
+          "cwd": "${workspaceFolder}"
+        },
+        "problemMatcher": []
+      },
+      {
+        "label": "Bertrand: ty check",
+        "type": "shell",
+        "command": "ty check .",
+        "options": {
+          "cwd": "${workspaceFolder}"
+        },
+        "problemMatcher": []
+      }
+    ]
+  }
+}

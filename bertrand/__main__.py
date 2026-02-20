@@ -34,8 +34,6 @@ from .env.pipeline import (
 )
 from .env.container import Environment
 from .env.config import (
-    AGENTS,
-    ASSISTS,
     ENV_LAYOUT_KEY,
     MOUNT,
     Config,
@@ -215,34 +213,8 @@ class External:
                 choices=INIT_CODE_CHOICES,
                 default=INIT_CODE_DEFAULT,
                 help=
-                    "The text editor to launch when running 'bertrand code' within "
-                    "the environment.  Note that the editor command is always invoked "
-                    "on the host system (rather than inside a container), and will be "
-                    "rooted at the environment directory.  Bertrand also attempts to "
-                    "mount the container's local toolchain (including LSPs, AI "
-                    "assistants, linters, etc.) to the editor via remote development "
-                    "extensions, if supported.  Currently only supports vscode, but "
-                    "other editors may be added in the future.",
-            )
-            command.add_argument(
-                "--agent",
-                nargs=1,
-                default=["none"],
-                choices=tuple(AGENTS),
-                help=
-                    "AI coding agent to recommend in the editor workspace.  This "
-                    "controls extension recommendations only; it does not install or "
-                    "start any runtime services.",
-            )
-            command.add_argument(
-                "--assist",
-                nargs=1,
-                default=["none"],
-                choices=tuple(ASSISTS),
-                help=
-                    "AI assistant integration to recommend in the editor workspace.  "
-                    "This controls extension recommendations only; it does not install "
-                    "or start any runtime services.",
+                    "Editor integration capability to include.  Use 'none' to disable "
+                    "editor capability entirely (default: vscode).",
             )
 
         def build(self) -> None:
@@ -898,8 +870,6 @@ class External:
             env=env,
             image_tag=image_tag,
             container_tag=container_tag,
-            agent=args.agent[0],
-            assist=args.assist[0],
             profile=profile,
             capabilities=cast(JSONValue, capabilities),
         )

@@ -51,103 +51,16 @@ assert MOUNT.is_absolute()
 
 
 # CLI options that affect template rendering
-AGENTS: dict[str, tuple[str, ...]] = {
-    "none": (),
-    "claude": ("anthropic.claude-code",),
-    "codex": ("openai.chatgpt",),
-}
-ASSISTS: dict[str, tuple[str, ...]] = {
-    "none": (),
-    "copilot": ("GitHub.copilot", "GitHub.copilot-chat"),
-}
-EDITORS: dict[str, str] = {
-    "vscode": "code",
-}
 SHELLS: dict[str, tuple[str, ...]] = {
     "bash": ("bash", "-l"),
 }
-DEFAULT_AGENT: str = "none"
-DEFAULT_ASSIST: str = "none"
-DEFAULT_EDITOR: str = "vscode"
 DEFAULT_SHELL: str = "bash"
-if DEFAULT_AGENT not in AGENTS:
-    raise RuntimeError(f"default agent is unsupported: {DEFAULT_AGENT}")
-if DEFAULT_ASSIST not in ASSISTS:
-    raise RuntimeError(f"default assist is unsupported: {DEFAULT_ASSIST}")
-if DEFAULT_EDITOR not in EDITORS:
-    raise RuntimeError(f"default editor is unsupported: {DEFAULT_EDITOR}")
 if DEFAULT_SHELL not in SHELLS:
     raise RuntimeError(f"default shell is unsupported: {DEFAULT_SHELL}")
 
 
-# TODO: would it be better to place these vscode managed workspace details into a
-# template and render it on init only?
-
-# Resource IDs and defaults for editor-specific managed artifacts.
+# Resource IDs for editor-specific resources.
 VSCODE_WORKSPACE_RESOURCE_ID: str = "vscode-workspace"
-_VSCODE_REMOTE_EXTENSION: str = "ms-vscode-remote.remote-containers"
-_VSCODE_CLANGD_EXTENSION: str = "llvm-vs-code-extensions.vscode-clangd"
-_VSCODE_PYTHON_EXTENSION: str = "ms-python.python"
-_VSCODE_RUFF_EXTENSION: str = "charliermarsh.ruff"
-_VSCODE_TY_EXTENSION: str = "astral-sh.ty"
-_VSCODE_BASE_RECOMMENDED_EXTENSIONS: tuple[str, ...] = (
-    _VSCODE_REMOTE_EXTENSION,
-    _VSCODE_CLANGD_EXTENSION,
-    _VSCODE_PYTHON_EXTENSION,
-    _VSCODE_RUFF_EXTENSION,
-    _VSCODE_TY_EXTENSION,
-)
-_VSCODE_MANAGED_SETTINGS: dict[str, Any] = {
-    "C_Cpp.intelliSenseEngine": "disabled",
-    "clangd.path": "clangd",
-    "[python]": {
-        "editor.defaultFormatter": _VSCODE_RUFF_EXTENSION,
-        "editor.formatOnSave": True,
-        "editor.codeActionsOnSave": {
-            "source.fixAll.ruff": "explicit",
-            "source.organizeImports.ruff": "explicit",
-        },
-    },
-    "ty.serverMode": "languageServer",
-    "ty.disableLanguageServices": True,
-    "python.testing.pytestEnabled": True,
-    "python.testing.unittestEnabled": False,
-    "python.testing.pytestPath": "pytest",
-    "python.testing.pytestArgs": ["."],
-}
-_VSCODE_MANAGED_TASKS: dict[str, Any] = {
-    "version": "2.0.0",
-    "tasks": [
-        {
-            "label": "Bertrand: pytest",
-            "type": "shell",
-            "command": "pytest -q",
-            "options": {"cwd": "${workspaceFolder}"},
-            "problemMatcher": [],
-        },
-        {
-            "label": "Bertrand: ruff check",
-            "type": "shell",
-            "command": "ruff check .",
-            "options": {"cwd": "${workspaceFolder}"},
-            "problemMatcher": [],
-        },
-        {
-            "label": "Bertrand: ruff format",
-            "type": "shell",
-            "command": "ruff format .",
-            "options": {"cwd": "${workspaceFolder}"},
-            "problemMatcher": [],
-        },
-        {
-            "label": "Bertrand: ty check",
-            "type": "shell",
-            "command": "ty check .",
-            "options": {"cwd": "${workspaceFolder}"},
-            "problemMatcher": [],
-        },
-    ],
-}
 
 
 # In-container environment variables for relevant configuration, for use in upstream
@@ -732,22 +645,8 @@ class PyProject(Resource):
             supported=SHELLS,
             description="shell",
         )
-        agent = self._require_choice(
-            _require_str_value(bertrand.get("agent"), where="tool.bertrand.agent"),
-            where="tool.bertrand.agent",
-            supported=AGENTS,
-            description="agent",
-        )
-        assist = self._require_choice(
-            _require_str_value(bertrand.get("assist"), where="tool.bertrand.assist"),
-            where="tool.bertrand.assist",
-            supported=ASSISTS,
-            description="assist",
-        )
         return {
             "shell": shell,
-            "agent": agent,
-            "assist": assist,
         }
 
 
@@ -903,25 +802,6 @@ class Clangd(Resource):
     """
     # pylint: disable=missing-function-docstring, unused-argument, missing-return-doc
 
-    def parse(self, config: Config) -> dict[str, Any] | None:
-        section = _load_tool_section(
-            config,
-            "clangd",
-            resource_id="clangd",
-            required=False,
-        )
-        if section is None or "arguments" not in section:
-            return None
-
-        return {
-            "clangd": {
-                "arguments": _require_str_list(
-                    section["arguments"],
-                    where="tool.clangd.arguments",
-                ),
-            },
-        }
-
     def render(self, config: Config) -> str | None:
         section = _load_tool_section(
             config,
@@ -961,42 +841,13 @@ class Clangd(Resource):
         return _dump_yaml(payload, resource_id="clangd")
 
 
-@resource(VSCODE_WORKSPACE_RESOURCE_ID, kind="file")
+@resource(
+    VSCODE_WORKSPACE_RESOURCE_ID,
+    kind="file",
+    template="core/vscode-workspace/2026-02-15",
+)
 class VSCodeWorkspace(Resource):
     """A managed VS Code workspace file used by host-side editor attach flows."""
-    # pylint: disable=missing-function-docstring, unused-argument, missing-return-doc
-
-    def render(self, config: Config) -> str | None:
-        recommended_extensions: list[str] = []
-        seen: set[str] = set()
-        for ext in (
-            *_VSCODE_BASE_RECOMMENDED_EXTENSIONS,
-            *AGENTS[config["agent"]],
-            *ASSISTS[config["assist"]],
-        ):
-            if ext in seen:
-                continue
-            seen.add(ext)
-            recommended_extensions.append(ext)
-
-        settings = dict(_VSCODE_MANAGED_SETTINGS)
-        clangd_cfg = config["clangd"] if "clangd" in config else {}
-        if isinstance(clangd_cfg, Mapping) and "arguments" in clangd_cfg:
-            clangd_arguments = _require_str_list(
-                clangd_cfg["arguments"],
-                where="clangd.arguments",
-            )
-        else:
-            clangd_arguments = []
-        settings["clangd.arguments"] = clangd_arguments
-
-        payload = {
-            "folders": [{"path": str(MOUNT)}],
-            "settings": settings,
-            "extensions": {"recommendations": recommended_extensions},
-            "tasks": _VSCODE_MANAGED_TASKS,
-        }
-        return json.dumps(payload, indent=2, sort_keys=True) + "\n"
 
 
 # NOTE: "*" indicates a baseline, while other keys act as overlay diffs that merge on
@@ -1071,8 +922,6 @@ class Config:
         manifest: dict[str, Any] = field()
         paths: dict[str, str] = field()
         project_name: str = field()
-        agent: str = field()
-        assist: str = field()
         shell: str = field(default=DEFAULT_SHELL)
         bertrand_version: str = field(default=__version__)
         cpus: int = field(default_factory=lambda: os.cpu_count() or 1)
@@ -1512,8 +1361,6 @@ class Config:
                 for resource_id in sorted(self.manifest.resources)
             },
             project_name=sanitize_name(self.root.name, replace="-"),
-            agent=_expect_str("agent", ctx),
-            assist=_expect_str("assist", ctx),
         )
 
     def render(self, ctx: Pipeline.InProgress) -> dict[str, str]:

@@ -479,21 +479,27 @@ class CodeServer:
         self._ensure_running_container(container_bin, container_id, deadline=deadline)
         self._ensure_remote_containers_extension(editor_bin, deadline=deadline)
         try:
-            with Config.load(env_root) as config:
-                if "vscode" not in config.capabilities:
-                    raise CodeError(
-                        "invalid_config",
-                        "environment is missing required 'vscode' capability for "
-                        "host-side editor attach"
-                    )
-                if VSCODE_WORKSPACE_RESOURCE_ID not in config.manifest.resources:
-                    raise CodeError(
-                        "invalid_config",
-                        "layout manifest is missing required VS Code workspace resource: "
-                        f"'{VSCODE_WORKSPACE_RESOURCE_ID}'"
-                    )
-                workspace = config.manifest.resources[VSCODE_WORKSPACE_RESOURCE_ID].path
-                config.sync()
+            config = Config.load(env_root)
+            if "vscode" not in config.capabilities:
+                raise CodeError(
+                    "invalid_config",
+                    "environment is missing required 'vscode' capability for "
+                    "host-side editor attach"
+                )
+            if VSCODE_WORKSPACE_RESOURCE_ID not in config.manifest.resources:
+                raise CodeError(
+                    "invalid_config",
+                    "layout manifest is missing required VS Code workspace resource: "
+                    f"'{VSCODE_WORKSPACE_RESOURCE_ID}'"
+                )
+            workspace = config.manifest.resources[VSCODE_WORKSPACE_RESOURCE_ID].path
+            workspace_path = env_root / workspace
+            if not workspace_path.exists() or not workspace_path.is_file():
+                raise CodeError(
+                    "invalid_config",
+                    "missing VS Code workspace file at "
+                    f"{workspace_path}; rerun `bertrand init` to regenerate it."
+                )
         except CodeError:
             raise
         except OSError as err:
@@ -630,13 +636,13 @@ def _service_path(key: str, path: str) -> str:
 def _render_code_service(env_root: Path) -> str:
     # Editor integration is capability-driven.  For now, host attach is implemented
     # only for vscode-capable environments.
-    with Config.load(env_root) as config:
-        if "vscode" not in config.capabilities:
-            raise CodeError(
-                "invalid_config",
-                "environment is missing required 'vscode' capability for host-side "
-                "editor attach"
-            )
+    config = Config.load(env_root)
+    if "vscode" not in config.capabilities:
+        raise CodeError(
+            "invalid_config",
+            "environment is missing required 'vscode' capability for host-side "
+            "editor attach"
+        )
 
     # find RPC server, editor, and container executables on PATH
     rpc_bin = shutil.which("bertrand-code-rpc")
