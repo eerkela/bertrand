@@ -50,17 +50,13 @@ MOUNT: PosixPath = PosixPath("/env")
 assert MOUNT.is_absolute()
 
 
-# CLI options that affect template rendering
+# CLI options that affect template rendering in the `init` phase
 SHELLS: dict[str, tuple[str, ...]] = {
     "bash": ("bash", "-l"),
 }
 DEFAULT_SHELL: str = "bash"
 if DEFAULT_SHELL not in SHELLS:
     raise RuntimeError(f"default shell is unsupported: {DEFAULT_SHELL}")
-
-
-# Resource IDs for editor-specific resources.
-VSCODE_WORKSPACE_RESOURCE_ID: str = "vscode-workspace"
 
 
 # In-container environment variables for relevant configuration, for use in upstream
@@ -194,11 +190,7 @@ def resource(
     return _decorator
 
 
-@resource(
-    VSCODE_WORKSPACE_RESOURCE_ID,
-    kind="file",
-    template="core/vscode-workspace/2026-02-15",
-)
+@resource("vscode-workspace", kind="file", template="core/vscode-workspace/2026-02-15")
 @resource("containerfile", kind="file", template="core/containerfile/2026-02-15")
 @resource("containerignore", kind="file", template="core/containerignore/2026-02-15")
 @resource("docs", kind="dir")
@@ -859,7 +851,7 @@ CAPABILITIES: dict[str, dict[str, dict[str, PosixPath]]] = {
     },
     "vscode": {
         "*": {
-            VSCODE_WORKSPACE_RESOURCE_ID: PosixPath(".vscode/bertrand.code-workspace"),
+            "vscode-workspace": PosixPath(".vscode/bertrand.code-workspace"),
         },
         "flat": {},
         "src": {},
@@ -1069,13 +1061,10 @@ class Config:
                     )
 
         # validate cross-resource dependencies for active capabilities.
-        if (
-            VSCODE_WORKSPACE_RESOURCE_ID in merged_paths and
-            "pyproject" not in merged_paths
-        ):
+        if "vscode-workspace" in merged_paths and "pyproject" not in merged_paths:
             raise ValueError(
-                "resource dependency error: "
-                f"'{VSCODE_WORKSPACE_RESOURCE_ID}' requires 'pyproject' to be present"
+                "resource dependency error: 'vscode-workspace' requires 'pyproject' "
+                "to be present"
             )
 
         # materialize manifest resources from catalog defaults

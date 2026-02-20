@@ -9,7 +9,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
-from typing import Callable, cast
+from typing import cast
 
 from .env.code import CodeError, open_editor
 from .env.pipeline import (
@@ -50,11 +50,6 @@ RUNTIME_TAG_KEYS: tuple[str, str, str] = (
     "BERTRAND_IMAGE",
     "BERTRAND_CONTAINER",
 )
-# Temporary init defaults until profile/capability CLI expansion is finalized.
-INIT_LANG_CHOICES: tuple[str, str] = ("python", "cpp")
-INIT_LANG_DEFAULTS: tuple[str, str] = ("python", "cpp")
-INIT_CODE_CHOICES: tuple[str, str] = ("vscode", "none")
-INIT_CODE_DEFAULT: str = "vscode"
 
 
 # # create swap memory for large builds
@@ -160,6 +155,25 @@ class External:
                 prog="bertrand",
                 metavar="(command)",
             )
+            self.version()
+            self.init()
+            self.build()
+            self.start()
+            self.enter()
+            self.code()
+            self.run()
+            self.stop()
+            self.pause()
+            self.resume()
+            self.restart()
+            self.prune()
+            self.rm()
+            self.ls()
+            self.monitor()
+            self.top()
+            self.log()
+            self.journal()
+            self.clean()
 
         def version(self) -> None:
             """Add the 'version' query to the parser."""
@@ -171,8 +185,6 @@ class External:
 
         def init(self) -> None:
             """Add the 'init' command to the parser."""
-            # TODO: set the choices/defaults based dynamically based on the contents
-            # of the global config maps, rather than hardcoding them here.
             command = self.commands.add_parser(
                 "init",
                 help=
@@ -184,7 +196,7 @@ class External:
             )
             command.add_argument(
                 "path",
-                nargs=1,
+                metavar="ENV",
                 help=
                     "A path to the specified environment directory.  This may be an "
                     "absolute or relative path, and must not point to an existing "
@@ -210,12 +222,13 @@ class External:
             )
             command.add_argument(
                 "--code",
-                choices=INIT_CODE_CHOICES,
-                default=INIT_CODE_DEFAULT,
+                choices=("vscode", "none"),
+                default="vscode",
                 help=
                     "Editor integration capability to include.  Use 'none' to disable "
                     "editor capability entirely (default: vscode).",
             )
+            command.set_defaults(handler=External.init)
 
         def build(self) -> None:
             """Add the 'build' command to the parser."""
@@ -228,7 +241,7 @@ class External:
             )
             command.add_argument(
                 "path",
-                nargs=1,
+                metavar="ENV[:IMAGE]",
                 help=
                     "A path to the specified environment directory.  This may be an "
                     "absolute or relative path, and must point to an environment "
@@ -242,6 +255,7 @@ class External:
             command.add_argument(
                 "args",
                 nargs=argparse.REMAINDER,
+                metavar="COMPILE_ARGS",
                 help=
                     "Containerfile arguments to use when compiling the the image.  If "
                     "none are given, then the image will be built with the default "
@@ -250,6 +264,7 @@ class External:
                     "can serve as a stable identifier for the specified arguments, "
                     "even if the resulting image is rebuilt in the future.",
             )
+            command.set_defaults(handler=External.build)
 
         def start(self) -> None:
             """Add the 'start' command to the parser."""
@@ -262,6 +277,7 @@ class External:
             command.add_argument(
                 "path",
                 nargs="?",
+                metavar="ENV[:IMAGE[:CONTAINER]]",
                 help=
                     "A path to the specified environment directory.  This may be an "
                     "absolute or relative path, and must point to an environment "
@@ -277,6 +293,7 @@ class External:
             command.add_argument(
                 "args",
                 nargs=argparse.REMAINDER,
+                metavar="CONTAINER_ARGS",
                 help=
                     "Additional arguments to pass to the 'podman create' command when "
                     "building the container.  If given, then a (possibly new) "
@@ -284,6 +301,7 @@ class External:
                     "will serve as a stable identifier for the specified arguments, "
                     "even if the resulting container is rebuilt in the future.",
             )
+            command.set_defaults(handler=External.start)
 
         def enter(self) -> None:
             """Add the 'enter' command to the parser."""
@@ -300,13 +318,14 @@ class External:
             )
             command.add_argument(
                 "path",
-                nargs=1,
+                metavar="ENV[:IMAGE[:CONTAINER]]",
                 help=
                     "A path to the specified environment directory.  If no image or "
                     "container tag is given, then the default container for the parent "
                     "environment or image will be used.  Otherwise, the container tag "
                     "must correspond to a previous 'bertrand start' command.",
             )
+            command.set_defaults(handler=External.enter)
 
         def run(self) -> None:
             """Add the 'run' command to the parser."""
@@ -320,7 +339,7 @@ class External:
             )
             command.add_argument(
                 "path",
-                nargs=1,
+                metavar="ENV[:IMAGE[:CONTAINER]]",
                 help=
                     "A path to the specified environment directory.  If no image or "
                     "container tag is given, then the default container for the parent "
@@ -330,6 +349,7 @@ class External:
             command.add_argument(
                 "cmd",
                 nargs=argparse.REMAINDER,
+                metavar="CMD",
                 help=
                     "The command to run within the environment context.  Note that "
                     "Bertrand makes no attempt to parse, validate, or sanitize the "
@@ -340,6 +360,7 @@ class External:
                     "remain insulated, but this is not guaranteed, and should not be "
                     "trusted.",
             )
+            command.set_defaults(handler=External.run)
 
         def stop(self) -> None:
             """Add the 'stop' command to the parser."""
@@ -357,6 +378,7 @@ class External:
             command.add_argument(
                 "path",
                 nargs="?",
+                metavar="ENV[:IMAGE[:CONTAINER]]",
                 help=
                     "A path to the specified environment directory.  This may be an "
                     "absolute or relative path, and must point to an environment "
@@ -377,6 +399,7 @@ class External:
                     "Duration (in seconds) to wait for a container to stop before "
                     "forcefully killing it (usually via a SIGKILL signal).",
             )
+            command.set_defaults(handler=External.stop)
 
         def pause(self) -> None:
             """Add the 'pause' command to the parser."""
@@ -394,8 +417,10 @@ class External:
             command.add_argument(
                 "path",
                 nargs="?",
+                metavar="ENV[:IMAGE[:CONTAINER]]",
                 help="The path to the environment directory to pause.",
             )
+            command.set_defaults(handler=External.pause)
 
         def resume(self) -> None:
             """Add the 'resume' command to the parser."""
@@ -409,6 +434,7 @@ class External:
             command.add_argument(
                 "path",
                 nargs="?",
+                metavar="ENV[:IMAGE[:CONTAINER]]",
                 help=
                     "A path to the specified environment directory.  This may be an "
                     "absolute or relative path, and must point to an environment "
@@ -421,6 +447,7 @@ class External:
                     "all paused Bertrand containers on the host system will be "
                     "resumed, after prompting the user to confirm.",
             )
+            command.set_defaults(handler=External.resume)
 
         def restart(self) -> None:
             """Add the 'restart' command to the parser."""
@@ -436,6 +463,7 @@ class External:
             command.add_argument(
                 "path",
                 nargs="?",
+                metavar="ENV[:IMAGE[:CONTAINER]]",
                 help=
                     "A path to the specified environment directory.  This may be an "
                     "absolute or relative path, and must point to an environment "
@@ -456,6 +484,7 @@ class External:
                     "Duration (in seconds) to wait for a container to stop before "
                     "forcefully killing it (usually via a SIGKILL signal).",
             )
+            command.set_defaults(handler=External.restart)
 
         def prune(self) -> None:
             """Add the 'prune' command to the parser."""
@@ -472,6 +501,7 @@ class External:
             command.add_argument(
                 "path",
                 nargs="?",
+                metavar="ENV[:IMAGE[:CONTAINER]]",
                 help=
                     "A path to the specified environment directory.  This may be an "
                     "absolute or relative path, and must point to an environment "
@@ -484,6 +514,7 @@ class External:
                     "given, then all stopped Bertrand containers on the host system "
                     "will be pruned, after prompting the user to confirm.",
             )
+            command.set_defaults(handler=External.prune)
 
         def rm(self) -> None:
             """Add the 'rm' command to the parser."""
@@ -498,6 +529,7 @@ class External:
             command.add_argument(
                 "path",
                 nargs="?",
+                metavar="ENV[:IMAGE[:CONTAINER]]",
                 help=
                     "A path to the specified environment directory.  This may be an "
                     "absolute or relative path, and must point to an environment "
@@ -521,6 +553,7 @@ class External:
                     "omitted, Bertrand will prevent deletion and exit with an error "
                     "instead.  Use with extreme caution.",
             )
+            command.set_defaults(handler=External.rm)
 
         def ls(self) -> None:
             """Add the 'ls' command to the parser."""
@@ -534,6 +567,7 @@ class External:
             command.add_argument(
                 "path",
                 nargs="?",
+                metavar="ENV[:IMAGE[:CONTAINER]]",
                 help=
                     "A path to the specified environment directory.  This may be an "
                     "absolute or relative path, and must point to an environment "
@@ -553,7 +587,8 @@ class External:
                     "Show Bertrand images in the current scope instead of containers "
                     "(which is the default).",
             )
-            command.add_argument(
+            status = command.add_mutually_exclusive_group()
+            status.add_argument(
                 "--running",
                 action="store_true",
                 help=
@@ -563,7 +598,7 @@ class External:
                     "'restarting' states.  An image is considered to be running if any "
                     "running container references it.",
             )
-            command.add_argument(
+            status.add_argument(
                 "--stopped",
                 action="store_true",
                 help=
@@ -580,6 +615,7 @@ class External:
                     "Output the list in indented JSON format.  If omitted, the list "
                     "will be printed as a human-readable table.",
             )
+            command.set_defaults(handler=External.ls)
 
         def monitor(self) -> None:
             """Add the 'monitor' command to the parser."""
@@ -593,6 +629,7 @@ class External:
             command.add_argument(
                 "path",
                 nargs="?",
+                metavar="ENV[:IMAGE[:CONTAINER]]",
                 help=
                     "A path to the specified environment directory.  This may be an "
                     "absolute or relative path, and must point to an environment "
@@ -623,6 +660,7 @@ class External:
                     "compatible with the '--interval' option, which must be set to 0 "
                     "if '--json' is used.",
             )
+            command.set_defaults(handler=External.monitor)
 
         def top(self) -> None:
             """Add the 'top' command to the parser."""
@@ -634,7 +672,7 @@ class External:
             )
             command.add_argument(
                 "path",
-                nargs=1,
+                metavar="ENV[:IMAGE[:CONTAINER]]",
                 help=
                     "A path to the specified environment directory.  This may be an "
                     "absolute or relative path, and must point to an environment "
@@ -643,6 +681,7 @@ class External:
                     "environment or image will be used.  Otherwise, the container tag "
                     "must correspond to a previous bertrand start' command.",
             )
+            command.set_defaults(handler=External.top)
 
         def log(self) -> None:
             """Add the 'log' command to the parser."""
@@ -654,7 +693,7 @@ class External:
             )
             command.add_argument(
                 "path",
-                nargs=1,
+                metavar="ENV[:IMAGE[:CONTAINER]]",
                 help=
                     "A path to the specified environment directory.  This may be an "
                     "absolute or relative path, and must point to an environment "
@@ -684,6 +723,7 @@ class External:
                     "'2024-01-01T00:00:00') and relative timestamps (e.g. '5m').  This "
                     "option has no effect if used in conjunction with '--images'.",
             )
+            command.set_defaults(handler=External.log)
             command.add_argument(
                 "--until",
                 type=str,
@@ -715,7 +755,7 @@ class External:
             )
             command.add_argument(
                 "path",
-                nargs=1,
+                metavar="ENV[:IMAGE[:CONTAINER]]",
                 help=
                     "A path to the specified environment directory.  This may be an "
                     "absolute or relative path, and must point to an environment "
@@ -727,6 +767,7 @@ class External:
                     "environment or image will be used.  Otherwise, the container tag "
                     "must correspond to a previous 'bertrand start' command.",
             )
+            command.set_defaults(handler=External.code)
 
         # TODO: freeze()
         # TODO: unfreeze()
@@ -749,7 +790,7 @@ class External:
             )
             command.add_argument(
                 "subcommand",
-                nargs=1,
+                metavar="COMMAND",
                 help=
                     "The command to dump the journal of.  This should correspond to "
                     "another 'bertrand' command (e.g. 'build', 'start', 'enter', etc.) "
@@ -758,6 +799,7 @@ class External:
                     "provide a limited form of logging in order to debug issues with "
                     "Bertrand itself."
             )
+            command.set_defaults(handler=External.journal)
 
         def clean(self) -> None:
             """Add the 'clean' command to the parser."""
@@ -782,6 +824,47 @@ class External:
                     "Bertrand images, containers, and the container engine itself.  "
                     "Use with caution.",
             )
+            command.set_defaults(handler=External.clean)
+
+        def _validate_args(self, args: argparse.Namespace) -> None:
+            command = args.command
+
+            if command == "build":
+                _, image_tag, container_tag = _parse(args.path)
+                if container_tag:
+                    self.root.error("build path cannot include a container tag")
+                if args.args and not image_tag:
+                    self.root.error(
+                        "build passthrough args require an explicit image tag in PATH "
+                        "(use ENV:IMAGE)"
+                    )
+                return
+
+            if command == "start":
+                _, _, container_tag = _parse(args.path)
+                if args.args and not container_tag:
+                    self.root.error(
+                        "start passthrough args require an explicit container tag in "
+                        "PATH (use ENV:IMAGE:CONTAINER)"
+                    )
+                return
+
+            if command == "monitor":
+                if args.json and args.interval != 0:
+                    self.root.error("monitor --json requires --interval=0")
+                return
+
+            if command == "log":
+                if args.images and (args.since is not None or args.until is not None):
+                    self.root.error("log --images cannot be combined with --since/--until")
+                return
+
+            if command == "journal":
+                if args.subcommand not in External.pipelines:
+                    self.root.error(
+                        f"invalid journal subcommand '{args.subcommand}'; must be one of: "
+                        f"{', '.join(sorted(External.pipelines))}"
+                    )
 
         def __call__(self) -> argparse.Namespace:
             """Run the command-line parser.
@@ -791,26 +874,9 @@ class External:
             argparse.Namespace
                 The parsed command-line arguments.
             """
-            self.version()
-            self.init()
-            self.build()
-            self.start()
-            self.enter()
-            self.code()
-            self.run()
-            self.stop()
-            self.pause()
-            self.resume()
-            self.restart()
-            self.prune()
-            self.rm()
-            self.ls()
-            self.monitor()
-            self.top()
-            self.log()
-            self.journal()
-            self.clean()
-            return self.root.parse_args()
+            args = self.root.parse_args()
+            self._validate_args(args)
+            return args
 
     @staticmethod
     def version(args: argparse.Namespace) -> None:
@@ -839,7 +905,7 @@ class External:
             allowed when initializing an environment directory, or if requested
             layout options differ from an existing manifest.
         """
-        env, image_tag, container_tag = _parse(args.path[0])
+        env, image_tag, container_tag = _parse(args.path)
         if env is None:
             raise OSError("environment path is required for init")
         if image_tag or container_tag:
@@ -850,7 +916,7 @@ class External:
 
         # resolve profile + capabilities
         profile = args.profile
-        langs = list(args.lang) if args.lang is not None else list(INIT_LANG_DEFAULTS)
+        langs = list(args.lang) if args.lang is not None else ["python", "cpp"]
         code_capability = args.code
         capabilities = _dedupe(
             langs + ([] if code_capability == "none" else [code_capability])
@@ -883,7 +949,7 @@ class External:
         args : argparse.Namespace
             The parsed command-line arguments.
         """
-        env, image_tag, container_tag = _parse(args.path[0])
+        env, image_tag, container_tag = _parse(args.path)
         on_build.do(
             env=env,
             image_tag=image_tag,
@@ -917,7 +983,7 @@ class External:
         args : argparse.Namespace
             The parsed command-line arguments.
         """
-        env, image_tag, container_tag = _parse(args.path[0])
+        env, image_tag, container_tag = _parse(args.path)
         on_enter.do(
             env=env,
             image_tag=image_tag,
@@ -933,7 +999,7 @@ class External:
         args : argparse.Namespace
             The parsed command-line arguments.
         """
-        env, image_tag, container_tag = _parse(args.path[0])
+        env, image_tag, container_tag = _parse(args.path)
         on_run.do(
             env=env,
             image_tag=image_tag,
@@ -1087,7 +1153,7 @@ class External:
         args : argparse.Namespace
             The parsed command-line arguments.
         """
-        env, image_tag, container_tag = _parse(args.path[0])
+        env, image_tag, container_tag = _parse(args.path)
         on_top.do(
             env=env,
             image_tag=image_tag,
@@ -1103,7 +1169,7 @@ class External:
         args : argparse.Namespace
             The parsed command-line arguments.
         """
-        env, image_tag, container_tag = _parse(args.path[0])
+        env, image_tag, container_tag = _parse(args.path)
         on_log.do(
             env=env,
             image_tag=image_tag,
@@ -1122,7 +1188,7 @@ class External:
         args : argparse.Namespace
             The parsed command-line arguments.
         """
-        env, image_tag, container_tag = _parse(args.path[0])
+        env, image_tag, container_tag = _parse(args.path)
         on_code.do(
             env=env,
             image_tag=image_tag,
@@ -1162,16 +1228,16 @@ class External:
         KeyError
             If the specified command is invalid or not recognized.
         """
-        pipe = External.pipelines.get(args.subcommand[0], None)
+        pipe = External.pipelines.get(args.subcommand, None)
         if pipe is None:
-            raise KeyError(f"Invalid subcommand '{args.subcommand[0]}'.")
+            raise KeyError(f"Invalid subcommand '{args.subcommand}'.")
 
         # load journal for the specified pipeline and dump it to stdout in JSON format
         with pipe:
             journal = pipe.state_dir / "journal.json"
             if not journal.exists():
                 print(
-                    f"bertrand: no journal found for '{args.subcommand[0]}'",
+                    f"bertrand: no journal found for '{args.subcommand}'",
                     file=sys.stderr
                 )
                 return
@@ -1232,36 +1298,13 @@ class External:
         ):
             _clean(pipe)
 
-    commands: dict[str, Callable[[argparse.Namespace], None]] = {
-        "version": version,
-        "init": init,
-        "build": build,
-        "start": start,
-        "enter": enter,
-        "code": code,
-        "run": run,
-        "stop": stop,
-        "pause": pause,
-        "resume": resume,
-        "restart": restart,
-        "prune": prune,
-        "rm": rm,
-        "ls": ls,
-        "monitor": monitor,
-        "top": top,
-        "log": log,
-        "journal": journal,
-        "clean": clean,
-    }
-
     def __call__(self) -> None:
         parser = External.Parser()
         args = parser()
-        command = External.commands.get(args.command, None)
-        if command is not None:
-            command(args)
-        else:
+        if args.command is None:
             parser.root.print_help()
+            return
+        args.handler(args)
 
 
 def inside_image() -> bool:
@@ -1321,6 +1364,12 @@ class Internal:
                 prog="bertrand",
                 metavar="(command)",
             )
+            self.version()
+            self.code()
+            self.build()
+            self.check()
+            self.test()
+            self.format()
 
         def version(self) -> None:
             """Add the 'version' query to the parser."""
@@ -1332,7 +1381,7 @@ class Internal:
 
         def code(self) -> None:
             """Add the 'code' command to the parser."""
-            self.commands.add_parser(
+            command = self.commands.add_parser(
                 "code",
                 help=
                     "Launch a text editor rooted at this container's environment "
@@ -1344,40 +1393,45 @@ class Internal:
                     "only supports vscode and its Remote Containers extension, but "
                     "other editors may be added in the future.",
             )
+            command.set_defaults(handler=Internal.code)
 
         def build(self) -> None:
             """Add the 'build' command to the parser."""
-            self.commands.add_parser(
+            command = self.commands.add_parser(
                 "build",
                 help=
                     "Build and install the current workspace into this container "
                     "using Bertrand's default 'uv install' command.",
             )
+            command.set_defaults(handler=Internal.build)
 
         def check(self) -> None:
             """Add the 'check' command to the parser."""
-            self.commands.add_parser(
+            command = self.commands.add_parser(
                 "check",
                 help=
                     "Run cross-language static checks for the current workspace: "
                     "Ruff, Ty, and clang-tidy (requires compile_commands.json).",
             )
+            command.set_defaults(handler=Internal.check)
 
         def test(self) -> None:
             """Add the 'test' command to the parser."""
-            self.commands.add_parser(
+            command = self.commands.add_parser(
                 "test",
                 help="Run the workspace test suite with pytest.",
             )
+            command.set_defaults(handler=Internal.test)
 
         def format(self) -> None:
             """Add the 'format' command to the parser."""
-            self.commands.add_parser(
+            command = self.commands.add_parser(
                 "format",
                 help=
                     "Run cross-language formatting for the current workspace: "
                     "Ruff and clang-format (requires compile_commands.json).",
             )
+            command.set_defaults(handler=Internal.format)
 
         def __call__(self) -> argparse.Namespace:
             """Run the command-line parser.
@@ -1387,12 +1441,6 @@ class Internal:
             argparse.Namespace
                 The parsed command-line arguments.
             """
-            self.version()
-            self.code()
-            self.build()
-            self.check()
-            self.test()
-            self.format()
             return self.root.parse_args()
 
     @staticmethod
@@ -1550,23 +1598,13 @@ class Internal:
         if result.returncode != 0:
             raise SystemExit(result.returncode)
 
-    commands: dict[str, Callable[[argparse.Namespace], None]] = {
-        "version": version,
-        "code": code,
-        "build": build,
-        "check": check,
-        "test": test,
-        "format": format,
-    }
-
     def __call__(self) -> None:
         parser = Internal.Parser()
         args = parser()
-        command = Internal.commands.get(args.command, None)
-        if command is not None:
-            command(args)
-        else:
+        if args.command is None:
             parser.root.print_help()
+            return
+        args.handler(args)
 
 
 def main() -> None:
