@@ -740,6 +740,7 @@ CACHES: str = "/tmp/.cache"
 TIMEOUT: int = 30
 ENV_REGISTRY_FILE = "env-registry.json"
 ENV_REGISTRY_LOCK = "env-registry.lock"
+ENV_REGISTRY_SYNTAX = 1
 ENV_CORE_KEYS: tuple[str, str, str] = ("version", "id", "tags")
 
 
@@ -773,6 +774,51 @@ def _registry_file() -> Path:
 
 def _registry_lock() -> Path:
     return on_init.state_dir / ENV_REGISTRY_LOCK
+
+
+def _load_registry_state() -> dict[str, Path]:
+    path = _registry_file()
+    raw = path.read_text(encoding="utf-8")
+    data = json_parser.loads(raw)
+    if not isinstance(data, dict):
+        raise ValueError("registry JSON must be an object")
+
+    syntax = data.get("syntax")
+    if syntax != ENV_REGISTRY_SYNTAX:
+        raise ValueError(
+            f"registry syntax mismatch: expected {ENV_REGISTRY_SYNTAX}, got {syntax}"
+        )
+
+    raw_owners = data.get("owners")
+    if not isinstance(raw_owners, dict):
+        raise ValueError("registry JSON must define an 'owners' object")
+
+    owners: dict[str, Path] = {}
+    for raw_uuid, raw_path in raw_owners.items():
+        if not isinstance(raw_uuid, str):
+            raise ValueError(f"registry owner UUID must be a string: {raw_uuid}")
+        env_uuid = _check_uuid_str(raw_uuid)
+        if not isinstance(raw_path, str):
+            raise ValueError(f"registry owner path must be a string: {raw_path}")
+        root = Path(raw_path).expanduser().resolve()
+        owners[env_uuid] = root
+    return owners
+
+
+def _dump_registry_state(owners: dict[str, Path]) -> None:
+    payload = {
+        "syntax": ENV_REGISTRY_SYNTAX,
+        "owners": {
+            env_uuid: str(root)
+            for env_uuid, root in sorted(owners.items(), key=lambda item: item[0])
+        }
+    }
+    atomic_write_text(
+        _registry_file(),
+        json_parser.dumps(payload, indent=2) + "\n",
+        encoding="utf-8",
+        private=True
+    )
 
 
 def _read_env_metadata(root: Path, *, missing_ok: bool = False) -> dict[str, Any]:
@@ -815,31 +861,67 @@ def _merge_env_metadata(core: dict[str, Any], extras: dict[str, Any]) -> dict[st
     return merged
 
 
-def _is_valid_environment_root(path: Path) -> bool:
-    root = path.expanduser().resolve()
+def _read_env_core(root: Path) -> tuple[Environment.JSON, dict[str, Any]]:
+    data = _read_env_metadata(root)
+    if ENV_LAYOUT_KEY not in data:
+        raise OSError(
+            f"missing '{ENV_LAYOUT_KEY}' in environment metadata at {_env_file(root)}"
+        )
+    core, extras = _split_env_metadata(data)
+    return Environment.JSON.model_validate(core), extras
+
+
+def _write_env_core(root: Path, core: Environment.JSON, extras: dict[str, Any]) -> None:
+    merged = _merge_env_metadata(core.model_dump(mode="json"), extras)
+    atomic_write_text(
+        _env_file(root),
+        json_parser.dumps(merged, indent=2) + "\n",
+        encoding="utf-8"
+    )
+
+
+def _env_uuid_for_root(root: Path) -> str | None:
+    root = root.expanduser().resolve()
     if not root.exists() or not root.is_dir():
-        return False
+        return None
     env_dir = _env_dir(root)
     if not env_dir.exists() or not env_dir.is_dir():
-        return False
+        return None
     env_file = _env_file(root)
     if not env_file.exists() or not env_file.is_file():
-        return False
+        return None
 
-    # acquire environment lock and validate env.json
     try:
         with lock_env(root, timeout=TIMEOUT):
-            data = _read_env_metadata(root)
-            if ENV_LAYOUT_KEY not in data:
-                return False
-            core, _ = _split_env_metadata(data)
-            Environment.JSON.model_validate(core)
+            core, _ = _read_env_core(root)
 
             # validate persisted layout metadata while the env lock is held.
             Config.load(root)
-            return True
+            return core.id
     except Exception:
-        return False
+        return None
+
+
+def _rekey_environment(root: Path, taken_ids: set[str]) -> tuple[str, str]:
+    root = root.expanduser().resolve()
+    with lock_env(root, timeout=TIMEOUT):
+        current, extras = _read_env_core(root)
+        old_id = current.id
+        new_id = uuid.uuid4().hex
+        while new_id == old_id or new_id in taken_ids:
+            new_id = uuid.uuid4().hex
+
+        rewritten = Environment.JSON.model_validate({
+            "version": current.version,
+            "id": new_id,
+            "tags": {},
+        })
+        _write_env_core(root, rewritten, extras)
+        return old_id, new_id
+
+
+def _is_valid_environment_root(path: Path) -> bool:
+    return _env_uuid_for_root(path) is not None
 
 
 def _discover_environment_mounts() -> list[Path]:
@@ -890,50 +972,76 @@ def _reconcile_registry(add: Path | None) -> list[Path]:
     # NOTE: lock ordering is registry > environment.  `_is_valid_environment_root()`
     # takes per-environment locks while this registry lock is held.
     with Lock(_registry_lock(), timeout=TIMEOUT):
-        # create empty registry if missing
         path = _registry_file()
-        if not path.exists():
-            atomic_write_text(path, "[]\n", encoding="utf-8", private=True)
+        changed = False
+        owners: dict[str, Path]
 
-        # try to load and normalize registry list
-        raw = path.read_text(encoding="utf-8")
+        # load ownership state
         try:
-            data = json_parser.loads(raw)
-            if not isinstance(data, list) or not all(isinstance(i, str) for i in data):
-                raise ValueError("registry JSON must be an array of strings")
-            raw_entries = [Path(i).expanduser().resolve() for i in data]
-            changed = False
+            if not path.exists():
+                raise FileNotFoundError(path)
+            owners = _load_registry_state()
 
-        # if JSON is corrupted, recover using container bind mounts (best-effort)
+        # if state is missing/corrupted, recover from active mounts (best-effort)
         except Exception:
-            raw_entries = _discover_environment_mounts()
+            owners = {}
+            for root in _discover_environment_mounts():
+                env_uuid = _env_uuid_for_root(root)
+                if env_uuid is None:
+                    continue
+                owners.setdefault(env_uuid, root.expanduser().resolve())
             changed = True
 
-        # remove any duplicate/invalid entries and scan for the new entry if provided
-        seen: set[Path] = set()
-        entries: list[Path] = []
-        for entry in raw_entries:
-            if entry not in seen and _is_valid_environment_root(entry):
-                seen.add(entry)
-                entries.append(entry)
-        if len(entries) != len(raw_entries):
-            changed = True
+        # sanitize stale entries and normalize to actual env UUIDs
+        normalized: dict[str, Path] = {}
+        for env_uuid, root in owners.items():
+            root = root.expanduser().resolve()
+            actual_id = _env_uuid_for_root(root)
+            if actual_id is None:
+                changed = True
+                continue
+            if actual_id != env_uuid:
+                changed = True
 
-        # add new entry if provided and not already found
-        if add is not None and add not in seen:
-            entries.append(add)
-            changed = True
+            # first valid owner wins for each UUID
+            if actual_id in normalized:
+                if normalized[actual_id] != root:
+                    changed = True
+                continue
+            normalized[actual_id] = root
 
-        # if changed, write back to registry
+        owners = normalized
+
+        # claim/rekey the requested root, if any
+        if add is not None:
+            add_id = _env_uuid_for_root(add)
+            if add_id is not None:
+                owner = owners.get(add_id)
+                if owner is None:
+                    owners[add_id] = add
+                    changed = True
+                elif owner != add:
+                    owner_id = _env_uuid_for_root(owner)
+                    if owner_id != add_id:
+                        # prior owner became invalid; transfer ownership (move case)
+                        owners[add_id] = add
+                        changed = True
+                    else:
+                        # duplicate copy; isolate by rekeying current root
+                        _, new_id = _rekey_environment(add, set(owners))
+                        owners[new_id] = add
+                        changed = True
+                        print(
+                            f"bertrand: duplicate environment identity detected at {add}; "
+                            f"assigned new ID '{new_id}' and reset runtime tags.",
+                            file=sys.stderr
+                        )
+
+        # persist ownership state if anything changed
         if changed:
-            atomic_write_text(
-                _registry_file(),
-                json_parser.dumps([str(path) for path in entries], indent=2) + "\n",
-                encoding="utf-8",
-                private=True
-            )
+            _dump_registry_state(owners)
 
-        return entries
+        return list(owners.values())
 
 
 def _check_list_field(value: object, field: str) -> list[str]:
