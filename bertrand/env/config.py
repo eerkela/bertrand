@@ -194,6 +194,11 @@ def resource(
     return _decorator
 
 
+@resource(
+    VSCODE_WORKSPACE_RESOURCE_ID,
+    kind="file",
+    template="core/vscode-workspace/2026-02-15",
+)
 @resource("containerfile", kind="file", template="core/containerfile/2026-02-15")
 @resource("containerignore", kind="file", template="core/containerignore/2026-02-15")
 @resource("docs", kind="dir")
@@ -601,6 +606,22 @@ def _load_tool_section(
     return _require_dict(raw, where=f"tool.{section}")
 
 
+def _require_non_empty_section(
+    section: dict[str, Any] | None,
+    *,
+    section_name: str,
+    resource_id: str,
+) -> dict[str, Any] | None:
+    """Validate that an optional tool section is either absent or non-empty."""
+    if section is None:
+        return None
+    if not section:
+        raise OSError(
+            f"empty [tool.{section_name}] cannot render resource '{resource_id}'"
+        )
+    return section
+
+
 @resource("pyproject", kind="file", template="core/pyproject/2026-02-15")
 class PyProject(Resource):
     """A resource describing a `pyproject.toml` file, which is used to configure
@@ -711,40 +732,29 @@ class CompileCommands(Resource):
 @resource("clang-format", kind="file")
 class ClangFormat(Resource):
     """A resource describing a `.clang-format` file, which is used to configure
-    clang-format for C++ code formatting.
+    clang-format for C++ code formatting.  The `[tool.clang-format]` table is
+    projected directly to YAML with no key remapping.
     """
     # pylint: disable=missing-function-docstring, unused-argument, missing-return-doc
 
     def render(self, config: Config) -> str | None:
-        section = _load_tool_section(
+        section = _require_non_empty_section(_load_tool_section(
             config,
             "clang-format",
             resource_id="clang-format",
-            required=True,
-        )
-        assert section is not None
-        payload: dict[str, Any] = {}
-        if "style" in section:
-            style = _require_dict(section["style"], where="tool.clang-format.style")
-            payload.update(style)
-        for key, value in section.items():
-            if key == "style":
-                continue
-            if key in payload:
-                raise OSError(
-                    "duplicate '.clang-format' key after style expansion: "
-                    f"'{key}'"
-                )
-            payload[key] = value
-        if not payload:
-            raise OSError("empty [tool.clang-format] cannot render .clang-format")
-        return _dump_yaml(payload, resource_id="clang-format")
+            required=False,
+        ), section_name="clang-format", resource_id="clang-format")
+        if section is None:
+            return None
+        return _dump_yaml(section, resource_id="clang-format")
 
 
 @resource("clang-tidy", kind="file")
 class ClangTidy(Resource):
     """A resource describing a `.clang-tidy` file, which is used to configure
-    clang-tidy for C++ linting.
+    clang-tidy for C++ linting.  This expects native clang-tidy key names in TOML.
+    `Checks` and `WarningsAsErrors` may be specified as arrays for convenience and
+    will be joined to comma-separated strings.
     """
     # pylint: disable=missing-function-docstring, unused-argument, missing-return-doc
 
@@ -756,98 +766,56 @@ class ClangTidy(Resource):
         return ",".join(checks)
 
     def render(self, config: Config) -> str | None:
-        section = _load_tool_section(
+        section = _require_non_empty_section(_load_tool_section(
             config,
             "clang-tidy",
             resource_id="clang-tidy",
-            required=True,
-        )
-        assert section is not None
+            required=False,
+        ), section_name="clang-tidy", resource_id="clang-tidy")
+        if section is None:
+            return None
 
         payload: dict[str, Any] = {}
         for key, value in section.items():
-            if key == "checks":
+            if key == "Checks":
                 payload["Checks"] = self._join_checks(
                     value,
-                    where="tool.clang-tidy.checks",
+                    where="tool.clang-tidy.Checks",
                 )
-            elif key == "warnings_as_errors":
+            elif key == "WarningsAsErrors":
                 payload["WarningsAsErrors"] = self._join_checks(
                     value,
-                    where="tool.clang-tidy.warnings_as_errors",
+                    where="tool.clang-tidy.WarningsAsErrors",
                 )
-            elif key == "header_filter_regex":
-                payload["HeaderFilterRegex"] = _require_str_value(
-                    value,
-                    where="tool.clang-tidy.header_filter_regex",
-                )
-            elif key == "options":
-                options = _require_dict(value, where="tool.clang-tidy.options")
-                payload["CheckOptions"] = {
-                    option_name: str(option_value)
-                    for option_name, option_value in options.items()
-                }
             else:
                 payload[key] = value
 
-        if not payload:
-            raise OSError("empty [tool.clang-tidy] cannot render .clang-tidy")
         return _dump_yaml(payload, resource_id="clang-tidy")
 
 
 @resource("clangd", kind="file")
 class Clangd(Resource):
     """A resource describing a `.clangd` file, which is used to configure clangd for
-    C++ language server features in editors.
+    C++ language server features in editors.  This expects native clangd keys in
+    `[tool.clangd]`; legacy `arguments` aliasing is intentionally unsupported.
     """
     # pylint: disable=missing-function-docstring, unused-argument, missing-return-doc
 
     def render(self, config: Config) -> str | None:
-        section = _load_tool_section(
+        section = _require_non_empty_section(_load_tool_section(
             config,
             "clangd",
             resource_id="clangd",
-            required=True,
-        )
-        assert section is not None
-        payload: dict[str, Any] = {}
-        arguments: list[str] | None = None
-
-        for key, value in section.items():
-            if key == "arguments":
-                arguments = _require_str_list(value, where="tool.clangd.arguments")
-                continue
-            payload[key] = value
-
-        if arguments is not None:
-            compile_flags = payload.get("CompileFlags")
-            if compile_flags is None:
-                payload["CompileFlags"] = {"Add": arguments}
-            else:
-                compile_flags_map = _require_dict(
-                    compile_flags,
-                    where="tool.clangd.CompileFlags",
-                )
-                if "Add" in compile_flags_map:
-                    raise OSError(
-                        "tool.clangd cannot define both 'arguments' and 'CompileFlags.Add'"
-                    )
-                merged = dict(compile_flags_map)
-                merged["Add"] = arguments
-                payload["CompileFlags"] = merged
-
-        if not payload:
-            raise OSError("empty [tool.clangd] cannot render .clangd")
-        return _dump_yaml(payload, resource_id="clangd")
-
-
-@resource(
-    VSCODE_WORKSPACE_RESOURCE_ID,
-    kind="file",
-    template="core/vscode-workspace/2026-02-15",
-)
-class VSCodeWorkspace(Resource):
-    """A managed VS Code workspace file used by host-side editor attach flows."""
+            required=False,
+        ), section_name="clangd", resource_id="clangd")
+        if section is None:
+            return None
+        if "arguments" in section:
+            raise OSError(
+                "unsupported key [tool.clangd].arguments. "
+                "Use native clangd keys (for example, CompileFlags.Add) if needed."
+            )
+        return _dump_yaml(section, resource_id="clangd")
 
 
 # NOTE: "*" indicates a baseline, while other keys act as overlay diffs that merge on

@@ -13,27 +13,7 @@ dependencies = []
 [tool.bertrand]
 shell = "{{ shell }}"
 
-[tool.clang-format]
-style = { BasedOnStyle = "LLVM", IndentWidth = 4, ColumnLimit = 100 }
-
-[tool.clang-tidy]
-checks = [
-    "clang-analyzer-*",
-    "bugprone-*",
-    "performance-*",
-    "readability-*",
-]
-warnings_as_errors = []
-header_filter_regex = ".*"
-options = {}
-
-[tool.clangd]
-arguments = [
-    "--background-index",
-    "--clang-tidy",
-    "--completion-style=detailed",
-    "--header-insertion=iwyu",
-]
+[tool.ty]
 
 [tool.ruff]
 line-length = 100
@@ -42,8 +22,34 @@ target-version = "py312"
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP"]
 
-[tool.ty]
-
 [tool.pytest.ini_options]
 addopts = "-q"
 testpaths = ["tests"]
+
+# Bertrand projects centralize clang tool settings here.
+# On `config.sync()`, these sections project to:
+#   [tool.clang-format] -> .clang-format
+#   [tool.clang-tidy]   -> .clang-tidy
+#   [tool.clangd]       -> .clangd
+[tool.clang-format]
+BasedOnStyle = "LLVM"
+IndentWidth = 4
+ColumnLimit = 100
+
+[tool.clang-tidy]
+Checks = [
+    "clang-analyzer-*",
+    "bugprone-*",
+    "performance-*",
+    "readability-*",
+]
+WarningsAsErrors = []
+HeaderFilterRegex = ".*"
+CheckOptions = {}
+
+# clangd should generally use compile commands from compile_commands.json.
+# Use this section for diagnostics/completion/inlay/documentation tuning.
+# CompileFlags can be set manually if needed, but is usually unnecessary.
+[tool.clangd]
+[tool.clangd.Diagnostics]
+UnusedIncludes = "Strict"
