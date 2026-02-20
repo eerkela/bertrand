@@ -11,6 +11,7 @@ import shutil
 import sys
 import uuid
 
+from collections.abc import Mapping
 from dataclasses import dataclass, asdict, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -1749,6 +1750,7 @@ class Environment:
 
     root: Path
     _json: JSON
+    _declared: dict[str, DeclaredImage] | None
     _lock: Lock
     _entered: int
 
@@ -1759,6 +1761,7 @@ class Environment:
             id="",
             tags={}
         )
+        self._declared = None
         self._lock = lock_env(self.root, timeout=timeout)
         self._entered = 0
 
@@ -1786,14 +1789,25 @@ class Environment:
                 self._json,
                 extras,
             )
+            self._declared = _load_declared_images(self.root)
+            removed_images, removed_containers = _reconcile_declared_runtime_tags(
+                self,
+                self._declared,
+            )
+            if removed_images or removed_containers:
+                changed = True
+                print(
+                    "bertrand: dropped undeclared runtime artifacts from environment at "
+                    f"{self.root}: removed {removed_images} image(s) and "
+                    f"{removed_containers} container(s).",
+                    file=sys.stderr
+                )
             if changed:
                 _write_env_core(self.root, self._json, extras)
-
-            # Ensure layout metadata is valid while the env lock is held.
-            Config.load(self.root)
             return self
 
         except Exception as err:
+            self._declared = None
             self._entered -= 1
             self._lock.__exit__(type(err), err, getattr(err, "__traceback__", None))
             raise
@@ -1823,6 +1837,8 @@ class Environment:
         # always release the lock and local context depth
         finally:
             self._entered -= 1
+            if self._entered == 0:
+                self._declared = None
             self._lock.__exit__(exc_type, exc_value, traceback)
 
     def __hash__(self) -> int:
@@ -1951,6 +1967,29 @@ class Environment:
             user-visible tags.
         """
         return self._json.tags
+
+    @property
+    def declared_images(self) -> dict[str, DeclaredImage]:
+        """
+        Returns
+        -------
+        dict[str, DeclaredImage]
+            A mapping from declared image tags to metadata objects representing
+            corresponding declared images.  This is used for locating declared images
+            within this environment.
+
+        Raises
+        ------
+        OSError
+            If the environment has not been acquired as a context manager, or if the
+            declared images could not be loaded from disk.
+        """
+        if self._entered < 1 or self._declared is None:
+            raise OSError(
+                "environment must be acquired as a context manager before accessing "
+                "declared images"
+            )
+        return self._declared
 
     @property
     def container_file(self) -> Path:
@@ -2127,6 +2166,205 @@ def _all_environments() -> list[Path]:
         return []
 
 
+class DeclaredImage(TypedDict):
+    """Type hint for declared image metadata loaded from the environment's
+    normalized configuration snapshot.  Images of this type are the authoritative
+    source of truth for declared image and container tags, and are used to validate
+    the runtime metadata against the declared configuration, dropping any undeclared
+    tags to maintain consistency.
+    """
+    args: tuple[str, ...]
+    containers: dict[str, tuple[str, ...]]
+
+
+def _normalize_declared_args(value: Any, *, where: str) -> tuple[str, ...]:
+    if isinstance(value, list):
+        items = value
+    elif isinstance(value, tuple):
+        items = list(value)
+    else:
+        raise OSError(f"expected sequence[str] at '{where}', got {type(value).__name__}")
+
+    out: list[str] = []
+    for idx, item in enumerate(items):
+        if not isinstance(item, str):
+            raise OSError(
+                f"expected string at '{where}[{idx}]', got {type(item).__name__}"
+            )
+        text = item.strip()
+        if not text:
+            raise OSError(f"expected non-empty string at '{where}[{idx}]'")
+        out.append(text)
+    return tuple(out)
+
+
+def _normalize_declared_images(raw: Any, *, root: Path) -> dict[str, DeclaredImage]:
+    if not isinstance(raw, Mapping):
+        raise OSError(
+            "missing or invalid 'images' config snapshot.  Expected image "
+            f"declarations under [tool.bertrand] in {root / 'pyproject.toml'}"
+        )
+
+    images: dict[str, DeclaredImage] = {}
+    for raw_image_tag, raw_image in raw.items():
+        if not isinstance(raw_image_tag, str):
+            raise OSError(
+                "invalid non-string image tag in config snapshot under 'images'"
+            )
+        image_tag = raw_image_tag.strip()
+        sanitized_image = sanitize_name(image_tag)
+        if image_tag != sanitized_image:
+            raise OSError(
+                "invalid image tag in config snapshot under 'images': "
+                f"'{image_tag}' (sanitizes to: '{sanitized_image}')"
+            )
+
+        if not isinstance(raw_image, Mapping):
+            raise OSError(
+                "invalid image declaration in config snapshot under 'images': "
+                f"'{image_tag}'"
+            )
+        raw_args = raw_image.get("args", ())
+        raw_containers = raw_image.get("containers", {})
+        if not isinstance(raw_containers, Mapping):
+            raise OSError(
+                "invalid containers declaration in config snapshot for image "
+                f"'{image_tag}'"
+            )
+
+        containers: dict[str, tuple[str, ...]] = {"": tuple()}
+        for raw_container_tag, raw_container_args in raw_containers.items():
+            if not isinstance(raw_container_tag, str):
+                raise OSError(
+                    "invalid non-string container tag in config snapshot under "
+                    f"'images.{image_tag}.containers'"
+                )
+            container_tag = raw_container_tag.strip()
+            sanitized_container = sanitize_name(container_tag)
+            if container_tag != sanitized_container:
+                raise OSError(
+                    "invalid container tag in config snapshot under "
+                    f"'images.{image_tag}.containers': '{container_tag}' "
+                    f"(sanitizes to: '{sanitized_container}')"
+                )
+            containers[container_tag] = _normalize_declared_args(
+                raw_container_args,
+                where=(
+                    "images."
+                    f"{image_tag if image_tag else '<default>'}.containers."
+                    f"{container_tag if container_tag else '<default>'}.args"
+                ),
+            )
+
+        # Keep default container first while preserving declaration order for the rest.
+        default_container_args = containers.get("", tuple())
+        ordered_containers: dict[str, tuple[str, ...]] = {"": default_container_args}
+        for container_tag, container_args in containers.items():
+            if container_tag == "":
+                continue
+            ordered_containers[container_tag] = container_args
+
+        images[image_tag] = {
+            "args": _normalize_declared_args(
+                raw_args,
+                where=(
+                    "images."
+                    f"{image_tag if image_tag else '<default>'}.args"
+                ),
+            ),
+            "containers": ordered_containers,
+        }
+
+    # Keep default image first while preserving declaration order for the rest.
+    default_image = images.get("")
+    if default_image is None:
+        default_image = {
+            "args": tuple(),
+            "containers": {"": tuple()},
+        }
+    ordered_images: dict[str, DeclaredImage] = {"": default_image}
+    for image_tag, image in images.items():
+        if image_tag == "":
+            continue
+        ordered_images[image_tag] = image
+    return ordered_images
+
+
+def _load_declared_images(root: Path) -> dict[str, DeclaredImage]:
+    config = Config.load(root)
+    with config:
+        if "images" not in config:
+            raise OSError(
+                "missing declared images in config snapshot.  Define images under "
+                f"[tool.bertrand] in {root / 'pyproject.toml'}"
+            )
+        raw_images = config["images"]
+    return _normalize_declared_images(raw_images, root=root)
+
+
+def _require_declared_image(
+    root: Path,
+    images: dict[str, DeclaredImage],
+    image_tag: str,
+) -> DeclaredImage:
+    image = images.get(image_tag)
+    if image is not None:
+        return image
+
+    tag = image_tag if image_tag else "<default>"
+    raise KeyError(
+        f"undeclared image tag '{tag}' for environment at {root}.  Declare it under "
+        f"[[tool.bertrand.images]] in {root / 'pyproject.toml'}"
+    )
+
+
+def _require_declared_container(
+    root: Path,
+    image_tag: str,
+    image: DeclaredImage,
+    container_tag: str,
+) -> tuple[str, ...]:
+    container = image["containers"].get(container_tag)
+    if container is not None:
+        return container
+
+    image_text = image_tag if image_tag else "<default>"
+    container_text = container_tag if container_tag else "<default>"
+    raise KeyError(
+        f"undeclared container tag '{container_text}' for image '{image_text}' in "
+        f"environment at {root}.  Declare it under [[tool.bertrand.images.containers]] "
+        f"in {root / 'pyproject.toml'}"
+    )
+
+
+def _reconcile_declared_runtime_tags(
+    env: Environment,
+    images: dict[str, DeclaredImage],
+) -> tuple[int, int]:
+    removed_images = 0
+    removed_containers = 0
+    declared_images = images
+
+    for image_tag in list(env.tags):
+        image = env.tags[image_tag]
+        declared_image = declared_images.get(image_tag)
+        if declared_image is None:
+            image.remove(force=True, timeout=env.timeout, missing_ok=True)
+            env.tags.pop(image_tag, None)
+            removed_images += 1
+            continue
+
+        declared_containers = declared_image["containers"]
+        for container_tag, container in list(image.containers.items()):
+            if container_tag in declared_containers:
+                continue
+            container.remove(force=True, timeout=env.timeout, missing_ok=True)
+            image.containers.pop(container_tag, None)
+            removed_containers += 1
+
+    return removed_images, removed_containers
+
+
 Validator: TypeAlias = Callable[[JSONView], Any]
 
 
@@ -2225,62 +2463,29 @@ class _Command:
 
 @dataclass
 class Build(_Command):
-    """Incrementally build Bertrand images/containers within an environment, scoping to
-    specific images and containers if desired.  This command does not start any
-    containers, but may rebuild and restart existing containers if their parent images
-    are out of date.
-
-    If an image tag is provided, then arbitrary additional command-line arguments may
-    be passed to assign to the tag, making them available for use in downstream
-    commands.  If no image tag is provided, then no additional arguments may be passed,
-    and all images in the environment will be built using their currently-tagged
-    arguments.
+    """Incrementally build Bertrand images and materialize declared containers within
+    an environment, scoping to specific images/containers if desired.  This command
+    does not start containers, and all build/create arguments are resolved from
+    `[tool.bertrand]` in `pyproject.toml`.
     """
-    args: Validator = field(default=_validate_args)
 
     @staticmethod
-    def container(
-        ctx: Pipeline.InProgress,
+    def _build_image_candidate(
         *,
         env: Environment,
         image_tag: str,
-        container_tag: str,
-        args: list[str],
-        **kwargs: Any
-    ) -> None:
-        raise OSError(
-            "The 'build' command is reserved for compiling images.  Use 'start' or "
-            "'enter' to run containers from a prebuilt image instead."
-        )
-
-    @staticmethod
-    def image(
-        ctx: Pipeline.InProgress,
-        *,
-        env: Environment,
-        image_tag: str,
-        args: list[str],
-        **kwargs: Any
-    ) -> None:
-        if args and not image_tag:
-            raise OSError("images with non-default arguments must have a tag")
-
+    ) -> tuple[DeclaredImage, Image | None, Image, bool]:
+        declared = _require_declared_image(env.root, env.declared_images, image_tag)
+        args = list(declared["args"])
         existing = env.tags.get(image_tag)
-        if not args:
-            if existing is None:
-                if image_tag:
-                    raise KeyError(f"no image found for tag: '{image_tag}'")
-                args = []  # empty tag implies empty args
-            else:
-                args = existing.args  # reuse existing args
 
-        # build new image
+        # build candidate image
         # NOTE: podman + BuildAh will automatically reuse cached layers as long as
         # none of the inputs have changed (including the contents of the environment
         # directory, excluding patterns in .containerignore).  Therefore, we can build
         # unconditionally, and check whether the ID has changed afterwards to detect
         # whether a rebuild was necessary.
-        image = Image.model_construct(
+        candidate = Image.model_construct(
             version=VERSION,
             id="",  # corrected after build
             created=datetime.now(timezone.utc),
@@ -2306,54 +2511,207 @@ class Build(_Command):
                 *build_args,
                 str(env.root)
             ], cwd=env.root)
-            image.id = iid_file.read_text(encoding="utf-8").strip()  # build returns image ID
+            candidate.id = iid_file.read_text(encoding="utf-8").strip()  # build returns image ID
         finally:
             iid_file.unlink(missing_ok=True)
-        if existing is not None and image.id == existing.id:
+
+        changed = existing is None or candidate.id != existing.id
+        return declared, existing, candidate, changed
+
+    @staticmethod
+    def _materialize_container(
+        *,
+        env: Environment,
+        image: Image,
+        image_tag: str,
+        declared: DeclaredImage,
+        container_tag: str,
+    ) -> None:
+        declared_args = _require_declared_container(
+            env.root,
+            image_tag,
+            declared,
+            container_tag,
+        )
+        container = image.build(
+            env_root=env.root,
+            env_uuid=env.id,
+            image_tag=image_tag,
+            container_tag=container_tag,
+            container_args=list(declared_args),
+        )
+        if container.inspect() is None:
+            image.containers.pop(container_tag, None)
+
+    @staticmethod
+    def _materialize_all_containers(
+        *,
+        env: Environment,
+        image: Image,
+        image_tag: str,
+        declared: DeclaredImage,
+    ) -> None:
+        for container_tag in declared["containers"]:
+            Build._materialize_container(
+                env=env,
+                image=image,
+                image_tag=image_tag,
+                declared=declared,
+                container_tag=container_tag,
+            )
+
+    @staticmethod
+    def _cleanup_candidate_image(candidate: Image) -> None:
+        for container in candidate.containers.values():
+            podman_cmd(["container", "rm", "-f", container.id], check=False)
+        podman_cmd(["image", "rm", "-f", candidate.id], check=False)
+
+    @staticmethod
+    def _swap_image(
+        *,
+        env: Environment,
+        image_tag: str,
+        existing: Image | None,
+        candidate: Image,
+    ) -> None:
+        if existing is not None:
+            existing.remove(force=True, timeout=env.timeout, missing_ok=True)
+        env.tags[image_tag] = candidate
+
+    @staticmethod
+    def container(
+        ctx: Pipeline.InProgress,
+        *,
+        env: Environment,
+        image_tag: str,
+        container_tag: str,
+        **kwargs: Any
+    ) -> None:
+        declared, existing, candidate, changed = Build._build_image_candidate(
+            env=env,
+            image_tag=image_tag,
+        )
+
+        # no runtime image yet -> materialize only the selected container
+        if existing is None:
+            try:
+                Build._materialize_container(
+                    env=env,
+                    image=candidate,
+                    image_tag=image_tag,
+                    declared=declared,
+                    container_tag=container_tag,
+                )
+            except Exception:
+                Build._cleanup_candidate_image(candidate)
+                raise
+            env.tags[image_tag] = candidate
             return
 
-        # rebuild downstream containers for new image
-        if existing is not None:
-            try:
-                for container_tag, container in existing.containers.items():
-                    image.build(
-                        env_root=env.root,
-                        env_uuid=env.id,
-                        image_tag=image_tag,
-                        container_tag=container_tag,
-                        container_args=container.args
-                    )
-                existing.remove(force=True, timeout=env.timeout, missing_ok=True)
-            except Exception:
-                for container in image.containers.values():
-                    podman_cmd(["container", "rm", "-f", container.id], check=False)
-                podman_cmd(["image", "rm", "-f", image.id], check=False)
-                raise
+        # unchanged digest -> materialize only selected container on existing image
+        if not changed:
+            declared_args = list(declared["args"])
+            if existing.args != declared_args:
+                existing.args = declared_args
+            Build._materialize_container(
+                env=env,
+                image=existing,
+                image_tag=image_tag,
+                declared=declared,
+                container_tag=container_tag,
+            )
+            return
 
-        # register new image
-        env.tags[image_tag] = image
+        # changed digest -> promote to full image-scope materialization before swap
+        try:
+            Build._materialize_all_containers(
+                env=env,
+                image=candidate,
+                image_tag=image_tag,
+                declared=declared,
+            )
+            Build._swap_image(
+                env=env,
+                image_tag=image_tag,
+                existing=existing,
+                candidate=candidate,
+            )
+        except Exception:
+            Build._cleanup_candidate_image(candidate)
+            raise
+
+    @staticmethod
+    def image(
+        ctx: Pipeline.InProgress,
+        *,
+        env: Environment,
+        image_tag: str,
+        **kwargs: Any
+    ) -> None:
+        declared, existing, candidate, changed = Build._build_image_candidate(
+            env=env,
+            image_tag=image_tag,
+        )
+
+        # no runtime image yet -> materialize all declared containers and register image
+        if existing is None:
+            try:
+                Build._materialize_all_containers(
+                    env=env,
+                    image=candidate,
+                    image_tag=image_tag,
+                    declared=declared,
+                )
+            except Exception:
+                Build._cleanup_candidate_image(candidate)
+                raise
+            env.tags[image_tag] = candidate
+            return
+
+        # unchanged digest -> keep existing image, reconcile args, materialize all containers
+        if not changed:
+            declared_args = list(declared["args"])
+            if existing.args != declared_args:
+                existing.args = declared_args
+            Build._materialize_all_containers(
+                env=env,
+                image=existing,
+                image_tag=image_tag,
+                declared=declared,
+            )
+            return
+
+        # changed digest -> materialize all declared containers on candidate, then swap
+        try:
+            Build._materialize_all_containers(
+                env=env,
+                image=candidate,
+                image_tag=image_tag,
+                declared=declared,
+            )
+            Build._swap_image(
+                env=env,
+                image_tag=image_tag,
+                existing=existing,
+                candidate=candidate,
+            )
+        except Exception:
+            Build._cleanup_candidate_image(candidate)
+            raise
 
     @staticmethod
     def environment(
         ctx: Pipeline.InProgress,
         *,
         env: Environment,
-        args: list[str],
         **kwargs: Any
     ) -> None:
-        if args:
-            raise OSError(
-                "An environment's default image cannot have arguments.  Either specify "
-                "an image tag to assign to these arguments, or set the appropriate "
-                "defaults in the environment's Containerfile instead."
-            )
-        Build.image(ctx, env=env, image_tag="", args=args, **kwargs)
+        for declared_image_tag in env.declared_images:
+            Build.image(ctx, env=env, image_tag=declared_image_tag, **kwargs)
 
     @staticmethod
     def all(
         ctx: Pipeline.InProgress,
-        *,
-        args: list[str],
         **kwargs: Any
     ) -> None:
         raise OSError("cannot build all environments")
@@ -2365,7 +2723,6 @@ class Start(_Command):
     containers if desired.  This is equivalent to `Build` followed by a
     `podman container start` command on all referenced containers.
     """
-    args: Validator = field(default=_validate_args)
 
     @staticmethod
     def container(
@@ -2374,31 +2731,26 @@ class Start(_Command):
         env: Environment,
         image_tag: str,
         container_tag: str,
-        args: list[str],
         **kwargs: Any
     ) -> None:
-        Build.image(
+        Build.container(
             ctx,
             env=env,
             image_tag=image_tag,
-            args=[],
+            container_tag=container_tag,
             **kwargs
         )
         image = env[image_tag]
         if image is None:
             raise OSError(f"unable to build image '{image_tag}'")
-        container = image.build(
-            env_root=env.root,
-            env_uuid=env.id,
-            image_tag=image_tag,
-            container_tag=container_tag,
-            container_args=args if args else None,
-        )
+        container = image.containers.get(container_tag)
+        if container is None:
+            return
         inspect = container.inspect()
         if inspect is None:
-            image.containers.pop(container_tag)
-        else:
-            Container.start(inspect)
+            image.containers.pop(container_tag, None)
+            return
+        Container.start(inspect)
 
     @staticmethod
     def image(
@@ -2406,19 +2758,17 @@ class Start(_Command):
         *,
         env: Environment,
         image_tag: str,
-        args: list[str],
         **kwargs: Any
     ) -> None:
-        image = env.tags.get(image_tag)
-        if image is None:
-            raise KeyError(f"no image found for tag: '{image_tag}'")
-        if args:
-            raise OSError("cannot specify arguments when starting an image")
-        Build.image(ctx, env=env, image_tag=image_tag, args=args, **kwargs)
+        declared_image = _require_declared_image(env.root, env.declared_images, image_tag)
+        Build.image(ctx, env=env, image_tag=image_tag, **kwargs)
         image = env[image_tag]
         if image is None:
             raise OSError(f"unable to build image '{image_tag}'")
-        for container_tag, container in list(image.containers.items()):
+        for container_tag in declared_image["containers"]:
+            container = image.containers.get(container_tag)
+            if container is None:
+                continue
             inspect = container.inspect()
             if inspect is None:
                 image.containers.pop(container_tag)
@@ -2430,30 +2780,16 @@ class Start(_Command):
         ctx: Pipeline.InProgress,
         *,
         env: Environment,
-        args: list[str],
         **kwargs: Any
     ) -> None:
-        if args:
-            raise OSError("cannot specify arguments when starting a whole environment")
-        Build.environment(ctx, env=env, args=args, **kwargs)
-        for image in env.tags.values():
-            for container_tag, container in list(image.containers.items()):
-                inspect = container.inspect()
-                if inspect is None:
-                    image.containers.pop(container_tag)
-                else:
-                    Container.start(inspect)
+        for declared_image_tag in env.declared_images:
+            Start.image(ctx, env=env, image_tag=declared_image_tag, **kwargs)
 
     @staticmethod
     def all(
         ctx: Pipeline.InProgress,
-        *,
-        args: list[str],
         **kwargs: Any
     ) -> None:
-        if args:
-            raise OSError("cannot specify arguments when starting all environments")
-
         if confirm(
             "This will start all Bertrand containers on this system.  This may take "
             "a long time depending on the number and complexity of the environments.\n"
@@ -2462,13 +2798,7 @@ class Start(_Command):
             for env_path in _all_environments():
                 try:
                     with Environment(env_path) as env:
-                        for image in env.tags.values():
-                            for container_tag, container in list(image.containers.items()):
-                                inspect = container.inspect()
-                                if inspect is None:
-                                    image.containers.pop(container_tag)
-                                else:
-                                    Container.start(inspect, check=False)
+                        Start.environment(ctx, env=env)
                 except Exception as err:
                     print(err, file=sys.stderr)
 
@@ -2528,7 +2858,6 @@ class Enter(_Command):
             env=env,
             image_tag=image_tag,
             container_tag=container_tag,
-            args=args,
             **kwargs
         )
         container = env[image_tag, container_tag]
@@ -2641,7 +2970,6 @@ class Code(_Command):
             env=env,
             image_tag=image_tag,
             container_tag=container_tag,
-            args=[],
             **kwargs
         )
         container = env[image_tag, container_tag]
@@ -2731,7 +3059,6 @@ class Run(_Command):
             env=env,
             image_tag=image_tag,
             container_tag=container_tag,
-            args=[],
             **kwargs
         )
         container = env[image_tag, container_tag]
@@ -3152,7 +3479,7 @@ class Restart(_Command):
             running = state["Running"] or state["Restarting"] or state["Paused"]
 
         # possibly rebuild the parent image and all downstream containers
-        Build.image(ctx, env=env, image_tag=image_tag, args=[], **kwargs)
+        Build.image(ctx, env=env, image_tag=image_tag, **kwargs)
         image = env[image_tag]
         if image is None:
             raise OSError(f"unable to build image '{image_tag}'")
@@ -3195,7 +3522,7 @@ class Restart(_Command):
                     running.add(container_tag)
 
         # possibly rebuild the image and all downstream containers
-        Build.image(ctx, env=env, image_tag=image_tag, args=[], **kwargs)
+        Build.image(ctx, env=env, image_tag=image_tag, **kwargs)
         image = env[image_tag]
         if image is None:
             raise OSError(f"unable to build image '{image_tag}'")

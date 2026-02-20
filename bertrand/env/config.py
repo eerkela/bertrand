@@ -645,6 +645,118 @@ class PyProject(Resource):
             )
         return value
 
+    @staticmethod
+    def _require_allowed_keys(
+        table: dict[str, Any],
+        *,
+        where: str,
+        allowed: set[str],
+    ) -> None:
+        unknown = sorted(k for k in table if k not in allowed)
+        if unknown:
+            allowed_text = ", ".join(sorted(allowed))
+            unknown_text = ", ".join(unknown)
+            raise OSError(
+                f"unsupported key(s) at '{where}': {unknown_text} "
+                f"(allowed: {allowed_text})"
+            )
+
+    @staticmethod
+    def _require_tag(value: Any, *, where: str) -> str:
+        tag = _require_str_value(value, where=where, allow_empty=True)
+        sanitized = sanitize_name(tag)
+        if tag != sanitized:
+            raise OSError(
+                f"invalid tag at '{where}': '{tag}' "
+                f"(sanitizes to: '{sanitized}')"
+            )
+        return tag
+
+    @staticmethod
+    def _require_table_array(value: Any, *, where: str) -> list[dict[str, Any]]:
+        if value is None:
+            return []
+        if isinstance(value, (str, bytes)) or not isinstance(value, Sequence):
+            raise OSError(
+                f"expected array of tables at '{where}', got {type(value).__name__}"
+            )
+        out: list[dict[str, Any]] = []
+        for idx, item in enumerate(value):
+            out.append(_require_dict(item, where=f"{where}[{idx}]"))
+        return out
+
+    @classmethod
+    def _parse_containers(
+        cls,
+        *,
+        where: str,
+        raw: Any,
+    ) -> dict[str, tuple[str, ...]]:
+        rows = cls._require_table_array(raw, where=where)
+        seen: set[str] = set()
+        declared: list[tuple[str, tuple[str, ...]]] = []
+        for idx, row in enumerate(rows):
+            row_where = f"{where}[{idx}]"
+            cls._require_allowed_keys(
+                row,
+                where=row_where,
+                allowed={"tag", "args"},
+            )
+            tag = cls._require_tag(row.get("tag"), where=f"{row_where}.tag")
+            if tag in seen:
+                raise OSError(f"duplicate container tag at '{row_where}.tag': '{tag}'")
+            seen.add(tag)
+            args = tuple(_require_str_list(row.get("args", []), where=f"{row_where}.args"))
+            declared.append((tag, args))
+
+        # Always include default container first.
+        containers: dict[str, tuple[str, ...]] = {"": tuple()}
+        for tag, args in declared:
+            containers[tag] = args
+        return containers
+
+    @classmethod
+    def _parse_images(
+        cls,
+        *,
+        where: str,
+        raw: Any,
+    ) -> dict[str, dict[str, Any]]:
+        rows = cls._require_table_array(raw, where=where)
+        seen: set[str] = set()
+        declared: list[tuple[str, tuple[str, ...], dict[str, tuple[str, ...]]]] = []
+        for idx, row in enumerate(rows):
+            row_where = f"{where}[{idx}]"
+            cls._require_allowed_keys(
+                row,
+                where=row_where,
+                allowed={"tag", "args", "containers"},
+            )
+            tag = cls._require_tag(row.get("tag"), where=f"{row_where}.tag")
+            if tag in seen:
+                raise OSError(f"duplicate image tag at '{row_where}.tag': '{tag}'")
+            seen.add(tag)
+            args = tuple(_require_str_list(row.get("args", []), where=f"{row_where}.args"))
+            containers = cls._parse_containers(
+                where=f"{row_where}.containers",
+                raw=row.get("containers"),
+            )
+            declared.append((tag, args, containers))
+
+        # Always include default image first.
+        images: dict[str, dict[str, Any]] = {
+            "": {
+                "args": tuple(),
+                "containers": {"": tuple()},
+            }
+        }
+        for tag, args, containers in declared:
+            images[tag] = {
+                "args": args,
+                "containers": containers,
+            }
+        return images
+
     def parse(self, config: Config) -> dict[str, Any] | None:
         resource_id = "pyproject"
         pyproject = _load_pyproject(config, resource_id=resource_id)
@@ -652,14 +764,24 @@ class PyProject(Resource):
 
         # validate `[tool.bertrand]`
         bertrand = _require_dict(tool.get("bertrand"), where="tool.bertrand")
+        self._require_allowed_keys(
+            bertrand,
+            where="tool.bertrand",
+            allowed={"shell", "images"},
+        )
         shell = self._require_choice(
             _require_str_value(bertrand.get("shell"), where="tool.bertrand.shell"),
             where="tool.bertrand.shell",
             supported=SHELLS,
             description="shell",
         )
+        images = self._parse_images(
+            where="tool.bertrand.images",
+            raw=bertrand.get("images"),
+        )
         return {
             "shell": shell,
+            "images": images,
         }
 
 

@@ -235,34 +235,25 @@ class External:
             command = self.commands.add_parser(
                 "build",
                 help=
-                    "Compile an image of a Bertrand environment at the specified "
-                    "path, passing any additional build arguments directly to its "
-                    "Containerfile.",
+                    "Build and materialize declared Bertrand images/containers at the "
+                    "specified path without starting them.  Tags and arguments are "
+                    "declared by modifying project metadata according to the '--lang' "
+                    "options chosen during 'bertrand init'.  See the generated "
+                    "configuration files for details.",
             )
             command.add_argument(
                 "path",
-                metavar="ENV[:IMAGE]",
+                metavar="ENV[:IMAGE[:CONTAINER]]",
                 help=
                     "A path to the specified environment directory.  This may be an "
                     "absolute or relative path, and must point to an environment "
-                    "directory produced by 'bertrand init'.  The path may include an "
-                    "optional image tag (e.g. '/path/to/env:image'), in which case the "
-                    "tag will be assigned to the resulting image and can be used to "
-                    "reference it in other commands.  If no tag is given, then the "
-                    "default image for the environment will be built, which uses the "
-                    "default values specified in the Containerfile.",                
-            )
-            command.add_argument(
-                "args",
-                nargs=argparse.REMAINDER,
-                metavar="COMPILE_ARGS",
-                help=
-                    "Containerfile arguments to use when compiling the the image.  If "
-                    "none are given, then the image will be built with the default "
-                    "values specified in the Containerfile, and the image tag may be "
-                    "omitted from path.  Otherwise, an image tag must be given, which "
-                    "can serve as a stable identifier for the specified arguments, "
-                    "even if the resulting image is rebuilt in the future.",
+                    "directory produced by 'bertrand init'.  The path may include "
+                    "optional image and container tags (e.g. "
+                    "'/path/to/env:image:container').  If no tags are given, all "
+                    "declared images/containers are materialized.  If an image tag is "
+                    "given, only that image and its declared containers are "
+                    "materialized.  If both image and container tags are given, only "
+                    "that declared container is materialized.",
             )
             command.set_defaults(handler=External.build)
 
@@ -285,21 +276,10 @@ class External:
                     "optional image and container tags (e.g. "
                     "'/path/to/env:image:container'), which can be used to scope the "
                     "command to specific images or containers within the environment.  "
-                    "If an image or environment scope is given, then all containers "
-                    "matching that scope will be started.  If no path is given, then "
-                    "all Bertrand containers on the host system will be started, after "
-                    "prompting the user to confirm.",
-            )
-            command.add_argument(
-                "args",
-                nargs=argparse.REMAINDER,
-                metavar="CONTAINER_ARGS",
-                help=
-                    "Additional arguments to pass to the 'podman create' command when "
-                    "building the container.  If given, then a (possibly new) "
-                    "container scope must be listed in the path, and the container tag "
-                    "will serve as a stable identifier for the specified arguments, "
-                    "even if the resulting container is rebuilt in the future.",
+                    "If an image or environment scope is given, then all declared "
+                    "containers matching that scope will be started.  If no path is "
+                    "given, then all Bertrand containers on the host system will be "
+                    "started, after prompting the user to confirm.",
             )
             command.set_defaults(handler=External.start)
 
@@ -323,7 +303,8 @@ class External:
                     "A path to the specified environment directory.  If no image or "
                     "container tag is given, then the default container for the parent "
                     "environment or image will be used.  Otherwise, the container tag "
-                    "must correspond to a previous 'bertrand start' command.",
+                    "must be declared in the project metadata according to the "
+                    "'--lang' options chosen during 'bertrand init'.",
             )
             command.set_defaults(handler=External.enter)
 
@@ -344,7 +325,8 @@ class External:
                     "A path to the specified environment directory.  If no image or "
                     "container tag is given, then the default container for the parent "
                     "environment or image will be used.  Otherwise, the container tag "
-                    "must correspond to a previous 'bertrand start' command.",
+                    "must be declared in the project metadata according to the "
+                    "'--lang' options chosen during 'bertrand init'.",
             )
             command.add_argument(
                 "cmd",
@@ -765,7 +747,8 @@ class External:
                     "container whose toolchain will be mounted.  If no image or "
                     "container tag is given, then the default container for the parent "
                     "environment or image will be used.  Otherwise, the container tag "
-                    "must correspond to a previous 'bertrand start' command.",
+                    "must be declared in the project metadata according to the "
+                    "'--lang' options chosen during 'bertrand init'.",
             )
             command.set_defaults(handler=External.code)
 
@@ -828,26 +811,6 @@ class External:
 
         def _validate_args(self, args: argparse.Namespace) -> None:
             command = args.command
-
-            if command == "build":
-                _, image_tag, container_tag = _parse(args.path)
-                if container_tag:
-                    self.root.error("build path cannot include a container tag")
-                if args.args and not image_tag:
-                    self.root.error(
-                        "build passthrough args require an explicit image tag in PATH "
-                        "(use ENV:IMAGE)"
-                    )
-                return
-
-            if command == "start":
-                _, _, container_tag = _parse(args.path)
-                if args.args and not container_tag:
-                    self.root.error(
-                        "start passthrough args require an explicit container tag in "
-                        "PATH (use ENV:IMAGE:CONTAINER)"
-                    )
-                return
 
             if command == "monitor":
                 if args.json and args.interval != 0:
@@ -954,7 +917,6 @@ class External:
             env=env,
             image_tag=image_tag,
             container_tag=container_tag,
-            args=args.args,
         )
 
     @staticmethod
@@ -971,7 +933,6 @@ class External:
             env=env,
             image_tag=image_tag,
             container_tag=container_tag,
-            args=args.args,
         )
 
     @staticmethod
