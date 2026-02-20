@@ -878,6 +878,11 @@ class Config:
                 pass
             return 4
 
+        # TODO: rather than baking things like page size into the template context,
+        # I should just auto-detect it when writing the CMakeLists.txt file in the
+        # pep517 backend, and then eliminate it from the base image's qualified name
+        # in the templated Containerfile.
+
         env: str = field()
         manifest: dict[str, Any] = field()
         paths: dict[str, str] = field()

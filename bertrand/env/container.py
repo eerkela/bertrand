@@ -576,6 +576,7 @@ def _ensure_environment_core_metadata(root: Path) -> None:
             "id": core.get("id", uuid.uuid4().hex),
             "tags": core.get("tags", {}),
         })
+        validated, extras, _ = _apply_distribution_compatibility(root, validated, extras)
         merged = _merge_env_metadata(validated.model_dump(mode="json"), extras)
         if merged != current:
             atomic_write_text(
@@ -742,6 +743,19 @@ ENV_REGISTRY_FILE = "env-registry.json"
 ENV_REGISTRY_LOCK = "env-registry.lock"
 ENV_REGISTRY_SYNTAX = 1
 ENV_CORE_KEYS: tuple[str, str, str] = ("version", "id", "tags")
+ENV_DISTRIBUTION_KEY = "distribution"
+ENV_DISTRIBUTION_SYNTAX = 1
+HOST_FINGERPRINT_KEYS: tuple[str, ...] = (
+    "os",
+    "arch",
+    "page_size_kib",
+    "distro_id",
+    "distro_version",
+    "systemd_version",
+    "podman_version",
+)
+HIGH_SIGNAL_HOST_KEYS: frozenset[str] = frozenset({"arch", "page_size_kib"})
+HostFingerprint: TypeAlias = dict[str, str | int | None]
 
 
 def _env_dir(env_root: Path) -> Path:
@@ -859,6 +873,179 @@ def _merge_env_metadata(core: dict[str, Any], extras: dict[str, Any]) -> dict[st
     merged = dict(extras)
     merged.update(core)
     return merged
+
+
+def _page_size_kib() -> int:
+    try:
+        page_size = os.sysconf("SC_PAGESIZE")
+        if isinstance(page_size, int) and page_size > 0:
+            return max(1, page_size // 1024)
+    except (AttributeError, OSError, ValueError):
+        pass
+    return 4
+
+
+def _os_release() -> tuple[str, str]:
+    path = Path("/etc/os-release")
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return "", ""
+
+    fields: dict[str, str] = {}
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        value = value.strip()
+        if value and value[0] == value[-1] and value[0] in ("'", '"'):
+            value = value[1:-1]
+        fields[key] = value
+    return fields.get("ID", ""), fields.get("VERSION_ID", "")
+
+
+def _podman_version() -> str | None:
+    try:
+        result = run(
+            ["podman", "version", "--format", "{{.Version}}"],
+            check=False,
+            capture_output=True
+        )
+    except Exception:
+        return None
+    if result.returncode != 0:
+        return None
+    version = result.stdout.strip()
+    return version or None
+
+
+
+# TODO: I'm hoping that I can avoid fingerprinting and salting the `bertrand` image
+# itself, by just detecting this information when generating the CMakeLists.txt file
+# that actually invokes the compiler, and passing it in that way, rather than baking
+# that information into each image.
+
+
+def _current_host_fingerprint() -> HostFingerprint:
+    host_os = "linux" if sys.platform.startswith("linux") else sys.platform
+    arch = ""
+    try:
+        arch = os.uname().machine.strip()
+    except (AttributeError, OSError):
+        pass
+    distro_id, distro_version = _os_release()
+    try:
+        systemd_version = _systemd_version()
+    except Exception:
+        systemd_version = None
+
+    return {
+        "os": host_os,
+        "arch": arch.lower(),
+        "page_size_kib": _page_size_kib(),
+        "distro_id": distro_id,
+        "distro_version": distro_version,
+        "systemd_version": systemd_version,
+        "podman_version": _podman_version(),
+    }
+
+
+def _load_stored_host_fingerprint(extras: dict[str, Any]) -> HostFingerprint | None:
+    raw_distribution = extras.get(ENV_DISTRIBUTION_KEY)
+    if not isinstance(raw_distribution, dict):
+        return None
+    if raw_distribution.get("syntax") != ENV_DISTRIBUTION_SYNTAX:
+        return None
+
+    raw_host = raw_distribution.get("host")
+    if not isinstance(raw_host, dict):
+        return None
+
+    host: HostFingerprint = {}
+    for key in HOST_FINGERPRINT_KEYS:
+        value = raw_host.get(key)
+        if key == "page_size_kib":
+            if isinstance(value, int):
+                host[key] = value
+            else:
+                return None
+            continue
+
+        if key == "systemd_version":
+            if value is None or isinstance(value, int):
+                host[key] = value
+            else:
+                return None
+            continue
+
+        if key == "podman_version":
+            if value is None or isinstance(value, str):
+                host[key] = value
+            else:
+                return None
+            continue
+
+        if not isinstance(value, str):
+            return None
+        host[key] = value
+
+    return host
+
+
+def _clear_container_records(core: Environment.JSON) -> int:
+    removed = 0
+    for image in core.tags.values():
+        removed += len(image.containers)
+        image.containers = {}
+    return removed
+
+
+def _apply_distribution_compatibility(
+    root: Path,
+    core: Environment.JSON,
+    extras: dict[str, Any],
+) -> tuple[Environment.JSON, dict[str, Any], bool]:
+    changed = False
+    current_host = _current_host_fingerprint()
+    stored_host = _load_stored_host_fingerprint(extras)
+
+    if stored_host is not None:
+        mismatches = {
+            key: (stored_host.get(key), current_host.get(key))
+            for key in HOST_FINGERPRINT_KEYS
+            if stored_host.get(key) != current_host.get(key)
+        }
+        if mismatches:
+            details = ", ".join(
+                f"{key}={old!r}->{new!r}"
+                for key, (old, new) in sorted(mismatches.items(), key=lambda item: item[0])
+            )
+            print(
+                f"bertrand: host compatibility drift detected for environment at "
+                f"{root}: {details}",
+                file=sys.stderr
+            )
+            if any(key in HIGH_SIGNAL_HOST_KEYS for key in mismatches):
+                removed = _clear_container_records(core)
+                if removed:
+                    changed = True
+                print(
+                    "bertrand: architecture/page-size mismatch detected; cleared stored "
+                    "container records while preserving image build args.  Containers "
+                    "will be rebuilt on demand.",
+                    file=sys.stderr
+                )
+
+    distribution_payload = {
+        "syntax": ENV_DISTRIBUTION_SYNTAX,
+        "host": current_host,
+    }
+    if extras.get(ENV_DISTRIBUTION_KEY) != distribution_payload:
+        extras[ENV_DISTRIBUTION_KEY] = distribution_payload
+        changed = True
+
+    return core, extras, changed
 
 
 def _read_env_core(root: Path) -> tuple[Environment.JSON, dict[str, Any]]:
@@ -1593,15 +1780,14 @@ class Environment:
 
         try:
             # try to load existing metadata if possible
-            data = _read_env_metadata(self.root)
-            if ENV_LAYOUT_KEY not in data:
-                raise OSError(
-                    f"missing '{ENV_LAYOUT_KEY}' in environment metadata at "
-                    f"{_env_file(self.root)}"
-                )
-
-            core, _ = _split_env_metadata(data)
-            self._json = self.JSON.model_validate(core)
+            self._json, extras = _read_env_core(self.root)
+            self._json, extras, changed = _apply_distribution_compatibility(
+                self.root,
+                self._json,
+                extras,
+            )
+            if changed:
+                _write_env_core(self.root, self._json, extras)
 
             # Ensure layout metadata is valid while the env lock is held.
             Config.load(self.root)
