@@ -9,10 +9,11 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
-from typing import Callable
+from typing import Callable, cast
 
 from .env.code import CodeError, open_editor
 from .env.pipeline import (
+    JSONValue,
     Pipeline,
     on_init,
     on_build,
@@ -35,9 +36,9 @@ from .env.container import Environment
 from .env.config import (
     AGENTS,
     ASSISTS,
+    ENV_LAYOUT_KEY,
     MOUNT,
     Config,
-    compile_commands_sources,
 )
 from .env.run import confirm
 from . import __version__
@@ -51,6 +52,11 @@ RUNTIME_TAG_KEYS: tuple[str, str, str] = (
     "BERTRAND_IMAGE",
     "BERTRAND_CONTAINER",
 )
+# Temporary init defaults until profile/capability CLI expansion is finalized.
+INIT_LANG_CHOICES: tuple[str, str] = ("python", "cpp")
+INIT_LANG_DEFAULTS: tuple[str, str] = ("python", "cpp")
+INIT_CODE_CHOICES: tuple[str, str] = ("vscode", "none")
+INIT_CODE_DEFAULT: str = "vscode"
 
 
 # # create swap memory for large builds
@@ -77,6 +83,57 @@ def _parse(path: str | None) -> tuple[str | None, str, str]:
         return (None, "", "")
     else:
         return Environment.parse(path)
+
+
+def _dedupe(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        out.append(value)
+    return out
+
+
+def _existing_layout(env_root: Path) -> Config | None:
+    env_file = env_root / ".bertrand" / "env.json"
+    if not env_file.exists():
+        return None
+    if not env_file.is_file():
+        raise OSError(f"environment metadata path is not a file: {env_file}")
+    try:
+        data = json_parser.loads(env_file.read_text(encoding="utf-8"))
+    except Exception as err:
+        raise OSError(f"failed to parse environment metadata at {env_file}: {err}") from err
+    if not isinstance(data, dict):
+        raise OSError(f"environment metadata at {env_file} must be a JSON object")
+    if ENV_LAYOUT_KEY not in data:
+        return None
+    return Config.load(env_root)
+
+
+def _check_init_layout_drift(
+    env_root: Path,
+    *,
+    profile: str,
+    capabilities: list[str],
+) -> None:
+    existing = _existing_layout(env_root)
+    if existing is None:
+        return
+
+    existing_profile = existing.manifest.profile
+    existing_capabilities = list(existing.manifest.capabilities)
+    if existing_profile == profile and existing_capabilities == capabilities:
+        return
+
+    raise OSError(
+        f"init layout mismatch for existing environment at {env_root}: requested "
+        f"profile='{profile}', capabilities={capabilities}; existing "
+        f"profile='{existing_profile}', capabilities={existing_capabilities}. "
+        "Use matching init options or migrate/recreate the environment."
+    )
 
 
 class External:
@@ -116,6 +173,8 @@ class External:
 
         def init(self) -> None:
             """Add the 'init' command to the parser."""
+            # TODO: set the choices/defaults based dynamically based on the contents
+            # of the global config maps, rather than hardcoding them here.
             command = self.commands.add_parser(
                 "init",
                 help=
@@ -135,18 +194,35 @@ class External:
                     "generated pyproject.toml.",
             )
             command.add_argument(
+                "--profile",
+                choices=("flat", "src"),
+                default="src",
+                help=
+                    "Layout profile to apply for environment structure and resource "
+                    "placement (default: src).",
+            )
+            command.add_argument(
+                "--lang",
+                action="append",
+                choices=("python", "cpp"),
+                default=None,
+                help=
+                    "Language capability to include (repeatable).  If omitted, defaults "
+                    "to python and cpp.",
+            )
+            command.add_argument(
                 "--code",
-                nargs=1,
-                default=["vscode"],
+                choices=INIT_CODE_CHOICES,
+                default=INIT_CODE_DEFAULT,
                 help=
                     "The text editor to launch when running 'bertrand code' within "
                     "the environment.  Note that the editor command is always invoked "
                     "on the host system (rather than inside a container), and will be "
                     "rooted at the environment directory.  Bertrand also attempts to "
                     "mount the container's local toolchain (including LSPs, AI "
-                    "assistants, linters, etc.) to the editor via its remote "
-                    "development extensions, if supported.  Currently only supports "
-                    "vscode, but other editors may be added in the future.",
+                    "assistants, linters, etc.) to the editor via remote development "
+                    "extensions, if supported.  Currently only supports vscode, but "
+                    "other editors may be added in the future.",
             )
             command.add_argument(
                 "--agent",
@@ -783,15 +859,49 @@ class External:
         ----------
         args : argparse.Namespace
             The parsed command-line arguments.
+
+        Raises
+        ------
+        OSError
+            If the specified path includes an image or container tag, which is not
+            allowed when initializing an environment directory, or if requested
+            layout options differ from an existing manifest.
         """
         env, image_tag, container_tag = _parse(args.path[0])
+        if env is None:
+            raise OSError("environment path is required for init")
+        if image_tag or container_tag:
+            raise OSError(
+                "cannot specify image or container tag when initializing an environment "
+                "directory"
+            )
+
+        # resolve profile + capabilities
+        profile = args.profile
+        langs = list(args.lang) if args.lang is not None else list(INIT_LANG_DEFAULTS)
+        code_capability = args.code
+        capabilities = _dedupe(
+            langs + ([] if code_capability == "none" else [code_capability])
+        )
+        if not capabilities:
+            raise OSError("init capabilities must not be empty")
+
+        # resolve environment path and check for drift from manifest
+        root = Path(env).expanduser().resolve()
+        _check_init_layout_drift(
+            root,
+            profile=profile,
+            capabilities=capabilities,
+        )
+
         on_init.do(
             env=env,
             image_tag=image_tag,
             container_tag=container_tag,
-            code=args.code[0],
             agent=args.agent[0],
             assist=args.assist[0],
+            profile=profile,
+            capabilities=cast(JSONValue, capabilities),
         )
 
     @staticmethod
@@ -1368,7 +1478,7 @@ class Internal:
         SystemExit
             If the build process fails with a non-zero exit code.
         """
-        with Config(MOUNT) as config:
+        with Config.load(MOUNT) as config:
             config.sync()
         cmd: list[str] = ["uv", "pip", "install"]
         if inside_container():
@@ -1391,12 +1501,13 @@ class Internal:
         Raises
         ------
         OSError
-            If `compile_commands.json` is missing or malformed.
+            If source discovery fails, e.g. due to malformed `compile_commands.json`.
         SystemExit
             If any check command exits non-zero.
         """
-        with Config(MOUNT) as config:
+        with Config.load(MOUNT) as config:
             config.sync()
+            files = config.sources()
 
         # Python static checks
         for cmd in (["ruff", "check", "."], ["ty", "check", "."]):
@@ -1404,8 +1515,7 @@ class Internal:
             if result.returncode != 0:
                 raise SystemExit(result.returncode)
 
-        # C++ static checks: require compile_commands.json in project root
-        files = compile_commands_sources()
+        # C++ static checks over resolved compilation sources.
         for source in files:
             result = subprocess.run(
                 ["clang-tidy", "-p", str(MOUNT), str(source)],
@@ -1428,20 +1538,20 @@ class Internal:
         Raises
         ------
         OSError
-            If `compile_commands.json` is missing or malformed.
+            If source discovery fails, e.g. due to malformed `compile_commands.json`.
         SystemExit
             If formatting exits non-zero.
         """
-        with Config(MOUNT) as config:
+        with Config.load(MOUNT) as config:
             config.sync()
+            files = config.sources()
 
         # Python formatting
         result = subprocess.run(["ruff", "format", "."], check=False, cwd=MOUNT)
         if result.returncode != 0:
             raise SystemExit(result.returncode)
 
-        # C++ formatting: require compile_commands.json in project root
-        files = compile_commands_sources()
+        # C++ formatting over resolved compilation sources.
         for source in files:
             result = subprocess.run(
                 ["clang-format", "-i", str(source)],

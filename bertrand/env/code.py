@@ -26,7 +26,6 @@ from .config import (
     CONTAINER_BIN_ENV,
     CONTAINER_ID_ENV,
     EDITOR_BIN_ENV,
-    EDITORS,
     HOST_ENV,
     MOUNT,
     VSCODE_WORKSPACE_RESOURCE_ID,
@@ -629,9 +628,15 @@ def _service_path(key: str, path: str) -> str:
 
 
 def _render_code_service(env_root: Path) -> str:
-    # read editor choice from pyproject.toml
+    # Editor integration is capability-driven.  For now, host attach is implemented
+    # only for vscode-capable environments.
     with Config.load(env_root) as config:
-        editor = config["code"]  # validated on config enter
+        if "vscode" not in config.capabilities:
+            raise CodeError(
+                "invalid_config",
+                "environment is missing required 'vscode' capability for host-side "
+                "editor attach"
+            )
 
     # find RPC server, editor, and container executables on PATH
     rpc_bin = shutil.which("bertrand-code-rpc")
@@ -642,13 +647,16 @@ def _render_code_service(env_root: Path) -> str:
             "console scripts are installed and discoverable via PATH before "
             "interacting with the code server."
         )
-    editor_bin = shutil.which(EDITORS[editor])
+    editor_bin = None
+    for candidate in VSCODE_EXECUTABLE_CANDIDATES:
+        editor_bin = shutil.which(candidate)
+        if editor_bin is not None:
+            break
     if editor_bin is None:
         raise CodeError(
             "invalid_service_environment",
-            f"editor executable for '{editor}' not found on PATH.  Ensure that your "
-            "chosen editor is installed and discoverable via PATH before "
-            "interacting with the code server."
+            "no supported VSCode executable found on PATH.  Searched: "
+            f"{', '.join(VSCODE_EXECUTABLE_CANDIDATES)}"
         )
     container_bin = shutil.which("podman")
     if container_bin is None:

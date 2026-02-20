@@ -732,12 +732,6 @@ class PyProject(Resource):
             supported=SHELLS,
             description="shell",
         )
-        code = self._require_choice(
-            _require_str_value(bertrand.get("code"), where="tool.bertrand.code"),
-            where="tool.bertrand.code",
-            supported=EDITORS,
-            description="editor",
-        )
         agent = self._require_choice(
             _require_str_value(bertrand.get("agent"), where="tool.bertrand.agent"),
             where="tool.bertrand.agent",
@@ -752,7 +746,6 @@ class PyProject(Resource):
         )
         return {
             "shell": shell,
-            "code": code,
             "agent": agent,
             "assist": assist,
         }
@@ -1078,7 +1071,6 @@ class Config:
         manifest: dict[str, Any] = field()
         paths: dict[str, str] = field()
         project_name: str = field()
-        code: str = field()
         agent: str = field()
         assist: str = field()
         shell: str = field(default=DEFAULT_SHELL)
@@ -1520,7 +1512,6 @@ class Config:
                 for resource_id in sorted(self.manifest.resources)
             },
             project_name=sanitize_name(self.root.name, replace="-"),
-            code=_expect_str("code", ctx),
             agent=_expect_str("agent", ctx),
             assist=_expect_str("assist", ctx),
         )
