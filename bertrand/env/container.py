@@ -488,60 +488,48 @@ def delegate_controllers(ctx: Pipeline.InProgress) -> None:
                         file=sys.stderr
                     )
 
-
-# TODO: review and maybe simplify these helpers
-
-
-def _resolve_profile_from_ctx(ctx: Pipeline.InProgress) -> str | None:
-    raw = ctx.get("profile")
-    if raw is None:
-        return None
-    if not isinstance(raw, str):
-        raise TypeError("profile must be a string")
-    profile = raw.strip().lower()
-    if not profile:
-        raise OSError("profile must be non-empty when provided")
-    return profile
-
-
-def _resolve_capabilities_from_ctx(ctx: Pipeline.InProgress) -> list[str] | None:
-    raw = ctx.get("capabilities")
-    if raw is None:
-        return None
-    if not isinstance(raw, (list, tuple)):
-        raise TypeError("capabilities must be a list or tuple of strings")
-
-    out: list[str] = []
-    seen: set[str] = set()
-    for idx, item in enumerate(raw):
-        if not isinstance(item, str):
-            raise TypeError(
-                f"capabilities[{idx}] must be a string, got {type(item).__name__}"
-            )
-        capability = item.strip().lower()
-        if not capability:
-            raise OSError(
-                f"capabilities[{idx}] must be non-empty when provided"
-            )
-        if capability in seen:
-            continue
-        seen.add(capability)
-        out.append(capability)
-
-    if not out:
-        raise OSError("capabilities must not be empty when provided")
-    return out
-
-
 def _resolve_init_layout_options(
     ctx: Pipeline.InProgress,
     env_root: Path
 ) -> tuple[str, list[str]]:
-    profile = _resolve_profile_from_ctx(ctx)
-    capabilities = _resolve_capabilities_from_ctx(ctx)
+    raw_profile = ctx.get("profile")
+    profile: str | None
+    if raw_profile is None:
+        profile = None
+    elif isinstance(raw_profile, str):
+        profile = raw_profile.strip().lower()
+        if not profile:
+            raise OSError("profile must be non-empty when provided")
+    else:
+        raise TypeError("profile must be a string")
 
-    if profile is not None and capabilities is not None:
-        return profile, capabilities
+    raw_capabilities = ctx.get("capabilities")
+    capabilities: list[str] | None
+    if raw_capabilities is None:
+        capabilities = None
+    else:
+        if not isinstance(raw_capabilities, (list, tuple)):
+            raise TypeError("capabilities must be a list or tuple of strings")
+        capabilities = []
+        seen: set[str] = set()
+        for idx, item in enumerate(raw_capabilities):
+            if not isinstance(item, str):
+                raise TypeError(
+                    f"capabilities[{idx}] must be a string, got {type(item).__name__}"
+                )
+            capability = item.strip().lower()
+            if not capability:
+                raise OSError(
+                    f"capabilities[{idx}] must be non-empty when provided"
+                )
+            if capability in seen:
+                continue
+            seen.add(capability)
+            capabilities.append(capability)
+        if not capabilities:
+            raise OSError("capabilities must not be empty when provided")
+
+    existing: Config | None = None
 
     missing: list[str] = []
     if profile is None:
@@ -549,41 +537,51 @@ def _resolve_init_layout_options(
     if capabilities is None:
         missing.append("capabilities")
 
-    try:
-        existing = Config.load(env_root)
-    except OSError as err:
-        missing_text = ", ".join(missing)
-        raise OSError(
-            f"missing required init fact(s): {missing_text}; and failed to load "
-            f"existing layout manifest from {_env_file(env_root)}: {err}"
-        ) from err
+    if missing:
+        try:
+            existing = Config.load(env_root)
+        except OSError as err:
+            missing_text = ", ".join(missing)
+            raise OSError(
+                f"missing required init fact(s): {missing_text}; and failed to load "
+                f"existing layout manifest from {_env_file(env_root)}: {err}"
+            ) from err
 
     if profile is None:
+        if existing is None:
+            raise OSError("missing required init fact: profile")
         profile = existing.manifest.profile
     if capabilities is None:
+        if existing is None:
+            raise OSError("missing required init fact: capabilities")
         capabilities = list(existing.manifest.capabilities)
 
-    if not capabilities:
-        raise OSError("capabilities must not be empty")
+    # if the environment already has a persisted layout manifest, require init
+    # arguments to match it exactly.
+    env_file = _env_file(env_root)
+    if env_file.exists():
+        if not env_file.is_file():
+            raise OSError(f"environment metadata path is not a file: {env_file}")
+        try:
+            data = json_parser.loads(env_file.read_text(encoding="utf-8"))
+        except Exception as err:
+            raise OSError(f"failed to parse environment metadata at {env_file}: {err}") from err
+        if not isinstance(data, dict):
+            raise OSError(f"environment metadata at {env_file} must be a JSON object")
+        if ENV_LAYOUT_KEY in data:
+            if existing is None:
+                existing = Config.load(env_root)
+            existing_profile = existing.manifest.profile
+            existing_capabilities = list(existing.manifest.capabilities)
+            if existing_profile != profile or existing_capabilities != capabilities:
+                raise OSError(
+                    f"init layout mismatch for existing environment at {env_root}: requested "
+                    f"profile='{profile}', capabilities={capabilities}; existing "
+                    f"profile='{existing_profile}', capabilities={existing_capabilities}. "
+                    "Use matching init options or migrate/recreate the environment."
+                )
+
     return profile, capabilities
-
-
-def _ensure_environment_core_metadata(root: Path) -> None:
-    with lock_env(root, timeout=TIMEOUT):
-        current = _read_env_metadata(root, missing_ok=True)
-        core, extras = _split_env_metadata(current)
-        validated = Environment.JSON.model_validate({
-            "version": core.get("version", VERSION),
-            "id": core.get("id", uuid.uuid4().hex),
-            "tags": core.get("tags", {}),
-        })
-        validated, extras, _ = _apply_distribution_compatibility(root, validated, extras)
-        merged = _merge_env_metadata(validated.model_dump(mode="json"), extras)
-        if merged != current:
-            atomic_write_text(
-                _env_file(root),
-                json_parser.dumps(merged, indent=2) + "\n"
-            )
 
 
 @on_init(requires=[delegate_controllers], ephemeral=True)
@@ -621,7 +619,21 @@ def init_environment(ctx: Pipeline.InProgress) -> None:
     cfg.apply(ctx)
 
     # preserve non-core env.json keys (notably `layout`) while ensuring core metadata.
-    _ensure_environment_core_metadata(root)
+    with lock_env(root, timeout=TIMEOUT):
+        current = _read_env_metadata(root, missing_ok=True)
+        core, extras = _split_env_metadata(current)
+        validated = Environment.JSON.model_validate({
+            "version": core.get("version", VERSION),
+            "id": core.get("id", uuid.uuid4().hex),
+            "tags": core.get("tags", {}),
+        })
+        validated, extras, _ = _apply_distribution_compatibility(root, validated, extras)
+        merged = _merge_env_metadata(validated.model_dump(mode="json"), extras)
+        if merged != current:
+            atomic_write_text(
+                _env_file(root),
+                json_parser.dumps(merged, indent=2) + "\n"
+            )
 
     # add to global environment registry
     _reconcile_registry(root)
@@ -699,6 +711,33 @@ def _list_podman_ids(args: list[str]) -> list[str] | None:
     if result.returncode != 0:
         return None
     return [line for line in result.stdout.splitlines() if line.strip()]
+
+
+def _container_ids_by_status(*, labels: list[str], statuses: tuple[str, ...]) -> list[str]:
+    cmd = [
+        "container",
+        "ls",
+        "-a",
+        "-q",
+        "--no-trunc",
+    ]
+    for label in labels:
+        cmd.extend(["--filter", f"label={label}"])
+
+    out: list[str] = []
+    seen: set[str] = set()
+    for status in statuses:
+        result = podman_cmd(
+            [*cmd, "--filter", f"status={status}"],
+            capture_output=True
+        )
+        for raw_id in result.stdout.splitlines():
+            container_id = raw_id.strip()
+            if not container_id or container_id in seen:
+                continue
+            seen.add(container_id)
+            out.append(container_id)
+    return out
 
 
 def _remove_dangling_volumes(*, force: bool, missing_ok: bool) -> None:
@@ -920,14 +959,6 @@ def _podman_version() -> str | None:
     version = result.stdout.strip()
     return version or None
 
-
-
-# TODO: I'm hoping that I can avoid fingerprinting and salting the `bertrand` image
-# itself, by just detecting this information when generating the CMakeLists.txt file
-# that actually invokes the compiler, and passing it in that way, rather than baking
-# that information into each image.
-
-
 def _current_host_fingerprint() -> HostFingerprint:
     host_os = "linux" if sys.platform.startswith("linux") else sys.platform
     arch = ""
@@ -994,14 +1025,6 @@ def _load_stored_host_fingerprint(extras: dict[str, Any]) -> HostFingerprint | N
     return host
 
 
-def _clear_container_records(core: Environment.JSON) -> int:
-    removed = 0
-    for image in core.tags.values():
-        removed += len(image.containers)
-        image.containers = {}
-    return removed
-
-
 def _apply_distribution_compatibility(
     root: Path,
     core: Environment.JSON,
@@ -1028,7 +1051,10 @@ def _apply_distribution_compatibility(
                 file=sys.stderr
             )
             if any(key in HIGH_SIGNAL_HOST_KEYS for key in mismatches):
-                removed = _clear_container_records(core)
+                removed = 0
+                for image in core.tags.values():
+                    removed += len(image.containers)
+                    image.containers = {}
                 if removed:
                     changed = True
                 print(
@@ -1108,10 +1134,6 @@ def _rekey_environment(root: Path, taken_ids: set[str]) -> tuple[str, str]:
         return old_id, new_id
 
 
-def _is_valid_environment_root(path: Path) -> bool:
-    return _env_uuid_for_root(path) is not None
-
-
 def _discover_environment_mounts() -> list[Path]:
     container_ids = _list_podman_ids([
         "container",
@@ -1157,8 +1179,8 @@ def _reconcile_registry(add: Path | None) -> list[Path]:
     if add is not None:
         add = add.expanduser().resolve()
 
-    # NOTE: lock ordering is registry > environment.  `_is_valid_environment_root()`
-    # takes per-environment locks while this registry lock is held.
+    # NOTE: lock ordering is registry > environment.  `_env_uuid_for_root()` takes
+    # per-environment locks while this registry lock is held.
     with Lock(_registry_lock(), timeout=TIMEOUT):
         path = _registry_file()
         changed = False
@@ -1625,10 +1647,7 @@ class Image(BaseModel):
             args=container_args,
             entry_point=[],  # default entry point
         )
-        container_name = (
-            f"{sanitize_name(env_root.name)}.{image_tag}.{container_tag}.{env_uuid[:13]}"
-        )
-        cid_file = _cid_file(env_root, container_name)
+        cid_file = _cid_file(env_root, f"create-{uuid.uuid4().hex}")
         cache_prefix = f"bertrand-{env_uuid[:13]}"
         uv_volume = f"{cache_prefix}-uv"
         bertrand_volume = f"{cache_prefix}-bertrand"
@@ -1644,8 +1663,6 @@ class Image(BaseModel):
             podman_cmd([
                 "create",
                 "--init",
-                f"--name={container_name}",
-                f"--hostname={container_name}",
                 "--cidfile", str(cid_file),
 
                 # labels for podman-level lookup
@@ -1688,7 +1705,7 @@ class Image(BaseModel):
         # remove existing container with same tag if needed
         if existing is not None:
             try:
-                podman_cmd(["container", "rm", "-f", existing.id], check=False)
+                podman_cmd(["container", "rm", "-f", existing.id])
             except CommandError as err:
                 podman_cmd(["container", "rm", "-f", container.id], check=False)
                 raise err
@@ -2211,83 +2228,55 @@ def _normalize_declared_images(raw: Any, *, root: Path) -> dict[str, DeclaredIma
             raise OSError(
                 "invalid non-string image tag in config snapshot under 'images'"
             )
-        image_tag = raw_image_tag.strip()
-        sanitized_image = sanitize_name(image_tag)
-        if image_tag != sanitized_image:
-            raise OSError(
-                "invalid image tag in config snapshot under 'images': "
-                f"'{image_tag}' (sanitizes to: '{sanitized_image}')"
-            )
 
         if not isinstance(raw_image, Mapping):
             raise OSError(
                 "invalid image declaration in config snapshot under 'images': "
-                f"'{image_tag}'"
+                f"'{raw_image_tag}'"
             )
         raw_args = raw_image.get("args", ())
         raw_containers = raw_image.get("containers", {})
         if not isinstance(raw_containers, Mapping):
             raise OSError(
                 "invalid containers declaration in config snapshot for image "
-                f"'{image_tag}'"
+                f"'{raw_image_tag}'"
             )
 
-        containers: dict[str, tuple[str, ...]] = {"": tuple()}
+        containers: dict[str, tuple[str, ...]] = {}
         for raw_container_tag, raw_container_args in raw_containers.items():
             if not isinstance(raw_container_tag, str):
                 raise OSError(
                     "invalid non-string container tag in config snapshot under "
-                    f"'images.{image_tag}.containers'"
+                    f"'images.{raw_image_tag}.containers'"
                 )
-            container_tag = raw_container_tag.strip()
-            sanitized_container = sanitize_name(container_tag)
-            if container_tag != sanitized_container:
-                raise OSError(
-                    "invalid container tag in config snapshot under "
-                    f"'images.{image_tag}.containers': '{container_tag}' "
-                    f"(sanitizes to: '{sanitized_container}')"
-                )
-            containers[container_tag] = _normalize_declared_args(
+            containers[raw_container_tag] = _normalize_declared_args(
                 raw_container_args,
                 where=(
                     "images."
-                    f"{image_tag if image_tag else '<default>'}.containers."
-                    f"{container_tag if container_tag else '<default>'}.args"
+                    f"{raw_image_tag if raw_image_tag else '<default>'}.containers."
+                    f"{raw_container_tag if raw_container_tag else '<default>'}.args"
                 ),
             )
+        if "" not in containers:
+            containers[""] = tuple()
 
-        # Keep default container first while preserving declaration order for the rest.
-        default_container_args = containers.get("", tuple())
-        ordered_containers: dict[str, tuple[str, ...]] = {"": default_container_args}
-        for container_tag, container_args in containers.items():
-            if container_tag == "":
-                continue
-            ordered_containers[container_tag] = container_args
-
-        images[image_tag] = {
+        images[raw_image_tag] = {
             "args": _normalize_declared_args(
                 raw_args,
                 where=(
                     "images."
-                    f"{image_tag if image_tag else '<default>'}.args"
+                    f"{raw_image_tag if raw_image_tag else '<default>'}.args"
                 ),
             ),
-            "containers": ordered_containers,
+            "containers": containers,
         }
 
-    # Keep default image first while preserving declaration order for the rest.
-    default_image = images.get("")
-    if default_image is None:
-        default_image = {
+    if "" not in images:
+        images[""] = {
             "args": tuple(),
             "containers": {"": tuple()},
         }
-    ordered_images: dict[str, DeclaredImage] = {"": default_image}
-    for image_tag, image in images.items():
-        if image_tag == "":
-            continue
-        ordered_images[image_tag] = image
-    return ordered_images
+    return images
 
 
 def _load_declared_images(root: Path) -> dict[str, DeclaredImage]:
@@ -2373,7 +2362,9 @@ def _validate_args(x: JSONView) -> list[str]:
         return []
     if isinstance(x, tuple) and all(isinstance(i, str) for i in x):
         return list(cast(tuple[str, ...], x))
-    raise TypeError("args must be a list of strings")
+    if isinstance(x, list) and all(isinstance(i, str) for i in x):
+        return list(cast(list[str], x))
+    raise TypeError("args must be a sequence of strings")
 
 
 @dataclass
@@ -2542,22 +2533,11 @@ class Build(_Command):
         )
         if container.inspect() is None:
             image.containers.pop(container_tag, None)
-
-    @staticmethod
-    def _materialize_all_containers(
-        *,
-        env: Environment,
-        image: Image,
-        image_tag: str,
-        declared: DeclaredImage,
-    ) -> None:
-        for container_tag in declared["containers"]:
-            Build._materialize_container(
-                env=env,
-                image=image,
-                image_tag=image_tag,
-                declared=declared,
-                container_tag=container_tag,
+            image_text = image_tag if image_tag else "<default>"
+            container_text = container_tag if container_tag else "<default>"
+            raise OSError(
+                f"failed to materialize container '{container_text}' for image '{image_text}' "
+                f"in environment at {env.root}: inspect failed after create"
             )
 
     @staticmethod
@@ -2565,18 +2545,6 @@ class Build(_Command):
         for container in candidate.containers.values():
             podman_cmd(["container", "rm", "-f", container.id], check=False)
         podman_cmd(["image", "rm", "-f", candidate.id], check=False)
-
-    @staticmethod
-    def _swap_image(
-        *,
-        env: Environment,
-        image_tag: str,
-        existing: Image | None,
-        candidate: Image,
-    ) -> None:
-        if existing is not None:
-            existing.remove(force=True, timeout=env.timeout, missing_ok=True)
-        env.tags[image_tag] = candidate
 
     @staticmethod
     def container(
@@ -2590,6 +2558,12 @@ class Build(_Command):
         declared, existing, candidate, changed = Build._build_image_candidate(
             env=env,
             image_tag=image_tag,
+        )
+        _require_declared_container(
+            env.root,
+            image_tag,
+            declared,
+            container_tag,
         )
 
         # no runtime image yet -> materialize only the selected container
@@ -2624,18 +2598,17 @@ class Build(_Command):
 
         # changed digest -> promote to full image-scope materialization before swap
         try:
-            Build._materialize_all_containers(
-                env=env,
-                image=candidate,
-                image_tag=image_tag,
-                declared=declared,
-            )
-            Build._swap_image(
-                env=env,
-                image_tag=image_tag,
-                existing=existing,
-                candidate=candidate,
-            )
+            for declared_container_tag in declared["containers"]:
+                Build._materialize_container(
+                    env=env,
+                    image=candidate,
+                    image_tag=image_tag,
+                    declared=declared,
+                    container_tag=declared_container_tag,
+                )
+            if existing is not None:
+                existing.remove(force=True, timeout=env.timeout, missing_ok=True)
+            env.tags[image_tag] = candidate
         except Exception:
             Build._cleanup_candidate_image(candidate)
             raise
@@ -2656,12 +2629,14 @@ class Build(_Command):
         # no runtime image yet -> materialize all declared containers and register image
         if existing is None:
             try:
-                Build._materialize_all_containers(
-                    env=env,
-                    image=candidate,
-                    image_tag=image_tag,
-                    declared=declared,
-                )
+                for declared_container_tag in declared["containers"]:
+                    Build._materialize_container(
+                        env=env,
+                        image=candidate,
+                        image_tag=image_tag,
+                        declared=declared,
+                        container_tag=declared_container_tag,
+                    )
             except Exception:
                 Build._cleanup_candidate_image(candidate)
                 raise
@@ -2673,28 +2648,29 @@ class Build(_Command):
             declared_args = list(declared["args"])
             if existing.args != declared_args:
                 existing.args = declared_args
-            Build._materialize_all_containers(
-                env=env,
-                image=existing,
-                image_tag=image_tag,
-                declared=declared,
-            )
+            for declared_container_tag in declared["containers"]:
+                Build._materialize_container(
+                    env=env,
+                    image=existing,
+                    image_tag=image_tag,
+                    declared=declared,
+                    container_tag=declared_container_tag,
+                )
             return
 
         # changed digest -> materialize all declared containers on candidate, then swap
         try:
-            Build._materialize_all_containers(
-                env=env,
-                image=candidate,
-                image_tag=image_tag,
-                declared=declared,
-            )
-            Build._swap_image(
-                env=env,
-                image_tag=image_tag,
-                existing=existing,
-                candidate=candidate,
-            )
+            for declared_container_tag in declared["containers"]:
+                Build._materialize_container(
+                    env=env,
+                    image=candidate,
+                    image_tag=image_tag,
+                    declared=declared,
+                    container_tag=declared_container_tag,
+                )
+            if existing is not None:
+                existing.remove(force=True, timeout=env.timeout, missing_ok=True)
+            env.tags[image_tag] = candidate
         except Exception:
             Build._cleanup_candidate_image(candidate)
             raise
@@ -2742,14 +2718,30 @@ class Start(_Command):
         )
         image = env[image_tag]
         if image is None:
-            raise OSError(f"unable to build image '{image_tag}'")
+            image_text = image_tag if image_tag else "<default>"
+            raise OSError(
+                f"failed to start declared container for image '{image_text}' in "
+                f"environment at {env.root}: image missing after build/materialization"
+            )
         container = image.containers.get(container_tag)
         if container is None:
-            return
+            image_text = image_tag if image_tag else "<default>"
+            container_text = container_tag if container_tag else "<default>"
+            raise OSError(
+                f"failed to start declared container '{container_text}' for image "
+                f"'{image_text}' in environment at {env.root}: missing after "
+                "build/materialization"
+            )
         inspect = container.inspect()
         if inspect is None:
             image.containers.pop(container_tag, None)
-            return
+            image_text = image_tag if image_tag else "<default>"
+            container_text = container_tag if container_tag else "<default>"
+            raise OSError(
+                f"failed to start declared container '{container_text}' for image "
+                f"'{image_text}' in environment at {env.root}: inspect failed after "
+                "build/materialization"
+            )
         Container.start(inspect)
 
     @staticmethod
@@ -2764,16 +2756,32 @@ class Start(_Command):
         Build.image(ctx, env=env, image_tag=image_tag, **kwargs)
         image = env[image_tag]
         if image is None:
-            raise OSError(f"unable to build image '{image_tag}'")
+            image_text = image_tag if image_tag else "<default>"
+            raise OSError(
+                f"failed to start declared containers for image '{image_text}' in "
+                f"environment at {env.root}: image missing after build/materialization"
+            )
         for container_tag in declared_image["containers"]:
             container = image.containers.get(container_tag)
             if container is None:
-                continue
+                image_text = image_tag if image_tag else "<default>"
+                container_text = container_tag if container_tag else "<default>"
+                raise OSError(
+                    f"failed to start declared container '{container_text}' for image "
+                    f"'{image_text}' in environment at {env.root}: missing after "
+                    "build/materialization"
+                )
             inspect = container.inspect()
             if inspect is None:
                 image.containers.pop(container_tag)
-            else:
-                Container.start(inspect)
+                image_text = image_tag if image_tag else "<default>"
+                container_text = container_tag if container_tag else "<default>"
+                raise OSError(
+                    f"failed to start declared container '{container_text}' for image "
+                    f"'{image_text}' in environment at {env.root}: inspect failed after "
+                    "build/materialization"
+                )
+            Container.start(inspect)
 
     @staticmethod
     def environment(
@@ -3122,6 +3130,7 @@ class Run(_Command):
 
     @staticmethod
     def all(
+        ctx: Pipeline.InProgress,
         *,
         args: list[str],
         **kwargs: Any
@@ -3149,37 +3158,16 @@ class Stop(_Command):
 
     @staticmethod
     def _batch(labels: list[str], timeout: int) -> None:
-        cmd = [
-            "container",
-            "ls",
-            "-a",
-            "-q",
-            "--no-trunc",
-        ]
-        for label in labels:
-            cmd.extend(["--filter", f"label={label}"])
-
-        running = list(podman_cmd(
-            [*cmd, "--filter", "status=running"],
-            capture_output=True
-        ).stdout.strip().splitlines())
-        restarting = list(podman_cmd(
-            [*cmd, "--filter", "status=restarting"],
-            capture_output=True
-        ).stdout.strip().splitlines())
-        paused = list(podman_cmd(
-            [*cmd, "--filter", "status=paused"],
-            capture_output=True
-        ).stdout.strip().splitlines())
-
-        if running or restarting or paused:
+        ids = _container_ids_by_status(
+            labels=labels,
+            statuses=("running", "restarting", "paused"),
+        )
+        if ids:
             podman_cmd([
                 "container",
                 "stop",
                 "-t", str(timeout),
-                *running,
-                *restarting,
-                *paused,
+                *ids,
             ], check=False)
 
     @staticmethod
@@ -3261,31 +3249,15 @@ class Pause(_Command):
 
     @staticmethod
     def _batch(labels: list[str]) -> None:
-        cmd = [
-            "container",
-            "ls",
-            "-a",
-            "-q",
-            "--no-trunc",
-        ]
-        for label in labels:
-            cmd.extend(["--filter", f"label={label}"])
-
-        running = list(podman_cmd(
-            [*cmd, "--filter", "status=running"],
-            capture_output=True
-        ).stdout.strip().splitlines())
-        restarting = list(podman_cmd(
-            [*cmd, "--filter", "status=restarting"],
-            capture_output=True
-        ).stdout.strip().splitlines())
-
-        if running or restarting:
+        ids = _container_ids_by_status(
+            labels=labels,
+            statuses=("running", "restarting"),
+        )
+        if ids:
             podman_cmd([
                 "container",
                 "pause",
-                *running,
-                *restarting,
+                *ids,
             ], check=False)
 
     @staticmethod
@@ -3357,23 +3329,12 @@ class Resume(_Command):
 
     @staticmethod
     def _batch(labels: list[str]) -> None:
-        cmd = [
-            "container",
-            "ls",
-            "-a",
-            "-q",
-            "--no-trunc",
-        ]
-        for label in labels:
-            cmd.extend(["--filter", f"label={label}"])
-
-        paused = list(podman_cmd(
-            [*cmd, "--filter", "status=paused"],
-            capture_output=True
-        ).stdout.strip().splitlines())
-
-        if paused:
-            podman_cmd(["container", "unpause", *paused], check=False)
+        ids = _container_ids_by_status(
+            labels=labels,
+            statuses=("paused",),
+        )
+        if ids:
+            podman_cmd(["container", "unpause", *ids], check=False)
 
     @staticmethod
     def container(

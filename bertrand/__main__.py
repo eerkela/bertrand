@@ -34,7 +34,6 @@ from .env.pipeline import (
 )
 from .env.container import Environment
 from .env.config import (
-    ENV_LAYOUT_KEY,
     MOUNT,
     Config,
 )
@@ -87,46 +86,6 @@ def _dedupe(values: list[str]) -> list[str]:
         seen.add(value)
         out.append(value)
     return out
-
-
-def _existing_layout(env_root: Path) -> Config | None:
-    env_file = env_root / ".bertrand" / "env.json"
-    if not env_file.exists():
-        return None
-    if not env_file.is_file():
-        raise OSError(f"environment metadata path is not a file: {env_file}")
-    try:
-        data = json_parser.loads(env_file.read_text(encoding="utf-8"))
-    except Exception as err:
-        raise OSError(f"failed to parse environment metadata at {env_file}: {err}") from err
-    if not isinstance(data, dict):
-        raise OSError(f"environment metadata at {env_file} must be a JSON object")
-    if ENV_LAYOUT_KEY not in data:
-        return None
-    return Config.load(env_root)
-
-
-def _check_init_layout_drift(
-    env_root: Path,
-    *,
-    profile: str,
-    capabilities: list[str],
-) -> None:
-    existing = _existing_layout(env_root)
-    if existing is None:
-        return
-
-    existing_profile = existing.manifest.profile
-    existing_capabilities = list(existing.manifest.capabilities)
-    if existing_profile == profile and existing_capabilities == capabilities:
-        return
-
-    raise OSError(
-        f"init layout mismatch for existing environment at {env_root}: requested "
-        f"profile='{profile}', capabilities={capabilities}; existing "
-        f"profile='{existing_profile}', capabilities={existing_capabilities}. "
-        "Use matching init options or migrate/recreate the environment."
-    )
 
 
 class External:
@@ -887,14 +846,6 @@ class External:
         if not capabilities:
             raise OSError("init capabilities must not be empty")
 
-        # resolve environment path and check for drift from manifest
-        root = Path(env).expanduser().resolve()
-        _check_init_layout_drift(
-            root,
-            profile=profile,
-            capabilities=capabilities,
-        )
-
         on_init.do(
             env=env,
             image_tag=image_tag,
@@ -965,7 +916,7 @@ class External:
             env=env,
             image_tag=image_tag,
             container_tag=container_tag,
-            cmd=args.cmd,
+            args=args.cmd,
         )
 
     @staticmethod
