@@ -45,7 +45,6 @@ from .code import (
     start_code_service,
 )
 from .config import (
-    ENV_LAYOUT_KEY,
     MOUNT,
     SHELLS,
     CONTAINER_ID_ENV,
@@ -97,12 +96,15 @@ from .run import (
 #pylint: disable=redefined-builtin, redefined-outer-name, broad-except
 
 
-############################
-####    INSTALLATION    ####
-############################
+# environment metadata info
+VERSION: int = 1
+CACHES: str = "/tmp/.cache"
+TIMEOUT: int = 30
+ENV_REGISTRY_FILE = "env-registry.json"
+ENV_REGISTRY_LOCK = "env-registry.lock"
 
 
-# shared fact names
+# shared fact names during init/enter pipelines
 USER = "user"
 UID = "uid"
 GID = "gid"
@@ -111,6 +113,92 @@ DISTRO_ID = "distro_id"
 DISTRO_VERSION = "distro_version"
 DISTRO_CODENAME = "distro_codename"
 CODE_SERVER_AVAILABLE = "code_server_available"
+
+
+def _env_dir(env_root: Path) -> Path:
+    return env_root / ".bertrand"
+
+
+def _env_tmp_dir(env_root: Path) -> Path:
+    return _env_dir(env_root) / "tmp"
+
+
+def _cid_file(env_root: Path, name: str) -> Path:
+    return _env_tmp_dir(env_root) / f"{name}.cid"
+
+
+def _iid_file(env_root: Path, name: str) -> Path:
+    return _env_tmp_dir(env_root) / f"{name}.iid"
+
+
+def _env_file(env_root: Path) -> Path:
+    return _env_dir(env_root) / "env.json"
+
+
+def _container_file(env_root: Path) -> Path:
+    return env_root / "Containerfile"
+
+
+def _registry_file() -> Path:
+    return on_init.state_dir / ENV_REGISTRY_FILE
+
+
+def _registry_lock() -> Path:
+    return on_init.state_dir / ENV_REGISTRY_LOCK
+
+
+def _check_absolute_path(value: object) -> Path:
+    p = Path(value)
+    if p != p.expanduser().resolve():
+        raise ValueError(f"path must be absolute: {value}")
+    return p
+
+
+def _check_list_field(value: object, field: str) -> list[str]:
+    if not isinstance(value, list) or not all(isinstance(x, str) for x in value):
+        raise ValueError(f"missing or invalid '{field}' field: {value}")
+    return value
+
+
+def _check_args_field(value: object) -> list[str]:
+    return _check_list_field(value, "args")
+
+
+def _check_entry_point_field(value: object) -> list[str]:
+    return _check_list_field(value, "entry_point")
+
+
+def _check_uuid_str(value: str) -> str:
+    value = value.strip()
+    if not value:
+        raise ValueError(f"missing or invalid 'id' field: {value}")
+    try:
+        uuid.UUID(value)
+    except Exception as err:
+        raise ValueError(f"'id' must be a valid UUID: {value}") from err
+    return value
+
+
+def _to_utc(value: datetime) -> datetime:
+    if value.tzinfo is None or value.tzinfo.utcoffset(value) is None:
+        raise ValueError(f"'created' must be a valid ISO timestamp: {value}")
+    return value.astimezone(timezone.utc)
+
+
+AbsolutePath: TypeAlias = Annotated[Path, BeforeValidator(_check_absolute_path)]
+HostId: TypeAlias = Annotated[str, BeforeValidator(_check_uuid_str)]
+EnvironmentId: TypeAlias = Annotated[str, BeforeValidator(_check_uuid_str)]
+ImageId: TypeAlias = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+ContainerId: TypeAlias = ImageId
+CreatedAt: TypeAlias = Annotated[AwareDatetime, AfterValidator(_to_utc)]
+ArgsList: TypeAlias = Annotated[
+    list[Annotated[str, StringConstraints(min_length=1)]],
+    BeforeValidator(_check_args_field)
+]
+EntryPoint: TypeAlias = Annotated[
+    list[Annotated[str, StringConstraints(min_length=1)]],
+    BeforeValidator(_check_entry_point_field)
+]
 
 
 @atomic
@@ -134,8 +222,8 @@ class PurgeBertrandArtifacts:
         Rm._all(force=force, timeout=TIMEOUT)  # pylint: disable=protected-access
 
         # clean up any dangling images/containers/volumes that weren't removed by
-        # rm -f, which can occur if the environment has no containers, but does have
-        # images/volumes, which prevent us from discovering their mount points.
+        # rm -f, which can occur if the environment registry is incomplete and the
+        # environment has no containers, preventing us from discovering its mount point
         try:
             containers = _list_podman_ids([
                 "container",
@@ -294,8 +382,6 @@ def install_container_cli(ctx: Pipeline.InProgress) -> None:
         packages.append("uidmap")
     elif package_manager == "dnf":
         packages.append("shadow-utils")
-    else:
-        raise OSError(f"Unknown package manager: '{package_manager}'")
     ctx.do(InstallPodman(
         manager=package_manager,
         packages=packages,
@@ -488,21 +574,18 @@ def delegate_controllers(ctx: Pipeline.InProgress) -> None:
                         file=sys.stderr
                     )
 
-def _resolve_init_layout_options(
-    ctx: Pipeline.InProgress,
-    env_root: Path
-) -> tuple[str, list[str]]:
-    raw_profile = ctx.get("profile")
-    profile: str | None
-    if raw_profile is None:
-        profile = None
-    elif isinstance(raw_profile, str):
-        profile = raw_profile.strip().lower()
+
+def _resolve_init_layout(ctx: Pipeline.InProgress, env_root: Path) -> tuple[str, list[str]]:
+    # determine directory layout
+    profile = ctx.get("profile")
+    if isinstance(profile, str):
+        profile = profile.strip().lower()
         if not profile:
             raise OSError("profile must be non-empty when provided")
-    else:
+    elif profile is not None:
         raise TypeError("profile must be a string")
 
+    # normalize + deduplicate language capabilities
     raw_capabilities = ctx.get("capabilities")
     capabilities: list[str] | None
     if raw_capabilities is None:
@@ -519,9 +602,7 @@ def _resolve_init_layout_options(
                 )
             capability = item.strip().lower()
             if not capability:
-                raise OSError(
-                    f"capabilities[{idx}] must be non-empty when provided"
-                )
+                raise OSError(f"capabilities[{idx}] must be non-empty when provided")
             if capability in seen:
                 continue
             seen.add(capability)
@@ -529,59 +610,320 @@ def _resolve_init_layout_options(
         if not capabilities:
             raise OSError("capabilities must not be empty when provided")
 
+    # attempt to load existing environment metadata if present
     existing: Config | None = None
+    try:
+        existing = Config.load(env_root)
+    except Exception:
+        pass
 
-    missing: list[str] = []
-    if profile is None:
-        missing.append("profile")
-    if capabilities is None:
-        missing.append("capabilities")
-
-    if missing:
-        try:
-            existing = Config.load(env_root)
-        except OSError as err:
-            missing_text = ", ".join(missing)
+    # if the current profile could not be loaded, assert profile and capabilities are
+    # explicitly provided
+    if existing is None:
+        if profile is None:
             raise OSError(
-                f"missing required init fact(s): {missing_text}; and failed to load "
-                f"existing layout manifest from {_env_file(env_root)}: {err}"
-            ) from err
+                "missing required init fact: 'profile' and failed to load existing "
+                f"layout manifest for environment at {env_root}"
+            )
+        if capabilities is None:
+            raise OSError(
+                "missing required init fact: 'capabilities' and failed to load existing "
+                f"layout manifest for environment at {env_root}"
+            )
 
-    if profile is None:
-        if existing is None:
-            raise OSError("missing required init fact: profile")
-        profile = existing.manifest.profile
-    if capabilities is None:
-        if existing is None:
-            raise OSError("missing required init fact: capabilities")
-        capabilities = list(existing.manifest.capabilities)
-
-    # if the environment already has a persisted layout manifest, require init
-    # arguments to match it exactly.
-    env_file = _env_file(env_root)
-    if env_file.exists():
-        if not env_file.is_file():
-            raise OSError(f"environment metadata path is not a file: {env_file}")
-        try:
-            data = json_parser.loads(env_file.read_text(encoding="utf-8"))
-        except Exception as err:
-            raise OSError(f"failed to parse environment metadata at {env_file}: {err}") from err
-        if not isinstance(data, dict):
-            raise OSError(f"environment metadata at {env_file} must be a JSON object")
-        if ENV_LAYOUT_KEY in data:
-            if existing is None:
-                existing = Config.load(env_root)
-            existing_profile = existing.manifest.profile
-            existing_capabilities = list(existing.manifest.capabilities)
-            if existing_profile != profile or existing_capabilities != capabilities:
-                raise OSError(
-                    f"init layout mismatch for existing environment at {env_root}: requested "
-                    f"profile='{profile}', capabilities={capabilities}; existing "
-                    f"profile='{existing_profile}', capabilities={existing_capabilities}. "
-                    "Use matching init options or migrate/recreate the environment."
-                )
+    # otherwise, fill in missing values from the existing manifest and assert values
+    # match what is already recorded
+    else:
+        if profile is None:
+            profile = existing.manifest.profile
+        elif profile != existing.manifest.profile:
+            raise OSError(
+                f"init profile mismatch for existing environment at {env_root}: "
+                f"requested '{profile}', but found '{existing.manifest.profile}'. "
+                "Use matching init options or manually recreate the environment with "
+                "the new layout."
+            )
+        if capabilities is None:
+            capabilities = list(existing.manifest.capabilities)
+        elif capabilities != existing.manifest.capabilities:
+            raise OSError(
+                f"init capabilities mismatch for existing environment at {env_root}: "
+                f"requested {capabilities}, but found {existing.manifest.capabilities}. "
+                "Use matching init options or manually recreate the environment with "
+                "the new layout."
+            )
 
     return profile, capabilities
+
+
+def _read_metadata(
+    root: Path,
+    *,
+    missing_ok: bool = False
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    env_file = _env_file(root)
+    if not env_file.exists():
+        if missing_ok:
+            return {}, {}
+        raise FileNotFoundError(f"environment metadata file not found: {env_file}")
+    if not env_file.is_file():
+        raise OSError(f"environment metadata path is not a file: {env_file}")
+
+    # parse json
+    try:
+        data = json_parser.loads(env_file.read_text(encoding="utf-8"))
+    except Exception as err:
+        raise OSError(f"failed to parse environment metadata at {env_file}: {err}") from err
+    if not isinstance(data, dict):
+        raise OSError(f"environment metadata at {env_file} must be a JSON object")
+
+    # split into core and extra keys
+    core_keys = set(Environment.JSON.model_fields)
+    core: dict[str, Any] = {}
+    extras: dict[str, Any] = {}
+    for k, v in data.items():
+        if not isinstance(k, str):
+            raise OSError(f"environment metadata at {env_file} must have string keys")
+        if k in core_keys:
+            core[k] = v
+        else:
+            extras[k] = v
+    return core, extras
+
+
+def _write_metadata(root: Path, core: dict[str, Any], extras: dict[str, Any]) -> None:
+    merged = core.copy()
+    merged.update(extras)
+    atomic_write_text(
+        _env_file(root),
+        json_parser.dumps(merged, indent=2) + "\n",
+        encoding="utf-8",
+        private=True
+    )
+
+
+def _current_target_triple() -> str:
+    arch = "unknown"
+    try:
+        arch = os.uname().machine.strip().lower()
+    except (AttributeError, OSError):
+        pass
+    if sys.platform.startswith("linux"):
+        return f"{arch}-unknown-linux-gnu"
+    platform = sys.platform.strip().lower() or "unknown"
+    return f"{arch}-unknown-{platform}-unknown"
+
+
+def _discover_environment_mounts() -> list[Path]:
+    container_ids = _list_podman_ids([
+        "container",
+        "ls",
+        "-a",
+        "-q",
+        "--filter", "label=BERTRAND=1",
+        "--no-trunc",
+    ])
+    if not container_ids:
+        return []
+
+    # inspect all containers
+    try:
+        inspects = json_parser.loads(podman_cmd(
+            ["container", "inspect", *container_ids],
+            capture_output=True
+        ).stdout)
+    except Exception:
+        return []
+    if not isinstance(inspects, list):
+        return []
+
+    # retrieve unique bind mounts
+    seen: set[Path] = set()
+    result: list[Path] = []
+    for inspect in inspects:
+        if not isinstance(inspect, dict):
+            continue
+        try:
+            mount = Container.mount(inspect)  # type: ignore[arg-type]
+        except Exception:
+            continue
+        if mount is None or mount in seen:
+            continue
+        seen.add(mount)
+        result.append(mount)
+
+    return result
+
+
+def _check_env(root: Path, env_id: EnvironmentId | None = None) -> Environment.JSON | None:
+    root = root.expanduser().resolve()
+    env_file = _env_file(root)
+    if not env_file.exists() or not env_file.is_file():
+        return None
+    try:
+        # validate layout and environment metadata while the env lock is held
+        with lock_env(root, timeout=TIMEOUT):
+            Config.load(root)
+            core, _ = _read_metadata(root)
+            metadata = Environment.JSON.model_validate(core)
+            if env_id is not None and metadata.id != env_id:
+                return None
+            return metadata
+    except Exception:
+        return None
+
+
+class EnvironmentRegistry(BaseModel):
+    """Serialized registry of environments that have been built on this system.
+
+    A global registry of this form is stored in the `init` pipeline's state directory,
+    and allows Bertrand to target all environments on the system for various CLI
+    commands, as well as detect relocation of environments, possibly across different
+    hosts.
+
+    Attributes
+    ----------
+    host : HostId
+        A UUID tied to the lifetime of the registry.  Every environment's metadata
+        will store the host UUID of the registry it was initialized from.  If we
+        attempt to insert the environment into another registry with a different
+        UUID, then it signifies the environment was sent from another host, and we
+        should force a rebuild of all downstream images and containers.
+    environments : dict[EnvironmentId, Path]
+        A mapping of environment UUIDs to their corresponding root directories on this
+        system.  If we attempt to insert an environment with a pre-existing UUID, then
+        we can check to see if the previous path is still valid and matches that UUID,
+        in which case the environment we are attempting to insert is a copy, and we
+        should assign a new UUID to ensure they are treated as separate environments
+        with isolated tags.  If the previous path is no longer valid or doesn't match
+        the UUID, then the new environment constitutes a move, and we can transfer
+        ownership to the new path.
+    """
+    host: HostId
+    environments: dict[EnvironmentId, AbsolutePath]
+
+
+def _dump_registry(registry: EnvironmentRegistry) -> None:
+    atomic_write_text(
+        _registry_file(),
+        json_parser.dumps({
+            "host": registry.host,
+            "environments": {env_uuid: str(root) for env_uuid, root in sorted(
+                registry.environments.items(),
+                key=lambda item: item[0]
+            )}
+        }, indent=2) + "\n",
+        encoding="utf-8",
+        private=True
+    )
+
+
+def _load_registry() -> EnvironmentRegistry:
+    # touch a new registry if none exists
+    path = _registry_file()
+    changed = False
+    if not path.exists():
+        registry = EnvironmentRegistry(
+            host=uuid.uuid4().hex,
+            environments={}
+        )
+        changed = True
+
+    # otherwise, try to parse registry JSON
+    else:
+        try:
+            data = json_parser.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                raise ValueError("registry JSON must be an object")
+            registry = EnvironmentRegistry.model_validate(data)
+
+        # if the registry is corrupted or otherwise invalid, attempt to rebuild it using
+        # active mounts as the source of truth (best-effort)
+        except Exception:
+            registry = EnvironmentRegistry(
+                host=uuid.uuid4().hex,
+                environments={}
+            )
+            for root in _discover_environment_mounts():
+                env = _check_env(root)
+                if env is None:
+                    continue
+                registry.environments.setdefault(env.id, root.expanduser().resolve())
+            changed = True
+
+    # remove any stale entries
+    normalized: dict[EnvironmentId, AbsolutePath] = {}
+    for env_id, root in registry.environments.items():
+        env = _check_env(root, env_id=env_id)
+        if env is None or normalized.setdefault(env.id, root) != root:
+            changed = True
+    registry.environments = normalized
+
+    # write registry back to disk if anything changed
+    if changed:
+        _dump_registry(registry)
+    return registry
+
+
+def _reconcile_registry(add: Path | None) -> list[Path]:
+    if add is not None:
+        add = add.expanduser().resolve()
+
+    # NOTE: lock ordering is registry > environment.  `_check_env()` takes
+    # per-environment locks while this registry lock is held.
+    with Lock(_registry_lock(), timeout=TIMEOUT):
+        registry = _load_registry()
+
+        # claim the requested root
+        if add is not None:
+            env = _check_env(add)
+            if env is not None:
+                changed = False
+
+                # if the environment being added was initialized from a different host
+                # registry, then it signifies a cross-platform relocation.  We
+                # handle this by clearing the environment's built tags to force a
+                # rebuild of all downstream images and containers on the new host,
+                # and then proceed like normal
+                if env.host != registry.host:
+                    env.tags.clear()
+                    env.host = registry.host
+                    _, extras = _read_metadata(add)
+                    _write_metadata(add, env.model_dump(mode="json"), extras)
+
+                # if the environment is not already registered, insert it directly
+                owner = registry.environments.get(env.id)
+                if owner is None:
+                    registry.environments[env.id] = add
+                    changed = True
+
+                # otherwise, if the root has drifted, then it signals a same-host copy
+                # or move
+                elif owner != add:
+                    existing = _check_env(owner, env_id=env.id)
+
+                    # if the previous root exists and matches the expected UUID, then
+                    # the new environment constitutes a copy, and we need to clear its
+                    # tags and re-key it to guarantee uniqueness
+                    if existing is not None:
+                        env.tags.clear()
+                        env.id = uuid.uuid4().hex
+                        while env.id in registry.environments:
+                            env.id = uuid.uuid4().hex
+                        _, extras = _read_metadata(add)
+                        _write_metadata(add, env.model_dump(mode="json"), extras)
+
+                    # otherwise, the new environment constitutes a move, and we can
+                    # transfer ownership by updating the root path without modifying
+                    # the environment metadata
+                    registry.environments[env.id] = add
+                    changed = True
+
+                # persist ownership state if anything changed
+                if changed:
+                    _dump_registry(registry)
+
+        return list(registry.environments.values())
 
 
 @on_init(requires=[delegate_controllers], ephemeral=True)
@@ -611,29 +953,42 @@ def init_environment(ctx: Pipeline.InProgress) -> None:
             "cannot specify image or container tag when initializing an environment "
             "directory."
         )
+    profile, capabilities = _resolve_init_layout(ctx, root)
 
-    profile, capabilities = _resolve_init_layout_options(ctx, root)
-
-    # initialize layout-managed resources and persist manifest metadata
+    # initialize config layout and render templates in environment directory
     cfg = Config.init(root, profile=profile, capabilities=capabilities)
     cfg.apply(ctx)
 
-    # preserve non-core env.json keys (notably `layout`) while ensuring core metadata.
+    # TODO: get rid of the target triple stuff here
+
+    # validate core metadata while preserving non-core keys
     with lock_env(root, timeout=TIMEOUT):
-        current = _read_env_metadata(root, missing_ok=True)
-        core, extras = _split_env_metadata(current)
-        validated = Environment.JSON.model_validate({
-            "version": core.get("version", VERSION),
-            "id": core.get("id", uuid.uuid4().hex),
-            "tags": core.get("tags", {}),
-        })
-        validated, extras, _ = _apply_distribution_compatibility(root, validated, extras)
-        merged = _merge_env_metadata(validated.model_dump(mode="json"), extras)
-        if merged != current:
-            atomic_write_text(
-                _env_file(root),
-                json_parser.dumps(merged, indent=2) + "\n"
+        core, extras = _read_metadata(root, missing_ok=True)
+
+        # validate or construct core metadata
+        current_triple = _current_target_triple()
+        if core:
+            data = Environment.JSON.model_validate(core)
+
+            # if the stored triple doesn't match the current triple, then it signifies
+            # relocation from another host
+            if data.target_triple != current_triple:
+                for image in data.tags.values():
+                    image.containers.clear()
+                data.target_triple = current_triple
+        else:
+            data = Environment.JSON(
+                version=VERSION,
+                id=uuid.uuid4().hex,
+                target_triple=current_triple,
+                tags={},
             )
+
+        # if the core data changed, dump it back to disk, while preserving extra keys
+        out = data.model_dump(mode="json")
+        if out != core:
+            out.update(extras)
+            atomic_write_text(_env_file(root), json_parser.dumps(out, indent=2) + "\n")
 
     # add to global environment registry
     _reconcile_registry(root)
@@ -645,7 +1000,8 @@ def podman_cmd(
     check: bool = True,
     capture_output: bool | None = False,
     input: str | None = None,
-    cwd: Path | None = None
+    cwd: Path | None = None,
+    env: Mapping[str, str] | None = None,
 ) -> CompletedProcess:
     """Run a podman command.
 
@@ -664,6 +1020,9 @@ def podman_cmd(
     cwd : Path | None, optional
         An optional working directory to run the command in.  If None (the default),
         then the current working directory will be used.
+    env : Mapping[str, str] | None, optional
+        An optional mapping of environment variables to set for the command.  If None
+        (the default), then the current environment will be used.
 
     Returns
     -------
@@ -681,11 +1040,11 @@ def podman_cmd(
         capture_output=capture_output,
         input=input,
         cwd=cwd,
-        env=None,
+        env=env,
     )
 
 
-def podman_exec(args: list[str]) -> None:
+def podman_exec(args: list[str], *, env: Mapping[str, str] | None = None) -> None:
     """Run a podman command by replacing the current process.  This is intended for
     interactive use cases like `bertrand enter` where we want to drop the user into a
     shell inside the container.
@@ -694,13 +1053,19 @@ def podman_exec(args: list[str]) -> None:
     ----------
     args : list[str]
         The podman command arguments (excluding the 'podman' executable).
+    env : Mapping[str, str] | None, optional
+        An optional mapping of environment variables to set for the command.  If None
+        (the default), then the current environment will be used.
 
     Raises
     ------
     OSError
         If execution fails.
     """
-    os.execvp("podman", ["podman", *args])
+    if env is None:
+        os.execvp("podman", ["podman", *args])
+    else:
+        os.execvpe("podman", ["podman", *args], env)
 
 
 def _list_podman_ids(args: list[str]) -> list[str] | None:
@@ -711,6 +1076,9 @@ def _list_podman_ids(args: list[str]) -> list[str] | None:
     if result.returncode != 0:
         return None
     return [line for line in result.stdout.splitlines() if line.strip()]
+
+
+# TODO: these helpers should be moved into CLI section
 
 
 def _container_ids_by_status(*, labels: list[str], statuses: tuple[str, ...]) -> list[str]:
@@ -771,532 +1139,26 @@ def _ensure_cache_volume(name: str, env_uuid: str, kind: str) -> None:
         pass
 
 
-###################
-####    CLI    ####
-###################
 
 
-VERSION: int = 1
-CACHES: str = "/tmp/.cache"
-TIMEOUT: int = 30
-ENV_REGISTRY_FILE = "env-registry.json"
-ENV_REGISTRY_LOCK = "env-registry.lock"
-ENV_REGISTRY_SYNTAX = 1
-ENV_CORE_KEYS: tuple[str, str, str] = ("version", "id", "tags")
-ENV_DISTRIBUTION_KEY = "distribution"
-ENV_DISTRIBUTION_SYNTAX = 1
-HOST_FINGERPRINT_KEYS: tuple[str, ...] = (
-    "os",
-    "arch",
-    "page_size_kib",
-    "distro_id",
-    "distro_version",
-    "systemd_version",
-    "podman_version",
-)
-HIGH_SIGNAL_HOST_KEYS: frozenset[str] = frozenset({"arch", "page_size_kib"})
-HostFingerprint: TypeAlias = dict[str, str | int | None]
 
 
-def _env_dir(env_root: Path) -> Path:
-    return env_root / ".bertrand"
 
 
-def _env_tmp_dir(env_root: Path) -> Path:
-    return _env_dir(env_root) / "tmp"
 
 
-def _cid_file(env_root: Path, name: str) -> Path:
-    return _env_tmp_dir(env_root) / f"{name}.cid"
 
 
-def _iid_file(env_root: Path, name: str) -> Path:
-    return _env_tmp_dir(env_root) / f"{name}.iid"
 
 
-def _env_file(env_root: Path) -> Path:
-    return _env_dir(env_root) / "env.json"
 
 
-def _container_file(env_root: Path) -> Path:
-    return env_root / "Containerfile"
 
 
-def _registry_file() -> Path:
-    return on_init.state_dir / ENV_REGISTRY_FILE
 
 
-def _registry_lock() -> Path:
-    return on_init.state_dir / ENV_REGISTRY_LOCK
 
 
-def _load_registry_state() -> dict[str, Path]:
-    path = _registry_file()
-    raw = path.read_text(encoding="utf-8")
-    data = json_parser.loads(raw)
-    if not isinstance(data, dict):
-        raise ValueError("registry JSON must be an object")
-
-    syntax = data.get("syntax")
-    if syntax != ENV_REGISTRY_SYNTAX:
-        raise ValueError(
-            f"registry syntax mismatch: expected {ENV_REGISTRY_SYNTAX}, got {syntax}"
-        )
-
-    raw_owners = data.get("owners")
-    if not isinstance(raw_owners, dict):
-        raise ValueError("registry JSON must define an 'owners' object")
-
-    owners: dict[str, Path] = {}
-    for raw_uuid, raw_path in raw_owners.items():
-        if not isinstance(raw_uuid, str):
-            raise ValueError(f"registry owner UUID must be a string: {raw_uuid}")
-        env_uuid = _check_uuid_str(raw_uuid)
-        if not isinstance(raw_path, str):
-            raise ValueError(f"registry owner path must be a string: {raw_path}")
-        root = Path(raw_path).expanduser().resolve()
-        owners[env_uuid] = root
-    return owners
-
-
-def _dump_registry_state(owners: dict[str, Path]) -> None:
-    payload = {
-        "syntax": ENV_REGISTRY_SYNTAX,
-        "owners": {
-            env_uuid: str(root)
-            for env_uuid, root in sorted(owners.items(), key=lambda item: item[0])
-        }
-    }
-    atomic_write_text(
-        _registry_file(),
-        json_parser.dumps(payload, indent=2) + "\n",
-        encoding="utf-8",
-        private=True
-    )
-
-
-def _read_env_metadata(root: Path, *, missing_ok: bool = False) -> dict[str, Any]:
-    env_file = _env_file(root)
-    if not env_file.exists():
-        if missing_ok:
-            return {}
-        raise FileNotFoundError(f"environment metadata file not found: {env_file}")
-    if not env_file.is_file():
-        raise OSError(f"environment metadata path is not a file: {env_file}")
-
-    try:
-        data = json_parser.loads(env_file.read_text(encoding="utf-8"))
-    except Exception as err:
-        raise OSError(
-            f"failed to parse environment metadata at {env_file}: {err}"
-        ) from err
-    if not isinstance(data, dict):
-        raise OSError(f"environment metadata at {env_file} must be a JSON object")
-    return data
-
-
-def _split_env_metadata(data: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
-    core = {
-        key: value
-        for key, value in data.items()
-        if key in ENV_CORE_KEYS
-    }
-    extras = {
-        key: value
-        for key, value in data.items()
-        if key not in ENV_CORE_KEYS
-    }
-    return core, extras
-
-
-def _merge_env_metadata(core: dict[str, Any], extras: dict[str, Any]) -> dict[str, Any]:
-    merged = dict(extras)
-    merged.update(core)
-    return merged
-
-
-def _page_size_kib() -> int:
-    try:
-        page_size = os.sysconf("SC_PAGESIZE")
-        if isinstance(page_size, int) and page_size > 0:
-            return max(1, page_size // 1024)
-    except (AttributeError, OSError, ValueError):
-        pass
-    return 4
-
-
-def _os_release() -> tuple[str, str]:
-    path = Path("/etc/os-release")
-    try:
-        text = path.read_text(encoding="utf-8")
-    except OSError:
-        return "", ""
-
-    fields: dict[str, str] = {}
-    for raw in text.splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, value = line.split("=", 1)
-        value = value.strip()
-        if value and value[0] == value[-1] and value[0] in ("'", '"'):
-            value = value[1:-1]
-        fields[key] = value
-    return fields.get("ID", ""), fields.get("VERSION_ID", "")
-
-
-def _podman_version() -> str | None:
-    try:
-        result = run(
-            ["podman", "version", "--format", "{{.Version}}"],
-            check=False,
-            capture_output=True
-        )
-    except Exception:
-        return None
-    if result.returncode != 0:
-        return None
-    version = result.stdout.strip()
-    return version or None
-
-def _current_host_fingerprint() -> HostFingerprint:
-    host_os = "linux" if sys.platform.startswith("linux") else sys.platform
-    arch = ""
-    try:
-        arch = os.uname().machine.strip()
-    except (AttributeError, OSError):
-        pass
-    distro_id, distro_version = _os_release()
-    try:
-        systemd_version = _systemd_version()
-    except Exception:
-        systemd_version = None
-
-    return {
-        "os": host_os,
-        "arch": arch.lower(),
-        "page_size_kib": _page_size_kib(),
-        "distro_id": distro_id,
-        "distro_version": distro_version,
-        "systemd_version": systemd_version,
-        "podman_version": _podman_version(),
-    }
-
-
-def _load_stored_host_fingerprint(extras: dict[str, Any]) -> HostFingerprint | None:
-    raw_distribution = extras.get(ENV_DISTRIBUTION_KEY)
-    if not isinstance(raw_distribution, dict):
-        return None
-    if raw_distribution.get("syntax") != ENV_DISTRIBUTION_SYNTAX:
-        return None
-
-    raw_host = raw_distribution.get("host")
-    if not isinstance(raw_host, dict):
-        return None
-
-    host: HostFingerprint = {}
-    for key in HOST_FINGERPRINT_KEYS:
-        value = raw_host.get(key)
-        if key == "page_size_kib":
-            if isinstance(value, int):
-                host[key] = value
-            else:
-                return None
-            continue
-
-        if key == "systemd_version":
-            if value is None or isinstance(value, int):
-                host[key] = value
-            else:
-                return None
-            continue
-
-        if key == "podman_version":
-            if value is None or isinstance(value, str):
-                host[key] = value
-            else:
-                return None
-            continue
-
-        if not isinstance(value, str):
-            return None
-        host[key] = value
-
-    return host
-
-
-def _apply_distribution_compatibility(
-    root: Path,
-    core: Environment.JSON,
-    extras: dict[str, Any],
-) -> tuple[Environment.JSON, dict[str, Any], bool]:
-    changed = False
-    current_host = _current_host_fingerprint()
-    stored_host = _load_stored_host_fingerprint(extras)
-
-    if stored_host is not None:
-        mismatches = {
-            key: (stored_host.get(key), current_host.get(key))
-            for key in HOST_FINGERPRINT_KEYS
-            if stored_host.get(key) != current_host.get(key)
-        }
-        if mismatches:
-            details = ", ".join(
-                f"{key}={old!r}->{new!r}"
-                for key, (old, new) in sorted(mismatches.items(), key=lambda item: item[0])
-            )
-            print(
-                f"bertrand: host compatibility drift detected for environment at "
-                f"{root}: {details}",
-                file=sys.stderr
-            )
-            if any(key in HIGH_SIGNAL_HOST_KEYS for key in mismatches):
-                removed = 0
-                for image in core.tags.values():
-                    removed += len(image.containers)
-                    image.containers = {}
-                if removed:
-                    changed = True
-                print(
-                    "bertrand: architecture/page-size mismatch detected; cleared stored "
-                    "container records while preserving image build args.  Containers "
-                    "will be rebuilt on demand.",
-                    file=sys.stderr
-                )
-
-    distribution_payload = {
-        "syntax": ENV_DISTRIBUTION_SYNTAX,
-        "host": current_host,
-    }
-    if extras.get(ENV_DISTRIBUTION_KEY) != distribution_payload:
-        extras[ENV_DISTRIBUTION_KEY] = distribution_payload
-        changed = True
-
-    return core, extras, changed
-
-
-def _read_env_core(root: Path) -> tuple[Environment.JSON, dict[str, Any]]:
-    data = _read_env_metadata(root)
-    if ENV_LAYOUT_KEY not in data:
-        raise OSError(
-            f"missing '{ENV_LAYOUT_KEY}' in environment metadata at {_env_file(root)}"
-        )
-    core, extras = _split_env_metadata(data)
-    return Environment.JSON.model_validate(core), extras
-
-
-def _write_env_core(root: Path, core: Environment.JSON, extras: dict[str, Any]) -> None:
-    merged = _merge_env_metadata(core.model_dump(mode="json"), extras)
-    atomic_write_text(
-        _env_file(root),
-        json_parser.dumps(merged, indent=2) + "\n",
-        encoding="utf-8"
-    )
-
-
-def _env_uuid_for_root(root: Path) -> str | None:
-    root = root.expanduser().resolve()
-    if not root.exists() or not root.is_dir():
-        return None
-    env_dir = _env_dir(root)
-    if not env_dir.exists() or not env_dir.is_dir():
-        return None
-    env_file = _env_file(root)
-    if not env_file.exists() or not env_file.is_file():
-        return None
-
-    try:
-        with lock_env(root, timeout=TIMEOUT):
-            core, _ = _read_env_core(root)
-
-            # validate persisted layout metadata while the env lock is held.
-            Config.load(root)
-            return core.id
-    except Exception:
-        return None
-
-
-def _rekey_environment(root: Path, taken_ids: set[str]) -> tuple[str, str]:
-    root = root.expanduser().resolve()
-    with lock_env(root, timeout=TIMEOUT):
-        current, extras = _read_env_core(root)
-        old_id = current.id
-        new_id = uuid.uuid4().hex
-        while new_id == old_id or new_id in taken_ids:
-            new_id = uuid.uuid4().hex
-
-        rewritten = Environment.JSON.model_validate({
-            "version": current.version,
-            "id": new_id,
-            "tags": {},
-        })
-        _write_env_core(root, rewritten, extras)
-        return old_id, new_id
-
-
-def _discover_environment_mounts() -> list[Path]:
-    container_ids = _list_podman_ids([
-        "container",
-        "ls",
-        "-a",
-        "-q",
-        "--filter", "label=BERTRAND=1",
-        "--no-trunc",
-    ])
-    if not container_ids:
-        return []
-
-    # inspect all containers
-    try:
-        inspects = json_parser.loads(podman_cmd(
-            ["container", "inspect", *container_ids],
-            capture_output=True
-        ).stdout)
-    except Exception:
-        return []
-    if not isinstance(inspects, list):
-        return []
-
-    # retrieve unique bind mounts
-    seen: set[Path] = set()
-    result: list[Path] = []
-    for inspect in inspects:
-        if not isinstance(inspect, dict):
-            continue
-        try:
-            mount = Container.mount(inspect)  # type: ignore[arg-type]
-        except Exception:
-            continue
-        if mount is None or mount in seen:
-            continue
-        seen.add(mount)
-        result.append(mount)
-
-    return result
-
-
-def _reconcile_registry(add: Path | None) -> list[Path]:
-    if add is not None:
-        add = add.expanduser().resolve()
-
-    # NOTE: lock ordering is registry > environment.  `_env_uuid_for_root()` takes
-    # per-environment locks while this registry lock is held.
-    with Lock(_registry_lock(), timeout=TIMEOUT):
-        path = _registry_file()
-        changed = False
-        owners: dict[str, Path]
-
-        # load ownership state
-        try:
-            if not path.exists():
-                raise FileNotFoundError(path)
-            owners = _load_registry_state()
-
-        # if state is missing/corrupted, recover from active mounts (best-effort)
-        except Exception:
-            owners = {}
-            for root in _discover_environment_mounts():
-                env_uuid = _env_uuid_for_root(root)
-                if env_uuid is None:
-                    continue
-                owners.setdefault(env_uuid, root.expanduser().resolve())
-            changed = True
-
-        # sanitize stale entries and normalize to actual env UUIDs
-        normalized: dict[str, Path] = {}
-        for env_uuid, root in owners.items():
-            root = root.expanduser().resolve()
-            actual_id = _env_uuid_for_root(root)
-            if actual_id is None:
-                changed = True
-                continue
-            if actual_id != env_uuid:
-                changed = True
-
-            # first valid owner wins for each UUID
-            if actual_id in normalized:
-                if normalized[actual_id] != root:
-                    changed = True
-                continue
-            normalized[actual_id] = root
-
-        owners = normalized
-
-        # claim/rekey the requested root, if any
-        if add is not None:
-            add_id = _env_uuid_for_root(add)
-            if add_id is not None:
-                owner = owners.get(add_id)
-                if owner is None:
-                    owners[add_id] = add
-                    changed = True
-                elif owner != add:
-                    owner_id = _env_uuid_for_root(owner)
-                    if owner_id != add_id:
-                        # prior owner became invalid; transfer ownership (move case)
-                        owners[add_id] = add
-                        changed = True
-                    else:
-                        # duplicate copy; isolate by rekeying current root
-                        _, new_id = _rekey_environment(add, set(owners))
-                        owners[new_id] = add
-                        changed = True
-                        print(
-                            f"bertrand: duplicate environment identity detected at {add}; "
-                            f"assigned new ID '{new_id}' and reset runtime tags.",
-                            file=sys.stderr
-                        )
-
-        # persist ownership state if anything changed
-        if changed:
-            _dump_registry_state(owners)
-
-        return list(owners.values())
-
-
-def _check_list_field(value: object, field: str) -> list[str]:
-    if not isinstance(value, list) or not all(isinstance(x, str) for x in value):
-        raise ValueError(f"missing or invalid '{field}' field: {value}")
-    return value
-
-
-def _check_args_field(value: object) -> list[str]:
-    return _check_list_field(value, "args")
-
-
-def _check_entry_point_field(value: object) -> list[str]:
-    return _check_list_field(value, "entry_point")
-
-
-def _check_uuid_str(value: str) -> str:
-    value = value.strip()
-    if not value:
-        raise ValueError(f"missing or invalid 'id' field: {value}")
-    try:
-        uuid.UUID(value)
-    except Exception as err:
-        raise ValueError(f"'id' must be a valid UUID: {value}") from err
-    return value
-
-
-def _to_utc(value: datetime) -> datetime:
-    if value.tzinfo is None or value.tzinfo.utcoffset(value) is None:
-        raise ValueError(f"'created' must be a valid ISO timestamp: {value}")
-    return value.astimezone(timezone.utc)
-
-
-ContainerId: TypeAlias = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
-ImageId: TypeAlias = ContainerId
-EnvironmentId: TypeAlias = Annotated[str, BeforeValidator(_check_uuid_str)]
-CreatedAt: TypeAlias = Annotated[AwareDatetime, AfterValidator(_to_utc)]
-ArgsList: TypeAlias = Annotated[
-    list[Annotated[str, StringConstraints(min_length=1)]],
-    BeforeValidator(_check_args_field)
-]
-EntryPoint: TypeAlias = Annotated[
-    list[Annotated[str, StringConstraints(min_length=1)]],
-    BeforeValidator(_check_entry_point_field)
-]
 
 
 class Container(BaseModel):
@@ -1742,6 +1604,11 @@ class Environment:
         """Pydantic model representing JSON metadata for a Bertrand environment."""
         model_config = ConfigDict(extra="forbid", validate_assignment=True)
         version: PositiveInt
+
+        # TODO: make sure every environment stores its host uuid in the environment
+        # metadata, so that I can compare against the host refistry in order to
+        # detect relocation across hosts.
+        host: HostId
         id: EnvironmentId
         tags: dict[str, Image]
 
@@ -1776,6 +1643,7 @@ class Environment:
         self._json = self.JSON.model_construct(
             version=0,
             id="",
+            target_triple=_current_target_triple(),
             tags={}
         )
         self._declared = None
@@ -1800,12 +1668,19 @@ class Environment:
 
         try:
             # try to load existing metadata if possible
-            self._json, extras = _read_env_core(self.root)
-            self._json, extras, changed = _apply_distribution_compatibility(
-                self.root,
-                self._json,
-                extras,
-            )
+            core, extras = _read_metadata(self.root)
+            self._json = self.JSON.model_validate(core)
+            changed = False
+
+            # check relocation to a different target triple, and drop all containers
+            # if so
+            current_triple = _current_target_triple()
+            if self._json.target_triple != current_triple:
+                for image in self._json.tags.values():
+                    image.containers.clear()
+                self._json.target_triple = current_triple
+                changed = True
+
             self._declared = _load_declared_images(self.root)
             removed_images, removed_containers = _reconcile_declared_runtime_tags(
                 self,
@@ -1820,7 +1695,7 @@ class Environment:
                     file=sys.stderr
                 )
             if changed:
-                _write_env_core(self.root, self._json, extras)
+                _write_metadata(self.root, self._json.model_dump(mode="json"), extras)
             return self
 
         except Exception as err:
@@ -1843,9 +1718,9 @@ class Environment:
             if self._entered == 1 and env_dir.exists():
                 # write validated core metadata while preserving non-core env.json keys.
                 self._json = self.JSON.model_validate(self._json.model_dump(mode="python"))
-                current = _read_env_metadata(self.root, missing_ok=True)
-                _, extras = _split_env_metadata(current)
-                merged = _merge_env_metadata(self._json.model_dump(mode="json"), extras)
+                _, extras = _read_metadata(self.root, missing_ok=True)
+                merged = self._json.model_dump(mode="json")
+                merged.update(extras)
                 atomic_write_text(
                     _env_file(self.root),
                     json_parser.dumps(merged, indent=2) + "\n"
