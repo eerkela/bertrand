@@ -22,7 +22,7 @@ from importlib import resources
 from importlib.resources.abc import Traversable
 from pathlib import Path, PosixPath
 from types import MappingProxyType, TracebackType
-from typing import Annotated, Any, Callable, Iterator, Literal, Self, TypeVar
+from typing import Annotated, Any, Callable, Iterator, Literal, Self, TypeVar, TypedDict
 
 from jinja2 import Environment, StrictUndefined
 from pydantic import (
@@ -622,163 +622,178 @@ class PyProject(Resource):
     """
     # pylint: disable=missing-function-docstring, unused-argument, missing-return-doc
 
-    @staticmethod
-    def _require_tool(pyproject: dict[str, Any], *, resource_id: str) -> dict[str, Any]:
+    class Image(TypedDict):
+        """Normalized image declaration parsed from `[tool.bertrand.images]`."""
+        args: tuple[str, ...]
+        containers: dict[str, tuple[str, ...]]
+
+    def parse(self, config: Config) -> dict[str, Any] | None:
+        """Parse and normalize `[tool.bertrand]` from `pyproject.toml`.
+
+        Parameters
+        ----------
+        config : Config
+            The active configuration context, which provides access to the
+            resource's path and other shared state.
+
+        Returns
+        -------
+        dict[str, Any]
+            The normalized config snapshot fragment:
+
+            {
+                "shell": str,
+                "images": {
+                    "<image_tag>": {
+                        "args": tuple[str, ...],
+                        "containers": {
+                            "<container_tag>": tuple[str, ...],
+                        },
+                    },
+                },
+            }
+
+
+        Raises
+        ------
+        OSError
+            If the `[tool.bertrand]` section is missing or contains invalid values.
+        """
+        resource_id = "pyproject"
+        pyproject = _load_pyproject(config, resource_id=resource_id)
         tool_raw = pyproject.get("tool")
         if tool_raw is None:
             raise OSError(f"missing '[tool]' table in resource '{resource_id}'")
-        return _require_dict(tool_raw, where="tool")
-
-    @staticmethod
-    def _require_choice(
-        value: str,
-        *,
-        where: str,
-        supported: dict[str, Any],
-        description: str,
-    ) -> str:
-        if value not in supported:
-            choices = ", ".join(sorted(supported))
-            raise OSError(
-                f"unsupported {description} at '{where}': '{value}' "
-                f"(supported: {choices})"
-            )
-        return value
-
-    @staticmethod
-    def _require_allowed_keys(
-        table: dict[str, Any],
-        *,
-        where: str,
-        allowed: set[str],
-    ) -> None:
-        unknown = sorted(k for k in table if k not in allowed)
-        if unknown:
-            allowed_text = ", ".join(sorted(allowed))
-            unknown_text = ", ".join(unknown)
-            raise OSError(
-                f"unsupported key(s) at '{where}': {unknown_text} "
-                f"(allowed: {allowed_text})"
-            )
-
-    @staticmethod
-    def _require_tag(value: Any, *, where: str) -> str:
-        tag = _require_str_value(value, where=where, allow_empty=True)
-        sanitized = sanitize_name(tag)
-        if tag != sanitized:
-            raise OSError(
-                f"invalid tag at '{where}': '{tag}' "
-                f"(sanitizes to: '{sanitized}')"
-            )
-        return tag
-
-    @staticmethod
-    def _require_table_array(value: Any, *, where: str) -> list[dict[str, Any]]:
-        if value is None:
-            return []
-        if isinstance(value, (str, bytes)) or not isinstance(value, Sequence):
-            raise OSError(
-                f"expected array of tables at '{where}', got {type(value).__name__}"
-            )
-        out: list[dict[str, Any]] = []
-        for idx, item in enumerate(value):
-            out.append(_require_dict(item, where=f"{where}[{idx}]"))
-        return out
-
-    @classmethod
-    def _parse_containers(
-        cls,
-        *,
-        where: str,
-        raw: Any,
-    ) -> dict[str, tuple[str, ...]]:
-        rows = cls._require_table_array(raw, where=where)
-        seen: set[str] = set()
-        declared: list[tuple[str, tuple[str, ...]]] = []
-        for idx, row in enumerate(rows):
-            row_where = f"{where}[{idx}]"
-            cls._require_allowed_keys(
-                row,
-                where=row_where,
-                allowed={"tag", "args"},
-            )
-            tag = cls._require_tag(row.get("tag"), where=f"{row_where}.tag")
-            if tag in seen:
-                raise OSError(f"duplicate container tag at '{row_where}.tag': '{tag}'")
-            seen.add(tag)
-            args = tuple(_require_str_list(row.get("args", []), where=f"{row_where}.args"))
-            declared.append((tag, args))
-
-        # Always include default container first.
-        containers: dict[str, tuple[str, ...]] = {"": tuple()}
-        for tag, args in declared:
-            containers[tag] = args
-        return containers
-
-    @classmethod
-    def _parse_images(
-        cls,
-        *,
-        where: str,
-        raw: Any,
-    ) -> dict[str, dict[str, Any]]:
-        rows = cls._require_table_array(raw, where=where)
-        seen: set[str] = set()
-        declared: list[tuple[str, tuple[str, ...], dict[str, tuple[str, ...]]]] = []
-        for idx, row in enumerate(rows):
-            row_where = f"{where}[{idx}]"
-            cls._require_allowed_keys(
-                row,
-                where=row_where,
-                allowed={"tag", "args", "containers"},
-            )
-            tag = cls._require_tag(row.get("tag"), where=f"{row_where}.tag")
-            if tag in seen:
-                raise OSError(f"duplicate image tag at '{row_where}.tag': '{tag}'")
-            seen.add(tag)
-            args = tuple(_require_str_list(row.get("args", []), where=f"{row_where}.args"))
-            containers = cls._parse_containers(
-                where=f"{row_where}.containers",
-                raw=row.get("containers"),
-            )
-            declared.append((tag, args, containers))
-
-        # Always include default image first.
-        images: dict[str, dict[str, Any]] = {
-            "": {
-                "args": tuple(),
-                "containers": {"": tuple()},
-            }
-        }
-        for tag, args, containers in declared:
-            images[tag] = {
-                "args": args,
-                "containers": containers,
-            }
-        return images
-
-    def parse(self, config: Config) -> dict[str, Any] | None:
-        resource_id = "pyproject"
-        pyproject = _load_pyproject(config, resource_id=resource_id)
-        tool = self._require_tool(pyproject, resource_id=resource_id)
+        tool = _require_dict(tool_raw, where="tool")
 
         # validate `[tool.bertrand]`
         bertrand = _require_dict(tool.get("bertrand"), where="tool.bertrand")
-        self._require_allowed_keys(
-            bertrand,
-            where="tool.bertrand",
-            allowed={"shell", "images"},
-        )
-        shell = self._require_choice(
-            _require_str_value(bertrand.get("shell"), where="tool.bertrand.shell"),
-            where="tool.bertrand.shell",
-            supported=SHELLS,
-            description="shell",
-        )
-        images = self._parse_images(
-            where="tool.bertrand.images",
-            raw=bertrand.get("images"),
-        )
+        unknown_tool_keys = sorted(k for k in bertrand if k not in {"shell", "images"})
+        if unknown_tool_keys:
+            raise OSError(
+                "unsupported key(s) at 'tool.bertrand': "
+                f"{', '.join(unknown_tool_keys)} (allowed: images, shell)"
+            )
+
+        shell = _require_str_value(bertrand.get("shell"), where="tool.bertrand.shell")
+        if shell not in SHELLS:
+            choices = ", ".join(sorted(SHELLS))
+            raise OSError(
+                f"unsupported shell at 'tool.bertrand.shell': '{shell}' "
+                f"(supported: {choices})"
+            )
+
+        raw_images = bertrand.get("images")
+        if raw_images is None:
+            image_rows: list[dict[str, Any]] = []
+        elif isinstance(raw_images, (str, bytes)) or not isinstance(raw_images, Sequence):
+            raise OSError(
+                "expected array of tables at 'tool.bertrand.images', got "
+                f"{type(raw_images).__name__}"
+            )
+        else:
+            image_rows = [
+                _require_dict(item, where=f"tool.bertrand.images[{idx}]")
+                for idx, item in enumerate(raw_images)
+            ]
+
+        images: dict[str, PyProject.Image] = {
+            "": {
+                "args": tuple(),
+                "containers": {
+                    "": tuple()
+                }
+            }
+        }
+        seen_images: set[str] = set()
+        for image_idx, image_row in enumerate(image_rows):
+            image_where = f"tool.bertrand.images[{image_idx}]"
+            unknown_image_keys = sorted(
+                k for k in image_row if k not in {"tag", "args", "containers"}
+            )
+            if unknown_image_keys:
+                raise OSError(
+                    f"unsupported key(s) at '{image_where}': {', '.join(unknown_image_keys)} "
+                    "(allowed: args, containers, tag)"
+                )
+
+            image_tag = _require_str_value(
+                image_row.get("tag"),
+                where=f"{image_where}.tag",
+                allow_empty=True
+            )
+            sanitized_image_tag = sanitize_name(image_tag)
+            if image_tag != sanitized_image_tag:
+                raise OSError(
+                    f"invalid tag at '{image_where}.tag': '{image_tag}' "
+                    f"(sanitizes to: '{sanitized_image_tag}')"
+                )
+            if image_tag in seen_images:
+                raise OSError(f"duplicate image tag at '{image_where}.tag': '{image_tag}'")
+            seen_images.add(image_tag)
+            image_args = tuple(_require_str_list(
+                image_row.get("args", []),
+                where=f"{image_where}.args"
+            ))
+
+            raw_containers = image_row.get("containers")
+            if raw_containers is None:
+                container_rows: list[dict[str, Any]] = []
+            elif (
+                isinstance(raw_containers, (str, bytes)) or
+                not isinstance(raw_containers, Sequence)
+            ):
+                raise OSError(
+                    f"expected array of tables at '{image_where}.containers', got "
+                    f"{type(raw_containers).__name__}"
+                )
+            else:
+                container_rows = [
+                    _require_dict(item, where=f"{image_where}.containers[{idx}]")
+                    for idx, item in enumerate(raw_containers)
+                ]
+
+            containers: dict[str, tuple[str, ...]] = {"": tuple()}
+            seen_containers: set[str] = set()
+            for container_idx, container_row in enumerate(container_rows):
+                container_where = f"{image_where}.containers[{container_idx}]"
+                unknown_container_keys = sorted(
+                    k for k in container_row if k not in {"tag", "args"}
+                )
+                if unknown_container_keys:
+                    raise OSError(
+                        f"unsupported key(s) at '{container_where}': "
+                        f"{', '.join(unknown_container_keys)} (allowed: args, tag)"
+                    )
+
+                container_tag = _require_str_value(
+                    container_row.get("tag"),
+                    where=f"{container_where}.tag",
+                    allow_empty=True
+                )
+                sanitized_container_tag = sanitize_name(container_tag)
+                if container_tag != sanitized_container_tag:
+                    raise OSError(
+                        f"invalid tag at '{container_where}.tag': '{container_tag}' "
+                        f"(sanitizes to: '{sanitized_container_tag}')"
+                    )
+                if container_tag in seen_containers:
+                    raise OSError(
+                        f"duplicate container tag at '{container_where}.tag': "
+                        f"'{container_tag}'"
+                    )
+                seen_containers.add(container_tag)
+                container_args = tuple(_require_str_list(
+                    container_row.get("args", []),
+                    where=f"{container_where}.args"
+                ))
+                containers[container_tag] = container_args
+
+            images[image_tag] = {
+                "args": image_args,
+                "containers": containers,
+            }
+
         return {
             "shell": shell,
             "images": images,
@@ -1030,8 +1045,52 @@ class Config:
         self.root = self.root.expanduser().resolve()
 
     @classmethod
+    def validate(cls, env_root: Path, data: dict[str, Any]) -> Self:
+        """Load a layout manifest from a raw Python dictionary and return a resolved
+        `Config` instance.
+
+        Parameters
+        ----------
+        env_root : Path
+            The root path of the environment, used to locate the manifest and resolve
+            resource paths.
+        data : dict[str, Any]
+            The raw layout manifest data, typically loaded from `env.json` under the
+            `layout` key.
+
+        Returns
+        -------
+        Self
+            A resolved `Config` instance containing the manifest and root path.
+
+        Raises
+        ------
+        OSError
+            If the manifest data is malformed or contains an unsupported schema
+            version.
+        """
+        env_root = env_root.expanduser().resolve()
+        layout = data.get(ENV_LAYOUT_KEY)
+        if layout is None:
+            raise OSError(
+                f"missing '{ENV_LAYOUT_KEY}' in environment metadata at "
+                f"{_env_file(env_root)}"
+            )
+        try:
+            return cls(
+                root=env_root,
+                manifest=Manifest.model_validate(layout)
+            )
+        except ValidationError as err:
+            raise OSError(
+                "invalid layout manifest in environment metadata at "
+                f"{_env_file(env_root)}: {err}"
+            ) from err
+
+    @classmethod
     def load(cls, env_root: Path) -> Self:
-        """Load layout manifest from `env_root` and return a resolved `Config`.
+        """Load layout manifest from metadata stored in `env_root` and return a
+        resolved `Config` instance.
 
         Parameters
         ----------
@@ -1050,23 +1109,10 @@ class Config:
             If the manifest file is missing, malformed, or contains an unsupported
             schema version.
         """
-        root = env_root.expanduser().resolve()
-        with lock_env(root):
-            data = _read_env_json(root)
-            layout = data.get(ENV_LAYOUT_KEY)
-            if layout is None:
-                raise OSError(
-                    f"missing '{ENV_LAYOUT_KEY}' in environment metadata at {_env_file(root)}"
-                )
-            try:
-                return cls(
-                    root=root,
-                    manifest=Manifest.model_validate(layout)
-                )
-            except ValidationError as err:
-                raise OSError(
-                    f"invalid layout manifest in environment metadata at {_env_file(root)}: {err}"
-                ) from err
+        env_root = env_root.expanduser().resolve()
+        with lock_env(env_root):
+            data = _read_env_json(env_root)
+            return cls.validate(env_root, data)
 
     @staticmethod
     def _merge_placement_maps(
@@ -1369,6 +1415,38 @@ class Config:
 
     def __bool__(self) -> bool:
         return self._entered > 0 and self._snapshot is not None
+
+    def get(self, key: str, default: Any = None) -> Any:
+        """Look up a key in the active context snapshot, returning a default value if
+        the key is not present.
+
+        Parameters
+        ----------
+        key : str
+            The key to look up in the snapshot.
+        default : Any, optional
+            The value to return if the key is not present, by default None.
+
+        Returns
+        -------
+        Any
+            The value associated with the key in the snapshot, or the default value if
+            the key is not present.
+
+        Raises
+        ------
+        RuntimeError
+            If there is no active layout context or if the snapshot is unavailable.
+        TypeError
+            If the key is not a string.
+        """
+        if self._entered < 1 or self._snapshot is None:
+            raise RuntimeError(
+                "layout config snapshot is unavailable outside an active layout context"
+            )
+        if not isinstance(key, str):
+            raise TypeError(f"invalid key type: {type(key)}")
+        return self._snapshot.get(key, default)
 
     def resource(self, resource_id: str) -> Resource:
         """Retrieve the resource specification for the given resource ID.

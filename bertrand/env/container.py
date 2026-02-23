@@ -702,18 +702,6 @@ def _write_metadata(root: Path, core: dict[str, Any], extras: dict[str, Any]) ->
     )
 
 
-def _current_target_triple() -> str:
-    arch = "unknown"
-    try:
-        arch = os.uname().machine.strip().lower()
-    except (AttributeError, OSError):
-        pass
-    if sys.platform.startswith("linux"):
-        return f"{arch}-unknown-linux-gnu"
-    platform = sys.platform.strip().lower() or "unknown"
-    return f"{arch}-unknown-{platform}-unknown"
-
-
 def _discover_environment_mounts() -> list[Path]:
     container_ids = _list_podman_ids([
         "container",
@@ -755,22 +743,28 @@ def _discover_environment_mounts() -> list[Path]:
     return result
 
 
-def _check_env(root: Path, env_id: EnvironmentId | None = None) -> Environment.JSON | None:
+def _check_env(
+    root: Path,
+    env_id: EnvironmentId | None = None
+) -> tuple[Environment.JSON | None, dict[str, Any]]:
     root = root.expanduser().resolve()
     env_file = _env_file(root)
     if not env_file.exists() or not env_file.is_file():
-        return None
+        return None, {}
+
     try:
-        # validate layout and environment metadata while the env lock is held
-        with lock_env(root, timeout=TIMEOUT):
-            Config.load(root)
-            core, _ = _read_metadata(root)
-            metadata = Environment.JSON.model_validate(core)
-            if env_id is not None and metadata.id != env_id:
-                return None
-            return metadata
+        core, extras = _read_metadata(root)
     except Exception:
-        return None
+        return None, {}
+
+    try:
+        Config.load(root)
+        metadata = Environment.JSON.model_validate(core)
+        if env_id is not None and metadata.id != env_id:
+            return None, extras
+        return metadata, extras
+    except Exception:
+        return None, extras
 
 
 class EnvironmentRegistry(BaseModel):
@@ -803,6 +797,12 @@ class EnvironmentRegistry(BaseModel):
     environments: dict[EnvironmentId, AbsolutePath]
 
 
+# NOTE: lock order is always registry > environment, and never the reverse, in order to
+# avoid deadlocks.  As a result of this, the `_dump_registry`, `_load_registry`, and
+# `_reconcile_registry` methods all assume that the registry lock has already been
+# acquired before they can be safely called.
+
+
 def _dump_registry(registry: EnvironmentRegistry) -> None:
     atomic_write_text(
         _registry_file(),
@@ -823,10 +823,7 @@ def _load_registry() -> EnvironmentRegistry:
     path = _registry_file()
     changed = False
     if not path.exists():
-        registry = EnvironmentRegistry(
-            host=uuid.uuid4().hex,
-            environments={}
-        )
+        registry = EnvironmentRegistry(host=uuid.uuid4().hex, environments={})
         changed = True
 
     # otherwise, try to parse registry JSON
@@ -845,19 +842,21 @@ def _load_registry() -> EnvironmentRegistry:
                 environments={}
             )
             for root in _discover_environment_mounts():
-                env = _check_env(root)
+                with lock_env(root, timeout=TIMEOUT):
+                    env, _ = _check_env(root)
                 if env is None:
                     continue
                 registry.environments.setdefault(env.id, root.expanduser().resolve())
             changed = True
 
-    # remove any stale entries
-    normalized: dict[EnvironmentId, AbsolutePath] = {}
-    for env_id, root in registry.environments.items():
-        env = _check_env(root, env_id=env_id)
-        if env is None or normalized.setdefault(env.id, root) != root:
-            changed = True
-    registry.environments = normalized
+        # remove any stale entries
+        normalized: dict[EnvironmentId, AbsolutePath] = {}
+        for env_id, root in registry.environments.items():
+            with lock_env(root, timeout=TIMEOUT):
+                env, _ = _check_env(root, env_id=env_id)
+                if env is None or normalized.setdefault(env.id, root) != root:
+                    changed = True
+        registry.environments = normalized
 
     # write registry back to disk if anything changed
     if changed:
@@ -865,65 +864,113 @@ def _load_registry() -> EnvironmentRegistry:
     return registry
 
 
-def _reconcile_registry(add: Path | None) -> list[Path]:
+@overload
+def _reconcile_registry(add: None = ...) -> tuple[None, list[Path]]: ...
+@overload
+def _reconcile_registry(add: Path) -> tuple[Environment.JSON, list[Path]]: ...
+def _reconcile_registry(add: Path | None = None) -> tuple[Environment.JSON | None, list[Path]]:
+    env: Environment.JSON | None = None
+    registry = _load_registry()
+    registry_changed = False
+
+    # claim the requested root
     if add is not None:
         add = add.expanduser().resolve()
+        with lock_env(add, timeout=TIMEOUT):  # lock environment
+            env, extras = _check_env(add)
+            env_changed = False
+            if env is None:
+                env = Environment.JSON(
+                    version=VERSION,
+                    host=registry.host,
+                    id=uuid.uuid4().hex,
+                    tags={}
+                )
+                env_changed = True
 
-    # NOTE: lock ordering is registry > environment.  `_check_env()` takes
-    # per-environment locks while this registry lock is held.
-    with Lock(_registry_lock(), timeout=TIMEOUT):
-        registry = _load_registry()
+            # if the environment being added was initialized from a different host
+            # registry, then it signifies a cross-platform relocation.  We handle
+            # this by clearing the environment's built tags to force a rebuild of
+            # all downstream images and containers on the new host, and then
+            # proceed like normal
+            if env.host != registry.host:
+                env.tags.clear()
+                env.host = registry.host
+                env_changed = True
 
-        # claim the requested root
-        if add is not None:
-            env = _check_env(add)
-            if env is not None:
-                changed = False
+            # unconditionally delete any tags that are no longer declared in the
+            # environment's config or whose arguments have drifted
+            with Config.validate(add, extras) as config:
+                declared_images = config["images"]
+                for image_tag, image in list(env.tags.items()):
+                    # check if the image tag is still declared with the same
+                    # arguments
+                    declared_image = declared_images.get(image_tag)
+                    if (
+                        declared_image is None or
+                        tuple(image.args) != tuple(declared_image["args"])
+                    ):
+                        image.remove(force=True, timeout=TIMEOUT, missing_ok=True)
+                        env.tags.pop(image_tag, None)
+                        env_changed = True
+                        continue
 
-                # if the environment being added was initialized from a different host
-                # registry, then it signifies a cross-platform relocation.  We
-                # handle this by clearing the environment's built tags to force a
-                # rebuild of all downstream images and containers on the new host,
-                # and then proceed like normal
-                if env.host != registry.host:
+                    # check if any descendant container tags are no longer
+                    # declared, or have mismatched arguments
+                    declared_containers = declared_image["containers"]
+                    for container_tag, container in list(image.containers.items()):
+                        declared_container_args = declared_containers.get(container_tag)
+                        if (
+                            declared_container_args is None or
+                            tuple(container.args) != tuple(declared_container_args)
+                        ):
+                            container.remove(force=True, timeout=TIMEOUT, missing_ok=True)
+                            image.containers.pop(container_tag, None)
+                            env_changed = True
+
+            # if the environment is not already registered, insert it directly
+            owner = registry.environments.get(env.id)
+            if owner is None:
+                registry.environments[env.id] = add
+                registry_changed = True
+
+            # otherwise, if the root has drifted, then it signals a same-host copy
+            # or move
+            elif owner != add:
+                # if the previous root exists and matches the expected UUID, then
+                # the new environment constitutes a copy, and we need to clear its
+                # tags and re-key it to guarantee uniqueness
+                owner_env, _ = _check_env(owner, env_id=env.id)
+                if owner_env is not None:
                     env.tags.clear()
-                    env.host = registry.host
-                    _, extras = _read_metadata(add)
-                    _write_metadata(add, env.model_dump(mode="json"), extras)
-
-                # if the environment is not already registered, insert it directly
-                owner = registry.environments.get(env.id)
-                if owner is None:
-                    registry.environments[env.id] = add
-                    changed = True
-
-                # otherwise, if the root has drifted, then it signals a same-host copy
-                # or move
-                elif owner != add:
-                    existing = _check_env(owner, env_id=env.id)
-
-                    # if the previous root exists and matches the expected UUID, then
-                    # the new environment constitutes a copy, and we need to clear its
-                    # tags and re-key it to guarantee uniqueness
-                    if existing is not None:
-                        env.tags.clear()
+                    env.id = uuid.uuid4().hex
+                    while env.id in registry.environments:
                         env.id = uuid.uuid4().hex
-                        while env.id in registry.environments:
-                            env.id = uuid.uuid4().hex
-                        _, extras = _read_metadata(add)
-                        _write_metadata(add, env.model_dump(mode="json"), extras)
+                    env_changed = True
 
-                    # otherwise, the new environment constitutes a move, and we can
-                    # transfer ownership by updating the root path without modifying
-                    # the environment metadata
-                    registry.environments[env.id] = add
-                    changed = True
+                # otherwise, the new environment constitutes a move, and we can
+                # transfer ownership by deleting the old containers (but not
+                # images), to avoid coupling with the previous path
+                for image in env.tags.values():
+                    while image.containers:
+                        _, container = image.containers.popitem()
+                        container.remove(force=True, timeout=TIMEOUT, missing_ok=True)
+                        env_changed = True
 
-                # persist ownership state if anything changed
-                if changed:
-                    _dump_registry(registry)
+                # in both cases, we need to update the environment metadata and
+                # then the registry to point to the new root
+                registry.environments[env.id] = add
+                registry_changed = True
 
-        return list(registry.environments.values())
+            # persist new environment metadata if it changed
+            if env_changed:
+                _write_metadata(add, env.model_dump(mode="json"), extras)
+
+    # persist new registry metadata if it changed
+    if registry_changed:
+        _dump_registry(registry)
+
+    return env, list(registry.environments.values())
 
 
 @on_init(requires=[delegate_controllers], ephemeral=True)
@@ -959,39 +1006,12 @@ def init_environment(ctx: Pipeline.InProgress) -> None:
     cfg = Config.init(root, profile=profile, capabilities=capabilities)
     cfg.apply(ctx)
 
-    # TODO: get rid of the target triple stuff here
-
-    # validate core metadata while preserving non-core keys
-    with lock_env(root, timeout=TIMEOUT):
-        core, extras = _read_metadata(root, missing_ok=True)
-
-        # validate or construct core metadata
-        current_triple = _current_target_triple()
-        if core:
-            data = Environment.JSON.model_validate(core)
-
-            # if the stored triple doesn't match the current triple, then it signifies
-            # relocation from another host
-            if data.target_triple != current_triple:
-                for image in data.tags.values():
-                    image.containers.clear()
-                data.target_triple = current_triple
-        else:
-            data = Environment.JSON(
-                version=VERSION,
-                id=uuid.uuid4().hex,
-                target_triple=current_triple,
-                tags={},
-            )
-
-        # if the core data changed, dump it back to disk, while preserving extra keys
-        out = data.model_dump(mode="json")
-        if out != core:
-            out.update(extras)
-            atomic_write_text(_env_file(root), json_parser.dumps(out, indent=2) + "\n")
-
     # add to global environment registry
-    _reconcile_registry(root)
+    with Lock(_registry_lock(), timeout=TIMEOUT):
+        _reconcile_registry(root)
+
+
+# TODO: continue refactor from here
 
 
 def podman_cmd(
@@ -1078,9 +1098,6 @@ def _list_podman_ids(args: list[str]) -> list[str] | None:
     return [line for line in result.stdout.splitlines() if line.strip()]
 
 
-# TODO: these helpers should be moved into CLI section
-
-
 def _container_ids_by_status(*, labels: list[str], statuses: tuple[str, ...]) -> list[str]:
     cmd = [
         "container",
@@ -1137,28 +1154,6 @@ def _ensure_cache_volume(name: str, env_uuid: str, kind: str) -> None:
         ], check=False)
     except Exception:
         pass
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 class Container(BaseModel):
@@ -1604,10 +1599,6 @@ class Environment:
         """Pydantic model representing JSON metadata for a Bertrand environment."""
         model_config = ConfigDict(extra="forbid", validate_assignment=True)
         version: PositiveInt
-
-        # TODO: make sure every environment stores its host uuid in the environment
-        # metadata, so that I can compare against the host refistry in order to
-        # detect relocation across hosts.
         host: HostId
         id: EnvironmentId
         tags: dict[str, Image]
@@ -1642,8 +1633,8 @@ class Environment:
         self.root = root.expanduser().resolve()
         self._json = self.JSON.model_construct(
             version=0,
+            host="",
             id="",
-            target_triple=_current_target_triple(),
             tags={}
         )
         self._declared = None
@@ -1651,58 +1642,23 @@ class Environment:
         self._entered = 0
 
     def __enter__(self) -> Environment:
-        # NOTE: lock order is registry > env lock to avoid deadlocks
-        if self._entered == 0:
+        # obey registry > environment lock order
+        with Lock(_registry_lock(), timeout=self.timeout):
+            self._lock.__enter__()
+            self._entered += 1
+            if self._entered > 1:
+                return self  # re-entrant case
+
+            # add to/synchronize the environment registry with on-disk metadata
             try:
-                _reconcile_registry(self.root)
-            except OSError as err:
-                print(
-                    f"bertrand: warning: failed to reconcile global environment registry: {err}",
-                    file=sys.stderr
-                )
+                self._json, _ = _reconcile_registry(self.root)
+                return self
 
-        self._lock.__enter__()
-        self._entered += 1
-        if self._entered > 1:
-            return self  # re-entrant case
-
-        try:
-            # try to load existing metadata if possible
-            core, extras = _read_metadata(self.root)
-            self._json = self.JSON.model_validate(core)
-            changed = False
-
-            # check relocation to a different target triple, and drop all containers
-            # if so
-            current_triple = _current_target_triple()
-            if self._json.target_triple != current_triple:
-                for image in self._json.tags.values():
-                    image.containers.clear()
-                self._json.target_triple = current_triple
-                changed = True
-
-            self._declared = _load_declared_images(self.root)
-            removed_images, removed_containers = _reconcile_declared_runtime_tags(
-                self,
-                self._declared,
-            )
-            if removed_images or removed_containers:
-                changed = True
-                print(
-                    "bertrand: dropped undeclared runtime artifacts from environment at "
-                    f"{self.root}: removed {removed_images} image(s) and "
-                    f"{removed_containers} container(s).",
-                    file=sys.stderr
-                )
-            if changed:
-                _write_metadata(self.root, self._json.model_dump(mode="json"), extras)
-            return self
-
-        except Exception as err:
-            self._declared = None
-            self._entered -= 1
-            self._lock.__exit__(type(err), err, getattr(err, "__traceback__", None))
-            raise
+            except Exception as err:
+                self._declared = None
+                self._entered -= 1
+                self._lock.__exit__(type(err), err, getattr(err, "__traceback__", None))
+                raise
 
     def __exit__(
         self,
@@ -2047,17 +2003,6 @@ class Environment:
 # pylint: disable=missing-return-doc, unused-argument
 
 
-def _all_environments() -> list[Path]:
-    try:
-        return _reconcile_registry(None)
-    except OSError as err:
-        print(
-            f"bertrand: warning: failed to load global environment registry: {err}",
-            file=sys.stderr
-        )
-        return []
-
-
 class DeclaredImage(TypedDict):
     """Type hint for declared image metadata loaded from the environment's
     normalized configuration snapshot.  Images of this type are the authoritative
@@ -2067,103 +2012,6 @@ class DeclaredImage(TypedDict):
     """
     args: tuple[str, ...]
     containers: dict[str, tuple[str, ...]]
-
-
-def _normalize_declared_args(value: Any, *, where: str) -> tuple[str, ...]:
-    if isinstance(value, list):
-        items = value
-    elif isinstance(value, tuple):
-        items = list(value)
-    else:
-        raise OSError(f"expected sequence[str] at '{where}', got {type(value).__name__}")
-
-    out: list[str] = []
-    for idx, item in enumerate(items):
-        if not isinstance(item, str):
-            raise OSError(
-                f"expected string at '{where}[{idx}]', got {type(item).__name__}"
-            )
-        text = item.strip()
-        if not text:
-            raise OSError(f"expected non-empty string at '{where}[{idx}]'")
-        out.append(text)
-    return tuple(out)
-
-
-def _normalize_declared_images(raw: Any, *, root: Path) -> dict[str, DeclaredImage]:
-    if not isinstance(raw, Mapping):
-        raise OSError(
-            "missing or invalid 'images' config snapshot.  Expected image "
-            f"declarations under [tool.bertrand] in {root / 'pyproject.toml'}"
-        )
-
-    images: dict[str, DeclaredImage] = {}
-    for raw_image_tag, raw_image in raw.items():
-        if not isinstance(raw_image_tag, str):
-            raise OSError(
-                "invalid non-string image tag in config snapshot under 'images'"
-            )
-
-        if not isinstance(raw_image, Mapping):
-            raise OSError(
-                "invalid image declaration in config snapshot under 'images': "
-                f"'{raw_image_tag}'"
-            )
-        raw_args = raw_image.get("args", ())
-        raw_containers = raw_image.get("containers", {})
-        if not isinstance(raw_containers, Mapping):
-            raise OSError(
-                "invalid containers declaration in config snapshot for image "
-                f"'{raw_image_tag}'"
-            )
-
-        containers: dict[str, tuple[str, ...]] = {}
-        for raw_container_tag, raw_container_args in raw_containers.items():
-            if not isinstance(raw_container_tag, str):
-                raise OSError(
-                    "invalid non-string container tag in config snapshot under "
-                    f"'images.{raw_image_tag}.containers'"
-                )
-            containers[raw_container_tag] = _normalize_declared_args(
-                raw_container_args,
-                where=(
-                    "images."
-                    f"{raw_image_tag if raw_image_tag else '<default>'}.containers."
-                    f"{raw_container_tag if raw_container_tag else '<default>'}.args"
-                ),
-            )
-        if "" not in containers:
-            containers[""] = tuple()
-
-        images[raw_image_tag] = {
-            "args": _normalize_declared_args(
-                raw_args,
-                where=(
-                    "images."
-                    f"{raw_image_tag if raw_image_tag else '<default>'}.args"
-                ),
-            ),
-            "containers": containers,
-        }
-
-    if "" not in images:
-        images[""] = {
-            "args": tuple(),
-            "containers": {"": tuple()},
-        }
-    return images
-
-
-def _load_declared_images(root: Path) -> dict[str, DeclaredImage]:
-    config = Config.load(root)
-    with config:
-        if "images" not in config:
-            raise OSError(
-                "missing declared images in config snapshot.  Define images under "
-                f"[tool.bertrand] in {root / 'pyproject.toml'}"
-            )
-        raw_images = config["images"]
-    return _normalize_declared_images(raw_images, root=root)
 
 
 def _require_declared_image(
@@ -2201,32 +2049,17 @@ def _require_declared_container(
     )
 
 
-def _reconcile_declared_runtime_tags(
-    env: Environment,
-    images: dict[str, DeclaredImage],
-) -> tuple[int, int]:
-    removed_images = 0
-    removed_containers = 0
-    declared_images = images
-
-    for image_tag in list(env.tags):
-        image = env.tags[image_tag]
-        declared_image = declared_images.get(image_tag)
-        if declared_image is None:
-            image.remove(force=True, timeout=env.timeout, missing_ok=True)
-            env.tags.pop(image_tag, None)
-            removed_images += 1
-            continue
-
-        declared_containers = declared_image["containers"]
-        for container_tag, container in list(image.containers.items()):
-            if container_tag in declared_containers:
-                continue
-            container.remove(force=True, timeout=env.timeout, missing_ok=True)
-            image.containers.pop(container_tag, None)
-            removed_containers += 1
-
-    return removed_images, removed_containers
+def _all_environments() -> list[Path]:
+    try:
+        with Lock(_registry_lock(), timeout=TIMEOUT):
+            _, environments = _reconcile_registry()
+            return environments
+    except OSError as err:
+        print(
+            f"bertrand: warning: failed to load global environment registry: {err}",
+            file=sys.stderr
+        )
+        return []
 
 
 Validator: TypeAlias = Callable[[JSONView], Any]
