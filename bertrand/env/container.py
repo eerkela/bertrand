@@ -197,6 +197,7 @@ EntryPoint: TypeAlias = Annotated[
     list[Annotated[str, StringConstraints(min_length=1)]],
     BeforeValidator(_check_entry_point_field)
 ]
+Validator: TypeAlias = Callable[[JSONView], Any]
 
 
 @atomic
@@ -1051,14 +1052,16 @@ def _podman_ids(
     # form basic command based on mode
     cmd: list[str] = []
     if mode == "volume":
-        cmd.append("volume")
-        cmd.extend(["ls", "-q", "--filter", "label=BERTRAND=1"])
+        cmd.extend(["volume", "ls", "-q", "--filter", "label=BERTRAND=1"])
     else:
-        if mode == "image":
-            cmd.append("image")
-        else:
-            cmd.append("container")
-        cmd.extend(["ls", "-a", "-q", "--no-trunc", "--filter", "label=BERTRAND=1"])
+        cmd.extend([
+            "image" if mode == "image" else "container",
+            "ls",
+            "-a",
+            "-q",
+            "--no-trunc",
+            "--filter", "label=BERTRAND=1"
+        ])
 
     # append additional labels to filter results
     for label in labels:
@@ -1504,6 +1507,7 @@ class Environment:
             # add to/synchronize the environment registry with on-disk metadata
             try:
                 self._json, self._config, _ = _reconcile_registry(self.root)
+                self._config.__enter__()
                 return self
 
             except Exception as err:
@@ -1524,7 +1528,7 @@ class Environment:
         try:
             env_dir = _env_dir(self.root)
             if self._entered == 1 and env_dir.exists():
-                # write validated core metadata while preserving non-core env.json keys.
+                # write validated core metadata while preserving non-core env.json keys
                 self._json = self.JSON.model_validate(self._json.model_dump(mode="python"))
                 _, extras = _read_metadata(self.root, missing_ok=True)
                 merged = self._json.model_dump(mode="json")
@@ -1536,8 +1540,10 @@ class Environment:
 
         # always release the lock and local context depth
         finally:
+            if self._entered == 1 and self._config is not None:
+                self._config.__exit__(exc_type, exc_value, traceback)
+                self._config = None
             self._entered -= 1
-            self._config = None
             self._lock.__exit__(exc_type, exc_value, traceback)
 
     def __hash__(self) -> int:
@@ -1768,29 +1774,15 @@ class Environment:
             If any of the podman commands fail and `missing_ok` is False.
         """
         # find all descendant containers + images
-        containers = list(podman_cmd([
-            "container",
-            "ls",
-            "-a",
-            "-q",
-            "--no-trunc",
-            "--filter", f"label=BERTRAND_ENV={self.id}",
-        ], capture_output=True).stdout.splitlines())
-        images = list(podman_cmd([
-            "image",
-            "ls",
-            "-a",
-            "-q",
-            "--no-trunc",
-            "--filter", f"label=BERTRAND_ENV={self.id}",
-        ], capture_output=True).stdout.splitlines())
+        containers = _podman_ids("container", labels=[f"BERTRAND_ENV={self.id}"])
+        images = _podman_ids("image", labels=[f"BERTRAND_ENV={self.id}"])
 
         # remove containers first
         if containers:
             cmd = [
                 "container",
                 "rm",
-                "--depend",  # remove dependent containers
+                "--depend",  # remove dependents
                 "-v",  # remove anonymous volumes
                 "-t", str(timeout),
             ]
@@ -1817,9 +1809,6 @@ class Environment:
             shutil.rmtree(_env_dir(self.root), ignore_errors=True)
         except Exception:
             pass
-
-
-Validator: TypeAlias = Callable[[JSONView], Any]
 
 
 def _all_environments() -> list[Path]:
@@ -1963,7 +1952,7 @@ class Build(_Command):
             raise KeyError(
                 f"undeclared image tag '{image_tag}' for environment at {env.root}."
             )
-        args = declared["args"]
+        args = list(declared["args"])
 
         # build candidate image
         # NOTE: podman + the OCI build system will automatically reuse cached layers as
@@ -2009,23 +1998,30 @@ class Build(_Command):
                 existing = env.tags.get(image_tag)
                 changed = existing is None or candidate.id != existing.id
                 if changed:
-                    for declared_tag in declared["containers"]:
+                    for container_tag in declared["containers"]:
                         Build._container(
                             ctx,
                             env=env,
                             image_tag=image_tag,
-                            image=candidate,  # build using the new image
-                            container_tag=declared_tag,
+                            image=candidate,  # build using the temp image
+                            container_tag=container_tag,
                         )
+
+                # otherwise, preserve original timestamp and containers
+                elif existing is not None:
+                    candidate.created = existing.created
+                    candidate.containers = existing.containers
+
             except Exception:
-                for container in candidate.containers.values():
-                    podman_cmd(["container", "rm", "-f", container.id], check=False)
+                cmd = ["container", "rm", "-f"]
+                cmd.extend(c.id for c in candidate.containers.values())
+                podman_cmd(cmd, check=False)
                 podman_cmd(["image", "rm", "-f", candidate.id], check=False)
                 raise
 
-            # delete old image if it exists
+            # swap and delete old image if it exists
             env.tags[image_tag] = candidate
-            if existing is not None and changed:
+            if changed and existing is not None:
                 existing.remove(force=True, timeout=env.timeout, missing_ok=True)
             return candidate, changed
 
@@ -2052,16 +2048,17 @@ class Build(_Command):
                 f"undeclared container tag '{container_tag}' for image '{image_tag}' in "
                 f"environment at {env.root}"
             )
+        args = list(args)
 
         # attempt to build the parent image first
         if image is None:
             image, changed = Build._image(ctx, env=env, image_tag=image_tag)
-            if changed:  # implicitly rebuilds container if image is new or changes
+            if changed:  # implicitly rebuilt container along with image
                 return image.containers[container_tag], True
 
         # reuse container if args match and container has not been relocated
         existing = image.containers.get(container_tag)
-        if existing is not None and existing.args == args:
+        if existing is not None and list(existing.args) == args:
             inspect = existing.inspect()
             if inspect is not None:
                 mount = Container.mount(inspect)
@@ -2164,7 +2161,7 @@ class Build(_Command):
             ctx,
             env=env,
             image_tag=image_tag,
-            image=None,  # will be built if needed
+            image=None,  # build or reuse image as needed
             container_tag=container_tag
         )
 
@@ -2176,11 +2173,19 @@ class Build(_Command):
         image_tag: str,
         **kwargs: Any
     ) -> None:
-        Build._image(
-            ctx,
-            env=env,
-            image_tag=image_tag
-        )
+        image, changed = Build._image(ctx, env=env, image_tag=image_tag)
+
+        # if we didn't rebuild the image itself, make sure to rebuild all descendant
+        # containers in order to enforce proper CLI scope
+        if not changed:
+            for container_tag in env.config["images"][image_tag]["containers"]:
+                Build._container(
+                    ctx,
+                    env=env,
+                    image_tag=image_tag,
+                    image=image,  # reuse built image
+                    container_tag=container_tag
+                )
 
     @staticmethod
     def environment(
@@ -2216,13 +2221,18 @@ class Start(_Command):
         container_tag: str,
         **kwargs: Any
     ) -> None:
-        container, _ = Build._container(
+        Build.container(
             ctx,
             env=env,
             image_tag=image_tag,
-            image=None,  # will be built if needed
             container_tag=container_tag,
+            **kwargs,
         )
+        container = env[image_tag, container_tag]
+        if container is None:
+            raise OSError(
+                f"unable to build container '{container_tag}' in image '{image_tag}'"
+            )
         inspect = container.inspect()
         if inspect is None:
             container.remove(force=True, timeout=env.timeout, missing_ok=True)
@@ -2240,11 +2250,12 @@ class Start(_Command):
         image_tag: str,
         **kwargs: Any
     ) -> None:
-        image, _ = Build._image(
-            ctx,
-            env=env,
-            image_tag=image_tag,
-        )
+        Build.image(ctx, env=env, image_tag=image_tag, **kwargs)
+        image = env[image_tag]
+        if image is None:
+            raise OSError(
+                f"unable to build image '{image_tag}' in environment at {env.root}"
+            )
         for container_tag, container in image.containers.items():
             inspect = container.inspect()
             if inspect is None:
@@ -3508,13 +3519,7 @@ class Monitor(_Command):
             raise ValueError("cannot use 'json' and 'interval' together")
 
         # first, get the container ids for all labels
-        ids = list(podman_cmd([
-            "container",
-            "ls",
-            "-a",
-            "-q",
-            *labels,
-        ], capture_output=True).stdout.strip().splitlines())
+        ids = _podman_ids("container", labels)
         if not ids:
             return [] if json else None
 

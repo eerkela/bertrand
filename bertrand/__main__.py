@@ -1213,9 +1213,6 @@ class External:
         # NOTE: a specific ordering is necessary to ensure that pipelines are undone
         # in a safe manner, and never leave the system in a broken state.
         for pipe in (
-            # on_publish,
-            # on_export,
-            # on_import,
             on_top,
             on_log,
             on_monitor,
