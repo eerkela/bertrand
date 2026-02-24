@@ -8,7 +8,6 @@ import os
 import shutil
 import subprocess
 import sys
-from pathlib import Path
 from typing import cast
 
 from .env.code import CodeError, open_editor
@@ -31,6 +30,8 @@ from .env.pipeline import (
     on_monitor,
     on_top,
     on_log,
+    on_search,
+    on_publish,
 )
 from .env.container import Environment
 from .env.config import (
@@ -68,6 +69,38 @@ RUNTIME_TAG_KEYS: tuple[str, str, str] = (
 #         print("Cleaning up swap file...")
 #         run([*sudo, "swapoff", str(swapfile)], check=False)
 #         swapfile.unlink(missing_ok=True)
+
+
+
+def inside_image() -> bool:
+    """Check if we're currently running inside an image build context (Containerfile
+    or container instance).
+
+    Returns
+    -------
+    bool
+        True if we're either building an image or running inside a container process.
+        False otherwise.
+
+    Notes
+    -----
+    If this is true and `inside_container()` is false, then it means the CLI was
+    invoked from a Containerfile during an image build, which corresponds to AoT
+    compilation for statically-typed languages.  The `build` command takes advantage
+    of this to differentiate between normal and editable installs, for example.
+    """
+    return os.environ.get(INTERNAL_ENV, "") == "1"
+
+
+def inside_container() -> bool:
+    """Check if we're currently running inside a container instance.
+
+    Returns
+    -------
+    bool
+        True if we're running inside a container process, False otherwise.
+    """
+    return all(key in os.environ for key in RUNTIME_TAG_KEYS)
 
 
 def _parse(path: str | None) -> tuple[str | None, str, str]:
@@ -266,6 +299,40 @@ class External:
                     "'--lang' options chosen during 'bertrand init'.",
             )
             command.set_defaults(handler=External.enter)
+
+        def code(self) -> None:
+            """Add the 'code' command to the parser."""
+            command = self.commands.add_parser(
+                "code",
+                help=
+                    "Launch a text editor rooted at a Bertrand environment directory "
+                    "and mount its local toolchain using remote development "
+                    "extensions.  Note that the editor is launched on the host system "
+                    "rather than within the container, and no editor is actually "
+                    "bundled inside the container.  This necessitates an RPC service "
+                    "to communicate between the container and host contexts, which is "
+                    "managed via systemd.  Bertrand performs a strict startup/probe "
+                    "before launching, and fails fast if the RPC service is "
+                    "unreachable.  Currently only supports vscode and its Remote "
+                    "Containers extension, but other editors may be added in the "
+                    "future.",
+            )
+            command.add_argument(
+                "path",
+                metavar="ENV[:IMAGE[:CONTAINER]]",
+                help=
+                    "A path to the specified environment directory.  This may be an "
+                    "absolute or relative path, and must point to an environment "
+                    "directory produced by 'bertrand init'.  The path may include "
+                    "optional image and container tags (e.g. "
+                    "'/path/to/env:image:container'), which determine the exact "
+                    "container whose toolchain will be mounted.  If no image or "
+                    "container tag is given, then the default container for the parent "
+                    "environment or image will be used.  Otherwise, the container tag "
+                    "must be declared in the project metadata according to the "
+                    "'--lang' options chosen during 'bertrand init'.",
+            )
+            command.set_defaults(handler=External.code)
 
         def run(self) -> None:
             """Add the 'run' command to the parser."""
@@ -677,45 +744,15 @@ class External:
                     "option has no effect if used in conjunction with '--images'.",
             )
 
-        def code(self) -> None:
-            """Add the 'code' command to the parser."""
-            command = self.commands.add_parser(
-                "code",
-                help=
-                    "Launch a text editor rooted at a Bertrand environment directory "
-                    "and mount its local toolchain using remote development "
-                    "extensions.  Note that the editor is launched on the host system "
-                    "rather than within the container, and no editor is actually "
-                    "bundled inside the container.  This necessitates an RPC service "
-                    "to communicate between the container and host contexts, which is "
-                    "managed via systemd.  Bertrand performs a strict startup/probe "
-                    "before launching, and fails fast if the RPC service is "
-                    "unreachable.  Currently only supports vscode and its Remote "
-                    "Containers extension, but other editors may be added in the "
-                    "future.",
-            )
-            command.add_argument(
-                "path",
-                metavar="ENV[:IMAGE[:CONTAINER]]",
-                help=
-                    "A path to the specified environment directory.  This may be an "
-                    "absolute or relative path, and must point to an environment "
-                    "directory produced by 'bertrand init'.  The path may include "
-                    "optional image and container tags (e.g. "
-                    "'/path/to/env:image:container'), which determine the exact "
-                    "container whose toolchain will be mounted.  If no image or "
-                    "container tag is given, then the default container for the parent "
-                    "environment or image will be used.  Otherwise, the container tag "
-                    "must be declared in the project metadata according to the "
-                    "'--lang' options chosen during 'bertrand init'.",
-            )
-            command.set_defaults(handler=External.code)
+        def search(self) -> None:
+            """Add the 'search' command to the parser."""
+            # TODO: implement this command
+            pass
 
-        # TODO: freeze()
-        # TODO: unfreeze()
-        # TODO: import_()
-        # TODO: export()
-        # TODO: publish()
+        def publish(self) -> None:
+            """Add the 'publish' command to the parser."""
+            # TODO: implement this command
+            pass
 
         def journal(self) -> None:
             """Add the 'journal' command to the parser."""
@@ -897,6 +934,22 @@ class External:
         """
         env, image_tag, container_tag = _parse(args.path)
         on_enter.do(
+            env=env,
+            image_tag=image_tag,
+            container_tag=container_tag,
+        )
+
+    @staticmethod
+    def code(args: argparse.Namespace) -> None:
+        """Execute the `bertrand code` CLI command.
+
+        Parameters
+        ----------
+        args : argparse.Namespace
+            The parsed command-line arguments.
+        """
+        env, image_tag, container_tag = _parse(args.path)
+        on_code.do(
             env=env,
             image_tag=image_tag,
             container_tag=container_tag,
@@ -1092,20 +1145,26 @@ class External:
         )
 
     @staticmethod
-    def code(args: argparse.Namespace) -> None:
-        """Execute the `bertrand code` CLI command.
+    def search(args: argparse.Namespace) -> None:
+        """Execute the `bertrand search` CLI command.
 
         Parameters
         ----------
         args : argparse.Namespace
             The parsed command-line arguments.
         """
-        env, image_tag, container_tag = _parse(args.path)
-        on_code.do(
-            env=env,
-            image_tag=image_tag,
-            container_tag=container_tag,
-        )
+        raise NotImplementedError("search command is not yet implemented")
+
+    @staticmethod
+    def publish(args: argparse.Namespace) -> None:
+        """Execute the `bertrand publish` CLI command.
+
+        Parameters
+        ----------
+        args : argparse.Namespace
+            The parsed command-line arguments.
+        """
+        raise NotImplementedError("publish command is not yet implemented")
 
     pipelines: dict[str, Pipeline] = {
         "init": on_init,
@@ -1124,6 +1183,8 @@ class External:
         "monitor": on_monitor,
         "top": on_top,
         "log": on_log,
+        "search": on_search,
+        "publish": on_publish,
     }
 
     @staticmethod
@@ -1217,37 +1278,6 @@ class External:
             parser.root.print_help()
             return
         args.handler(args)
-
-
-def inside_image() -> bool:
-    """Check if we're currently running inside an image build context (Containerfile
-    or container instance).
-
-    Returns
-    -------
-    bool
-        True if we're either building an image or running inside a container process.
-        False otherwise.
-
-    Notes
-    -----
-    If this is true and `inside_container()` is false, then it means the CLI was
-    invoked from a Containerfile during an image build, which corresponds to AoT
-    compilation for statically-typed languages.  The `build` command takes advantage
-    of this to differentiate between normal and editable installs, for example.
-    """
-    return os.environ.get(INTERNAL_ENV, "") == "1"
-
-
-def inside_container() -> bool:
-    """Check if we're currently running inside a container instance.
-
-    Returns
-    -------
-    bool
-        True if we're running inside a container process, False otherwise.
-    """
-    return all(key in os.environ for key in RUNTIME_TAG_KEYS)
 
 
 class Internal:

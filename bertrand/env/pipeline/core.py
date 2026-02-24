@@ -50,7 +50,10 @@ STATE_DIR = User().home / ".local" / "share" / "bertrand" / "pipelines"
 STATE_LOCK = STATE_DIR / ".lock"
 MISSING: Literal["<missing>"] = "<missing>"  # not a valid SHA-256 hexdigest
 ATOMIC_UNDO: dict[str, Callable[[Pipeline.InProgress, dict[str, JSONValue], bool], None]] = {}
-QualName = Annotated[str, StringConstraints(pattern=r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*$")]
+QualName = Annotated[
+    str,
+    StringConstraints(pattern=r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*$")
+]
 UUID4Hex = Annotated[str, StringConstraints(pattern=r"^[a-f0-9]{32}$")]
 Hash256 = Annotated[str, StringConstraints(pattern=r"^[a-f0-9]{64}$")]
 JSONValue: TypeAlias = (
@@ -1413,7 +1416,5 @@ on_ls = Pipeline(state_dir=STATE_DIR / "ls", keep=5)
 on_monitor = Pipeline(state_dir=STATE_DIR / "monitor", keep=5)
 on_log = Pipeline(state_dir=STATE_DIR / "log", keep=5)
 on_top = Pipeline(state_dir=STATE_DIR / "top", keep=5)
-on_import = Pipeline(state_dir=STATE_DIR / "import", keep=5)
-on_export = Pipeline(state_dir=STATE_DIR / "export", keep=5)
 on_search = Pipeline(state_dir=STATE_DIR / "search", keep=5)
 on_publish = Pipeline(state_dir=STATE_DIR / "publish", keep=5)
