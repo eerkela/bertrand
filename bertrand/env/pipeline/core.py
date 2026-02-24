@@ -26,6 +26,7 @@ from typing import (
     Literal,
     Protocol,
     TypeAlias,
+    TypeVar,
     overload,
 )
 
@@ -120,18 +121,21 @@ class Atomic(Protocol):
         """
 
 
-def atomic(t: type[Atomic]) -> type[Atomic]:
+T = TypeVar("T", bound=Atomic)
+
+
+def atomic(t: type[T]) -> type[T]:
     """Register an operator for use given operation kind, so that it can be
     looked up during rollback.
 
     Parameters
     ----------
-    t : type[Atomic]
+    t : type[T]
         The operation class to register.
 
     Returns
     -------
-    type[Atomic]
+    type[T]
         The same operation class that was passed in, after registering its undo
         method.
 
@@ -1113,7 +1117,7 @@ class Pipeline:
             """
             self.pipeline._dump()
 
-    class RunStep(Pipeline.InProgress):
+    class RunStep(InProgress):
         """A context manager that appends a new step on entrance and transitions it
         to "completed" on exit, or rolls it back on error.
         """
@@ -1177,7 +1181,7 @@ class Pipeline:
                 self.record.error = f"{exc_type.__name__}: {exc_value}"
             self.dump()
 
-    class UndoStep(Pipeline.InProgress):
+    class UndoStep(InProgress):
         """A context manager that loads a step on entrance and transitions it to
         "rolled_back" on exit.
         """

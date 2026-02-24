@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
-from .pipeline import JSONValue, Pipeline, atomic
+from .core import JSONValue, Pipeline, atomic
 from ..run import confirm, run, sudo_prefix
 
 # pylint: disable=unused-argument, missing-function-docstring, broad-exception-caught

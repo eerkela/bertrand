@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Literal, cast
 
-from .pipeline import JSONValue, Pipeline, atomic
+from .core import JSONValue, Pipeline, atomic
 from .filesystem import WriteBytes, WriteText
 from .network import Download
 from ..run import run, sudo_prefix

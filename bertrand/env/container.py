@@ -21,6 +21,7 @@ from typing import (
     Any,
     Callable,
     Literal,
+    Sequence,
     TypeAlias,
     TypedDict,
     cast,
@@ -144,24 +145,24 @@ def _registry_lock() -> Path:
     return on_init.state_dir / ENV_REGISTRY_LOCK
 
 
-def _check_absolute_path(value: object) -> Path:
+def _check_absolute_path(value: Any) -> Path:
     p = Path(value)
     if p != p.expanduser().resolve():
         raise ValueError(f"path must be absolute: {value}")
     return p
 
 
-def _check_list_field(value: object, field: str) -> list[str]:
+def _check_list_field(value: Any, field: str) -> list[str]:
     if not isinstance(value, list) or not all(isinstance(x, str) for x in value):
         raise ValueError(f"missing or invalid '{field}' field: {value}")
     return value
 
 
-def _check_args_field(value: object) -> list[str]:
+def _check_args_field(value: Any) -> list[str]:
     return _check_list_field(value, "args")
 
 
-def _check_entry_point_field(value: object) -> list[str]:
+def _check_entry_point_field(value: Any) -> list[str]:
     return _check_list_field(value, "entry_point")
 
 
@@ -222,14 +223,7 @@ class PurgeBertrandArtifacts:
         # rm -f, which can occur if the environment registry is incomplete and the
         # environment has no containers, preventing us from discovering its mount point
         try:
-            containers = _list_podman_ids([
-                "container",
-                "ls",
-                "-a",
-                "-q",
-                "--no-trunc",
-                "--filter", "label=BERTRAND=1",
-            ])
+            containers = _podman_ids("container")
             if containers:
                 podman_cmd([
                     "container",
@@ -241,22 +235,10 @@ class PurgeBertrandArtifacts:
                     "-t", str(TIMEOUT),
                     *containers
                 ], check=False)
-            images = _list_podman_ids([
-                "image",
-                "ls",
-                "-a",
-                "-q",
-                "--no-trunc",
-                "--filter", "label=BERTRAND=1",
-            ])
+            images = _podman_ids("image")
             if images:
                 podman_cmd(["image", "rm", "-f", "-i", *images], check=False)
-            volumes = _list_podman_ids([
-                "volume",
-                "ls",
-                "-q",
-                "--filter", "label=BERTRAND=1",
-            ])
+            volumes = _podman_ids("volume")
             if volumes:
                 podman_cmd(["volume", "rm", "-f", "-i", *volumes], check=False)
         except Exception:
@@ -278,33 +260,14 @@ class InstallPodman(InstallPackage):
         # Conservative: if host state is unknown or in use, skip uninstall to avoid
         # clobbering user-managed podman resources.
         try:
-            containers = _list_podman_ids([
-                "container",
-                "ls",
-                "-a",
-                "-q",
-                "--no-trunc",
-                "--filter", "label!=BERTRAND=1",
-            ])
-            if containers is None or containers:
+            containers = _podman_ids("container")
+            if containers:
                 return
-            images = _list_podman_ids([
-                "image",
-                "ls",
-                "-a",
-                "-q",
-                "--no-trunc",
-                "--filter", "label!=BERTRAND=1",
-            ])
-            if images is None or images:
+            images = _podman_ids("image")
+            if images:
                 return
-            volumes = _list_podman_ids([
-                "volume",
-                "ls",
-                "-q",
-                "--filter", "label!=BERTRAND=1",
-            ])
-            if volumes is None or volumes:
+            volumes = _podman_ids("volume")
+            if volumes:
                 return
             InstallPackage.undo(ctx, payload, force)
         except Exception:
@@ -700,14 +663,7 @@ def _write_metadata(root: Path, core: dict[str, Any], extras: dict[str, Any]) ->
 
 
 def _discover_environment_mounts() -> list[Path]:
-    container_ids = _list_podman_ids([
-        "container",
-        "ls",
-        "-a",
-        "-q",
-        "--filter", "label=BERTRAND=1",
-        "--no-trunc",
-    ])
+    container_ids = _podman_ids("container")
     if not container_ids:
         return []
 
@@ -805,7 +761,7 @@ def _dump_registry(registry: EnvironmentRegistry) -> None:
         _registry_file(),
         json_parser.dumps({
             "host": registry.host,
-            "environments": {env_uuid: str(root) for env_uuid, root in sorted(
+            "environments": {env_id: str(root) for env_id, root in sorted(
                 registry.environments.items(),
                 key=lambda item: item[0]
             )}
@@ -1086,44 +1042,76 @@ def podman_exec(args: list[str], *, env: Mapping[str, str] | None = None) -> Non
         os.execvpe("podman", ["podman", *args], env)
 
 
-# TODO: these simple helpers might be able to be simplified
+def _podman_ids(
+    mode: Literal["container", "image", "volume"],
+    labels: Sequence[str] = (),
+    *,
+    status: Sequence[str] | None = None,
+) -> list[str]:
+    # form basic command based on mode
+    cmd: list[str] = []
+    if mode == "volume":
+        cmd.append("volume")
+        cmd.extend(["ls", "-q", "--filter", "label=BERTRAND=1"])
+    else:
+        if mode == "image":
+            cmd.append("image")
+        else:
+            cmd.append("container")
+        cmd.extend(["ls", "-a", "-q", "--no-trunc", "--filter", "label=BERTRAND=1"])
 
-
-def _list_podman_ids(args: list[str]) -> list[str] | None:
-    try:
-        result = podman_cmd(args, check=False, capture_output=True)
-    except Exception:
-        return None
-    if result.returncode != 0:
-        return None
-    return [line for line in result.stdout.splitlines() if line.strip()]
-
-
-def _container_ids_by_status(*, labels: list[str], statuses: tuple[str, ...]) -> list[str]:
-    cmd = [
-        "container",
-        "ls",
-        "-a",
-        "-q",
-        "--no-trunc",
-    ]
+    # append additional labels to filter results
     for label in labels:
         cmd.extend(["--filter", f"label={label}"])
 
+    # parse results, returning an empty/partial list on failure (best-effort)
     out: list[str] = []
     seen: set[str] = set()
-    for status in statuses:
-        result = podman_cmd(
-            [*cmd, "--filter", f"status={status}"],
-            capture_output=True
-        )
-        for raw_id in result.stdout.splitlines():
-            container_id = raw_id.strip()
-            if not container_id or container_id in seen:
+    try:
+        # return all statuses by default
+        if status is None:
+            result = podman_cmd(cmd, capture_output=True, check=False)
+            if result.returncode == 0:
+                for raw_id in result.stdout.splitlines():
+                    container_id = raw_id.strip()
+                    if not container_id or container_id in seen:
+                        continue
+                    seen.add(container_id)
+                    out.append(container_id)
+            return out
+
+        # filter by status
+        for stat in status:
+            result = podman_cmd(
+                [*cmd, "--filter", f"status={stat}"],
+                capture_output=True,
+                check=False
+            )
+            if result.returncode != 0:
                 continue
-            seen.add(container_id)
-            out.append(container_id)
+            for raw_id in result.stdout.splitlines():
+                container_id = raw_id.strip()
+                if not container_id or container_id in seen:
+                    continue
+                seen.add(container_id)
+                out.append(container_id)
+    except Exception:
+        pass
     return out
+
+
+def _ensure_volume(name: str, env_id: str, kind: str) -> None:
+    try:
+        podman_cmd([
+            "volume",
+            "create",
+            "--label", "BERTRAND=1",
+            "--label", f"BERTRAND_ENV={env_id}",
+            "--label", f"BERTRAND_VOLUME={kind}",
+            name,
+        ], check=False)
+    except Exception:
+        pass
 
 
 def _remove_dangling_volumes(*, force: bool, missing_ok: bool) -> None:
@@ -1141,20 +1129,6 @@ def _remove_dangling_volumes(*, force: bool, missing_ok: bool) -> None:
         if missing_ok:
             cmd.append("-i")
         podman_cmd([*cmd, *volumes])
-
-
-def _ensure_cache_volume(name: str, env_uuid: str, kind: str) -> None:
-    try:
-        podman_cmd([
-            "volume",
-            "create",
-            "--label", "BERTRAND=1",
-            "--label", f"BERTRAND_ENV={env_uuid}",
-            "--label", f"BERTRAND_VOLUME={kind}",
-            name,
-        ], check=False)
-    except Exception:
-        pass
 
 
 class Container(BaseModel):
@@ -1312,14 +1286,28 @@ class Container(BaseModel):
         check : bool, optional
             If True, raise CommandError if the container fails to start.  Default is
             True.
+
+        Raises
+        ------
+        KeyError
+            If the inspection data is missing required fields.
+        CommandError
+            If the container fails to start and `check` is True.
         """
-        state = inspect["State"]
-        if state["Running"] or state["Restarting"]:
+        state = inspect.get("State")
+        if not isinstance(state, dict):
+            raise KeyError("invalid container inspect data: missing 'State'")
+        if state.get("Running") or state.get("Restarting"):
             return
-        if state["Paused"]:
-            podman_cmd(["container", "unpause", inspect["Id"]], check=check)
+
+        id = inspect.get("Id")
+        if not isinstance(id, str):
+            raise KeyError("invalid container inspect data: missing 'Id'")
+
+        if state.get("Paused"):
+            podman_cmd(["container", "unpause", id], check=check)
         else:
-            podman_cmd(["container", "start", inspect["Id"]], check=check)
+            podman_cmd(["container", "start", id], check=check)
 
 
 class Image(BaseModel):
@@ -1555,7 +1543,7 @@ class Environment:
     def __hash__(self) -> int:
         return hash(self.root)
 
-    def __eq__(self, other: object) -> bool:
+    def __eq__(self, other: Any) -> bool:
         if not isinstance(other, Environment):
             return NotImplemented
         return self.root == other.root
@@ -2001,7 +1989,7 @@ class Build(_Command):
             podman_cmd([
                 "build",
                 "-t", image_name,
-                "-f", str(env.container_file),
+                "-f", str(env.config.path("containerfile")),
                 "--iidfile", str(iid_file),
                 "--label", "BERTRAND=1",
                 "--label", f"BERTRAND_ENV={env.id}",
@@ -2097,10 +2085,10 @@ class Build(_Command):
         bertrand_volume = f"{cache_prefix}-bertrand"
         ccache_volume = f"{cache_prefix}-ccache"
         conan_volume = f"{cache_prefix}-conan"
-        _ensure_cache_volume(uv_volume, env.id, "uv")
-        _ensure_cache_volume(bertrand_volume, env.id, "bertrand")
-        _ensure_cache_volume(ccache_volume, env.id, "ccache")
-        _ensure_cache_volume(conan_volume, env.id, "conan")
+        _ensure_volume(uv_volume, env.id, "uv")
+        _ensure_volume(bertrand_volume, env.id, "bertrand")
+        _ensure_volume(ccache_volume, env.id, "ccache")
+        _ensure_volume(conan_volume, env.id, "conan")
         mkdir_private(CODE_SOCKET.parent)
         try:
             cid_file.parent.mkdir(parents=True, exist_ok=True)
@@ -2634,17 +2622,9 @@ class Stop(_Command):
 
     @staticmethod
     def _batch(labels: list[str], timeout: int) -> None:
-        ids = _container_ids_by_status(
-            labels=labels,
-            statuses=("running", "restarting", "paused"),
-        )
+        ids = _podman_ids("container", labels, status=("running", "restarting", "paused"))
         if ids:
-            podman_cmd([
-                "container",
-                "stop",
-                "-t", str(timeout),
-                *ids,
-            ], check=False)
+            podman_cmd(["container", "stop", "-t", str(timeout), *ids], check=False)
 
     @staticmethod
     def container(
@@ -2659,16 +2639,23 @@ class Stop(_Command):
         image = env.tags.get(image_tag)
         if image is None:
             raise KeyError(f"no image found for tag: '{image_tag}'")
+
         container = image.containers.get(container_tag)
         if container is None:
             raise KeyError(f"no container found for tag: '{container_tag}'")
+
         inspect = container.inspect()
         if inspect is None:
             image.containers.pop(container_tag, None)
         else:
-            state = inspect["State"]
-            if state["Running"] or state["Restarting"] or state["Paused"]:
-                podman_cmd(["container", "stop", inspect["Id"], "-t", str(timeout)])
+            state = inspect.get("State")
+            if not isinstance(state, dict):
+                raise OSError(f"invalid container state for container '{container_tag}'")
+            if state.get("Running") or state.get("Restarting") or state.get("Paused"):
+                id = inspect.get("Id")
+                if not isinstance(id, str):
+                    raise OSError(f"invalid container ID for container '{container_tag}'")
+                podman_cmd(["container", "stop", id, "-t", str(timeout)])
 
     @staticmethod
     def image(
@@ -2685,10 +2672,7 @@ class Stop(_Command):
         image_inspect = image.inspect()
         if image_inspect is None:
             raise OSError(f"failed to inspect image '{image_tag}'")
-        Stop._batch(
-            labels=["BERTRAND=1", f"BERTRAND_ENV={env.id}", f"BERTRAND_IMAGE={image_tag}"],
-            timeout=timeout
-        )
+        Stop._batch([f"BERTRAND_ENV={env.id}", f"BERTRAND_IMAGE={image_tag}"], timeout)
 
     @staticmethod
     def environment(
@@ -2698,10 +2682,7 @@ class Stop(_Command):
         timeout: int,
         **kwargs: Any
     ) -> None:
-        Stop._batch(
-            labels=["BERTRAND=1", f"BERTRAND_ENV={env.id}"],
-            timeout=timeout
-        )
+        Stop._batch([f"BERTRAND_ENV={env.id}"], timeout)
 
     @staticmethod
     def all(
@@ -2714,7 +2695,7 @@ class Stop(_Command):
             "This will stop all running Bertrand containers on this system.\n"
             "Are you sure you want to continue? [y/N] "
         ):
-            Stop._batch(labels=["BERTRAND=1"], timeout=timeout)
+            Stop._batch([], timeout)
 
 
 @dataclass
@@ -2725,16 +2706,9 @@ class Pause(_Command):
 
     @staticmethod
     def _batch(labels: list[str]) -> None:
-        ids = _container_ids_by_status(
-            labels=labels,
-            statuses=("running", "restarting"),
-        )
+        ids = _podman_ids("container", labels, status=("running", "restarting"))
         if ids:
-            podman_cmd([
-                "container",
-                "pause",
-                *ids,
-            ], check=False)
+            podman_cmd(["container", "pause", *ids], check=False)
 
     @staticmethod
     def container(
@@ -2755,9 +2729,14 @@ class Pause(_Command):
         if inspect is None:
             image.containers.pop(container_tag, None)
         else:
-            state = inspect["State"]
-            if state["Running"] or state["Restarting"]:
-                podman_cmd(["container", "pause", inspect["Id"]])
+            state = inspect.get("State")
+            if not isinstance(state, dict):
+                raise OSError(f"invalid container state for container '{container_tag}'")
+            if state.get("Running") or state.get("Restarting"):
+                id = inspect.get("Id")
+                if not isinstance(id, str):
+                    raise OSError(f"invalid container ID for container '{container_tag}'")
+                podman_cmd(["container", "pause", id])
 
     @staticmethod
     def image(
@@ -2770,31 +2749,19 @@ class Pause(_Command):
         image = env.tags.get(image_tag)
         if image is None:
             raise KeyError(f"no image found for tag: '{image_tag}'")
-        Pause._batch(labels=[
-            "BERTRAND=1",
-            f"BERTRAND_ENV={env.id}",
-            f"BERTRAND_IMAGE={image_tag}"
-        ])
+        Pause._batch([f"BERTRAND_ENV={env.id}", f"BERTRAND_IMAGE={image_tag}"])
 
     @staticmethod
-    def environment(
-        ctx: Pipeline.InProgress,
-        *,
-        env: Environment,
-        **kwargs: Any
-    ) -> None:
-        Pause._batch(labels=["BERTRAND=1", f"BERTRAND_ENV={env.id}"])
+    def environment(ctx: Pipeline.InProgress, *, env: Environment, **kwargs: Any) -> None:
+        Pause._batch([f"BERTRAND_ENV={env.id}"])
 
     @staticmethod
-    def all(
-        ctx: Pipeline.InProgress,
-        **kwargs: Any
-    ) -> None:
+    def all(ctx: Pipeline.InProgress, **kwargs: Any) -> None:
         if confirm(
             "This will pause all running Bertrand containers on this system.\n"
             "Are you sure you want to continue? [y/N] "
         ):
-            Pause._batch(labels=["BERTRAND=1"])
+            Pause._batch([])
 
 
 @dataclass
@@ -2805,10 +2772,7 @@ class Resume(_Command):
 
     @staticmethod
     def _batch(labels: list[str]) -> None:
-        ids = _container_ids_by_status(
-            labels=labels,
-            statuses=("paused",),
-        )
+        ids = _podman_ids("container", labels, status=("paused",))
         if ids:
             podman_cmd(["container", "unpause", *ids], check=False)
 
@@ -2830,8 +2794,15 @@ class Resume(_Command):
         inspect = container.inspect()
         if inspect is None:
             image.containers.pop(container_tag, None)
-        elif inspect["State"]["Paused"]:
-            podman_cmd(["container", "unpause", inspect["Id"]])
+        else:
+            state = inspect.get("State")
+            if not isinstance(state, dict):
+                raise OSError(f"invalid container state for container '{container_tag}'")
+            if state.get("Paused"):
+                id = inspect.get("Id")
+                if not isinstance(id, str):
+                    raise OSError(f"invalid container ID for container '{container_tag}'")
+                podman_cmd(["container", "unpause", id])
 
     @staticmethod
     def image(
@@ -2844,11 +2815,7 @@ class Resume(_Command):
         image = env.tags.get(image_tag)
         if image is None:
             raise KeyError(f"no image found for tag: '{image_tag}'")
-        Resume._batch(labels=[
-            "BERTRAND=1",
-            f"BERTRAND_ENV={env.id}",
-            f"BERTRAND_IMAGE={image_tag}"
-        ])
+        Resume._batch([f"BERTRAND_ENV={env.id}", f"BERTRAND_IMAGE={image_tag}"])
 
     @staticmethod
     def environment(
@@ -2857,7 +2824,7 @@ class Resume(_Command):
         env: Environment,
         **kwargs: Any
     ) -> None:
-        Resume._batch(labels=["BERTRAND=1", f"BERTRAND_ENV={env.id}"])
+        Resume._batch([f"BERTRAND_ENV={env.id}"])
 
     @staticmethod
     def all(
@@ -2868,7 +2835,7 @@ class Resume(_Command):
             "This will resume all paused Bertrand containers on this system.\n"
             "Are you sure you want to continue? [y/N] "
         ):
-            Resume._batch(labels=["BERTRAND=1"])
+            Resume._batch([])
 
 
 @dataclass
@@ -2912,8 +2879,10 @@ class Restart(_Command):
         if inspect is None:
             running = False
         else:
-            state = inspect["State"]
-            running = state["Running"] or state["Restarting"] or state["Paused"]
+            state = inspect.get("State")
+            if not isinstance(state, dict):
+                raise OSError(f"invalid container state for container '{container_tag}'")
+            running = state.get("Running") or state.get("Restarting") or state.get("Paused")
 
         # possibly rebuild the parent image and all downstream containers
         Build.image(ctx, env=env, image_tag=image_tag, **kwargs)
@@ -2929,12 +2898,16 @@ class Restart(_Command):
         if inspect is None:
             image.containers.pop(container_tag, None)
         elif running:
-            if inspect["State"]["Status"] == "created":  # newly-rebuilt
+            state = inspect.get("State")
+            if not isinstance(state, dict):
+                raise OSError(f"invalid container state for container '{container_tag}'")
+            if state.get("Status") == "created":  # newly-rebuilt
                 Container.start(inspect)
-            else:  # still running
-                state = inspect["State"]
-                if state["Running"] or state["Paused"]:
-                    podman_cmd(["container", "restart", inspect["Id"], "-t", str(timeout)])
+            elif state.get("Running") or state.get("Paused"):
+                id = inspect.get("Id")
+                if not isinstance(id, str):
+                    raise OSError(f"invalid container ID for container '{container_tag}'")
+                podman_cmd(["container", "restart", id, "-t", str(timeout)])
 
     @staticmethod
     def image(
@@ -2954,8 +2927,13 @@ class Restart(_Command):
         for container_tag, c in image.containers.items():
             inspect = c.inspect()
             if inspect is not None:
-                state = inspect["State"]
-                if state["Running"] or state["Restarting"] or state["Paused"]:
+                state = inspect.get("State")
+                if not isinstance(state, dict):
+                    raise OSError(
+                        f"invalid container state for container '{container_tag}' in image "
+                        f"'{image_tag}'"
+                    )
+                if state.get("Running") or state.get("Restarting") or state.get("Paused"):
                     running.add(container_tag)
 
         # possibly rebuild the image and all downstream containers
@@ -2972,12 +2950,20 @@ class Restart(_Command):
             inspect = container.inspect()
             if inspect is None:
                 continue  # container was removed during rebuild, skip it
-            if inspect["State"]["Status"] == "created":  # newly-rebuilt
+
+            state = inspect.get("State")
+            if not isinstance(state, dict):
+                raise OSError(
+                    f"invalid container state for container '{container_tag}' in image "
+                    f"'{image_tag}'"
+                )
+            if state.get("Status") == "created":  # newly-rebuilt
                 Container.start(inspect)
-            else:  # still running
-                state = inspect["State"]
-                if state["Running"] or state["Paused"]:
-                    podman_cmd(["container", "restart", inspect["Id"], "-t", str(timeout)])
+            elif state.get("Running") or state.get("Paused"):
+                id = inspect.get("Id")
+                if not isinstance(id, str):
+                    raise OSError(f"invalid container ID for container '{container_tag}'")
+                podman_cmd(["container", "restart", id, "-t", str(timeout)])
 
     @staticmethod
     def environment(
@@ -3037,8 +3023,14 @@ class Prune(_Command):
             return None
         inspect = container.inspect()
         if inspect is not None:
-            state = inspect["State"]
-            if not state["Running"] and not state["Restarting"] and not state["Paused"]:
+            state = inspect.get("State")
+            if not isinstance(state, dict):
+                raise OSError(f"invalid container state for container '{container_tag}'")
+            if (
+                not state.get("Running") and
+                not state.get("Restarting") and
+                not state.get("Paused")
+            ):
                 container.remove(force=True, timeout=env.timeout, missing_ok=True)
                 image.containers.pop(container_tag, None)
 
@@ -3062,8 +3054,17 @@ class Prune(_Command):
         for container_tag, container in list(image.containers.items()):
             inspect = container.inspect()
             if inspect is not None:
-                state = inspect["State"]
-                if not state["Running"] and not state["Restarting"] and not state["Paused"]:
+                state = inspect.get("State")
+                if not isinstance(state, dict):
+                    raise OSError(
+                        f"invalid container state for container '{container_tag}' in image "
+                        f"'{image_tag}'"
+                    )
+                if (
+                    not state.get("Running") and
+                    not state.get("Restarting") and
+                    not state.get("Paused")
+                ):
                     container.remove(force=True, timeout=env.timeout, missing_ok=True)
                     image.containers.pop(container_tag, None)
 

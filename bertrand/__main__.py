@@ -30,8 +30,6 @@ from .env.pipeline import (
     on_monitor,
     on_top,
     on_log,
-    on_search,
-    on_publish,
 )
 from .env.container import Environment
 from .env.config import (
@@ -744,16 +742,6 @@ class External:
                     "option has no effect if used in conjunction with '--images'.",
             )
 
-        def search(self) -> None:
-            """Add the 'search' command to the parser."""
-            # TODO: implement this command
-            pass
-
-        def publish(self) -> None:
-            """Add the 'publish' command to the parser."""
-            # TODO: implement this command
-            pass
-
         def journal(self) -> None:
             """Add the 'journal' command to the parser."""
             command = self.commands.add_parser(
@@ -1144,28 +1132,6 @@ class External:
             until=args.until,
         )
 
-    @staticmethod
-    def search(args: argparse.Namespace) -> None:
-        """Execute the `bertrand search` CLI command.
-
-        Parameters
-        ----------
-        args : argparse.Namespace
-            The parsed command-line arguments.
-        """
-        raise NotImplementedError("search command is not yet implemented")
-
-    @staticmethod
-    def publish(args: argparse.Namespace) -> None:
-        """Execute the `bertrand publish` CLI command.
-
-        Parameters
-        ----------
-        args : argparse.Namespace
-            The parsed command-line arguments.
-        """
-        raise NotImplementedError("publish command is not yet implemented")
-
     pipelines: dict[str, Pipeline] = {
         "init": on_init,
         "build": on_build,
@@ -1183,8 +1149,6 @@ class External:
         "monitor": on_monitor,
         "top": on_top,
         "log": on_log,
-        "search": on_search,
-        "publish": on_publish,
     }
 
     @staticmethod

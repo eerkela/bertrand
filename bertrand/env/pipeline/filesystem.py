@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
-from .pipeline import JSONValue, Pipeline, atomic
+from .core import JSONValue, Pipeline, atomic
 from ..run import atomic_write_bytes, mkdir_private
 
 # pylint: disable=unused-argument, missing-function-docstring, broad-exception-caught
@@ -136,7 +136,7 @@ def _stash_existing(
     if _exists(path):
         existing: dict[str, JSONValue] = {}
         payload["existing"] = existing
-        Stash(path).do(ctx, existing)
+        Stash(path=path).do(ctx, existing)
 
 
 def _unstash_existing(

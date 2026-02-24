@@ -10,7 +10,7 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
-from .pipeline import JSONValue, Pipeline, atomic
+from .core import JSONValue, Pipeline, atomic
 from .filesystem import (
     _check_id,
     _clear_id,
