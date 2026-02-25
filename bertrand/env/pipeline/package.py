@@ -547,7 +547,7 @@ class InstallPackage:
         _ensure_manager_cmd(self.manager, spec)
 
         # ensure we can elevate if needed
-        sudo = sudo_prefix()
+        sudo = sudo_prefix(non_interactive=self.assume_yes)
         if os.name == "posix" and os.geteuid() != 0 and not sudo:
             raise PermissionError(
                 "Package installation requires root privileges; sudo not available."
@@ -637,14 +637,14 @@ class InstallPackage:
         _ensure_manager_cmd(manager, spec)
 
         # ensure we can elevate if needed
-        sudo = sudo_prefix()
+        assume_yes = bool(payload.get("assume_yes", False))
+        sudo = sudo_prefix(non_interactive=assume_yes)
         if os.name == "posix" and os.geteuid() != 0 and not sudo:
             raise PermissionError(
                 "Package removal requires root privileges; sudo not available."
             )
 
         # detect which packages need to be removed
-        assume_yes = bool(payload.get("assume_yes", False))
         errors: list[str] = []
         to_remove: list[str] = []
         for item in installed:
@@ -721,7 +721,7 @@ class UninstallPackage:
             raise FileNotFoundError(f"Remove command not found: {spec.remove[0]}")
 
         # ensure we can elevate if needed
-        sudo = sudo_prefix()
+        sudo = sudo_prefix(non_interactive=self.assume_yes)
         if os.name == "posix" and os.geteuid() != 0 and not sudo:
             raise PermissionError(
                 "Package removal requires root privileges; sudo not available."
@@ -809,14 +809,14 @@ class UninstallPackage:
         _ensure_manager_cmd(manager, spec)
 
         # ensure we can elevate if needed
-        sudo = sudo_prefix()
+        assume_yes = bool(payload.get("assume_yes", False))
+        sudo = sudo_prefix(non_interactive=assume_yes)
         if os.name == "posix" and os.geteuid() != 0 and not sudo:
             raise PermissionError(
                 "Package installation requires root privileges; sudo not available."
             )
 
         # detect which packages need to be re-installed
-        assume_yes = bool(payload.get("assume_yes", False))
         to_install: list[str] = []
         errors: list[str] = []
         expected: dict[str, str] = {}

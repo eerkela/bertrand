@@ -264,7 +264,7 @@ class EnsureSubIDs:
         ):
             return
 
-        sudo = sudo_prefix()
+        sudo = sudo_prefix(non_interactive=self.assume_yes)
         if os.geteuid() != 0 and not sudo:
             raise PermissionError(
                 "Subuid/subgid provisioning requires root privileges; no sudo available."
@@ -331,7 +331,7 @@ class EnsureUserNamespaces:
             return
 
         # prompt for sudo if needed
-        sudo = sudo_prefix()
+        sudo = sudo_prefix(non_interactive=self.assume_yes)
         if os.geteuid() != 0 and not sudo:
             raise PermissionError(
                 "Enabling user namespaces requires root privileges; no sudo available."

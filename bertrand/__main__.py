@@ -179,19 +179,21 @@ class External:
                 "init",
                 help=
                     "Install Bertrand's container engine if it is not already present, "
-                    "and then initialize a new project at the specified path (relative "
-                    "or absolute).  This will create a directory at that path with a "
-                    "template Containerfile, .containerignore, and pyproject.toml, "
-                    "which the user can edit if needed.",
+                    "and optionally initialize a new project at the specified path "
+                    "(relative or absolute).  If an environment path is provided, this "
+                    "will create a directory at that path with a template Containerfile, "
+                    ".containerignore, and pyproject.toml.  If omitted, this command "
+                    "only bootstraps host prerequisites for containerized workflows.",
             )
             command.add_argument(
                 "path",
                 metavar="ENV",
+                nargs="?",
                 help=
                     "A path to the specified environment directory.  This may be an "
                     "absolute or relative path, and must not point to an existing "
-                    "file.  The last component will be used as the project name in the "
-                    "generated pyproject.toml.",
+                    "file.  The last component will be used as the project name.  If "
+                    "omitted, only host bootstrap steps are performed.",
             )
             command.add_argument(
                 "-y", "--yes",
@@ -204,10 +206,10 @@ class External:
             command.add_argument(
                 "--profile",
                 choices=("flat", "src"),
-                default="src",
+                default=None,
                 help=
                     "Layout profile to apply for environment structure and resource "
-                    "placement (default: src).",
+                    "placement.  Requires ENV.  Defaults to src when ENV is provided.",
             )
             command.add_argument(
                 "--lang",
@@ -215,16 +217,17 @@ class External:
                 choices=("python", "cpp"),
                 default=None,
                 help=
-                    "Language capability to include (repeatable).  If omitted, defaults "
-                    "to python and cpp.",
+                    "Language capability to include (repeatable).  Requires ENV.  If "
+                    "omitted, defaults to python and cpp when ENV is provided.",
             )
             command.add_argument(
                 "--code",
                 choices=("vscode", "none"),
-                default="vscode",
+                default=None,
                 help=
                     "Editor integration capability to include.  Use 'none' to disable "
-                    "editor capability entirely (default: vscode).",
+                    "editor capability entirely.  Requires ENV.  Defaults to vscode "
+                    "when ENV is provided.",
             )
             command.set_defaults(handler=External.init)
 
@@ -858,11 +861,25 @@ class External:
         OSError
             If the specified path includes an image or container tag, which is not
             allowed when initializing an environment directory, or if requested
-            layout options differ from an existing manifest.
+            layout options differ from an existing manifest.  In host-only mode (no
+            path), layout options are rejected.
         """
         env, image_tag, container_tag = _parse(args.path)
         if env is None:
-            raise OSError("environment path is required for init")
+            if args.profile is not None or args.lang is not None or args.code is not None:
+                raise OSError(
+                    "init layout options (--profile/--lang/--code) require an "
+                    "environment path"
+                )
+            on_init.do(
+                env=None,
+                image_tag=image_tag,
+                container_tag=container_tag,
+                profile=None,
+                capabilities=None,
+                yes=args.yes,
+            )
+            return
         if image_tag or container_tag:
             raise OSError(
                 "cannot specify image or container tag when initializing an environment "
@@ -870,9 +887,9 @@ class External:
             )
 
         # resolve profile + capabilities
-        profile = args.profile
+        profile = args.profile if args.profile is not None else "src"
         langs = list(args.lang) if args.lang is not None else ["python", "cpp"]
-        code_capability = args.code
+        code_capability = args.code if args.code is not None else "vscode"
         capabilities = _dedupe(
             langs + ([] if code_capability == "none" else [code_capability])
         )

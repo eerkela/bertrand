@@ -310,9 +310,15 @@ def sanitize_name(name: str, *, replace: str = "_") -> str:
 # not necessary at all.
 
 
-def sudo_prefix() -> list[str]:
+def sudo_prefix(*, non_interactive: bool = False) -> list[str]:
     """Return a base command prefix that uses `sudo` if the current user is not already
     root.
+
+    Parameters
+    ----------
+    non_interactive : bool, optional
+        If True, include `-n` so sudo fails immediately instead of prompting for a
+        password.  Defaults to False.
 
     Returns
     -------
@@ -322,7 +328,11 @@ def sudo_prefix() -> list[str]:
     if os.name != "posix" or os.geteuid() == 0 or not shutil.which("sudo"):
         return []
     preserve = "DOCKER_HOST,DOCKER_CONTEXT,DOCKER_CONFIG"
-    return ["sudo", f"--preserve-env={preserve}"]
+    out = ["sudo"]
+    if non_interactive:
+        out.append("-n")
+    out.append(f"--preserve-env={preserve}")
+    return out
 
 
 LOCK_GUARD = threading.RLock()

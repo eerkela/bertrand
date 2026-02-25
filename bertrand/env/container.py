@@ -144,6 +144,14 @@ def _init_assume_yes(ctx: Pipeline.InProgress) -> bool:
     raise TypeError(f"invalid 'yes' fact type: {type(raw).__name__}")
 
 
+def _podman_ready() -> bool:
+    """Return True when podman is installed and usable for the current user."""
+    if not shutil.which("podman"):
+        return False
+    result = run(["podman", "info", "--format", "json"], check=False, capture_output=True)
+    return result.returncode == 0
+
+
 def _check_absolute_path(value: Any) -> Path:
     p = Path(value)
     if p != p.expanduser().resolve():
@@ -376,6 +384,9 @@ def enable_user_namespaces(ctx: Pipeline.InProgress) -> None:
         The in-flight pipeline context.
     """
     assume_yes = _init_assume_yes(ctx)
+    if _podman_ready():
+        return
+
     ctx.do(EnsureUserNamespaces(
         needed=15000,
         prompt=(
@@ -406,6 +417,9 @@ def provision_subids(ctx: Pipeline.InProgress) -> None:
         `detect_platform` step.
     """
     assume_yes = _init_assume_yes(ctx)
+    if _podman_ready():
+        return
+
     user = ctx.get(USER)
     if not isinstance(user, str):
         raise OSError(f"Invalid user: {user}")
@@ -489,6 +503,9 @@ def delegate_controllers(ctx: Pipeline.InProgress) -> None:
         If systemd is not found, or if elevation is required but not available.
     """
     assume_yes = _init_assume_yes(ctx)
+    if _podman_ready():
+        return
+
     uid = ctx.get(UID)
     if not isinstance(uid, int):
         raise OSError(f"Invalid UID: {uid}")
@@ -547,6 +564,25 @@ def delegate_controllers(ctx: Pipeline.InProgress) -> None:
                         "resource limits may be unavailable.",
                         file=sys.stderr
                     )
+
+
+# TODO: maybe delete `assert_container_cli_ready` upon review.
+
+
+@on_init(requires=[delegate_controllers], version=1)
+def assert_container_cli_ready(ctx: Pipeline.InProgress) -> None:
+    """Assert that the rootless container backend is usable after host bootstrap."""
+    if _podman_ready():
+        return
+
+    assume_yes = _init_assume_yes(ctx)
+    cmd = "bertrand init --yes" if assume_yes else "bertrand init"
+    raise OSError(
+        "podman is installed but not usable for rootless operation after init "
+        "bootstrap. Verify host prerequisites (user namespaces, subuid/subgid, and "
+        "controller delegation) and retry. Run `podman info` for diagnostics. "
+        f"(last command: `{cmd}`)"
+    )
 
 
 def _resolve_init_layout(ctx: Pipeline.InProgress, env_root: Path) -> tuple[str, list[str]]:
@@ -944,7 +980,7 @@ def _reconcile_registry(
     return env, config, list(registry.environments.values())
 
 
-@on_init(requires=[delegate_controllers], ephemeral=True)
+@on_init(requires=[assert_container_cli_ready], ephemeral=True)
 def init_environment(ctx: Pipeline.InProgress) -> None:
     """Initialize an environment directory using the active Config manifest and
     templates.
@@ -962,7 +998,9 @@ def init_environment(ctx: Pipeline.InProgress) -> None:
     TypeError
         If init facts are present with invalid types.
     """
-    env = ctx["env"]
+    env = ctx.get("env")
+    if env is None:
+        return
     if not isinstance(env, str):
         raise TypeError("environment path must be a string")
     root = Path(env).expanduser().resolve()

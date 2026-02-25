@@ -562,7 +562,7 @@ class DelegateUserControllers:
             return
 
         # ensure we can elevate if needed
-        sudo = sudo_prefix()
+        sudo = sudo_prefix(non_interactive=self.assume_yes)
         if os.geteuid() != 0 and not sudo:
             raise PermissionError(
                 "Configuring controller delegation requires root privileges; no sudo available."

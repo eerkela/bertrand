@@ -88,12 +88,6 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install Podman
-        shell: bash
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y podman
-
       - name: Install Bertrand CLI
         shell: bash
         run: |
@@ -106,7 +100,7 @@ jobs:
       - name: Bootstrap toolchain and build images
         shell: bash
         run: |
-          yes | bertrand init .
+          bertrand init --yes
           bertrand build .
 
       - id: collect
@@ -290,12 +284,6 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install Podman
-        shell: bash
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y podman
-
       - name: Install Bertrand CLI
         shell: bash
         run: |
@@ -308,7 +296,7 @@ jobs:
       - name: Bootstrap toolchain and build images
         shell: bash
         run: |
-          yes | bertrand init .
+          bertrand init --yes
           bertrand build .
 
       - id: collect

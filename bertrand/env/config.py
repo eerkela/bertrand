@@ -119,12 +119,7 @@ class Template(BaseModel):
         )
 
 
-def resource(
-    name: str,
-    *,
-    kind: Literal["file", "dir"],
-    template: str | None = None,
-) -> Callable[[type[T]], type[T]]:
+def resource(name: str, *, template: str | None = None) -> Callable[[type[T]], type[T]]:
     """A class decorator for defining layout resources.
 
     Parameters
@@ -132,22 +127,22 @@ def resource(
     name : str
         The unique name of this resource, which serves as its stable identifier in the
         layout manifest and catalog.  This should generally match the `name` portion
-        of a corresponding template, if one is given.
-    kind : Literal["file", "dir"]
-        The type of this resource, which determines how it is rendered and applied.
+        of a corresponding template file, if one is given.
     template : str | None, optional
         An optional reference to a Jinja template for this resource, of the form
-        "namespace/name/version".  If given, the template will be loaded from the
+        "namespace/name/version".  If given, the resource will be treated as a file,
+        and its initial contents will be rendered from a template file stored in the
         `on_init` pipeline's state directory, under
-        `templates/namespace/name/version.j2`, and will be used to initialize the
-        resource's content during `Config.init()`.  If none is given, then the resource
-        will not be written during layout initialization.
+        `templates/{namespace}/{name}/{version}.j2`.  Bertrand provides its own
+        templates as part of its front-end wheel, which are copied into this location
+        by default.  If no template is given (the default), then the resource will be
+        treated as a directory.
 
     Returns
     -------
     Callable[[type[T]], type[T]]
         A class decorator that registers the decorated class as a layout resource in the
-        global `CATALOG` under the given name, with the specified kind and template.
+        global `CATALOG` under the given name, with the specified template.
 
     Raises
     ------
@@ -167,8 +162,6 @@ def resource(
 
     template_kwargs: dict[str, str] | None = None
     if template is not None:
-        if kind != "file":
-            raise TypeError(f"only file resources can define a template reference: '{name}'")
         parts = template.split("/")
         if len(parts) != 3:
             raise TypeError(
@@ -182,7 +175,6 @@ def resource(
             raise TypeError(f"duplicate resource name in catalog: '{name}'")
         CATALOG[name] = cls(
             name=name,
-            kind=kind,
             template=Template(**template_kwargs) if template_kwargs is not None else None,
         )
         return cls
@@ -190,12 +182,12 @@ def resource(
     return _decorator
 
 
-@resource("vscode-workspace", kind="file", template="core/vscode-workspace/2026-02-15")
-@resource("containerfile", kind="file", template="core/containerfile/2026-02-15")
-@resource("containerignore", kind="file", template="core/containerignore/2026-02-15")
-@resource("docs", kind="dir")
-@resource("tests", kind="dir")
-@resource("src", kind="dir")
+@resource("vscode-workspace", template="core/vscode-workspace/2026-02-15")
+@resource("containerfile", template="core/containerfile/2026-02-15")
+@resource("containerignore", template="core/containerignore/2026-02-15")
+@resource("docs")
+@resource("tests")
+@resource("src")
 @dataclass(frozen=True)
 class Resource:
     """A base class describing a single file or directory being managed by the layout
@@ -207,8 +199,6 @@ class Resource:
     ----------
     name : str
         The name that was assigned to this resource in `@resource()`.
-    kind : Literal["file", "dir"]
-        The kind that was assigned to this resource in `@resource()`.
     template : Template | None
         The template reference that was assigned to this resource in `@resource()`, if
         any.
@@ -260,7 +250,6 @@ class Resource:
 
     # pylint: disable=unused-argument, redundant-returns-doc
     name: str
-    kind: Literal["file", "dir"]
     template: Template | None
 
     def parse(self, config: Config) -> dict[str, Any] | None:
@@ -614,7 +603,7 @@ def _require_non_empty_section(
     return section
 
 
-@resource("pyproject", kind="file", template="core/pyproject/2026-02-15")
+@resource("pyproject", template="core/pyproject/2026-02-15")
 class PyProject(Resource):
     """A resource describing a `pyproject.toml` file, which is used to configure
     Python projects and tools, and is also used as the primary vehicle for
@@ -800,7 +789,7 @@ class PyProject(Resource):
         }
 
 
-@resource("compile_commands", kind="file", template="core/compile_commands/2026-02-15")
+@resource("compile_commands", template="core/compile_commands/2026-02-15")
 class CompileCommands(Resource):
     """A resource describing a `compile_commands.json` file, which is used to
     configure C++ projects and tools, and can also be used as a source of truth for
@@ -858,7 +847,7 @@ class CompileCommands(Resource):
         return out
 
 
-@resource("clang-format", kind="file")
+@resource("clang-format", template="core/clang-format/2026-02-15")
 class ClangFormat(Resource):
     """A resource describing a `.clang-format` file, which is used to configure
     clang-format for C++ code formatting.  The `[tool.clang-format]` table is
@@ -878,7 +867,7 @@ class ClangFormat(Resource):
         return _dump_yaml(section, resource_id="clang-format")
 
 
-@resource("clang-tidy", kind="file")
+@resource("clang-tidy", template="core/clang-tidy/2026-02-15")
 class ClangTidy(Resource):
     """A resource describing a `.clang-tidy` file, which is used to configure
     clang-tidy for C++ linting.  This expects native clang-tidy key names in TOML.
@@ -922,7 +911,7 @@ class ClangTidy(Resource):
         return _dump_yaml(payload, resource_id="clang-tidy")
 
 
-@resource("clangd", kind="file")
+@resource("clangd", template="core/clangd/2026-02-15")
 class Clangd(Resource):
     """A resource describing a `.clangd` file, which is used to configure clangd for
     C++ language server features in editors.  This expects native clangd keys in
