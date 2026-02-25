@@ -1,10 +1,10 @@
 """Layout schema and init-time orchestration for Bertrand environments.
 
 This module is intentionally scoped to a minimal, ctx-driven backend for
-`bertrand init`:
+`bertrand init` and runtime environment loading:
 
-1. Build a deterministic layout manifest.
-2. Persist it in `.bertrand/env.json` under top-level `layout`.
+1. Build deterministic resource placement maps during init.
+2. Discover runtime resources from mapped candidate paths.
 3. Render and write templated bootstrap resources in deterministic phases.
 
 Canonical templates are packaged with Bertrand and lazily hydrated into
@@ -12,8 +12,8 @@ Canonical templates are packaged with Bertrand and lazily hydrated into
 """
 from __future__ import annotations
 
-import json
 import os
+import json
 import tomllib
 
 from dataclasses import asdict, dataclass, field
@@ -22,16 +22,14 @@ from importlib import resources
 from importlib.resources.abc import Traversable
 from pathlib import Path, PosixPath
 from types import MappingProxyType, TracebackType
-from typing import Annotated, Any, Callable, Iterator, Literal, Self, TypeVar, TypedDict
+from typing import Annotated, Any, Callable, Iterator, Self, TypeVar, TypedDict
 
 from jinja2 import Environment, StrictUndefined
 from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
-    ValidationError,
     field_validator,
-    model_validator,
 )
 import yaml
 
@@ -42,10 +40,7 @@ from .version import __version__
 
 # Canonical path and name definitions for shared resources
 ENV_DIR_NAME: str = ".bertrand"
-ENV_FILE_NAME: str = "env.json"
 ENV_LOCK_NAME: str = ".lock"
-ENV_LAYOUT_KEY: str = "layout"
-LAYOUT_SCHEMA_VERSION: int = 1
 MOUNT: PosixPath = PosixPath("/env")
 assert MOUNT.is_absolute()
 
@@ -126,7 +121,7 @@ def resource(name: str, *, template: str | None = None) -> Callable[[type[T]], t
     ----------
     name : str
         The unique name of this resource, which serves as its stable identifier in the
-        layout manifest and catalog.  This should generally match the `name` portion
+        resource catalog.  This should generally match the `name` portion
         of a corresponding template file, if one is given.
     template : str | None, optional
         An optional reference to a Jinja template for this resource, of the form
@@ -203,54 +198,31 @@ class Resource:
         The template reference that was assigned to this resource in `@resource()`, if
         any.
     """
-    class JSON(BaseModel):
-        """Serialized representation of a Resource, which is stored inside an
-        environment's layout manifest and used to reconstruct the Resource.
-        """
-        model_config = ConfigDict(extra="forbid")
-        kind: Annotated[
-            Literal["file", "dir"],
-            Field(description="The type of resource, either 'file' or 'dir'."),
-        ]
-        path: Annotated[
-            PosixPath,
-            Field(
-                description=
-                    "The relative path of the resource starting from the environment root.  "
-                    "Always stored as a POSIX path."
-            ),
-        ]
-        template: Annotated[
-            Template | None,
-            Field(
-                description=
-                    "An optional reference to a template used to render the contents of a "
-                    "file resource.  Must be None for non-file resources.",
-            ),
-        ] = None
-
-        @field_validator("path")
-        @classmethod
-        def _validate_path(cls, value: PosixPath) -> PosixPath:
-            if value.is_absolute():
-                raise ValueError(f"layout resource paths must be relative: {value}")
-            if value == PosixPath("."):
-                raise ValueError("layout resource path must not be empty")
-            if any(part == ".." for part in value.parts):
-                raise ValueError(f"layout resource path must not traverse parents: {value}")
-            return value
-
-        @model_validator(mode="after")
-        def _validate(self) -> Self:
-            if self.kind != "file" and self.template is not None:
-                raise ValueError(
-                    "non-file layout resources must not define a template reference"
-                )
-            return self
-
     # pylint: disable=unused-argument, redundant-returns-doc
     name: str
     template: Template | None
+
+    @property
+    def is_file(self) -> bool:
+        """
+        Returns
+        -------
+        bool
+            True if this resource is a file (i.e. has an associated template), or False
+            if it is a directory.
+        """
+        return self.template is not None
+
+    @property
+    def is_dir(self) -> bool:
+        """
+        Returns
+        -------
+        bool
+            True if this resource is a directory (i.e. has no associated template), or
+            False if it is a file.
+        """
+        return self.template is None
 
     def parse(self, config: Config) -> dict[str, Any] | None:
         """A parser function that can extract normalized config data from this
@@ -310,135 +282,12 @@ class Resource:
         return None
 
 
-class Manifest(BaseModel):
-    """Serializable resource manifest persisted in environment metadata.
-
-    A manifest of this form is stored in `env.json` under the top-level `layout` key,
-    and can be loaded to reconstruct the layout after initialization.
-    """
-    model_config = ConfigDict(extra="forbid")
-    schema_version: Annotated[
-        int,
-        Field(gt=0, description="Version number, for forward compatibility."),
-    ] = LAYOUT_SCHEMA_VERSION
-    profile: Annotated[
-        str,
-        Field(
-            description=
-                "The layout profile used to generate this manifest, e.g. 'flat' or 'src'."
-        ),
-    ]
-    capabilities: list[str] = Field(
-        default_factory=list,
-        description=
-            "List of language capabilities included in this layout, e.g. 'python' "
-            "and 'cpp'.  This field is reserved for future use with other languages."
-    )
-    resources: dict[str, Resource.JSON] = Field(
-        default_factory=dict,
-        description=
-            "Mapping of resource IDs to their specifications.  Resource IDs are "
-            "arbitrary strings that serve as stable identifiers for resources, and "
-            "should generally match the `name` portion of a corresponding template."
-    )
-
-    @field_validator("profile")
-    @classmethod
-    def _validate_profile(cls, value: str) -> str:
-        text = value.strip().lower()
-        if not text:
-            raise ValueError("layout profile must be non-empty")
-        return text
-
-    @field_validator("capabilities")
-    @classmethod
-    def _validate_capabilities(cls, values: list[str]) -> list[str]:
-        # capability names must be non-empty strings with no duplicates
-        out: list[str] = []
-        seen: set[str] = set()
-        for raw in values:
-            capability = raw.strip().lower()
-            if not capability:
-                raise ValueError("layout capabilities must be non-empty strings")
-            if capability in seen:
-                continue
-            seen.add(capability)
-            out.append(capability)
-        return out
-
-    @field_validator("resources", mode="before")
-    @classmethod
-    def _validate_resources(cls, value: Any) -> Any:
-        if not isinstance(value, dict):
-            return value
-
-        # resource ids must be non-empty strings with no duplicates
-        normalized: dict[str, Any] = {}
-        seen: set[str] = set()
-        for raw_id, spec in value.items():
-            if not isinstance(raw_id, str):
-                raise ValueError("layout resource IDs must be strings")
-            resource_id = raw_id.strip()
-            if not resource_id:
-                raise ValueError("layout resource IDs must be non-empty")
-            if resource_id in seen:
-                raise ValueError(f"duplicate layout resource ID: {resource_id}")
-            seen.add(resource_id)
-            normalized[resource_id] = spec
-        return normalized
-
-    @model_validator(mode="after")
-    def _validate(self) -> Manifest:
-        if self.schema_version != LAYOUT_SCHEMA_VERSION:
-            raise ValueError(
-                f"unsupported layout schema version: {self.schema_version} "
-                f"(expected {LAYOUT_SCHEMA_VERSION})"
-            )
-
-        # validate no duplicate paths
-        by_parts: dict[tuple[str, ...], tuple[str, Resource.JSON]] = {}
-        for resource_id in self.resources:
-            r = self.resources[resource_id]
-            parts = r.path.parts
-            existing = by_parts.get(parts)
-            if existing is not None:
-                existing_id, _ = existing
-                raise ValueError(
-                    f"layout path collision between resource IDs '{existing_id}' and "
-                    f"'{resource_id}' at '{r.path}'"
-                )
-            by_parts[parts] = (resource_id, r)
-
-        # validate no file ancestors in paths
-        for resource_id in self.resources:
-            r = self.resources[resource_id]
-            parts = r.path.parts
-            for depth in range(1, len(parts)):
-                parent_parts = parts[:depth]
-                parent = by_parts.get(parent_parts)
-                if parent is None:
-                    continue
-                parent_id, parent_r = parent
-                if parent_r.kind == "file":
-                    parent_path = PosixPath(*parent_parts)
-                    raise ValueError(
-                        f"layout resource '{resource_id}' at '{r.path}' cannot be nested "
-                        f"under file resource '{parent_id}' at '{parent_path}'"
-                    )
-
-        return self
-
-
 def _template_path(ctx: Pipeline.InProgress, ref: Template) -> Path:
     return ctx.state_dir / "templates" / ref.namespace / ref.name / f"{ref.version}.j2"
 
 
 def _env_dir(root: Path) -> Path:
     return root.expanduser().resolve() / ENV_DIR_NAME
-
-
-def _env_file(root: Path) -> Path:
-    return _env_dir(root) / ENV_FILE_NAME
 
 
 def lock_env(root: Path, timeout: float = LOCK_TIMEOUT) -> Lock:
@@ -462,24 +311,6 @@ def lock_env(root: Path, timeout: float = LOCK_TIMEOUT) -> Lock:
     lock_dir = _env_dir(root)
     lock_dir.mkdir(parents=True, exist_ok=True)
     return Lock(lock_dir / ENV_LOCK_NAME, timeout=timeout)
-
-
-def _read_env_json(env_root: Path, *, missing_ok: bool = False) -> dict[str, Any]:
-    env_file = _env_file(env_root)
-    if not env_file.exists():
-        if missing_ok:
-            return {}
-        raise FileNotFoundError(f"environment metadata file not found: {env_file}")
-    if not env_file.is_file():
-        raise OSError(f"environment metadata path is not a file: {env_file}")
-
-    try:
-        data = json.loads(env_file.read_text(encoding="utf-8"))
-    except Exception as err:
-        raise OSError(f"failed to parse environment metadata at {env_file}: {err}") from err
-    if not isinstance(data, dict):
-        raise OSError(f"environment metadata at {env_file} must be a JSON object")
-    return data
 
 
 def _expect_str(name: str, ctx: Pipeline.InProgress) -> str:
@@ -987,9 +818,9 @@ CAPABILITIES: dict[str, dict[str, dict[str, PosixPath]]] = {
 
 @dataclass
 class Config:
-    """Read-only view representing the deserialized contents of a layout manifest,
-    together with the environment root path in which to apply it.  This is the main
-    entry point for layout rendering and application logic.
+    """Read-only view representing resource placements within an environment root,
+    as well as normalized config data parsed from resources that implement a `parse()`
+    method, without coupling to any particular schema.
     """
     @dataclass(frozen=True)
     class Facts:
@@ -1010,7 +841,6 @@ class Config:
         # in the templated Containerfile.
 
         env: str = field()
-        manifest: dict[str, Any] = field()
         paths: dict[str, str] = field()
         project_name: str = field()
         shell: str = field(default=DEFAULT_SHELL)
@@ -1021,9 +851,9 @@ class Config:
         cache_dir: str = field(default="/tmp/.cache")
 
     root: Path
-    manifest: Manifest
+    resources: dict[str, PosixPath]
     _entered: int = field(default=0, init=False, repr=False)
-    _snapshot: dict[str, Any] | None = field(default=None, init=False, repr=False)
+    _snapshot: Any | None = field(default=None, init=False, repr=False)
     _snapshot_key_owner: dict[tuple[str, ...], str] = field(
         default_factory=dict,
         init=False,
@@ -1032,118 +862,94 @@ class Config:
 
     def __post_init__(self) -> None:
         self.root = self.root.expanduser().resolve()
+        for r_id, path in self.resources.items():
+            if r_id not in CATALOG:
+                raise ValueError(f"unknown resource id in config: '{r_id}'")
+            self._check_relative_path(path, where=f"resource '{r_id}'")
 
-    @classmethod
-    def validate(cls, env_root: Path, data: dict[str, Any]) -> Self:
-        """Load a layout manifest from a raw Python dictionary and return a resolved
-        `Config` instance.
-
-        Parameters
-        ----------
-        env_root : Path
-            The root path of the environment, used to locate the manifest and resolve
-            resource paths.
-        data : dict[str, Any]
-            The raw layout manifest data, typically loaded from `env.json` under the
-            `layout` key.
-
-        Returns
-        -------
-        Self
-            A resolved `Config` instance containing the manifest and root path.
-
-        Raises
-        ------
-        OSError
-            If the manifest data is malformed or contains an unsupported schema
-            version.
-        """
-        env_root = env_root.expanduser().resolve()
-        layout = data.get(ENV_LAYOUT_KEY)
-        if layout is None:
+    @staticmethod
+    def _check_relative_path(path: PosixPath, *, where: str) -> None:
+        if path.is_absolute():
+            raise OSError(f"mapped resource path must be relative at '{where}': {path}")
+        if path == PosixPath("."):
+            raise OSError(f"mapped resource path must not be empty at '{where}'")
+        if any(part == ".." for part in path.parts):
             raise OSError(
-                f"missing '{ENV_LAYOUT_KEY}' in environment metadata at "
-                f"{_env_file(env_root)}"
+                f"mapped resource path must not traverse parents at '{where}': {path}"
             )
-        try:
-            return cls(
-                root=env_root,
-                manifest=Manifest.model_validate(layout)
-            )
-        except ValidationError as err:
-            raise OSError(
-                "invalid layout manifest in environment metadata at "
-                f"{_env_file(env_root)}: {err}"
-            ) from err
 
     @classmethod
     def load(cls, env_root: Path) -> Self:
-        """Load layout manifest from metadata stored in `env_root` and return a
-        resolved `Config` instance.
+        """Load layout by scanning the environment root for known resource placements
+        based on the `PROFILES` and `CAPABILITIES` maps.
 
         Parameters
         ----------
         env_root : Path
-            The root path of the environment, used to locate the manifest and resolve
-            resource paths.
+            The root path of the environment directory.
 
         Returns
         -------
         Self
-            A resolved `Config` instance containing the manifest and root path.
+            A resolved `Config` instance containing the discovered resources.
 
         Raises
         ------
         OSError
-            If the manifest file is missing, malformed, or contains an unsupported
-            schema version.
+            If any resource placements reference unknown resource IDs, or if there are
+            any path collisions between resources in the environment (either from
+            multiple resources mapping to the same path, or from a single resource
+            mapping to multiple paths).
         """
         env_root = env_root.expanduser().resolve()
         with lock_env(env_root):
-            data = _read_env_json(env_root)
-            return cls.validate(env_root, data)
-
-    @staticmethod
-    def _merge_placement_maps(
-        base: dict[str, PosixPath],
-        overlay: dict[str, PosixPath],
-    ) -> dict[str, PosixPath]:
-        merged = {
-            resource_id: path
-            for resource_id, path in base.items()
-        }
-        for resource_id, path in overlay.items():
-            merged[resource_id] = path
-        return merged
-
-    @staticmethod
-    def _resolve_profile(profile: str) -> dict[str, PosixPath]:
-        base = PROFILES.get("*")
-        if base is None:
-            raise ValueError("missing wildcard baseline in PROFILES: '*'")
-        overlay = PROFILES.get(profile)
-        if overlay is None:
-            raise ValueError(
-                f"unknown layout profile: {profile} (supported: "
-                f"{', '.join(sorted(profile for profile in PROFILES if profile != "*"))})"
+            # build a candidate map of resource locations based on all known placements
+            # across the current profiles and capabilities, so that we don't need to
+            # do a full filesystem walk
+            candidates: list[tuple[str, str, PosixPath]] = [
+                (f"PROFILES['{profile}']['{r_id}']", r_id, path)
+                for profile, placements in PROFILES.items()
+                for r_id, path in placements.items()
+            ]
+            candidates.extend(
+                (f"CAPABILITIES['{capability}']['{profile}']['{r_id}']", r_id, path)
+                for capability, variants in CAPABILITIES.items()
+                for profile, placements in variants.items()
+                for r_id, path in placements.items()
             )
-        return Config._merge_placement_maps(base, overlay)
+            seen: dict[PosixPath, str] = {}
+            for where, r_id, path in candidates:
+                if r_id not in CATALOG:
+                    raise OSError(
+                        f"unknown resource id in mapped placement '{where}': {r_id}"
+                    )
+                cls._check_relative_path(path, where=where)
+                observed_id = seen.setdefault(path, r_id)
+                if observed_id != r_id:
+                    raise OSError(
+                        f"resource path collision at '{where}': '{r_id}' and "
+                        f"'{observed_id}' both map to '{path}'"
+                    )
 
-    @staticmethod
-    def _resolve_capability(capability: str, profile: str) -> dict[str, PosixPath]:
-        variants = CAPABILITIES.get(capability)
-        if variants is None:
-            raise ValueError(
-                f"unknown layout capability: {capability} (supported: "
-                f"{', '.join(sorted(CAPABILITIES))})"
-            )
-        base = variants.get("*")
-        if base is None:
-            raise ValueError(
-                f"layout capability '{capability}' is missing wildcard baseline '*'"
-            )
-        overlay = variants.get(profile, {})
-        return Config._merge_placement_maps(base, overlay)
+            # search the candidate locations to discover the actual resources present
+            # in the environment
+            discovered: dict[str, PosixPath] = {}
+            for path, r_id in seen.items():
+                r = CATALOG[r_id]
+                target = env_root / path
+                if target.exists() and (
+                    (r.is_file and target.is_file()) or
+                    (r.is_dir and target.is_dir())
+                ):
+                    observed_path = discovered.setdefault(r_id, path)
+                    if observed_path != path:
+                        raise OSError(
+                            f"ambiguous mapped resource '{r_id}' in environment at "
+                            f"{env_root}: '{observed_path}' and '{path}'"
+                        )
+
+            # return as a resolved Config instance with normalized paths
+            return cls(root=env_root, resources=discovered)
 
     @classmethod
     def init(
@@ -1170,7 +976,7 @@ class Config:
         Returns
         -------
         Self
-            A Config instance containing the environment root and generated manifest.
+            A Config instance containing the environment root and generated resources.
 
         Raises
         ------
@@ -1180,76 +986,69 @@ class Config:
             an unknown catalog resource ID, or if there are any invalid resource
             collisions (including path collisions) when merging.
         """
-        # normalize and validate profile
-        profile_key = profile.strip().lower()
-        supported = sorted(profile for profile in PROFILES if profile != "*")
-        if profile_key not in supported:
+        # normalize profile
+        profile = profile.strip()
+        if not profile:
+            raise ValueError("layout profile cannot be empty")
+        if profile == "*":
+            raise ValueError("layout profile cannot be wildcard '*'")
+
+        # start with the wildcard baseline and merge the profile diff on top
+        base = PROFILES.get("*")
+        if base is None:
+            raise ValueError("missing wildcard baseline in PROFILES: '*'")
+        overlay = PROFILES.get(profile)
+        if overlay is None:
             raise ValueError(
-                f"unknown layout profile: {profile} (supported: {', '.join(supported)})"
+                f"unknown layout profile: {profile} (supported: "
+                f"{', '.join(sorted(profile for profile in PROFILES if profile != '*'))})"
             )
+        merged = base.copy()
+        merged.update(overlay)
 
-        # merge profile resource placements
-        merged_paths = cls._resolve_profile(profile_key)
-
-        # normalize and validate capabilities
-        seen: set[str] = set()
-        caps: list[str] = []
-        if capabilities is not None:
+        # merge capability resource placements, checking for collisions as we go
+        if capabilities:
+            seen: set[str] = set()
             for raw in capabilities:
-                cap = raw.strip().lower()
-                if not cap:
-                    raise ValueError("layout capabilities must be non-empty")
-                if cap not in seen:
-                    if cap not in CAPABILITIES:
-                        raise ValueError(
-                            f"unknown layout capability: {cap} (supported: "
-                            f"{', '.join(sorted(CAPABILITIES))})"
-                        )
-                    seen.add(cap)
-                    caps.append(cap)
-
-        # merge resolved capability resource placements, checking for collisions
-        for cap in caps:
-            variant = cls._resolve_capability(cap, profile_key)
-            for resource_id, path in variant.items():
-                existing = merged_paths.get(resource_id)
-                if existing is None:
-                    merged_paths[resource_id] = path
+                # normalize capability and skip duplicates
+                cap = raw.strip()
+                if cap in seen:
                     continue
-                if existing != path:
+                if not cap:
+                    raise ValueError("layout capability cannot be empty")
+                if cap == "*":
+                    raise ValueError("layout capability cannot be wildcard '*'")
+
+                # start with the wildcard baseline and merge the profile-specific diff
+                # on top; if a variant does not specify a profile-specific diff, treat
+                # it as an empty overlay rather than an error
+                variants = CAPABILITIES.get(cap)
+                if variants is None:
                     raise ValueError(
-                        f"layout resource path collision for '{resource_id}' while applying "
-                        f"capability '{cap}': {existing} != {path}"
+                        f"unknown layout capability: {cap} (supported: "
+                        f"{', '.join(sorted(CAPABILITIES))})"
                     )
+                base = variants.get("*")
+                if base is None:
+                    raise ValueError(
+                        f"layout capability '{cap}' is missing wildcard baseline '*'"
+                    )
+                overlay = variants.get(profile, {})
+                caps = base.copy()
+                caps.update(overlay)
 
-        # validate cross-resource dependencies for active capabilities.
-        if "vscode-workspace" in merged_paths and "pyproject" not in merged_paths:
-            raise ValueError(
-                "resource dependency error: 'vscode-workspace' requires 'pyproject' "
-                "to be present"
-            )
+                # check for collisions during merge
+                for r_id, path in caps.items():
+                    existing = merged.setdefault(r_id, path)
+                    if existing != path:
+                        raise ValueError(
+                            f"layout resource path collision for '{r_id}' while "
+                            f"applying capability '{cap}': {existing} != {path}"
+                        )
+                seen.add(cap)
 
-        # materialize manifest resources from catalog defaults
-        merged_resources: dict[str, Resource.JSON] = {}
-        for resource_id, path in merged_paths.items():
-            r = CATALOG.get(resource_id)
-            if r is None:
-                raise ValueError(f"unknown layout resource ID: '{resource_id}'")
-            merged_resources[resource_id] = Resource.JSON(
-                kind=r.kind,
-                path=path,
-                template=r.template.model_copy(deep=True) if r.template is not None else None,
-            )
-
-        return cls(
-            root=env_root,
-            manifest=Manifest(
-                schema_version=LAYOUT_SCHEMA_VERSION,
-                profile=profile_key,
-                capabilities=caps,
-                resources=merged_resources,
-            )
-        )
+        # return as a resolved Config instance with normalized paths
+        return cls(root=env_root, resources=merged)
 
     def _merge_snapshot_fragment(
         self,
@@ -1317,12 +1116,11 @@ class Config:
                 try:
                     snapshot: dict[str, Any] = {}
                     key_owner: dict[tuple[str, ...], str] = {}
-                    for resource_id in self.manifest.resources:
+                    for resource_id in sorted(self.resources):
                         r = CATALOG.get(resource_id)
                         if r is None:
                             raise OSError(
-                                "layout manifest references unknown resource ID: "
-                                f"'{resource_id}'"
+                                f"config references unknown resource ID: '{resource_id}'"
                             )
 
                         # invoke parser to extract config fragment
@@ -1366,8 +1164,7 @@ class Config:
         traceback: TracebackType | None,
     ) -> None:
         """Release one context level and clear snapshot on outermost exit."""
-        del exc_type, exc, traceback
-        if self._entered == 0:
+        if self._entered <= 0:
             raise RuntimeError("layout context is not active")
         self._entered -= 1
         if self._entered == 0:
@@ -1375,7 +1172,6 @@ class Config:
             self._snapshot_key_owner = {}
 
     def __getitem__(self, key: str) -> Any:
-        """Look up immutable normalized snapshot data from the active context."""
         if self._entered < 1 or self._snapshot is None:
             raise RuntimeError(
                 "layout config snapshot is unavailable outside an active layout context"
@@ -1385,7 +1181,6 @@ class Config:
         return self._snapshot[key]
 
     def __iter__(self) -> Iterator[str]:
-        """Iterate over keys in the active context snapshot."""
         if self._entered < 1 or self._snapshot is None:
             raise RuntimeError(
                 "layout config snapshot is unavailable outside an active layout context"
@@ -1393,7 +1188,6 @@ class Config:
         return iter(self._snapshot)
 
     def __contains__(self, key: str) -> bool:
-        """Check for the presence of a key in the active context snapshot."""
         if self._entered < 1 or self._snapshot is None:
             raise RuntimeError(
                 "layout config snapshot is unavailable outside an active layout context"
@@ -1453,9 +1247,9 @@ class Config:
         Raises
         ------
         KeyError
-            If the given resource ID is not defined in the manifest.
+            If the given resource ID is not detected in the environment.
         """
-        if resource_id not in self.manifest.resources:
+        if resource_id not in self.resources:
             raise KeyError(f"unknown resource ID: '{resource_id}'")
         return CATALOG[resource_id]
 
@@ -1465,75 +1259,38 @@ class Config:
         Parameters
         ----------
         resource_id : str
-            The stable identifier of the resource to resolve, as defined in the
-            manifest.
+            The stable identifier of the resource to resolve, as in `CATALOG`.
 
         Returns
         -------
         Path
             An absolute path to the resource within the environment root directory.
-        """
-        return self.root / Path(self.manifest.resources[resource_id].path)
-
-    # TODO: figure out a better way to pass and validate CLI arguments from __main__.py
-
-    def _facts(self, ctx: Pipeline.InProgress) -> Config.Facts:
-        """Build a Jinja context from pipeline facts, which can be used to render
-        layout resources.
-
-        Parameters
-        ----------
-        ctx : Pipeline.InProgress
-            The current pipeline context, whose state directory holds layout
-            templates and whose facts record CLI input.
-
-        Returns
-        -------
-        Config.Facts
-            A Facts instance containing the relevant context for layout rendering.
 
         Raises
         ------
-        OSError
-            If the environment path in pipeline facts does not match this layout's
-            root path.
+        KeyError
+            If the given resource ID is not detected in the environment.
         """
+        if resource_id not in self.resources:
+            raise KeyError(f"unknown resource ID: '{resource_id}'")
+        return self.root / Path(self.resources[resource_id])
+
+    def _facts(self, ctx: Pipeline.InProgress) -> Config.Facts:
         env = Path(_expect_str("env", ctx)).expanduser().resolve()
         if env != self.root:
             raise OSError(
                 f"layout context mismatch for environment root: layout={self.root}, ctx={env}"
             )
-
         return Config.Facts(
             env=str(self.root),
-            manifest=self.manifest.model_dump(mode="python"),
             paths={
                 resource_id: str(self.path(resource_id))
-                for resource_id in sorted(self.manifest.resources)
+                for resource_id in sorted(self.resources)
             },
             project_name=sanitize_name(self.root.name, replace="-"),
         )
 
-    def render(self, ctx: Pipeline.InProgress) -> dict[str, str]:
-        """Render templated file resources in deterministic resource-id order.
-
-        This function renders text only.  Callers are responsible for filesystem writes.
-
-        Parameters
-        ----------
-        ctx : Pipeline.InProgress
-            The current pipeline context, whose state directory holds layout templates.
-
-        Returns
-        -------
-        dict[str, str]
-            A mapping of resource IDs to their rendered text content.
-
-        Raises
-        ------
-        OSError
-            If there are any errors during template loading or rendering.
-        """
+    def _render(self, ctx: Pipeline.InProgress) -> dict[str, str]:
         # gather jinja context
         jinja = Environment(
             autoescape=False,
@@ -1546,9 +1303,9 @@ class Config:
 
         # collect template references from templated file resources
         refs: dict[tuple[str, str, str], Template] = {}
-        for resource_id in sorted(self.manifest.resources):
+        for resource_id in sorted(self.resources):
             r = self.resource(resource_id)
-            if r.kind != "file" or r.template is None:
+            if not r.is_file or r.template is None:
                 continue
             ref = r.template
             refs[(ref.namespace, ref.name, ref.version)] = ref
@@ -1559,9 +1316,7 @@ class Config:
             if target.exists():
                 if not target.is_file():
                     raise OSError(f"template cache path is not a file: {target}")
-                continue  # already hydrated, skip
-
-            # load template from packaged resources
+                continue
             source = ref.packaged_path()
             if not source.is_file():
                 raise FileNotFoundError(
@@ -1581,9 +1336,9 @@ class Config:
 
         # render templated resources with Jinja context
         out: dict[str, str] = {}
-        for resource_id in sorted(self.manifest.resources):
+        for resource_id in sorted(self.resources):
             r = self.resource(resource_id)
-            if r.kind != "file" or r.template is None:
+            if not r.is_file or r.template is None:
                 continue
 
             # load template
@@ -1633,27 +1388,11 @@ class Config:
             If there are any filesystem errors when writing rendered resources to disk.
         """
         with lock_env(self.root, timeout=ctx.timeout):
-            rendered = self.render(ctx)
+            rendered = self._render(ctx)
 
-            # serialize layout to env.json
-            data = _read_env_json(self.root, missing_ok=True)
-            data[ENV_LAYOUT_KEY] = self.manifest.model_dump(mode="json")
-            env_file = _env_file(self.root)
-            try:
-                ctx.do(WriteText(
-                    path=env_file,
-                    text=json.dumps(data, indent=2) + "\n",
-                    replace=None
-                ), undo=False)
-            except Exception as err:
-                raise OSError(
-                    f"failed to serialize environment metadata for {env_file}: {err}"
-                ) from err
-
-            # create directory resources
-            for resource_id in self.manifest.resources:
-                r = self.manifest.resources[resource_id]
-                if r.kind == "dir":
+            for resource_id in sorted(self.resources):
+                r = self.resource(resource_id)
+                if r.is_dir:
                     ctx.do(Mkdir(path=self.path(resource_id), replace=False), undo=False)
 
             # write missing files in deterministic order
@@ -1682,14 +1421,10 @@ class Config:
             )
 
         with lock_env(self.root):
-            for resource_id in self.manifest.resources:
+            for resource_id in sorted(self.resources):
                 r = CATALOG.get(resource_id)
                 if r is None:
-                    raise OSError(
-                        f"layout manifest references unknown resource ID: '{resource_id}'"
-                    )
-
-                # render artifact content and validate output
+                    raise OSError(f"config references unknown resource ID: '{resource_id}'")
                 target = self.path(resource_id)
                 try:
                     text = r.render(self)
@@ -1747,14 +1482,10 @@ class Config:
         out: list[Path] = []
         seen: set[Path] = set()
         with lock_env(self.root):
-            for resource_id in self.manifest.resources:
+            for resource_id in sorted(self.resources):
                 r = CATALOG.get(resource_id)
                 if r is None:
-                    raise OSError(
-                        f"layout manifest references unknown resource ID: '{resource_id}'"
-                    )
-
-                # invoke resolver to extract source paths
+                    raise OSError(f"config references unknown resource ID: '{resource_id}'")
                 try:
                     paths = r.sources(self)
                     if paths is None:
@@ -1787,14 +1518,3 @@ class Config:
                     out.append(normalized)
 
         return out
-
-    @property
-    def capabilities(self) -> tuple[str, ...]:
-        """Return the list of active capabilities in this layout config.
-
-        Returns
-        -------
-        tuple[str, ...]
-            The list of active capabilities declared in the manifest.
-        """
-        return tuple(self.manifest.capabilities)
