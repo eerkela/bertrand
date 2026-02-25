@@ -194,6 +194,14 @@ class External:
                     "generated pyproject.toml.",
             )
             command.add_argument(
+                "-y", "--yes",
+                action="store_true",
+                help=
+                    "Skip confirmation prompts when installing the container engine "
+                    "and/or initializing the project.  This is mainly intended for "
+                    "non-interactive use, such as in CI/CD workflows.",
+            )
+            command.add_argument(
                 "--profile",
                 choices=("flat", "src"),
                 default="src",
@@ -877,6 +885,7 @@ class External:
             container_tag=container_tag,
             profile=profile,
             capabilities=cast(JSONValue, capabilities),
+            yes=args.yes,
         )
 
     @staticmethod

@@ -52,6 +52,8 @@ from .config import (
     HOST_ENV,
     Config,
     lock_env,
+    _env_dir,
+    _env_file,
 )
 from .pipeline import (
     DelegateUserControllers,
@@ -113,10 +115,6 @@ DISTRO_CODENAME = "distro_codename"
 CODE_SERVER_AVAILABLE = "code_server_available"
 
 
-def _env_dir(env_root: Path) -> Path:
-    return env_root / ".bertrand"
-
-
 def _env_tmp_dir(env_root: Path) -> Path:
     return _env_dir(env_root) / "tmp"
 
@@ -129,20 +127,21 @@ def _iid_file(env_root: Path, name: str) -> Path:
     return _env_tmp_dir(env_root) / f"{name}.iid"
 
 
-def _env_file(env_root: Path) -> Path:
-    return _env_dir(env_root) / "env.json"
-
-
-def _container_file(env_root: Path) -> Path:
-    return env_root / "Containerfile"
-
-
 def _registry_file() -> Path:
     return on_init.state_dir / ENV_REGISTRY_FILE
 
 
 def _registry_lock() -> Path:
     return on_init.state_dir / ENV_REGISTRY_LOCK
+
+
+def _init_assume_yes(ctx: Pipeline.InProgress) -> bool:
+    raw = ctx.get("yes")
+    if raw is None:
+        return False
+    if isinstance(raw, bool):
+        return raw
+    raise TypeError(f"invalid 'yes' fact type: {type(raw).__name__}")
 
 
 def _check_absolute_path(value: Any) -> Path:
@@ -300,7 +299,8 @@ def detect_platform(ctx: Pipeline.InProgress) -> None:
 @on_init(requires=[detect_platform], version=1)
 def install_container_cli(ctx: Pipeline.InProgress) -> None:
     """Install the base packages required for the container backend via the detected
-    package manager.  This will prompt the user for confirmation before
+    package manager.  This may prompt for confirmation unless init is running with
+    `--yes`.
 
     Parameters
     ----------
@@ -312,6 +312,8 @@ def install_container_cli(ctx: Pipeline.InProgress) -> None:
     OSError
         If `podman` is not found and installation is declined by the user.
     """
+    assume_yes = _init_assume_yes(ctx)
+
     # check if podman CLI is already present
     cli = shutil.which("podman")
     if cli:
@@ -328,7 +330,7 @@ def install_container_cli(ctx: Pipeline.InProgress) -> None:
         "Bertrand requires 'podman' to manage rootless containers.  Would you like to "
         f"install it now using {package_manager} (requires sudo).\n"
         "[y/N] ",
-        assume_yes=False,
+        assume_yes=assume_yes,
     ):
         raise OSError("Installation declined by user.")
 
@@ -346,7 +348,8 @@ def install_container_cli(ctx: Pipeline.InProgress) -> None:
     ctx.do(InstallPodman(
         manager=package_manager,
         packages=packages,
-        refresh=True
+        assume_yes=assume_yes,
+        refresh=True,
     ))
 
     # verify installation and record facts for later steps
@@ -364,20 +367,23 @@ def install_container_cli(ctx: Pipeline.InProgress) -> None:
 @on_init(requires=[install_container_cli], version=1)
 def enable_user_namespaces(ctx: Pipeline.InProgress) -> None:
     """Ensure unprivileged user namespaces are enabled on the host system, which are
-    required for the rootless container cli.
+    required for the rootless container cli.  Prompts are auto-accepted when init is
+    run with `--yes`; permission failures still raise.
 
     Parameters
     ----------
     ctx : Pipeline.InProgress
         The in-flight pipeline context.
     """
+    assume_yes = _init_assume_yes(ctx)
     ctx.do(EnsureUserNamespaces(
         needed=15000,
         prompt=(
             "Rootless containers require unprivileged user namespaces to be enabled on "
             "the host system.  This may require sudo privileges.\n"
             "Do you want to proceed? [y/N] "
-        )
+        ),
+        assume_yes=assume_yes,
     ))
 
 
@@ -385,6 +391,8 @@ def enable_user_namespaces(ctx: Pipeline.InProgress) -> None:
 def provision_subids(ctx: Pipeline.InProgress) -> None:
     """Ensure subordinate UID/GID ranges are allocated for the host user in
     /etc/subuid and /etc/subgid, which are required for rootless Podman operation.
+    Prompts are auto-accepted when init is run with `--yes`; permission failures still
+    raise.
 
     Parameters
     ----------
@@ -397,6 +405,7 @@ def provision_subids(ctx: Pipeline.InProgress) -> None:
         If the USER fact is not a valid string.  This should have been set by the
         `detect_platform` step.
     """
+    assume_yes = _init_assume_yes(ctx)
     user = ctx.get(USER)
     if not isinstance(user, str):
         raise OSError(f"Invalid user: {user}")
@@ -408,7 +417,8 @@ def provision_subids(ctx: Pipeline.InProgress) -> None:
             "/etc/subuid and /etc/subgid.  Bertrand can configure this, but may "
             "require sudo privileges to do so.\n"
             "Do you want to proceed? [y/N] "
-        )
+        ),
+        assume_yes=assume_yes,
     ))
 
 
@@ -465,7 +475,8 @@ def _dropin_delegate_controllers(path: Path) -> set[str] | None:
 def delegate_controllers(ctx: Pipeline.InProgress) -> None:
     """Configure systemd controller delegation for the rootless container CLI, if not
     already configured.  This allows the container CLI to manage resource limits on
-    cgroup v2 hosts.
+    cgroup v2 hosts.  Prompts are auto-accepted when init is run with `--yes`;
+    permission failures still raise.
 
     Parameters
     ----------
@@ -477,6 +488,7 @@ def delegate_controllers(ctx: Pipeline.InProgress) -> None:
     OSError
         If systemd is not found, or if elevation is required but not available.
     """
+    assume_yes = _init_assume_yes(ctx)
     uid = ctx.get(UID)
     if not isinstance(uid, int):
         raise OSError(f"Invalid UID: {uid}")
@@ -520,6 +532,7 @@ def delegate_controllers(ctx: Pipeline.InProgress) -> None:
                         "can configure this, but may require sudo privileges to do so.\n"
                         "Do you want to proceed? [y/N] "
                     ),
+                    assume_yes=assume_yes,
                 ))
                 dropin_controllers = _dropin_delegate_controllers(dropin_path) or set()
                 if dropin_controllers and required.issubset(dropin_controllers):
@@ -966,7 +979,9 @@ def init_environment(ctx: Pipeline.InProgress) -> None:
 
     # add to global environment registry
     with Lock(_registry_lock(), timeout=TIMEOUT):
-        _reconcile_registry(root)
+        _reconcile_registry(root) 
+
+    # TODO: git init
 
 
 def podman_cmd(
