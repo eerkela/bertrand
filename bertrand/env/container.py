@@ -948,12 +948,77 @@ def init_environment(ctx: Pipeline.InProgress) -> None:
     # apply effective resource config and render templates in environment directory
     cfg = Config.init(root, profile=profile, capabilities=capabilities)
     cfg.apply(timeout=TIMEOUT)
+    with cfg:
+        cfg.sync()  # synchronize any config-based artifacts
+
+
+@on_init(requires=[init_environment], ephemeral=True)
+def init_repository(ctx: Pipeline.InProgress) -> None:
+    """Initialize a git repository in the environment directory.
+
+    Parameters
+    ----------
+    ctx : Pipeline.InProgress
+        The in-flight pipeline context.
+
+    Raises
+    ------
+    TypeError
+        If the "env" fact is missing or not a string.
+    """
+    env = ctx.get("env")
+    if env is None:
+        return
+    if not isinstance(env, str):
+        raise TypeError("environment path must be a string")
+    root = Path(env).expanduser().resolve()
+
+    # check if git is available
+    if not shutil.which("git"):
+        return
+
+    # check if repo is already initialized
+    git_dir = root / ".git"
+    if git_dir.exists():
+        return
+
+    # initialize repo and make an initial commit with the newly-rendered environment
+    stage = "initialize git repository"
+    try:
+        run(["git", "init", "--quiet"], cwd=root, capture_output=True)
+        stage = "stage files for initial commit"
+        run(["git", "add", "-A"], cwd=root, capture_output=True)
+        stage = "create initial commit"
+        run(["git", "commit", "--quiet", "-m", "Initial commit"], cwd=root, capture_output=True)
+    except CommandError as err:
+        print(f"bertrand: warning: failed to {stage} in {root}\n{err}", file=sys.stderr)
+
+
+@on_init(requires=[init_repository], ephemeral=True)
+def register_environment(ctx: Pipeline.InProgress) -> None:
+    """Register the environment in the global registry to enable management by CLI
+    commands.
+
+    Parameters
+    ----------
+    ctx : Pipeline.InProgress
+        The in-flight pipeline context.
+
+    Raises
+    ------
+    TypeError
+        If the "env" fact is missing or not a string.
+    """
+    env = ctx.get("env")
+    if env is None:
+        return
+    if not isinstance(env, str):
+        raise TypeError("environment path must be a string")
+    root = Path(env).expanduser().resolve()
 
     # add to global environment registry
     with Lock(_registry_lock(), timeout=TIMEOUT):
         _reconcile_registry(root)
-
-    # TODO: git init
 
 
 def podman_cmd(

@@ -12,6 +12,35 @@ dependencies = []
 
 [tool.bertrand]
 shell = "{{ shell }}"
+ignore = [
+    ".bertrand/",
+    "**/.bertrand/",
+    "__pycache__/",
+    "*.py[cod]",
+    "*.egg-info/",
+    ".dist/",
+    ".build/",
+    ".eggs/",
+    ".venv/",
+    "venv/",
+    "build/",
+    "out/",
+    "*.o",
+    "*.obj",
+    "*.a",
+    "*.lib",
+    "*.so",
+    "*.dylib",
+    "*.dll",
+    ".vscode/",
+    ".idea/",
+    ".DS_Store",
+]
+git_ignore = []
+container_ignore = [
+    ".git/",
+    ".gitignore",
+]
 
 # Canonical build matrix for Bertrand images/containers.
 # `tag = ""` denotes the default image/container for its parent environment
