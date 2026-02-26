@@ -28,7 +28,6 @@ from .config import (
     EDITOR_BIN_ENV,
     HOST_ENV,
     MOUNT,
-    VSCODE_WORKSPACE_RESOURCE_ID,
     Config
 )
 from .mcp import sync_vscode_mcp_config
@@ -480,25 +479,17 @@ class CodeServer:
         self._ensure_remote_containers_extension(editor_bin, deadline=deadline)
         try:
             config = Config.load(env_root)
-            if "vscode" not in config.capabilities:
+            if "vscode-workspace" not in config.resources:
                 raise CodeError(
                     "invalid_config",
-                    "environment is missing required 'vscode' capability for "
-                    "host-side editor attach"
+                    "layout is missing required 'vscode-workspace' resource"
                 )
-            if VSCODE_WORKSPACE_RESOURCE_ID not in config.manifest.resources:
-                raise CodeError(
-                    "invalid_config",
-                    "layout manifest is missing required VS Code workspace resource: "
-                    f"'{VSCODE_WORKSPACE_RESOURCE_ID}'"
-                )
-            workspace = config.manifest.resources[VSCODE_WORKSPACE_RESOURCE_ID].path
-            workspace_path = env_root / workspace
-            if not workspace_path.exists() or not workspace_path.is_file():
+            workspace_abs_path = config.path("vscode-workspace")
+            if not workspace_abs_path.exists() or not workspace_abs_path.is_file():
                 raise CodeError(
                     "invalid_config",
                     "missing VS Code workspace file at "
-                    f"{workspace_path}; rerun `bertrand init` to regenerate it."
+                    f"{workspace_abs_path}; rerun `bertrand init` to regenerate it."
                 )
         except CodeError:
             raise
@@ -540,11 +531,12 @@ class CodeServer:
 
         # open editor in detached (non-blocking) process
         try:
+            workspace_rel_path = config.resources["vscode-workspace"]
             subprocess.Popen(
                 [
                     str(editor_bin),
                     "--file-uri",
-                    self._vscode_workspace_uri(container_id, workspace)
+                    self._vscode_workspace_uri(container_id, workspace_rel_path)
                 ],
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
@@ -634,14 +626,14 @@ def _service_path(key: str, path: str) -> str:
 
 
 def _render_code_service(env_root: Path) -> str:
-    # Editor integration is capability-driven.  For now, host attach is implemented
+    # Editor integration is resource-driven.  For now, host attach is implemented
     # only for vscode-capable environments.
     config = Config.load(env_root)
-    if "vscode" not in config.capabilities:
+    if "vscode-workspace" not in config.resources:
         raise CodeError(
             "invalid_config",
-            "environment is missing required 'vscode' capability for host-side "
-            "editor attach"
+            "environment is missing required 'vscode-workspace' resource for "
+            "host-side editor attach"
         )
 
     # find RPC server, editor, and container executables on PATH
@@ -820,7 +812,7 @@ def start_code_service(ctx: Pipeline.InProgress, *, env_root: Path, strict: bool
 
     except Exception as err:
         if strict:
-            raise err
+            raise
         _warn_code_service_unavailable(str(err))
         return False
 

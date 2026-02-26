@@ -52,8 +52,6 @@ from .config import (
     HOST_ENV,
     Config,
     lock_env,
-    _env_dir,
-    _env_file,
 )
 from .pipeline import (
     DelegateUserControllers,
@@ -100,6 +98,8 @@ from .run import (
 VERSION: int = 1
 CACHES: str = "/tmp/.cache"
 TIMEOUT: int = 30
+ENV_DIR_NAME: str = ".bertrand"
+ENV_FILE_NAME: str = "env.json"
 ENV_REGISTRY_FILE = "env-registry.json"
 ENV_REGISTRY_LOCK = "env-registry.lock"
 
@@ -113,6 +113,14 @@ DISTRO_ID = "distro_id"
 DISTRO_VERSION = "distro_version"
 DISTRO_CODENAME = "distro_codename"
 CODE_SERVER_AVAILABLE = "code_server_available"
+
+
+def _env_dir(root: Path) -> Path:
+    return root.expanduser().resolve() / ENV_DIR_NAME
+
+
+def _env_file(root: Path) -> Path:
+    return _env_dir(root) / ENV_FILE_NAME
 
 
 def _env_tmp_dir(env_root: Path) -> Path:
@@ -204,7 +212,6 @@ EntryPoint: TypeAlias = Annotated[
     list[Annotated[str, StringConstraints(min_length=1)]],
     BeforeValidator(_check_entry_point_field)
 ]
-Validator: TypeAlias = Callable[[JSONView], Any]
 
 
 @atomic
@@ -566,12 +573,23 @@ def delegate_controllers(ctx: Pipeline.InProgress) -> None:
                     )
 
 
-# TODO: maybe delete `assert_container_cli_ready` upon review.
-
-
 @on_init(requires=[delegate_controllers], version=1)
 def assert_container_cli_ready(ctx: Pipeline.InProgress) -> None:
-    """Assert that the rootless container backend is usable after host bootstrap."""
+    """Assert that the rootless container backend is usable after host bootstrap.
+
+    Parameters
+    ----------
+    ctx : Pipeline.InProgress
+        The in-flight pipeline context.
+
+    Raises
+    ------
+    OSError
+        If `podman` is still not usable after host bootstrap.  This likely indicates a
+        misconfiguration of host prerequisites (user namespaces, subuid/subgid, or
+        controller delegation), and should be investigated by checking `podman info`
+        and verifying the host meets all prerequisites.
+    """
     if _podman_ready():
         return
 
@@ -580,106 +598,24 @@ def assert_container_cli_ready(ctx: Pipeline.InProgress) -> None:
     raise OSError(
         "podman is installed but not usable for rootless operation after init "
         "bootstrap. Verify host prerequisites (user namespaces, subuid/subgid, and "
-        "controller delegation) and retry. Run `podman info` for diagnostics. "
+        "controller delegation) and retry.  Run `podman info` for diagnostics. "
         f"(last command: `{cmd}`)"
     )
-
-
-def _resolve_init_layout(ctx: Pipeline.InProgress, env_root: Path) -> tuple[str, list[str]]:
-    # determine directory layout
-    profile = ctx.get("profile")
-    if isinstance(profile, str):
-        profile = profile.strip().lower()
-        if not profile:
-            raise OSError("profile must be non-empty when provided")
-    elif profile is not None:
-        raise TypeError("profile must be a string")
-
-    # normalize + deduplicate language capabilities
-    raw_capabilities = ctx.get("capabilities")
-    capabilities: list[str] | None
-    if raw_capabilities is None:
-        capabilities = None
-    else:
-        if not isinstance(raw_capabilities, (list, tuple)):
-            raise TypeError("capabilities must be a list or tuple of strings")
-        capabilities = []
-        seen: set[str] = set()
-        for idx, item in enumerate(raw_capabilities):
-            if not isinstance(item, str):
-                raise TypeError(
-                    f"capabilities[{idx}] must be a string, got {type(item).__name__}"
-                )
-            capability = item.strip().lower()
-            if not capability:
-                raise OSError(f"capabilities[{idx}] must be non-empty when provided")
-            if capability in seen:
-                continue
-            seen.add(capability)
-            capabilities.append(capability)
-        if not capabilities:
-            raise OSError("capabilities must not be empty when provided")
-
-    # attempt to load existing environment metadata if present
-    existing: Config | None = None
-    try:
-        existing = Config.load(env_root)
-    except Exception:
-        pass
-
-    # if the current profile could not be loaded, assert profile and capabilities are
-    # explicitly provided
-    if existing is None:
-        if profile is None:
-            raise OSError(
-                "missing required init fact: 'profile' and failed to load existing "
-                f"layout manifest for environment at {env_root}"
-            )
-        if capabilities is None:
-            raise OSError(
-                "missing required init fact: 'capabilities' and failed to load existing "
-                f"layout manifest for environment at {env_root}"
-            )
-
-    # otherwise, fill in missing values from the existing manifest and assert values
-    # match what is already recorded
-    else:
-        if profile is None:
-            profile = existing.manifest.profile
-        elif profile != existing.manifest.profile:
-            raise OSError(
-                f"init profile mismatch for existing environment at {env_root}: "
-                f"requested '{profile}', but found '{existing.manifest.profile}'. "
-                "Use matching init options or manually recreate the environment with "
-                "the new layout."
-            )
-        if capabilities is None:
-            capabilities = list(existing.manifest.capabilities)
-        elif capabilities != existing.manifest.capabilities:
-            raise OSError(
-                f"init capabilities mismatch for existing environment at {env_root}: "
-                f"requested {capabilities}, but found {existing.manifest.capabilities}. "
-                "Use matching init options or manually recreate the environment with "
-                "the new layout."
-            )
-
-    return profile, capabilities
 
 
 def _read_metadata(
     root: Path,
     *,
     missing_ok: bool = False
-) -> tuple[dict[str, Any], dict[str, Any]]:
+) -> Environment.JSON | None:
     env_file = _env_file(root)
     if not env_file.exists():
         if missing_ok:
-            return {}, {}
+            return None
         raise FileNotFoundError(f"environment metadata file not found: {env_file}")
     if not env_file.is_file():
         raise OSError(f"environment metadata path is not a file: {env_file}")
 
-    # parse json
     try:
         data = json_parser.loads(env_file.read_text(encoding="utf-8"))
     except Exception as err:
@@ -687,26 +623,16 @@ def _read_metadata(
     if not isinstance(data, dict):
         raise OSError(f"environment metadata at {env_file} must be a JSON object")
 
-    # split into core and extra keys
-    core_keys = set(Environment.JSON.model_fields)
-    core: dict[str, Any] = {}
-    extras: dict[str, Any] = {}
-    for k, v in data.items():
-        if not isinstance(k, str):
-            raise OSError(f"environment metadata at {env_file} must have string keys")
-        if k in core_keys:
-            core[k] = v
-        else:
-            extras[k] = v
-    return core, extras
+    try:
+        return Environment.JSON.model_validate(data)
+    except Exception as err:
+        raise OSError(f"invalid environment metadata at {env_file}: {err}") from err
 
 
-def _write_metadata(root: Path, core: dict[str, Any], extras: dict[str, Any]) -> None:
-    merged = core.copy()
-    merged.update(extras)
+def _write_metadata(root: Path, metadata: Environment.JSON) -> None:
     atomic_write_text(
         _env_file(root),
-        json_parser.dumps(merged, indent=2) + "\n",
+        json_parser.dumps(metadata.model_dump(mode="json"), indent=2) + "\n",
         encoding="utf-8",
         private=True
     )
@@ -746,28 +672,19 @@ def _discover_environment_mounts() -> list[Path]:
     return result
 
 
-def _check_env(
-    root: Path,
-    env_id: EnvironmentId | None = None
-) -> tuple[Environment.JSON | None, dict[str, Any]]:
-    root = root.expanduser().resolve()
-    env_file = _env_file(root)
-    if not env_file.exists() or not env_file.is_file():
-        return None, {}
-
+def _check_env(root: Path, env_id: EnvironmentId | None = None) -> Environment.JSON | None:
     try:
-        core, extras = _read_metadata(root)
+        root = root.expanduser().resolve()
+        env_file = _env_file(root)
+        if env_file.exists() and env_file.is_file():
+            metadata = _read_metadata(root)
+            if metadata is not None:
+                Config.load(root)
+                if env_id is None or metadata.id == env_id:
+                    return metadata
     except Exception:
-        return None, {}
-
-    try:
-        Config.load(root)
-        metadata = Environment.JSON.model_validate(core)
-        if env_id is not None and metadata.id != env_id:
-            return None, extras
-        return metadata, extras
-    except Exception:
-        return None, extras
+        pass
+    return None
 
 
 class EnvironmentRegistry(BaseModel):
@@ -846,9 +763,9 @@ def _load_registry() -> EnvironmentRegistry:
             )
             for root in _discover_environment_mounts():
                 with lock_env(root, timeout=TIMEOUT):
-                    env, _ = _check_env(root)
-                if env is None:
-                    continue
+                    env = _check_env(root)
+                    if env is None:
+                        continue
                 registry.environments.setdefault(env.id, root.expanduser().resolve())
             changed = True
 
@@ -856,7 +773,7 @@ def _load_registry() -> EnvironmentRegistry:
         normalized: dict[EnvironmentId, AbsolutePath] = {}
         for env_id, root in registry.environments.items():
             with lock_env(root, timeout=TIMEOUT):
-                env, _ = _check_env(root, env_id=env_id)
+                env = _check_env(root, env_id=env_id)
                 if env is None or normalized.setdefault(env.id, root) != root:
                     changed = True
         registry.environments = normalized
@@ -883,7 +800,7 @@ def _reconcile_registry(
     if add is not None:
         add = add.expanduser().resolve()
         with lock_env(add, timeout=TIMEOUT):  # lock environment
-            env, extras = _check_env(add)
+            env = _check_env(add)
             env_changed = False
             if env is None:
                 env = Environment.JSON(
@@ -906,7 +823,7 @@ def _reconcile_registry(
 
             # unconditionally delete any tags that are no longer declared in the
             # environment's config or whose arguments have drifted
-            config = Config.validate(add, extras)
+            config = Config.load(add)
             with config:
                 declared_images = config["images"]
                 for image_tag, image in list(env.tags.items()):
@@ -947,7 +864,7 @@ def _reconcile_registry(
                 # if the previous root exists and matches the expected UUID, then
                 # the new environment constitutes a copy, and we need to clear its
                 # tags and re-key it to guarantee uniqueness
-                owner_env, _ = _check_env(owner, env_id=env.id)
+                owner_env = _check_env(owner, env_id=env.id)
                 if owner_env is not None:
                     env.tags.clear()
                     env.id = uuid.uuid4().hex
@@ -971,7 +888,7 @@ def _reconcile_registry(
 
             # persist new environment metadata if it changed
             if env_changed:
-                _write_metadata(add, env.model_dump(mode="json"), extras)
+                _write_metadata(add, env)
 
     # persist new registry metadata if it changed
     if registry_changed:
@@ -982,7 +899,7 @@ def _reconcile_registry(
 
 @on_init(requires=[assert_container_cli_ready], ephemeral=True)
 def init_environment(ctx: Pipeline.InProgress) -> None:
-    """Initialize an environment directory using the active Config manifest and
+    """Initialize an environment directory using discovered/requested resources and
     templates.
 
     Parameters
@@ -993,8 +910,9 @@ def init_environment(ctx: Pipeline.InProgress) -> None:
     Raises
     ------
     OSError
-        If required init facts are missing and no existing layout manifest can be
-        loaded for fallback.
+        If required init facts are missing and no existing resource config can be
+        discovered for fallback, or if requested resources conflict with existing
+        resources.
     TypeError
         If init facts are present with invalid types.
     """
@@ -1009,15 +927,31 @@ def init_environment(ctx: Pipeline.InProgress) -> None:
             "cannot specify image or container tag when initializing an environment "
             "directory."
         )
-    profile, capabilities = _resolve_init_layout(ctx, root)
 
-    # initialize config layout and render templates in environment directory
+    # parse requested profile
+    profile = ctx.get("profile")
+    if profile is not None and not isinstance(profile, str):
+        raise TypeError("profile must be a string")
+
+    # parse requested capabilities
+    capabilities: list[str] | None = None
+    raw_capabilities = ctx.get("capabilities")
+    if raw_capabilities is not None:
+        if not isinstance(raw_capabilities, (list, tuple)):
+            raise TypeError("capabilities must be a list or tuple of strings")
+        capabilities = []
+        for cap in raw_capabilities:
+            if not isinstance(cap, str):
+                raise TypeError(f"capability must be a string: {cap}")
+            capabilities.append(cap)
+
+    # apply effective resource config and render templates in environment directory
     cfg = Config.init(root, profile=profile, capabilities=capabilities)
-    cfg.apply(ctx)
+    cfg.apply(timeout=TIMEOUT)
 
     # add to global environment registry
     with Lock(_registry_lock(), timeout=TIMEOUT):
-        _reconcile_registry(root) 
+        _reconcile_registry(root)
 
     # TODO: git init
 
@@ -1581,15 +1515,7 @@ class Environment:
         try:
             env_dir = _env_dir(self.root)
             if self._entered == 1 and env_dir.exists():
-                # write validated core metadata while preserving non-core env.json keys
-                self._json = self.JSON.model_validate(self._json.model_dump(mode="python"))
-                _, extras = _read_metadata(self.root, missing_ok=True)
-                merged = self._json.model_dump(mode="json")
-                merged.update(extras)
-                atomic_write_text(
-                    _env_file(self.root),
-                    json_parser.dumps(merged, indent=2) + "\n"
-                )
+                _write_metadata(self.root, self._json)
 
         # always release the lock and local context depth
         finally:
@@ -1722,7 +1648,7 @@ class Environment:
             downstream container objects.  Note that only built images and containers
             are represented in this mapping.  To get all declared images and
             containers, use the `config` property to access the full configuration
-            manifest instead.
+            snapshot instead.
         """
         return self._json.tags
 
@@ -1864,6 +1790,9 @@ class Environment:
             pass
 
 
+Validator: TypeAlias = Callable[[JSONView], Any]
+
+
 def _all_environments() -> list[Path]:
     try:
         with Lock(_registry_lock(), timeout=TIMEOUT):
@@ -1882,8 +1811,6 @@ def _validate_args(x: JSONView) -> list[str]:
         return []
     if isinstance(x, tuple) and all(isinstance(i, str) for i in x):
         return list(cast(tuple[str, ...], x))
-    if isinstance(x, list) and all(isinstance(i, str) for i in x):
-        return list(cast(list[str], x))
     raise TypeError("args must be a sequence of strings")
 
 
@@ -2946,7 +2873,11 @@ class Restart(_Command):
             state = inspect.get("State")
             if not isinstance(state, dict):
                 raise OSError(f"invalid container state for container '{container_tag}'")
-            running = state.get("Running") or state.get("Restarting") or state.get("Paused")
+            running = bool(
+                state.get("Running") or
+                state.get("Restarting") or
+                state.get("Paused")
+            )
 
         # possibly rebuild the parent image and all downstream containers
         Build.image(ctx, env=env, image_tag=image_tag, **kwargs)

@@ -12,28 +12,23 @@ Canonical templates are packaged with Bertrand and lazily hydrated into
 """
 from __future__ import annotations
 
-import os
 import json
+import os
+import shutil
 import tomllib
 
 from dataclasses import asdict, dataclass, field
 from collections.abc import Mapping, Sequence
-from importlib import resources
-from importlib.resources.abc import Traversable
+from importlib import resources as importlib_resources
 from pathlib import Path, PosixPath
 from types import MappingProxyType, TracebackType
 from typing import Annotated, Any, Callable, Iterator, Self, TypeVar, TypedDict
 
 from jinja2 import Environment, StrictUndefined
-from pydantic import (
-    BaseModel,
-    ConfigDict,
-    Field,
-    field_validator,
-)
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 import yaml
 
-from .pipeline import Mkdir, Pipeline, WriteText
+from .pipeline import on_init
 from .run import LOCK_TIMEOUT, Lock, atomic_write_text, sanitize_name
 from .version import __version__
 
@@ -96,22 +91,6 @@ class Template(BaseModel):
         if not text:
             raise ValueError("template reference fields must be non-empty")
         return text
-
-    def packaged_path(self) -> Traversable:
-        """Return a path to the version of this template that is packaged with
-        Bertrand itself, which will be hydrated into the `on_init` state cache during
-        layout application if not already present.
-
-        Returns
-        -------
-        Traversable
-            A path to the packaged template file corresponding to this reference.
-        """
-        return resources.files("bertrand.env").joinpath("templates").joinpath(
-            self.namespace,
-            self.name,
-            f"{self.version}.j2",
-        )
 
 
 def resource(name: str, *, template: str | None = None) -> Callable[[type[T]], type[T]]:
@@ -282,10 +261,6 @@ class Resource:
         return None
 
 
-def _template_path(ctx: Pipeline.InProgress, ref: Template) -> Path:
-    return ctx.state_dir / "templates" / ref.namespace / ref.name / f"{ref.version}.j2"
-
-
 def _env_dir(root: Path) -> Path:
     return root.expanduser().resolve() / ENV_DIR_NAME
 
@@ -311,16 +286,6 @@ def lock_env(root: Path, timeout: float = LOCK_TIMEOUT) -> Lock:
     lock_dir = _env_dir(root)
     lock_dir.mkdir(parents=True, exist_ok=True)
     return Lock(lock_dir / ENV_LOCK_NAME, timeout=timeout)
-
-
-def _expect_str(name: str, ctx: Pipeline.InProgress) -> str:
-    value = ctx.get(name)
-    if not isinstance(value, str):
-        raise TypeError(f"{name} must be a string")
-    text = value.strip()
-    if not text:
-        raise OSError(f"{name} cannot be empty")
-    return text
 
 
 def _require_dict(value: Any, *, where: str) -> dict[str, Any]:
@@ -956,7 +921,7 @@ class Config:
         cls,
         env_root: Path,
         *,
-        profile: str,
+        profile: str | None,
         capabilities: list[str] | None = None
     ) -> Self:
         """Build a layout reflecting the given profile and capabilities.
@@ -965,10 +930,12 @@ class Config:
         ----------
         env_root : Path
             The root path to the environment described by the layout.
-        profile : str
+        profile : str | None, optional
             The layout profile to use, e.g. 'flat' or 'src'.  Profiles define a base
-            set of resources to include in the layout.
-        capabilities : list[str] | None
+            set of resources to include in the layout.  If None (the default), then the
+            resource profile will be inferred from the existing environment where
+            possible, and will error otherwise.
+        capabilities : list[str] | None, optional
             An optional list of language capabilities to include, e.g. 'python' and
             'cpp'.  Capabilities define additional resource placements to include
             based on the languages used in the project.
@@ -986,69 +953,208 @@ class Config:
             an unknown catalog resource ID, or if there are any invalid resource
             collisions (including path collisions) when merging.
         """
-        # normalize profile
-        profile = profile.strip()
-        if not profile:
-            raise ValueError("layout profile cannot be empty")
-        if profile == "*":
-            raise ValueError("layout profile cannot be wildcard '*'")
+        # lock the environment during layout generation
+        with lock_env(env_root):
+            # load any existing resources from the environment
+            result = cls.load(env_root)
 
-        # start with the wildcard baseline and merge the profile diff on top
-        base = PROFILES.get("*")
-        if base is None:
-            raise ValueError("missing wildcard baseline in PROFILES: '*'")
-        overlay = PROFILES.get(profile)
-        if overlay is None:
-            raise ValueError(
-                f"unknown layout profile: {profile} (supported: "
-                f"{', '.join(sorted(profile for profile in PROFILES if profile != '*'))})"
-            )
-        merged = base.copy()
-        merged.update(overlay)
+            # normalize the requested profile, inferring from the loaded layout if
+            # necessary
+            base_profile = PROFILES.get("*")
+            if base_profile is None:
+                raise ValueError("missing wildcard baseline in PROFILES: '*'")
+            if profile is None:
+                # choose the profile with the most matching placements, to prefer src
+                # layouts over flat where both would be valid
+                n = 0
+                for candidate_profile, placements in PROFILES.items():
+                    if candidate_profile == "*":
+                        continue
+                    merged_profile = base_profile.copy()
+                    merged_profile.update(placements)
+                    if len(merged_profile) > n and all(
+                        result.resources.get(r_id) == path
+                        for r_id, path in merged_profile.items()
+                    ):
+                        profile = candidate_profile
+                        n = len(merged_profile)
 
-        # merge capability resource placements, checking for collisions as we go
-        if capabilities:
-            seen: set[str] = set()
-            for raw in capabilities:
-                # normalize capability and skip duplicates
-                cap = raw.strip()
-                if cap in seen:
-                    continue
-                if not cap:
-                    raise ValueError("layout capability cannot be empty")
-                if cap == "*":
-                    raise ValueError("layout capability cannot be wildcard '*'")
-
-                # start with the wildcard baseline and merge the profile-specific diff
-                # on top; if a variant does not specify a profile-specific diff, treat
-                # it as an empty overlay rather than an error
-                variants = CAPABILITIES.get(cap)
-                if variants is None:
+                # if we couldn't infer a profile, then we hard error rather than clobbering
+                # an existing environment
+                if profile is None:
                     raise ValueError(
-                        f"unknown layout capability: {cap} (supported: "
-                        f"{', '.join(sorted(CAPABILITIES))})"
+                        "unable to infer layout profile from environment, please specify "
+                        "explicitly (supported: "
+                        f"{', '.join(sorted(p for p in PROFILES if p != '*'))})"
                     )
-                base = variants.get("*")
-                if base is None:
-                    raise ValueError(
-                        f"layout capability '{cap}' is missing wildcard baseline '*'"
-                    )
-                overlay = variants.get(profile, {})
-                caps = base.copy()
-                caps.update(overlay)
+            else:
+                profile = profile.strip()
+                if not profile:
+                    raise ValueError("layout profile cannot be empty")
+                if profile == "*":
+                    raise ValueError("layout profile cannot be wildcard '*'")
 
-                # check for collisions during merge
-                for r_id, path in caps.items():
-                    existing = merged.setdefault(r_id, path)
+                # merge the selected profile diff on top of the base placements
+                overlay_profile = PROFILES.get(profile)
+                if overlay_profile is None:
+                    raise ValueError(
+                        f"unknown layout profile: {profile} (supported: "
+                        f"{', '.join(sorted(p for p in PROFILES if p != '*'))})"
+                    )
+                merged_profile = base_profile.copy()
+                merged_profile.update(overlay_profile)
+
+                # update the result with placements from the merged profile, checking
+                # for collisions
+                for r_id, path in merged_profile.items():
+                    existing = result.resources.setdefault(r_id, path)
                     if existing != path:
                         raise ValueError(
-                            f"layout resource path collision for '{r_id}' while "
-                            f"applying capability '{cap}': {existing} != {path}"
+                            f"layout resource path collision for '{r_id}' while applying "
+                            f"profile '{profile}': {existing} != {path}"
                         )
-                seen.add(cap)
 
-        # return as a resolved Config instance with normalized paths
-        return cls(root=env_root, resources=merged)
+            # merge capability resource placements, checking for collisions
+            if capabilities:
+                seen: set[str] = set()
+                for raw in capabilities:
+                    # normalize capability and skip duplicates
+                    cap = raw.strip()
+                    if cap in seen:
+                        continue
+                    if not cap:
+                        raise ValueError("layout capability cannot be empty")
+                    if cap == "*":
+                        raise ValueError("layout capability cannot be wildcard '*'")
+
+                    # start with the wildcard baseline and merge the profile-specific
+                    # diff on top; if a variant does not specify a diff, treat it as an
+                    # empty overlay rather than an error
+                    variants = CAPABILITIES.get(cap)
+                    if variants is None:
+                        raise ValueError(
+                            f"unknown layout capability: {cap} (supported: "
+                            f"{', '.join(sorted(CAPABILITIES))})"
+                        )
+                    base_cap = variants.get("*")
+                    if base_cap is None:
+                        raise ValueError(
+                            f"layout capability '{cap}' is missing wildcard baseline '*'"
+                        )
+                    overlay_cap = variants.get(profile, {})
+                    merged_caps = base_cap.copy()
+                    merged_caps.update(overlay_cap)
+
+                    # check for collisions during merge
+                    for r_id, path in merged_caps.items():
+                        existing = result.resources.setdefault(r_id, path)
+                        if existing != path:
+                            raise ValueError(
+                                f"layout resource path collision for '{r_id}' while "
+                                f"applying capability '{cap}': {existing} != {path}"
+                            )
+                    seen.add(cap)
+
+            return result
+
+    def apply(self, *, timeout: float = LOCK_TIMEOUT) -> None:
+        """Apply the layout to the environment directory by rendering templated file
+        resources and writing missing outputs to disk.
+
+        Parameters
+        ----------
+        timeout : float, optional
+            The maximum time to wait for acquiring the environment lock, by default
+            `LOCK_TIMEOUT`.
+
+        Raises
+        ------
+        OSError
+            If there are any filesystem errors when writing rendered resources to disk.
+        """
+        # gather jinja context
+        templates = on_init.state_dir / "templates"
+        base_templates = importlib_resources.files("bertrand.env").joinpath("templates")
+        jinja = Environment(
+            autoescape=False,
+            undefined=StrictUndefined,
+            keep_trailing_newline=True,
+            trim_blocks=False,
+            lstrip_blocks=False,
+        )
+        replacements = asdict(Config.Facts(
+            env=str(self.root),
+            paths={r_id: str(self.path(r_id)) for r_id in sorted(self.resources)},
+            project_name=sanitize_name(self.root.name, replace="-"),
+        ))
+
+        # lock the environment during application
+        with lock_env(self.root, timeout=timeout):
+            for r_id in sorted(self.resources):
+                path = self.path(r_id)
+                r = self.resource(r_id)
+                if path.exists():
+                    if r.is_file and not path.is_file():
+                        raise OSError(
+                            f"cannot apply layout resource '{r_id}' to {path}: "
+                            "target exists and is not a file"
+                        )
+                    if r.is_dir and not path.is_dir():
+                        raise OSError(
+                            f"cannot apply layout resource '{r_id}' to {path}: "
+                            "target exists and is not a directory"
+                        )
+                    continue
+
+                # directories are trivially created
+                if r.is_dir:
+                    path.mkdir(parents=True, exist_ok=True)
+                    continue
+
+                # locate file template and copy it into the template directory if it's
+                # not already present
+                if r.template is None:
+                    raise OSError(f"no template specified for file resource '{r_id}'")
+                template = (
+                    templates /
+                    r.template.namespace /
+                    r.template.name /
+                    f"{r.template.version}.j2"
+                )
+                if not template.exists():
+                    with importlib_resources.as_file(base_templates.joinpath(
+                        r.template.namespace,
+                        r.template.name,
+                        f"{r.template.version}.j2",
+                    )) as source:
+                        if not source.exists():
+                            raise FileNotFoundError(
+                                "missing Bertrand template for layout resource "
+                                f"'{r_id}' reference {r.template.namespace}/"
+                                f"{r.template.name}/{r.template.version}: {source}"
+                            )
+                        if not source.is_file():
+                            raise FileNotFoundError(
+                                "missing Bertrand template for layout resource "
+                                f"'{r_id}' reference {r.template.namespace}/"
+                                f"{r.template.name}/{r.template.version}: {source}"
+                            )
+                        template.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copy(source, template)
+
+                # render template to disk
+                try:
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    text = template.read_text(encoding="utf-8")
+                    path.write_text(
+                        jinja.from_string(text).render(**replacements),
+                        encoding="utf-8"
+                    )
+                except OSError as err:
+                    raise OSError(
+                        f"failed to render template for layout resource '{r_id}' at "
+                        f"{path}: {err}"
+                    ) from err
 
     def _merge_snapshot_fragment(
         self,
@@ -1275,131 +1381,59 @@ class Config:
             raise KeyError(f"unknown resource ID: '{resource_id}'")
         return self.root / Path(self.resources[resource_id])
 
-    def _facts(self, ctx: Pipeline.InProgress) -> Config.Facts:
-        env = Path(_expect_str("env", ctx)).expanduser().resolve()
-        if env != self.root:
-            raise OSError(
-                f"layout context mismatch for environment root: layout={self.root}, ctx={env}"
-            )
-        return Config.Facts(
-            env=str(self.root),
-            paths={
-                resource_id: str(self.path(resource_id))
-                for resource_id in sorted(self.resources)
-            },
-            project_name=sanitize_name(self.root.name, replace="-"),
-        )
+    def sources(self) -> list[Path]:
+        """Resolve and deduplicate source file paths from source-capable resources.
 
-    def _render(self, ctx: Pipeline.InProgress) -> dict[str, str]:
-        # gather jinja context
-        jinja = Environment(
-            autoescape=False,
-            undefined=StrictUndefined,
-            keep_trailing_newline=True,
-            trim_blocks=False,
-            lstrip_blocks=False,
-        )
-        replacements = asdict(self._facts(ctx))
-
-        # collect template references from templated file resources
-        refs: dict[tuple[str, str, str], Template] = {}
-        for resource_id in sorted(self.resources):
-            r = self.resource(resource_id)
-            if not r.is_file or r.template is None:
-                continue
-            ref = r.template
-            refs[(ref.namespace, ref.name, ref.version)] = ref
-
-        # hydrate any missing templates from packaged Bertrand sources
-        for _, ref in sorted(refs.items()):
-            target = _template_path(ctx, ref)
-            if target.exists():
-                if not target.is_file():
-                    raise OSError(f"template cache path is not a file: {target}")
-                continue
-            source = ref.packaged_path()
-            if not source.is_file():
-                raise FileNotFoundError(
-                    "missing packaged template for layout reference "
-                    f"{ref.namespace}/{ref.name}/{ref.version}: {source}"
-                )
-            try:
-                text = source.read_text(encoding="utf-8")
-            except OSError as err:
-                raise OSError(
-                    "failed to read packaged template for layout reference "
-                    f"{ref.namespace}/{ref.name}/{ref.version} at {source}: {err}"
-                ) from err
-
-            # write template to state cache for rendering
-            ctx.do(WriteText(path=target, text=text, replace=False), undo=False)
-
-        # render templated resources with Jinja context
-        out: dict[str, str] = {}
-        for resource_id in sorted(self.resources):
-            r = self.resource(resource_id)
-            if not r.is_file or r.template is None:
-                continue
-
-            # load template
-            path = _template_path(ctx, r.template)
-            if not path.exists() or not path.is_file():
-                raise FileNotFoundError(
-                    f"missing template for layout resource '{resource_id}': {path}"
-                )
-            try:
-                text = path.read_text(encoding="utf-8")
-            except OSError as err:
-                raise OSError(
-                    f"failed to read template for layout resource '{resource_id}' at "
-                    f"{path}: {err}"
-                ) from err
-
-            # render template and store output
-            try:
-                rendered = jinja.from_string(text).render(**replacements)
-            except Exception as err:
-                raise OSError(
-                    f"failed to render template for layout resource '{resource_id}' at {path}: "
-                    f"{err}"
-                ) from err
-            if not isinstance(rendered, str):
-                raise OSError(
-                    f"template render returned non-string for layout resource '{resource_id}' "
-                    f"at {path}"
-                )
-            out[resource_id] = rendered
-
-        return out
-
-    def apply(self, ctx: Pipeline.InProgress) -> None:
-        """Apply the layout to the environment directory by rendering templated file
-        resources and writing missing outputs to disk.
-
-        Parameters
-        ----------
-        ctx : Pipeline.InProgress
-            The current pipeline context, used to drive template rendering and record
-            operations.
+        Returns
+        -------
+        list[Path]
+            Absolute source paths deduplicated in first-seen order.
 
         Raises
         ------
         OSError
-            If there are any filesystem errors when writing rendered resources to disk.
+            If a source hook fails, returns invalid output, or if resource kind/path
+            validation fails.
         """
-        with lock_env(self.root, timeout=ctx.timeout):
-            rendered = self._render(ctx)
-
+        out: list[Path] = []
+        seen: set[Path] = set()
+        with lock_env(self.root):
             for resource_id in sorted(self.resources):
-                r = self.resource(resource_id)
-                if r.is_dir:
-                    ctx.do(Mkdir(path=self.path(resource_id), replace=False), undo=False)
+                r = CATALOG.get(resource_id)
+                if r is None:
+                    raise OSError(f"config references unknown resource ID: '{resource_id}'")
+                try:
+                    paths = r.sources(self)
+                    if paths is None:
+                        continue
+                except Exception as err:
+                    raise OSError(
+                        f"failed to resolve sources for resource '{resource_id}' at "
+                        f"{self.path(resource_id)}: {err}"
+                    ) from err
+                if not isinstance(paths, list):
+                    raise OSError(
+                        f"source hook for resource '{resource_id}' returned non-list output: "
+                        f"{type(paths)}"
+                    )
 
-            # write missing files in deterministic order
-            for resource_id, text in rendered.items():
-                target = self.path(resource_id)
-                if not target.exists():
-                    ctx.do(WriteText(path=target, text=text, replace=False), undo=False)
+                # normalize + deduplicate source paths, checking for validity
+                for raw_path in paths:
+                    if not isinstance(raw_path, Path):
+                        raise OSError(
+                            f"source hook for resource '{resource_id}' returned non-Path "
+                            f"entry: {repr(raw_path)}"
+                        )
+                    normalized = raw_path.expanduser()
+                    if not normalized.is_absolute():
+                        normalized = (self.root / normalized).expanduser()
+                    normalized = normalized.resolve()
+                    if normalized in seen:
+                        continue
+                    seen.add(normalized)
+                    out.append(normalized)
+
+        return out
 
     def sync(self) -> None:
         """Render and write derived artifact resources from active context snapshot.
@@ -1464,57 +1498,3 @@ class Config:
                         f"failed to write sync output for resource '{resource_id}' at "
                         f"{target}: {err}"
                     ) from err
-
-    def sources(self) -> list[Path]:
-        """Resolve and deduplicate source file paths from source-capable resources.
-
-        Returns
-        -------
-        list[Path]
-            Absolute source paths deduplicated in first-seen order.
-
-        Raises
-        ------
-        OSError
-            If a source hook fails, returns invalid output, or if resource kind/path
-            validation fails.
-        """
-        out: list[Path] = []
-        seen: set[Path] = set()
-        with lock_env(self.root):
-            for resource_id in sorted(self.resources):
-                r = CATALOG.get(resource_id)
-                if r is None:
-                    raise OSError(f"config references unknown resource ID: '{resource_id}'")
-                try:
-                    paths = r.sources(self)
-                    if paths is None:
-                        continue
-                except Exception as err:
-                    raise OSError(
-                        f"failed to resolve sources for resource '{resource_id}' at "
-                        f"{self.path(resource_id)}: {err}"
-                    ) from err
-                if not isinstance(paths, list):
-                    raise OSError(
-                        f"source hook for resource '{resource_id}' returned non-list output: "
-                        f"{type(paths)}"
-                    )
-
-                # normalize + deduplicate source paths, checking for validity
-                for raw_path in paths:
-                    if not isinstance(raw_path, Path):
-                        raise OSError(
-                            f"source hook for resource '{resource_id}' returned non-Path "
-                            f"entry: {repr(raw_path)}"
-                        )
-                    normalized = raw_path.expanduser()
-                    if not normalized.is_absolute():
-                        normalized = (self.root / normalized).expanduser()
-                    normalized = normalized.resolve()
-                    if normalized in seen:
-                        continue
-                    seen.add(normalized)
-                    out.append(normalized)
-
-        return out
