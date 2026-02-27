@@ -2,10 +2,14 @@
 name: publish
 
 on:
-  push:
-    tags:
-      - "v*"
+  release:
+    types: [published]
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Release tag to re-publish (for example: v1.2.3)"
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -22,58 +26,102 @@ jobs:
     outputs:
       should_publish: ${{ steps.discover.outputs.should_publish }}
       tags_json: ${{ steps.discover.outputs.tags_json }}
+      checkout_ref: ${{ steps.resolve.outputs.checkout_ref }}
+      release_tag: ${{ steps.resolve.outputs.release_tag }}
+      version: ${{ steps.discover.outputs.version }}
     steps:
+      - id: resolve
+        name: Resolve release tag
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          RELEASE_TAG_EVENT: ${{ github.event.release.tag_name || '' }}
+          RELEASE_TAG_INPUT: ${{ inputs.release_tag || '' }}
+        run: |
+          set -euo pipefail
+
+          case "${EVENT_NAME}" in
+            release)
+              release_tag="${RELEASE_TAG_EVENT}"
+              ;;
+            workflow_dispatch)
+              release_tag="${RELEASE_TAG_INPUT}"
+              ;;
+            *)
+              echo "unsupported event for publish workflow: ${EVENT_NAME}" >&2
+              exit 1
+              ;;
+          esac
+
+          release_tag="$(printf '%s' "${release_tag}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+          if [[ -z "${release_tag}" ]]; then
+            echo "missing release tag (release event tag or workflow dispatch input)" >&2
+            exit 1
+          fi
+
+          {
+            echo "release_tag=${release_tag}"
+            echo "checkout_ref=refs/tags/${release_tag}"
+          } >> "${GITHUB_OUTPUT}"
+
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.resolve.outputs.release_tag }}
 
       - id: discover
         name: Compute publish metadata
         shell: bash
+        env:
+          RELEASE_TAG: ${{ steps.resolve.outputs.release_tag }}
         run: |
-          python - <<'PY'
-          import json
-          import os
-          import re
-          from pathlib import Path
+          set -euo pipefail
 
+          version="$(awk '
+            BEGIN { in_project=0 }
+            /^[[:space:]]*\[/ {
+              in_project = ($0 ~ /^[[:space:]]*\[project\][[:space:]]*$/)
+            }
+            in_project && $0 ~ /^[[:space:]]*version[[:space:]]*=/ {
+              line=$0
+              sub(/^[[:space:]]*version[[:space:]]*=[[:space:]]*/, "", line)
+              if (match(line, /^"[^\"]+"/)) {
+                print substr(line, 2, RLENGTH - 2)
+                exit
+              }
+              if (match(line, /^'"'"'[^'"'"']+'"'"'/)) {
+                print substr(line, 2, RLENGTH - 2)
+                exit
+              }
+            }
+          ' pyproject.toml)"
 
-          def fail(message: str) -> None:
-              raise SystemExit(message)
+          if [[ -z "${version}" ]]; then
+            echo "missing or invalid [project].version in pyproject.toml" >&2
+            exit 1
+          fi
 
+          canonical_tag="v${version}"
+          tags=("${canonical_tag}")
+          if [[ "${version}" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+            major="${BASH_REMATCH[1]}"
+            minor="${BASH_REMATCH[2]}"
+            tags+=("v${major}.${minor}" "v${major}")
+          fi
+          if [[ "${RELEASE_TAG}" != "${canonical_tag}" ]]; then
+            tags+=("${RELEASE_TAG}")
+          fi
 
-          event_name = os.getenv("GITHUB_EVENT_NAME", "")
-          ref_type = os.getenv("GITHUB_REF_TYPE", "")
-          ref_name = os.getenv("GITHUB_REF_NAME", "")
-          short_sha = os.getenv("GITHUB_SHA", "")[:12]
-          release_event = event_name in {"push", "workflow_dispatch"}
+          tags_json="$(
+            printf '%s\n' "${tags[@]}" |
+            awk 'NF { if (!seen[$0]++) print $0 }' |
+            jq -R -s -c 'split("\n") | map(select(length > 0))'
+          )"
 
-          tags: list[str] = []
-          if release_event and ref_type == "branch" and ref_name == "main":
-              tags = ["main"]
-              if short_sha:
-                  tags.append(f"sha-{short_sha}")
-          elif release_event and ref_type == "tag":
-              semver = re.fullmatch(r"v(\d+)\.(\d+)\.(\d+)", ref_name)
-              if semver:
-                  major, minor, patch = semver.groups()
-                  tags = [
-                      f"v{major}.{minor}.{patch}",
-                      f"v{major}.{minor}",
-                      f"v{major}",
-                  ]
-
-          should_publish = bool(tags)
-
-          output_path = os.environ.get("GITHUB_OUTPUT")
-          if not output_path:
-              fail("missing GITHUB_OUTPUT")
-
-          with Path(output_path).open("a", encoding="utf-8") as fh:
-              fh.write(f"should_publish={'true' if should_publish else 'false'}\n")
-              fh.write(
-                  "tags_json="
-                  f"{json.dumps(tags, separators=(',', ':'))}\n"
-              )
-          PY
+          {
+            echo "should_publish=true"
+            echo "version=${version}"
+            echo "tags_json=${tags_json}"
+          } >> "${GITHUB_OUTPUT}"
 
   build_amd64:
     name: Build amd64 images
@@ -83,25 +131,29 @@ jobs:
       image_tags_json: ${{ steps.collect.outputs.image_tags_json }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.discover.outputs.checkout_ref }}
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: "{% endraw %}{{ python_version }}{% raw %}"
 
       - name: Install Bertrand CLI
         shell: bash
         run: |
+          set -euo pipefail
           python -m venv .venv
           . .venv/bin/activate
           python -m pip install --upgrade pip
           python -m pip install "bertrand=={% endraw %}{{ bertrand_version }}{% raw %}"
-          echo "${PWD}/.venv/bin" >> "$GITHUB_PATH"
+          echo "${PWD}/.venv/bin" >> "${GITHUB_PATH}"
 
       - name: Bootstrap toolchain and build images
         shell: bash
         run: |
+          set -euo pipefail
           bertrand init --yes
-          bertrand build .
+          bertrand build --dist . > build.json
 
       - id: collect
         name: Collect amd64 image tags and publish refs
@@ -111,124 +163,47 @@ jobs:
           BASE_TAGS_JSON: ${{ needs.discover.outputs.tags_json }}
           SHOULD_PUBLISH: ${{ needs.discover.outputs.should_publish }}
         run: |
-          python - <<'PY'
-          import json
-          import os
-          import subprocess
-          from pathlib import Path
+          set -euo pipefail
 
+          jq -e '
+            type == "object" and
+            all(to_entries[]?; (.key | type == "string") and (.value | type == "string"))
+          ' build.json > /dev/null
 
-          def fail(message: str) -> None:
-              raise SystemExit(message)
+          image_tags_json="$(jq -c '((if has("") then [""] else [] end) + ([keys[] | select(. != "")] | sort))' build.json)"
 
+          publish_refs_json='[]'
+          if [[ "${SHOULD_PUBLISH}" == "true" ]]; then
+            publish_refs_json="$(jq -c \
+              --arg repo "ghcr.io/${GITHUB_REPOSITORY,,}" \
+              --arg arch "${ARCH}" \
+              --argjson base_tags "${BASE_TAGS_JSON}" \
+              '
+                if (($base_tags | type) != "array") or ($base_tags | any(.[]; type != "string"))
+                then error("BASE_TAGS_JSON must decode to list[str]")
+                else .
+                end
+                | ((if has("") then [""] else [] end) + ([keys[] | select(. != "")] | sort)) as $ordered_tags
+                | [
+                    $ordered_tags[] as $image_tag
+                    | $base_tags[] as $base
+                    | {
+                        source_id: .[$image_tag],
+                        target_ref: (
+                          $repo + ":" + $base +
+                          (if $image_tag == "" then "" else "-" + $image_tag end) +
+                          "-" + $arch
+                        )
+                      }
+                  ]
+              ' \
+              build.json)"
+          fi
 
-          def run_capture(cmd: list[str]) -> str:
-              cp = subprocess.run(cmd, check=True, capture_output=True, text=True)
-              return cp.stdout
-
-
-          def normalize_list(payload: object, where: str) -> list[object]:
-              if isinstance(payload, list):
-                  return payload
-              fail(f"expected list at {where}")
-
-
-          ls_raw = run_capture(["bertrand", "ls", ".", "--images", "--json"])
-          ls_payload = json.loads(ls_raw)
-          ls_rows = normalize_list(ls_payload, "bertrand ls output")
-
-          image_ids: list[str] = []
-          seen_ids: set[str] = set()
-          for row in ls_rows:
-              if not isinstance(row, dict):
-                  continue
-              image_id = None
-              for key in ("Id", "ID", "ImageID", "ImageId"):
-                  value = row.get(key)
-                  if isinstance(value, str) and value.strip():
-                      image_id = value.strip()
-                      break
-              if image_id is None or image_id in seen_ids:
-                  continue
-              seen_ids.add(image_id)
-              image_ids.append(image_id)
-
-          if not image_ids:
-              fail("no Bertrand images were found after build")
-
-          tag_to_id: dict[str, str] = {}
-          for image_id in image_ids:
-              inspect_raw = run_capture(["podman", "image", "inspect", image_id])
-              inspect_payload = json.loads(inspect_raw)
-              if isinstance(inspect_payload, list):
-                  if not inspect_payload:
-                      continue
-                  inspect_obj = inspect_payload[0]
-              else:
-                  inspect_obj = inspect_payload
-
-              if not isinstance(inspect_obj, dict):
-                  fail(f"invalid inspect payload for image id: {image_id}")
-
-              labels = inspect_obj.get("Labels")
-              if labels is None:
-                  labels = {}
-              if not isinstance(labels, dict):
-                  fail(f"invalid image labels for image id: {image_id}")
-
-              image_tag = labels.get("BERTRAND_IMAGE")
-              if not isinstance(image_tag, str):
-                  fail(
-                      "missing BERTRAND_IMAGE label in inspect data for image id: "
-                      f"{image_id}"
-                  )
-
-              existing_id = tag_to_id.get(image_tag)
-              if existing_id is not None and existing_id != image_id:
-                  fail(f"duplicate built image tag detected: '{image_tag}'")
-              tag_to_id[image_tag] = image_id
-
-          if not tag_to_id:
-              fail("no Bertrand image tags discovered from inspect labels")
-
-          ordered_tags: list[str] = []
-          if "" in tag_to_id:
-              ordered_tags.append("")
-          ordered_tags.extend(sorted(tag for tag in tag_to_id if tag))
-
-          should_publish = os.environ.get("SHOULD_PUBLISH", "false").lower() == "true"
-          base_tags = json.loads(os.environ.get("BASE_TAGS_JSON", "[]"))
-          if not isinstance(base_tags, list) or not all(isinstance(x, str) for x in base_tags):
-              fail("BASE_TAGS_JSON must decode to list[str]")
-
-          repo = f"ghcr.io/{os.environ['GITHUB_REPOSITORY'].lower()}"
-          arch = os.environ["ARCH"]
-
-          publish_refs: list[dict[str, str]] = []
-          if should_publish:
-              for image_tag in ordered_tags:
-                  suffix = f"-{image_tag}" if image_tag else ""
-                  source_id = tag_to_id[image_tag]
-                  for base in base_tags:
-                      publish_refs.append({
-                          "source_id": source_id,
-                          "target_ref": f"{repo}:{base}{suffix}-{arch}",
-                      })
-
-          output_path = os.environ.get("GITHUB_OUTPUT")
-          if not output_path:
-              fail("missing GITHUB_OUTPUT")
-
-          with Path(output_path).open("a", encoding="utf-8") as fh:
-              fh.write(
-                  "image_tags_json="
-                  f"{json.dumps(ordered_tags, separators=(',', ':'))}\n"
-              )
-              fh.write(
-                  "publish_refs_json="
-                  f"{json.dumps(publish_refs, separators=(',', ':'))}\n"
-              )
-          PY
+          {
+            echo "image_tags_json=${image_tags_json}"
+            echo "publish_refs_json=${publish_refs_json}"
+          } >> "${GITHUB_OUTPUT}"
 
       - name: Log in to GHCR
         if: ${{ needs.discover.outputs.should_publish == 'true' }}
@@ -236,6 +211,7 @@ jobs:
         env:
           GHCR_TOKEN: ${{ github.token }}
         run: |
+          set -euo pipefail
           echo "${GHCR_TOKEN}" | podman login ghcr.io --username "${GITHUB_ACTOR}" --password-stdin
 
       - name: Push amd64 image tags
@@ -244,32 +220,19 @@ jobs:
         env:
           PUBLISH_REFS_JSON: ${{ steps.collect.outputs.publish_refs_json }}
         run: |
-          python - <<'PY'
-          import json
-          import os
-          import shlex
-          import subprocess
+          set -euo pipefail
 
-          refs = json.loads(os.environ["PUBLISH_REFS_JSON"])
-          if not isinstance(refs, list):
-              raise SystemExit("PUBLISH_REFS_JSON must decode to a list")
+          jq -e '
+            type == "array" and
+            all(.[]; (.source_id | type == "string") and (.target_ref | type == "string"))
+          ' <<< "${PUBLISH_REFS_JSON}" > /dev/null
 
-          for row in refs:
-              if not isinstance(row, dict):
-                  raise SystemExit("publish ref rows must be objects")
-              source_id = row.get("source_id")
-              target_ref = row.get("target_ref")
-              if not isinstance(source_id, str) or not isinstance(target_ref, str):
-                  raise SystemExit("publish ref rows must contain source_id and target_ref")
-
-              tag_cmd = ["podman", "tag", source_id, target_ref]
-              print("+", " ".join(shlex.quote(part) for part in tag_cmd))
-              subprocess.run(tag_cmd, check=True)
-
-              push_cmd = ["podman", "push", target_ref]
-              print("+", " ".join(shlex.quote(part) for part in push_cmd))
-              subprocess.run(push_cmd, check=True)
-          PY
+          while IFS= read -r row; do
+            source_id="$(jq -r '.source_id' <<< "${row}")"
+            target_ref="$(jq -r '.target_ref' <<< "${row}")"
+            podman tag "${source_id}" "${target_ref}"
+            podman push "${target_ref}"
+          done < <(jq -c '.[]' <<< "${PUBLISH_REFS_JSON}")
 
   build_arm64:
     name: Build arm64 images
@@ -279,25 +242,29 @@ jobs:
       image_tags_json: ${{ steps.collect.outputs.image_tags_json }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.discover.outputs.checkout_ref }}
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: "{% endraw %}{{ python_version }}{% raw %}"
 
       - name: Install Bertrand CLI
         shell: bash
         run: |
+          set -euo pipefail
           python -m venv .venv
           . .venv/bin/activate
           python -m pip install --upgrade pip
           python -m pip install "bertrand=={% endraw %}{{ bertrand_version }}{% raw %}"
-          echo "${PWD}/.venv/bin" >> "$GITHUB_PATH"
+          echo "${PWD}/.venv/bin" >> "${GITHUB_PATH}"
 
       - name: Bootstrap toolchain and build images
         shell: bash
         run: |
+          set -euo pipefail
           bertrand init --yes
-          bertrand build .
+          bertrand build --dist . > build.json
 
       - id: collect
         name: Collect arm64 image tags and publish refs
@@ -307,124 +274,47 @@ jobs:
           BASE_TAGS_JSON: ${{ needs.discover.outputs.tags_json }}
           SHOULD_PUBLISH: ${{ needs.discover.outputs.should_publish }}
         run: |
-          python - <<'PY'
-          import json
-          import os
-          import subprocess
-          from pathlib import Path
+          set -euo pipefail
 
+          jq -e '
+            type == "object" and
+            all(to_entries[]?; (.key | type == "string") and (.value | type == "string"))
+          ' build.json > /dev/null
 
-          def fail(message: str) -> None:
-              raise SystemExit(message)
+          image_tags_json="$(jq -c '((if has("") then [""] else [] end) + ([keys[] | select(. != "")] | sort))' build.json)"
 
+          publish_refs_json='[]'
+          if [[ "${SHOULD_PUBLISH}" == "true" ]]; then
+            publish_refs_json="$(jq -c \
+              --arg repo "ghcr.io/${GITHUB_REPOSITORY,,}" \
+              --arg arch "${ARCH}" \
+              --argjson base_tags "${BASE_TAGS_JSON}" \
+              '
+                if (($base_tags | type) != "array") or ($base_tags | any(.[]; type != "string"))
+                then error("BASE_TAGS_JSON must decode to list[str]")
+                else .
+                end
+                | ((if has("") then [""] else [] end) + ([keys[] | select(. != "")] | sort)) as $ordered_tags
+                | [
+                    $ordered_tags[] as $image_tag
+                    | $base_tags[] as $base
+                    | {
+                        source_id: .[$image_tag],
+                        target_ref: (
+                          $repo + ":" + $base +
+                          (if $image_tag == "" then "" else "-" + $image_tag end) +
+                          "-" + $arch
+                        )
+                      }
+                  ]
+              ' \
+              build.json)"
+          fi
 
-          def run_capture(cmd: list[str]) -> str:
-              cp = subprocess.run(cmd, check=True, capture_output=True, text=True)
-              return cp.stdout
-
-
-          def normalize_list(payload: object, where: str) -> list[object]:
-              if isinstance(payload, list):
-                  return payload
-              fail(f"expected list at {where}")
-
-
-          ls_raw = run_capture(["bertrand", "ls", ".", "--images", "--json"])
-          ls_payload = json.loads(ls_raw)
-          ls_rows = normalize_list(ls_payload, "bertrand ls output")
-
-          image_ids: list[str] = []
-          seen_ids: set[str] = set()
-          for row in ls_rows:
-              if not isinstance(row, dict):
-                  continue
-              image_id = None
-              for key in ("Id", "ID", "ImageID", "ImageId"):
-                  value = row.get(key)
-                  if isinstance(value, str) and value.strip():
-                      image_id = value.strip()
-                      break
-              if image_id is None or image_id in seen_ids:
-                  continue
-              seen_ids.add(image_id)
-              image_ids.append(image_id)
-
-          if not image_ids:
-              fail("no Bertrand images were found after build")
-
-          tag_to_id: dict[str, str] = {}
-          for image_id in image_ids:
-              inspect_raw = run_capture(["podman", "image", "inspect", image_id])
-              inspect_payload = json.loads(inspect_raw)
-              if isinstance(inspect_payload, list):
-                  if not inspect_payload:
-                      continue
-                  inspect_obj = inspect_payload[0]
-              else:
-                  inspect_obj = inspect_payload
-
-              if not isinstance(inspect_obj, dict):
-                  fail(f"invalid inspect payload for image id: {image_id}")
-
-              labels = inspect_obj.get("Labels")
-              if labels is None:
-                  labels = {}
-              if not isinstance(labels, dict):
-                  fail(f"invalid image labels for image id: {image_id}")
-
-              image_tag = labels.get("BERTRAND_IMAGE")
-              if not isinstance(image_tag, str):
-                  fail(
-                      "missing BERTRAND_IMAGE label in inspect data for image id: "
-                      f"{image_id}"
-                  )
-
-              existing_id = tag_to_id.get(image_tag)
-              if existing_id is not None and existing_id != image_id:
-                  fail(f"duplicate built image tag detected: '{image_tag}'")
-              tag_to_id[image_tag] = image_id
-
-          if not tag_to_id:
-              fail("no Bertrand image tags discovered from inspect labels")
-
-          ordered_tags: list[str] = []
-          if "" in tag_to_id:
-              ordered_tags.append("")
-          ordered_tags.extend(sorted(tag for tag in tag_to_id if tag))
-
-          should_publish = os.environ.get("SHOULD_PUBLISH", "false").lower() == "true"
-          base_tags = json.loads(os.environ.get("BASE_TAGS_JSON", "[]"))
-          if not isinstance(base_tags, list) or not all(isinstance(x, str) for x in base_tags):
-              fail("BASE_TAGS_JSON must decode to list[str]")
-
-          repo = f"ghcr.io/{os.environ['GITHUB_REPOSITORY'].lower()}"
-          arch = os.environ["ARCH"]
-
-          publish_refs: list[dict[str, str]] = []
-          if should_publish:
-              for image_tag in ordered_tags:
-                  suffix = f"-{image_tag}" if image_tag else ""
-                  source_id = tag_to_id[image_tag]
-                  for base in base_tags:
-                      publish_refs.append({
-                          "source_id": source_id,
-                          "target_ref": f"{repo}:{base}{suffix}-{arch}",
-                      })
-
-          output_path = os.environ.get("GITHUB_OUTPUT")
-          if not output_path:
-              fail("missing GITHUB_OUTPUT")
-
-          with Path(output_path).open("a", encoding="utf-8") as fh:
-              fh.write(
-                  "image_tags_json="
-                  f"{json.dumps(ordered_tags, separators=(',', ':'))}\n"
-              )
-              fh.write(
-                  "publish_refs_json="
-                  f"{json.dumps(publish_refs, separators=(',', ':'))}\n"
-              )
-          PY
+          {
+            echo "image_tags_json=${image_tags_json}"
+            echo "publish_refs_json=${publish_refs_json}"
+          } >> "${GITHUB_OUTPUT}"
 
       - name: Log in to GHCR
         if: ${{ needs.discover.outputs.should_publish == 'true' }}
@@ -432,6 +322,7 @@ jobs:
         env:
           GHCR_TOKEN: ${{ github.token }}
         run: |
+          set -euo pipefail
           echo "${GHCR_TOKEN}" | podman login ghcr.io --username "${GITHUB_ACTOR}" --password-stdin
 
       - name: Push arm64 image tags
@@ -440,32 +331,19 @@ jobs:
         env:
           PUBLISH_REFS_JSON: ${{ steps.collect.outputs.publish_refs_json }}
         run: |
-          python - <<'PY'
-          import json
-          import os
-          import shlex
-          import subprocess
+          set -euo pipefail
 
-          refs = json.loads(os.environ["PUBLISH_REFS_JSON"])
-          if not isinstance(refs, list):
-              raise SystemExit("PUBLISH_REFS_JSON must decode to a list")
+          jq -e '
+            type == "array" and
+            all(.[]; (.source_id | type == "string") and (.target_ref | type == "string"))
+          ' <<< "${PUBLISH_REFS_JSON}" > /dev/null
 
-          for row in refs:
-              if not isinstance(row, dict):
-                  raise SystemExit("publish ref rows must be objects")
-              source_id = row.get("source_id")
-              target_ref = row.get("target_ref")
-              if not isinstance(source_id, str) or not isinstance(target_ref, str):
-                  raise SystemExit("publish ref rows must contain source_id and target_ref")
-
-              tag_cmd = ["podman", "tag", source_id, target_ref]
-              print("+", " ".join(shlex.quote(part) for part in tag_cmd))
-              subprocess.run(tag_cmd, check=True)
-
-              push_cmd = ["podman", "push", target_ref]
-              print("+", " ".join(shlex.quote(part) for part in push_cmd))
-              subprocess.run(push_cmd, check=True)
-          PY
+          while IFS= read -r row; do
+            source_id="$(jq -r '.source_id' <<< "${row}")"
+            target_ref="$(jq -r '.target_ref' <<< "${row}")"
+            podman tag "${source_id}" "${target_ref}"
+            podman push "${target_ref}"
+          done < <(jq -c '.[]' <<< "${PUBLISH_REFS_JSON}")
 
   manifest:
     name: Publish multi-arch manifests
@@ -476,17 +354,32 @@ jobs:
     if: ${{ needs.discover.outputs.should_publish == 'true' }}
     runs-on: ubuntu-24.04
     steps:
-      - name: Install Podman
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "{% endraw %}{{ python_version }}{% raw %}"
+
+      - name: Install Bertrand CLI
         shell: bash
         run: |
-          sudo apt-get update
-          sudo apt-get install -y podman
+          set -euo pipefail
+          python -m venv .venv
+          . .venv/bin/activate
+          python -m pip install --upgrade pip
+          python -m pip install "bertrand=={% endraw %}{{ bertrand_version }}{% raw %}"
+          echo "${PWD}/.venv/bin" >> "${GITHUB_PATH}"
+
+      - name: Bootstrap toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          bertrand init --yes
 
       - name: Log in to GHCR
         shell: bash
         env:
           GHCR_TOKEN: ${{ github.token }}
         run: |
+          set -euo pipefail
           echo "${GHCR_TOKEN}" | podman login ghcr.io --username "${GITHUB_ACTOR}" --password-stdin
 
       - name: Assemble and push manifests
@@ -496,83 +389,54 @@ jobs:
           AMD_IMAGE_TAGS_JSON: ${{ needs.build_amd64.outputs.image_tags_json }}
           ARM_IMAGE_TAGS_JSON: ${{ needs.build_arm64.outputs.image_tags_json }}
         run: |
-          python - <<'PY'
-          import json
-          import os
-          import shlex
-          import subprocess
+          set -euo pipefail
 
+          base_tags_json="$(jq -c '
+            if (type != "array") or any(.[]; type != "string")
+            then error("BASE_TAGS_JSON must decode to list[str]")
+            else .
+            end
+          ' <<< "${BASE_TAGS_JSON}")"
 
-          def fail(message: str) -> None:
-              raise SystemExit(message)
+          amd_tags_json="$(jq -c '
+            if (type != "array") or any(.[]; type != "string")
+            then error("AMD_IMAGE_TAGS_JSON must decode to list[str]")
+            else sort
+            end
+          ' <<< "${AMD_IMAGE_TAGS_JSON}")"
 
+          arm_tags_json="$(jq -c '
+            if (type != "array") or any(.[]; type != "string")
+            then error("ARM_IMAGE_TAGS_JSON must decode to list[str]")
+            else sort
+            end
+          ' <<< "${ARM_IMAGE_TAGS_JSON}")"
 
-          base_tags = json.loads(os.environ["BASE_TAGS_JSON"])
-          amd_tags = json.loads(os.environ["AMD_IMAGE_TAGS_JSON"])
-          arm_tags = json.loads(os.environ["ARM_IMAGE_TAGS_JSON"])
+          if [[ "${amd_tags_json}" != "${arm_tags_json}" ]]; then
+            echo "built image tag sets differ between architectures: amd64=${amd_tags_json}, arm64=${arm_tags_json}" >&2
+            exit 1
+          fi
 
-          if not isinstance(base_tags, list) or not all(isinstance(x, str) for x in base_tags):
-              fail("BASE_TAGS_JSON must decode to list[str]")
-          if not isinstance(amd_tags, list) or not all(isinstance(x, str) for x in amd_tags):
-              fail("AMD_IMAGE_TAGS_JSON must decode to list[str]")
-          if not isinstance(arm_tags, list) or not all(isinstance(x, str) for x in arm_tags):
-              fail("ARM_IMAGE_TAGS_JSON must decode to list[str]")
+          repo="ghcr.io/${GITHUB_REPOSITORY,,}"
+          mapfile -t base_tags < <(jq -r '.[]' <<< "${base_tags_json}")
+          mapfile -t image_tags < <(jq -r '.[]' <<< "${amd_tags_json}")
 
-          if amd_tags != arm_tags:
-              fail(
-                  "built image tag sets differ between architectures: "
-                  f"amd64={amd_tags}, arm64={arm_tags}"
-              )
+          for image_tag in "${image_tags[@]}"; do
+            if [[ -n "${image_tag}" ]]; then
+              suffix="-${image_tag}"
+            else
+              suffix=""
+            fi
 
-          repo = f"ghcr.io/{os.environ['GITHUB_REPOSITORY'].lower()}"
+            for base_tag in "${base_tags[@]}"; do
+              manifest_ref="${repo}:${base_tag}${suffix}"
 
-          for image_tag in amd_tags:
-              suffix = f"-{image_tag}" if image_tag else ""
-              for base in base_tags:
-                  manifest_ref = f"{repo}:{base}{suffix}"
-                  source_refs = [
-                      f"{manifest_ref}-amd64",
-                      f"{manifest_ref}-arm64",
-                  ]
-
-                  subprocess.run(
-                      ["podman", "manifest", "rm", manifest_ref],
-                      check=False,
-                      stdout=subprocess.DEVNULL,
-                      stderr=subprocess.DEVNULL,
-                  )
-
-                  create_cmd = ["podman", "manifest", "create", manifest_ref]
-                  print("+", " ".join(shlex.quote(part) for part in create_cmd))
-                  subprocess.run(create_cmd, check=True)
-
-                  for source_ref in source_refs:
-                      add_cmd = [
-                          "podman",
-                          "manifest",
-                          "add",
-                          manifest_ref,
-                          f"docker://{source_ref}",
-                      ]
-                      print("+", " ".join(shlex.quote(part) for part in add_cmd))
-                      subprocess.run(add_cmd, check=True)
-
-                  push_cmd = [
-                      "podman",
-                      "manifest",
-                      "push",
-                      "--all",
-                      manifest_ref,
-                      f"docker://{manifest_ref}",
-                  ]
-                  print("+", " ".join(shlex.quote(part) for part in push_cmd))
-                  subprocess.run(push_cmd, check=True)
-
-                  subprocess.run(
-                      ["podman", "manifest", "rm", manifest_ref],
-                      check=False,
-                      stdout=subprocess.DEVNULL,
-                      stderr=subprocess.DEVNULL,
-                  )
-          PY
+              podman manifest rm "${manifest_ref}" > /dev/null 2>&1 || true
+              podman manifest create "${manifest_ref}"
+              podman manifest add "${manifest_ref}" "docker://${manifest_ref}-amd64"
+              podman manifest add "${manifest_ref}" "docker://${manifest_ref}-arm64"
+              podman manifest push --all "${manifest_ref}" "docker://${manifest_ref}"
+              podman manifest rm "${manifest_ref}" > /dev/null 2>&1 || true
+            done
+          done
 {% endraw %}

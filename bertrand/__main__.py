@@ -256,6 +256,16 @@ class External:
                     "materialized.  If both image and container tags are given, only "
                     "that declared container is materialized.",
             )
+            command.add_argument(
+                "--dist",
+                action="store_true",
+                help=
+                    "Build images only and skip container materialization.  Useful "
+                    "for CI publish workflows where the resulting images will be "
+                    "bundled and pushed to an OCI container repository for "
+                    "distribution.  Emits a machine-readable JSON summary mapping "
+                    "Bertrand image tags to built image IDs to assist with that.",
+            )
             command.set_defaults(handler=External.build)
 
         def start(self) -> None:
@@ -913,12 +923,25 @@ class External:
         ----------
         args : argparse.Namespace
             The parsed command-line arguments.
+
+        Raises
+        ------
+        OSError
+            If the specified path includes an image or container tag, which is not
+            allowed when building an environment, or if the --dist flag is used with
+            a container target.
         """
         env, image_tag, container_tag = _parse(args.path)
+        if args.dist and container_tag:
+            raise OSError(
+                "cannot use --dist with a container target.  Specify an "
+                "environment or image scope only (ENV or ENV:IMAGE)."
+            )
         on_build.do(
             env=env,
             image_tag=image_tag,
             container_tag=container_tag,
+            dist=args.dist,
         )
 
     @staticmethod

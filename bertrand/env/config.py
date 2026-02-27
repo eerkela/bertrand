@@ -30,7 +30,7 @@ import yaml
 
 from .pipeline import on_init
 from .run import LOCK_TIMEOUT, Lock, atomic_write_text, sanitize_name
-from .version import __version__
+from .version import __version__, VERSIONS
 
 
 # Canonical path and name definitions for shared resources
@@ -890,6 +890,16 @@ class Config:
                 pass
             return 4
 
+        @staticmethod
+        def _python_version() -> str:
+            version = VERSIONS.python
+            if not isinstance(version, str) or not version:
+                raise OSError(
+                    "missing PYTHON_VERSION in canonical Containerfile; cannot render "
+                    "python_version template fact"
+                )
+            return version
+
         # TODO: rather than baking things like page size into the template context,
         # I should just auto-detect it when writing the CMakeLists.txt file in the
         # pep517 backend, and then eliminate it from the base image's qualified name
@@ -900,6 +910,7 @@ class Config:
         project_name: str = field()
         shell: str = field(default=DEFAULT_SHELL)
         bertrand_version: str = field(default=__version__)
+        python_version: str = field(default_factory=_python_version)
         cpus: int = field(default_factory=lambda: os.cpu_count() or 1)
         page_size_kib: int = field(default_factory=_page_size_kib)
         mount_path: str = field(default=str(MOUNT))

@@ -160,6 +160,12 @@ def _podman_ready() -> bool:
     return result.returncode == 0
 
 
+def _check_boolean(value: Any) -> bool:
+    if not isinstance(value, bool):
+        raise ValueError(f"expected a boolean value, got: {value}")
+    return value
+
+
 def _check_absolute_path(value: Any) -> Path:
     p = Path(value)
     if p != p.expanduser().resolve():
@@ -1983,6 +1989,7 @@ class Build(_Command):
     does not start containers, and all build/create arguments are resolved from
     `[tool.bertrand]` in `pyproject.toml`.
     """
+    dist: Validator = field(default=_check_boolean)
 
     @staticmethod
     def _image(
@@ -1990,6 +1997,7 @@ class Build(_Command):
         *,
         env: Environment,
         image_tag: str,
+        dist: bool = False,
     ) -> tuple[Image, bool]:
         changed = False
         declared = env.config["images"].get(image_tag)
@@ -2030,7 +2038,7 @@ class Build(_Command):
                 "--label", f"BERTRAND_IMAGE={image_tag}",
                 *build_args,
                 str(env.root)
-            ], cwd=env.root)
+            ], cwd=env.root, capture_output=dist)
             candidate.id = iid_file.read_text(encoding="utf-8").strip()
             try:
                 # confirm that the image was actually built and is reachable
@@ -2042,7 +2050,7 @@ class Build(_Command):
                 # rebuild all downstream containers if the image changed
                 existing = env.tags.get(image_tag)
                 changed = existing is None or candidate.id != existing.id
-                if changed:
+                if changed and not dist:
                     for container_tag in declared["containers"]:
                         Build._container(
                             ctx,
@@ -2097,7 +2105,12 @@ class Build(_Command):
 
         # attempt to build the parent image first
         if image is None:
-            image, changed = Build._image(ctx, env=env, image_tag=image_tag)
+            image, changed = Build._image(
+                ctx,
+                env=env,
+                image_tag=image_tag,
+                dist=False,
+            )
             if changed:  # implicitly rebuilt container along with image
                 return image.containers[container_tag], True
 
@@ -2194,20 +2207,39 @@ class Build(_Command):
             cid_file.unlink(missing_ok=True)
 
     @staticmethod
+    def _print_dist(env: Environment, image: str | None) -> None:
+        if image is None:
+            print(json_parser.dumps(
+                {k: v.id for k, v in sorted(env.tags.items(), key=lambda x: x[0])},
+                separators=(",", ":")
+            ))
+        else:
+            print(json_parser.dumps(
+                {image: env.tags[image].id} if image in env.tags else {},
+                separators=(",", ":")
+            ))
+
+    @staticmethod
     def container(
         ctx: Pipeline.InProgress,
         *,
         env: Environment,
         image_tag: str,
         container_tag: str,
+        dist: bool,
         **kwargs: Any
     ) -> None:
+        if dist:
+            raise OSError(
+                "cannot materialize a container with --dist enabled.  Specify an "
+                "environment or image scope only."
+            )
         Build._container(
             ctx,
             env=env,
             image_tag=image_tag,
             image=None,  # build or reuse image as needed
-            container_tag=container_tag
+            container_tag=container_tag,
         )
 
     @staticmethod
@@ -2216,31 +2248,63 @@ class Build(_Command):
         *,
         env: Environment,
         image_tag: str,
+        dist: bool,
         **kwargs: Any
     ) -> None:
-        image, changed = Build._image(ctx, env=env, image_tag=image_tag)
+        image, changed = Build._image(
+            ctx,
+            env=env,
+            image_tag=image_tag,
+            dist=dist,
+        )
 
         # if we didn't rebuild the image itself, make sure to rebuild all descendant
         # containers in order to enforce proper CLI scope
-        if not changed:
+        if not dist and not changed:
             for container_tag in env.config["images"][image_tag]["containers"]:
                 Build._container(
                     ctx,
                     env=env,
                     image_tag=image_tag,
                     image=image,  # reuse built image
-                    container_tag=container_tag
+                    container_tag=container_tag,
                 )
+
+        # emit image json
+        if dist:
+            Build._print_dist(env, image_tag)
 
     @staticmethod
     def environment(
         ctx: Pipeline.InProgress,
         *,
         env: Environment,
+        dist: bool = False,
         **kwargs: Any
     ) -> None:
         for image_tag in env.config["images"]:
-            Build.image(ctx, env=env, image_tag=image_tag)
+            image, changed = Build._image(
+                ctx,
+                env=env,
+                image_tag=image_tag,
+                dist=dist,
+            )
+
+            # if we didn't rebuild the image itself, make sure to rebuild all descendant
+            # containers in order to enforce proper CLI scope
+            if not dist and not changed:
+                for container_tag in env.config["images"][image_tag]["containers"]:
+                    Build._container(
+                        ctx,
+                        env=env,
+                        image_tag=image_tag,
+                        image=image,  # reuse built image
+                        container_tag=container_tag,
+                    )
+
+        # emit image json
+        if dist:
+            Build._print_dist(env, None)
 
     @staticmethod
     def all(
@@ -2271,6 +2335,7 @@ class Start(_Command):
             env=env,
             image_tag=image_tag,
             container_tag=container_tag,
+            dist=False,
             **kwargs,
         )
         container = env[image_tag, container_tag]
@@ -2295,7 +2360,7 @@ class Start(_Command):
         image_tag: str,
         **kwargs: Any
     ) -> None:
-        Build.image(ctx, env=env, image_tag=image_tag, **kwargs)
+        Build.image(ctx, env=env, image_tag=image_tag, dist=False, **kwargs)
         image = env[image_tag]
         if image is None:
             raise OSError(
@@ -2945,7 +3010,7 @@ class Restart(_Command):
             )
 
         # possibly rebuild the parent image and all downstream containers
-        Build.image(ctx, env=env, image_tag=image_tag, **kwargs)
+        Build.image(ctx, env=env, image_tag=image_tag, dist=False, **kwargs)
         image = env[image_tag]
         if image is None:
             raise OSError(f"unable to build image '{image_tag}'")
@@ -2997,7 +3062,7 @@ class Restart(_Command):
                     running.add(container_tag)
 
         # possibly rebuild the image and all downstream containers
-        Build.image(ctx, env=env, image_tag=image_tag, **kwargs)
+        Build.image(ctx, env=env, image_tag=image_tag, dist=False, **kwargs)
         image = env[image_tag]
         if image is None:
             raise OSError(f"unable to build image '{image_tag}'")
@@ -3175,7 +3240,7 @@ class Rm(_Command):
             raise ValueError("timeout must be non-negative or -1 for no timeout")
         return x
 
-    force: Validator = field(default=bool)
+    force: Validator = field(default=_check_boolean)
     timeout: Validator = field(default=_validate_timeout)
 
     @staticmethod
@@ -3284,10 +3349,10 @@ class Ls(_Command):
         Command: str
         RunningFor: str
 
-    json: Validator = field(default=bool)
-    images: Validator = field(default=bool)
-    running: Validator = field(default=bool)
-    stopped: Validator = field(default=bool)
+    json: Validator = field(default=_check_boolean)
+    images: Validator = field(default=_check_boolean)
+    running: Validator = field(default=_check_boolean)
+    stopped: Validator = field(default=_check_boolean)
 
     @staticmethod
     def _format_images(
@@ -3554,7 +3619,7 @@ class Monitor(_Command):
             raise ValueError("interval must be non-negative")
         return x
 
-    json: Validator = field(default=bool)
+    json: Validator = field(default=_check_boolean)
     interval: Validator = field(default=_validate_interval)
 
     @staticmethod
@@ -3762,7 +3827,7 @@ class Log(_Command):
         x = x.strip()
         return x or None
 
-    images: Validator = field(default=bool)
+    images: Validator = field(default=_check_boolean)
     since: Validator = field(default=_validate_time)
     until: Validator = field(default=_validate_time)
 

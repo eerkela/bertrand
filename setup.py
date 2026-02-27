@@ -78,6 +78,7 @@ class BuildSourcesHeadless(BuildSources):
 
 
 setup(
+    data_files=[("share/bertrand", ["Containerfile"])],
     # cpp_deps=[
     #     Package("nlohmann_json", "3.11.3", "nlohmann_json", "nlohmann_json::nlohmann_json"),
     #     Package("pcre2", "10.43", "PCRE2", "pcre2::pcre2"),
