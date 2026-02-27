@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: "Release tag to re-publish (for example: v1.2.3)"
+        description: "Release tag to re-publish (must match project version, e.g. 1.2.3)"
         required: true
         type: string
 
@@ -19,341 +19,35 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  RELEASE_TAG: ${{ github.event_name == 'release' && github.event.release.tag_name || inputs.release_tag }}
+
 jobs:
-  discover:
-    name: Discover publish tags
-    runs-on: ubuntu-24.04
-    outputs:
-      should_publish: ${{ steps.discover.outputs.should_publish }}
-      tags_json: ${{ steps.discover.outputs.tags_json }}
-      checkout_ref: ${{ steps.resolve.outputs.checkout_ref }}
-      release_tag: ${{ steps.resolve.outputs.release_tag }}
-      version: ${{ steps.discover.outputs.version }}
+  build:
+    name: Build and publish arch images
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
     steps:
-      - id: resolve
-        name: Resolve release tag
+      - name: Validate release tag
         shell: bash
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          RELEASE_TAG_EVENT: ${{ github.event.release.tag_name || '' }}
-          RELEASE_TAG_INPUT: ${{ inputs.release_tag || '' }}
         run: |
           set -euo pipefail
-
-          case "${EVENT_NAME}" in
-            release)
-              release_tag="${RELEASE_TAG_EVENT}"
-              ;;
-            workflow_dispatch)
-              release_tag="${RELEASE_TAG_INPUT}"
-              ;;
-            *)
-              echo "unsupported event for publish workflow: ${EVENT_NAME}" >&2
-              exit 1
-              ;;
-          esac
-
-          release_tag="$(printf '%s' "${release_tag}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
-          if [[ -z "${release_tag}" ]]; then
+          if [[ -z "${RELEASE_TAG}" ]]; then
             echo "missing release tag (release event tag or workflow dispatch input)" >&2
             exit 1
           fi
 
-          {
-            echo "release_tag=${release_tag}"
-            echo "checkout_ref=refs/tags/${release_tag}"
-          } >> "${GITHUB_OUTPUT}"
-
       - uses: actions/checkout@v4
         with:
-          ref: ${{ steps.resolve.outputs.release_tag }}
+          ref: refs/tags/${{ env.RELEASE_TAG }}
 
-      - id: discover
-        name: Compute publish metadata
-        shell: bash
-        env:
-          RELEASE_TAG: ${{ steps.resolve.outputs.release_tag }}
-        run: |
-          set -euo pipefail
-
-          version="$(awk '
-            BEGIN { in_project=0 }
-            /^[[:space:]]*\[/ {
-              in_project = ($0 ~ /^[[:space:]]*\[project\][[:space:]]*$/)
-            }
-            in_project && $0 ~ /^[[:space:]]*version[[:space:]]*=/ {
-              line=$0
-              sub(/^[[:space:]]*version[[:space:]]*=[[:space:]]*/, "", line)
-              if (match(line, /^"[^\"]+"/)) {
-                print substr(line, 2, RLENGTH - 2)
-                exit
-              }
-              if (match(line, /^'"'"'[^'"'"']+'"'"'/)) {
-                print substr(line, 2, RLENGTH - 2)
-                exit
-              }
-            }
-          ' pyproject.toml)"
-
-          if [[ -z "${version}" ]]; then
-            echo "missing or invalid [project].version in pyproject.toml" >&2
-            exit 1
-          fi
-
-          canonical_tag="v${version}"
-          tags=("${canonical_tag}")
-          if [[ "${version}" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
-            major="${BASH_REMATCH[1]}"
-            minor="${BASH_REMATCH[2]}"
-            tags+=("v${major}.${minor}" "v${major}")
-          fi
-          if [[ "${RELEASE_TAG}" != "${canonical_tag}" ]]; then
-            tags+=("${RELEASE_TAG}")
-          fi
-
-          tags_json="$(
-            printf '%s\n' "${tags[@]}" |
-            awk 'NF { if (!seen[$0]++) print $0 }' |
-            jq -R -s -c 'split("\n") | map(select(length > 0))'
-          )"
-
-          {
-            echo "should_publish=true"
-            echo "version=${version}"
-            echo "tags_json=${tags_json}"
-          } >> "${GITHUB_OUTPUT}"
-
-  build_amd64:
-    name: Build amd64 images
-    needs: discover
-    runs-on: ubuntu-24.04
-    outputs:
-      image_tags_json: ${{ steps.collect.outputs.image_tags_json }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.discover.outputs.checkout_ref }}
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "{% endraw %}{{ python_version }}{% raw %}"
-
-      - name: Install Bertrand CLI
-        shell: bash
-        run: |
-          set -euo pipefail
-          python -m venv .venv
-          . .venv/bin/activate
-          python -m pip install --upgrade pip
-          python -m pip install "bertrand=={% endraw %}{{ bertrand_version }}{% raw %}"
-          echo "${PWD}/.venv/bin" >> "${GITHUB_PATH}"
-
-      - name: Bootstrap toolchain and build images
-        shell: bash
-        run: |
-          set -euo pipefail
-          bertrand init --yes
-          bertrand build --dist . > build.json
-
-      - id: collect
-        name: Collect amd64 image tags and publish refs
-        shell: bash
-        env:
-          ARCH: amd64
-          BASE_TAGS_JSON: ${{ needs.discover.outputs.tags_json }}
-          SHOULD_PUBLISH: ${{ needs.discover.outputs.should_publish }}
-        run: |
-          set -euo pipefail
-
-          jq -e '
-            type == "object" and
-            all(to_entries[]?; (.key | type == "string") and (.value | type == "string"))
-          ' build.json > /dev/null
-
-          image_tags_json="$(jq -c '((if has("") then [""] else [] end) + ([keys[] | select(. != "")] | sort))' build.json)"
-
-          publish_refs_json='[]'
-          if [[ "${SHOULD_PUBLISH}" == "true" ]]; then
-            publish_refs_json="$(jq -c \
-              --arg repo "ghcr.io/${GITHUB_REPOSITORY,,}" \
-              --arg arch "${ARCH}" \
-              --argjson base_tags "${BASE_TAGS_JSON}" \
-              '
-                if (($base_tags | type) != "array") or ($base_tags | any(.[]; type != "string"))
-                then error("BASE_TAGS_JSON must decode to list[str]")
-                else .
-                end
-                | ((if has("") then [""] else [] end) + ([keys[] | select(. != "")] | sort)) as $ordered_tags
-                | [
-                    $ordered_tags[] as $image_tag
-                    | $base_tags[] as $base
-                    | {
-                        source_id: .[$image_tag],
-                        target_ref: (
-                          $repo + ":" + $base +
-                          (if $image_tag == "" then "" else "-" + $image_tag end) +
-                          "-" + $arch
-                        )
-                      }
-                  ]
-              ' \
-              build.json)"
-          fi
-
-          {
-            echo "image_tags_json=${image_tags_json}"
-            echo "publish_refs_json=${publish_refs_json}"
-          } >> "${GITHUB_OUTPUT}"
-
-      - name: Log in to GHCR
-        if: ${{ needs.discover.outputs.should_publish == 'true' }}
-        shell: bash
-        env:
-          GHCR_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          echo "${GHCR_TOKEN}" | podman login ghcr.io --username "${GITHUB_ACTOR}" --password-stdin
-
-      - name: Push amd64 image tags
-        if: ${{ needs.discover.outputs.should_publish == 'true' }}
-        shell: bash
-        env:
-          PUBLISH_REFS_JSON: ${{ steps.collect.outputs.publish_refs_json }}
-        run: |
-          set -euo pipefail
-
-          jq -e '
-            type == "array" and
-            all(.[]; (.source_id | type == "string") and (.target_ref | type == "string"))
-          ' <<< "${PUBLISH_REFS_JSON}" > /dev/null
-
-          while IFS= read -r row; do
-            source_id="$(jq -r '.source_id' <<< "${row}")"
-            target_ref="$(jq -r '.target_ref' <<< "${row}")"
-            podman tag "${source_id}" "${target_ref}"
-            podman push "${target_ref}"
-          done < <(jq -c '.[]' <<< "${PUBLISH_REFS_JSON}")
-
-  build_arm64:
-    name: Build arm64 images
-    needs: discover
-    runs-on: ubuntu-24.04-arm
-    outputs:
-      image_tags_json: ${{ steps.collect.outputs.image_tags_json }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.discover.outputs.checkout_ref }}
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "{% endraw %}{{ python_version }}{% raw %}"
-
-      - name: Install Bertrand CLI
-        shell: bash
-        run: |
-          set -euo pipefail
-          python -m venv .venv
-          . .venv/bin/activate
-          python -m pip install --upgrade pip
-          python -m pip install "bertrand=={% endraw %}{{ bertrand_version }}{% raw %}"
-          echo "${PWD}/.venv/bin" >> "${GITHUB_PATH}"
-
-      - name: Bootstrap toolchain and build images
-        shell: bash
-        run: |
-          set -euo pipefail
-          bertrand init --yes
-          bertrand build --dist . > build.json
-
-      - id: collect
-        name: Collect arm64 image tags and publish refs
-        shell: bash
-        env:
-          ARCH: arm64
-          BASE_TAGS_JSON: ${{ needs.discover.outputs.tags_json }}
-          SHOULD_PUBLISH: ${{ needs.discover.outputs.should_publish }}
-        run: |
-          set -euo pipefail
-
-          jq -e '
-            type == "object" and
-            all(to_entries[]?; (.key | type == "string") and (.value | type == "string"))
-          ' build.json > /dev/null
-
-          image_tags_json="$(jq -c '((if has("") then [""] else [] end) + ([keys[] | select(. != "")] | sort))' build.json)"
-
-          publish_refs_json='[]'
-          if [[ "${SHOULD_PUBLISH}" == "true" ]]; then
-            publish_refs_json="$(jq -c \
-              --arg repo "ghcr.io/${GITHUB_REPOSITORY,,}" \
-              --arg arch "${ARCH}" \
-              --argjson base_tags "${BASE_TAGS_JSON}" \
-              '
-                if (($base_tags | type) != "array") or ($base_tags | any(.[]; type != "string"))
-                then error("BASE_TAGS_JSON must decode to list[str]")
-                else .
-                end
-                | ((if has("") then [""] else [] end) + ([keys[] | select(. != "")] | sort)) as $ordered_tags
-                | [
-                    $ordered_tags[] as $image_tag
-                    | $base_tags[] as $base
-                    | {
-                        source_id: .[$image_tag],
-                        target_ref: (
-                          $repo + ":" + $base +
-                          (if $image_tag == "" then "" else "-" + $image_tag end) +
-                          "-" + $arch
-                        )
-                      }
-                  ]
-              ' \
-              build.json)"
-          fi
-
-          {
-            echo "image_tags_json=${image_tags_json}"
-            echo "publish_refs_json=${publish_refs_json}"
-          } >> "${GITHUB_OUTPUT}"
-
-      - name: Log in to GHCR
-        if: ${{ needs.discover.outputs.should_publish == 'true' }}
-        shell: bash
-        env:
-          GHCR_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          echo "${GHCR_TOKEN}" | podman login ghcr.io --username "${GITHUB_ACTOR}" --password-stdin
-
-      - name: Push arm64 image tags
-        if: ${{ needs.discover.outputs.should_publish == 'true' }}
-        shell: bash
-        env:
-          PUBLISH_REFS_JSON: ${{ steps.collect.outputs.publish_refs_json }}
-        run: |
-          set -euo pipefail
-
-          jq -e '
-            type == "array" and
-            all(.[]; (.source_id | type == "string") and (.target_ref | type == "string"))
-          ' <<< "${PUBLISH_REFS_JSON}" > /dev/null
-
-          while IFS= read -r row; do
-            source_id="$(jq -r '.source_id' <<< "${row}")"
-            target_ref="$(jq -r '.target_ref' <<< "${row}")"
-            podman tag "${source_id}" "${target_ref}"
-            podman push "${target_ref}"
-          done < <(jq -c '.[]' <<< "${PUBLISH_REFS_JSON}")
-
-  manifest:
-    name: Publish multi-arch manifests
-    needs:
-      - discover
-      - build_amd64
-      - build_arm64
-    if: ${{ needs.discover.outputs.should_publish == 'true' }}
-    runs-on: ubuntu-24.04
-    steps:
       - uses: actions/setup-python@v5
         with:
           python-version: "{% endraw %}{{ python_version }}{% raw %}"
@@ -382,44 +76,112 @@ jobs:
           set -euo pipefail
           echo "${GHCR_TOKEN}" | podman login ghcr.io --username "${GITHUB_ACTOR}" --password-stdin
 
-      - name: Assemble and push manifests
+      - name: Build release output
         shell: bash
         env:
-          BASE_TAGS_JSON: ${{ needs.discover.outputs.tags_json }}
-          AMD_IMAGE_TAGS_JSON: ${{ needs.build_amd64.outputs.image_tags_json }}
-          ARM_IMAGE_TAGS_JSON: ${{ needs.build_arm64.outputs.image_tags_json }}
+          ARCH: ${{ matrix.arch }}
+          OCI_REPO: ghcr.io/${{ github.repository }}
+        run: |
+          set -euo pipefail
+          repo="$(printf '%s' "${OCI_REPO}" | tr '[:upper:]' '[:lower:]')"
+          bertrand build --publish "${RELEASE_TAG}" --repo "${repo}" . > "release-${ARCH}.json"
+
+      - name: Validate release envelope
+        shell: bash
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          jq -e --arg arch "${ARCH}" '
+            if (type != "object") then
+              error("release output must be an object")
+            elif (.version | type != "string" or length == 0) then
+              error("release output missing non-empty version")
+            elif (.arch | type != "string" or .arch != $arch) then
+              error("release output arch mismatch")
+            elif (.images | type != "object" or any(.images | to_entries[]?; (.key | type != "string") or (.value | type != "string") or (.value | length == 0))) then
+              error("release output images must be object[str,str]")
+            elif ([keys[]] | sort) != ["arch", "images", "version"] then
+              error("release output keys must be exactly: version, arch, images")
+            else .
+            end
+          ' "release-${ARCH}.json" > /dev/null
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.arch }}
+          path: release-${{ matrix.arch }}.json
+          if-no-files-found: error
+
+  manifest:
+    name: Publish multi-arch manifests
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "{% endraw %}{{ python_version }}{% raw %}"
+
+      - name: Install Bertrand CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m venv .venv
+          . .venv/bin/activate
+          python -m pip install --upgrade pip
+          python -m pip install "bertrand=={% endraw %}{{ bertrand_version }}{% raw %}"
+          echo "${PWD}/.venv/bin" >> "${GITHUB_PATH}"
+
+      - name: Bootstrap toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          bertrand init --yes
+
+      - name: Download amd64 release output
+        uses: actions/download-artifact@v4
+        with:
+          name: release-amd64
+          path: artifacts/amd64
+
+      - name: Download arm64 release output
+        uses: actions/download-artifact@v4
+        with:
+          name: release-arm64
+          path: artifacts/arm64
+
+      - name: Log in to GHCR
+        shell: bash
+        env:
+          GHCR_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          echo "${GHCR_TOKEN}" | podman login ghcr.io --username "${GITHUB_ACTOR}" --password-stdin
+
+      - name: Assemble and push manifests
+        shell: bash
         run: |
           set -euo pipefail
 
-          base_tags_json="$(jq -c '
-            if (type != "array") or any(.[]; type != "string")
-            then error("BASE_TAGS_JSON must decode to list[str]")
-            else .
-            end
-          ' <<< "${BASE_TAGS_JSON}")"
+          amd_json="artifacts/amd64/release-amd64.json"
+          arm_json="artifacts/arm64/release-arm64.json"
 
-          amd_tags_json="$(jq -c '
-            if (type != "array") or any(.[]; type != "string")
-            then error("AMD_IMAGE_TAGS_JSON must decode to list[str]")
-            else sort
-            end
-          ' <<< "${AMD_IMAGE_TAGS_JSON}")"
+          amd_version="$(jq -r '.version' "${amd_json}")"
+          arm_version="$(jq -r '.version' "${arm_json}")"
+          if [[ "${amd_version}" != "${arm_version}" ]]; then
+            echo "project version mismatch across architectures: amd64=${amd_version}, arm64=${arm_version}" >&2
+            exit 1
+          fi
 
-          arm_tags_json="$(jq -c '
-            if (type != "array") or any(.[]; type != "string")
-            then error("ARM_IMAGE_TAGS_JSON must decode to list[str]")
-            else sort
-            end
-          ' <<< "${ARM_IMAGE_TAGS_JSON}")"
-
-          if [[ "${amd_tags_json}" != "${arm_tags_json}" ]]; then
-            echo "built image tag sets differ between architectures: amd64=${amd_tags_json}, arm64=${arm_tags_json}" >&2
+          amd_image_tags="$(jq -c '((if (.images | has("")) then [""] else [] end) + ([.images | keys[] | select(. != "")] | sort))' "${amd_json}")"
+          arm_image_tags="$(jq -c '((if (.images | has("")) then [""] else [] end) + ([.images | keys[] | select(. != "")] | sort))' "${arm_json}")"
+          if [[ "${amd_image_tags}" != "${arm_image_tags}" ]]; then
+            echo "image tag set mismatch across architectures: amd64=${amd_image_tags}, arm64=${arm_image_tags}" >&2
             exit 1
           fi
 
           repo="ghcr.io/${GITHUB_REPOSITORY,,}"
-          mapfile -t base_tags < <(jq -r '.[]' <<< "${base_tags_json}")
-          mapfile -t image_tags < <(jq -r '.[]' <<< "${amd_tags_json}")
+          mapfile -t image_tags < <(jq -r '.[]' <<< "${amd_image_tags}")
 
           for image_tag in "${image_tags[@]}"; do
             if [[ -n "${image_tag}" ]]; then
@@ -428,15 +190,12 @@ jobs:
               suffix=""
             fi
 
-            for base_tag in "${base_tags[@]}"; do
-              manifest_ref="${repo}:${base_tag}${suffix}"
-
-              podman manifest rm "${manifest_ref}" > /dev/null 2>&1 || true
-              podman manifest create "${manifest_ref}"
-              podman manifest add "${manifest_ref}" "docker://${manifest_ref}-amd64"
-              podman manifest add "${manifest_ref}" "docker://${manifest_ref}-arm64"
-              podman manifest push --all "${manifest_ref}" "docker://${manifest_ref}"
-              podman manifest rm "${manifest_ref}" > /dev/null 2>&1 || true
-            done
+            manifest_ref="${repo}:${amd_version}${suffix}"
+            podman manifest rm "${manifest_ref}" > /dev/null 2>&1 || true
+            podman manifest create "${manifest_ref}"
+            podman manifest add "${manifest_ref}" "docker://${manifest_ref}-amd64"
+            podman manifest add "${manifest_ref}" "docker://${manifest_ref}-arm64"
+            podman manifest push --all "${manifest_ref}" "docker://${manifest_ref}"
+            podman manifest rm "${manifest_ref}" > /dev/null 2>&1 || true
           done
 {% endraw %}

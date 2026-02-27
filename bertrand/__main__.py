@@ -257,14 +257,26 @@ class External:
                     "that declared container is materialized.",
             )
             command.add_argument(
-                "--dist",
-                action="store_true",
+                "--publish",
+                metavar="VERSION",
+                nargs="?",
+                const="",
+                default=None,
                 help=
-                    "Build images only and skip container materialization.  Useful "
-                    "for CI publish workflows where the resulting images will be "
-                    "bundled and pushed to an OCI container repository for "
-                    "distribution.  Emits a machine-readable JSON summary mapping "
-                    "Bertrand image tags to built image IDs to assist with that.",
+                    "Build images only and emit a machine-readable JSON envelope for "
+                    "use in CI publish workflows.  If a version is provided (usually) "
+                    "the contents of a github release tag), then its contents must "
+                    "exactly match the current version specified in the project's "
+                    "configuration files.  If omitted, then the version will default "
+                    "the current project version."
+            )
+            command.add_argument(
+                "--repo",
+                metavar="OCI_REPO",
+                default=None,
+                help=
+                    "Optional OCI repository to push publish arch tags to (for "
+                    "example: 'ghcr.io/owner/repo').  Requires --publish.",
             )
             command.set_defaults(handler=External.build)
 
@@ -928,20 +940,24 @@ class External:
         ------
         OSError
             If the specified path includes an image or container tag, which is not
-            allowed when building an environment, or if the --dist flag is used with
-            a container target.
+            allowed when building an environment, or if publish mode is used with a
+            container target.
         """
         env, image_tag, container_tag = _parse(args.path)
-        if args.dist and container_tag:
+        publish = args.publish
+        if args.repo and publish is None:
+            raise OSError("cannot use --repo without --publish")
+        if publish is not None and container_tag:
             raise OSError(
-                "cannot use --dist with a container target.  Specify an "
+                "cannot use --publish with a container target.  Specify an "
                 "environment or image scope only (ENV or ENV:IMAGE)."
             )
         on_build.do(
             env=env,
             image_tag=image_tag,
             container_tag=container_tag,
-            dist=args.dist,
+            publish=publish,
+            repo=args.repo,
         )
 
     @staticmethod

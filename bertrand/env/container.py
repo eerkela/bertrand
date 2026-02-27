@@ -115,6 +115,15 @@ DISTRO_CODENAME = "distro_codename"
 CODE_SERVER_AVAILABLE = "code_server_available"
 
 
+# CI publish workflow requires an architecture matrix
+NORMALIZE_ARCH = {
+    "x86_64": "amd64",
+    "amd64": "amd64",
+    "aarch64": "arm64",
+    "arm64": "arm64",
+}
+
+
 def _env_dir(root: Path) -> Path:
     return root.expanduser().resolve() / ENV_DIR_NAME
 
@@ -1989,7 +1998,27 @@ class Build(_Command):
     does not start containers, and all build/create arguments are resolved from
     `[tool.bertrand]` in `pyproject.toml`.
     """
-    dist: Validator = field(default=_check_boolean)
+    @staticmethod
+    def _validate_publish(x: JSONView) -> str | None:
+        if x is None:
+            return None
+        if not isinstance(x, str):
+            raise TypeError("publish version must be a string")
+        return x.strip()
+
+    @staticmethod
+    def _validate_repo(x: JSONView) -> str:
+        if x is None:
+            return ""
+        if not isinstance(x, str):
+            raise TypeError("OCI repository must be a string")
+        x = x.strip()
+        if not x:
+            raise ValueError("OCI repository must be non-empty when provided")
+        return x
+
+    publish: Validator = field(default=_validate_publish)
+    repo: Validator = field(default=_validate_repo)
 
     @staticmethod
     def _image(
@@ -1997,7 +2026,7 @@ class Build(_Command):
         *,
         env: Environment,
         image_tag: str,
-        dist: bool = False,
+        publish: bool,
     ) -> tuple[Image, bool]:
         changed = False
         declared = env.config["images"].get(image_tag)
@@ -2038,7 +2067,7 @@ class Build(_Command):
                 "--label", f"BERTRAND_IMAGE={image_tag}",
                 *build_args,
                 str(env.root)
-            ], cwd=env.root, capture_output=dist)
+            ], cwd=env.root, capture_output=publish)
             candidate.id = iid_file.read_text(encoding="utf-8").strip()
             try:
                 # confirm that the image was actually built and is reachable
@@ -2050,7 +2079,7 @@ class Build(_Command):
                 # rebuild all downstream containers if the image changed
                 existing = env.tags.get(image_tag)
                 changed = existing is None or candidate.id != existing.id
-                if changed and not dist:
+                if changed and not publish:
                     for container_tag in declared["containers"]:
                         Build._container(
                             ctx,
@@ -2109,7 +2138,7 @@ class Build(_Command):
                 ctx,
                 env=env,
                 image_tag=image_tag,
-                dist=False,
+                publish=False,
             )
             if changed:  # implicitly rebuilt container along with image
                 return image.containers[container_tag], True
@@ -2207,17 +2236,66 @@ class Build(_Command):
             cid_file.unlink(missing_ok=True)
 
     @staticmethod
-    def _print_dist(env: Environment, image: str | None) -> None:
-        if image is None:
-            print(json_parser.dumps(
-                {k: v.id for k, v in sorted(env.tags.items(), key=lambda x: x[0])},
-                separators=(",", ":")
-            ))
+    def _push(
+        *,
+        env: Environment,
+        publish: str,
+        repo: str,
+        image_tag: str | None,
+    ) -> None:
+        version = env.config.get("version")
+        if not isinstance(version, str):
+            raise OSError(f"missing or invalid project version: {version}")
+        version = version.strip()
+        if not version:
+            raise OSError(f"project version must be non-empty: '{version}'")
+        if publish and publish != version:
+            raise OSError(
+                f"publish version '{publish}' does not match project version '{version}'"
+            )
+
+        # infer target image tags from project config, and map to built image IDs
+        if image_tag is None:
+            declared = cast(dict[str, Any], env.config["images"])
+            targets = {tag: env.tags[tag].id for tag in declared if tag in env.tags}
+        elif image_tag in env.tags:
+            targets = {image_tag: env.tags[image_tag].id}
         else:
-            print(json_parser.dumps(
-                {image: env.tags[image].id} if image in env.tags else {},
-                separators=(",", ":")
-            ))
+            targets = {}
+
+        # detect host architecture
+        arch = podman_cmd(
+            ["info", "--format", "{{.Host.Arch}}"],
+            capture_output=True
+        ).stdout.strip().lower()
+        if not arch:
+            arch = "unknown"
+        else:
+            arch = NORMALIZE_ARCH.get(
+                arch,
+                re.sub(r"[^a-z0-9._-]+", "-", arch).strip("-") or "unknown"
+            )
+
+        # push tags to the remote repository
+        if repo:
+            for image_tag, image_id in targets.items():
+                suffix = f"-{image_tag}" if image_tag else ""
+                ref = f"{repo}:{version}{suffix}-{arch}"
+
+                # tag and push the built image using the container engine
+                podman_cmd(["tag", image_id, ref], capture_output=True)
+                podman_cmd(["push", ref], capture_output=True)
+
+        # print release envelope as JSON, which gets consumed by the CI publish
+        # workflow to assemble the final manifest
+        print(json_parser.dumps(
+            {
+                "version": version,
+                "arch": arch,
+                "images": targets,
+            },
+            separators=(",", ":"),
+        ))
 
     @staticmethod
     def container(
@@ -2226,14 +2304,17 @@ class Build(_Command):
         env: Environment,
         image_tag: str,
         container_tag: str,
-        dist: bool,
+        publish: str | None,
+        repo: str,
         **kwargs: Any
     ) -> None:
-        if dist:
+        if publish is not None:
             raise OSError(
-                "cannot materialize a container with --dist enabled.  Specify an "
+                "cannot materialize a container with --publish enabled.  Specify an "
                 "environment or image scope only."
             )
+        if repo:
+            raise OSError("cannot use --repo without --publish")
         Build._container(
             ctx,
             env=env,
@@ -2248,19 +2329,22 @@ class Build(_Command):
         *,
         env: Environment,
         image_tag: str,
-        dist: bool,
+        publish: str | None,
+        repo: str,
         **kwargs: Any
     ) -> None:
+        if repo and not publish is None:
+            raise OSError("cannot use --repo without --publish")
         image, changed = Build._image(
             ctx,
             env=env,
             image_tag=image_tag,
-            dist=dist,
+            publish=publish is not None,
         )
 
         # if we didn't rebuild the image itself, make sure to rebuild all descendant
         # containers in order to enforce proper CLI scope
-        if not dist and not changed:
+        if publish is None and not changed:
             for container_tag in env.config["images"][image_tag]["containers"]:
                 Build._container(
                     ctx,
@@ -2270,29 +2354,36 @@ class Build(_Command):
                     container_tag=container_tag,
                 )
 
-        # emit image json
-        if dist:
-            Build._print_dist(env, image_tag)
+        if publish is not None:
+            Build._push(
+                env=env,
+                publish=publish,
+                repo=repo,
+                image_tag=image_tag
+            )
 
     @staticmethod
     def environment(
         ctx: Pipeline.InProgress,
         *,
         env: Environment,
-        dist: bool = False,
+        publish: str | None,
+        repo: str,
         **kwargs: Any
     ) -> None:
+        if repo and publish is None:
+            raise OSError("cannot use --repo without --publish")
         for image_tag in env.config["images"]:
             image, changed = Build._image(
                 ctx,
                 env=env,
                 image_tag=image_tag,
-                dist=dist,
+                publish=publish is not None,
             )
 
             # if we didn't rebuild the image itself, make sure to rebuild all descendant
             # containers in order to enforce proper CLI scope
-            if not dist and not changed:
+            if publish is None and not changed:
                 for container_tag in env.config["images"][image_tag]["containers"]:
                     Build._container(
                         ctx,
@@ -2302,9 +2393,13 @@ class Build(_Command):
                         container_tag=container_tag,
                     )
 
-        # emit image json
-        if dist:
-            Build._print_dist(env, None)
+        if publish is not None:
+            Build._push(
+                env=env,
+                publish=publish,
+                repo=repo,
+                image_tag=None
+            )
 
     @staticmethod
     def all(
@@ -2335,7 +2430,8 @@ class Start(_Command):
             env=env,
             image_tag=image_tag,
             container_tag=container_tag,
-            dist=False,
+            publish=None,
+            repo="",
             **kwargs,
         )
         container = env[image_tag, container_tag]
@@ -2360,7 +2456,7 @@ class Start(_Command):
         image_tag: str,
         **kwargs: Any
     ) -> None:
-        Build.image(ctx, env=env, image_tag=image_tag, dist=False, **kwargs)
+        Build.image(ctx, env=env, image_tag=image_tag, publish=None, repo="", **kwargs)
         image = env[image_tag]
         if image is None:
             raise OSError(
@@ -3010,7 +3106,7 @@ class Restart(_Command):
             )
 
         # possibly rebuild the parent image and all downstream containers
-        Build.image(ctx, env=env, image_tag=image_tag, dist=False, **kwargs)
+        Build.image(ctx, env=env, image_tag=image_tag, publish=None, repo="", **kwargs)
         image = env[image_tag]
         if image is None:
             raise OSError(f"unable to build image '{image_tag}'")
@@ -3062,7 +3158,7 @@ class Restart(_Command):
                     running.add(container_tag)
 
         # possibly rebuild the image and all downstream containers
-        Build.image(ctx, env=env, image_tag=image_tag, dist=False, **kwargs)
+        Build.image(ctx, env=env, image_tag=image_tag, publish=None, repo="", **kwargs)
         image = env[image_tag]
         if image is None:
             raise OSError(f"unable to build image '{image_tag}'")

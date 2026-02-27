@@ -453,6 +453,7 @@ class PyProject(Resource):
             The normalized config snapshot fragment:
 
             {
+                "version": str,
                 "shell": str,
                 "ignore": tuple[str, ...],
                 "git_ignore": tuple[str, ...],
@@ -467,7 +468,6 @@ class PyProject(Resource):
                 },
             }
 
-
         Raises
         ------
         OSError
@@ -475,6 +475,8 @@ class PyProject(Resource):
         """
         resource_id = "pyproject"
         pyproject = _load_pyproject(config, resource_id=resource_id)
+        project = _require_dict(pyproject.get("project"), where="project")
+        version = _require_str_value(project.get("version"), where="project.version")
         tool_raw = pyproject.get("tool")
         if tool_raw is None:
             raise OSError(f"missing '[tool]' table in resource '{resource_id}'")
@@ -625,6 +627,7 @@ class PyProject(Resource):
             }
 
         return {
+            "version": version,
             "shell": shell,
             "ignore": ignore,
             "git_ignore": git_ignore,
