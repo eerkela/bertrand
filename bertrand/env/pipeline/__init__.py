@@ -10,6 +10,7 @@ from .core import (
     atomic,
     on_init,
     on_build,
+    on_publish,
     on_start,
     on_enter,
     on_code,
@@ -24,8 +25,6 @@ from .core import (
     on_monitor,
     on_log,
     on_top,
-    on_search,
-    on_publish,
 )
 from .filesystem import (
     Chmod,

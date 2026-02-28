@@ -79,6 +79,7 @@ from .pipeline import (
     on_monitor,
     on_log,
     on_top,
+    on_publish,
 )
 from .run import (
     CommandError,
@@ -1995,30 +1996,9 @@ class _Command:
 class Build(_Command):
     """Incrementally build Bertrand images and materialize declared containers within
     an environment, scoping to specific images/containers if desired.  This command
-    does not start containers, and all build/create arguments are resolved from
-    `[tool.bertrand]` in `pyproject.toml`.
+    does not start containers, and all build/create arguments are resolved from project
+    configuration files.
     """
-    @staticmethod
-    def _validate_publish(x: JSONView) -> str | None:
-        if x is None:
-            return None
-        if not isinstance(x, str):
-            raise TypeError("publish version must be a string")
-        return x.strip()
-
-    @staticmethod
-    def _validate_repo(x: JSONView) -> str:
-        if x is None:
-            return ""
-        if not isinstance(x, str):
-            raise TypeError("OCI repository must be a string")
-        x = x.strip()
-        if not x:
-            raise ValueError("OCI repository must be non-empty when provided")
-        return x
-
-    publish: Validator = field(default=_validate_publish)
-    repo: Validator = field(default=_validate_repo)
 
     @staticmethod
     def _image(
@@ -2236,85 +2216,14 @@ class Build(_Command):
             cid_file.unlink(missing_ok=True)
 
     @staticmethod
-    def _push(
-        *,
-        env: Environment,
-        publish: str,
-        repo: str,
-        image_tag: str | None,
-    ) -> None:
-        version = env.config.get("version")
-        if not isinstance(version, str):
-            raise OSError(f"missing or invalid project version: {version}")
-        version = version.strip()
-        if not version:
-            raise OSError(f"project version must be non-empty: '{version}'")
-        if publish and publish != version:
-            raise OSError(
-                f"publish version '{publish}' does not match project version '{version}'"
-            )
-
-        # infer target image tags from project config, and map to built image IDs
-        if image_tag is None:
-            declared = cast(dict[str, Any], env.config["images"])
-            targets = {tag: env.tags[tag].id for tag in declared if tag in env.tags}
-        elif image_tag in env.tags:
-            targets = {image_tag: env.tags[image_tag].id}
-        else:
-            targets = {}
-
-        # detect host architecture
-        arch = podman_cmd(
-            ["info", "--format", "{{.Host.Arch}}"],
-            capture_output=True
-        ).stdout.strip().lower()
-        if not arch:
-            arch = "unknown"
-        else:
-            arch = NORMALIZE_ARCH.get(
-                arch,
-                re.sub(r"[^a-z0-9._-]+", "-", arch).strip("-") or "unknown"
-            )
-
-        # push tags to the remote repository
-        if repo:
-            for image_tag, image_id in targets.items():
-                suffix = f"-{image_tag}" if image_tag else ""
-                ref = f"{repo}:{version}{suffix}-{arch}"
-
-                # tag and push the built image using the container engine
-                podman_cmd(["tag", image_id, ref], capture_output=True)
-                podman_cmd(["push", ref], capture_output=True)
-
-        # print release envelope as JSON, which gets consumed by the CI publish
-        # workflow to assemble the final manifest
-        print(json_parser.dumps(
-            {
-                "version": version,
-                "arch": arch,
-                "images": targets,
-            },
-            separators=(",", ":"),
-        ))
-
-    @staticmethod
     def container(
         ctx: Pipeline.InProgress,
         *,
         env: Environment,
         image_tag: str,
         container_tag: str,
-        publish: str | None,
-        repo: str,
         **kwargs: Any
     ) -> None:
-        if publish is not None:
-            raise OSError(
-                "cannot materialize a container with --publish enabled.  Specify an "
-                "environment or image scope only."
-            )
-        if repo:
-            raise OSError("cannot use --repo without --publish")
         Build._container(
             ctx,
             env=env,
@@ -2329,22 +2238,18 @@ class Build(_Command):
         *,
         env: Environment,
         image_tag: str,
-        publish: str | None,
-        repo: str,
         **kwargs: Any
     ) -> None:
-        if repo and not publish is None:
-            raise OSError("cannot use --repo without --publish")
         image, changed = Build._image(
             ctx,
             env=env,
             image_tag=image_tag,
-            publish=publish is not None,
+            publish=False,
         )
 
         # if we didn't rebuild the image itself, make sure to rebuild all descendant
         # containers in order to enforce proper CLI scope
-        if publish is None and not changed:
+        if not changed:
             for container_tag in env.config["images"][image_tag]["containers"]:
                 Build._container(
                     ctx,
@@ -2354,36 +2259,24 @@ class Build(_Command):
                     container_tag=container_tag,
                 )
 
-        if publish is not None:
-            Build._push(
-                env=env,
-                publish=publish,
-                repo=repo,
-                image_tag=image_tag
-            )
-
     @staticmethod
     def environment(
         ctx: Pipeline.InProgress,
         *,
         env: Environment,
-        publish: str | None,
-        repo: str,
         **kwargs: Any
     ) -> None:
-        if repo and publish is None:
-            raise OSError("cannot use --repo without --publish")
         for image_tag in env.config["images"]:
             image, changed = Build._image(
                 ctx,
                 env=env,
                 image_tag=image_tag,
-                publish=publish is not None,
+                publish=False,
             )
 
             # if we didn't rebuild the image itself, make sure to rebuild all descendant
             # containers in order to enforce proper CLI scope
-            if publish is None and not changed:
+            if not changed:
                 for container_tag in env.config["images"][image_tag]["containers"]:
                     Build._container(
                         ctx,
@@ -2393,20 +2286,172 @@ class Build(_Command):
                         container_tag=container_tag,
                     )
 
-        if publish is not None:
-            Build._push(
-                env=env,
-                publish=publish,
-                repo=repo,
-                image_tag=None
-            )
-
     @staticmethod
     def all(
         ctx: Pipeline.InProgress,
         **kwargs: Any
     ) -> None:
         raise OSError("cannot build all environments")
+
+
+@dataclass
+class Publish(_Command):
+    """Build and publish Bertrand images to a remote OCI registry.  This command is
+    meant to be used in CI workflows triggered by git tags, and usually does not need
+    to be invoked by the user directly.
+    """
+    @staticmethod
+    def _validate_version(x: JSONView) -> str | None:
+        if x is None:
+            return None
+        if not isinstance(x, str):
+            raise TypeError("version must be a string")
+        x = x.strip()
+        return x or None
+
+    @staticmethod
+    def _validate_repo(x: JSONView) -> str:
+        if not isinstance(x, str):
+            raise TypeError("OCI repository must be a string")
+        x = x.strip()
+        if not x:
+            raise ValueError("OCI repository must be non-empty when provided")
+        return x
+
+    version: Validator = field(default=_validate_version)
+    repo: Validator = field(default=_validate_repo)
+    manifest: Validator = field(default=_check_boolean)
+
+    @staticmethod
+    def container(
+        ctx: Pipeline.InProgress,
+        *,
+        env: Environment,
+        image_tag: str,
+        container_tag: str,
+        version: str | None,
+        repo: str,
+        manifest: bool,
+        **kwargs: Any
+    ) -> None:
+        raise OSError(
+            "cannot publish a singular container.  Specify an environment scope only."
+        )
+
+    @staticmethod
+    def image(
+        ctx: Pipeline.InProgress,
+        *,
+        env: Environment,
+        image_tag: str,
+        version: str | None,
+        repo: str,
+        manifest: bool,
+        **kwargs: Any
+    ) -> None:
+        raise OSError(
+            "cannot publish a singular image.  Specify an environment scope only."
+        )
+
+    @staticmethod
+    def environment(
+        ctx: Pipeline.InProgress,
+        *,
+        env: Environment,
+        version: str | None,
+        repo: str,
+        manifest: bool,
+        **kwargs: Any
+    ) -> None:
+        # get version number from project configuration, and confirm it matches the
+        # tagged version if provided
+        project_version = env.config.get("version")
+        if not isinstance(project_version, str):
+            raise OSError(f"missing or invalid project version: {project_version}")
+        project_version = project_version.strip()
+        if not project_version:
+            raise OSError(f"project version must be non-empty: '{project_version}'")
+        if version is not None and version != project_version:
+            raise OSError(
+                f"publish version '{version}' does not match project version "
+                f"'{project_version}'"
+            )
+
+        # detect host architecture
+        arch = podman_cmd(
+            ["info", "--format", "{{.Host.Arch}}"],
+            capture_output=True
+        ).stdout.strip().lower()
+        if not arch:
+            arch = "unknown"
+        else:
+            arch = NORMALIZE_ARCH.get(
+                arch,
+                re.sub(r"[^a-z0-9._-]+", "-", arch).strip("-") or "unknown"
+            )
+
+        # phase 1: build, tag, and push all images for this architecture
+        if not manifest:
+            for image_tag in env.config["images"]:
+                image, _ = Build._image(ctx, env=env, image_tag=image_tag, publish=True)
+                suffix = f"-{image_tag}" if image_tag else ""
+                ref = f"{repo}:{project_version}{suffix}-{arch}"
+                podman_cmd(["tag", image.id, ref], capture_output=True)
+                podman_cmd(["push", ref], capture_output=True)
+            return
+
+        # phase 2: assemble manifest and push to GHCR
+        for image_tag in env.config["images"]:
+            suffix = f"-{image_tag}" if image_tag else ""
+            manifest_ref = f"{repo}:{project_version}{suffix}"
+            amd_ref = f"{manifest_ref}-amd64"
+            arm_ref = f"{manifest_ref}-arm64"
+
+            # TODO: what are all of these podman commands doing, actually?
+            for ref in (amd_ref, arm_ref):
+                try:
+                    podman_cmd(
+                        ["manifest", "inspect", f"docker://{ref}"],
+                        capture_output=True,
+                    )
+                except Exception as err:
+                    raise OSError(f"missing source image for manifest: {ref}\n{err}") from err
+            try:
+                podman_cmd(
+                    ["manifest", "rm", manifest_ref],
+                    check=False,
+                    capture_output=True,
+                )
+                podman_cmd(["manifest", "create", manifest_ref], capture_output=True)
+                podman_cmd(
+                    ["manifest", "add", manifest_ref, f"docker://{amd_ref}"],
+                    capture_output=True,
+                )
+                podman_cmd(
+                    ["manifest", "add", manifest_ref, f"docker://{arm_ref}"],
+                    capture_output=True,
+                )
+                podman_cmd(
+                    ["manifest", "push", "--all", manifest_ref, f"docker://{manifest_ref}"],
+                    capture_output=True,
+                )
+            finally:
+                podman_cmd(
+                    ["manifest", "rm", manifest_ref],
+                    check=False,
+                    capture_output=True,
+                )
+
+    @staticmethod
+    def all(
+        ctx: Pipeline.InProgress,
+        *,
+        version: str | None,
+        repo: str,
+        manifest: bool,
+        **kwargs: Any
+    ) -> None:
+        raise OSError("cannot publish all environments")
 
 
 @dataclass
@@ -4041,6 +4086,11 @@ class Log(_Command):
 @on_build(ephemeral=True)
 def podman_build(ctx: Pipeline.InProgress) -> None:
     Build()(ctx)
+
+
+@on_publish(ephemeral=True)
+def podman_publish(ctx: Pipeline.InProgress) -> None:
+    Publish()(ctx)
 
 
 @on_start(ephemeral=True)

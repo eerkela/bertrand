@@ -79,45 +79,30 @@ jobs:
       - name: Build release output
         shell: bash
         env:
-          ARCH: ${{ matrix.arch }}
           OCI_REPO: ghcr.io/${{ github.repository }}
         run: |
           set -euo pipefail
           repo="$(printf '%s' "${OCI_REPO}" | tr '[:upper:]' '[:lower:]')"
-          bertrand build --publish "${RELEASE_TAG}" --repo "${repo}" . > "release-${ARCH}.json"
-
-      - name: Validate release envelope
-        shell: bash
-        env:
-          ARCH: ${{ matrix.arch }}
-        run: |
-          set -euo pipefail
-          jq -e --arg arch "${ARCH}" '
-            if (type != "object") then
-              error("release output must be an object")
-            elif (.version | type != "string" or length == 0) then
-              error("release output missing non-empty version")
-            elif (.arch | type != "string" or .arch != $arch) then
-              error("release output arch mismatch")
-            elif (.images | type != "object" or any(.images | to_entries[]?; (.key | type != "string") or (.value | type != "string") or (.value | length == 0))) then
-              error("release output images must be object[str,str]")
-            elif ([keys[]] | sort) != ["arch", "images", "version"] then
-              error("release output keys must be exactly: version, arch, images")
-            else .
-            end
-          ' "release-${ARCH}.json" > /dev/null
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: release-${{ matrix.arch }}
-          path: release-${{ matrix.arch }}.json
-          if-no-files-found: error
+          bertrand publish --repo "${repo}" --version "${RELEASE_TAG}" .
 
   manifest:
     name: Publish multi-arch manifests
     needs: build
     runs-on: ubuntu-24.04
     steps:
+      - name: Validate release tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${RELEASE_TAG}" ]]; then
+            echo "missing release tag (release event tag or workflow dispatch input)" >&2
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ env.RELEASE_TAG }}
+
       - uses: actions/setup-python@v5
         with:
           python-version: "{% endraw %}{{ python_version }}{% raw %}"
@@ -138,18 +123,6 @@ jobs:
           set -euo pipefail
           bertrand init --yes
 
-      - name: Download amd64 release output
-        uses: actions/download-artifact@v4
-        with:
-          name: release-amd64
-          path: artifacts/amd64
-
-      - name: Download arm64 release output
-        uses: actions/download-artifact@v4
-        with:
-          name: release-arm64
-          path: artifacts/arm64
-
       - name: Log in to GHCR
         shell: bash
         env:
@@ -160,42 +133,10 @@ jobs:
 
       - name: Assemble and push manifests
         shell: bash
+        env:
+          OCI_REPO: ghcr.io/${{ github.repository }}
         run: |
           set -euo pipefail
-
-          amd_json="artifacts/amd64/release-amd64.json"
-          arm_json="artifacts/arm64/release-arm64.json"
-
-          amd_version="$(jq -r '.version' "${amd_json}")"
-          arm_version="$(jq -r '.version' "${arm_json}")"
-          if [[ "${amd_version}" != "${arm_version}" ]]; then
-            echo "project version mismatch across architectures: amd64=${amd_version}, arm64=${arm_version}" >&2
-            exit 1
-          fi
-
-          amd_image_tags="$(jq -c '((if (.images | has("")) then [""] else [] end) + ([.images | keys[] | select(. != "")] | sort))' "${amd_json}")"
-          arm_image_tags="$(jq -c '((if (.images | has("")) then [""] else [] end) + ([.images | keys[] | select(. != "")] | sort))' "${arm_json}")"
-          if [[ "${amd_image_tags}" != "${arm_image_tags}" ]]; then
-            echo "image tag set mismatch across architectures: amd64=${amd_image_tags}, arm64=${arm_image_tags}" >&2
-            exit 1
-          fi
-
-          repo="ghcr.io/${GITHUB_REPOSITORY,,}"
-          mapfile -t image_tags < <(jq -r '.[]' <<< "${amd_image_tags}")
-
-          for image_tag in "${image_tags[@]}"; do
-            if [[ -n "${image_tag}" ]]; then
-              suffix="-${image_tag}"
-            else
-              suffix=""
-            fi
-
-            manifest_ref="${repo}:${amd_version}${suffix}"
-            podman manifest rm "${manifest_ref}" > /dev/null 2>&1 || true
-            podman manifest create "${manifest_ref}"
-            podman manifest add "${manifest_ref}" "docker://${manifest_ref}-amd64"
-            podman manifest add "${manifest_ref}" "docker://${manifest_ref}-arm64"
-            podman manifest push --all "${manifest_ref}" "docker://${manifest_ref}"
-            podman manifest rm "${manifest_ref}" > /dev/null 2>&1 || true
-          done
+          repo="$(printf '%s' "${OCI_REPO}" | tr '[:upper:]' '[:lower:]')"
+          bertrand publish --manifest --repo "${repo}" --version "${RELEASE_TAG}" .
 {% endraw %}

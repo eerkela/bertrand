@@ -16,6 +16,7 @@ from .env.pipeline import (
     Pipeline,
     on_init,
     on_build,
+    on_publish,
     on_start,
     on_enter,
     on_code,
@@ -148,6 +149,7 @@ class External:
             self.version()
             self.init()
             self.build()
+            self.publish()
             self.start()
             self.enter()
             self.code()
@@ -256,29 +258,53 @@ class External:
                     "materialized.  If both image and container tags are given, only "
                     "that declared container is materialized.",
             )
-            command.add_argument(
-                "--publish",
-                metavar="VERSION",
-                nargs="?",
-                const="",
-                default=None,
+            command.set_defaults(handler=External.build)
+
+        def publish(self) -> None:
+            """Add the 'publish' command to the parser."""
+            command = self.commands.add_parser(
+                "publish",
                 help=
-                    "Build images only and emit a machine-readable JSON envelope for "
-                    "use in CI publish workflows.  If a version is provided (usually) "
-                    "the contents of a github release tag), then its contents must "
-                    "exactly match the current version specified in the project's "
-                    "configuration files.  If omitted, then the version will default "
-                    "the current project version."
+                    "Build and publish declared Bertrand images in the specified "
+                    "environment to a remote OCI registry.  This is meant to be used "
+                    "in CI workflows triggered by git tags, and usually does not need "
+                    "to be invoked by the user directly.",
+            )
+            command.add_argument(
+                "path",
+                metavar="ENV[:IMAGE[:CONTAINER]]",
+                help=
+                    "A path to the specified environment directory.  This may be an "
+                    "absolute or relative path, and must point to an environment "
+                    "directory produced by 'bertrand init'."
             )
             command.add_argument(
                 "--repo",
                 metavar="OCI_REPO",
                 default=None,
                 help=
-                    "Optional OCI repository to push publish arch tags to (for "
-                    "example: 'ghcr.io/owner/repo').  Requires --publish.",
+                    "Remote OCI repository where arch-specific image tags and final "
+                    "manifests will be published (for example: 'ghcr.io/owner/repo').",
             )
-            command.set_defaults(handler=External.build)
+            command.add_argument(
+                "--version",
+                metavar="VERSION",
+                default=None,
+                help=
+                    "Optional release version to enforce.  If provided, it must match "
+                    "the current project version from its configuration files exactly.",
+            )
+            command.add_argument(
+                "--manifest",
+                action="store_true",
+                help=
+                    "Publish manifests only from existing arch-specific refs.  This "
+                    "skips image builds and pushes no new arch tags, and is meant to "
+                    "be used as a second stage in CI workflows after a successful "
+                    "build-and-publish stage with the same version and repo "
+                    "parameters.",
+            )
+            command.set_defaults(handler=External.publish)
 
         def start(self) -> None:
             """Add the 'start' command to the parser."""
@@ -940,24 +966,48 @@ class External:
         ------
         OSError
             If the specified path includes an image or container tag, which is not
-            allowed when building an environment, or if publish mode is used with a
-            container target.
+            allowed when building an environment.
         """
         env, image_tag, container_tag = _parse(args.path)
-        publish = args.publish
-        if args.repo and publish is None:
-            raise OSError("cannot use --repo without --publish")
-        if publish is not None and container_tag:
-            raise OSError(
-                "cannot use --publish with a container target.  Specify an "
-                "environment or image scope only (ENV or ENV:IMAGE)."
-            )
         on_build.do(
             env=env,
             image_tag=image_tag,
             container_tag=container_tag,
-            publish=publish,
-            repo=args.repo,
+        )
+
+    @staticmethod
+    def publish(args: argparse.Namespace) -> None:
+        """Execute the `bertrand publish` CLI command.
+
+        Parameters
+        ----------
+        args : argparse.Namespace
+            The parsed command-line arguments.
+
+        Raises
+        ------
+        OSError
+            If the specified path includes an image or container tag, or if no
+            repository is provided.
+        """
+        env, image_tag, container_tag = _parse(args.path)
+        if env is None:
+            raise OSError("must specify an environment to publish")
+        if image_tag or container_tag:
+            raise OSError(
+                "publish currently supports environment scope only.  Specify ENV "
+                "without image/container tags."
+            )
+        repo = args.repo
+        if repo is None or not repo.strip():
+            raise OSError("must specify --repo when publishing")
+        on_publish.do(
+            env=env,
+            image_tag=image_tag,
+            container_tag=container_tag,
+            version=args.version,
+            repo=repo,
+            manifest=args.manifest,
         )
 
     @staticmethod
@@ -1200,6 +1250,7 @@ class External:
     pipelines: dict[str, Pipeline] = {
         "init": on_init,
         "build": on_build,
+        "publish": on_publish,
         "start": on_start,
         "enter": on_enter,
         "code": on_code,
@@ -1292,6 +1343,7 @@ class External:
             on_code,
             on_enter,
             on_start,
+            on_publish,
             on_build,
             on_init,
         ):
