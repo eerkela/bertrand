@@ -22,13 +22,13 @@ from collections.abc import Mapping, Sequence
 from importlib import resources as importlib_resources
 from pathlib import Path, PosixPath
 from types import MappingProxyType, TracebackType
-from typing import Annotated, Any, Callable, Iterator, Self, TypeVar, TypedDict
+from typing import Annotated, Any, Callable, Iterator, Self, TypeVar, TypedDict, cast
 
 from jinja2 import Environment, StrictUndefined
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, field_validator
 import yaml
 
-from .pipeline import on_init
+from .pipeline import JSONValue, on_init
 from .run import LOCK_TIMEOUT, Lock, atomic_write_text, sanitize_name
 from .version import __version__, VERSIONS
 
@@ -319,6 +319,15 @@ def _require_str_list(value: Any, *, where: str) -> list[str]:
     return out
 
 
+def _require_sanitized_str(value: Any, *, where: str) -> str:
+    if not isinstance(value, str):
+        raise OSError(f"expected string at '{where}', got {type(value).__name__}")
+    sanitized = sanitize_name(value)
+    if value != sanitized:
+        raise OSError(f"invalid name at '{where}': '{value}' (sanitizes to: '{sanitized}')")
+    return value
+
+
 def _freeze(value: Any) -> Any:
     """Recursively freeze dictionaries and lists into immutable containers."""
     if isinstance(value, Mapping):
@@ -433,10 +442,71 @@ class PyProject(Resource):
     """
     # pylint: disable=missing-function-docstring, unused-argument, missing-return-doc
 
-    class Image(TypedDict):
-        """Normalized image declaration parsed from `[tool.bertrand.images]`."""
-        args: tuple[str, ...]
-        containers: dict[str, tuple[str, ...]]
+    class Bertrand(BaseModel):
+        """Pydantic model for validating the `[tool.bertrand]` table."""
+        class Container(BaseModel):
+            """Pydantic model for validating entries in the `[[tool.bertrand.containers]]`
+            table.
+            """
+            model_config = ConfigDict(extra="forbid")
+            tag: Annotated[str, AfterValidator(
+                lambda x: _require_sanitized_str(x, where="tool.bertrand.containers.tag")
+            )] = ""
+            compile_args: Annotated[list[str], AfterValidator(
+                lambda x: _require_str_list(x, where="tool.bertrand.containers.compile_args")
+            )] = []
+            asan: bool = False
+            ubsan: bool = False
+            # TODO: figure out full spec here
+
+            @property
+            def image_args(self) -> list[str]:
+                """Collect arguments that affect the container image build, which
+                should be passed to `podman build`.
+
+                Returns
+                -------
+                list[str]
+                    The list of arguments that affect the container image build.
+                """
+                return self.compile_args
+
+            @property
+            def container_args(self) -> list[str]:
+                """Collect arguments that affect the runtime container configuration,
+                which should be passed to `podman create`.
+
+                Returns
+                -------
+                list[str]
+                    The list of arguments that affect the runtime container
+                    configuration.
+                """
+                # TODO: figure this out once full spec has been figured out
+                return []
+
+        @staticmethod
+        def _validate_shell(value: Any) -> str:
+            text = _require_str_value(value, where="tool.bertrand.shell")
+            if text not in SHELLS:
+                raise OSError(
+                    f"unsupported shell at 'tool.bertrand.shell': '{text}' "
+                    f"(supported: {', '.join(sorted(SHELLS))})"
+                )
+            return text
+
+        model_config = ConfigDict(extra="forbid")
+        shell: Annotated[str, AfterValidator(_validate_shell)] = "bash"
+        ignore: Annotated[list[str], AfterValidator(
+            lambda x: _normalize_ignore_list(x, where="tool.bertrand.ignore")
+        )] = []
+        git_ignore: Annotated[list[str], AfterValidator(
+            lambda x: _normalize_ignore_list(x, where="tool.bertrand.git_ignore")
+        )] = []
+        container_ignore: Annotated[list[str], AfterValidator(
+            lambda x: _normalize_ignore_list(x, where="tool.bertrand.container_ignore")
+        )] = []
+        tags: list[Container] = []
 
     def parse(self, config: Config) -> dict[str, Any] | None:
         """Parse and normalize `[tool.bertrand]` from `pyproject.toml`.
@@ -458,12 +528,13 @@ class PyProject(Resource):
                 "ignore": tuple[str, ...],
                 "git_ignore": tuple[str, ...],
                 "container_ignore": tuple[str, ...],
-                "images": {
-                    "<image_tag>": {
-                        "args": tuple[str, ...],
-                        "containers": {
-                            "<container_tag>": tuple[str, ...],
-                        },
+                "containers": {
+                    "<container_tag>": {
+                        "tag": str,
+                        "compile_args": tuple[str, ...],
+                        "asan": bool,
+                        "ubsan": bool,
+                        ...
                     },
                 },
             }
@@ -475,165 +546,41 @@ class PyProject(Resource):
         """
         resource_id = "pyproject"
         pyproject = _load_pyproject(config, resource_id=resource_id)
+
+        # validate `[project]`
         project = _require_dict(pyproject.get("project"), where="project")
         version = _require_str_value(project.get("version"), where="project.version")
+        merged: dict[str, JSONValue] = {"version": version}
+
+        # extract `[tool]`
         tool_raw = pyproject.get("tool")
         if tool_raw is None:
             raise OSError(f"missing '[tool]' table in resource '{resource_id}'")
         tool = _require_dict(tool_raw, where="tool")
 
         # validate `[tool.bertrand]`
-        bertrand = _require_dict(tool.get("bertrand"), where="tool.bertrand")
-        unknown_tool_keys = sorted(k for k in bertrand if k not in {
-            "shell", "images", "ignore", "git_ignore", "container_ignore"
-        })
-        if unknown_tool_keys:
-            raise OSError(
-                "unsupported key(s) at 'tool.bertrand': "
-                f"{', '.join(unknown_tool_keys)} "
-                "(allowed: container_ignore, git_ignore, ignore, images, shell)"
-            )
-
-        shell = _require_str_value(bertrand.get("shell"), where="tool.bertrand.shell")
-        if shell not in SHELLS:
-            choices = ", ".join(sorted(SHELLS))
-            raise OSError(
-                f"unsupported shell at 'tool.bertrand.shell': '{shell}' "
-                f"(supported: {choices})"
-            )
-
-        ignore = _normalize_ignore_list(
-            bertrand.get("ignore", []),
-            where="tool.bertrand.ignore",
+        bertrand = PyProject.Bertrand.model_validate(
+            _require_dict(tool.get("bertrand"), where="tool.bertrand")
         )
-        git_ignore = _normalize_ignore_list(
-            bertrand.get("git_ignore", []),
-            where="tool.bertrand.git_ignore",
-        )
-        container_ignore = _normalize_ignore_list(
-            bertrand.get("container_ignore", []),
-            where="tool.bertrand.container_ignore",
-        )
+        merged["shell"] = bertrand.shell
+        merged["ignore"] = cast(JSONValue, bertrand.ignore)
+        merged["git_ignore"] = cast(JSONValue, bertrand.git_ignore)
+        merged["container_ignore"] = cast(JSONValue, bertrand.container_ignore)
 
-        raw_images = bertrand.get("images")
-        if raw_images is None:
-            image_rows: list[dict[str, Any]] = []
-        elif isinstance(raw_images, (str, bytes)) or not isinstance(raw_images, Sequence):
-            raise OSError(
-                "expected array of tables at 'tool.bertrand.images', got "
-                f"{type(raw_images).__name__}"
-            )
-        else:
-            image_rows = [
-                _require_dict(item, where=f"tool.bertrand.images[{idx}]")
-                for idx, item in enumerate(raw_images)
-            ]
-
-        images: dict[str, PyProject.Image] = {
-            "": {
-                "args": tuple(),
-                "containers": {
-                    "": tuple()
-                }
-            }
-        }
-        seen_images: set[str] = set()
-        for image_idx, image_row in enumerate(image_rows):
-            image_where = f"tool.bertrand.images[{image_idx}]"
-            unknown_image_keys = sorted(
-                k for k in image_row if k not in {"tag", "args", "containers"}
-            )
-            if unknown_image_keys:
+        # validate `[[tool.bertrand.tags]]`
+        tags: dict[str, JSONValue] = {}
+        for container in bertrand.tags:
+            if container.tag in tags:
                 raise OSError(
-                    f"unsupported key(s) at '{image_where}': {', '.join(unknown_image_keys)} "
-                    "(allowed: args, containers, tag)"
+                    f"duplicate container tag in '[tool.bertrand.tags]': "
+                    f"'{container.tag}'"
                 )
+            tags[container.tag] = container.model_dump(mode="python")
+        if "" not in tags:
+            tags[""] = PyProject.Bertrand.Container().model_dump(mode="python")
+        merged["tags"] = tags
 
-            image_tag = _require_str_value(
-                image_row.get("tag"),
-                where=f"{image_where}.tag",
-                allow_empty=True
-            )
-            sanitized_image_tag = sanitize_name(image_tag)
-            if image_tag != sanitized_image_tag:
-                raise OSError(
-                    f"invalid tag at '{image_where}.tag': '{image_tag}' "
-                    f"(sanitizes to: '{sanitized_image_tag}')"
-                )
-            if image_tag in seen_images:
-                raise OSError(f"duplicate image tag at '{image_where}.tag': '{image_tag}'")
-            seen_images.add(image_tag)
-            image_args = tuple(_require_str_list(
-                image_row.get("args", []),
-                where=f"{image_where}.args"
-            ))
-
-            raw_containers = image_row.get("containers")
-            if raw_containers is None:
-                container_rows: list[dict[str, Any]] = []
-            elif (
-                isinstance(raw_containers, (str, bytes)) or
-                not isinstance(raw_containers, Sequence)
-            ):
-                raise OSError(
-                    f"expected array of tables at '{image_where}.containers', got "
-                    f"{type(raw_containers).__name__}"
-                )
-            else:
-                container_rows = [
-                    _require_dict(item, where=f"{image_where}.containers[{idx}]")
-                    for idx, item in enumerate(raw_containers)
-                ]
-
-            containers: dict[str, tuple[str, ...]] = {"": tuple()}
-            seen_containers: set[str] = set()
-            for container_idx, container_row in enumerate(container_rows):
-                container_where = f"{image_where}.containers[{container_idx}]"
-                unknown_container_keys = sorted(
-                    k for k in container_row if k not in {"tag", "args"}
-                )
-                if unknown_container_keys:
-                    raise OSError(
-                        f"unsupported key(s) at '{container_where}': "
-                        f"{', '.join(unknown_container_keys)} (allowed: args, tag)"
-                    )
-
-                container_tag = _require_str_value(
-                    container_row.get("tag"),
-                    where=f"{container_where}.tag",
-                    allow_empty=True
-                )
-                sanitized_container_tag = sanitize_name(container_tag)
-                if container_tag != sanitized_container_tag:
-                    raise OSError(
-                        f"invalid tag at '{container_where}.tag': '{container_tag}' "
-                        f"(sanitizes to: '{sanitized_container_tag}')"
-                    )
-                if container_tag in seen_containers:
-                    raise OSError(
-                        f"duplicate container tag at '{container_where}.tag': "
-                        f"'{container_tag}'"
-                    )
-                seen_containers.add(container_tag)
-                container_args = tuple(_require_str_list(
-                    container_row.get("args", []),
-                    where=f"{container_where}.args"
-                ))
-                containers[container_tag] = container_args
-
-            images[image_tag] = {
-                "args": image_args,
-                "containers": containers,
-            }
-
-        return {
-            "version": version,
-            "shell": shell,
-            "ignore": ignore,
-            "git_ignore": git_ignore,
-            "container_ignore": container_ignore,
-            "images": images,
-        }
+        return merged
 
 
 @resource("containerignore", template="core/containerignore/2026-02-15")

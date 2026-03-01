@@ -42,37 +42,20 @@ container_ignore = [
     ".gitignore",
 ]
 
-# Canonical build matrix for Bertrand images/containers.
-# `tag = ""` denotes the default image/container for its parent environment
-# or image, respectively.  Images/containers of this form can have arguments,
-# but users are encouraged to define tags for any images/containers that
-# require them, in order to avoid confusion.
-[[tool.bertrand.images]]
+# Canonical build matrix for Bertrand containers.
+# `tag = ""` denotes the default container for an environment.
+[[tool.bertrand.tags]]
 tag = ""
-args = []
+compile_args = []
 
-[[tool.bertrand.images.containers]]
-tag = ""
-args = []
-
-[[tool.bertrand.images]]
-tag = "debug"
-args = ["DEBUG=true"]
-
-[[tool.bertrand.images.containers]]
-tag = ""
-args = []
-
-# `env:debug:san` extends the `debug` image with common sanitizers that
+# `env:debug` compiles with debug assertions and common sanitizers that
 # execute alongside your program and detect memory errors or undefined
 # behavior.
-[[tool.bertrand.images.containers]]
-tag = "san"
-args = [
-    "-e SANITIZERS=asan,ubsan",
-    "-e ASAN_OPTIONS=detect_leaks=1:abort_on_error=1",
-    "-e UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1",
-]
+[[tool.bertrand.tags]]
+tag = "debug"
+compile_args = ["DEBUG=true"]
+asan = true
+ubsan = true
 
 [tool.ty]
 
