@@ -501,7 +501,7 @@ class Lock:
                     "pid": self._pid,
                     "pid_start": self._create_time,
                 }, indent=2) + "\n", encoding="utf-8")
-            except Exception:
+            except:
                 shutil.rmtree(self.path, ignore_errors=True)
                 raise
 

@@ -11,6 +11,7 @@ requires-python = ">=3.12"
 dependencies = []
 
 [tool.bertrand]
+max_commits = {{ max_commits }}
 shell = "{{ shell }}"
 ignore = [
     ".bertrand/",
@@ -46,14 +47,14 @@ container_ignore = [
 # `tag = ""` denotes the default container for an environment.
 [[tool.bertrand.tags]]
 tag = ""
-compile_args = []
+containerfile_args = []
 
 # `env:debug` compiles with debug assertions and common sanitizers that
 # execute alongside your program and detect memory errors or undefined
 # behavior.
 [[tool.bertrand.tags]]
 tag = "debug"
-compile_args = ["DEBUG=true"]
+containerfile_args = ["DEBUG=true"]
 asan = true
 ubsan = true
 

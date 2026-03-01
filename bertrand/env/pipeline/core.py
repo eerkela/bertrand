@@ -26,7 +26,6 @@ from typing import (
     Literal,
     Protocol,
     TypeAlias,
-    TypeVar,
     overload,
 )
 
@@ -121,10 +120,7 @@ class Atomic(Protocol):
         """
 
 
-T = TypeVar("T", bound=Atomic)
-
-
-def atomic(t: type[T]) -> type[T]:
+def atomic[T: Atomic](t: type[T]) -> type[T]:
     """Register an operator for use given operation kind, so that it can be
     looked up during rollback.
 

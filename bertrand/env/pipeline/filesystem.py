@@ -18,6 +18,7 @@ from .core import JSONValue, Pipeline, atomic
 from ..run import atomic_write_bytes, mkdir_private
 
 # pylint: disable=unused-argument, missing-function-docstring, broad-exception-caught
+# pylint: disable=bare-except
 
 
 def _exists(path: Path) -> bool:
@@ -329,7 +330,7 @@ class Stash:
         src.parent.mkdir(parents=True, exist_ok=True)
         try:
             _move_preserve_lstat(dst, src)
-        except Exception:
+        except:
             if not force:
                 raise
             return
@@ -1004,7 +1005,7 @@ class Move:
                     _remove_path(source, force=True)
                 try:
                     _move_preserve_lstat(target, source)
-                except Exception:
+                except:
                     pass
                 payload.pop("fingerprint", None)
                 _clear_id(ctx, payload)

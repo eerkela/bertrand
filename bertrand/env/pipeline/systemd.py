@@ -14,6 +14,7 @@ from .core import JSONValue, Pipeline, atomic
 from ..run import confirm, run, sudo_prefix
 
 # pylint: disable=unused-argument, missing-function-docstring, broad-exception-caught
+# pylint: disable=bare-except
 
 
 def _systemctl_base(user: bool) -> list[str]:
@@ -44,7 +45,7 @@ def _service_show(name: str, user: bool) -> dict[str, str]:
     ]
     try:
         cp = run(cmd, check=False, capture_output=True)
-    except Exception:
+    except:
         return {}
     if cp.returncode != 0:
         return {}
@@ -61,7 +62,7 @@ def _is_enabled(name: str, user: bool) -> bool | None:
     cmd = [*_systemctl_base(user), "is-enabled", "--quiet", name]
     try:
         cp = run(cmd, check=False, capture_output=True)
-    except Exception:
+    except:
         return None
     if cp.returncode == 0:
         return True
@@ -170,7 +171,7 @@ class StartService:
             cmd_prefix = [*sudo, *cmd_prefix]
         try:
             run([*cmd_prefix, "stop", name], env=cast(dict[str, str], env))
-        except Exception:
+        except:
             if not force:
                 raise
 
@@ -280,7 +281,7 @@ class StopService:
             cmd_prefix = [*sudo, *cmd_prefix]
         try:
             run([*cmd_prefix, "start", name], env=cast(dict[str, str], env))
-        except Exception:
+        except:
             if not force:
                 raise
 
@@ -406,7 +407,7 @@ class EnableService:
             cmd_prefix = [*sudo, *cmd_prefix]
         try:
             run([*cmd_prefix, "disable", name], env=cast(dict[str, str], env))
-        except Exception:
+        except:
             pass
 
 
@@ -484,7 +485,7 @@ class DisableService:
             cmd_prefix = [*sudo, *cmd_prefix]
         try:
             run([*cmd_prefix, "enable", name], env=cast(dict[str, str], env))
-        except Exception:
+        except:
             pass
 
 

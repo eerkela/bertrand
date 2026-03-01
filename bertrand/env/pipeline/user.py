@@ -18,6 +18,7 @@ from .core import JSONValue, Pipeline, atomic
 from ..run import atomic_write_text, confirm, run, sudo_prefix
 
 # pylint: disable=unused-argument, missing-function-docstring, broad-exception-caught
+# pylint: disable=bare-except
 
 
 @dataclass(frozen=True)
@@ -413,7 +414,7 @@ class AddUserToGroup:
             )
         try:
             run([*sudo, "gpasswd", "-d", user, group], check=False)
-        except Exception:
+        except:
             pass
 
 
@@ -469,7 +470,7 @@ class RemoveUserFromGroup:
             )
         try:
             run([*sudo, "usermod", "-aG", group, user])
-        except Exception:
+        except:
             pass
 
 
@@ -676,7 +677,7 @@ class CreateGroup:
             )
         try:
             run([*sudo, "groupdel", name])
-        except Exception:
+        except:
             if not force:
                 raise
 
@@ -789,7 +790,7 @@ class CreateUser:
         # delete user and optionally home directory if empty
         try:
             run([*sudo, "userdel", name])
-        except Exception:
+        except:
             if not force:
                 raise
         if create_home and isinstance(home, str):
@@ -881,7 +882,7 @@ class SetUserShell:
             )
         try:
             run([*sudo, "usermod", "-s", old_shell, name])
-        except Exception:
+        except:
             if not force:
                 raise
 
@@ -954,7 +955,7 @@ class LockUser:
             )
         try:
             run([*sudo, "usermod", "-U", name])
-        except Exception:
+        except:
             if not force:
                 raise
 
@@ -1027,7 +1028,7 @@ class UnlockUser:
             )
         try:
             run([*sudo, "usermod", "-L", name])
-        except Exception:
+        except:
             if not force:
                 raise
 
@@ -1137,7 +1138,7 @@ class CreateHomeDir:
             )
         try:
             run([*sudo, "rmdir", str(home_path)])
-        except Exception:
+        except:
             if not force:
                 raise
 
@@ -1232,7 +1233,7 @@ class InstallSSHKey:
                     "Modifying authorized_keys requires root privileges or the target user."
                 )
                 _write_authorized_keys(auth_keys, [str(p) for p in previous])
-            except Exception:
+            except:
                 if not force:
                     raise
             return
@@ -1251,7 +1252,7 @@ class InstallSSHKey:
                 "Modifying authorized_keys requires root privileges or the target user."
             )
             _write_authorized_keys(auth_keys, new_lines)
-        except Exception:
+        except:
             if not force:
                 raise
 
@@ -1328,6 +1329,6 @@ class RemoveSSHKey:
                 "Modifying authorized_keys requires root privileges or the target user."
             )
             _write_authorized_keys(auth_keys, [*current, key])
-        except Exception:
+        except:
             if not force:
                 raise

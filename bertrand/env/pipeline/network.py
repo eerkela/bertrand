@@ -23,6 +23,7 @@ from .filesystem import (
 )
 
 # pylint: disable=unused-argument, missing-function-docstring, broad-exception-caught
+# pylint: disable=bare-except
 
 
 @atomic
@@ -83,7 +84,7 @@ class Download:
                             break
                         f.write(chunk)
                         hasher.update(chunk)
-        except Exception:
+        except:
             try:
                 temp.unlink()
             except OSError:

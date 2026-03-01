@@ -16,6 +16,7 @@ from .network import Download
 from ..run import run, sudo_prefix
 
 # pylint: disable=unused-argument, missing-function-docstring, broad-exception-caught
+# pylint: disable=bare-except
 
 
 @dataclass(frozen=True)
@@ -49,7 +50,7 @@ def _detect_apt_arch() -> str | None:
             arch = result.stdout.strip()
             if arch:
                 return arch
-        except Exception:
+        except:
             pass
     machine = platform.machine()
     arch_map = {
@@ -71,7 +72,7 @@ def _parse_repo_key_path(manager: str, repo_path: Path) -> Path | None:
     """Best-effort parse of a key path referenced inside a repo file."""
     try:
         text = repo_path.read_text(encoding="utf-8", errors="ignore")
-    except Exception:
+    except:
         return None
 
     def _clean(token: str) -> str:
@@ -1214,7 +1215,7 @@ class AddRepository:
         if isinstance(write_payload, dict):
             try:
                 WriteText.undo(ctx, write_payload, force=force)
-            except Exception:
+            except:
                 pass
 
         # undo trusted repo download (best-effort)
@@ -1222,7 +1223,7 @@ class AddRepository:
         if isinstance(repo_payload, dict):
             try:
                 Download.undo(ctx, repo_payload, force=force)
-            except Exception:
+            except:
                 pass
 
         # undo key download (best-effort)
@@ -1230,7 +1231,7 @@ class AddRepository:
         if isinstance(download_payload, dict):
             try:
                 Download.undo(ctx, download_payload, force=force)
-            except Exception:
+            except:
                 pass
 
 
@@ -1326,7 +1327,7 @@ class InstallCACert:
         if isinstance(write_payload, dict):
             try:
                 WriteBytes.undo(ctx, write_payload, force=force)
-            except Exception:
+            except:
                 pass
 
         # refresh trust store if supported (best-effort)
@@ -1341,5 +1342,5 @@ class InstallCACert:
                     assume_yes=False,
                 )
                 run(cmd, env=_cmd_env(spec.noninteractive_env, False))
-            except Exception:
+            except:
                 pass

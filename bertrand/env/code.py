@@ -45,7 +45,7 @@ from .run import (
     run
 )
 
-# pylint: disable=broad-exception-caught
+# pylint: disable=bare-except, broad-exception-caught
 
 
 # code RPC protocol and systemd details
@@ -226,7 +226,7 @@ class CodeServer:
             server.bind(str(self.path))
             server.listen()
             self.path.chmod(0o600)
-        except Exception:
+        except:
             server.close()
             raise
 
@@ -255,7 +255,7 @@ class CodeServer:
                 continue
 
             # more serious errors should be raised to the caller
-            except Exception:
+            except:
                 conn.close()
                 raise
 

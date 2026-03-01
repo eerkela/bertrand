@@ -22,15 +22,24 @@ from collections.abc import Mapping, Sequence
 from importlib import resources as importlib_resources
 from pathlib import Path, PosixPath
 from types import MappingProxyType, TracebackType
-from typing import Annotated, Any, Callable, Iterator, Self, TypeVar, TypedDict, cast
+from typing import Annotated, Any, Callable, Iterator, Self, cast
 
 from jinja2 import Environment, StrictUndefined
-from pydantic import AfterValidator, BaseModel, ConfigDict, Field, field_validator
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    ConfigDict,
+    PositiveInt,
+    Field,
+    field_validator
+)
 import yaml
 
 from .pipeline import JSONValue, on_init
 from .run import LOCK_TIMEOUT, Lock, atomic_write_text, sanitize_name
 from .version import __version__, VERSIONS
+
+# pylint: disable=bare-except
 
 
 # Canonical path and name definitions for shared resources
@@ -40,7 +49,8 @@ MOUNT: PosixPath = PosixPath("/env")
 assert MOUNT.is_absolute()
 
 
-# CLI options that affect template rendering in the `init` phase
+# CLI options stored in `[tool.bertrand]`
+DEFAULT_MAX_COMMITS: int = 10
 SHELLS: dict[str, tuple[str, ...]] = {
     "bash": ("bash", "-l"),
 }
@@ -61,7 +71,6 @@ HOST_ENV: str = "BERTRAND_HOST_ENV"
 # and then update the capabilities and/or profiles to place them in the generated
 # layouts, without needing to change any of the core layout application logic.
 CATALOG: dict[str,  Resource] = {}
-T = TypeVar("T", bound="Resource")
 
 
 class Template(BaseModel):
@@ -93,7 +102,11 @@ class Template(BaseModel):
         return text
 
 
-def resource(name: str, *, template: str | None = None) -> Callable[[type[T]], type[T]]:
+def resource[T: Resource](
+    name: str,
+    *,
+    template: str | None = None
+) -> Callable[[type[T]], type[T]]:
     """A class decorator for defining layout resources.
 
     Parameters
@@ -439,51 +452,52 @@ class PyProject(Resource):
     """A resource describing a `pyproject.toml` file, which is used to configure
     Python projects and tools, and is also used as the primary vehicle for
     configuring Bertrand itself through the `[tool.bertrand]` section.
+
+    Parses to a normalized config snapshot fragment of the form:
+
+        {
+            "name": str,
+            "version": str,
+            "shell": str,
+            "max_commits": int,
+            "ignore": tuple[str, ...],
+            "git_ignore": tuple[str, ...],
+            "container_ignore": tuple[str, ...],
+            "images": {
+                "<image_tag>": {
+                    "tag": str,
+                    "containerfile_args": tuple[str, ...],
+                    "asan": bool,
+                    "ubsan": bool,
+                    ...
+                },
+            },
+        }
     """
     # pylint: disable=missing-function-docstring, unused-argument, missing-return-doc
 
+    class Project(BaseModel):
+        """Pydantic model for validating the `[project]` table."""
+        model_config = ConfigDict(extra="forbid")
+        name: str
+        version: str
+
     class Bertrand(BaseModel):
         """Pydantic model for validating the `[tool.bertrand]` table."""
-        class Container(BaseModel):
-            """Pydantic model for validating entries in the `[[tool.bertrand.containers]]`
+        class Image(BaseModel):
+            """Pydantic model for validating entries in the `[[tool.bertrand.images]]`
             table.
             """
             model_config = ConfigDict(extra="forbid")
             tag: Annotated[str, AfterValidator(
-                lambda x: _require_sanitized_str(x, where="tool.bertrand.containers.tag")
+                lambda x: _require_sanitized_str(x, where="tool.bertrand.images.tag")
             )] = ""
-            compile_args: Annotated[list[str], AfterValidator(
-                lambda x: _require_str_list(x, where="tool.bertrand.containers.compile_args")
+            containerfile_args: Annotated[list[str], AfterValidator(
+                lambda x: _require_str_list(x, where="tool.bertrand.images.containerfile_args")
             )] = []
             asan: bool = False
             ubsan: bool = False
             # TODO: figure out full spec here
-
-            @property
-            def image_args(self) -> list[str]:
-                """Collect arguments that affect the container image build, which
-                should be passed to `podman build`.
-
-                Returns
-                -------
-                list[str]
-                    The list of arguments that affect the container image build.
-                """
-                return self.compile_args
-
-            @property
-            def container_args(self) -> list[str]:
-                """Collect arguments that affect the runtime container configuration,
-                which should be passed to `podman create`.
-
-                Returns
-                -------
-                list[str]
-                    The list of arguments that affect the runtime container
-                    configuration.
-                """
-                # TODO: figure this out once full spec has been figured out
-                return []
 
         @staticmethod
         def _validate_shell(value: Any) -> str:
@@ -497,6 +511,7 @@ class PyProject(Resource):
 
         model_config = ConfigDict(extra="forbid")
         shell: Annotated[str, AfterValidator(_validate_shell)] = "bash"
+        max_commits: PositiveInt = DEFAULT_MAX_COMMITS
         ignore: Annotated[list[str], AfterValidator(
             lambda x: _normalize_ignore_list(x, where="tool.bertrand.ignore")
         )] = []
@@ -506,51 +521,20 @@ class PyProject(Resource):
         container_ignore: Annotated[list[str], AfterValidator(
             lambda x: _normalize_ignore_list(x, where="tool.bertrand.container_ignore")
         )] = []
-        tags: list[Container] = []
+        images: list[Image] = []
 
     def parse(self, config: Config) -> dict[str, Any] | None:
-        """Parse and normalize `[tool.bertrand]` from `pyproject.toml`.
-
-        Parameters
-        ----------
-        config : Config
-            The active configuration context, which provides access to the
-            resource's path and other shared state.
-
-        Returns
-        -------
-        dict[str, Any]
-            The normalized config snapshot fragment:
-
-            {
-                "version": str,
-                "shell": str,
-                "ignore": tuple[str, ...],
-                "git_ignore": tuple[str, ...],
-                "container_ignore": tuple[str, ...],
-                "containers": {
-                    "<container_tag>": {
-                        "tag": str,
-                        "compile_args": tuple[str, ...],
-                        "asan": bool,
-                        "ubsan": bool,
-                        ...
-                    },
-                },
-            }
-
-        Raises
-        ------
-        OSError
-            If the `[tool.bertrand]` section is missing or contains invalid values.
-        """
         resource_id = "pyproject"
         pyproject = _load_pyproject(config, resource_id=resource_id)
 
         # validate `[project]`
-        project = _require_dict(pyproject.get("project"), where="project")
-        version = _require_str_value(project.get("version"), where="project.version")
-        merged: dict[str, JSONValue] = {"version": version}
+        project = PyProject.Project.model_validate(
+            _require_dict(pyproject.get("project"), where="project")
+        )
+        merged: dict[str, JSONValue] = {
+            "name": project.name,
+            "version": project.version
+        }
 
         # extract `[tool]`
         tool_raw = pyproject.get("tool")
@@ -562,23 +546,24 @@ class PyProject(Resource):
         bertrand = PyProject.Bertrand.model_validate(
             _require_dict(tool.get("bertrand"), where="tool.bertrand")
         )
+        merged["max_commits"] = bertrand.max_commits
         merged["shell"] = bertrand.shell
         merged["ignore"] = cast(JSONValue, bertrand.ignore)
         merged["git_ignore"] = cast(JSONValue, bertrand.git_ignore)
         merged["container_ignore"] = cast(JSONValue, bertrand.container_ignore)
 
-        # validate `[[tool.bertrand.tags]]`
-        tags: dict[str, JSONValue] = {}
-        for container in bertrand.tags:
-            if container.tag in tags:
+        # validate `[[tool.bertrand.images]]`
+        images: dict[str, JSONValue] = {}
+        for image in bertrand.images:
+            if image.tag in images:
                 raise OSError(
-                    f"duplicate container tag in '[tool.bertrand.tags]': "
-                    f"'{container.tag}'"
+                    f"duplicate image tag in '[tool.bertrand.images]': "
+                    f"'{image.tag}'"
                 )
-            tags[container.tag] = container.model_dump(mode="python")
-        if "" not in tags:
-            tags[""] = PyProject.Bertrand.Container().model_dump(mode="python")
-        merged["tags"] = tags
+            images[image.tag] = image.model_dump(mode="python")
+        if "" not in images:
+            images[""] = PyProject.Bertrand.Image().model_dump(mode="python")
+        merged["images"] = images
 
         return merged
 
@@ -858,6 +843,7 @@ class Config:
         env: str = field()
         paths: dict[str, str] = field()
         project_name: str = field()
+        max_commits: int = field(default=DEFAULT_MAX_COMMITS)
         shell: str = field(default=DEFAULT_SHELL)
         bertrand_version: str = field(default=__version__)
         python_version: str = field(default_factory=_python_version)
@@ -1305,7 +1291,7 @@ class Config:
                             snapshot,
                             key_owner=key_owner,
                         )
-                except Exception:
+                except:
                     self._snapshot = None
                     self._snapshot_key_owner = {}
                     raise
