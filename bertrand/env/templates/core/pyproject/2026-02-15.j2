@@ -43,20 +43,178 @@ container_ignore = [
     ".gitignore",
 ]
 
-# Canonical build matrix for Bertrand containers.
-# `tag = ""` denotes the default container for an environment.
+[tool.bertrand.network.build]
+mode = "pasta"          # -> --network (none|host|ns:path|private|slirp4netns|pasta)
+options = []            # mode-specific option tokens (see podman docs)
+dns = []                # -> --dns (ip addresses of custom DNS servers)
+dns_search = []         # -> --dns-search (custom DNS search domains)
+dns_options = []        # -> --dns-option (DNS options, stored in `/etc/resolv.conf`)
+add_host = {}           # -> --add-host (hostname = ip|"host-gateway", stored in `/etc/hosts`)
+
+[tool.bertrand.network.run]
+mode = "pasta"          # -> --network (none|host|ns:path|private|slirp4netns|pasta)
+options = []            # mode-specific option tokens (see podman docs)
+dns = []                # -> --dns (ip addresses of custom DNS servers)
+dns_search = []         # -> --dns-search (custom DNS search domains)
+dns_options = []        # -> --dns-option (DNS options, stored in `/etc/resolv.conf`)
+add_host = {}           # -> --add-host (hostname = ip|"host-gateway", stored in `/etc/hosts`)
+
+############################
+####    BUILD MATRIX    ####
+############################
+
+# NOTE: `tag = ""` denotes the default container for an environment.  The
+# default tag is intentionally exhaustive and self-documenting, with each
+# option set to its default value.  Non-default tags should typically
+# override only what they need.  See the `podman build` and `podman run`
+# documentation for more details on what each options does.
+
 [[tool.bertrand.tags]]
 tag = ""
-containerfile_args = []
+containerfile = "Containerfile"  # -> --file, relative (posix) path from worktree root
+build_args = {}         # -> --build-arg (key = value), passed into containerfile
+env_file = []           # -> --env-file, relative (posix) path from worktree root
+ports = [               # -> --publish
+    # e.g. { container = 8000, host = 8000, host_ip = "127.0.0.1", protocol = "tcp" },
+]
+network_aliases = [     # -> --network-alias (for inter-tag network communication)
+    # e.g. "postgres"
+]
+cpus = 0.0              # -> --cpus (can be >1 to use multiple cores, 0.0 => unlimited)
+memory = "0"            # -> --memory ("0" => unlimited)
+pids_limit = 2048       # -> --pids-limit  (max processes in container, -1 => unlimited)
+shm_size = "64m"        # -> --shm-size  (size of `/dev/shm`, for IPC within a container)
+ulimit = [              # -> --ulimit
+    # e.g. { name = "nproc", soft = 4096, hard = 8192 },
+]
+cap_add = [             # -> --cap-add
+    # e.g. "NET_BIND_SERVICE"
+]
+cap_drop = [            # -> --cap-drop
+    # e.g. "ALL"
+]
+security_opt = [        # -> --security-opt
+    # e.g. "no-new-privileges"
+]
+userns = ""             # -> --userns (""|host|private|keep-id|auto|nomap|ns:path)
+ipc = "private"         # -> --ipc (none|shareable|<tag>|host|private|ns:path)
+pid = "private"         # -> --pid (private|host|ns:path|container:<name|id>)
+uts = "private"         # -> --uts (private|host|ns:path|container:<name|id>)
+ssh = []                # SSH capability IDs (SCREAMING_SNAKE_CASE, e.g. ["GIT_SSH_KEY"]).
+                        # Resolves to `podman build --ssh` entries.  No key material or
+                        # socket paths are stored in project configuration.
+instruments = []        # An array of tables representing runtime instrumentation tools
+                        # (e.g. sanitizers, profilers, etc.) to apply to this tag.  See
+                        # the `:debug` tag for example usage.
 
-# `env:debug` compiles with debug assertions and common sanitizers that
-# execute alongside your program and detect memory errors or undefined
-# behavior.
+[tool.bertrand.tags.devices]
+build = []              # Device capability IDs (SCREAMING_SNAKE_CASE, e.g. ["GPU"]).
+                        # Resolves to `podman build --device` entries.
+run = []                # Device capability IDs (SCREAMING_SNAKE_CASE, e.g. ["GPU"]).
+                        # Resolves to `podman run --device` entries.  No device paths
+                        # are stored in project configuration.
+
+[tool.bertrand.tags.secrets]
+build = []              # Secret IDs (SCREAMING_SNAKE_CASE, e.g. ["PYPI_TOKEN"]), passed
+                        # as env vars during the build, but not persisted in the image.
+run = []                # Secret IDs (SCREAMING_SNAKE_CASE, e.g. ["DB_PASSWORD"]), passed
+                        # as podman secrets, which are exposed as files under `/run/secrets/`.
+                        # No secret values are stored in project configuration.
+
+[tool.bertrand.tags.build]
+context = "."           # build context path, relative to worktree root
+target = ""             # -> --target (empty => final stage)
+pull_policy = "missing" # -> --pull (missing|always|never|newer)
+
+[tool.bertrand.tags.stop]
+signal = "SIGTERM"      # -> --stop-signal
+timeout = 10            # -> --stop-timeout
+
+[tool.bertrand.tags.restart]
+policy = "no"           # -> --restart (no|on-failure|always|unless-stopped)
+max_retries = 0         # -> --restart-retries (only for on-failure, ignored otherwise)
+
+[tool.bertrand.tags.healthcheck]
+cmd = []                # -> --health-cmd (e.g. ["curl", "-f", "<ip>"], disabled when empty)
+on_failure = "kill"     # -> --health-on-failure (none|kill|stop, "kill" invokes restart policy)
+retries = 3             # -> --health-retries
+interval = "30s"        # -> --health-interval
+timeout = "30s"         # -> --health-timeout
+
+[tool.bertrand.tags.healthcheck.startup]
+cmd = []                # -> --health-startup-cmd (only during boot; failure implies "stop")
+period = "0s"           # -> --health-start-period (overall time budget for healthcheck.startup)
+success = 0             # -> --health-startup-success (successes needed to enter "healthy" state)
+interval = "30s"        # -> --health-startup-interval
+timeout = "30s"         # -> --health-startup-timeout
+
+[tool.bertrand.tags.healthcheck.log]
+destination = "local"   # -> --health-log-destination
+max_count = 5           # -> --health-max-log-count
+max_size = 500          # -> --health-max-log-size
+
+# NOTE: `env:debug` compiles with debug assertions and instrumentation to detect
+# memory errors and undefined behavior.  This tag is provided by default to simplify
+# development and testing, as well as show how runtime instruments can be configured.
+# The current list of supported instruments are:
+#   -   asan (Address Sanitizer): detects memory errors such as buffer overflows,
+#       use-after-free, and memory leaks.
+#   -   msan (Memory Sanitizer): detects uninitialized memory reads, which can lead to
+#       undefined behavior and security vulnerabilities.
+#   -   tsan (Thread Sanitizer): detects data races and other threading issues in
+#       concurrent code.
+#   -   ubsan (Undefined Behavior Sanitizer): detects undefined behavior such as
+#       integer overflows, null pointer dereferences, and misaligned pointer access.
+#   -   valgrind: a suite of tools for memory debugging, memory leak detection, and
+#       profiling.
+#   -   lldb: an LLVM-native debugger that can be used for interactive debugging
+#       sessions.
+#   -   perf: a performance analysis tool for Linux that can be used to profile
+#       CPU and memory usage, as well as other performance metrics.
+#
+# If multiple instruments are specified for a tag, Bertrand will attempt to execute
+# them in the same order they are declared.  For each instrument, a `tool` key must
+# be specified, which is used to locate a corresponding handler.  All other keys are
+# passed as arguments to that handler, which produces the context necessary to apply
+# the instrument at build and/or runtime.  See the `bertrand.env.instruments` module
+# for more details.
+
 [[tool.bertrand.tags]]
 tag = "debug"
-containerfile_args = ["DEBUG=true"]
-asan = true
-ubsan = true
+build_args = { DEBUG = true }
+
+[[tool.bertrand.tags.instruments]]
+tool = "asan"
+detect_leaks = "1"                  # report memory leaks at process exit
+halt_on_error = "1"                 # abort on first ASan finding (fail-fast)
+symbolize = "1"                     # resolve addresses to file:line/function in reports
+detect_stack_use_after_return = "1" # detect stale stack references after function return
+strict_string_checks = "1"          # tighten checks around libc string/memory functions
+fast_unwind_on_fatal = "0"          # use slower precise unwinder for higher-fidelity traces
+
+[[tool.bertrand.tags.instruments]]
+tool = "ubsan"
+undefined = "true"                  # enable broad undefined-behavior instrumentation
+halt_on_error = "1"                 # abort on first UBSan finding (fail-fast)
+print_stacktrace = "1"              # include stacktrace for each UB report
+symbolize = "1"                     # resolve addresses to file:line/function in reports
+report_error_type = "1"             # include UB category (e.g. signed-overflow)
+print_summary = "1"                 # print end-of-run summary of UBSan reports
+
+[[tool.bertrand.tags.instruments]]
+tool = "lldb"
+auto_run = true                     # launch target immediately inside LLDB
+no_lldbinit = true                  # ignore host/user init files for reproducibility
+source_quietly = true               # suppress echoed auto-issued LLDB commands
+on_crash = [
+    "thread backtrace all",
+    "frame variable",
+    "register read",
+]
+
+##############################
+####    LANGUAGE TOOLS    ####
+##############################
 
 [tool.ty]
 
@@ -71,11 +229,6 @@ select = ["E", "F", "I", "B", "UP"]
 addopts = "-q"
 testpaths = ["tests"]
 
-# Bertrand projects centralize clang tool settings here.
-# On `config.sync()`, these sections project to:
-#   [tool.clang-format] -> .clang-format
-#   [tool.clang-tidy]   -> .clang-tidy
-#   [tool.clangd]       -> .clangd
 [tool.clang-format]
 BasedOnStyle = "LLVM"
 IndentWidth = 4
