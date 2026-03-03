@@ -294,81 +294,46 @@ RUN --mount=type=cache,target=/root/.cache/uv,sharing=locked \
     /opt/python/bin/conan --version; \
     /opt/python/bin/python -m pip check
 
-# Create a sane default profile for clang/libc++ and Ninja (Conan 2.x)
+# Create a deterministic default profile for clang/libc++ and Ninja (Conan 2.x)
 RUN set -eux; \
     mkdir -p "$CONAN_HOME"; \
     chmod 1777 "$CONAN_HOME"; \
+    mkdir -p "$CONAN_HOME/profiles"; \
     \
-    export CC=/opt/llvm/bin/clang; \
-    export CXX=/opt/llvm/bin/clang++; \
+    RAW_ARCH="$(dpkg --print-architecture 2>/dev/null || uname -m)"; \
+    case "$RAW_ARCH" in \
+        x86_64|amd64) CONAN_ARCH="x86_64" ;; \
+        aarch64|arm64) CONAN_ARCH="armv8" ;; \
+        *) echo "unsupported Conan arch: $RAW_ARCH" >&2; exit 1 ;; \
+    esac; \
     \
-    /opt/python/bin/conan profile detect --force; \
-    PROFILE="$(/opt/python/bin/conan profile path default)"; \
+    CLANG_VERSION="$("/opt/llvm/bin/clang" -dumpversion)"; \
+    CLANG_MAJOR="${CLANG_VERSION%%.*}"; \
+    case "$CLANG_MAJOR" in \
+        ''|*[!0-9]*) echo "failed to parse clang major version from: $CLANG_VERSION" >&2; exit 1 ;; \
+    esac; \
+    \
+    PROFILE="$CONAN_HOME/profiles/default"; \
+    printf '%s\n' \
+        '[settings]' \
+        'os=Linux' \
+        "arch=${CONAN_ARCH}" \
+        'compiler=clang' \
+        "compiler.version=${CLANG_MAJOR}" \
+        'compiler.libcxx=libc++' \
+        "compiler.cppstd=${CXX_STD}" \
+        'build_type=Release' \
+        '' \
+        '[conf]' \
+        'tools.cmake.cmaketoolchain:generator=Ninja' \
+        'tools.build:compiler_executables={"c":"/opt/llvm/bin/clang","cpp":"/opt/llvm/bin/clang++"}' \
+        '' \
+        '[buildenv]' \
+        'CC=ccache /opt/llvm/bin/clang' \
+        'CXX=ccache /opt/llvm/bin/clang++' \
+        > "$PROFILE"; \
     echo "Conan default profile: $PROFILE"; \
-    test -f "$PROFILE"; \
-    \
-    python3 - "$PROFILE" "${CXX_STD}" <<'PY' \
-import re  # not actually imported for some reason
-import sys
-import pathlib
-
-profile_path = sys.argv[1]
-cxx_std = sys.argv[2].strip()
-
-p = pathlib.Path(profile_path)
-txt = p.read_text().splitlines()
-
-def ensure_section(lines, name):
-    hdr = f"[{name}]"
-    if any(l.strip() == hdr for l in lines):
-        return lines
-    if lines and lines[-1].strip() != "":
-        lines.append("")
-    lines.append(hdr)
-    return lines
-
-def set_kv(lines, section, key, value):
-    import re  # needed here for regex usage
-    hdr = f"[{section}]"
-    out = []
-    in_sec = False
-    saw = False
-
-    for l in lines:
-        s = l.strip()
-        if s.startswith("[") and s.endswith("]"):
-            if in_sec and not saw:
-                out.append(f"{key}={value}")
-                saw = True
-            in_sec = (s == hdr)
-            out.append(l)
-            continue
-
-        if in_sec and re.match(rf"^{re.escape(key)}\s*=", s):
-            out.append(f"{key}={value}")
-            saw = True
-        else:
-            out.append(l)
-
-    if in_sec and not saw:
-        out.append(f"{key}={value}")
-    return out
-
-txt = ensure_section(txt, "settings")
-txt = ensure_section(txt, "conf")
-txt = ensure_section(txt, "buildenv")
-txt = set_kv(txt, "settings", "compiler.libcxx", "libc++")
-txt = set_kv(txt, "settings", "build_type", "Release")
-txt = set_kv(txt, "settings", "compiler.cppstd", cxx_std)
-txt = set_kv(txt, "conf", "tools.cmake.cmaketoolchain:generator", "Ninja")
-txt = set_kv(txt, "conf", "tools.build:compiler_executables",
-             '{"c":"/opt/llvm/bin/clang","cpp":"/opt/llvm/bin/clang++"}')
-txt = set_kv(txt, "buildenv", "CC", "ccache /opt/llvm/bin/clang")
-txt = set_kv(txt, "buildenv", "CXX", "ccache /opt/llvm/bin/clang++")
-
-p.write_text("\n".join(txt) + "\n")
-print(p.read_text())
-PY
+    /opt/python/bin/conan profile show -pr default >/dev/null
 
 
 #################################

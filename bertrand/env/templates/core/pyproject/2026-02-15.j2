@@ -1,19 +1,88 @@
 [build-system]
-requires = ["setuptools>=69", "wheel"]
-build-backend = "setuptools.build_meta"
+requires = ["bertrand"]
+build-backend = "bertrand.build"
 
 [project]
 name = "{{ project_name }}"
 version = "0.1.0"
+dependencies = [                    # Python-level dependencies
+    "bertrand=={{ bertrand_major }}.{{ bertrand_minor }}.{{ bertrand_patch }}",
+]
+requires-python = "{{ python_major }}.{{ python_minor }}"
+authors = [
+    # e.g. { name = "my name", email = "my@email.com" },
+]
+maintainers = [
+    # e.g. { name = "my name", email = "my@email.com" },
+]
 description = "Bertrand project"
 readme = "README.md"
-requires-python = ">=3.12"
-dependencies = []
+license = "MIT"                     # SPDX license identifier (e.g. MIT, Apache-2.0, etc.)
+license-files = ["LICEN[CS]E.*"]    # list of relative (posix) paths from worktree root
+classifiers = [
+    "Programming Language :: C++",
+    "Programming Language :: Python :: {{ python_major }}.{{ python_minor }}",
+]
+
+[project.urls]
+Homepage = "https://example.com"
+Documentation = "https://readthedocs.org"
+Repository = "https://github.com/myusername/myrepo"
+"Bug Tracker" = "https://github.com/myusername/myrepo/issues"
+
+##################
+####    UV    ####
+##################
+
+[tool.uv]
+managed = true                              # treat this as a uv-managed project
+required-version = "{{ uv_major }}.{{ uv_minor }}.{{ uv_patch }}"                  # toolchain uv version
+python-preference = "only-system"           # prefer the container-provided Python interpreter
+python-downloads = "never"                  # never download Python runtimes implicitly
+index-strategy = "first-index"              # stop at first index with a package (safer defaults)
+resolution = "highest"                      # pick highest compatible versions when resolving
+prerelease = "if-necessary-or-explicit"     # include prereleases only when required
+
+# Optional custom indexes
+# [[tool.uv.index]]
+# name = "internal"
+# url = "https://example.com/simple"
+# explicit = true                           # if true, indexed packages must be declared in [tool.uv.sources]
+# default = true                            # replaces PyPI as the default index when true
+
+#####################
+####    CONAN    ####
+#####################
+
+[tool.bertrand.conan]
+requires = []           # e.g. ["fmt/11.0.2", "nlohmann_json/3.12.0"]
+tool_requires = []      # e.g. ["cmake/3.30.5", "ninja/1.12.1"]
+options = {}            # e.g. { "fmt/*:header_only" = true }
+conf = {}               # e.g. { "tools.build:jobs" = 16 }
+build_type = "Release"  # Release|Debug (may be overridden in build matrix tags)
+
+# NOTE: Conan remotes are resolved in declaration order.  Prefer private remotes first,
+# then optional public fallback remotes last.  Credentials are host-local and must
+# never be stored here; resolve through env/secret channels (e.g.
+# CONAN_LOGIN_USERNAME_<REMOTE>, CONAN_PASSWORD_<REMOTE>, with remote names normalized
+# to SCREAMING_SNAKE_CASE).
+
+# [[tool.conan.remotes]]
+# name = "internal"
+# url = "https://conan.example.com"
+# verify_ssl = true
+# enabled = true
+# recipes_only = false
+# allowed_packages = ["myorg/*", "thirdparty/*"]
+
+########################
+####    BERTRAND    ####
+########################
 
 [tool.bertrand]
-max_commits = {{ max_commits }}
-shell = "{{ shell }}"
-ignore = [
+max_commits = {{ max_commits }}            # number of commits to store, after which LRU eviction begins
+shell = "{{ shell }}"          # shell to execute during `bertrand enter`
+ignore = [              # ignore patterns shared between .gitignore and .containerignore
     ".bertrand/",
     "**/.bertrand/",
     "__pycache__/",
@@ -37,11 +106,15 @@ ignore = [
     ".idea/",
     ".DS_Store",
 ]
-git_ignore = []
-container_ignore = [
+git_ignore = []         # additional .gitignore patterns
+container_ignore = [    # additional .containerignore patterns
     ".git/",
     ".gitignore",
 ]
+services = []           # optional service orchestration, using tags from the build matrix
+                        # below.  If non-empty, then a `kube.yaml` artifact will be generated
+                        # and played when starting the environment.  Each entry will be built
+                        # and started in sequence, using its build matrix definition.
 
 [tool.bertrand.network.build]
 mode = "pasta"          # -> --network (none|host|ns:path|private|slirp4netns|pasta)
@@ -71,6 +144,7 @@ add_host = {}           # -> --add-host (hostname = ip|"host-gateway", stored in
 
 [[tool.bertrand.tags]]
 tag = ""
+dependencies = []       # additional Python-level dependencies to install for this tag
 containerfile = "Containerfile"  # -> --file, relative (posix) path from worktree root
 build_args = {}         # -> --build-arg (key = value), passed into containerfile
 env_file = []           # -> --env-file, relative (posix) path from worktree root
@@ -120,6 +194,13 @@ build = []              # Secret IDs (SCREAMING_SNAKE_CASE, e.g. ["PYPI_TOKEN"])
 run = []                # Secret IDs (SCREAMING_SNAKE_CASE, e.g. ["DB_PASSWORD"]), passed
                         # as podman secrets, which are exposed as files under `/run/secrets/`.
                         # No secret values are stored in project configuration.
+
+[tool.bertrand.tags.conan]
+requires = []           # e.g. ["boost/1.86.0"]
+tool_requires = []      # e.g. ["protobuf/5.28.0"]
+options = {}            # e.g. { "boost/*:without_test" = true }
+conf = {}               # e.g. { "tools.cmake.cmaketoolchain:generator" = "Ninja" }
+build_type = ""         # empty => inherit [tool.bertrand.conan].build_type
 
 [tool.bertrand.tags.build]
 context = "."           # build context path, relative to worktree root
@@ -181,7 +262,11 @@ max_size = 500          # -> --health-max-log-size
 
 [[tool.bertrand.tags]]
 tag = "debug"
+dependencies = []                   # additional Python-level dependencies for this tag
 build_args = { DEBUG = true }
+
+[tool.bertrand.tags.conan]
+build_type = "Debug"                # compile conan dependencies in debug mode
 
 [[tool.bertrand.tags.instruments]]
 tool = "asan"
@@ -212,42 +297,378 @@ on_crash = [
     "register read",
 ]
 
-##############################
-####    LANGUAGE TOOLS    ####
-##############################
+######################
+####    PYTEST    ####
+######################
 
-[tool.ty]
+[tool.pytest]
+minversion = 9.0                    # minimum supported pytest version (>=9.0)
+required_plugins = []               # pytest plugins that must be present for test execution
+testpaths = ["tests"]               # default test discovery roots
+python_files = ["test_*.py"]        # glob-style patterns for Python files to collect tests from
+python_functions = ["test_*"]       # glob-style patterns for Python functions to collect as tests
+python_classes = ["Test*"]          # glob-style patterns for Python classes to collect as tests
+filterwarnings = []                 # ignore or error on specific warnings (see pytest docs)
+markers = []                        # custom markers for test categorization (see pytest docs)
+usefixtures = []                    # fixtures to auto-apply for all tests
+addopts = ["-ra", "-q"]             # quiet output with short test summary
+console_output_style = "progress"   # classic|progress|count|times
+strict = true                       # prevent common testing footguns (see pytest docs)
+
+##################
+####    TY    ####
+##################
+
+# NOTE: These are balanced defaults for local development and CI, which are
+# intentionally non-gating out of the box, and can be tightened as projects mature.
+
+[tool.ty.src]
+{% if project_layout == "src" %}
+include = ["src", "tests"]          # relative paths ty should check
+{% else %}
+include = [".", "tests"]            # relative paths ty should check
+{% endif %}
+exclude = []                        # explicitly skipped paths
+respect-ignore-files = true         # exclude paths in .gitignore
+
+[tool.ty.rules]
+# Overrides for specific rules go here.  See the ty documentation for the available
+# rules.
+
+####################
+####    RUFF    ####
+####################
 
 [tool.ruff]
-line-length = 100
-target-version = "py312"
+target-version = "py{{ python_major }}{{ python_minor }}"            # python syntax target
+line-length = 100                   # max allowed line length
+indent-width = 4                    # number of spaces per indentation level
+output-format = "full"              # full|concise|grouped|json|junit|github|gitlab|pylint|azure
+respect-gitignore = true            # exclude paths in .gitignore
+unsafe-fixes = false                # do not display hints for potentially unsafe fixes
+
+[tool.ruff.format]
+exclude = []                        # glob-style paths to exclude from formatting
+quote-style = "preserve"            # double|single|preserve (for string literals)
+indent-style = "space"              # space|tab
+skip-magic-trailing-comma = false   # trailing commas may enforce multi-line constructs
+line-ending = "auto"                # auto|lf|cr-lf|native (auto infers from file)
+docstring-code-format = true        # format inline code blocks in docstrings
+docstring-code-line-length = "dynamic"  # int|"dynamic" ("dynamic" defers to line-length)
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "B", "UP"]
+exclude = []                        # glob-style paths to exclude from linting
+select = [                          # enabled rule families (see ruff docs for details)
+    "E",
+    "F",
+    "I",
+    "B",
+    "UP"
+]
+ignore = []                         # suppressed rules
+fixable = ["ALL"]                   # rules that auto-fix may modify source code
+unfixable = []                      # rules to never auto-fix
+extend-safe-fixes = []              # extra rules to treat as safe for auto-fixing
+extend-unsafe-fixes = []            # extra rules to treat as unsafe for auto-fixing
+per-file-ignores = {}               # e.g. { "path/to/file.py": ["E501", "F401"] }
 
-[tool.pytest.ini_options]
-addopts = "-q"
-testpaths = ["tests"]
+# [tool.lint.flake8-*]
+# [tool.lint.pylint-*]
+# [tool.lint.isort-*]
+# etc. for rule-specific formatting and linting options.  See the ruff documentation
+# for supported rules and options.
 
-[tool.clang-format]
-BasedOnStyle = "LLVM"
-IndentWidth = 4
-ColumnLimit = 100
+######################
+####    CLANGD    ####
+######################
+
+[tool.clangd.Diagnostics]
+UnusedIncludes = "Strict"           # strict unused include diagnostics
+MissingIncludes = "Strict"          # strict missing-include diagnostics
+Suppress = []                       # diagnostics to suppress by code/category
+
+[tool.clangd.Index]
+Background = "Build"                # build/update background index
+
+[tool.clangd.Completion]
+AllScopes = true                    # include symbols from all visible scopes
+HeaderInsertion = "IWYU"            # prefer include-what-you-use insertions
+
+[tool.clangd.InlayHints]
+Enabled = true                      # enable inlay hints globally
+ParameterNames = true               # show argument/parameter name hints
+DeducedTypes = true                 # show deduced type hints for auto/templated code
+Designators = true                  # show designator hints for aggregate init
+
+##########################
+####    CLANG-TIDY    ####
+##########################
 
 [tool.clang-tidy]
-Checks = [
+FormatStyle = "file"                # always use generated .clang-tidy file
+Checks = [                          # enabled check families (see clang-tidy docs for details)
     "clang-analyzer-*",
     "bugprone-*",
     "performance-*",
     "readability-*",
+    "modernize-*",
+    "cppcoreguidelines-*",
 ]
-WarningsAsErrors = []
-HeaderFilterRegex = ".*"
-CheckOptions = {}
+CheckOptions = {}                   # check-specific option overrides
+WarningsAsErrors = []               # non-gating by default
+HeaderFilterRegex = ".*"            # display diagnostics from all non-system headers
+ExcludeHeaderFilterRegex = ""       # optional regex for headers to suppress
+SystemHeaders = false               # suppress diagnostics from system headers
+InheritParentConfig = true          # merge parent .clang-tidy configs when present
+UseColor = true                     # color diagnostics when supported
 
-# clangd should generally use compile commands from compile_commands.json.
-# Use this section for diagnostics/completion/inlay/documentation tuning.
-# CompileFlags can be set manually if needed, but is usually unnecessary.
-[tool.clangd]
-[tool.clangd.Diagnostics]
-UnusedIncludes = "Strict"
+############################
+####    CLANG-FORMAT    ####
+############################
+
+# NOTE: These are opinionated defaults designed to make C++ code as familiar as
+# possible to Python developers.  If your project has an existing style guide, or
+# you prefer a more traditional C++ style, feel free to disable automatic formatting
+# or modify these settings as needed.
+
+[tool.clang-format]
+DisableFormat = false               # enable/disable all formatting features
+BasedOnStyle = "Mozilla"            # LLVM|Google|Chromium|Mozilla|WebKit|Microsoft|GNU
+AccessModifierOffset = 0            # in indentation levels
+AlwaysBreakBeforeMultilineStrings = true
+AttributeMacros = [                 # names to recognize as custom language attributes
+    "__declspec",
+]
+BinPackArguments = false            # all arguments appear on one line or separate lines each
+BinPackLongBracedList = true        # override BinPackArguments for excessively long braced lists
+BinPackParameters = "OnePerLine"    # BinPack|OnePerLine|AlwaysOnePerLine
+BitFieldColonSpacing = "Both"       # Both|None|Before|After
+ColumnLimit = 100
+CompactNamespaces = false
+Cpp11BracedListStyle = "FunctionCall"       # Block|FunctionCall|AlignFirstComment
+EmptyLineAfterAccessModifier = "Never"      # Never|Leave|Always
+EmptyLineBeforeAccessModifier = "Always"    # Never|Leave|LogicalBlock|Always
+FixNamespaceComments = true                 # enforce closing comments for all namespaces
+ForEachMacros = [                           # names of macros to recognize as foreach loops
+    "Q_FOREACH",
+    "BOOST_FOREACH",
+]
+IFMacros = [                        # names of macros to recognize as if statements
+    "Q_IF",
+]
+IncludeBlocks = "Preserve"          # Preserve|Merge|Regroup
+InsertBraces = true
+InsertNewlineAtEOF = true
+LineEnding = "DeriveLF"             # LF|CRLF|DeriveLF|DeriveCRLF
+NamespaceIndentation = "None"       # None|Inner|All
+NamespaceMacros = [                 # names to recognize as namespace definitions
+    "__LIBCPP_BEGIN_NAMESPACE_STD",
+]
+OneLineFormatOffRegex = "NOFORMAT"  # regex to disable formatting for a single line
+PackConstructorInitializers = "CurrentLine" # Never|BinPack|CurrentLine|NextLine|NextLineOnly
+PointerAlignment = "Left"           # Left|Right|Middle
+QualifierOrder = [
+    "inline",
+    "static",
+    "constexpr",
+    "friend",
+    "const",
+    "volatile",
+    "type",
+]
+ReferenceAlignment = "Left"                     # Left|Right|Middle
+ReflowComments = "Always"                       # Never|IndentOnly|Always
+RemoveEmptyLinesInUnwrappedLines = true
+RequiresClausePosition = "WithPreceding"        # OwnLine|OwnLineWithBrace|WithPreceding|WithFollowing|SingleLine
+RequiresExpressionIndentation = "OuterScope"    # OuterScope|Keyword
+SeparateDefinitionBlocks = "Always"             # Leave|Always|Never
+SortUsingDeclarations = "Lexicographic"         # Never|Lexicographic|LexicographicNumeric
+SpacesBeforeTrailingComments = 2
+SpacesInAngles = "Never"                        # Never|Always|Leave
+SpacesInContainerLiterals = false
+SpacesInLineCommentPrefix = { Minimum = 1, Maximum = 1 }  # required space after `//`
+SpacesInParens = "Custom"                       # Always set to "Custom" to use SpacesInParensOptions
+SpacesInSquareBrackets = false
+Standard = "Auto"                               # Always set to "Auto" to infer standard
+TabWidth = 4
+TemplateNames = [
+    # e.g. "MYTEMPLATE" => `MYTEMPLATE<arg> void func() { ... }`
+]
+TypeNames = [
+    # e.g. "MYTYPE" => `MYTYPE* var;` without a typename prefix
+]
+TypenameMacros = [
+    # e.g. "MYTYPENAME" => `MYTYPENAME(typename) var;` without treating `MYTYPENAME` as a function
+]
+UseTab = "Never"                                # Never|ForIndentation|ForContinuationAndIndentation|AlignWithSpaces|Always
+WrapNamespaceBodyWithEmptyLines = "Leave"       # Never|Always|Leave
+
+[tool.clang-format.Align]
+AfterOpenBracket = false            # horizontally align parameters after open paren/bracket
+ArrayOfStructures = "None"          # Left|Right|None, for stacked initializer lists
+EscapedNewlines = "Right"           # DontAlign|Left|LeftWithLastLine|Right
+Operands = "Align"                  # DontAlign|Align|BreakBeforeBinaryOperators|AlignAfterOperator
+
+[tool.clang-format.Align.ConsecutiveAssignments]
+Enabled = false
+AcrossEmptyLines = false
+AcrossComments = false
+AlignCompound = false               # treat compound assignments (e.g. +=) the same
+PadOperators = false                # left-pad all assignments to longest compound operator
+
+[tool.clang-format.Align.ConsecutiveBitFields]
+Enabled = false
+AcrossEmptyLines = false
+AcrossComments = false
+
+[tool.clang-format.Align.ConsecutiveDeclarations]
+Enabled = false
+AcrossEmptyLines = false
+AcrossComments = false
+AlignFunctionDeclarations = false   # vertically align function names
+AlignFunctionPointers = true        # treat the `(*f)` part of `int(*f)()` as a declaration
+
+[tool.clang-format.Align.ConsecutiveMacros]
+Enabled = false
+AcrossEmptyLines = false
+AcrossComments = false
+
+[tool.clang-format.Align.ConsecutiveShortCaseStatements]
+Enabled = false
+AcrossEmptyLines = false
+AcrossComments = false
+AlignCaseArrows = false
+AlignCaseColons = false
+
+[tool.clang-format.Align.TrailingComments]
+Kind = "Never"                      # Leave|Always|Never
+OverEmptyLines = false
+AlignPPAndNotPP = true              # treat comments following preprocessor directives the same
+
+[tool.clang-format.Allow]
+AllArgumentsOnNextLine = false
+AllParametersOfDeclarationOnNextLine = false
+BreakBeforeNoexceptSpecifier = "OnlyWithParen"  # Never|OnlyWithParen|Always
+ShortBlocksOnASingleLine = "Empty"              # Never|Empty|Always
+ShortCaseExpressionsOnASingleLine = true
+ShortCaseLabelsOnASingleLine = true
+ShortCompoundRequirementsOnASingleLine = true
+ShortEnumsOnASingleLine = true
+ShortFunctionsOnASingleLine = "Always"          # None|Inline|InlineOnly|All
+ShortIfStatementsOnASingleLine = "WithoutElse"  # None|WithoutElse|OnlyFirstIf|AllIfsAndElse
+ShortLambdasOnASingleLine = "All"               # None|Empty|Inline|All
+ShortLoopsOnASingleLine = true
+ShortNamespacesOnASingleLine = false
+
+[tool.clang-format.Break]
+AdjacentStringLiterals = true
+AfterAttributes = "Never"                       # Always|Leave|Never
+AfterOpenBracketBracedList = true
+AfterOpenBracketFunction = true
+AfterOpenBracketIf = true
+AfterOpenBracketLoop = true
+AfterOpenBracketSwitch = true
+AfterReturnType = "ExceptShortType"             # Automatic|ExceptShortType|All|TopLevel|AllDefinitions|TopLevelDefinitions
+BeforeBinaryOperators = "None"                  # None|NonAssignment|All
+BeforeBraces = "Custom"                         # Always set to "Custom" to use BraceWrapping
+BeforeCloseBracketBracedList = true
+BeforeCloseBracketFunction = true
+BeforeCloseBracketIf = true
+BeforeCloseBracketLoop = true
+BeforeCloseBracketSwitch = true
+BeforeConceptDeclarations = "Always"            # Always|Allowed|Never
+BeforeInlineASMColon = "OnlyMultiline"          # Never|OnlyMultiline|Always
+BeforeTemplateCloser = true
+BeforeTernaryOperators = false
+BinaryOperations = "Never"                      # Never|OnePerLine|RespectPrecedence
+ConstructorInitializers = "AfterColon"          # BeforeColon|BeforeComma|AfterColon|AfterComma
+FunctionDefinitionParameters = false
+InheritanceList = "AfterColon"                  # BeforeColon|BeforeComma|AfterColon|AfterComma
+StringLiterals = true
+TemplateDeclarations = "Yes"                    # Leave|No|MultiLine|Yes
+
+[tool.clang-format.BraceWrapping]
+AfterCaseLabel = false
+AfterClass = false
+AfterControlStatement = "Never"     # Never|MultiLine|Always
+AfterEnum = false
+AfterFunction = false
+AfterNamespace = false
+AfterStruct = false
+AfterUnion = false
+AfterExternBlock = false
+BeforeCatch = false
+BeforeElse = false
+BeforeLambdaBody = false
+BeforeWhile = false
+IndentBraces = false
+SplitEmptyFunction = false
+SplitEmptyRecord = false
+SplitEmptyNamespace = false
+
+[tool.clang-format.Indent]
+CaseLabels = true
+ExportBlock = true
+ExternBlock = true
+GotoLabels = true
+PPDirectives = "BeforeHash"         # None|BeforeHash|AfterHash|Leave
+RequiresClause = true
+Width = 4
+WrappedFunctionNames = false
+
+[tool.clang-format.IntegerLiteralSeparator]
+Binary = 8                          # -1 => unlimited (requires 0b prefix)
+Decimal = -1                        # -1 => unlimited
+Hex = 4                             # -1 => unlimited (requires 0x prefix)
+
+[tool.clang-format.KeepEmptyLines]
+AtEndOfFile = false
+AtStartOfBlock = false
+AtStartOfFile = false
+
+[tool.clang-format.NumericLiteralCase]
+ExponentLetter = "Lower"            # Leave|Lower|Upper
+HexDigit = "Upper"                  # Leave|Lower|Upper
+Prefix = "Lower"                    # Leave|Lower|Upper
+Suffix = "Lower"                    # Leave|Lower|Upper
+
+[tool.clang-format.SortIncludes]
+Enabled = true
+IgnoreCase = false
+IgnoreExtension = false
+
+[tool.clang-format.Space]
+AfterCStyleCast = false
+AfterLogicalNot = false
+AfterOperatorKeyword = false
+AfterTemplateKeyword = false
+BeforeAssignmentOperators = true
+BeforeCaseColon = false
+BeforeCpp11BracedList = false
+BeforeCtorInitializerColon = true
+BeforeInheritanceColon = true
+BeforeJSonColon = false
+BeforeParens = "Custom"             # Always set to "Custom" to use BeforeParensOptions
+BeforeRangeBasedForLoopColon = true
+BeforeSquareBrackets = false
+InEmptyBraces = "Never"             # Always|Block|Never
+
+[tool.clang-format.Space.BeforeParensOptions]
+AfterControlStatements = true
+AfterForeachMacros = true
+AfterFunctionDeclarationName = false
+AfterFunctionDefinitionName = false
+AfterIfMacros = true
+AfterNot = true
+AfterOverloadedOperator = false
+AfterPlacementOperator = true
+AfterRequiresInClause = false
+AfterRequiresInExpression = false
+BeforeNonEmptyParentheses = false
+
+[tool.clang-format.SpacesInParensOptions]
+ExceptDoubleParentheses = false
+InConditionalStatements = false
+InCStyleCasts = false
+InEmptyParentheses = false
+Other = false
