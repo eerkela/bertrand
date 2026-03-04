@@ -80,7 +80,7 @@ build_type = "Release"  # Release|Debug (may be overridden in build matrix tags)
 ########################
 
 [tool.bertrand]
-max_commits = {{ max_commits }}            # number of commits to store, after which LRU eviction begins
+max_commits = {{ max_commits }}        # number of commits to store, after which LRU eviction begins
 shell = "{{ shell }}"          # shell to execute during `bertrand enter`
 ignore = [              # ignore patterns shared between .gitignore and .containerignore
     ".bertrand/",
@@ -196,7 +196,7 @@ run = []                # Secret IDs (SCREAMING_SNAKE_CASE, e.g. ["DB_PASSWORD"]
                         # No secret values are stored in project configuration.
 
 [tool.bertrand.tags.conan]
-requires = []           # e.g. ["boost/1.86.0"]
+requires = []           # e.g. ["boost/1.86.0"] (additive with [tool.conan].requires)
 tool_requires = []      # e.g. ["protobuf/5.28.0"]
 options = {}            # e.g. { "boost/*:without_test" = true }
 conf = {}               # e.g. { "tools.cmake.cmaketoolchain:generator" = "Ninja" }
@@ -375,30 +375,59 @@ per-file-ignores = {}               # e.g. { "path/to/file.py": ["E501", "F401"]
 # [tool.lint.flake8-*]
 # [tool.lint.pylint-*]
 # [tool.lint.isort-*]
-# etc. for rule-specific formatting and linting options.  See the ruff documentation
-# for supported rules and options.
+# etc. for rule-specific formatting and linting customization.  See the ruff
+# documentation for supported rules and options.
 
 ######################
 ####    CLANGD    ####
 ######################
 
+# NOTE: clangd compile commands should come from a generated `compile_commands.json`
+# file produced by the build system.  `CompileFlags` is intentionally omitted here
+# to avoid drifting from build-system truth.
+
 [tool.clangd.Diagnostics]
-UnusedIncludes = "Strict"           # strict unused include diagnostics
-MissingIncludes = "Strict"          # strict missing-include diagnostics
-Suppress = []                       # diagnostics to suppress by code/category
+UnusedIncludes = "Strict"           # None|Strict
+MissingIncludes = "Strict"          # None|Strict
+Suppress = []                       # diagnostics to suppress by code/category, including clang-tidy
 
 [tool.clangd.Index]
-Background = "Build"                # build/update background index
+Background = "Build"                # Build|Skip build/update background index
+StandardLibrary = true              # eagerly index STL
 
 [tool.clangd.Completion]
 AllScopes = true                    # include symbols from all visible scopes
-HeaderInsertion = "IWYU"            # prefer include-what-you-use insertions
+ArgumentLists = "FullPlaceholders"  # None|OpenDelimiter|Delimiters|FullPlaceholders
+HeaderInsertion = "IWYU"            # Never|IWYU (include-what-you-use)
+CodePatterns = "All"                # All|None
 
 [tool.clangd.InlayHints]
 Enabled = true                      # enable inlay hints globally
 ParameterNames = true               # show argument/parameter name hints
 DeducedTypes = true                 # show deduced type hints for auto/templated code
 Designators = true                  # show designator hints for aggregate init
+BlockEnd = false                    # show closing-brace ownership hints
+DefaultArguments = true             # show default argument values in call sites
+TypeNameLimit = 24                  # max rendered type-name length for hints
+
+[tool.clangd.Hover]
+ShowAKA = true                      # include canonical type aliases in hover cards
+MacroContentsLimit = 2048           # max macro expansion bytes shown in hover
+
+[tool.clangd.Documentation]
+CommentFormat = "Doxygen"           # PlainText|Markdown|Doxygen
+
+# NOTE: rules can be customized for specific (globbed) paths via the `If` array of
+# tables, which accepts all the same table keys as above, but applies them only when an
+# entry's path regexes are satisfied.  Note that if two enmtries match the same path,
+# the latter one will take precedence in the event of a conflict.
+
+[[tool.clangd.If]]
+PathMatch = ["tests/.*"]          # regex list of paths where this overlay applies
+PathExclude = []                  # regex list of paths excluded from this overlay
+
+[tool.clangd.If.Diagnostics]
+Suppress = ["unused-parameter"]   # noisy in unit-test helper signatures
 
 ##########################
 ####    CLANG-TIDY    ####
