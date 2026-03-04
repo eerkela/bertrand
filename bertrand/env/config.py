@@ -13,6 +13,7 @@ Canonical templates are packaged with Bertrand and lazily hydrated into
 from __future__ import annotations
 
 import json
+import ipaddress
 import os
 import re
 import shutil
@@ -24,7 +25,7 @@ from collections.abc import Mapping, Sequence
 from importlib import resources as importlib_resources
 from pathlib import Path, PosixPath
 from types import MappingProxyType, TracebackType
-from typing import Annotated, Any, Callable, Iterator, Self, cast
+from typing import Annotated, Any, Callable, Self
 
 from jinja2 import Environment, StrictUndefined
 from email_validator import EmailNotValidError, validate_email
@@ -38,6 +39,7 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     PositiveInt,
+    StringConstraints,
     TypeAdapter,
     ValidationError,
     Field,
@@ -46,7 +48,7 @@ from pydantic import (
 )
 import yaml
 
-from .pipeline import JSONValue, on_init
+from .pipeline import on_init
 from .run import LOCK_TIMEOUT, Lock, atomic_write_text, sanitize_name
 from .version import __version__, VERSION
 
@@ -60,16 +62,6 @@ MOUNT: PosixPath = PosixPath("/env")
 assert MOUNT.is_absolute()
 
 
-# CLI options stored in `[tool.bertrand]`
-DEFAULT_MAX_COMMITS: int = 10
-SHELLS: dict[str, tuple[str, ...]] = {
-    "bash": ("bash", "-l"),
-}
-DEFAULT_SHELL: str = "bash"
-if DEFAULT_SHELL not in SHELLS:
-    raise RuntimeError(f"default shell is unsupported: {DEFAULT_SHELL}")
-
-
 # In-container environment variables for relevant configuration, for use in upstream
 # subsystems like the container runtime and editor integration.
 CONTAINER_ID_ENV: str = "BERTRAND_CONTAINER_ID"
@@ -77,11 +69,197 @@ CONTAINER_BIN_ENV: str = "BERTRAND_CODE_PODMAN_BIN"
 EDITOR_BIN_ENV: str = "BERTRAND_CODE_EDITOR_BIN"
 HOST_ENV: str = "BERTRAND_HOST_ENV"
 
-
 # Global resource catalog.  Extensions can add resources here with associated behavior,
 # and then update the capabilities and/or profiles to place them in the generated
 # layouts, without needing to change any of the core layout application logic.
 CATALOG: dict[str,  Resource] = {}
+
+
+# Validation primitives for config fields
+DEFAULT_MAX_COMMITS: int = 10
+SHELLS: dict[str, tuple[str, ...]] = {
+    "bash": ("bash", "-l"),
+}
+DEFAULT_SHELL: str = "bash"
+if DEFAULT_SHELL not in SHELLS:
+    raise RuntimeError(f"default shell is unsupported: {DEFAULT_SHELL}")
+GLOB_REGEX = re.compile(r"^[A-Za-z0-9._/\-\*\?\[\]!]+$")
+HTTP_URL = TypeAdapter(AnyHttpUrl)
+NS_PATH_RE = re.compile(r"^ns:\S+$")
+NETWORK_MODE_RE = re.compile(rf"^(none|host|private|slirp4netns|pasta|{NS_PATH_RE.pattern})$")
+HOSTNAME_RE = re.compile(
+    r"^(?=.{1,253}$)(?!-)[A-Za-z0-9-]{1,63}(?<!-)"
+    r"(?:\.(?!-)[A-Za-z0-9-]{1,63}(?<!-))*$"
+)
+
+
+def _check_semver(version: str) -> str:
+    try:
+        Specifier(version)
+    except InvalidSpecifier as err:
+        raise ValueError(f"invalid PEP 440 requires-python specifier: {version}") from err
+    return version
+
+
+def _check_license(expression: str) -> str:
+    try:
+        return canonicalize_license_expression(expression)
+    except InvalidLicenseExpression as err:
+        raise ValueError(f"invalid PEP 639 SPDX license expression: {expression}") from err
+
+
+def _check_glob(pattern: str) -> str:
+    pattern = pattern.strip()
+    if not GLOB_REGEX.fullmatch(pattern):
+        raise ValueError(f"invalid glob pattern: '{pattern}'")
+    if pattern.startswith("/"):
+        raise ValueError(f"glob pattern cannot be absolute: '{pattern}'")
+    if any(part in ("..", ".") for part in pattern.split("/")):
+        raise ValueError(f"glob pattern cannot contain '.' or '..' segments: '{pattern}'")
+    return pattern
+
+
+def _check_email(email: str) -> str:
+    email = email.strip()
+    try:
+        return validate_email(email, check_deliverability=False).normalized
+    except EmailNotValidError as err:
+        raise ValueError(f"invalid email address: {email}") from err
+
+
+def _check_email_name(name: str) -> str:
+    name = name.strip()
+    if not name:
+        raise ValueError("email name cannot be empty")
+    if "," in name:
+        raise ValueError("email name cannot contain commas")
+    if "\n" in name or "\r" in name:
+        raise ValueError("email name cannot contain CR/LF characters")
+    return name
+
+
+def _check_url(url: str) -> str:
+    url = url.strip()
+    if not url:
+        raise ValueError("URL cannot be empty")
+    if "\n" in url or "\r" in url:
+        raise ValueError("URL cannot contain CR/LF characters")
+    try:
+        return str(HTTP_URL.validate_python(url))
+    except ValidationError as err:
+        raise ValueError(f"invalid URL: {url}") from err
+
+
+def _check_url_label(label: str) -> str:
+    chars_to_remove = string.punctuation + string.whitespace
+    removal_map = str.maketrans("", "", chars_to_remove)
+    return label.translate(removal_map).lower()
+
+
+def _check_pep508_requirement(requirement: str) -> str:
+    requirement = requirement.strip()
+    if not requirement:
+        raise ValueError("PEP 508 requirement cannot be empty")
+    try:
+        return str(Requirement(requirement))
+    except InvalidRequirement as err:
+        raise ValueError(f"invalid PEP 508 requirement: {requirement}") from err
+
+
+def _check_pep508_name(name: str) -> str:
+    name = name.strip()
+    if not name:
+        raise ValueError("PEP 508 name cannot be empty")
+    try:
+        return canonicalize_name(name, validate=True)
+    except InvalidName as err:
+        raise ValueError(f"invalid PEP 508 name: {name}") from err
+
+
+def _check_shell(shell: str) -> str:
+    shell = shell.strip()
+    if shell not in SHELLS:
+        raise ValueError(
+            f"unsupported shell: '{shell}' (supported shells: {', '.join(SHELLS)})"
+        )
+    return shell
+
+
+def _deduplicate_ignore_list(value: list[Glob]) -> list[Glob]:
+    out: list[Glob] = []
+    seen: set[Glob] = set()
+    for pattern in value:
+        if pattern in seen:
+            continue
+        out.append(pattern)
+        seen.add(pattern)
+    return out
+
+
+def _check_network_mode(value: str) -> str:
+    mode = value.strip()
+    if not NETWORK_MODE_RE.fullmatch(mode):
+        raise ValueError(
+            "invalid network mode (expected one of: "
+            "none|host|private|slirp4netns|pasta|ns:<path>)"
+        )
+    if mode.startswith("ns:") and not NS_PATH_RE.fullmatch(mode):
+        raise ValueError("invalid namespace network mode, expected 'ns:<path>'")
+    return mode
+
+
+def _check_ip_address(value: str) -> str:
+    address = value.strip()
+    if not address:
+        raise ValueError("IP address cannot be empty")
+    try:
+        return str(ipaddress.ip_address(address))
+    except ValueError as err:
+        raise ValueError(f"invalid IP address: {address}") from err
+
+
+def _check_host_ip(value: str) -> str:
+    address = value.strip()
+    if address == "host-gateway":
+        return address
+    return _check_ip_address(address)
+
+
+def _check_host_name(value: str) -> str:
+    name = value.strip()
+    if not name:
+        raise ValueError("host name cannot be empty")
+    if not HOSTNAME_RE.fullmatch(name):
+        raise ValueError(
+            f"invalid host name for add-host mapping: '{name}' (must be a valid "
+            "entry for /etc/hosts, excluding the IP address and port components)"
+        )
+    return name
+
+
+SemVer = Annotated[str, AfterValidator(_check_semver)]
+License = Annotated[str, AfterValidator(_check_license)]
+Glob = Annotated[str, AfterValidator(_check_glob)]
+Email = Annotated[str, AfterValidator(_check_email)]
+EmailName = Annotated[str, AfterValidator(_check_email_name)]
+URL = Annotated[str, AfterValidator(_check_url)]
+URLLabel = Annotated[str, AfterValidator(_check_url_label)]
+PEP508Requirement = Annotated[str, AfterValidator(_check_pep508_requirement)]
+PEP508Name = Annotated[str, AfterValidator(_check_pep508_name)]
+Entrypoint = Annotated[str, StringConstraints(
+    strip_whitespace=True,
+    pattern=r"^[A-Za-z_][A-Za-z0-9_]*:[A-Za-z_][A-Za-z0-9_]*$"
+)]
+EntrypointName = Annotated[str, StringConstraints(
+    strip_whitespace=True,
+    pattern=r"^[a-zA-Z_][a-zA-Z0-9_]*$"
+)]
+Shell = Annotated[str, AfterValidator(_check_shell)]
+IgnoreList = Annotated[list[Glob], AfterValidator(_deduplicate_ignore_list)]
+NetworkMode = Annotated[str, AfterValidator(_check_network_mode)]
+IPAddress = Annotated[str, AfterValidator(_check_ip_address)]
+HostIP = Annotated[str, AfterValidator(_check_host_ip)]
+HostName = Annotated[str, AfterValidator(_check_host_name)]
 
 
 class Template(BaseModel):
@@ -380,67 +558,9 @@ def _dump_yaml(payload: dict[str, Any], *, resource_id: str) -> str:
     return text
 
 
-def _load_pyproject(config: Config, *, resource_id: str) -> dict[str, Any]:
-    path = config.path("pyproject")
-    try:
-        text = path.read_text(encoding="utf-8")
-    except OSError as err:
-        raise OSError(
-            f"failed to read pyproject for resource '{resource_id}' at {path}: {err}"
-        ) from err
-    try:
-        parsed = tomllib.loads(text)
-    except tomllib.TOMLDecodeError as err:
-        raise OSError(
-            f"failed to parse pyproject TOML for resource '{resource_id}' at {path}: {err}"
-        ) from err
-    return _require_dict(parsed, where="pyproject")
 
 
-def _load_tool_section(
-    config: Config,
-    section: str,
-    *,
-    resource_id: str,
-    required: bool,
-) -> dict[str, Any] | None:
-    pyproject = _load_pyproject(config, resource_id=resource_id)
-    tool = _require_dict(pyproject.get("tool"), where="tool")
-    raw = tool.get(section)
-    if raw is None:
-        if required:
-            raise OSError(
-                f"missing required [tool.{section}] for resource '{resource_id}'"
-            )
-        return None
-    return _require_dict(raw, where=f"tool.{section}")
 
-
-def _require_non_empty_section(
-    section: dict[str, Any] | None,
-    *,
-    section_name: str,
-    resource_id: str,
-) -> dict[str, Any] | None:
-    """Validate that an optional tool section is either absent or non-empty."""
-    if section is None:
-        return None
-    if not section:
-        raise OSError(
-            f"empty [tool.{section_name}] cannot render resource '{resource_id}'"
-        )
-    return section
-
-
-def _normalize_ignore_list(value: Any, *, where: str) -> tuple[str, ...]:
-    out: list[str] = []
-    seen: set[str] = set()
-    for pattern in _require_str_list(value, where=where):
-        if pattern in seen:
-            continue
-        seen.add(pattern)
-        out.append(pattern)
-    return tuple(out)
 
 
 def _render_ignore_patterns(*groups: Sequence[str]) -> str:
@@ -458,337 +578,34 @@ def _render_ignore_patterns(*groups: Sequence[str]) -> str:
     return "\n".join(lines) + "\n"
 
 
-GLOB_REGEX = re.compile(r"^[A-Za-z0-9._/\-\*\?\[\]!]+$")
-HTTP_URL = TypeAdapter(AnyHttpUrl)
-ENTRYPOINT_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
-ENTRYPOINT_MODULE = re.compile(
-    r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*$"
-)
-ENTRYPOINT_ATTR = re.compile(
-    r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*$"
-)
-
-
-def _check_semver(version: str) -> str:
-    try:
-        Specifier(version)
-    except InvalidSpecifier as err:
-        raise ValueError(f"invalid PEP 440 requires-python specifier: {version}") from err
-    return version
-
-
-def _check_license(expression: str) -> str:
-    try:
-        return canonicalize_license_expression(expression)
-    except InvalidLicenseExpression as err:
-        raise ValueError(f"invalid PEP 639 SPDX license expression: {expression}") from err
-
-
-def _check_glob(pattern: str) -> str:
-    pattern = pattern.strip()
-    if not GLOB_REGEX.fullmatch(pattern):
-        raise ValueError(f"invalid glob pattern: '{pattern}'")
-    if pattern.startswith("/"):
-        raise ValueError(f"glob pattern cannot be absolute: '{pattern}'")
-    if any(part in ("..", ".") for part in pattern.split("/")):
-        raise ValueError(f"glob pattern cannot contain '.' or '..' segments: '{pattern}'")
-    return pattern
-
-
-def _check_email(email: str) -> str:
-    email = email.strip()
-    try:
-        return validate_email(email, check_deliverability=False).normalized
-    except EmailNotValidError as err:
-        raise ValueError(f"invalid email address: {email}") from err
-
-
-def _check_email_name(name: str) -> str:
-    name = name.strip()
-    if not name:
-        raise ValueError("email name cannot be empty")
-    if "," in name:
-        raise ValueError("email name cannot contain commas")
-    if "\n" in name or "\r" in name:
-        raise ValueError("email name cannot contain CR/LF characters")
-    return name
-
-
-def _check_url(url: str) -> str:
-    url = url.strip()
-    if not url:
-        raise ValueError("URL cannot be empty")
-    if "\n" in url or "\r" in url:
-        raise ValueError("URL cannot contain CR/LF characters")
-    try:
-        return str(HTTP_URL.validate_python(url))
-    except ValidationError as err:
-        raise ValueError(f"invalid URL: {url}") from err
-
-
-def _check_url_label(label: str) -> str:
-    chars_to_remove = string.punctuation + string.whitespace
-    removal_map = str.maketrans("", "", chars_to_remove)
-    return label.translate(removal_map).lower()
-
-
-def _check_pep508_requirement(requirement: str) -> str:
-    requirement = requirement.strip()
-    if not requirement:
-        raise ValueError("PEP 508 requirement cannot be empty")
-    try:
-        return str(Requirement(requirement))
-    except InvalidRequirement as err:
-        raise ValueError(f"invalid PEP 508 requirement: {requirement}") from err
-
-
-def _check_pep508_name(name: str) -> str:
-    name = name.strip()
-    if not name:
-        raise ValueError("PEP 508 name cannot be empty")
-    try:
-        return canonicalize_name(name, validate=True)
-    except InvalidName as err:
-        raise ValueError(f"invalid PEP 508 name: {name}") from err
-
-
-def _check_entrypoint_name(name: str) -> str:
-    name = name.strip()
-    if not name:
-        raise ValueError("entrypoint name cannot be empty")
-    if "\n" in name or "\r" in name:
-        raise ValueError("entrypoint name cannot contain CR/LF characters")
-    if not ENTRYPOINT_NAME.fullmatch(name):
-        raise ValueError(f"invalid entrypoint name: '{name}'")
-    return name
-
-
-def _check_entrypoint(value: str) -> str:
-    entrypoint = value.strip()
-    if entrypoint.count(":") != 1:
-        raise ValueError(f"entrypoint must be of form 'module:attr': '{entrypoint}'")
-
-    module, attr = entrypoint.split(":", maxsplit=1)
-    if not module or not attr:
-        raise ValueError(f"entrypoint must include both module and attr: '{entrypoint}'")
-    if not ENTRYPOINT_MODULE.fullmatch(module):
-        raise ValueError(f"entrypoint module path is invalid: '{module}'")
-    if not ENTRYPOINT_ATTR.fullmatch(attr):
-        raise ValueError(f"entrypoint attr path is invalid: '{attr}'")
-
-    return entrypoint
-
-
-SemVer = Annotated[str, AfterValidator(_check_semver)]
-License = Annotated[str, AfterValidator(_check_license)]
-Glob = Annotated[str, AfterValidator(_check_glob)]
-Email = Annotated[str, AfterValidator(_check_email)]
-EmailName = Annotated[str, AfterValidator(_check_email_name)]
-URL = Annotated[str, AfterValidator(_check_url)]
-URLLabel = Annotated[str, AfterValidator(_check_url_label)]
-PEP508Requirement = Annotated[str, AfterValidator(_check_pep508_requirement)]
-PEP508Name = Annotated[str, AfterValidator(_check_pep508_name)]
-Entrypoint = Annotated[str, AfterValidator(_check_entrypoint)]
-EntrypointName = Annotated[str, AfterValidator(_check_entrypoint_name)]
-
 
 @resource("pyproject", template="core/pyproject/2026-02-15")
 class PyProject(Resource):
-    """A resource describing a `pyproject.toml` file, which is used to configure
-    Python projects and tools, and is also used as the primary vehicle for
-    configuring Bertrand itself through the `[tool.bertrand]` section.
-
-    Parses to a normalized config snapshot fragment of the form:
-
-        {
-            "name": str,
-            "version": str,
-            "shell": str,
-            "max_commits": int,
-            "ignore": tuple[str, ...],
-            "git_ignore": tuple[str, ...],
-            "container_ignore": tuple[str, ...],
-            "images": {
-                "<image_tag>": {
-                    "tag": str,
-                    "containerfile_args": tuple[str, ...],
-                    "asan": bool,
-                    "ubsan": bool,
-                    ...
-                },
-            },
-        }
+    """A resource describing a `pyproject.toml` file, which is the primary vehicle for
+    configuring a top-level Python project, as well as Bertrand itself and its entire
+    toolchain via the `[tool.bertrand]` table.
     """
     # pylint: disable=missing-function-docstring, unused-argument, missing-return-doc
 
-    # TODO: maybe the build system should be pinned to `bertrand.build`?
+    def parse(self, config: Config) -> dict[Any, Any] | None:
+        path = config.path("pyproject")
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError as err:
+            raise OSError(
+                f"failed to read pyproject for resource 'pyproject' at {path}: {err}"
+            ) from err
 
-    class BuildSystem(BaseModel):
-        """Validate the `[build-system]` table."""
-        model_config = ConfigDict(extra="allow")
-        requires: list[str] = Field(default_factory=lambda: ["bertrand"])
-        build_backend: str = Field(default="bertrand.build", alias="build-backend")
+        try:
+            parsed = tomllib.loads(text)
+        except tomllib.TOMLDecodeError as err:
+            raise OSError(
+                f"failed to parse pyproject TOML for resource 'pyproject' at {path}: {err}"
+            ) from err
 
-    class Project(BaseModel):
-        """Validate the `[project]` table."""
-        class Author(BaseModel):
-            """Validate entries in the `authors` and `maintainers` lists."""
-            model_config = ConfigDict(extra="forbid")
-            name: EmailName | None = None
-            email: Email | None = None
-
-            @model_validator(mode="after")
-            def _require_name_or_email(self) -> Self:
-                if self.name is None and self.email is None:
-                    raise ValueError("at least one of 'name' or 'email' must be provided")
-                return self
-
-        model_config = ConfigDict(extra="allow", populate_by_name=True)
-        name: str = Field()
-        version: str = Field()
-        description: str | None = Field(default=None)
-        readme: PosixPath | None = Field(default=None)
-        requires_python: SemVer | None = Field(default=VERSION.python, alias="requires-python")
-        license: License | None = Field(default=None)
-        license_files: list[Glob] | None = Field(default=None, alias="license-files")
-        authors: list[Author] = Field(default_factory=list)
-        maintainers: list[Author] = Field(default_factory=list)
-        keywords: list[str] = Field(default_factory=list)
-        classifiers: list[str] = Field(default_factory=list)
-        dependencies: list[PEP508Requirement] = Field(default_factory=list)
-        optional_dependencies: dict[PEP508Name, list[PEP508Requirement]] = Field(
-            default_factory=dict,
-            alias="optional-dependencies"
-        )
-        scripts: dict[EntrypointName, Entrypoint] = Field(default_factory=dict)
-        gui_scripts: dict[EntrypointName, Entrypoint] = Field(
-            default_factory=dict,
-            alias="gui-scripts"
-        )
-        urls: dict[URLLabel, URL] = Field(default_factory=dict)
-
-        @model_validator(mode="after")
-        def _validate_script_collisions(self) -> Self:
-            collisions = set(self.scripts).intersection(set(self.gui_scripts))
-            if collisions:
-                raise ValueError(
-                    "duplicate script names across 'project.scripts' and "
-                    f"'project.gui-scripts': {', '.join(sorted(collisions))}"
-                )
-            return self
-
-        def _resolve_licenses(self, pyproject: Path) -> None:
-            root = pyproject.parent
-            seen: set[str] = set()
-            for pattern in self.license_files or ():
-                for path in sorted(
-                    (p for p in root.glob(pattern) if p.is_file()),
-                    key=lambda p: p.as_posix()
-                ):
-                    relative = path.relative_to(root).as_posix()
-                    if relative not in seen:
-                        try:
-                            path.read_text(encoding="utf-8")
-                        except UnicodeDecodeError as err:
-                            raise OSError(
-                                f"license file is not UTF-8 encoded '{relative}': {err}"
-                            ) from err
-                        seen.add(relative)
-
-    class Bertrand(BaseModel):
-        """Pydantic model for validating the `[tool.bertrand]` table."""
-        class Image(BaseModel):
-            """Pydantic model for validating entries in the `[[tool.bertrand.images]]`
-            table.
-            """
-            model_config = ConfigDict(extra="forbid")
-            tag: Annotated[str, AfterValidator(
-                lambda x: _require_sanitized_str(x, where="tool.bertrand.images.tag")
-            )] = ""
-            containerfile_args: Annotated[list[str], AfterValidator(
-                lambda x: _require_str_list(x, where="tool.bertrand.images.containerfile_args")
-            )] = []
-            asan: bool = False
-            ubsan: bool = False
-            # TODO: figure out full spec here
-
-        @staticmethod
-        def _validate_shell(value: Any) -> str:
-            text = _require_str_value(value, where="tool.bertrand.shell")
-            if text not in SHELLS:
-                raise OSError(
-                    f"unsupported shell at 'tool.bertrand.shell': '{text}' "
-                    f"(supported: {', '.join(sorted(SHELLS))})"
-                )
-            return text
-
-        model_config = ConfigDict(extra="forbid")
-        shell: Annotated[str, AfterValidator(_validate_shell)] = "bash"
-        max_commits: PositiveInt = DEFAULT_MAX_COMMITS
-        ignore: Annotated[list[str], AfterValidator(
-            lambda x: _normalize_ignore_list(x, where="tool.bertrand.ignore")
-        )] = []
-        git_ignore: Annotated[list[str], AfterValidator(
-            lambda x: _normalize_ignore_list(x, where="tool.bertrand.git_ignore")
-        )] = []
-        container_ignore: Annotated[list[str], AfterValidator(
-            lambda x: _normalize_ignore_list(x, where="tool.bertrand.container_ignore")
-        )] = []
-        images: list[Image] = []
-
-    # TODO: parse should just return a raw dictionary containing the loaded keys and
-    # values, and then let the pydantic models handle validation and normalization
-
-    def parse(self, config: Config) -> dict[str, Any] | None:
-        # pylint: disable=protected-access
-        resource_id = "pyproject"
-        pyproject = _load_pyproject(config, resource_id=resource_id)
-        pyproject_path = config.path("pyproject")
-
-        # validate `[project]`
-        project = PyProject.Project.model_validate(
-            _require_dict(pyproject.get("project"), where="project")
-        )
-        project._resolve_licenses(pyproject_path)
-
-
-
-        # begin merging config fragments
-        merged: dict[str, JSONValue] = {
-            "name": project.name,
-            "version": project.version
-        }
-
-        # extract `[tool]`
-        tool_raw = pyproject.get("tool")
-        if tool_raw is None:
-            raise OSError(f"missing '[tool]' table in resource '{resource_id}'")
-        tool = _require_dict(tool_raw, where="tool")
-
-        # validate `[tool.bertrand]`
-        bertrand = PyProject.Bertrand.model_validate(
-            _require_dict(tool.get("bertrand"), where="tool.bertrand")
-        )
-        merged["max_commits"] = bertrand.max_commits
-        merged["shell"] = bertrand.shell
-        merged["ignore"] = cast(JSONValue, bertrand.ignore)
-        merged["git_ignore"] = cast(JSONValue, bertrand.git_ignore)
-        merged["container_ignore"] = cast(JSONValue, bertrand.container_ignore)
-
-        # validate `[[tool.bertrand.images]]`
-        images: dict[str, JSONValue] = {}
-        for image in bertrand.images:
-            if image.tag in images:
-                raise OSError(
-                    f"duplicate image tag in '[tool.bertrand.images]': "
-                    f"'{image.tag}'"
-                )
-            images[image.tag] = image.model_dump(mode="python")
-        if "" not in images:
-            images[""] = PyProject.Bertrand.Image().model_dump(mode="python")
-        merged["images"] = images
-
-        return merged
+        if not isinstance(parsed, dict):
+            raise OSError(f"expected mapping at 'pyproject', got {type(parsed).__name__}")
+        return parsed
 
 
 @resource("containerignore", template="core/containerignore/2026-02-15")
@@ -982,6 +799,10 @@ class Clangd(Resource):
 # top to avoid duplication.
 
 
+# TODO: since profiles and capabilities are now so compact, I can just get rid of the
+# "*" baseline thing and make the system a lot more robust.
+
+
 # Profiles define only resource placement paths: wildcard baseline + profile diffs.
 PROFILES: dict[str, dict[str, PosixPath]] = {
     "*": {
@@ -1075,22 +896,203 @@ class Config:
         mount_path: str = field(default=str(MOUNT))
         cache_dir: str = field(default="/tmp/.cache")
 
+    class BuildSystem(BaseModel):
+        """Validate the `[build-system]` table."""
+        model_config = ConfigDict(extra="forbid")
+        requires: list[str] = Field()
+
+        @field_validator("requires")
+        @classmethod
+        def _validate_requires(cls, value: list[str]) -> list[str]:
+            if value != ["bertrand"]:
+                raise ValueError("build-system.requires must be set to ['bertrand']")
+            return value
+
+    class Project(BaseModel):
+        """Validate the `[project]` table."""
+        class Author(BaseModel):
+            """Validate entries in the `authors` and `maintainers` lists."""
+            model_config = ConfigDict(extra="forbid")
+            name: EmailName | None = Field(default=None)
+            email: Email | None = Field(default=None)
+
+            @model_validator(mode="after")
+            def _require_name_or_email(self) -> Self:
+                if self.name is None and self.email is None:
+                    raise ValueError("at least one of 'name' or 'email' must be provided")
+                return self
+
+        model_config = ConfigDict(extra="allow", populate_by_name=True)
+        name: str = Field()
+        version: str = Field()
+        description: str | None = Field(default=None)
+        readme: PosixPath | None = Field(default=None)
+        requires_python: SemVer | None = Field(default=VERSION.python, alias="requires-python")
+        license: License | None = Field(default=None)
+        license_files: list[Glob] | None = Field(default=None, alias="license-files")
+        authors: list[Author] = Field(default_factory=list)
+        maintainers: list[Author] = Field(default_factory=list)
+        keywords: list[str] = Field(default_factory=list)
+        classifiers: list[str] = Field(default_factory=list)
+        dependencies: list[PEP508Requirement] = Field(default_factory=list)
+        optional_dependencies: dict[PEP508Name, list[PEP508Requirement]] = Field(
+            default_factory=dict,
+            alias="optional-dependencies"
+        )
+        scripts: dict[EntrypointName, Entrypoint] = Field(default_factory=dict)
+        gui_scripts: dict[EntrypointName, Entrypoint] = Field(
+            default_factory=dict,
+            alias="gui-scripts"
+        )
+        urls: dict[URLLabel, URL] = Field(default_factory=dict)
+
+        @model_validator(mode="after")
+        def _validate_script_collisions(self) -> Self:
+            collisions = set(self.scripts).intersection(set(self.gui_scripts))
+            if collisions:
+                raise ValueError(
+                    "duplicate script names across 'project.scripts' and "
+                    f"'project.gui-scripts': {', '.join(sorted(collisions))}"
+                )
+            return self
+
+        def _resolve_licenses(self, root: Path) -> None:
+            seen: set[str] = set()
+            for pattern in self.license_files or ():
+                for path in sorted(
+                    (p for p in root.glob(pattern) if p.is_file()),
+                    key=lambda p: p.as_posix()
+                ):
+                    relative = path.relative_to(root).as_posix()
+                    if relative not in seen:
+                        try:
+                            path.read_text(encoding="utf-8")
+                        except UnicodeDecodeError as err:
+                            raise OSError(
+                                f"license file is not UTF-8 encoded '{relative}': {err}"
+                            ) from err
+                        seen.add(relative)
+
+    class Tool(BaseModel):
+        """Validate the `[tool]` table."""
+        class Bertrand(BaseModel):
+            """Validate the `[tool.bertrand]` table."""
+            model_config = ConfigDict(extra="forbid")
+            max_commits: PositiveInt = Field(
+                default=DEFAULT_MAX_COMMITS,
+                alias="max-commits"
+            )
+            shell: Shell = Field(default=DEFAULT_SHELL)
+            ignore: IgnoreList = Field(default_factory=list)
+            git_ignore: IgnoreList = Field(
+                default_factory=list,
+                alias="git-ignore"
+            )
+            container_ignore: IgnoreList = Field(
+                default_factory=list,
+                alias="container-ignore"
+            )
+            services: list[str] = Field(default_factory=list)
+
+            class Network(BaseModel):
+                """Validate the `[tool.bertrand.network]` table."""
+                class Table(BaseModel):
+                    """Validate the `[tool.bertrand.network.build/run]` tables."""
+                    model_config = ConfigDict(extra="forbid")
+                    mode: NetworkMode = Field(default="pasta")
+                    options: list[str] = Field(default_factory=list)
+                    dns: list[IPAddress] = Field(default_factory=list)
+                    dns_search: list[str] = Field(
+                        default_factory=list,
+                        alias="dns-search"
+                    )
+                    dns_options: list[str] = Field(
+                        default_factory=list,
+                        alias="dns-options"
+                    )
+                    add_host: dict[HostName, HostIP] = Field(
+                        default_factory=dict,
+                        alias="add-host"
+                    )
+
+                    @model_validator(mode="after")
+                    def _validate_none_mode(self) -> Self:
+                        if self.mode == "none" and (
+                            self.options or
+                            self.dns or
+                            self.dns_search or
+                            self.dns_options or
+                            self.add_host
+                        ):
+                            raise ValueError(
+                                "network mode 'none' requires empty options, dns, "
+                                "dns-search, dns-options, and add-host"
+                            )
+                        return self
+
+                model_config = ConfigDict(extra="forbid")
+                build: Table = Field(default_factory=Table)
+                run: Table = Field(default_factory=Table)
+
+            network: Network = Field(default_factory=Network)
+
+            class Tag(BaseModel):
+                """Validate entries in the `[[tool.bertrand.tags]]` table."""
+                model_config = ConfigDict(extra="forbid")
+                tag: Annotated[str, AfterValidator(
+                    lambda x: _require_sanitized_str(x, where="tool.bertrand.tags.tag")
+                )] = ""
+                containerfile_args: Annotated[list[str], AfterValidator(
+                    lambda x: _require_str_list(x, where="tool.bertrand.tags.containerfile_args")
+                )] = []
+                asan: bool = False
+                ubsan: bool = False
+                # TODO: figure out full spec here
+
+            tags: list[Tag] = []
+
+            @model_validator(mode="after")
+            def _validate_services(self) -> Self:
+                valid = set(t.tag for t in self.tags)
+                seen: set[str] = set()
+                invalid: list[str] = []
+                for service in self.services:
+                    if service in seen:
+                        raise ValueError(
+                            "duplicate service name in 'tool.bertrand.services': "
+                            f"'{service}'"
+                        )
+                    if service not in valid:
+                        invalid.append(service)
+                    seen.add(service)
+                if invalid:
+                    raise ValueError(
+                        "found service names in 'tool.bertrand.services' with no "
+                        f"matching tag in 'tool.bertrand.tags': {', '.join(invalid)}"
+                    )
+                return self
+
+        model_config = ConfigDict(extra="allow")
+        bertrand: Bertrand | None = Field(default=None)
+
+    class Parse(BaseModel):
+        """Validate the output of the `parse()` pass for all resources."""
+        model_config = ConfigDict(extra="forbid")
+        build_system: Config.BuildSystem | None = Field(default=None, alias="build-system")
+        project: Config.Project | None = Field(default=None)
+        tool: Config.Tool | None = Field(default=None)
+
     root: Path
     resources: dict[str, PosixPath]
-    _entered: int = field(default=0, init=False, repr=False)
-    _snapshot: Any | None = field(default=None, init=False, repr=False)
-    _snapshot_key_owner: dict[tuple[str, ...], str] = field(
+    build_system: Config.BuildSystem | None = field(default=None, repr=False)
+    project: Config.Project | None = field(default=None, repr=False)
+    tool: Config.Tool | None = field(default=None, repr=False)
+    _entered: int = field(default=0, repr=False)
+    _key_owner: dict[tuple[str, ...], str] = field(
         default_factory=dict,
         init=False,
         repr=False,
     )
-
-    def __post_init__(self) -> None:
-        self.root = self.root.expanduser().resolve()
-        for r_id, path in self.resources.items():
-            if r_id not in CATALOG:
-                raise ValueError(f"unknown resource id in config: '{r_id}'")
-            self._check_relative_path(path, where=f"resource '{r_id}'")
 
     @staticmethod
     def _check_relative_path(path: PosixPath, *, where: str) -> None:
@@ -1102,6 +1104,13 @@ class Config:
             raise OSError(
                 f"mapped resource path must not traverse parents at '{where}': {path}"
             )
+
+    def __post_init__(self) -> None:
+        self.root = self.root.expanduser().resolve()
+        for r_id, path in self.resources.items():
+            if r_id not in CATALOG:
+                raise ValueError(f"unknown resource id in config: '{r_id}'")
+            self._check_relative_path(path, where=f"resource '{r_id}'")
 
     @classmethod
     def load(cls, env_root: Path) -> Self:
@@ -1416,18 +1425,18 @@ class Config:
                         f"{path}: {err}"
                     ) from err
 
-    def _merge_snapshot_fragment(
+    def _merge_fragment(
         self,
         resource_id: str,
-        fragment: dict[str, Any],
-        snapshot: dict[str, Any],
+        fragment: dict[Any, Any],
+        merged: dict[str, Any],
         *,
         key_owner: dict[tuple[str, ...], str],
         path_prefix: tuple[str, ...] = (),
     ) -> None:
         for raw_key, value in fragment.items():
-            if not isinstance(raw_key, str):  # defensive check
-                if path_prefix:  # type: ignore[unreachable]
+            if not isinstance(raw_key, str):
+                if path_prefix:
                     parent = ".".join(path_prefix)
                 else:
                     parent = "<root>"
@@ -1438,90 +1447,100 @@ class Config:
 
             # insert value if key is new, and recurse if value is a nested dict
             key_path = path_prefix + (raw_key,)
-            if raw_key not in snapshot:
+            if raw_key not in merged:
                 if isinstance(value, dict):
                     child: dict[str, Any] = {}
-                    snapshot[raw_key] = child
+                    merged[raw_key] = child
                     key_owner[key_path] = resource_id
-                    self._merge_snapshot_fragment(
+                    self._merge_fragment(
                         resource_id,
                         value,
                         child,
-                        path_prefix=key_path,
                         key_owner=key_owner,
+                        path_prefix=key_path,
                     )
                 else:
-                    snapshot[raw_key] = value
+                    merged[raw_key] = value
                     key_owner[key_path] = resource_id
                 continue
 
             # if an existing key is present, and both the key and value are nested
             # dicts, then merge recursively
-            existing = snapshot[raw_key]
-            existing_owner = key_owner.get(key_path, "<unknown>")
+            existing = merged[raw_key]
             if isinstance(existing, dict) and isinstance(value, dict):
-                self._merge_snapshot_fragment(
+                self._merge_fragment(
                     resource_id,
                     value,
                     existing,
-                    path_prefix=key_path,
                     key_owner=key_owner,
+                    path_prefix=key_path,
                 )
                 continue
 
             # otherwise, this is a collision
+            owner = key_owner.get(key_path, "<unknown>")
             raise OSError(
                 f"config parse key collision at '{'.'.join(key_path)}' between "
-                f"resources '{existing_owner}' and '{resource_id}'"
+                f"resources '{owner}' and '{resource_id}'"
             )
 
     def __enter__(self) -> Self:
         """Load a context-scoped config snapshot from parse-capable resources."""
-        if self._entered == 0:
+        if self._entered > 0:  # re-entrant case
+            self._entered += 1
+            return self
+
+        try:
             with lock_env(self.root):
-                try:
-                    snapshot: dict[str, Any] = {}
-                    key_owner: dict[tuple[str, ...], str] = {}
-                    for resource_id in sorted(self.resources):
-                        r = CATALOG.get(resource_id)
-                        if r is None:
-                            raise OSError(
-                                f"config references unknown resource ID: '{resource_id}'"
-                            )
+                merged: dict[str, Any] = {}
+                key_owner: dict[tuple[str, ...], str] = {}
 
-                        # invoke parser to extract config fragment
-                        try:
-                            result = r.parse(self)
-                            if result is None:
-                                continue
-                        except Exception as err:
-                            raise OSError(
-                                f"failed to parse resource '{resource_id}' at "
-                                f"{self.path(resource_id)}: {err}"
-                            ) from err
-                        if not isinstance(result, dict) or not all(
-                            isinstance(k, str) for k in result
-                        ):
-                            raise OSError(
-                                f"parse hook for resource '{resource_id}' must return a "
-                                f"string mapping: {result}"
-                            )
-
-                        # merge fragment into snapshot, checking for key collisions
-                        self._merge_snapshot_fragment(
-                            resource_id,
-                            result,
-                            snapshot,
-                            key_owner=key_owner,
+                # invoke parse hooks for all resources in deterministic order
+                for resource_id in sorted(self.resources):
+                    r = CATALOG.get(resource_id)
+                    if r is None:
+                        raise OSError(
+                            f"config references unknown resource ID: '{resource_id}'"
                         )
-                except:
-                    self._snapshot = None
-                    self._snapshot_key_owner = {}
-                    raise
-            self._snapshot = _freeze(snapshot)
-            self._snapshot_key_owner = key_owner
-        self._entered += 1
-        return self
+
+                    # extract config fragment and ensure key-value mapping
+                    try:
+                        result = r.parse(self)
+                        if result is None:
+                            continue
+                    except Exception as err:
+                        raise OSError(
+                            f"failed to parse resource '{resource_id}' at "
+                            f"{self.path(resource_id)}: {err}"
+                        ) from err
+                    if not isinstance(result, dict):
+                        raise OSError(
+                            f"parse hook for resource '{resource_id}' must return a "
+                            f"string mapping: {result}"
+                        )
+
+                    # merge fragment into snapshot, checking for key collisions
+                    self._merge_fragment(
+                        resource_id,
+                        result,
+                        merged,
+                        key_owner=key_owner,
+                    )
+
+                # validate merged snapshot against expected schema
+                data = Config.Parse.model_validate(merged)
+                self.build_system = data.build_system
+                self.project = data.project
+                self.tool = data.tool
+                self._key_owner = key_owner
+                self._entered += 1
+                return self
+        except:
+            self.build_system = None
+            self.project = None
+            self.tool = None
+            self._key_owner = {}
+            raise
 
     def __exit__(
         self,
@@ -1534,68 +1553,13 @@ class Config:
             raise RuntimeError("layout context is not active")
         self._entered -= 1
         if self._entered == 0:
-            self._snapshot = None
-            self._snapshot_key_owner = {}
-
-    def __getitem__(self, key: str) -> Any:
-        if self._entered < 1 or self._snapshot is None:
-            raise RuntimeError(
-                "layout config snapshot is unavailable outside an active layout context"
-            )
-        if not isinstance(key, str):
-            raise TypeError(f"invalid key type: {type(key)}")
-        return self._snapshot[key]
-
-    def __iter__(self) -> Iterator[str]:
-        if self._entered < 1 or self._snapshot is None:
-            raise RuntimeError(
-                "layout config snapshot is unavailable outside an active layout context"
-            )
-        return iter(self._snapshot)
-
-    def __contains__(self, key: str) -> bool:
-        if self._entered < 1 or self._snapshot is None:
-            raise RuntimeError(
-                "layout config snapshot is unavailable outside an active layout context"
-            )
-        if not isinstance(key, str):
-            raise TypeError(f"invalid key type: {type(key)}")
-        return key in self._snapshot
+            self.build_system = None
+            self.project = None
+            self.tool = None
+            self._key_owner = {}
 
     def __bool__(self) -> bool:
-        return self._entered > 0 and self._snapshot is not None
-
-    def get(self, key: str, default: Any = None) -> Any:
-        """Look up a key in the active context snapshot, returning a default value if
-        the key is not present.
-
-        Parameters
-        ----------
-        key : str
-            The key to look up in the snapshot.
-        default : Any, optional
-            The value to return if the key is not present, by default None.
-
-        Returns
-        -------
-        Any
-            The value associated with the key in the snapshot, or the default value if
-            the key is not present.
-
-        Raises
-        ------
-        RuntimeError
-            If there is no active layout context or if the snapshot is unavailable.
-        TypeError
-            If the key is not a string.
-        """
-        if self._entered < 1 or self._snapshot is None:
-            raise RuntimeError(
-                "layout config snapshot is unavailable outside an active layout context"
-            )
-        if not isinstance(key, str):
-            raise TypeError(f"invalid key type: {type(key)}")
-        return self._snapshot.get(key, default)
+        return self._entered > 0
 
     def resource(self, resource_id: str) -> Resource:
         """Retrieve the resource specification for the given resource ID.
@@ -1709,7 +1673,7 @@ class Config:
             If render hooks fail, return invalid output, or if any filesystem I/O
             fails during artifact synchronization.
         """
-        if self._entered < 1 or self._snapshot is None:
+        if not self:
             raise RuntimeError(
                 "layout config snapshot is unavailable outside an active layout context"
             )

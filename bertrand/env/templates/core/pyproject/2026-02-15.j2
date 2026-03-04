@@ -1,6 +1,5 @@
 [build-system]
 requires = ["bertrand"]
-build-backend = "bertrand.build"
 
 [project]
 name = "{{ project_name }}"
@@ -71,7 +70,7 @@ prerelease = "if-necessary-or-explicit"     # include prereleases only when requ
 
 [tool.bertrand.conan]
 requires = []           # e.g. ["fmt/11.0.2", "nlohmann_json/3.12.0"]
-tool_requires = []      # e.g. ["cmake/3.30.5", "ninja/1.12.1"]
+tool-requires = []      # e.g. ["cmake/3.30.5", "ninja/1.12.1"]
 options = {}            # e.g. { "fmt/*:header_only" = true }
 conf = {}               # e.g. { "tools.build:jobs" = 16 }
 build_type = "Release"  # Release|Debug (may be overridden in build matrix tags)
@@ -95,7 +94,7 @@ build_type = "Release"  # Release|Debug (may be overridden in build matrix tags)
 ########################
 
 [tool.bertrand]
-max_commits = {{ max_commits }}        # number of commits to store, after which LRU eviction begins
+max-commits = {{ max_commits }}        # number of commits to store, after which LRU eviction begins
 shell = "{{ shell }}"          # shell to execute during `bertrand enter`
 ignore = [              # ignore patterns shared between .gitignore and .containerignore
     ".bertrand/",
@@ -121,31 +120,31 @@ ignore = [              # ignore patterns shared between .gitignore and .contain
     ".idea/",
     ".DS_Store",
 ]
-git_ignore = []         # additional .gitignore patterns
-container_ignore = [    # additional .containerignore patterns
+git-ignore = []         # additional .gitignore patterns
+container-ignore = [    # additional .containerignore patterns
     ".git/",
     ".gitignore",
 ]
 services = []           # optional service orchestration, using tags from the build matrix
                         # below.  If non-empty, then a `kube.yaml` artifact will be generated
                         # and played when starting the environment.  Each entry will be built
-                        # and started in sequence, using its build matrix definition.
+                        # and started in sequence using its matching build matrix definition.
 
 [tool.bertrand.network.build]
 mode = "pasta"          # -> --network (none|host|ns:path|private|slirp4netns|pasta)
 options = []            # mode-specific option tokens (see podman docs)
 dns = []                # -> --dns (ip addresses of custom DNS servers)
-dns_search = []         # -> --dns-search (custom DNS search domains)
-dns_options = []        # -> --dns-option (DNS options, stored in `/etc/resolv.conf`)
-add_host = {}           # -> --add-host (hostname = ip|"host-gateway", stored in `/etc/hosts`)
+dns-search = []         # -> --dns-search (custom DNS search domains)
+dns-options = []        # -> --dns-option (DNS options, stored in `/etc/resolv.conf`)
+add-host = {}           # -> --add-host (hostname = ip|"host-gateway", stored in `/etc/hosts`)
 
 [tool.bertrand.network.run]
 mode = "pasta"          # -> --network (none|host|ns:path|private|slirp4netns|pasta)
 options = []            # mode-specific option tokens (see podman docs)
 dns = []                # -> --dns (ip addresses of custom DNS servers)
-dns_search = []         # -> --dns-search (custom DNS search domains)
-dns_options = []        # -> --dns-option (DNS options, stored in `/etc/resolv.conf`)
-add_host = {}           # -> --add-host (hostname = ip|"host-gateway", stored in `/etc/hosts`)
+dns-search = []         # -> --dns-search (custom DNS search domains)
+dns-options = []        # -> --dns-option (DNS options, stored in `/etc/resolv.conf`)
+add-host = {}           # -> --add-host (hostname = ip|"host-gateway", stored in `/etc/hosts`)
 
 ############################
 ####    BUILD MATRIX    ####
@@ -161,28 +160,28 @@ add_host = {}           # -> --add-host (hostname = ip|"host-gateway", stored in
 tag = ""
 dependencies = []       # additional Python-level dependencies to install for this tag
 containerfile = "Containerfile"  # -> --file, relative (posix) path from worktree root
-build_args = {}         # -> --build-arg (key = value), passed into containerfile
-env_file = []           # -> --env-file, relative (posix) path from worktree root
+build-args = {}         # -> --build-arg (key = value), passed into containerfile
+env-file = []           # -> --env-file, relative (posix) path from worktree root
 ports = [               # -> --publish
     # e.g. { container = 8000, host = 8000, host_ip = "127.0.0.1", protocol = "tcp" },
 ]
-network_aliases = [     # -> --network-alias (for inter-tag network communication)
+network-aliases = [     # -> --network-alias (for inter-tag network communication)
     # e.g. "postgres"
 ]
 cpus = 0.0              # -> --cpus (can be >1 to use multiple cores, 0.0 => unlimited)
 memory = "0"            # -> --memory ("0" => unlimited)
-pids_limit = 2048       # -> --pids-limit  (max processes in container, -1 => unlimited)
-shm_size = "64m"        # -> --shm-size  (size of `/dev/shm`, for IPC within a container)
+pids-limit = 2048       # -> --pids-limit  (max processes in container, -1 => unlimited)
+shm-size = "64m"        # -> --shm-size  (size of `/dev/shm`, for IPC within a container)
 ulimit = [              # -> --ulimit
     # e.g. { name = "nproc", soft = 4096, hard = 8192 },
 ]
-cap_add = [             # -> --cap-add
+cap-add = [             # -> --cap-add
     # e.g. "NET_BIND_SERVICE"
 ]
-cap_drop = [            # -> --cap-drop
+cap-drop = [            # -> --cap-drop
     # e.g. "ALL"
 ]
-security_opt = [        # -> --security-opt
+security-opt = [        # -> --security-opt
     # e.g. "no-new-privileges"
 ]
 userns = ""             # -> --userns (""|host|private|keep-id|auto|nomap|ns:path)
@@ -212,7 +211,7 @@ run = []                # Secret IDs (SCREAMING_SNAKE_CASE, e.g. ["DB_PASSWORD"]
 
 [tool.bertrand.tags.conan]
 requires = []           # e.g. ["boost/1.86.0"] (additive with [tool.conan].requires)
-tool_requires = []      # e.g. ["protobuf/5.28.0"]
+tool-requires = []      # e.g. ["protobuf/5.28.0"]
 options = {}            # e.g. { "boost/*:without_test" = true }
 conf = {}               # e.g. { "tools.cmake.cmaketoolchain:generator" = "Ninja" }
 build_type = ""         # empty => inherit [tool.bertrand.conan].build_type
@@ -228,11 +227,11 @@ timeout = 10            # -> --stop-timeout
 
 [tool.bertrand.tags.restart]
 policy = "no"           # -> --restart (no|on-failure|always|unless-stopped)
-max_retries = 0         # -> --restart-retries (only for on-failure, ignored otherwise)
+max-retries = 0         # -> --restart-retries (only for on-failure, ignored otherwise)
 
 [tool.bertrand.tags.healthcheck]
 cmd = []                # -> --health-cmd (e.g. ["curl", "-f", "<ip>"], disabled when empty)
-on_failure = "kill"     # -> --health-on-failure (none|kill|stop, "kill" invokes restart policy)
+on-failure = "kill"     # -> --health-on-failure (none|kill|stop, "kill" invokes restart policy)
 retries = 3             # -> --health-retries
 interval = "30s"        # -> --health-interval
 timeout = "30s"         # -> --health-timeout
@@ -246,8 +245,8 @@ timeout = "30s"         # -> --health-startup-timeout
 
 [tool.bertrand.tags.healthcheck.log]
 destination = "local"   # -> --health-log-destination
-max_count = 5           # -> --health-max-log-count
-max_size = 500          # -> --health-max-log-size
+max-count = 5           # -> --health-max-log-count
+max-size = 500          # -> --health-max-log-size
 
 # NOTE: `env:debug` compiles with debug assertions and instrumentation to detect
 # memory errors and undefined behavior.  This tag is provided by default to simplify
@@ -278,35 +277,35 @@ max_size = 500          # -> --health-max-log-size
 [[tool.bertrand.tags]]
 tag = "debug"
 dependencies = []                   # additional Python-level dependencies for this tag
-build_args = { DEBUG = true }
+build-args = { DEBUG = true }
 
 [tool.bertrand.tags.conan]
-build_type = "Debug"                # compile conan dependencies in debug mode
+build-type = "Debug"                # compile conan dependencies in debug mode
 
 [[tool.bertrand.tags.instruments]]
 tool = "asan"
-detect_leaks = "1"                  # report memory leaks at process exit
-halt_on_error = "1"                 # abort on first ASan finding (fail-fast)
+detect-leaks = "1"                  # report memory leaks at process exit
+halt-on-error = "1"                 # abort on first ASan finding (fail-fast)
 symbolize = "1"                     # resolve addresses to file:line/function in reports
-detect_stack_use_after_return = "1" # detect stale stack references after function return
-strict_string_checks = "1"          # tighten checks around libc string/memory functions
-fast_unwind_on_fatal = "0"          # use slower precise unwinder for higher-fidelity traces
+detect-stack-use-after-return = "1" # detect stale stack references after function return
+strict-string-checks = "1"          # tighten checks around libc string/memory functions
+fast-unwind-on-fatal = "0"          # use slower precise unwinder for higher-fidelity traces
 
 [[tool.bertrand.tags.instruments]]
 tool = "ubsan"
 undefined = "true"                  # enable broad undefined-behavior instrumentation
-halt_on_error = "1"                 # abort on first UBSan finding (fail-fast)
-print_stacktrace = "1"              # include stacktrace for each UB report
+halt-on-error = "1"                 # abort on first UBSan finding (fail-fast)
+print-stacktrace = "1"              # include stacktrace for each UB report
 symbolize = "1"                     # resolve addresses to file:line/function in reports
-report_error_type = "1"             # include UB category (e.g. signed-overflow)
-print_summary = "1"                 # print end-of-run summary of UBSan reports
+report-error-type = "1"             # include UB category (e.g. signed-overflow)
+print-summary = "1"                 # print end-of-run summary of UBSan reports
 
 [[tool.bertrand.tags.instruments]]
 tool = "lldb"
-auto_run = true                     # launch target immediately inside LLDB
-no_lldbinit = true                  # ignore host/user init files for reproducibility
-source_quietly = true               # suppress echoed auto-issued LLDB commands
-on_crash = [
+auto-run = true                     # launch target immediately inside LLDB
+no-lldbinit = true                  # ignore host/user init files for reproducibility
+source-quietly = true               # suppress echoed auto-issued LLDB commands
+on-crash = [
     "thread backtrace all",
     "frame variable",
     "register read",
