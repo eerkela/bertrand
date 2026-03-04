@@ -129,5 +129,5 @@ def _load_versions() -> Versions:
 
 
 # global version singletons
-VERSIONS = _load_versions()
-__version__ = VERSIONS.bertrand
+VERSION = _load_versions()
+__version__ = VERSION.bertrand

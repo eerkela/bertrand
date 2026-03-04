@@ -14,7 +14,9 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
+import string
 import tomllib
 
 from dataclasses import asdict, dataclass, field
@@ -25,19 +27,28 @@ from types import MappingProxyType, TracebackType
 from typing import Annotated, Any, Callable, Iterator, Self, cast
 
 from jinja2 import Environment, StrictUndefined
+from email_validator import EmailNotValidError, validate_email
+from packaging.licenses import InvalidLicenseExpression, canonicalize_license_expression
+from packaging.requirements import InvalidRequirement, Requirement
+from packaging.specifiers import Specifier, InvalidSpecifier
+from packaging.utils import InvalidName, canonicalize_name
 from pydantic import (
     AfterValidator,
+    AnyHttpUrl,
     BaseModel,
     ConfigDict,
     PositiveInt,
+    TypeAdapter,
+    ValidationError,
     Field,
-    field_validator
+    field_validator,
+    model_validator
 )
 import yaml
 
 from .pipeline import JSONValue, on_init
 from .run import LOCK_TIMEOUT, Lock, atomic_write_text, sanitize_name
-from .version import __version__, VERSIONS
+from .version import __version__, VERSION
 
 # pylint: disable=bare-except
 
@@ -447,6 +458,140 @@ def _render_ignore_patterns(*groups: Sequence[str]) -> str:
     return "\n".join(lines) + "\n"
 
 
+GLOB_REGEX = re.compile(r"^[A-Za-z0-9._/\-\*\?\[\]!]+$")
+HTTP_URL = TypeAdapter(AnyHttpUrl)
+ENTRYPOINT_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+ENTRYPOINT_MODULE = re.compile(
+    r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*$"
+)
+ENTRYPOINT_ATTR = re.compile(
+    r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*$"
+)
+
+
+def _check_semver(version: str) -> str:
+    try:
+        Specifier(version)
+    except InvalidSpecifier as err:
+        raise ValueError(f"invalid PEP 440 requires-python specifier: {version}") from err
+    return version
+
+
+def _check_license(expression: str) -> str:
+    try:
+        return canonicalize_license_expression(expression)
+    except InvalidLicenseExpression as err:
+        raise ValueError(f"invalid PEP 639 SPDX license expression: {expression}") from err
+
+
+def _check_glob(pattern: str) -> str:
+    pattern = pattern.strip()
+    if not GLOB_REGEX.fullmatch(pattern):
+        raise ValueError(f"invalid glob pattern: '{pattern}'")
+    if pattern.startswith("/"):
+        raise ValueError(f"glob pattern cannot be absolute: '{pattern}'")
+    if any(part in ("..", ".") for part in pattern.split("/")):
+        raise ValueError(f"glob pattern cannot contain '.' or '..' segments: '{pattern}'")
+    return pattern
+
+
+def _check_email(email: str) -> str:
+    email = email.strip()
+    try:
+        return validate_email(email, check_deliverability=False).normalized
+    except EmailNotValidError as err:
+        raise ValueError(f"invalid email address: {email}") from err
+
+
+def _check_email_name(name: str) -> str:
+    name = name.strip()
+    if not name:
+        raise ValueError("email name cannot be empty")
+    if "," in name:
+        raise ValueError("email name cannot contain commas")
+    if "\n" in name or "\r" in name:
+        raise ValueError("email name cannot contain CR/LF characters")
+    return name
+
+
+def _check_url(url: str) -> str:
+    url = url.strip()
+    if not url:
+        raise ValueError("URL cannot be empty")
+    if "\n" in url or "\r" in url:
+        raise ValueError("URL cannot contain CR/LF characters")
+    try:
+        return str(HTTP_URL.validate_python(url))
+    except ValidationError as err:
+        raise ValueError(f"invalid URL: {url}") from err
+
+
+def _check_url_label(label: str) -> str:
+    chars_to_remove = string.punctuation + string.whitespace
+    removal_map = str.maketrans("", "", chars_to_remove)
+    return label.translate(removal_map).lower()
+
+
+def _check_pep508_requirement(requirement: str) -> str:
+    requirement = requirement.strip()
+    if not requirement:
+        raise ValueError("PEP 508 requirement cannot be empty")
+    try:
+        return str(Requirement(requirement))
+    except InvalidRequirement as err:
+        raise ValueError(f"invalid PEP 508 requirement: {requirement}") from err
+
+
+def _check_pep508_name(name: str) -> str:
+    name = name.strip()
+    if not name:
+        raise ValueError("PEP 508 name cannot be empty")
+    try:
+        return canonicalize_name(name, validate=True)
+    except InvalidName as err:
+        raise ValueError(f"invalid PEP 508 name: {name}") from err
+
+
+def _check_entrypoint_name(name: str) -> str:
+    name = name.strip()
+    if not name:
+        raise ValueError("entrypoint name cannot be empty")
+    if "\n" in name or "\r" in name:
+        raise ValueError("entrypoint name cannot contain CR/LF characters")
+    if not ENTRYPOINT_NAME.fullmatch(name):
+        raise ValueError(f"invalid entrypoint name: '{name}'")
+    return name
+
+
+def _check_entrypoint(value: str) -> str:
+    entrypoint = value.strip()
+    if entrypoint.count(":") != 1:
+        raise ValueError(f"entrypoint must be of form 'module:attr': '{entrypoint}'")
+
+    module, attr = entrypoint.split(":", maxsplit=1)
+    if not module or not attr:
+        raise ValueError(f"entrypoint must include both module and attr: '{entrypoint}'")
+    if not ENTRYPOINT_MODULE.fullmatch(module):
+        raise ValueError(f"entrypoint module path is invalid: '{module}'")
+    if not ENTRYPOINT_ATTR.fullmatch(attr):
+        raise ValueError(f"entrypoint attr path is invalid: '{attr}'")
+
+    return entrypoint
+
+
+SemVer = Annotated[str, AfterValidator(_check_semver)]
+License = Annotated[str, AfterValidator(_check_license)]
+Glob = Annotated[str, AfterValidator(_check_glob)]
+Email = Annotated[str, AfterValidator(_check_email)]
+EmailName = Annotated[str, AfterValidator(_check_email_name)]
+URL = Annotated[str, AfterValidator(_check_url)]
+URLLabel = Annotated[str, AfterValidator(_check_url_label)]
+PEP508Requirement = Annotated[str, AfterValidator(_check_pep508_requirement)]
+PEP508Name = Annotated[str, AfterValidator(_check_pep508_name)]
+Entrypoint = Annotated[str, AfterValidator(_check_entrypoint)]
+EntrypointName = Annotated[str, AfterValidator(_check_entrypoint_name)]
+
+
 @resource("pyproject", template="core/pyproject/2026-02-15")
 class PyProject(Resource):
     """A resource describing a `pyproject.toml` file, which is used to configure
@@ -476,11 +621,79 @@ class PyProject(Resource):
     """
     # pylint: disable=missing-function-docstring, unused-argument, missing-return-doc
 
+    # TODO: maybe the build system should be pinned to `bertrand.build`?
+
+    class BuildSystem(BaseModel):
+        """Validate the `[build-system]` table."""
+        model_config = ConfigDict(extra="allow")
+        requires: list[str] = Field(default_factory=lambda: ["bertrand"])
+        build_backend: str = Field(default="bertrand.build", alias="build-backend")
+
     class Project(BaseModel):
-        """Pydantic model for validating the `[project]` table."""
-        model_config = ConfigDict(extra="forbid")
-        name: str
-        version: str
+        """Validate the `[project]` table."""
+        class Author(BaseModel):
+            """Validate entries in the `authors` and `maintainers` lists."""
+            model_config = ConfigDict(extra="forbid")
+            name: EmailName | None = None
+            email: Email | None = None
+
+            @model_validator(mode="after")
+            def _require_name_or_email(self) -> Self:
+                if self.name is None and self.email is None:
+                    raise ValueError("at least one of 'name' or 'email' must be provided")
+                return self
+
+        model_config = ConfigDict(extra="allow", populate_by_name=True)
+        name: str = Field()
+        version: str = Field()
+        description: str | None = Field(default=None)
+        readme: PosixPath | None = Field(default=None)
+        requires_python: SemVer | None = Field(default=VERSION.python, alias="requires-python")
+        license: License | None = Field(default=None)
+        license_files: list[Glob] | None = Field(default=None, alias="license-files")
+        authors: list[Author] = Field(default_factory=list)
+        maintainers: list[Author] = Field(default_factory=list)
+        keywords: list[str] = Field(default_factory=list)
+        classifiers: list[str] = Field(default_factory=list)
+        dependencies: list[PEP508Requirement] = Field(default_factory=list)
+        optional_dependencies: dict[PEP508Name, list[PEP508Requirement]] = Field(
+            default_factory=dict,
+            alias="optional-dependencies"
+        )
+        scripts: dict[EntrypointName, Entrypoint] = Field(default_factory=dict)
+        gui_scripts: dict[EntrypointName, Entrypoint] = Field(
+            default_factory=dict,
+            alias="gui-scripts"
+        )
+        urls: dict[URLLabel, URL] = Field(default_factory=dict)
+
+        @model_validator(mode="after")
+        def _validate_script_collisions(self) -> Self:
+            collisions = set(self.scripts).intersection(set(self.gui_scripts))
+            if collisions:
+                raise ValueError(
+                    "duplicate script names across 'project.scripts' and "
+                    f"'project.gui-scripts': {', '.join(sorted(collisions))}"
+                )
+            return self
+
+        def _resolve_licenses(self, pyproject: Path) -> None:
+            root = pyproject.parent
+            seen: set[str] = set()
+            for pattern in self.license_files or ():
+                for path in sorted(
+                    (p for p in root.glob(pattern) if p.is_file()),
+                    key=lambda p: p.as_posix()
+                ):
+                    relative = path.relative_to(root).as_posix()
+                    if relative not in seen:
+                        try:
+                            path.read_text(encoding="utf-8")
+                        except UnicodeDecodeError as err:
+                            raise OSError(
+                                f"license file is not UTF-8 encoded '{relative}': {err}"
+                            ) from err
+                        seen.add(relative)
 
     class Bertrand(BaseModel):
         """Pydantic model for validating the `[tool.bertrand]` table."""
@@ -523,14 +736,24 @@ class PyProject(Resource):
         )] = []
         images: list[Image] = []
 
+    # TODO: parse should just return a raw dictionary containing the loaded keys and
+    # values, and then let the pydantic models handle validation and normalization
+
     def parse(self, config: Config) -> dict[str, Any] | None:
+        # pylint: disable=protected-access
         resource_id = "pyproject"
         pyproject = _load_pyproject(config, resource_id=resource_id)
+        pyproject_path = config.path("pyproject")
 
         # validate `[project]`
         project = PyProject.Project.model_validate(
             _require_dict(pyproject.get("project"), where="project")
         )
+        project._resolve_licenses(pyproject_path)
+
+
+
+        # begin merging config fragments
         merged: dict[str, JSONValue] = {
             "name": project.name,
             "version": project.version
@@ -827,8 +1050,8 @@ class Config:
 
         @staticmethod
         def _python_version() -> str:
-            version = VERSIONS.python
-            if not isinstance(version, str) or not version:
+            version = VERSION.python
+            if not version:
                 raise OSError(
                     "missing PYTHON_VERSION in canonical Containerfile; cannot render "
                     "python_version template fact"

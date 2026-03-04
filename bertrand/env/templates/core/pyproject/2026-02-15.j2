@@ -5,30 +5,45 @@ build-backend = "bertrand.build"
 [project]
 name = "{{ project_name }}"
 version = "0.1.0"
-dependencies = [                    # Python-level dependencies
-    "bertrand=={{ bertrand_major }}.{{ bertrand_minor }}.{{ bertrand_patch }}",
-]
-requires-python = "{{ python_major }}.{{ python_minor }}"
+description = "Bertrand project"
+readme = "README.md"
+requires-python = "{{ python_major }}.{{ python_minor }}.{{ python_patch }}"
+license = "MIT"                     # SPDX license identifier (e.g. MIT, Apache-2.0, etc.)
+license-files = ["LICEN[CS]E.*"]    # list of relative (posix) paths from worktree root
 authors = [
     # e.g. { name = "my name", email = "my@email.com" },
 ]
 maintainers = [
     # e.g. { name = "my name", email = "my@email.com" },
 ]
-description = "Bertrand project"
-readme = "README.md"
-license = "MIT"                     # SPDX license identifier (e.g. MIT, Apache-2.0, etc.)
-license-files = ["LICEN[CS]E.*"]    # list of relative (posix) paths from worktree root
+keywords = [
+    "bertrand",
+    "container",
+]
 classifiers = [
     "Programming Language :: C++",
     "Programming Language :: Python :: {{ python_major }}.{{ python_minor }}",
 ]
+dependencies = [                    # Python-level dependencies
+    "bertrand=={{ bertrand_major }}.{{ bertrand_minor }}.{{ bertrand_patch }}",
+]
+
+[project.scripts]
+# console entry points built by your project (e.g. my_script = "my_project.cli:main").
+# Note that this only defines Python-level entry points.  If you want to expose a
+# `main()` function from C++, it is more efficient to use [tool.bertrand.scripts]
+# instead, which exposes the binary directly without the overhead of a Python
+# subprocess.
+
+[project.gui-scripts]
+# GUI entry points built by your project (e.g. my_app = "my_project.app:main").  C++
+# applications are encouraged to use [tool.bertrand.gui-scripts] instead.
 
 [project.urls]
 Homepage = "https://example.com"
 Documentation = "https://readthedocs.org"
 Repository = "https://github.com/myusername/myrepo"
-"Bug Tracker" = "https://github.com/myusername/myrepo/issues"
+Issues = "https://github.com/myusername/myrepo/issues"
 
 ##################
 ####    UV    ####

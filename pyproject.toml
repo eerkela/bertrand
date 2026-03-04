@@ -53,11 +53,11 @@ keywords = [
     "ETL",
 ]
 dependencies = [
-    "conan",
     "jinja2",
     "mcp==1.9.4",
     "numpy",
-    "packaging",
+    "packaging>=24.2",
+    "email-validator",
     # "pandas >= 2.0.0",
     "psutil",
     # "pyarrow",
