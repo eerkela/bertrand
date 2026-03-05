@@ -25,7 +25,7 @@ from collections.abc import Mapping, Sequence
 from importlib import resources as importlib_resources
 from pathlib import Path, PosixPath
 from types import MappingProxyType, TracebackType
-from typing import Annotated, Any, Callable, Self
+from typing import Annotated, Any, Callable, Literal, Self
 
 from jinja2 import Environment, StrictUndefined
 from email_validator import EmailNotValidError, validate_email
@@ -91,6 +91,39 @@ HOSTNAME_RE = re.compile(
     r"^(?=.{1,253}$)(?!-)[A-Za-z0-9-]{1,63}(?<!-)"
     r"(?:\.(?!-)[A-Za-z0-9-]{1,63}(?<!-))*$"
 )
+NETWORK_ALIAS_LABEL_RE = re.compile(r"^(?!-)[a-z0-9-]{1,63}(?<!-)$")
+USERNS_CONTAINER_REF_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+USERNS_MAPPING_RE = re.compile(r"^(?P<container>\d+):(?P<host>@?\d+):(?P<length>\d+)$")
+ULIMIT_NAME_RE = re.compile(r"^[a-z][a-z0-9_]*$")
+CAPABILITY_TOKEN_RE = re.compile(r"^CAP_[A-Z0-9_]+$")
+CAPABILITY_DEFINE_RE = re.compile(r"^\s*#define\s+(CAP_[A-Z0-9_]+)\s+([0-9]+)\b")
+SECURITY_OPT_KEY_RE = re.compile(r"^[a-z0-9][a-z0-9_.-]*$")
+LINUX_CAPABILITY_HEADERS: tuple[Path, ...] = (
+    Path("/usr/include/linux/capability.h"),
+    Path("/usr/include/uapi/linux/capability.h"),
+    Path("/usr/src/linux/include/uapi/linux/capability.h"),
+)
+
+
+def _load_linux_capabilities() -> frozenset[str] | None:
+    for path in LINUX_CAPABILITY_HEADERS:
+        if not path.is_file():
+            continue
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            continue
+        found = {
+            match.group(1)
+            for line in lines
+            if (match := CAPABILITY_DEFINE_RE.match(line)) is not None
+        }
+        if found:
+            return frozenset(found)
+    return None
+
+
+LINUX_CAPABILITIES: frozenset[str] | None = _load_linux_capabilities()
 
 
 def _check_semver(version: str) -> str:
@@ -185,10 +218,10 @@ def _check_shell(shell: str) -> str:
     return shell
 
 
-def _deduplicate_ignore_list(value: list[Glob]) -> list[Glob]:
+def _deduplicate_ignore_list(ignore: list[Glob]) -> list[Glob]:
     out: list[Glob] = []
     seen: set[Glob] = set()
-    for pattern in value:
+    for pattern in ignore:
         if pattern in seen:
             continue
         out.append(pattern)
@@ -196,8 +229,8 @@ def _deduplicate_ignore_list(value: list[Glob]) -> list[Glob]:
     return out
 
 
-def _check_network_mode(value: str) -> str:
-    mode = value.strip()
+def _check_network_mode(mode: str) -> str:
+    mode = mode.strip()
     if not NETWORK_MODE_RE.fullmatch(mode):
         raise ValueError(
             "invalid network mode (expected one of: "
@@ -208,8 +241,8 @@ def _check_network_mode(value: str) -> str:
     return mode
 
 
-def _check_ip_address(value: str) -> str:
-    address = value.strip()
+def _check_ip_address(address: str) -> str:
+    address = address.strip()
     if not address:
         raise ValueError("IP address cannot be empty")
     try:
@@ -218,15 +251,15 @@ def _check_ip_address(value: str) -> str:
         raise ValueError(f"invalid IP address: {address}") from err
 
 
-def _check_host_ip(value: str) -> str:
-    address = value.strip()
+def _check_host_ip(address: str) -> str:
+    address = address.strip()
     if address == "host-gateway":
         return address
     return _check_ip_address(address)
 
 
-def _check_host_name(value: str) -> str:
-    name = value.strip()
+def _check_host_name(name: str) -> str:
+    name = name.strip()
     if not name:
         raise ValueError("host name cannot be empty")
     if not HOSTNAME_RE.fullmatch(name):
@@ -235,6 +268,311 @@ def _check_host_name(value: str) -> str:
             "entry for /etc/hosts, excluding the IP address and port components)"
         )
     return name
+
+
+def _check_sanitized_name(name: str) -> str:
+    sanitized = sanitize_name(name)
+    if name != sanitized:
+        raise OSError(f"invalid name: '{name}' (sanitizes to: '{sanitized}')")
+    return name
+
+
+def _check_relative_path(path: PosixPath) -> PosixPath:
+    parts = path.parts
+    if not parts:
+        raise ValueError("path cannot be empty")
+    if path.is_absolute():
+        raise ValueError(f"path cannot be absolute: '{path}'")
+    if any(p == "." or p == ".." for p in parts):
+        raise ValueError(f"path cannot contain '.' or '..' segments: '{path}'")
+    return path
+
+
+def _check_text_file(path: Path, *, tag: str | None = None) -> None:
+    suffix = f" for tag '{tag}'" if tag else ""
+    if not path.exists():
+        raise OSError(f"path does not exist{suffix}: {path}")
+    if not path.is_file():
+        raise OSError(f"path is not a file{suffix}: {path}")
+    try:
+        path.read_text(encoding="utf-8")
+    except UnicodeDecodeError as err:
+        raise OSError(f"file is not UTF-8 encoded{suffix}: {path}") from err
+
+
+def _check_network_alias(alias: str) -> str:
+    alias = alias.strip().lower()
+    if not alias:
+        raise ValueError("network alias cannot be empty")
+    if alias.startswith(".") or alias.endswith(".") or ".." in alias:
+        raise ValueError(
+            f"invalid network alias '{alias}' (cannot start/end with '.', or contain '..')"
+        )
+    for label in alias.split("."):
+        if not NETWORK_ALIAS_LABEL_RE.fullmatch(label):
+            raise ValueError(
+                f"invalid network alias label '{label}' in '{alias}' (labels must "
+                "match [a-z0-9-], max length 63, and cannot start/end with '-')"
+            )
+    return alias
+
+
+def _check_ulimit_name(name: str) -> str:
+    name = name.strip().lower()
+    if not name:
+        raise ValueError("ulimit name cannot be empty")
+    if not ULIMIT_NAME_RE.fullmatch(name):
+        raise ValueError(
+            f"invalid ulimit name '{name}' (expected lowercase POSIX-style token, "
+            "e.g. nofile, nproc, host)"
+        )
+    return name
+
+
+def _check_capability(capability: str) -> str:
+    capability = capability.strip()
+    if not capability:
+        raise ValueError("capability cannot be empty")
+    if "\n" in capability or "\r" in capability:
+        raise ValueError("capability cannot contain CR/LF characters")
+    if capability == "ALL":
+        return capability
+    if not CAPABILITY_TOKEN_RE.fullmatch(capability):
+        raise ValueError(
+            f"invalid capability token '{capability}' (expected exact CAP_* token or ALL)"
+        )
+    if LINUX_CAPABILITIES is not None and capability not in LINUX_CAPABILITIES:
+        raise ValueError(
+            f"unknown Linux capability '{capability}' according to local capability header"
+        )
+    return capability
+
+
+def _check_security_opt(option: str) -> str:
+    option = option.strip()
+    if not option:
+        raise ValueError("security-opt entry cannot be empty")
+    if "\n" in option or "\r" in option:
+        raise ValueError("security-opt entry cannot contain CR/LF characters")
+    if option == "no-new-privileges":
+        return option
+    if "=" not in option:
+        raise ValueError(
+            f"invalid security-opt '{option}' (expected 'no-new-privileges' or 'key=value')"
+        )
+    key, value = option.split("=", maxsplit=1)
+    if not key or not value:
+        raise ValueError(f"invalid security-opt '{option}' (missing key or value)")
+    if key != key.strip() or value != value.strip():
+        raise ValueError(f"invalid security-opt '{option}' (unexpected whitespace around '=')")
+    if not SECURITY_OPT_KEY_RE.fullmatch(key):
+        raise ValueError(f"invalid security-opt key '{key}' in '{option}'")
+    return option
+
+
+def _extract_container_ref(mode: str) -> str | None:
+    if not mode.startswith("container:"):
+        return None
+    _, _, ref = mode.partition(":")
+    return ref or None
+
+
+def _check_userns_uint(
+    *,
+    userns: str,
+    key: str,
+    value: str,
+    allow_zero: bool
+) -> None:
+    if not value.isdigit():
+        raise ValueError(
+            f"invalid userns '{userns}': {key} must be a non-negative integer"
+        )
+    number = int(value)
+    if not allow_zero and number <= 0:
+        raise ValueError(
+            f"invalid userns '{userns}': {key} must be greater than zero"
+        )
+
+
+def _check_userns_options(
+    *,
+    userns: str,
+    mode: Literal["keep-id", "auto"],
+    options: str
+) -> None:
+    if not options:
+        raise ValueError(f"invalid userns '{userns}': '{mode}' options cannot be empty")
+
+    seen: set[str] = set()
+    tokens = options.split(",")
+    for token in tokens:
+        if not token or "=" not in token:
+            raise ValueError(
+                f"invalid userns '{userns}': expected comma-separated key=value options"
+            )
+        key, value = token.split("=", maxsplit=1)
+        if not key or not value:
+            raise ValueError(
+                f"invalid userns '{userns}': expected non-empty key=value options"
+            )
+        if key in seen:
+            raise ValueError(
+                f"invalid userns '{userns}': duplicate option key '{key}'"
+            )
+        seen.add(key)
+
+        if mode == "keep-id":
+            if key in ("uid", "gid"):
+                _check_userns_uint(userns=userns, key=key, value=value, allow_zero=True)
+                continue
+            if key == "size":
+                _check_userns_uint(userns=userns, key=key, value=value, allow_zero=False)
+                continue
+            raise ValueError(
+                f"invalid userns '{userns}': unsupported keep-id option '{key}' "
+                "(allowed: uid, gid, size)"
+            )
+
+        if key == "size":
+            _check_userns_uint(userns=userns, key=key, value=value, allow_zero=False)
+            continue
+        if key in ("uidmapping", "gidmapping"):
+            match = USERNS_MAPPING_RE.fullmatch(value)
+            if match is None:
+                raise ValueError(
+                    f"invalid userns '{userns}': {key} must be "
+                    "'<container-id>:<host-id>:<size>' or '<container-id>:@<host-id>:<size>'"
+                )
+            length = int(match.group("length"))
+            if length <= 0:
+                raise ValueError(
+                    f"invalid userns '{userns}': {key} mapping size must be greater than zero"
+                )
+            continue
+        raise ValueError(
+            f"invalid userns '{userns}': unsupported auto option '{key}' "
+            "(allowed: size, uidmapping, gidmapping)"
+        )
+
+
+def _check_userns(userns: str) -> str:
+    userns = userns.strip()
+    if not userns:
+        raise ValueError("userns entry cannot be empty (use 'host' explicitly)")
+    if "\n" in userns or "\r" in userns:
+        raise ValueError("userns entry cannot contain CR/LF characters")
+    if re.search(r"\s", userns):
+        raise ValueError("userns entry cannot contain whitespace")
+    if userns in ("host", "keep-id", "auto", "nomap"):
+        return userns
+    if userns.startswith("ns:"):
+        if NS_PATH_RE.fullmatch(userns):
+            return userns
+        raise ValueError(f"invalid userns '{userns}' (expected 'ns:<path>' with no spaces)")
+    if userns.startswith("container:"):
+        ref = _extract_container_ref(userns)
+        if ref is None:
+            raise ValueError(
+                f"invalid userns '{userns}' (expected 'container:<tag>' with non-empty tag)"
+            )
+        if not USERNS_CONTAINER_REF_RE.fullmatch(ref):
+            raise ValueError(
+                f"invalid userns '{userns}' (container tag must use [A-Za-z0-9._-]+)"
+            )
+        sanitized = sanitize_name(ref)
+        if ref != sanitized:
+            raise ValueError(
+                f"invalid userns '{userns}' (container tag sanitizes to '{sanitized}')"
+            )
+        return userns
+    if ":" in userns:
+        mode, _, options = userns.partition(":")
+        if mode == "keep-id":
+            _check_userns_options(userns=userns, mode="keep-id", options=options)
+            return userns
+        if mode == "auto":
+            _check_userns_options(userns=userns, mode="auto", options=options)
+            return userns
+        if mode == "nomap":
+            raise ValueError(
+                f"invalid userns '{userns}' ('nomap' does not accept options)"
+            )
+    raise ValueError(
+        f"invalid userns '{userns}' (expected one of: host|keep-id[:<opts>]|"
+        "auto[:<opts>]|nomap|container:<tag>|ns:<path>)"
+    )
+
+
+def _check_namespace_mode(
+    mode: str,
+    *,
+    option: str,
+    literals: tuple[str, ...],
+    allow_empty: bool = False
+) -> str:
+    if mode == "" and allow_empty:
+        return mode
+    stripped = mode.strip()
+    if not stripped:
+        raise ValueError(f"{option} entry cannot be empty")
+    if mode != stripped:
+        raise ValueError(f"{option} entry cannot contain leading/trailing whitespace")
+    if "\n" in mode or "\r" in mode:
+        raise ValueError(f"{option} entry cannot contain CR/LF characters")
+    if re.search(r"\s", mode):
+        raise ValueError(f"{option} entry cannot contain whitespace")
+    if mode in literals:
+        return mode
+    if mode.startswith("ns:"):
+        if NS_PATH_RE.fullmatch(mode):
+            return mode
+        raise ValueError(f"invalid {option} '{mode}' (expected 'ns:<path>' with no spaces)")
+    ref = _extract_container_ref(mode)
+    if ref is not None:
+        if not USERNS_CONTAINER_REF_RE.fullmatch(ref):
+            raise ValueError(
+                f"invalid {option} '{mode}' (container tag must use [A-Za-z0-9._-]+)"
+            )
+        sanitized = sanitize_name(ref)
+        if ref != sanitized:
+            raise ValueError(
+                f"invalid {option} '{mode}' (container tag sanitizes to '{sanitized}')"
+            )
+        return mode
+    expected = "|".join(literals)
+    empty = '""|' if allow_empty else ""
+    raise ValueError(
+        f"invalid {option} '{mode}' (expected one of: {empty}{expected}|"
+        "container:<tag>|ns:<path>)"
+    )
+
+
+def _check_ipc(ipc: str) -> str:
+    return _check_namespace_mode(
+        ipc,
+        option="ipc",
+        literals=("none", "host", "private", "shareable"),
+        allow_empty=True
+    )
+
+
+def _check_pid(pid: str) -> str:
+    return _check_namespace_mode(
+        pid,
+        option="pid",
+        literals=("host", "private"),
+        allow_empty=False
+    )
+
+
+def _check_uts(uts: str) -> str:
+    return _check_namespace_mode(
+        uts,
+        option="uts",
+        literals=("host", "private"),
+        allow_empty=False
+    )
 
 
 SemVer = Annotated[str, AfterValidator(_check_semver)]
@@ -260,6 +598,17 @@ NetworkMode = Annotated[str, AfterValidator(_check_network_mode)]
 IPAddress = Annotated[str, AfterValidator(_check_ip_address)]
 HostIP = Annotated[str, AfterValidator(_check_host_ip)]
 HostName = Annotated[str, AfterValidator(_check_host_name)]
+SanitizedName = Annotated[str, AfterValidator(_check_sanitized_name)]
+RelativePath = Annotated[PosixPath, AfterValidator(_check_relative_path)]
+NetworkAlias = Annotated[str, AfterValidator(_check_network_alias)]
+Memory = Annotated[str, StringConstraints(strip_whitespace=True, pattern=r"^\d+[bkmg]?$")]
+ULimitName = Annotated[str, AfterValidator(_check_ulimit_name)]
+Capability = Annotated[str, AfterValidator(_check_capability)]
+SecurityOpt = Annotated[str, AfterValidator(_check_security_opt)]
+UserNS = Annotated[str, AfterValidator(_check_userns)]
+IPCMode = Annotated[str, AfterValidator(_check_ipc)]
+PIDMode = Annotated[str, AfterValidator(_check_pid)]
+UTSMode = Annotated[str, AfterValidator(_check_uts)]
 
 
 class Template(BaseModel):
@@ -510,24 +859,7 @@ def _require_str_value(value: Any, *, where: str, allow_empty: bool = False) -> 
     return text
 
 
-def _require_str_list(value: Any, *, where: str) -> list[str]:
-    if isinstance(value, (str, bytes)) or not isinstance(value, Sequence):
-        raise OSError(
-            f"expected sequence[str] at '{where}', got {type(value).__name__}"
-        )
-    out: list[str] = []
-    for idx, item in enumerate(value):
-        out.append(_require_str_value(item, where=f"{where}[{idx}]"))
-    return out
 
-
-def _require_sanitized_str(value: Any, *, where: str) -> str:
-    if not isinstance(value, str):
-        raise OSError(f"expected string at '{where}', got {type(value).__name__}")
-    sanitized = sanitize_name(value)
-    if value != sanitized:
-        raise OSError(f"invalid name at '{where}': '{value}' (sanitizes to: '{sanitized}')")
-    return value
 
 
 def _freeze(value: Any) -> Any:
@@ -899,7 +1231,7 @@ class Config:
     class BuildSystem(BaseModel):
         """Validate the `[build-system]` table."""
         model_config = ConfigDict(extra="forbid")
-        requires: list[str] = Field()
+        requires: list[str]
 
         @field_validator("requires")
         @classmethod
@@ -913,8 +1245,8 @@ class Config:
         class Author(BaseModel):
             """Validate entries in the `authors` and `maintainers` lists."""
             model_config = ConfigDict(extra="forbid")
-            name: EmailName | None = Field(default=None)
-            email: Email | None = Field(default=None)
+            name: Annotated[EmailName | None, Field(default=None)]
+            email: Annotated[Email | None, Field(default=None)]
 
             @model_validator(mode="after")
             def _require_name_or_email(self) -> Self:
@@ -923,28 +1255,34 @@ class Config:
                 return self
 
         model_config = ConfigDict(extra="allow", populate_by_name=True)
-        name: str = Field()
-        version: str = Field()
-        description: str | None = Field(default=None)
-        readme: PosixPath | None = Field(default=None)
-        requires_python: SemVer | None = Field(default=VERSION.python, alias="requires-python")
-        license: License | None = Field(default=None)
-        license_files: list[Glob] | None = Field(default=None, alias="license-files")
-        authors: list[Author] = Field(default_factory=list)
-        maintainers: list[Author] = Field(default_factory=list)
-        keywords: list[str] = Field(default_factory=list)
-        classifiers: list[str] = Field(default_factory=list)
-        dependencies: list[PEP508Requirement] = Field(default_factory=list)
-        optional_dependencies: dict[PEP508Name, list[PEP508Requirement]] = Field(
+        name: str
+        version: str
+        description: Annotated[str | None, Field(default=None)]
+        readme: Annotated[PosixPath | None, Field(default=None)]
+        requires_python: Annotated[
+            SemVer | None,
+            Field(default=VERSION.python, alias="requires-python")
+        ]
+        license: Annotated[License | None, Field(default=None)]
+        license_files: Annotated[
+            list[Glob] | None,
+            Field(default=None, alias="license-files")
+        ]
+        authors: Annotated[list[Author], Field(default_factory=list)]
+        maintainers: Annotated[list[Author], Field(default_factory=list)]
+        keywords: Annotated[list[str], Field(default_factory=list)]
+        classifiers: Annotated[list[str], Field(default_factory=list)]
+        dependencies: Annotated[list[PEP508Requirement], Field(default_factory=list)]
+        optional_dependencies: Annotated[dict[PEP508Name, list[PEP508Requirement]], Field(
             default_factory=dict,
             alias="optional-dependencies"
-        )
-        scripts: dict[EntrypointName, Entrypoint] = Field(default_factory=dict)
-        gui_scripts: dict[EntrypointName, Entrypoint] = Field(
+        )]
+        scripts: Annotated[dict[EntrypointName, Entrypoint], Field(default_factory=dict)]
+        gui_scripts: Annotated[dict[EntrypointName, Entrypoint], Field(
             default_factory=dict,
             alias="gui-scripts"
-        )
-        urls: dict[URLLabel, URL] = Field(default_factory=dict)
+        )]
+        urls: Annotated[dict[URLLabel, URL], Field(default_factory=dict)]
 
         @model_validator(mode="after")
         def _validate_script_collisions(self) -> Self:
@@ -978,42 +1316,42 @@ class Config:
         class Bertrand(BaseModel):
             """Validate the `[tool.bertrand]` table."""
             model_config = ConfigDict(extra="forbid")
-            max_commits: PositiveInt = Field(
+            max_commits: Annotated[PositiveInt, Field(
                 default=DEFAULT_MAX_COMMITS,
                 alias="max-commits"
-            )
-            shell: Shell = Field(default=DEFAULT_SHELL)
-            ignore: IgnoreList = Field(default_factory=list)
-            git_ignore: IgnoreList = Field(
-                default_factory=list,
-                alias="git-ignore"
-            )
-            container_ignore: IgnoreList = Field(
-                default_factory=list,
-                alias="container-ignore"
-            )
-            services: list[str] = Field(default_factory=list)
+            )]
+            shell: Annotated[Shell, Field(default=DEFAULT_SHELL)]
+            ignore: Annotated[IgnoreList, Field(default_factory=list)]
+            git_ignore: Annotated[
+                IgnoreList,
+                Field(default_factory=list, alias="git-ignore")
+            ]
+            container_ignore: Annotated[
+                IgnoreList,
+                Field(default_factory=list, alias="container-ignore")
+            ]
+            services: Annotated[list[str], Field(default_factory=list)]
 
             class Network(BaseModel):
                 """Validate the `[tool.bertrand.network]` table."""
                 class Table(BaseModel):
                     """Validate the `[tool.bertrand.network.build/run]` tables."""
                     model_config = ConfigDict(extra="forbid")
-                    mode: NetworkMode = Field(default="pasta")
-                    options: list[str] = Field(default_factory=list)
-                    dns: list[IPAddress] = Field(default_factory=list)
-                    dns_search: list[str] = Field(
-                        default_factory=list,
-                        alias="dns-search"
-                    )
-                    dns_options: list[str] = Field(
-                        default_factory=list,
-                        alias="dns-options"
-                    )
-                    add_host: dict[HostName, HostIP] = Field(
-                        default_factory=dict,
-                        alias="add-host"
-                    )
+                    mode: Annotated[NetworkMode, Field(default="pasta")]
+                    options: Annotated[list[str], Field(default_factory=list)]
+                    dns: Annotated[list[IPAddress], Field(default_factory=list)]
+                    dns_search: Annotated[
+                        list[str],
+                        Field(default_factory=list, alias="dns-search")
+                    ]
+                    dns_options: Annotated[
+                        list[str],
+                        Field(default_factory=list, alias="dns-options")
+                    ]
+                    add_host: Annotated[
+                        dict[HostName, HostIP],
+                        Field(default_factory=dict, alias="add-host")
+                    ]
 
                     @model_validator(mode="after")
                     def _validate_none_mode(self) -> Self:
@@ -1031,45 +1369,286 @@ class Config:
                         return self
 
                 model_config = ConfigDict(extra="forbid")
-                build: Table = Field(default_factory=Table)
-                run: Table = Field(default_factory=Table)
+                build: Annotated[Table, Field(default_factory=Table.model_construct)]
+                run: Annotated[Table, Field(default_factory=Table.model_construct)]
 
-            network: Network = Field(default_factory=Network)
+            network: Annotated[Network, Field(default_factory=Network.model_construct)]
 
             class Tag(BaseModel):
                 """Validate entries in the `[[tool.bertrand.tags]]` table."""
                 model_config = ConfigDict(extra="forbid")
-                tag: Annotated[str, AfterValidator(
-                    lambda x: _require_sanitized_str(x, where="tool.bertrand.tags.tag")
-                )] = ""
-                containerfile_args: Annotated[list[str], AfterValidator(
-                    lambda x: _require_str_list(x, where="tool.bertrand.tags.containerfile_args")
-                )] = []
-                asan: bool = False
-                ubsan: bool = False
-                # TODO: figure out full spec here
+                tag: SanitizedName
+                dependencies: Annotated[list[PEP508Requirement], Field(default_factory=list)]
+                containerfile: Annotated[RelativePath, Field(default=PosixPath("Containerfile"))]
+                build_args: Annotated[
+                    list[str],
+                    Field(default_factory=list, alias="build-args")
+                ]
+                env_file: Annotated[
+                    list[RelativePath],
+                    Field(default_factory=list, alias="env-file")
+                ]
 
-            tags: list[Tag] = []
+                class Port(BaseModel):
+                    """Validate entries in the `[[tool.bertrand.tags.ports]]` table."""
+                    model_config = ConfigDict(extra="forbid")
+                    container: Annotated[int, Field(ge=1, le=65535)]
+                    host: Annotated[int, Field(ge=1, le=65535)]
+                    host_ip: Annotated[IPAddress, Field(alias="host-ip")]
+                    protocol: Literal["tcp", "udp"]
+
+                ports: Annotated[list[Port], Field(default_factory=list)]
+                network_aliases: Annotated[
+                    list[NetworkAlias],
+                    Field(default_factory=list, alias="network-aliases")
+                ]
+                cpus: Annotated[float, Field(default=0.0, ge=0.0)]
+                memory: Annotated[Memory, Field(default="0")]
+                pids_limit: Annotated[
+                    PositiveInt,
+                    Field(default=0, alias="pids-limit")
+                ]
+
+                class ULimit(BaseModel):
+                    """Validate entries in the `[[tool.bertrand.tags.ulimit]]` table."""
+                    model_config = ConfigDict(extra="forbid")
+                    name: ULimitName
+                    soft: Annotated[int | None, Field(default=None, ge=-1)]
+                    hard: Annotated[int | None, Field(default=None, ge=-1)]
+
+                    @model_validator(mode="after")
+                    def _validate_limits(self) -> Self:
+                        if self.name == "host":
+                            if self.soft is not None or self.hard is not None:
+                                raise ValueError(
+                                    "ulimit name 'host' cannot define 'soft' or 'hard' values"
+                                )
+                            return self
+                        if self.soft is None or self.hard is None:
+                            raise ValueError(
+                                "non-'host' ulimit entries must define both 'soft' and 'hard'"
+                            )
+                        if self.hard >= 0 and self.soft > self.hard:
+                            raise ValueError(
+                                f"ulimit soft value {self.soft} cannot be greater than hard "
+                                f"value {self.hard}"
+                            )
+                        return self
+
+                ulimit: Annotated[list[ULimit], Field(default_factory=list)]
+                cap_add: Annotated[
+                    list[Capability],
+                    Field(default_factory=list, alias="cap-add")
+                ]
+                cap_drop: Annotated[
+                    list[Capability],
+                    Field(default_factory=list, alias="cap-drop")
+                ]
+                security_opt: Annotated[
+                    list[SecurityOpt],
+                    Field(default_factory=list, alias="security-opt")
+                ]
+                userns: Annotated[UserNS, Field(default="host")]
+                ipc: Annotated[IPCMode, Field(default="private")]
+                pid: Annotated[PIDMode, Field(default="private")]
+                uts: Annotated[UTSMode, Field(default="private")]
+
+
+                # TODO: ssh, instruments
+
+                @field_validator("ports")
+                @classmethod
+                def _validate_port_bindings(cls, ports: list[Port]) -> list[Port]:
+                    seen: set[tuple[str, int, str]] = set()
+                    for port in ports:
+                        key = (port.host_ip, port.host, port.protocol)
+                        if key in seen:
+                            raise ValueError(
+                                "duplicate published port binding for "
+                                f"{port.host_ip}:{port.host}/{port.protocol}"
+                            )
+                        seen.add(key)
+                    return ports
+
+                @field_validator("network_aliases")
+                @classmethod
+                def _validate_network_aliases(
+                    cls,
+                    aliases: list[NetworkAlias]
+                ) -> list[NetworkAlias]:
+                    seen: set[NetworkAlias] = set()
+                    for alias in aliases:
+                        if alias in seen:
+                            raise ValueError(f"duplicate network alias: '{alias}'")
+                        seen.add(alias)
+                    return aliases
+
+                @field_validator("ulimit")
+                @classmethod
+                def _validate_ulimit_entries(cls, entries: list[ULimit]) -> list[ULimit]:
+                    seen: set[str] = set()
+                    for entry in entries:
+                        if entry.name in seen:
+                            raise ValueError(f"duplicate ulimit name: '{entry.name}'")
+                        seen.add(entry.name)
+                    return entries
+
+                @field_validator("cap_add")
+                @classmethod
+                def _validate_cap_add_entries(
+                    cls,
+                    entries: list[Capability]
+                ) -> list[Capability]:
+                    seen: set[Capability] = set()
+                    for entry in entries:
+                        if entry in seen:
+                            raise ValueError(f"duplicate cap-add capability: '{entry}'")
+                        seen.add(entry)
+                    return entries
+
+                @field_validator("cap_drop")
+                @classmethod
+                def _validate_cap_drop_entries(
+                    cls,
+                    entries: list[Capability]
+                ) -> list[Capability]:
+                    seen: set[Capability] = set()
+                    for entry in entries:
+                        if entry in seen:
+                            raise ValueError(f"duplicate cap-drop capability: '{entry}'")
+                        seen.add(entry)
+                    return entries
+
+                @model_validator(mode="after")
+                def _validate_capability_conflicts(self) -> Self:
+                    if "ALL" in self.cap_add and len(self.cap_add) > 1:
+                        raise ValueError(
+                            "cap-add cannot combine 'ALL' with specific capabilities"
+                        )
+                    if "ALL" in self.cap_drop and len(self.cap_drop) > 1:
+                        raise ValueError(
+                            "cap-drop cannot combine 'ALL' with specific capabilities"
+                        )
+                    overlap = set(cap for cap in self.cap_add if cap != "ALL")
+                    overlap = overlap.intersection(
+                        cap for cap in self.cap_drop if cap != "ALL"
+                    )
+                    if overlap:
+                        raise ValueError(
+                            "cap-add and cap-drop cannot contain the same capability: "
+                            f"{', '.join(sorted(overlap))}"
+                        )
+                    return self
+
+                @field_validator("security_opt")
+                @classmethod
+                def _validate_security_opt_entries(
+                    cls,
+                    entries: list[SecurityOpt]
+                ) -> list[SecurityOpt]:
+                    seen: set[SecurityOpt] = set()
+                    for entry in entries:
+                        if entry in seen:
+                            raise ValueError(f"duplicate security-opt entry: '{entry}'")
+                        seen.add(entry)
+                    return entries
+
+                def _resolve_containerfile(self, root: Path) -> None:
+                    _check_text_file(root / self.containerfile, tag=self.tag)
+
+                def _resolve_env_files(self, root: Path) -> None:
+                    seen: set[PosixPath] = set()
+                    for idx, path in enumerate(self.env_file):
+                        if path in seen:
+                            raise ValueError(
+                                f"duplicate env-file path for tag '{self.tag}' at index "
+                                f"{idx}: {path}"
+                            )
+                        _check_text_file(root / path, tag=self.tag)
+                        seen.add(path)
+
+            tags: Annotated[list[Tag], Field(default_factory=lambda: [
+                Config.Tool.Bertrand.Tag.model_construct(tag="base")
+            ])]
 
             @model_validator(mode="after")
             def _validate_services(self) -> Self:
-                valid = set(t.tag for t in self.tags)
-                seen: set[str] = set()
-                invalid: list[str] = []
-                for service in self.services:
-                    if service in seen:
+                unknown_services: list[str] = []
+                for idx, service in enumerate(self.services):
+                    if any(prev == service for prev in self.services[:idx]):
                         raise ValueError(
                             "duplicate service name in 'tool.bertrand.services': "
                             f"'{service}'"
                         )
-                    if service not in valid:
-                        invalid.append(service)
-                    seen.add(service)
-                if invalid:
+                    if not any(tag.tag == service for tag in self.tags):
+                        unknown_services.append(service)
+                if unknown_services:
                     raise ValueError(
                         "found service names in 'tool.bertrand.services' with no "
-                        f"matching tag in 'tool.bertrand.tags': {', '.join(invalid)}"
+                        f"matching tag in 'tool.bertrand.tags': "
+                        f"{', '.join(unknown_services)}"
                     )
+                return self
+
+            @model_validator(mode="after")
+            def _validate_namespace_refs(self) -> Self:
+                for tag in self.tags:
+                    # if the current tag is a service, get its position in the list
+                    curr_pos = next(
+                        (pos for pos, name in enumerate(self.services) if name == tag.tag),
+                        None
+                    )
+
+                    # for each namespace field that references an external tag, ensure
+                    # that the tag it references is a valid service
+                    for option, mode in (
+                        ("userns", tag.userns),
+                        ("ipc", tag.ipc),
+                        ("pid", tag.pid),
+                        ("uts", tag.uts),
+                    ):
+                        ref = _extract_container_ref(mode)
+                        if ref is None:
+                            continue
+
+                        # outlaw self-references
+                        if ref == tag.tag:
+                            raise ValueError(
+                                f"{option} for tag '{tag.tag}' cannot reference itself "
+                                f"via 'container:{ref}'"
+                            )
+
+                        # get referenced service position + tag
+                        ref_pos = next(
+                            (pos for pos, name in enumerate(self.services) if name == ref),
+                            None
+                        )
+                        if ref_pos is None:
+                            raise ValueError(
+                                f"{option} for tag '{tag.tag}' references '{ref}', but "
+                                f"'{ref}' is not listed in 'tool.bertrand.services'"
+                            )
+                        ref_tag = next((t for t in self.tags if t.tag == ref), None)
+                        if ref_tag is None:
+                            raise ValueError(
+                                f"{option} for tag '{tag.tag}' references unknown tag "
+                                f"'{ref}'"
+                            )
+
+                        # enforce correct startup ordering
+                        if curr_pos is not None and ref_pos >= curr_pos:
+                            raise ValueError(
+                                f"{option} for service tag '{tag.tag}' references "
+                                f"'container:{ref}', but '{ref}' must appear earlier "
+                                f"than '{tag.tag}' in 'tool.bertrand.services'"
+                            )
+
+                        # ipc requires the referenced tag uses ipc=shareable
+                        if option == "ipc" and ref_tag.ipc != "shareable":
+                            raise ValueError(
+                                f"ipc for tag '{tag.tag}' uses 'container:{ref}', but "
+                                f"referenced tag '{ref}' must set ipc='shareable'"
+                            )
                 return self
 
         model_config = ConfigDict(extra="allow")
@@ -1531,7 +2110,13 @@ class Config:
                 data = Config.Parse.model_validate(merged)
                 self.build_system = data.build_system
                 self.project = data.project
+                if self.project is not None:
+                    self.project._resolve_licenses(self.root)
                 self.tool = data.tool
+                if self.tool is not None and self.tool.bertrand is not None:
+                    for tag in self.tool.bertrand.tags:
+                        tag._resolve_containerfile(self.root)
+                        tag._resolve_env_files(self.root)
                 self._key_owner = key_owner
                 self._entered += 1
                 return self
