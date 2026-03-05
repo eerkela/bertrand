@@ -55,27 +55,36 @@ from .version import __version__, VERSION
 # pylint: disable=bare-except
 
 
-# Canonical path and name definitions for shared resources
-ENV_DIR_NAME: str = ".bertrand"
-ENV_LOCK_NAME: str = ".lock"
-MOUNT: PosixPath = PosixPath("/env")
-assert MOUNT.is_absolute()
+# Canonical path definitions for environment control
+ENV_DIR: PosixPath = PosixPath(".bertrand")
+ENV_LOCK: PosixPath = ENV_DIR / ".lock"
+ENV_METADATA: PosixPath = ENV_DIR / "env.json"
+ENV_MOUNT: PosixPath = PosixPath("/env")
+ENV_TMP: PosixPath = ENV_DIR / "tmp"
+ENV_COMMITS: PosixPath = ENV_DIR / "commits"
 
-
-# In-container environment variables for relevant configuration, for use in upstream
-# subsystems like the container runtime and editor integration.
-CONTAINER_ID_ENV: str = "BERTRAND_CONTAINER_ID"
-CONTAINER_BIN_ENV: str = "BERTRAND_CODE_PODMAN_BIN"
-EDITOR_BIN_ENV: str = "BERTRAND_CODE_EDITOR_BIN"
-HOST_ENV: str = "BERTRAND_HOST_ENV"
 
 # Global resource catalog.  Extensions can add resources here with associated behavior,
 # and then update the capabilities and/or profiles to place them in the generated
-# layouts, without needing to change any of the core layout application logic.
+# layouts, without needing to change any of the core layout parsing or rendering logic.
 CATALOG: dict[str,  Resource] = {}
 
 
-# Validation primitives for config fields
+# In-container environment variables for relevant configuration, which are set either
+# at build time or upon starting the container context, and used to control the
+# behavior of the bertrand CLI both inside and outside the container.
+CONTAINER_BIN_ENV: str = "BERTRAND_CONTAINER_BIN"
+CONTAINER_ID_ENV: str = "BERTRAND_CONTAINER_ID"
+CONTAINER_TAG_ENV: str = "BERTRAND_CONTAINER_TAG"
+EDITOR_BIN_ENV: str = "BERTRAND_EDITOR_BIN"
+ENV_ID_ENV: str = "BERTRAND_ENV_ID"
+ENV_NAME_ENV: str = "BERTRAND_ENV_NAME"
+ENV_ROOT_ENV: str = "BERTRAND_ENV_ROOT"
+IMAGE_ID_ENV: str = "BERTRAND_IMAGE_ID"
+IMAGE_TAG_ENV: str = "BERTRAND_IMAGE_TAG"
+
+
+# Configuration options that affect CLI behavior
 DEFAULT_MAX_COMMITS: int = 10
 SHELLS: dict[str, tuple[str, ...]] = {
     "bash": ("bash", "-l"),
@@ -83,13 +92,22 @@ SHELLS: dict[str, tuple[str, ...]] = {
 DEFAULT_SHELL: str = "bash"
 if DEFAULT_SHELL not in SHELLS:
     raise RuntimeError(f"default shell is unsupported: {DEFAULT_SHELL}")
+INSTRUMENTS: dict[str, Callable[[dict[str, Any]], Callable[[list[str]], list[str]]]] = {
+    # NOTE: instruments are identified by a unique name, which limits what can appear
+    # in a tag's `instruments` field as part of a configured build matrix.  They map
+    # to functions which accept the instrument's configuration as a parsed mapping,
+    # validate it, and return another function that transforms the container's normal
+    # entry point command (list of strings) before execution.
+}
+
+
+# Validation primitives for config fields
 GLOB_REGEX = re.compile(r"^[A-Za-z0-9._/\-\*\?\[\]!]+$")
 HTTP_URL = TypeAdapter(AnyHttpUrl)
 NS_PATH_RE = re.compile(r"^ns:\S+$")
 NETWORK_MODE_RE = re.compile(rf"^(none|host|private|slirp4netns|pasta|{NS_PATH_RE.pattern})$")
 HOSTNAME_RE = re.compile(
-    r"^(?=.{1,253}$)(?!-)[A-Za-z0-9-]{1,63}(?<!-)"
-    r"(?:\.(?!-)[A-Za-z0-9-]{1,63}(?<!-))*$"
+    r"^(?=.{1,253}$)(?!-)[A-Za-z0-9-]{1,63}(?<!-)(?:\.(?!-)[A-Za-z0-9-]{1,63}(?<!-))*$"
 )
 NETWORK_ALIAS_LABEL_RE = re.compile(r"^(?!-)[a-z0-9-]{1,63}(?<!-)$")
 USERNS_CONTAINER_REF_RE = re.compile(r"^[A-Za-z0-9._-]+$")
@@ -98,6 +116,7 @@ ULIMIT_NAME_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 CAPABILITY_TOKEN_RE = re.compile(r"^CAP_[A-Z0-9_]+$")
 CAPABILITY_DEFINE_RE = re.compile(r"^\s*#define\s+(CAP_[A-Z0-9_]+)\s+([0-9]+)\b")
 SECURITY_OPT_KEY_RE = re.compile(r"^[a-z0-9][a-z0-9_.-]*$")
+DEVICE_PERMISSIONS: frozenset[str] = frozenset({"r", "w", "m", "rw", "rm", "wm", "rwm"})
 LINUX_CAPABILITY_HEADERS: tuple[Path, ...] = (
     Path("/usr/include/linux/capability.h"),
     Path("/usr/include/uapi/linux/capability.h"),
@@ -277,12 +296,23 @@ def _check_sanitized_name(name: str) -> str:
     return name
 
 
-def _check_relative_path(path: PosixPath) -> PosixPath:
+def _check_absolute_path(path: PosixPath) -> PosixPath:
+    if not path.is_absolute():
+        raise ValueError(f"path must be absolute: '{path}'")
     parts = path.parts
     if not parts:
         raise ValueError("path cannot be empty")
+    if any(p == "." or p == ".." for p in parts):
+        raise ValueError(f"path cannot contain '.' or '..' segments: '{path}'")
+    return path
+
+
+def _check_relative_path(path: PosixPath) -> PosixPath:
     if path.is_absolute():
         raise ValueError(f"path cannot be absolute: '{path}'")
+    parts = path.parts
+    if not parts:
+        raise ValueError("path cannot be empty")
     if any(p == "." or p == ".." for p in parts):
         raise ValueError(f"path cannot contain '.' or '..' segments: '{path}'")
     return path
@@ -575,6 +605,36 @@ def _check_uts(uts: str) -> str:
     )
 
 
+def _check_instrument(instrument: str) -> str:
+    instrument = instrument.strip()
+    if not instrument:
+        raise ValueError("instrument entry cannot be empty")
+    if "\n" in instrument or "\r" in instrument:
+        raise ValueError("instrument entry cannot contain CR/LF characters")
+    if re.search(r"\s", instrument):
+        raise ValueError("instrument entry cannot contain whitespace")
+    if instrument not in INSTRUMENTS:
+        raise ValueError(
+            f"unknown instrument '{instrument}' (available instruments: "
+            f"{', '.join(INSTRUMENTS)})"
+        )
+    return instrument
+
+
+def _check_device_permission(permission: str) -> str:
+    permission = permission.strip()
+    if not permission:
+        raise ValueError("device permissions cannot be empty")
+    if "\n" in permission or "\r" in permission:
+        raise ValueError("device permissions cannot contain CR/LF characters")
+    if permission not in DEVICE_PERMISSIONS:
+        raise ValueError(
+            f"invalid device permissions '{permission}' (expected one of: "
+            f"{'|'.join(sorted(DEVICE_PERMISSIONS, key=len))})"
+        )
+    return permission
+
+
 SemVer = Annotated[str, AfterValidator(_check_semver)]
 License = Annotated[str, AfterValidator(_check_license)]
 Glob = Annotated[str, AfterValidator(_check_glob)]
@@ -599,6 +659,7 @@ IPAddress = Annotated[str, AfterValidator(_check_ip_address)]
 HostIP = Annotated[str, AfterValidator(_check_host_ip)]
 HostName = Annotated[str, AfterValidator(_check_host_name)]
 SanitizedName = Annotated[str, AfterValidator(_check_sanitized_name)]
+AbsolutePath = Annotated[PosixPath, AfterValidator(_check_absolute_path)]
 RelativePath = Annotated[PosixPath, AfterValidator(_check_relative_path)]
 NetworkAlias = Annotated[str, AfterValidator(_check_network_alias)]
 Memory = Annotated[str, StringConstraints(strip_whitespace=True, pattern=r"^\d+[bkmg]?$")]
@@ -609,6 +670,12 @@ UserNS = Annotated[str, AfterValidator(_check_userns)]
 IPCMode = Annotated[str, AfterValidator(_check_ipc)]
 PIDMode = Annotated[str, AfterValidator(_check_pid)]
 UTSMode = Annotated[str, AfterValidator(_check_uts)]
+Instrument = Annotated[str, AfterValidator(_check_instrument)]
+ScreamingSnakeCase = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, pattern=r"^[A-Z0-9_]+$")
+]
+DevicePermission = Annotated[str, AfterValidator(_check_device_permission)]
 
 
 class Template(BaseModel):
@@ -1225,7 +1292,7 @@ class Config:
         python_version: str = field(default_factory=_python_version)
         cpus: int = field(default_factory=lambda: os.cpu_count() or 1)
         page_size_kib: int = field(default_factory=_page_size_kib)
-        mount_path: str = field(default=str(MOUNT))
+        mount_path: str = field(default=str(ENV_MOUNT))
         cache_dir: str = field(default="/tmp/.cache")
 
     class BuildSystem(BaseModel):
@@ -1409,6 +1476,33 @@ class Config:
                     Field(default=0, alias="pids-limit")
                 ]
 
+                @field_validator("ports")
+                @classmethod
+                def _validate_port_bindings(cls, ports: list[Port]) -> list[Port]:
+                    seen: set[tuple[str, int, str]] = set()
+                    for port in ports:
+                        key = (port.host_ip, port.host, port.protocol)
+                        if key in seen:
+                            raise ValueError(
+                                "duplicate published port binding for "
+                                f"{port.host_ip}:{port.host}/{port.protocol}"
+                            )
+                        seen.add(key)
+                    return ports
+
+                @field_validator("network_aliases")
+                @classmethod
+                def _validate_network_aliases(
+                    cls,
+                    aliases: list[NetworkAlias]
+                ) -> list[NetworkAlias]:
+                    seen: set[NetworkAlias] = set()
+                    for alias in aliases:
+                        if alias in seen:
+                            raise ValueError(f"duplicate network alias: '{alias}'")
+                        seen.add(alias)
+                    return aliases
+
                 class ULimit(BaseModel):
                     """Validate entries in the `[[tool.bertrand.tags.ulimit]]` table."""
                     model_config = ConfigDict(extra="forbid")
@@ -1452,36 +1546,26 @@ class Config:
                 ipc: Annotated[IPCMode, Field(default="private")]
                 pid: Annotated[PIDMode, Field(default="private")]
                 uts: Annotated[UTSMode, Field(default="private")]
+                ssh: Annotated[list[ScreamingSnakeCase], Field(default_factory=list)]
+                instruments: Annotated[list[Instrument], Field(default_factory=list)]
 
-
-                # TODO: ssh, instruments
-
-                @field_validator("ports")
-                @classmethod
-                def _validate_port_bindings(cls, ports: list[Port]) -> list[Port]:
-                    seen: set[tuple[str, int, str]] = set()
-                    for port in ports:
-                        key = (port.host_ip, port.host, port.protocol)
-                        if key in seen:
-                            raise ValueError(
-                                "duplicate published port binding for "
-                                f"{port.host_ip}:{port.host}/{port.protocol}"
-                            )
-                        seen.add(key)
-                    return ports
-
-                @field_validator("network_aliases")
-                @classmethod
-                def _validate_network_aliases(
-                    cls,
-                    aliases: list[NetworkAlias]
-                ) -> list[NetworkAlias]:
-                    seen: set[NetworkAlias] = set()
-                    for alias in aliases:
-                        if alias in seen:
-                            raise ValueError(f"duplicate network alias: '{alias}'")
-                        seen.add(alias)
-                    return aliases
+                # TODO: SSH capability design (config-layer contract):
+                # - `ssh` is a list of capability IDs only (SCREAMING_SNAKE_CASE),
+                #   never key data.
+                # - IDs resolve via host-local channels at execution time:
+                #     1) BERTRAND_SSH_<ID> env override
+                #     2) host profile (e.g. .bertrand/host/ssh.toml)
+                # - Preferred source is SSH agent forwarding; key-file source is
+                #   fallback only.
+                # - Intended mapping target is `podman build --ssh` (build-time),
+                #   not runtime mounts.
+                # - Security invariants:
+                #     * no private key bytes in pyproject/config metadata
+                #     * no host key paths committed to VCS
+                #     * no secret material written to image layers or persisted state
+                # - Runtime wiring/argv synthesis is deferred to container.py refactor.
+                # - Final usage is always in the tag's Containerfile, by appending
+                #   `RUN --mount=type=ssh,id=id ...`
 
                 @field_validator("ulimit")
                 @classmethod
@@ -1552,6 +1636,101 @@ class Config:
                             raise ValueError(f"duplicate security-opt entry: '{entry}'")
                         seen.add(entry)
                     return entries
+
+                class Devices(BaseModel):
+                    """Validate the `[tool.bertrand.tags.devices]` table."""
+                    class Request(BaseModel):
+                        """Validate one entry in `tool.bertrand.tags.devices.*`."""
+                        model_config = ConfigDict(extra="forbid")
+                        id: ScreamingSnakeCase
+                        required: bool = True
+                        container_path: Annotated[
+                            AbsolutePath | None,
+                            Field(default=None, alias="container-path")
+                        ]
+                        permissions: Annotated[DevicePermission, Field(default="rwm")]
+
+                    model_config = ConfigDict(extra="forbid")
+                    build: Annotated[list[Request], Field(default_factory=list)]
+                    run: Annotated[list[Request], Field(default_factory=list)]
+
+                    @model_validator(mode="after")
+                    def _validate_permissions(self) -> Self:
+                        seen: set[ScreamingSnakeCase] = set()
+                        for entry in self.build:
+                            if entry.id in seen:
+                                raise ValueError(f"duplicate build device id: '{entry.id}'")
+                            seen.add(entry.id)
+                        seen.clear()
+                        for entry in self.run:
+                            if entry.id in seen:
+                                raise ValueError(f"duplicate run device id: '{entry.id}'")
+                            seen.add(entry.id)
+                        return self
+
+                devices: Annotated[Devices, Field(default_factory=Devices.model_construct)]
+
+                # TODO: Device capability design (config-layer contract):
+                # - `devices.build` and `devices.run` are host-agnostic capability
+                #   requests keyed by SCREAMING_SNAKE_CASE IDs, never raw host paths.
+                # - Each request may override container-facing mapping details only:
+                #   `container-path`, `permissions`, `required`.
+                # - IDs resolve via host-local channels at execution time:
+                #     1) BERTRAND_DEVICE_<ID> env override
+                #     2) host profile (e.g. .bertrand/host/devices.toml)
+                # - Resolver policy is CDI-preferred with host-path fallback for
+                #   compatibility across hosts that lack CDI specs.
+                # - Security invariants:
+                #     * no host device paths committed in project configuration
+                #     * no secret host topology persisted in project metadata
+                # - Runtime wiring/argv synthesis is deferred to container.py refactor.
+
+                class Secrets(BaseModel):
+                    """Validate the `[tool.bertrand.tags.secrets]` table."""
+                    class Request(BaseModel):
+                        """Validate an individual secret capability request."""
+                        model_config = ConfigDict(extra="forbid")
+                        id: ScreamingSnakeCase
+                        required: bool = True
+
+                    model_config = ConfigDict(extra="forbid")
+                    build: Annotated[list[Request], Field(default_factory=list)]
+                    run: Annotated[list[Request], Field(default_factory=list)]
+
+                    @model_validator(mode="after")
+                    def _validate_secret_ids(self) -> Self:
+                        seen: set[ScreamingSnakeCase] = set()
+                        for entry in self.build:
+                            if entry.id in seen:
+                                raise ValueError(
+                                    f"duplicate build secret id: '{entry.id}'"
+                                )
+                            seen.add(entry.id)
+                        seen.clear()
+                        for entry in self.run:
+                            if entry.id in seen:
+                                raise ValueError(
+                                    f"duplicate run secret id: '{entry.id}'"
+                                )
+                            seen.add(entry.id)
+                        return self
+
+                secrets: Annotated[Secrets, Field(default_factory=Secrets.model_construct)]
+
+                # TODO: Secrets capability design (config-layer contract):
+                # - `secrets.build` and `secrets.run` are capability requests keyed
+                #   by SCREAMING_SNAKE_CASE IDs, never secret values.
+                # - IDs resolve via host-local channels at execution time:
+                #     1) BERTRAND_SECRET_<ID> env override
+                #     2) host profile / podman-backed secret resolver
+                # - Build-time resolution maps to `podman build --secret`.
+                # - Runtime resolution maps to `podman run --secret` and exposes
+                #   secrets as files (e.g. under `/run/secrets`), not env vars.
+                # - Security invariants:
+                #     * no secret bytes in project configuration or metadata
+                #     * no secret material persisted in logs or generated state
+                #     * unresolved `required=true` entries fail closed at runtime
+                # - Runtime wiring/argv synthesis is deferred to container.py refactor.
 
                 def _resolve_containerfile(self, root: Path) -> None:
                     _check_text_file(root / self.containerfile, tag=self.tag)

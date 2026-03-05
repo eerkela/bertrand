@@ -190,25 +190,37 @@ ipc = "private"         # -> --ipc (""|none|host|private|shareable|container:<ta
 pid = "private"         # -> --pid (host|private|container:<tag>|ns:<path>)
 uts = "private"         # -> --uts (host|private|container:<tag>|ns:<path>)
 ssh = []                # SSH capability IDs (SCREAMING_SNAKE_CASE, e.g. ["GIT_SSH_KEY"]).
-                        # Resolves to `podman build --ssh` entries.  No key material or
-                        # socket paths are stored in project configuration.
+                        # Build-time only: resolves to `podman build --ssh` entries via
+                        # host-local channels (env override, then host profile).  No key
+                        # material or host paths are stored in project configuration,
+                        # and users can access keys during builds by adjusting their
+                        # Containerfiles (e.g. `RUN --mount=type=ssh,id=id ...`).
 instruments = []        # An array of tables representing runtime instrumentation tools
                         # (e.g. sanitizers, profilers, etc.) to apply to this tag.  See
                         # the `:debug` tag for example usage.
 
 [tool.bertrand.tags.devices]
-build = []              # Device capability IDs (SCREAMING_SNAKE_CASE, e.g. ["GPU"]).
-                        # Resolves to `podman build --device` entries.
-run = []                # Device capability IDs (SCREAMING_SNAKE_CASE, e.g. ["GPU"]).
-                        # Resolves to `podman run --device` entries.  No device paths
-                        # are stored in project configuration.
+build = [               # Device capability requests for `podman build --device`.
+    # e.g. { id = "GPU", required = true, container-path = "/dev/dri/renderD128", permissions = "rwm" },
+]
+run = [                 # Device capability requests for `podman run --device`.
+    # e.g. { id = "GPU", required = true, container-path = "/dev/dri/renderD128", permissions = "rwm" },
+]
+# NOTE: Device IDs are host-agnostic capabilities.  Host resolver chooses CDI selector
+# or host path to avoid coupling with project config (CDI-preferred).  `container-path`
+# and `permissions` are container-side overrides only.
 
 [tool.bertrand.tags.secrets]
-build = []              # Secret IDs (SCREAMING_SNAKE_CASE, e.g. ["PYPI_TOKEN"]), passed
-                        # as env vars during the build, but not persisted in the image.
-run = []                # Secret IDs (SCREAMING_SNAKE_CASE, e.g. ["DB_PASSWORD"]), passed
-                        # as podman secrets, which are exposed as files under `/run/secrets/`.
-                        # No secret values are stored in project configuration.
+build = [               # Secret capability requests for `podman build --secret`.
+    # e.g. [{ id = "PYPI_TOKEN", required = true }]
+]
+run = [                 # Secret capability requests for `podman run --secret` file mounts.
+    # e.g. [{ id = "DB_PASSWORD", required = true }]
+]
+# NOTE: Secret IDs resolve through host-local channels; no secret values are stored in
+# project configuration.  They are passed into the container context as files under
+# `/run/secrets/{id}`.  Build secrets are exposed as environment variables during
+# `Containerfile` execution, and are not persisted in the final image layers.
 
 [tool.bertrand.tags.conan]
 requires = []           # e.g. ["boost/1.86.0"] (additive with [tool.conan].requires)
