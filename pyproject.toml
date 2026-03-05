@@ -53,6 +53,7 @@ keywords = [
     "ETL",
 ]
 dependencies = [
+    "conan",
     "jinja2",
     "mcp==1.9.4",
     "numpy",
@@ -143,6 +144,10 @@ warn_unreachable = true              # warn on unreachable code after type analy
 pretty = true                        # add source context to error messages
 color_output = true                  # colorize error messages
 error_summary = true                 # print a short summary for each error
+
+[[tool.mypy.overrides]]
+module = ["conan.*"]
+follow_untyped_imports = true
 
 [tool.pylint]
 ignore-patterns = [".*\\.pyi"]       # ignore type stubs

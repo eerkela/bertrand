@@ -68,12 +68,19 @@ prerelease = "if-necessary-or-explicit"     # include prereleases only when requ
 ####    CONAN    ####
 #####################
 
-[tool.bertrand.conan]
-requires = []           # e.g. ["fmt/11.0.2", "nlohmann_json/3.12.0"]
-tool-requires = []      # e.g. ["cmake/3.30.5", "ninja/1.12.1"]
-options = {}            # e.g. { "fmt/*:header_only" = true }
-conf = {}               # e.g. { "tools.build:jobs" = 16 }
-build_type = "Release"  # Release|Debug (may be overridden in build matrix tags)
+[tool.conan]
+build-type = "Release"                      # Release|Debug (may be overridden in tags)
+
+[tool.conan.conf]
+# Namespace tables map to conf entries of the form "<namespace>:<name>=<value>".
+# e.g. [tool.conan.conf."tools.build"]
+#      jobs = 16
+
+# [[tool.conan.requires]]
+# package = "fmt/11.0.2"                    # Conan requirement ref/range
+# kind = "host"                             # host|tool (tool dependencies build host dependencies)
+# options = { header_only = true }          # per-dependency options (option name => value)
+# conf = { "tools.build" = { jobs = 8 } }   # optional per-dependency conf override
 
 # NOTE: Conan remotes are resolved in declaration order.  Prefer private remotes first,
 # then optional public fallback remotes last.  Credentials are host-local and must
@@ -84,10 +91,10 @@ build_type = "Release"  # Release|Debug (may be overridden in build matrix tags)
 # [[tool.conan.remotes]]
 # name = "internal"
 # url = "https://conan.example.com"
-# verify_ssl = true
+# verify-ssl = true
 # enabled = true
-# recipes_only = false
-# allowed_packages = ["myorg/*", "thirdparty/*"]
+# recipes-only = false
+# allowed-packages = ["myorg/*", "thirdparty/*"]
 
 ########################
 ####    BERTRAND    ####
@@ -95,7 +102,7 @@ build_type = "Release"  # Release|Debug (may be overridden in build matrix tags)
 
 [tool.bertrand]
 max-commits = {{ max_commits }}        # number of commits to store, after which LRU eviction begins
-shell = "{{ shell }}"          # shell to execute during `bertrand enter`
+shell = "{{ shell }}"          # sh|bash|zsh|fish (shell to execute during `bertrand enter`)
 ignore = [              # ignore patterns shared between .gitignore and .containerignore
     ".bertrand/",
     "**/.bertrand/",
@@ -223,16 +230,25 @@ run = [                 # Secret capability requests for `podman run --secret` f
 # `Containerfile` execution, and are not persisted in the final image layers.
 
 [tool.bertrand.tags.conan]
-requires = []           # e.g. ["boost/1.86.0"] (additive with [tool.conan].requires)
-tool-requires = []      # e.g. ["protobuf/5.28.0"]
-options = {}            # e.g. { "boost/*:without_test" = true }
-conf = {}               # e.g. { "tools.cmake.cmaketoolchain:generator" = "Ninja" }
-build_type = ""         # empty => inherit [tool.bertrand.conan].build_type
+build-type = ""                             # empty => inherit [tool.conan].build-type
+
+[tool.bertrand.tags.conan.conf]
+# Namespace tables map to conf entries of the form "<namespace>:<name>=<value>".
+# Conf entries defined here will override conflicts in the global [tool.conan.conf]
+# namespace for this tag.
+# e.g. [tool.bertrand.tags.conan.conf."tools.cmake.cmaketoolchain"]
+#      generator = "Ninja"
+
+# [[tool.bertrand.tags.conan.requires]]
+# package = "boost/1.86.0"                  # additive with [[tool.conan.requires]]
+# kind = "host"                             # host|tool (tool dependencies build host dependencies)
+# options = { without_test = true }         # per-dependency options (option name => value)
+# conf = { "tools.build" = { jobs = 8 } }   # optional per-dependency conf override
 
 [tool.bertrand.tags.build]
 context = "."           # build context path, relative to worktree root
-target = ""             # -> --target (empty => final stage)
-pull_policy = "missing" # -> --pull (missing|always|never|newer)
+target = ""             # -> --target (empty => final stage of Containerfile)
+pull = "missing"        # -> --pull (missing|always|never|newer)
 
 [tool.bertrand.tags.stop]
 signal = "SIGTERM"      # -> --stop-signal

@@ -28,6 +28,10 @@ from types import MappingProxyType, TracebackType
 from typing import Annotated, Any, Callable, Literal, Self
 
 from jinja2 import Environment, StrictUndefined
+from conan.api.model.list import ListPattern, VersionRange
+from conan.api.model.refs import RecipeReference
+from conan.errors import ConanException
+from conan.internal.model.conf import ConfDefinition
 from email_validator import EmailNotValidError, validate_email
 from packaging.licenses import InvalidLicenseExpression, canonicalize_license_expression
 from packaging.requirements import InvalidRequirement, Requirement
@@ -43,7 +47,6 @@ from pydantic import (
     TypeAdapter,
     ValidationError,
     Field,
-    field_validator,
     model_validator
 )
 import yaml
@@ -116,6 +119,9 @@ ULIMIT_NAME_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 CAPABILITY_TOKEN_RE = re.compile(r"^CAP_[A-Z0-9_]+$")
 CAPABILITY_DEFINE_RE = re.compile(r"^\s*#define\s+(CAP_[A-Z0-9_]+)\s+([0-9]+)\b")
 SECURITY_OPT_KEY_RE = re.compile(r"^[a-z0-9][a-z0-9_.-]*$")
+CONAN_REF_TOKEN_RE = re.compile(r"^[a-z0-9_][a-z0-9_+.-]{1,100}\Z")
+CONAN_OPTION_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+CONAN_REMOTE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 DEVICE_PERMISSIONS: frozenset[str] = frozenset({"r", "w", "m", "rw", "rm", "wm", "rwm"})
 LINUX_CAPABILITY_HEADERS: tuple[Path, ...] = (
     Path("/usr/include/linux/capability.h"),
@@ -635,6 +641,152 @@ def _check_device_permission(permission: str) -> str:
     return permission
 
 
+def _check_conan_requirement(requirement: str) -> str:
+    requirement = requirement.strip()
+    if not requirement:
+        raise ValueError("conan requirement cannot be empty")
+    if "\n" in requirement or "\r" in requirement:
+        raise ValueError("conan requirement cannot contain CR/LF characters")
+
+    # Use conan's own parser to validate the requirement string and extract/verify its
+    # components
+    try:
+        ref = RecipeReference.loads(requirement)
+    except ConanException as err:
+        raise ValueError(
+            f"invalid conan requirement '{requirement}' "
+            "(expected name/version[@user/channel][#revision])"
+        ) from err
+    if ref.timestamp is not None:
+        raise ValueError(
+            f"invalid conan requirement '{requirement}' (timestamp suffixes are not "
+            "supported)"
+        )
+    if not CONAN_REF_TOKEN_RE.fullmatch(ref.name):
+        raise ValueError(
+            f"invalid conan package name '{ref.name}' in requirement '{requirement}'"
+        )
+    if ref.user and not CONAN_REF_TOKEN_RE.fullmatch(ref.user):
+        raise ValueError(
+            f"invalid conan package user '{ref.user}' in requirement '{requirement}'"
+        )
+    if ref.channel and not CONAN_REF_TOKEN_RE.fullmatch(ref.channel):
+        raise ValueError(
+            f"invalid conan package channel '{ref.channel}' in requirement '{requirement}'"
+        )
+
+    # validate version ranges
+    version = repr(ref.version)
+    if version.startswith("(") and version.endswith(")"):
+        raise ValueError(
+            f"invalid conan requirement '{requirement}' (alias references are not "
+            "supported)"
+        )
+    if version.startswith("[") and version.endswith("]"):
+        expression = version[1:-1].strip()
+        if not expression:
+            raise ValueError(
+                f"invalid conan requirement '{requirement}' (empty version range)"
+            )
+        try:
+            VersionRange(expression)
+        except ConanException as err:
+            raise ValueError(
+                f"invalid conan version range in requirement '{requirement}'"
+            ) from err
+    else:
+        try:
+            ref.validate_ref()
+        except ConanException as err:
+            raise ValueError(f"invalid conan requirement '{requirement}'") from err
+
+    # return normalized requirement string and strip any timestamp suffix
+    return ref.repr_notime()
+
+
+def _check_conan_option_name(option: str) -> str:
+    option = option.strip()
+    if not option:
+        raise ValueError("conan option name cannot be empty")
+    if "\n" in option or "\r" in option:
+        raise ValueError("conan option name cannot contain CR/LF characters")
+    if ":" in option:
+        raise ValueError(
+            f"invalid conan option name '{option}' (option names must not include "
+            "package selectors)"
+        )
+    if not CONAN_OPTION_NAME_RE.fullmatch(option):
+        raise ValueError(
+            f"invalid conan option name '{option}' (expected [A-Za-z_][A-Za-z0-9_]*)"
+        )
+    return option
+
+
+def _check_conan_conf_name(name: str, *, mode: str) -> str:
+    name = name.strip()
+    if not name:
+        raise ValueError(f"conan conf {mode} cannot be empty")
+    if "\n" in name or "\r" in name:
+        raise ValueError(f"conan conf {mode} cannot contain CR/LF characters")
+    if ":" in name:
+        raise ValueError(f"invalid conan conf {mode} '{name}' (':' is not allowed)")
+    if re.search(r"\s", name):
+        raise ValueError(f"invalid conan conf {mode} '{name}' (whitespace is not allowed)")
+    return name
+
+
+def _check_conan_conf(conf: dict[ConanConfNamespace, dict[ConanConfName, ConanScalar]]) -> None:
+    for namespace, values in conf.items():
+        for key in values:
+            key = f"{namespace}:{key}"
+            conf_def = ConfDefinition()
+            try:
+                conf_def.update(key, 0, profile=True)
+            except ConanException as err:
+                raise ValueError(f"invalid conan conf key '{key}'") from err
+
+
+def _check_conan_remote_name(name: str) -> str:
+    name = name.strip()
+    if not name:
+        raise ValueError("conan remote name cannot be empty")
+    if "\n" in name or "\r" in name:
+        raise ValueError("conan remote name cannot contain CR/LF characters")
+    if not CONAN_REMOTE_NAME_RE.fullmatch(name):
+        raise ValueError(
+            f"invalid conan remote name '{name}' (expected [A-Za-z0-9][A-Za-z0-9_.-]*)"
+        )
+    return name
+
+
+def _check_conan_allowed_pattern(pattern: str) -> str:
+    pattern = pattern.strip()
+    if not pattern:
+        raise ValueError("conan remote allowed-packages pattern cannot be empty")
+    if "\n" in pattern or "\r" in pattern:
+        raise ValueError(
+            "conan remote allowed-packages pattern cannot contain CR/LF characters"
+        )
+    if pattern.startswith(("!", "~")) or pattern == "&":
+        raise ValueError(
+            f"invalid conan allowed-packages pattern '{pattern}' (negation/consumer "
+            "patterns are not supported)"
+        )
+
+    # Use conan's own parser to validate the pattern string and extract/verify its
+    # components.  We require at least a name and version component
+    try:
+        parsed = ListPattern(pattern, only_recipe=True)
+    except ConanException as err:
+        raise ValueError(f"invalid conan allowed-packages pattern '{pattern}'") from err
+    if not parsed.name or not parsed.version:
+        raise ValueError(
+            f"invalid conan allowed-packages pattern '{pattern}' (expected a recipe "
+            "pattern with name/version)"
+        )
+    return pattern
+
+
 SemVer = Annotated[str, AfterValidator(_check_semver)]
 License = Annotated[str, AfterValidator(_check_license)]
 Glob = Annotated[str, AfterValidator(_check_glob)]
@@ -676,6 +828,23 @@ ScreamingSnakeCase = Annotated[
     StringConstraints(strip_whitespace=True, pattern=r"^[A-Z0-9_]+$")
 ]
 DevicePermission = Annotated[str, AfterValidator(_check_device_permission)]
+ConanRequirement = Annotated[str, AfterValidator(_check_conan_requirement)]
+ConanOptionName = Annotated[str, AfterValidator(_check_conan_option_name)]
+ConanConfNamespace = Annotated[
+    str,
+    AfterValidator(lambda x: _check_conan_conf_name(x, mode="namespace"))
+]
+ConanConfName = Annotated[
+    str,
+    AfterValidator(lambda x: _check_conan_conf_name(x, mode="key"))
+]
+type ConanScalar = str | bool | int | float
+ConanConf = Annotated[
+    dict[ConanConfNamespace, dict[ConanConfName, ConanScalar]],
+    AfterValidator(_check_conan_conf)
+]
+ConanRemoteName = Annotated[str, AfterValidator(_check_conan_remote_name)]
+ConanAllowedPattern = Annotated[str, AfterValidator(_check_conan_allowed_pattern)]
 
 
 class Template(BaseModel):
@@ -685,26 +854,17 @@ class Template(BaseModel):
     by stable `{namespace}/{name}/{version}` references.  They are lazily hydrated into
     the `on_init` state cache before rendering.
     """
-    model_config = ConfigDict(extra="forbid")
-    namespace: Annotated[str, Field(description="Template namespace, e.g. 'core'.")]
-    name: Annotated[str, Field(description="Template resource name, e.g. 'pyproject'.")]
-    version: Annotated[
-        str,
-        Field(
-            description=
-                "Stable template version identifier, e.g. '2026-02-15'.  No specific "
-                "format is required, but a date-based convention is recommended for "
-                "clarity and collision avoidance."
-        ),
-    ]
-
-    @field_validator("namespace", "name", "version")
-    @classmethod
-    def _validate_non_empty(cls, value: str) -> str:
+    @staticmethod
+    def _validate_non_empty(value: str) -> str:
         text = value.strip()
         if not text:
             raise ValueError("template reference fields must be non-empty")
         return text
+
+    model_config = ConfigDict(extra="forbid")
+    namespace: Annotated[str, AfterValidator(_validate_non_empty)]
+    name: Annotated[str, AfterValidator(_validate_non_empty)]
+    version: Annotated[str, AfterValidator(_validate_non_empty)]
 
 
 def resource[T: Resource](
@@ -880,7 +1040,7 @@ class Resource:
 
 
 def _env_dir(root: Path) -> Path:
-    return root.expanduser().resolve() / ENV_DIR_NAME
+    return root.expanduser().resolve() / ENV_DIR
 
 
 def lock_env(root: Path, timeout: float = LOCK_TIMEOUT) -> Lock:
@@ -901,9 +1061,9 @@ def lock_env(root: Path, timeout: float = LOCK_TIMEOUT) -> Lock:
          A lock instance representing the acquired lock on the environment directory.
     """
     # NOTE: pre-touching the lock's parent ensures that lock acquisition is atomic
-    lock_dir = _env_dir(root)
-    lock_dir.mkdir(parents=True, exist_ok=True)
-    return Lock(lock_dir / ENV_LOCK_NAME, timeout=timeout)
+    path = root.expanduser().resolve() / ENV_LOCK
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return Lock(path, timeout=timeout)
 
 
 def _require_dict(value: Any, *, where: str) -> dict[str, Any]:
@@ -1298,29 +1458,17 @@ class Config:
     class BuildSystem(BaseModel):
         """Validate the `[build-system]` table."""
         model_config = ConfigDict(extra="forbid")
-        requires: list[str]
 
-        @field_validator("requires")
-        @classmethod
-        def _validate_requires(cls, value: list[str]) -> list[str]:
+        @staticmethod
+        def _check_requires(value: list[str]) -> list[str]:
             if value != ["bertrand"]:
                 raise ValueError("build-system.requires must be set to ['bertrand']")
             return value
 
+        requires: Annotated[list[str], AfterValidator(_check_requires)]
+
     class Project(BaseModel):
         """Validate the `[project]` table."""
-        class Author(BaseModel):
-            """Validate entries in the `authors` and `maintainers` lists."""
-            model_config = ConfigDict(extra="forbid")
-            name: Annotated[EmailName | None, Field(default=None)]
-            email: Annotated[Email | None, Field(default=None)]
-
-            @model_validator(mode="after")
-            def _require_name_or_email(self) -> Self:
-                if self.name is None and self.email is None:
-                    raise ValueError("at least one of 'name' or 'email' must be provided")
-                return self
-
         model_config = ConfigDict(extra="allow", populate_by_name=True)
         name: str
         version: str
@@ -1335,6 +1483,19 @@ class Config:
             list[Glob] | None,
             Field(default=None, alias="license-files")
         ]
+
+        class Author(BaseModel):
+            """Validate entries in the `authors` and `maintainers` lists."""
+            model_config = ConfigDict(extra="forbid")
+            name: Annotated[EmailName | None, Field(default=None)]
+            email: Annotated[Email | None, Field(default=None)]
+
+            @model_validator(mode="after")
+            def _require_name_or_email(self) -> Self:
+                if self.name is None and self.email is None:
+                    raise ValueError("at least one of 'name' or 'email' must be provided")
+                return self
+
         authors: Annotated[list[Author], Field(default_factory=list)]
         maintainers: Annotated[list[Author], Field(default_factory=list)]
         keywords: Annotated[list[str], Field(default_factory=list)]
@@ -1380,6 +1541,95 @@ class Config:
 
     class Tool(BaseModel):
         """Validate the `[tool]` table."""
+        model_config = ConfigDict(extra="allow")
+
+        class Conan(BaseModel):
+            """Validate the `[tool.conan]` table."""
+            model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+            class Require(BaseModel):
+                """Validate entries in the `[[tool.conan.requires]]` AoT."""
+                model_config = ConfigDict(extra="forbid")
+                package: ConanRequirement
+                kind: Annotated[Literal["host", "tool"], Field(default="host")]
+                options: Annotated[
+                    dict[ConanOptionName, ConanScalar],
+                    Field(default_factory=dict)
+                ]
+                conf: Annotated[ConanConf, Field(default_factory=dict)]
+
+            class Remote(BaseModel):
+                """Validate entries in the `[[tool.conan.remotes]]` AoT."""
+                @staticmethod
+                def _check_allowed_packages(
+                    value: list[ConanAllowedPattern]
+                ) -> list[ConanAllowedPattern]:
+                    seen: set[ConanAllowedPattern] = set()
+                    for pattern in value:
+                        if pattern in seen:
+                            raise ValueError(
+                                f"duplicate conan allowed-packages pattern: '{pattern}'"
+                            )
+                        seen.add(pattern)
+                    return value
+
+                model_config = ConfigDict(extra="forbid", populate_by_name=True)
+                name: ConanRemoteName
+                url: URL
+                verify_ssl: Annotated[bool, Field(default=True, alias="verify-ssl")]
+                enabled: Annotated[bool, Field(default=True)]
+                recipes_only: Annotated[bool, Field(default=False, alias="recipes-only")]
+                allowed_packages: Annotated[
+                    list[ConanAllowedPattern],
+                    AfterValidator(_check_allowed_packages),
+                    Field(default_factory=list, alias="allowed-packages")
+                ]
+
+            @staticmethod
+            def _check_requires(value: list[Require], *, where: str) -> list[Require]:
+                seen: set[tuple[str, str]] = set()
+                for req in value:
+                    identity = (req.kind, req.package)
+                    if identity in seen:
+                        raise ValueError(
+                            f"duplicate conan requirement identity in {where} for "
+                            f"kind='{req.kind}', package='{req.package}'"
+                        )
+                    seen.add(identity)
+                return value
+
+            @staticmethod
+            def _check_remotes(value: list[Remote]) -> list[Remote]:
+                seen: set[ConanRemoteName] = set()
+                for remote in value:
+                    if remote.name in seen:
+                        raise ValueError(
+                            f"duplicate conan remote name in [tool.conan]: '{remote.name}'"
+                        )
+                    seen.add(remote.name)
+                return value
+
+            build_type: Annotated[
+                Literal["Release", "Debug"],
+                Field(default="Release", alias="build-type")
+            ]
+            conf: Annotated[ConanConf, Field(default_factory=dict)]
+            requires: Annotated[
+                list[Require],
+                AfterValidator(lambda x: Config.Tool.Conan._check_requires(
+                    x,
+                    where="[tool.conan.requires]"
+                )),
+                Field(default_factory=list)
+            ]
+            remotes: Annotated[
+                list[Remote],
+                AfterValidator(_check_remotes),
+                Field(default_factory=list)
+            ]
+
+        conan: Annotated[Conan | None, Field(default=None)]
+
         class Bertrand(BaseModel):
             """Validate the `[tool.bertrand]` table."""
             model_config = ConfigDict(extra="forbid")
@@ -1401,6 +1651,8 @@ class Config:
 
             class Network(BaseModel):
                 """Validate the `[tool.bertrand.network]` table."""
+                model_config = ConfigDict(extra="forbid")
+
                 class Table(BaseModel):
                     """Validate the `[tool.bertrand.network.build/run]` tables."""
                     model_config = ConfigDict(extra="forbid")
@@ -1435,7 +1687,6 @@ class Config:
                             )
                         return self
 
-                model_config = ConfigDict(extra="forbid")
                 build: Annotated[Table, Field(default_factory=Table.model_construct)]
                 run: Annotated[Table, Field(default_factory=Table.model_construct)]
 
@@ -1464,21 +1715,8 @@ class Config:
                     host_ip: Annotated[IPAddress, Field(alias="host-ip")]
                     protocol: Literal["tcp", "udp"]
 
-                ports: Annotated[list[Port], Field(default_factory=list)]
-                network_aliases: Annotated[
-                    list[NetworkAlias],
-                    Field(default_factory=list, alias="network-aliases")
-                ]
-                cpus: Annotated[float, Field(default=0.0, ge=0.0)]
-                memory: Annotated[Memory, Field(default="0")]
-                pids_limit: Annotated[
-                    PositiveInt,
-                    Field(default=0, alias="pids-limit")
-                ]
-
-                @field_validator("ports")
-                @classmethod
-                def _validate_port_bindings(cls, ports: list[Port]) -> list[Port]:
+                @staticmethod
+                def _check_ports(ports: list[Port]) -> list[Port]:
                     seen: set[tuple[str, int, str]] = set()
                     for port in ports:
                         key = (port.host_ip, port.host, port.protocol)
@@ -1490,18 +1728,31 @@ class Config:
                         seen.add(key)
                     return ports
 
-                @field_validator("network_aliases")
-                @classmethod
-                def _validate_network_aliases(
-                    cls,
-                    aliases: list[NetworkAlias]
-                ) -> list[NetworkAlias]:
+                @staticmethod
+                def _check_network_aliases(aliases: list[NetworkAlias]) -> list[NetworkAlias]:
                     seen: set[NetworkAlias] = set()
                     for alias in aliases:
                         if alias in seen:
                             raise ValueError(f"duplicate network alias: '{alias}'")
                         seen.add(alias)
                     return aliases
+
+                ports: Annotated[
+                    list[Port],
+                    AfterValidator(_check_ports),
+                    Field(default_factory=list)
+                ]
+                network_aliases: Annotated[
+                    list[NetworkAlias],
+                    AfterValidator(_check_network_aliases),
+                    Field(default_factory=list, alias="network-aliases")
+                ]
+                cpus: Annotated[float, Field(default=0.0, ge=0.0)]
+                memory: Annotated[Memory, Field(default="0")]
+                pids_limit: Annotated[
+                    PositiveInt,
+                    Field(default=0, alias="pids-limit")
+                ]
 
                 class ULimit(BaseModel):
                     """Validate entries in the `[[tool.bertrand.tags.ulimit]]` table."""
@@ -1529,17 +1780,51 @@ class Config:
                             )
                         return self
 
-                ulimit: Annotated[list[ULimit], Field(default_factory=list)]
+                @staticmethod
+                def _check_ulimit(entries: list[ULimit]) -> list[ULimit]:
+                    seen: set[str] = set()
+                    for entry in entries:
+                        if entry.name in seen:
+                            raise ValueError(f"duplicate ulimit name: '{entry.name}'")
+                        seen.add(entry.name)
+                    return entries
+
+                @staticmethod
+                def _check_unique(value: list[str], *, where: str) -> list[str]:
+                    seen: set[str] = set()
+                    for item in value:
+                        if item in seen:
+                            raise ValueError(f"duplicate {where}: '{item}'")
+                        seen.add(item)
+                    return value
+
+                ulimit: Annotated[
+                    list[ULimit],
+                    AfterValidator(_check_ulimit),
+                    Field(default_factory=list)
+                ]
                 cap_add: Annotated[
                     list[Capability],
+                    AfterValidator(lambda x: Config.Tool.Bertrand.Tag._check_unique(
+                        x,
+                        where="cap-add capability"
+                    )),
                     Field(default_factory=list, alias="cap-add")
                 ]
                 cap_drop: Annotated[
                     list[Capability],
+                    AfterValidator(lambda x: Config.Tool.Bertrand.Tag._check_unique(
+                        x,
+                        where="cap-drop capability"
+                    )),
                     Field(default_factory=list, alias="cap-drop")
                 ]
                 security_opt: Annotated[
                     list[SecurityOpt],
+                    AfterValidator(lambda x: Config.Tool.Bertrand.Tag._check_unique(
+                        x,
+                        where="security-opt entry"
+                    )),
                     Field(default_factory=list, alias="security-opt")
                 ]
                 userns: Annotated[UserNS, Field(default="host")]
@@ -1548,60 +1833,6 @@ class Config:
                 uts: Annotated[UTSMode, Field(default="private")]
                 ssh: Annotated[list[ScreamingSnakeCase], Field(default_factory=list)]
                 instruments: Annotated[list[Instrument], Field(default_factory=list)]
-
-                # TODO: SSH capability design (config-layer contract):
-                # - `ssh` is a list of capability IDs only (SCREAMING_SNAKE_CASE),
-                #   never key data.
-                # - IDs resolve via host-local channels at execution time:
-                #     1) BERTRAND_SSH_<ID> env override
-                #     2) host profile (e.g. .bertrand/host/ssh.toml)
-                # - Preferred source is SSH agent forwarding; key-file source is
-                #   fallback only.
-                # - Intended mapping target is `podman build --ssh` (build-time),
-                #   not runtime mounts.
-                # - Security invariants:
-                #     * no private key bytes in pyproject/config metadata
-                #     * no host key paths committed to VCS
-                #     * no secret material written to image layers or persisted state
-                # - Runtime wiring/argv synthesis is deferred to container.py refactor.
-                # - Final usage is always in the tag's Containerfile, by appending
-                #   `RUN --mount=type=ssh,id=id ...`
-
-                @field_validator("ulimit")
-                @classmethod
-                def _validate_ulimit_entries(cls, entries: list[ULimit]) -> list[ULimit]:
-                    seen: set[str] = set()
-                    for entry in entries:
-                        if entry.name in seen:
-                            raise ValueError(f"duplicate ulimit name: '{entry.name}'")
-                        seen.add(entry.name)
-                    return entries
-
-                @field_validator("cap_add")
-                @classmethod
-                def _validate_cap_add_entries(
-                    cls,
-                    entries: list[Capability]
-                ) -> list[Capability]:
-                    seen: set[Capability] = set()
-                    for entry in entries:
-                        if entry in seen:
-                            raise ValueError(f"duplicate cap-add capability: '{entry}'")
-                        seen.add(entry)
-                    return entries
-
-                @field_validator("cap_drop")
-                @classmethod
-                def _validate_cap_drop_entries(
-                    cls,
-                    entries: list[Capability]
-                ) -> list[Capability]:
-                    seen: set[Capability] = set()
-                    for entry in entries:
-                        if entry in seen:
-                            raise ValueError(f"duplicate cap-drop capability: '{entry}'")
-                        seen.add(entry)
-                    return entries
 
                 @model_validator(mode="after")
                 def _validate_capability_conflicts(self) -> Self:
@@ -1624,21 +1855,28 @@ class Config:
                         )
                     return self
 
-                @field_validator("security_opt")
-                @classmethod
-                def _validate_security_opt_entries(
-                    cls,
-                    entries: list[SecurityOpt]
-                ) -> list[SecurityOpt]:
-                    seen: set[SecurityOpt] = set()
-                    for entry in entries:
-                        if entry in seen:
-                            raise ValueError(f"duplicate security-opt entry: '{entry}'")
-                        seen.add(entry)
-                    return entries
+                # TODO: SSH capability design (config-layer contract):
+                # - `ssh` is a list of capability IDs only (SCREAMING_SNAKE_CASE),
+                #   never key data.
+                # - IDs resolve via host-local channels at execution time:
+                #     1) BERTRAND_SSH_<ID> env override
+                #     2) host profile (e.g. .bertrand/host/ssh.toml)
+                # - Preferred source is SSH agent forwarding; key-file source is
+                #   fallback only.
+                # - Intended mapping target is `podman build --ssh` (build-time),
+                #   not runtime mounts.
+                # - Security invariants:
+                #     * no private key bytes in pyproject/config metadata
+                #     * no host key paths committed to VCS
+                #     * no secret material written to image layers or persisted state
+                # - Runtime wiring/argv synthesis is deferred to container.py refactor.
+                # - Final usage is always in the tag's Containerfile, by appending
+                #   `RUN --mount=type=ssh,id=id ...`
 
                 class Devices(BaseModel):
                     """Validate the `[tool.bertrand.tags.devices]` table."""
+                    model_config = ConfigDict(extra="forbid")
+
                     class Request(BaseModel):
                         """Validate one entry in `tool.bertrand.tags.devices.*`."""
                         model_config = ConfigDict(extra="forbid")
@@ -1650,25 +1888,31 @@ class Config:
                         ]
                         permissions: Annotated[DevicePermission, Field(default="rwm")]
 
-                    model_config = ConfigDict(extra="forbid")
-                    build: Annotated[list[Request], Field(default_factory=list)]
-                    run: Annotated[list[Request], Field(default_factory=list)]
-
-                    @model_validator(mode="after")
-                    def _validate_permissions(self) -> Self:
+                    @staticmethod
+                    def _check_unique_ids(requests: list[Request], *, where: str) -> list[Request]:
                         seen: set[ScreamingSnakeCase] = set()
-                        for entry in self.build:
-                            if entry.id in seen:
-                                raise ValueError(f"duplicate build device id: '{entry.id}'")
-                            seen.add(entry.id)
-                        seen.clear()
-                        for entry in self.run:
-                            if entry.id in seen:
-                                raise ValueError(f"duplicate run device id: '{entry.id}'")
-                            seen.add(entry.id)
-                        return self
+                        for req in requests:
+                            if req.id in seen:
+                                raise ValueError(f"duplicate {where} device id: '{req.id}'")
+                            seen.add(req.id)
+                        return requests
 
-                devices: Annotated[Devices, Field(default_factory=Devices.model_construct)]
+                    build: Annotated[
+                        list[Request],
+                        AfterValidator(lambda x: Config.Tool.Bertrand.Tag.Devices._check_unique_ids(
+                            x,
+                            where="build"
+                        )),
+                        Field(default_factory=list)
+                    ]
+                    run: Annotated[
+                        list[Request],
+                        AfterValidator(lambda x: Config.Tool.Bertrand.Tag.Devices._check_unique_ids(
+                            x,
+                            where="run"
+                        )),
+                        Field(default_factory=list)
+                    ]
 
                 # TODO: Device capability design (config-layer contract):
                 # - `devices.build` and `devices.run` are host-agnostic capability
@@ -1685,37 +1929,43 @@ class Config:
                 #     * no secret host topology persisted in project metadata
                 # - Runtime wiring/argv synthesis is deferred to container.py refactor.
 
+                devices: Annotated[Devices, Field(default_factory=Devices.model_construct)]
+
                 class Secrets(BaseModel):
                     """Validate the `[tool.bertrand.tags.secrets]` table."""
+                    model_config = ConfigDict(extra="forbid")
+
                     class Request(BaseModel):
                         """Validate an individual secret capability request."""
                         model_config = ConfigDict(extra="forbid")
                         id: ScreamingSnakeCase
                         required: bool = True
 
-                    model_config = ConfigDict(extra="forbid")
-                    build: Annotated[list[Request], Field(default_factory=list)]
-                    run: Annotated[list[Request], Field(default_factory=list)]
-
-                    @model_validator(mode="after")
-                    def _validate_secret_ids(self) -> Self:
+                    @staticmethod
+                    def _check_unique_ids(requests: list[Request], *, where: str) -> list[Request]:
                         seen: set[ScreamingSnakeCase] = set()
-                        for entry in self.build:
-                            if entry.id in seen:
-                                raise ValueError(
-                                    f"duplicate build secret id: '{entry.id}'"
-                                )
-                            seen.add(entry.id)
-                        seen.clear()
-                        for entry in self.run:
-                            if entry.id in seen:
-                                raise ValueError(
-                                    f"duplicate run secret id: '{entry.id}'"
-                                )
-                            seen.add(entry.id)
-                        return self
+                        for req in requests:
+                            if req.id in seen:
+                                raise ValueError(f"duplicate {where} secret id: '{req.id}'")
+                            seen.add(req.id)
+                        return requests
 
-                secrets: Annotated[Secrets, Field(default_factory=Secrets.model_construct)]
+                    build: Annotated[
+                        list[Request],
+                        AfterValidator(lambda x: Config.Tool.Bertrand.Tag.Secrets._check_unique_ids(
+                            x,
+                            where="build"
+                        )),
+                        Field(default_factory=list)
+                    ]
+                    run: Annotated[
+                        list[Request],
+                        AfterValidator(lambda x: Config.Tool.Bertrand.Tag.Secrets._check_unique_ids(
+                            x,
+                            where="run"
+                        )),
+                        Field(default_factory=list)
+                    ]
 
                 # TODO: Secrets capability design (config-layer contract):
                 # - `secrets.build` and `secrets.run` are capability requests keyed
@@ -1732,8 +1982,45 @@ class Config:
                 #     * unresolved `required=true` entries fail closed at runtime
                 # - Runtime wiring/argv synthesis is deferred to container.py refactor.
 
+                secrets: Annotated[Secrets, Field(default_factory=Secrets.model_construct)]
+
+                class Conan(BaseModel):
+                    """Validate the `[tool.bertrand.tags.conan]` table."""
+                    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+                    build_type: Annotated[
+                        Literal["", "Release", "Debug"],
+                        Field(default="", alias="build-type")
+                    ]
+                    conf: Annotated[ConanConf, Field(default_factory=dict)]
+                    requires: Annotated[
+                        list[Config.Tool.Conan.Require],
+                        AfterValidator(lambda x: Config.Tool.Conan._check_requires(
+                            x,
+                            where="[tool.bertrand.tags.conan.requires]"
+                        )),
+                        Field(default_factory=list)
+                    ]
+
+                conan: Annotated[Conan, Field(default_factory=Conan.model_construct)]
+
+                class Build(BaseModel):
+                    """Validate the `[tool.bertrand.tags.build]` table."""
+                    model_config = ConfigDict(extra="forbid")
+                    context: Annotated[RelativePath, Field(default=PosixPath("."))]
+                    target: Annotated[str, Field(default="")]  # TODO: maybe a fancier type?
+                    pull: Annotated[
+                        Literal["missing", "always", "never", "newer"],
+                        Field(default="missing")
+                    ]
+
+                build: Annotated[Build, Field(default_factory=Build.model_construct)]
+
                 def _resolve_containerfile(self, root: Path) -> None:
                     _check_text_file(root / self.containerfile, tag=self.tag)
+                    # TODO: _check_text_file() should return the text so that I can
+                    # scan over it and verify that all of the `build-args` have
+                    # matching ARG instructions in the Containerfile, and `build.target`
+                    # is a valid build stage if there are multiple stages.
 
                 def _resolve_env_files(self, root: Path) -> None:
                     seen: set[PosixPath] = set()
@@ -1830,10 +2117,9 @@ class Config:
                             )
                 return self
 
-        model_config = ConfigDict(extra="allow")
-        bertrand: Bertrand | None = Field(default=None)
+        bertrand: Annotated[Bertrand | None, Field(default=None)]
 
-    class Parse(BaseModel):
+    class _Parse(BaseModel):
         """Validate the output of the `parse()` pass for all resources."""
         model_config = ConfigDict(extra="forbid")
         build_system: Config.BuildSystem | None = Field(default=None, alias="build-system")
@@ -2286,7 +2572,7 @@ class Config:
                     )
 
                 # validate merged snapshot against expected schema
-                data = Config.Parse.model_validate(merged)
+                data = Config._Parse.model_validate(merged)
                 self.build_system = data.build_system
                 self.project = data.project
                 if self.project is not None:
