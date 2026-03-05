@@ -105,7 +105,7 @@ INSTRUMENTS: dict[str, Callable[[dict[str, Any]], Callable[[list[str]], list[str
 
 
 # Validation primitives for config fields
-GLOB_REGEX = re.compile(r"^[A-Za-z0-9._/\-\*\?\[\]!]+$")
+GLOB_RE = re.compile(r"^[A-Za-z0-9._/\-\*\?\[\]!]+$")
 HTTP_URL = TypeAdapter(AnyHttpUrl)
 NS_PATH_RE = re.compile(r"^ns:\S+$")
 NETWORK_MODE_RE = re.compile(rf"^(none|host|private|slirp4netns|pasta|{NS_PATH_RE.pattern})$")
@@ -121,7 +121,6 @@ CAPABILITY_DEFINE_RE = re.compile(r"^\s*#define\s+(CAP_[A-Z0-9_]+)\s+([0-9]+)\b"
 SECURITY_OPT_KEY_RE = re.compile(r"^[a-z0-9][a-z0-9_.-]*$")
 CONAN_REF_TOKEN_RE = re.compile(r"^[a-z0-9_][a-z0-9_+.-]{1,100}\Z")
 CONAN_OPTION_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-CONAN_REMOTE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 DEVICE_PERMISSIONS: frozenset[str] = frozenset({"r", "w", "m", "rw", "rm", "wm", "rwm"})
 LINUX_CAPABILITY_HEADERS: tuple[Path, ...] = (
     Path("/usr/include/linux/capability.h"),
@@ -167,8 +166,7 @@ def _check_license(expression: str) -> str:
 
 
 def _check_glob(pattern: str) -> str:
-    pattern = pattern.strip()
-    if not GLOB_REGEX.fullmatch(pattern):
+    if not GLOB_RE.fullmatch(pattern):
         raise ValueError(f"invalid glob pattern: '{pattern}'")
     if pattern.startswith("/"):
         raise ValueError(f"glob pattern cannot be absolute: '{pattern}'")
@@ -178,30 +176,13 @@ def _check_glob(pattern: str) -> str:
 
 
 def _check_email(email: str) -> str:
-    email = email.strip()
     try:
         return validate_email(email, check_deliverability=False).normalized
     except EmailNotValidError as err:
         raise ValueError(f"invalid email address: {email}") from err
 
 
-def _check_email_name(name: str) -> str:
-    name = name.strip()
-    if not name:
-        raise ValueError("email name cannot be empty")
-    if "," in name:
-        raise ValueError("email name cannot contain commas")
-    if "\n" in name or "\r" in name:
-        raise ValueError("email name cannot contain CR/LF characters")
-    return name
-
-
 def _check_url(url: str) -> str:
-    url = url.strip()
-    if not url:
-        raise ValueError("URL cannot be empty")
-    if "\n" in url or "\r" in url:
-        raise ValueError("URL cannot contain CR/LF characters")
     try:
         return str(HTTP_URL.validate_python(url))
     except ValidationError as err:
@@ -215,9 +196,6 @@ def _check_url_label(label: str) -> str:
 
 
 def _check_pep508_requirement(requirement: str) -> str:
-    requirement = requirement.strip()
-    if not requirement:
-        raise ValueError("PEP 508 requirement cannot be empty")
     try:
         return str(Requirement(requirement))
     except InvalidRequirement as err:
@@ -225,9 +203,6 @@ def _check_pep508_requirement(requirement: str) -> str:
 
 
 def _check_pep508_name(name: str) -> str:
-    name = name.strip()
-    if not name:
-        raise ValueError("PEP 508 name cannot be empty")
     try:
         return canonicalize_name(name, validate=True)
     except InvalidName as err:
@@ -235,7 +210,6 @@ def _check_pep508_name(name: str) -> str:
 
 
 def _check_shell(shell: str) -> str:
-    shell = shell.strip()
     if shell not in SHELLS:
         raise ValueError(
             f"unsupported shell: '{shell}' (supported shells: {', '.join(SHELLS)})"
@@ -255,7 +229,6 @@ def _deduplicate_ignore_list(ignore: list[Glob]) -> list[Glob]:
 
 
 def _check_network_mode(mode: str) -> str:
-    mode = mode.strip()
     if not NETWORK_MODE_RE.fullmatch(mode):
         raise ValueError(
             "invalid network mode (expected one of: "
@@ -267,9 +240,6 @@ def _check_network_mode(mode: str) -> str:
 
 
 def _check_ip_address(address: str) -> str:
-    address = address.strip()
-    if not address:
-        raise ValueError("IP address cannot be empty")
     try:
         return str(ipaddress.ip_address(address))
     except ValueError as err:
@@ -277,22 +247,9 @@ def _check_ip_address(address: str) -> str:
 
 
 def _check_host_ip(address: str) -> str:
-    address = address.strip()
     if address == "host-gateway":
         return address
     return _check_ip_address(address)
-
-
-def _check_host_name(name: str) -> str:
-    name = name.strip()
-    if not name:
-        raise ValueError("host name cannot be empty")
-    if not HOSTNAME_RE.fullmatch(name):
-        raise ValueError(
-            f"invalid host name for add-host mapping: '{name}' (must be a valid "
-            "entry for /etc/hosts, excluding the IP address and port components)"
-        )
-    return name
 
 
 def _check_sanitized_name(name: str) -> str:
@@ -337,9 +294,7 @@ def _check_text_file(path: Path, *, tag: str | None = None) -> None:
 
 
 def _check_network_alias(alias: str) -> str:
-    alias = alias.strip().lower()
-    if not alias:
-        raise ValueError("network alias cannot be empty")
+    alias = alias.lower()
     if alias.startswith(".") or alias.endswith(".") or ".." in alias:
         raise ValueError(
             f"invalid network alias '{alias}' (cannot start/end with '.', or contain '..')"
@@ -354,9 +309,7 @@ def _check_network_alias(alias: str) -> str:
 
 
 def _check_ulimit_name(name: str) -> str:
-    name = name.strip().lower()
-    if not name:
-        raise ValueError("ulimit name cannot be empty")
+    name = name.lower()
     if not ULIMIT_NAME_RE.fullmatch(name):
         raise ValueError(
             f"invalid ulimit name '{name}' (expected lowercase POSIX-style token, "
@@ -366,11 +319,6 @@ def _check_ulimit_name(name: str) -> str:
 
 
 def _check_capability(capability: str) -> str:
-    capability = capability.strip()
-    if not capability:
-        raise ValueError("capability cannot be empty")
-    if "\n" in capability or "\r" in capability:
-        raise ValueError("capability cannot contain CR/LF characters")
     if capability == "ALL":
         return capability
     if not CAPABILITY_TOKEN_RE.fullmatch(capability):
@@ -385,11 +333,6 @@ def _check_capability(capability: str) -> str:
 
 
 def _check_security_opt(option: str) -> str:
-    option = option.strip()
-    if not option:
-        raise ValueError("security-opt entry cannot be empty")
-    if "\n" in option or "\r" in option:
-        raise ValueError("security-opt entry cannot contain CR/LF characters")
     if option == "no-new-privileges":
         return option
     if "=" not in option:
@@ -399,8 +342,6 @@ def _check_security_opt(option: str) -> str:
     key, value = option.split("=", maxsplit=1)
     if not key or not value:
         raise ValueError(f"invalid security-opt '{option}' (missing key or value)")
-    if key != key.strip() or value != value.strip():
-        raise ValueError(f"invalid security-opt '{option}' (unexpected whitespace around '=')")
     if not SECURITY_OPT_KEY_RE.fullmatch(key):
         raise ValueError(f"invalid security-opt key '{key}' in '{option}'")
     return option
@@ -493,13 +434,6 @@ def _check_userns_options(
 
 
 def _check_userns(userns: str) -> str:
-    userns = userns.strip()
-    if not userns:
-        raise ValueError("userns entry cannot be empty (use 'host' explicitly)")
-    if "\n" in userns or "\r" in userns:
-        raise ValueError("userns entry cannot contain CR/LF characters")
-    if re.search(r"\s", userns):
-        raise ValueError("userns entry cannot contain whitespace")
     if userns in ("host", "keep-id", "auto", "nomap"):
         return userns
     if userns.startswith("ns:"):
@@ -549,15 +483,8 @@ def _check_namespace_mode(
 ) -> str:
     if mode == "" and allow_empty:
         return mode
-    stripped = mode.strip()
-    if not stripped:
+    if not mode:
         raise ValueError(f"{option} entry cannot be empty")
-    if mode != stripped:
-        raise ValueError(f"{option} entry cannot contain leading/trailing whitespace")
-    if "\n" in mode or "\r" in mode:
-        raise ValueError(f"{option} entry cannot contain CR/LF characters")
-    if re.search(r"\s", mode):
-        raise ValueError(f"{option} entry cannot contain whitespace")
     if mode in literals:
         return mode
     if mode.startswith("ns:"):
@@ -612,13 +539,6 @@ def _check_uts(uts: str) -> str:
 
 
 def _check_instrument(instrument: str) -> str:
-    instrument = instrument.strip()
-    if not instrument:
-        raise ValueError("instrument entry cannot be empty")
-    if "\n" in instrument or "\r" in instrument:
-        raise ValueError("instrument entry cannot contain CR/LF characters")
-    if re.search(r"\s", instrument):
-        raise ValueError("instrument entry cannot contain whitespace")
     if instrument not in INSTRUMENTS:
         raise ValueError(
             f"unknown instrument '{instrument}' (available instruments: "
@@ -628,11 +548,6 @@ def _check_instrument(instrument: str) -> str:
 
 
 def _check_device_permission(permission: str) -> str:
-    permission = permission.strip()
-    if not permission:
-        raise ValueError("device permissions cannot be empty")
-    if "\n" in permission or "\r" in permission:
-        raise ValueError("device permissions cannot contain CR/LF characters")
     if permission not in DEVICE_PERMISSIONS:
         raise ValueError(
             f"invalid device permissions '{permission}' (expected one of: "
@@ -642,12 +557,6 @@ def _check_device_permission(permission: str) -> str:
 
 
 def _check_conan_requirement(requirement: str) -> str:
-    requirement = requirement.strip()
-    if not requirement:
-        raise ValueError("conan requirement cannot be empty")
-    if "\n" in requirement or "\r" in requirement:
-        raise ValueError("conan requirement cannot contain CR/LF characters")
-
     # Use conan's own parser to validate the requirement string and extract/verify its
     # components
     try:
@@ -704,37 +613,6 @@ def _check_conan_requirement(requirement: str) -> str:
     return ref.repr_notime()
 
 
-def _check_conan_option_name(option: str) -> str:
-    option = option.strip()
-    if not option:
-        raise ValueError("conan option name cannot be empty")
-    if "\n" in option or "\r" in option:
-        raise ValueError("conan option name cannot contain CR/LF characters")
-    if ":" in option:
-        raise ValueError(
-            f"invalid conan option name '{option}' (option names must not include "
-            "package selectors)"
-        )
-    if not CONAN_OPTION_NAME_RE.fullmatch(option):
-        raise ValueError(
-            f"invalid conan option name '{option}' (expected [A-Za-z_][A-Za-z0-9_]*)"
-        )
-    return option
-
-
-def _check_conan_conf_name(name: str, *, mode: str) -> str:
-    name = name.strip()
-    if not name:
-        raise ValueError(f"conan conf {mode} cannot be empty")
-    if "\n" in name or "\r" in name:
-        raise ValueError(f"conan conf {mode} cannot contain CR/LF characters")
-    if ":" in name:
-        raise ValueError(f"invalid conan conf {mode} '{name}' (':' is not allowed)")
-    if re.search(r"\s", name):
-        raise ValueError(f"invalid conan conf {mode} '{name}' (whitespace is not allowed)")
-    return name
-
-
 def _check_conan_conf(conf: dict[ConanConfNamespace, dict[ConanConfName, ConanScalar]]) -> None:
     for namespace, values in conf.items():
         for key in values:
@@ -746,27 +624,7 @@ def _check_conan_conf(conf: dict[ConanConfNamespace, dict[ConanConfName, ConanSc
                 raise ValueError(f"invalid conan conf key '{key}'") from err
 
 
-def _check_conan_remote_name(name: str) -> str:
-    name = name.strip()
-    if not name:
-        raise ValueError("conan remote name cannot be empty")
-    if "\n" in name or "\r" in name:
-        raise ValueError("conan remote name cannot contain CR/LF characters")
-    if not CONAN_REMOTE_NAME_RE.fullmatch(name):
-        raise ValueError(
-            f"invalid conan remote name '{name}' (expected [A-Za-z0-9][A-Za-z0-9_.-]*)"
-        )
-    return name
-
-
 def _check_conan_allowed_pattern(pattern: str) -> str:
-    pattern = pattern.strip()
-    if not pattern:
-        raise ValueError("conan remote allowed-packages pattern cannot be empty")
-    if "\n" in pattern or "\r" in pattern:
-        raise ValueError(
-            "conan remote allowed-packages pattern cannot contain CR/LF characters"
-        )
     if pattern.startswith(("!", "~")) or pattern == "&":
         raise ValueError(
             f"invalid conan allowed-packages pattern '{pattern}' (negation/consumer "
@@ -787,15 +645,45 @@ def _check_conan_allowed_pattern(pattern: str) -> str:
     return pattern
 
 
-SemVer = Annotated[str, AfterValidator(_check_semver)]
-License = Annotated[str, AfterValidator(_check_license)]
-Glob = Annotated[str, AfterValidator(_check_glob)]
-Email = Annotated[str, AfterValidator(_check_email)]
-EmailName = Annotated[str, AfterValidator(_check_email_name)]
-URL = Annotated[str, AfterValidator(_check_url)]
-URLLabel = Annotated[str, AfterValidator(_check_url_label)]
-PEP508Requirement = Annotated[str, AfterValidator(_check_pep508_requirement)]
-PEP508Name = Annotated[str, AfterValidator(_check_pep508_name)]
+def _check_health_log_destination(value: str) -> str:
+    if value in ("local", "events_logger"):
+        return value
+    if "\\" in value:
+        raise ValueError(
+            f"invalid healthcheck.log.destination '{value}' "
+            "(expected POSIX-style path separators)"
+        )
+    if any(part in (".", "..") for part in value.split("/")):
+        raise ValueError(
+            f"invalid healthcheck.log.destination '{value}' "
+            "(path cannot contain '.' or '..' segments)"
+        )
+    path = PosixPath(value)
+    if path.is_absolute():
+        raise ValueError(
+            f"invalid healthcheck.log.destination '{value}' "
+            "(path must be project-root-relative)"
+        )
+    return path.as_posix()
+
+
+type NonEmpty[S: str] = Annotated[S, StringConstraints(min_length=1)]
+Trimmed = Annotated[str, StringConstraints(strip_whitespace=True)]
+NoCRLF = Annotated[Trimmed, StringConstraints(pattern=r"^[^\r\n]*$")]
+NoWhiteSpace = Annotated[Trimmed, StringConstraints(pattern=r"^\S*$")]
+SemVer = Annotated[NonEmpty[Trimmed], AfterValidator(_check_semver)]
+License = Annotated[NonEmpty[Trimmed], AfterValidator(_check_license)]
+Glob = Annotated[NonEmpty[NoWhiteSpace], AfterValidator(_check_glob)]
+Email = Annotated[NonEmpty[Trimmed], AfterValidator(_check_email)]
+EmailName = Annotated[str, StringConstraints(
+    strip_whitespace=True,
+    min_length=1,
+    pattern=r"^[^\r\n,]+$"
+)]
+URL = Annotated[NonEmpty[NoCRLF], AfterValidator(_check_url)]
+URLLabel = Annotated[NonEmpty[Trimmed], AfterValidator(_check_url_label)]
+PEP508Requirement = Annotated[NonEmpty[Trimmed], AfterValidator(_check_pep508_requirement)]
+PEP508Name = Annotated[NonEmpty[NoWhiteSpace], AfterValidator(_check_pep508_name)]
 Entrypoint = Annotated[str, StringConstraints(
     strip_whitespace=True,
     pattern=r"^[A-Za-z_][A-Za-z0-9_]*:[A-Za-z_][A-Za-z0-9_]*$"
@@ -804,47 +692,73 @@ EntrypointName = Annotated[str, StringConstraints(
     strip_whitespace=True,
     pattern=r"^[a-zA-Z_][a-zA-Z0-9_]*$"
 )]
-Shell = Annotated[str, AfterValidator(_check_shell)]
+Shell = Annotated[NonEmpty[NoWhiteSpace], AfterValidator(_check_shell)]
 IgnoreList = Annotated[list[Glob], AfterValidator(_deduplicate_ignore_list)]
-NetworkMode = Annotated[str, AfterValidator(_check_network_mode)]
-IPAddress = Annotated[str, AfterValidator(_check_ip_address)]
-HostIP = Annotated[str, AfterValidator(_check_host_ip)]
-HostName = Annotated[str, AfterValidator(_check_host_name)]
+NetworkMode = Annotated[NonEmpty[NoWhiteSpace], AfterValidator(_check_network_mode)]
+IPAddress = Annotated[NonEmpty[NoWhiteSpace], AfterValidator(_check_ip_address)]
+HostIP = Annotated[NonEmpty[NoWhiteSpace], AfterValidator(_check_host_ip)]
+HostName = Annotated[str, StringConstraints(
+    strip_whitespace=True,
+    min_length=1,
+    pattern=HOSTNAME_RE.pattern
+)]
 SanitizedName = Annotated[str, AfterValidator(_check_sanitized_name)]
 AbsolutePath = Annotated[PosixPath, AfterValidator(_check_absolute_path)]
 RelativePath = Annotated[PosixPath, AfterValidator(_check_relative_path)]
-NetworkAlias = Annotated[str, AfterValidator(_check_network_alias)]
+NetworkAlias = Annotated[NonEmpty[NoWhiteSpace], AfterValidator(_check_network_alias)]
 Memory = Annotated[str, StringConstraints(strip_whitespace=True, pattern=r"^\d+[bkmg]?$")]
-ULimitName = Annotated[str, AfterValidator(_check_ulimit_name)]
-Capability = Annotated[str, AfterValidator(_check_capability)]
-SecurityOpt = Annotated[str, AfterValidator(_check_security_opt)]
-UserNS = Annotated[str, AfterValidator(_check_userns)]
-IPCMode = Annotated[str, AfterValidator(_check_ipc)]
-PIDMode = Annotated[str, AfterValidator(_check_pid)]
-UTSMode = Annotated[str, AfterValidator(_check_uts)]
-Instrument = Annotated[str, AfterValidator(_check_instrument)]
-ScreamingSnakeCase = Annotated[
-    str,
-    StringConstraints(strip_whitespace=True, pattern=r"^[A-Z0-9_]+$")
-]
-DevicePermission = Annotated[str, AfterValidator(_check_device_permission)]
-ConanRequirement = Annotated[str, AfterValidator(_check_conan_requirement)]
-ConanOptionName = Annotated[str, AfterValidator(_check_conan_option_name)]
-ConanConfNamespace = Annotated[
-    str,
-    AfterValidator(lambda x: _check_conan_conf_name(x, mode="namespace"))
-]
-ConanConfName = Annotated[
-    str,
-    AfterValidator(lambda x: _check_conan_conf_name(x, mode="key"))
-]
+ULimitName = Annotated[NonEmpty[NoWhiteSpace], AfterValidator(_check_ulimit_name)]
+Capability = Annotated[NonEmpty[NoWhiteSpace], AfterValidator(_check_capability)]
+SecurityOpt = Annotated[NonEmpty[NoWhiteSpace], AfterValidator(_check_security_opt)]
+UserNS = Annotated[NonEmpty[NoWhiteSpace], AfterValidator(_check_userns)]
+IPCMode = Annotated[NonEmpty[NoWhiteSpace], AfterValidator(_check_ipc)]
+PIDMode = Annotated[NonEmpty[NoWhiteSpace], AfterValidator(_check_pid)]
+UTSMode = Annotated[NonEmpty[NoWhiteSpace], AfterValidator(_check_uts)]
+Instrument = Annotated[NonEmpty[NoWhiteSpace], AfterValidator(_check_instrument)]
+ScreamingSnakeCase = Annotated[str, StringConstraints(
+    strip_whitespace=True,
+    pattern=r"^[A-Z_]?[A-Z0-9_]*$"
+)]
+DevicePermission = Annotated[NonEmpty[NoWhiteSpace], AfterValidator(_check_device_permission)]
+ConanRequirement = Annotated[NonEmpty[NoCRLF], AfterValidator(_check_conan_requirement)]
+ConanOptionName = Annotated[str, StringConstraints(
+    strip_whitespace=True,
+    min_length=1,
+    pattern=CONAN_OPTION_NAME_RE.pattern
+)]
+ConanConfNamespace = Annotated[str, StringConstraints(
+    strip_whitespace=True,
+    min_length=1,
+    pattern=r"^[^:\s]+$"
+)]
+ConanConfName = Annotated[str, StringConstraints(
+    strip_whitespace=True,
+    min_length=1,
+    pattern=r"^[^:\s]+$"
+)]
 type ConanScalar = str | bool | int | float
 ConanConf = Annotated[
     dict[ConanConfNamespace, dict[ConanConfName, ConanScalar]],
     AfterValidator(_check_conan_conf)
 ]
-ConanRemoteName = Annotated[str, AfterValidator(_check_conan_remote_name)]
-ConanAllowedPattern = Annotated[str, AfterValidator(_check_conan_allowed_pattern)]
+ConanRemoteName = Annotated[str, StringConstraints(
+    strip_whitespace=True,
+    min_length=1,
+    pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]*$"
+)]
+ConanAllowedPattern = Annotated[
+    NonEmpty[NoWhiteSpace],
+    AfterValidator(_check_conan_allowed_pattern)
+]
+Timeout = Annotated[str, StringConstraints(
+    strip_whitespace=True,
+    min_length=1,
+    pattern=r"^\d+(\.\d+)?[smhd]?$"
+)]
+HealthLogDestination = Annotated[
+    NonEmpty[NoCRLF],
+    AfterValidator(_check_health_log_destination)
+]
 
 
 class Template(BaseModel):
@@ -922,7 +836,7 @@ def resource[T: Resource](
             )
         template_kwargs = {"namespace": parts[0], "name": parts[1], "version": parts[2]}
 
-    def _decorator(cls: type[T]) -> type[T]:
+    def _decorator[U: Resource](cls: type[U]) -> type[U]:
         if name in CATALOG:
             raise TypeError(f"duplicate resource name in catalog: '{name}'")
         CATALOG[name] = cls(
@@ -2007,7 +1921,11 @@ class Config:
                     """Validate the `[tool.bertrand.tags.build]` table."""
                     model_config = ConfigDict(extra="forbid")
                     context: Annotated[RelativePath, Field(default=PosixPath("."))]
-                    target: Annotated[str, Field(default="")]  # TODO: maybe a fancier type?
+                    target: Annotated[
+                        NoWhiteSpace,
+                        StringConstraints(pattern=r"^[a-zA-Z0-9_-]*$"),
+                        Field(default="")
+                    ]
                     pull: Annotated[
                         Literal["missing", "always", "never", "newer"],
                         Field(default="missing")
@@ -2015,12 +1933,72 @@ class Config:
 
                 build: Annotated[Build, Field(default_factory=Build.model_construct)]
 
+                class Stop(BaseModel):
+                    """Validate the `[tool.bertrand.tags.stop]` table."""
+                    model_config = ConfigDict(extra="forbid")
+                    signal: Annotated[
+                        str,
+                        StringConstraints(
+                            strip_whitespace=True,
+                            min_length=1,
+                            pattern=r"^\S+$"
+                        ),
+                        Field(default="SIGTERM")
+                    ]
+                    timeout: Annotated[int, Field(default=10, ge=0)]
+
+                stop: Annotated[Stop, Field(default_factory=Stop.model_construct)]
+
+                class Restart(BaseModel):
+                    """Validate the `[tool.bertrand.tags.restart]` table."""
+                    model_config = ConfigDict(extra="forbid")
+                    policy: Annotated[
+                        Literal["no", "on-failure", "always", "unless-stopped"],
+                        Field(default="no")
+                    ]
+                    max_retries: Annotated[int, Field(default=0, ge=0, alias="max-retries")]
+
+                restart: Annotated[Restart, Field(default_factory=Restart.model_construct)]
+
+                class Healthcheck(BaseModel):
+                    """Validate the `[tool.bertrand.tags.healthcheck]` table."""
+                    model_config = ConfigDict(extra="forbid")
+                    cmd: Annotated[list[str], Field(default_factory=list)]
+                    on_failure: Annotated[
+                        Literal["none", "kill", "stop"],
+                        Field(default="kill", alias="on-failure")
+                    ]
+                    retries: Annotated[int, Field(default=3, ge=0)]
+                    interval: Annotated[Timeout, Field(default="30s")]
+                    timeout: Annotated[Timeout, Field(default="30s")]
+
+                    class Startup(BaseModel):
+                        """Validate the `[tool.bertrand.tags.healthcheck.startup]` table."""
+                        model_config = ConfigDict(extra="forbid")
+                        cmd: Annotated[list[str], Field(default_factory=list)]
+                        period: Annotated[Timeout, Field(default="0s")]
+                        success: Annotated[int, Field(default=0, ge=0)]
+                        interval: Annotated[Timeout, Field(default="30s")]
+                        timeout: Annotated[Timeout, Field(default="30s")]
+
+                    startup: Annotated[Startup, Field(default_factory=Startup.model_construct)]
+
+                    class Log(BaseModel):
+                        """Validate the `[tool.bertrand.tags.healthcheck.log]` table."""
+                        model_config = ConfigDict(extra="forbid")
+                        destination: Annotated[HealthLogDestination, Field(default="local")]
+                        max_count: Annotated[int, Field(default=0, ge=0, alias="max-count")]
+                        max_size: Annotated[int, Field(default=0, ge=0, alias="max-size")]
+
+                    log: Annotated[Log, Field(default_factory=Log.model_construct)]
+
+                healthcheck: Annotated[
+                    Healthcheck,
+                    Field(default_factory=Healthcheck.model_construct)
+                ]
+
                 def _resolve_containerfile(self, root: Path) -> None:
                     _check_text_file(root / self.containerfile, tag=self.tag)
-                    # TODO: _check_text_file() should return the text so that I can
-                    # scan over it and verify that all of the `build-args` have
-                    # matching ARG instructions in the Containerfile, and `build.target`
-                    # is a valid build stage if there are multiple stages.
 
                 def _resolve_env_files(self, root: Path) -> None:
                     seen: set[PosixPath] = set()

@@ -273,7 +273,8 @@ interval = "30s"        # -> --health-startup-interval
 timeout = "30s"         # -> --health-startup-timeout
 
 [tool.bertrand.tags.healthcheck.log]
-destination = "local"   # -> --health-log-destination
+destination = "local"   # -> --health-log-destination (local|events_logger|<relative-dir>)
+                        # Relative dirs are project-root-relative and host-agnostic.
 max-count = 5           # -> --health-max-log-count
 max-size = 500          # -> --health-max-log-size
 
