@@ -6,7 +6,7 @@ name = "{{ project_name }}"
 version = "0.1.0"
 description = "Bertrand project"
 readme = "README.md"
-requires-python = "{{ python_major }}.{{ python_minor }}.{{ python_patch }}"
+requires-python = ">={{ python_major }}.{{ python_minor }}.{{ python_patch }}"
 license = "MIT"                     # SPDX license identifier (e.g. MIT, Apache-2.0, etc.)
 license-files = ["LICEN[CS]E.*"]    # list of relative (posix) paths from worktree root
 authors = [
@@ -466,7 +466,7 @@ CommentFormat = "Doxygen"           # PlainText|Markdown|Doxygen
 
 # NOTE: rules can be customized for specific regex paths via the `If` array of tables,
 # which accepts all the same table keys as above, but applies them only when an entry's
-# path regexes are satisfied.  Note that if two enmtries match the same path, the
+# path regexes are satisfied.  Note that if two entries match the same path, the
 # latter one will take precedence in the event of a conflict.
 
 [[tool.clangd.If]]
@@ -481,14 +481,14 @@ Suppress = ["unused-parameter"]     # noisy in unit-test signatures
 ##########################
 
 [tool.clang-tidy]
-DisableFormat = false               # disable clang-format fixes for clang-tidy diagnostics
+DisableFormat = false               # enable/disable clang-format fixes for clang-tidy diagnostics
 HeaderFilterRegex = "^.*$"          # include diagnostics from matching headers
 ExcludeHeaderFilterRegex = "^$"     # ... except for headers matching this pattern
 SystemHeaders = false               # ... and system headers (if false)
 UseColor = true                     # color diagnostics when supported
 
 [[tool.clang-tidy.Checks]]
-Check = "clang-analyzer-*"          # check family (see clang-tidy docs for details)
+Check = "clang-analyzer-*"          # diagnostic family (see clang-tidy docs for details)
 Action = "warn"                     # disable|warn|error (default "warn")
 Options = {}                        # check-specific option overrides (see clang-tidy docs)
 
@@ -522,24 +522,23 @@ BasedOnStyle = "Mozilla"            # LLVM|Google|Chromium|Mozilla|WebKit|Micros
 AccessModifierOffset = 0            # in indentation levels
 AlwaysBreakBeforeMultilineStrings = true
 AttributeMacros = [                 # names to recognize as custom language attributes
-    "__declspec",
+    # e.g. "__declspec",
 ]
 BinPackArguments = false            # all arguments appear on one line or separate lines each
 BinPackLongBracedList = true        # override BinPackArguments for excessively long braced lists
 BinPackParameters = "OnePerLine"    # BinPack|OnePerLine|AlwaysOnePerLine
-BitFieldColonSpacing = "Both"       # Both|None|Before|After
-ColumnLimit = 100
+BitFieldColonSpacing = "Both"       # None|Before|After|Both
+ColumnLimit = 88
 CompactNamespaces = false
 Cpp11BracedListStyle = "FunctionCall"       # Block|FunctionCall|AlignFirstComment
-EmptyLineAfterAccessModifier = "Never"      # Never|Leave|Always
-EmptyLineBeforeAccessModifier = "Always"    # Never|Leave|LogicalBlock|Always
+EmptyLineAfterAccessModifier = "Leave"      # Never|Leave|Always
+EmptyLineBeforeAccessModifier = "Leave"     # Never|Leave|LogicalBlock|Always
 FixNamespaceComments = true                 # enforce closing comments for all namespaces
 ForEachMacros = [                           # names of macros to recognize as foreach loops
-    "Q_FOREACH",
-    "BOOST_FOREACH",
+    # e.g. "BOOST_FOREACH",
 ]
-IFMacros = [                        # names of macros to recognize as if statements
-    "Q_IF",
+IfMacros = [                        # names of macros to recognize as if statements
+    # e.g. "Q_IF",
 ]
 IncludeBlocks = "Preserve"          # Preserve|Merge|Regroup
 InsertBraces = true
@@ -547,7 +546,7 @@ InsertNewlineAtEOF = true
 LineEnding = "DeriveLF"             # LF|CRLF|DeriveLF|DeriveCRLF
 NamespaceIndentation = "None"       # None|Inner|All
 NamespaceMacros = [                 # names to recognize as namespace definitions
-    "__LIBCPP_BEGIN_NAMESPACE_STD",
+    # e.g. "__LIBCPP_BEGIN_NAMESPACE_STD",
 ]
 OneLineFormatOffRegex = "NOFORMAT"  # regex to disable formatting for a single line
 PackConstructorInitializers = "CurrentLine" # Never|BinPack|CurrentLine|NextLine|NextLineOnly
@@ -559,6 +558,7 @@ QualifierOrder = [
     "friend",
     "const",
     "volatile",
+    "restrict",
     "type",
 ]
 ReferenceAlignment = "Left"                     # Left|Right|Middle
@@ -566,27 +566,25 @@ ReflowComments = "Always"                       # Never|IndentOnly|Always
 RemoveEmptyLinesInUnwrappedLines = true
 RequiresClausePosition = "WithPreceding"        # OwnLine|OwnLineWithBrace|WithPreceding|WithFollowing|SingleLine
 RequiresExpressionIndentation = "OuterScope"    # OuterScope|Keyword
-SeparateDefinitionBlocks = "Always"             # Leave|Always|Never
+SeparateDefinitionBlocks = "Leave"              # Never|Leave|Always
 SortUsingDeclarations = "Lexicographic"         # Never|Lexicographic|LexicographicNumeric
 SpacesBeforeTrailingComments = 2
-SpacesInAngles = "Never"                        # Never|Always|Leave
+SpacesInAngles = "Never"                        # Never|Leave|Always
 SpacesInContainerLiterals = false
-SpacesInLineCommentPrefix = { Minimum = 1, Maximum = 1 }  # required space after `//`
-SpacesInParens = "Custom"                       # Always set to "Custom" to use SpacesInParensOptions
+SpacesInLineCommentPrefix = { Minimum = 1, Maximum = -1 }  # required space after `//` (-1 => no maximum)
 SpacesInSquareBrackets = false
-Standard = "Auto"                               # Always set to "Auto" to infer standard
 TabWidth = 4
-TemplateNames = [
+TemplateNames = [                               # definitions to recognize as template expressions
     # e.g. "MYTEMPLATE" => `MYTEMPLATE<arg> void func() { ... }`
 ]
-TypeNames = [
+TypeNames = [                                   # definitions to recognize as types
     # e.g. "MYTYPE" => `MYTYPE* var;` without a typename prefix
 ]
-TypenameMacros = [
+TypenameMacros = [                              # macros to recognize as typenames
     # e.g. "MYTYPENAME" => `MYTYPENAME(typename) var;` without treating `MYTYPENAME` as a function
 ]
 UseTab = "Never"                                # Never|ForIndentation|ForContinuationAndIndentation|AlignWithSpaces|Always
-WrapNamespaceBodyWithEmptyLines = "Leave"       # Never|Always|Leave
+WrapNamespaceBodyWithEmptyLines = "Leave"       # Never|Leave|Always
 
 [tool.clang-format.Align]
 AfterOpenBracket = false            # horizontally align parameters after open paren/bracket
@@ -626,7 +624,7 @@ AlignCaseArrows = false
 AlignCaseColons = false
 
 [tool.clang-format.Align.TrailingComments]
-Kind = "Never"                      # Leave|Always|Never
+Kind = "Leave"                      # Never|Leave|Always
 OverEmptyLines = false
 AlignPPAndNotPP = true              # treat comments following preprocessor directives the same
 
@@ -639,7 +637,7 @@ ShortCaseExpressionsOnASingleLine = true
 ShortCaseLabelsOnASingleLine = true
 ShortCompoundRequirementsOnASingleLine = true
 ShortEnumsOnASingleLine = true
-ShortFunctionsOnASingleLine = "Always"          # None|Inline|InlineOnly|All
+ShortFunctionsOnASingleLine = "All"             # None|InlineOnly|Empty|Inline|All
 ShortIfStatementsOnASingleLine = "WithoutElse"  # None|WithoutElse|OnlyFirstIf|AllIfsAndElse
 ShortLambdasOnASingleLine = "All"               # None|Empty|Inline|All
 ShortLoopsOnASingleLine = true
@@ -647,28 +645,27 @@ ShortNamespacesOnASingleLine = false
 
 [tool.clang-format.Break]
 AdjacentStringLiterals = true
-AfterAttributes = "Never"                       # Always|Leave|Never
+AfterAttributes = "Never"                       # Never|Leave|Always
 AfterOpenBracketBracedList = true
 AfterOpenBracketFunction = true
 AfterOpenBracketIf = true
 AfterOpenBracketLoop = true
 AfterOpenBracketSwitch = true
-AfterReturnType = "ExceptShortType"             # Automatic|ExceptShortType|All|TopLevel|AllDefinitions|TopLevelDefinitions
+AfterReturnType = "ExceptShortType"             # Automatic|ExceptShortType|TopLevel|TopLevelDefinitions|All|AllDefinitions
 BeforeBinaryOperators = "None"                  # None|NonAssignment|All
-BeforeBraces = "Custom"                         # Always set to "Custom" to use BraceWrapping
 BeforeCloseBracketBracedList = true
 BeforeCloseBracketFunction = true
 BeforeCloseBracketIf = true
 BeforeCloseBracketLoop = true
 BeforeCloseBracketSwitch = true
-BeforeConceptDeclarations = "Always"            # Always|Allowed|Never
+BeforeConceptDeclarations = "Always"            # Never|Allowed|Always
 BeforeInlineASMColon = "OnlyMultiline"          # Never|OnlyMultiline|Always
 BeforeTemplateCloser = true
 BeforeTernaryOperators = false
 BinaryOperations = "Never"                      # Never|OnePerLine|RespectPrecedence
-ConstructorInitializers = "AfterColon"          # BeforeColon|BeforeComma|AfterColon|AfterComma
+ConstructorInitializers = "AfterColon"          # BeforeColon|AfterColon|BeforeComma|AfterComma
 FunctionDefinitionParameters = false
-InheritanceList = "AfterColon"                  # BeforeColon|BeforeComma|AfterColon|AfterComma
+InheritanceList = "AfterColon"                  # BeforeColon|AfterColon|BeforeComma|AfterComma
 StringLiterals = true
 TemplateDeclarations = "Yes"                    # Leave|No|MultiLine|Yes
 
@@ -733,10 +730,9 @@ BeforeCpp11BracedList = false
 BeforeCtorInitializerColon = true
 BeforeInheritanceColon = true
 BeforeJSonColon = false
-BeforeParens = "Custom"             # Always set to "Custom" to use BeforeParensOptions
 BeforeRangeBasedForLoopColon = true
 BeforeSquareBrackets = false
-InEmptyBraces = "Never"             # Always|Block|Never
+InEmptyBraces = "Never"             # Never|Block|Always
 
 [tool.clang-format.Space.BeforeParensOptions]
 AfterControlStatements = true
@@ -751,7 +747,7 @@ AfterRequiresInClause = false
 AfterRequiresInExpression = false
 BeforeNonEmptyParentheses = false
 
-[tool.clang-format.SpacesInParensOptions]
+[tool.clang-format.Space.InParensOptions]
 ExceptDoubleParentheses = false
 InConditionalStatements = false
 InCStyleCasts = false

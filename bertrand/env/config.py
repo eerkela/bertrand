@@ -108,19 +108,13 @@ INSTRUMENTS: dict[str, Callable[[dict[str, Any]], Callable[[list[str]], list[str
 GLOB_RE = re.compile(r"^[A-Za-z0-9._/\-\*\?\[\]!]+$")
 HTTP_URL = TypeAdapter(AnyHttpUrl)
 NS_PATH_RE = re.compile(r"^ns:\S+$")
-NETWORK_MODE_RE = re.compile(rf"^(none|host|private|slirp4netns|pasta|{NS_PATH_RE.pattern})$")
-HOSTNAME_RE = re.compile(
-    r"^(?=.{1,253}$)(?!-)[A-Za-z0-9-]{1,63}(?<!-)(?:\.(?!-)[A-Za-z0-9-]{1,63}(?<!-))*$"
-)
 NETWORK_ALIAS_LABEL_RE = re.compile(r"^(?!-)[a-z0-9-]{1,63}(?<!-)$")
 USERNS_CONTAINER_REF_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 USERNS_MAPPING_RE = re.compile(r"^(?P<container>\d+):(?P<host>@?\d+):(?P<length>\d+)$")
-ULIMIT_NAME_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 CAPABILITY_TOKEN_RE = re.compile(r"^CAP_[A-Z0-9_]+$")
 CAPABILITY_DEFINE_RE = re.compile(r"^\s*#define\s+(CAP_[A-Z0-9_]+)\s+([0-9]+)\b")
 SECURITY_OPT_KEY_RE = re.compile(r"^[a-z0-9][a-z0-9_.-]*$")
 CONAN_REF_TOKEN_RE = re.compile(r"^[a-z0-9_][a-z0-9_+.-]{1,100}\Z")
-CONAN_OPTION_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 DEVICE_PERMISSIONS: frozenset[str] = frozenset({"r", "w", "m", "rw", "rm", "wm", "rwm"})
 LINUX_CAPABILITY_HEADERS: tuple[Path, ...] = (
     Path("/usr/include/linux/capability.h"),
@@ -228,17 +222,6 @@ def _deduplicate_ignore_list(ignore: list[Glob]) -> list[Glob]:
     return out
 
 
-def _check_network_mode(mode: str) -> str:
-    if not NETWORK_MODE_RE.fullmatch(mode):
-        raise ValueError(
-            "invalid network mode (expected one of: "
-            "none|host|private|slirp4netns|pasta|ns:<path>)"
-        )
-    if mode.startswith("ns:") and not NS_PATH_RE.fullmatch(mode):
-        raise ValueError("invalid namespace network mode, expected 'ns:<path>'")
-    return mode
-
-
 def _check_ip_address(address: str) -> str:
     try:
         return str(ipaddress.ip_address(address))
@@ -281,6 +264,22 @@ def _check_relative_path(path: PosixPath) -> PosixPath:
     return path
 
 
+def _check_build_context_path(path: PosixPath) -> PosixPath:
+    if path.is_absolute():
+        raise ValueError(f"build context path cannot be absolute: '{path}'")
+    if path == PosixPath("."):
+        return path
+    parts = path.parts
+    if not parts:
+        raise ValueError("build context path cannot be empty")
+    if any(p == "." or p == ".." for p in parts):
+        raise ValueError(
+            "build context path cannot contain '.' or '..' segments: "
+            f"'{path}'"
+        )
+    return path
+
+
 def _check_text_file(path: Path, *, tag: str | None = None) -> None:
     suffix = f" for tag '{tag}'" if tag else ""
     if not path.exists():
@@ -306,16 +305,6 @@ def _check_network_alias(alias: str) -> str:
                 "match [a-z0-9-], max length 63, and cannot start/end with '-')"
             )
     return alias
-
-
-def _check_ulimit_name(name: str) -> str:
-    name = name.lower()
-    if not ULIMIT_NAME_RE.fullmatch(name):
-        raise ValueError(
-            f"invalid ulimit name '{name}' (expected lowercase POSIX-style token, "
-            "e.g. nofile, nproc, host)"
-        )
-    return name
 
 
 def _check_capability(capability: str) -> str:
@@ -538,15 +527,6 @@ def _check_uts(uts: str) -> str:
     )
 
 
-def _check_instrument(instrument: str) -> str:
-    if instrument not in INSTRUMENTS:
-        raise ValueError(
-            f"unknown instrument '{instrument}' (available instruments: "
-            f"{', '.join(INSTRUMENTS)})"
-        )
-    return instrument
-
-
 def _check_device_permission(permission: str) -> str:
     if permission not in DEVICE_PERMISSIONS:
         raise ValueError(
@@ -709,7 +689,10 @@ type PEP508Requirement = Annotated[
 type PEP508Name = Annotated[NonEmpty[NoWhiteSpace], AfterValidator(_check_pep508_name)]
 type Entrypoint = Annotated[str, StringConstraints(
     strip_whitespace=True,
-    pattern=r"^[A-Za-z_][A-Za-z0-9_]*:[A-Za-z_][A-Za-z0-9_]*$"
+    pattern=(
+        r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*:"
+        r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*$"
+    )
 )]
 type EntrypointName = Annotated[str, StringConstraints(
     strip_whitespace=True,
@@ -717,7 +700,14 @@ type EntrypointName = Annotated[str, StringConstraints(
 )]
 type Shell = Annotated[NonEmpty[NoWhiteSpace], AfterValidator(_check_shell)]
 type IgnoreList = Annotated[list[Glob], AfterValidator(_deduplicate_ignore_list)]
-type NetworkMode = Annotated[NonEmpty[NoWhiteSpace], AfterValidator(_check_network_mode)]
+type NetworkMode = Annotated[
+    str,
+    StringConstraints(
+        strip_whitespace=True,
+        min_length=1,
+        pattern=rf"^(none|host|private|slirp4netns|pasta|{NS_PATH_RE.pattern})$"
+    ),
+]
 type IPAddress = Annotated[NonEmpty[NoWhiteSpace], AfterValidator(_check_ip_address)]
 type HostIP = Annotated[  # pylint: disable=invalid-name
     NonEmpty[NoWhiteSpace],
@@ -726,16 +716,30 @@ type HostIP = Annotated[  # pylint: disable=invalid-name
 type HostName = Annotated[str, StringConstraints(
     strip_whitespace=True,
     min_length=1,
-    pattern=HOSTNAME_RE.pattern
+    max_length=253,
+    pattern=
+        r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
+        r"(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$"
 )]
 type SanitizedName = Annotated[str, AfterValidator(_check_sanitized_name)]
 type AbsolutePath = Annotated[PosixPath, AfterValidator(_check_absolute_path)]
 type RelativePath = Annotated[PosixPath, AfterValidator(_check_relative_path)]
+type BuildContextPath = Annotated[PosixPath, AfterValidator(_check_build_context_path)]
+type BuildArgName = Annotated[str, StringConstraints(
+    strip_whitespace=True,
+    min_length=1,
+    pattern=r"^[A-Za-z_][A-Za-z0-9_]*$"
+)]
+type BuildArgScalar = str | bool | int | float
 type NetworkAlias = Annotated[NonEmpty[NoWhiteSpace], AfterValidator(_check_network_alias)]
 type Memory = Annotated[str, StringConstraints(strip_whitespace=True, pattern=r"^\d+[bkmg]?$")]
 type ULimitName = Annotated[
-    NonEmpty[NoWhiteSpace],
-    AfterValidator(_check_ulimit_name)
+    str,
+    StringConstraints(
+        strip_whitespace=True,
+        min_length=1,
+        pattern=r"^[a-z][a-z0-9_]*$"
+    ),
 ]
 type Capability = Annotated[NonEmpty[NoWhiteSpace], AfterValidator(_check_capability)]
 type SecurityOpt = Annotated[NonEmpty[NoWhiteSpace], AfterValidator(_check_security_opt)]
@@ -746,10 +750,14 @@ type UserNS = Annotated[  # pylint: disable=invalid-name
 type IPCMode = Annotated[NonEmpty[NoWhiteSpace], AfterValidator(_check_ipc)]
 type PIDMode = Annotated[NonEmpty[NoWhiteSpace], AfterValidator(_check_pid)]
 type UTSMode = Annotated[NonEmpty[NoWhiteSpace], AfterValidator(_check_uts)]
-type Instrument = Annotated[NonEmpty[NoWhiteSpace], AfterValidator(_check_instrument)]
+type InstrumentTool = Annotated[str, StringConstraints(
+    strip_whitespace=True,
+    min_length=1,
+    pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]*$"
+)]
 type ScreamingSnakeCase = Annotated[str, StringConstraints(
     strip_whitespace=True,
-    pattern=r"^[A-Z_]?[A-Z0-9_]*$"
+    pattern=r"^[A-Z][A-Z0-9_]*$"
 )]
 type DevicePermission = Annotated[
     NonEmpty[NoWhiteSpace],
@@ -762,7 +770,7 @@ type ConanRequirement = Annotated[
 type ConanOptionName = Annotated[str, StringConstraints(
     strip_whitespace=True,
     min_length=1,
-    pattern=CONAN_OPTION_NAME_RE.pattern
+    pattern=r"^[A-Za-z_][A-Za-z0-9_]*$"
 )]
 type ConanConfNamespace = Annotated[str, StringConstraints(
     strip_whitespace=True,
@@ -1664,8 +1672,8 @@ class Config:
                 dependencies: Annotated[list[PEP508Requirement], Field(default_factory=list)]
                 containerfile: Annotated[RelativePath, Field(default=PosixPath("Containerfile"))]
                 build_args: Annotated[
-                    list[str],
-                    Field(default_factory=list, alias="build-args")
+                    dict[BuildArgName, BuildArgScalar],
+                    Field(default_factory=dict, alias="build-args")
                 ]
                 env_file: Annotated[
                     list[RelativePath],
@@ -1715,9 +1723,10 @@ class Config:
                 cpus: Annotated[NonNegativeFloat, Field(default=0.0)]
                 memory: Annotated[Memory, Field(default="0")]
                 pids_limit: Annotated[
-                    NonNegativeInt,
-                    Field(default=0, alias="pids-limit")
+                    int,
+                    Field(default=0, ge=-1, alias="pids-limit")
                 ]
+                shm_size: Annotated[Memory, Field(default="64m", alias="shm-size")]
 
                 class ULimit(BaseModel):
                     """Validate entries in the `[[tool.bertrand.tags.ulimit]]` table."""
@@ -1797,7 +1806,13 @@ class Config:
                 pid: Annotated[PIDMode, Field(default="private")]
                 uts: Annotated[UTSMode, Field(default="private")]
                 ssh: Annotated[list[ScreamingSnakeCase], Field(default_factory=list)]
-                instruments: Annotated[list[Instrument], Field(default_factory=list)]
+
+                class InstrumentEntry(BaseModel):
+                    """Validate entries in the `[[tool.bertrand.tags.instruments]]` AoT."""
+                    model_config = ConfigDict(extra="allow")
+                    tool: InstrumentTool
+
+                instruments: Annotated[list[InstrumentEntry], Field(default_factory=list)]
 
                 @model_validator(mode="after")
                 def _validate_capability_conflicts(self) -> Self:
@@ -1971,7 +1986,7 @@ class Config:
                 class Build(BaseModel):
                     """Validate the `[tool.bertrand.tags.build]` table."""
                     model_config = ConfigDict(extra="forbid")
-                    context: Annotated[RelativePath, Field(default=PosixPath("."))]
+                    context: Annotated[BuildContextPath, Field(default=PosixPath("."))]
                     target: Annotated[
                         NoWhiteSpace,
                         StringConstraints(pattern=r"^[a-zA-Z0-9_-]*$"),
@@ -2375,7 +2390,8 @@ class Config:
                     seen.add(entry.Check)
                 return value
 
-            HeaderFilterRegex: Annotated[RegexPattern, Field(default=".*")]
+            DisableFormat: Annotated[bool, Field(default=False)]
+            HeaderFilterRegex: Annotated[RegexPattern, Field(default="^.*$")]
             ExcludeHeaderFilterRegex: Annotated[RegexPattern, Field(default="^$")]
             SystemHeaders: Annotated[bool, Field(default=False)]
             UseColor: Annotated[bool, Field(default=True)]
@@ -2387,10 +2403,540 @@ class Config:
 
         clang_tidy: Annotated[ClangTidy | None, Field(default=None, alias="clang-tidy")]
 
+        # TODO: SpacesInParens => always "Custom"
+        # TODO: Standard => always "Auto"
+        # TODO: Break.BeforeBraces => always "Custom"
+        # TODO: Space.BeforeParens => always "Custom"
+
         class ClangFormat(BaseModel):
             """Validate the `[tool.clang-format]` table."""
             model_config = ConfigDict(extra="forbid")
-            # TODO: populate this section
+
+            @staticmethod
+            def _check_qualifier_order(value: list[str]) -> list[str]:
+                seen: set[str] = set()
+                for qualifier in value:
+                    if qualifier in seen:
+                        raise ValueError(
+                            "duplicate qualifier in ClangFormat.QualifierOrder: "
+                            f"'{qualifier}'"
+                        )
+                    seen.add(qualifier)
+                if "type" not in seen:
+                    raise ValueError(
+                        "ClangFormat.QualifierOrder must include a 'type' qualifier"
+                    )
+                return value
+
+            DisableFormat: Annotated[bool, Field(default=False)]
+            BasedOnStyle: Annotated[
+                Literal["LLVM", "Google", "Chromium", "Mozilla", "WebKit", "Microsoft", "GNU"],
+                Field(default="Mozilla")
+            ]
+            AccessModifierOffset: Annotated[NonNegativeInt, Field(default=0)]
+            AlwaysBreakBeforeMultilineStrings: Annotated[bool, Field(default=True)]
+            AttributeMacros: Annotated[list[NoWhiteSpace], Field(default_factory=list)]
+            BinPackArguments: Annotated[bool, Field(default=False)]
+            BinPackLongBracedList: Annotated[bool, Field(default=True)]
+            BinPackParameters: Annotated[
+                Literal["BinPack", "OnePerLine", "AlwaysOnePerLine"],
+                Field(default="OnePerLine")
+            ]
+            BitFieldColonSpacing: Annotated[
+                Literal["None", "Before", "After", "Both"],
+                Field(default="Both")
+            ]
+            ColumnLimit: Annotated[NonNegativeInt, Field(default=88)]
+            CompactNamespaces: Annotated[bool, Field(default=False)]
+            Cpp11BracedListStyle: Annotated[
+                Literal["Block", "FunctionCall", "AlignFirstComment"],
+                Field(default="FunctionCall")
+            ]
+            EmptyLineAfterAccessModifier: Annotated[
+                Literal["Never", "Leave", "Always"],
+                Field(default="Leave")
+            ]
+            EmptyLineBeforeAccessModifier: Annotated[
+                Literal["Never", "Leave", "LogicalBlock", "Always"],
+                Field(default="Leave")
+            ]
+            FixNamespaceComments: Annotated[bool, Field(default=True)]
+            ForEachMacros: Annotated[list[NoWhiteSpace], Field(default_factory=list)]
+            IfMacros: Annotated[list[NoWhiteSpace], Field(default_factory=list)]
+            IncludeBlocks: Annotated[
+                Literal["Preserve", "Merge", "Regroup"],
+                Field(default="Preserve")
+            ]
+            InsertBraces: Annotated[bool, Field(default=True)]
+            InsertNewlineAtEOF: Annotated[bool, Field(default=True)]
+            LineEnding: Annotated[
+                Literal["LF", "CRLF", "DeriveLF", "DeriveCRLF"],
+                Field(default="DeriveLF")
+            ]
+            NamespaceIndentation: Annotated[
+                Literal["None", "Inner", "All"],
+                Field(default="None")
+            ]
+            NamespaceMacros: Annotated[list[NoWhiteSpace], Field(default_factory=list)]
+            OneLineFormatOffRegex: Annotated[RegexPattern, Field(default="NOFORMAT")]
+            PackConstructorInitializers: Annotated[
+                Literal["Never", "BinPack", "CurrentLine", "NextLine", "NextLineOnly"],
+                Field(default="CurrentLine")
+            ]
+            PointerAlignment: Annotated[
+                Literal["Left", "Right", "Middle"],
+                Field(default="Left")
+            ]
+            QualifierOrder: Annotated[
+                list[Literal[
+                    "inline", "static", "constexpr", "friend", "const", "volatile",
+                    "restrict", "type"
+                ]],
+                AfterValidator(_check_qualifier_order),
+                Field(default_factory=lambda: [
+                    "inline", "static", "constexpr", "friend", "const", "volatile",
+                    "restrict", "type"
+                ])
+            ]
+            ReferenceAlignment: Annotated[
+                Literal["Left", "Right", "Middle"],
+                Field(default="Left")
+            ]
+            ReflowComments: Annotated[
+                Literal["Never", "IndentOnly", "Always"],
+                Field(default="Always")
+            ]
+            RemoveEmptyLinesInUnwrappedLines: Annotated[bool, Field(default=True)]
+            RequiresClausePosition: Annotated[
+                Literal[
+                    "OwnLine", "OwnLineWithBrace", "WithPreceding", "WithFollowing",
+                    "SingleLine"
+                ],
+                Field(default="WithPreceding")
+            ]
+            RequiresExpressionIndentation: Annotated[
+                Literal["OuterScope", "Keyword"],
+                Field(default="OuterScope")
+            ]
+            SeparateDefinitionBlocks: Annotated[
+                Literal["Never", "Leave", "Always"],
+                Field(default="Leave")
+            ]
+            SortUsingDeclarations: Annotated[
+                Literal["Never", "Lexicographic", "LexicographicNumeric"],
+                Field(default="Lexicographic")
+            ]
+            SpacesBeforeTrailingComments: Annotated[NonNegativeInt, Field(default=2)]
+            SpacesInAngles: Annotated[
+                Literal["Never", "Leave", "Always"],
+                Field(default="Never")
+            ]
+            SpacesInContainerLiterals: Annotated[bool, Field(default=False)]
+
+            class _SpacesInLineCommentPrefix(BaseModel):
+                """Validate the `[tool.clang-format.spaces-in-line-comment-prefix]` table."""
+                model_config = ConfigDict(extra="forbid")
+                Minimum: Annotated[NonNegativeInt, Field(default=1)]
+                Maximum: Annotated[int, Field(default=-1, ge=-1)]
+
+            SpacesInLineCommentPrefix: Annotated[
+                _SpacesInLineCommentPrefix,
+                Field(default_factory=_SpacesInLineCommentPrefix.model_construct)
+            ]
+            SpacesInSquareBrackets: Annotated[bool, Field(default=False)]
+            TabWidth: Annotated[NonNegativeInt, Field(default=4)]
+            TemplateNames: Annotated[list[NoWhiteSpace], Field(default_factory=list)]
+            TypeNames: Annotated[list[NoWhiteSpace], Field(default_factory=list)]
+            TypenameMacros: Annotated[list[NoWhiteSpace], Field(default_factory=list)]
+            UseTab: Annotated[
+                Literal[
+                    "Never", "ForIndentation", "ForContinuationAndIndentation",
+                    "AlignWithSpaces", "Always"
+                ],
+                Field(default="Never")
+            ]
+            WrapNamespaceBodyWithEmptyLines: Annotated[
+                Literal["Never", "Leave", "Always"],
+                Field(default="Leave")
+            ]
+
+            class _Align(BaseModel):
+                """Validate the `[tool.clang-format.Align]` table."""
+                model_config = ConfigDict(extra="forbid")
+                AfterOpenBracket: Annotated[bool, Field(default=False)]
+                ArrayOfStructures: Annotated[
+                    Literal["Left", "Right", "None"],
+                    Field(default="None")
+                ]
+                EscapedNewlines: Annotated[
+                    Literal["DontAlign", "Left", "LeftWithLastLine", "Right"],
+                    Field(default="Right")
+                ]
+                Operands: Annotated[
+                    Literal[
+                        "DontAlign", "Align", "BreakBeforeBinaryOperators",
+                        "AlignAfterOperator",
+                    ],
+                    Field(default="Align")
+                ]
+
+                class _ConsecutiveAssignments(BaseModel):
+                    """Validate the `[tool.clang-format.align.ConsecutiveAssignments]`
+                    table.
+                    """
+                    model_config = ConfigDict(extra="forbid")
+                    Enabled: Annotated[bool, Field(default=False)]
+                    AcrossEmptyLines: Annotated[bool, Field(default=False)]
+                    AcrossComments: Annotated[bool, Field(default=False)]
+                    AlignCompound: Annotated[bool, Field(default=False)]
+                    PadOperators: Annotated[bool, Field(default=False)]
+
+                ConsecutiveAssignments: Annotated[
+                    _ConsecutiveAssignments,
+                    Field(default_factory=_ConsecutiveAssignments.model_construct)
+                ]
+
+                class _ConsecutiveBitFields(BaseModel):
+                    """Validate the `[tool.clang-format.align.ConsecutiveBitFields]`
+                    table.
+                    """
+                    model_config = ConfigDict(extra="forbid")
+                    Enabled: Annotated[bool, Field(default=False)]
+                    AcrossEmptyLines: Annotated[bool, Field(default=False)]
+                    AcrossComments: Annotated[bool, Field(default=False)]
+
+                ConsecutiveBitFields: Annotated[
+                    _ConsecutiveBitFields,
+                    Field(default_factory=_ConsecutiveBitFields.model_construct)
+                ]
+
+                class _ConsecutiveDeclarations(BaseModel):
+                    """Validate the `[tool.clang-format.align.ConsecutiveDeclarations]`
+                    table.
+                    """
+                    model_config = ConfigDict(extra="forbid")
+                    Enabled: Annotated[bool, Field(default=False)]
+                    AcrossEmptyLines: Annotated[bool, Field(default=False)]
+                    AcrossComments: Annotated[bool, Field(default=False)]
+                    AlignFunctionDeclarations: Annotated[bool, Field(default=False)]
+                    AlignFunctionPointers: Annotated[bool, Field(default=False)]
+
+                ConsecutiveDeclarations: Annotated[
+                    _ConsecutiveDeclarations,
+                    Field(default_factory=_ConsecutiveDeclarations.model_construct)
+                ]
+
+                class _ConsecutiveMacros(BaseModel):
+                    """Validate the `[tool.clang-format.align.ConsecutiveMacros]`
+                    table.
+                    """
+                    model_config = ConfigDict(extra="forbid")
+                    Enabled: Annotated[bool, Field(default=False)]
+                    AcrossEmptyLines: Annotated[bool, Field(default=False)]
+                    AcrossComments: Annotated[bool, Field(default=False)]
+
+                ConsecutiveMacros: Annotated[
+                    _ConsecutiveMacros,
+                    Field(default_factory=_ConsecutiveMacros.model_construct)
+                ]
+
+                class _ConsecutiveShortCaseStatements(BaseModel):
+                    """Validate the
+                    `[tool.clang-format.align.ConsecutiveShortCaseStatements]` table.
+                    """
+                    model_config = ConfigDict(extra="forbid")
+                    Enabled: Annotated[bool, Field(default=False)]
+                    AcrossEmptyLines: Annotated[bool, Field(default=False)]
+                    AcrossComments: Annotated[bool, Field(default=False)]
+                    AlignCaseArrows: Annotated[bool, Field(default=False)]
+                    AlignCaseColons: Annotated[bool, Field(default=False)]
+
+                ConsecutiveShortCaseStatements: Annotated[
+                    _ConsecutiveShortCaseStatements,
+                    Field(default_factory=_ConsecutiveShortCaseStatements.model_construct)
+                ]
+
+                class _TrailingComments(BaseModel):
+                    """Validate the `[tool.clang-format.align.TrailingComments]`
+                    table.
+                    """
+                    model_config = ConfigDict(extra="forbid")
+                    Kind: Annotated[
+                        Literal["Never", "Leave", "Always"],
+                        Field(default="Leave")
+                    ]
+                    OverEmptyLines: Annotated[bool, Field(default=False)]
+                    AlignPPAndNotPP: Annotated[bool, Field(default=True)]
+
+                TrailingComments: Annotated[
+                    _TrailingComments,
+                    Field(default_factory=_TrailingComments.model_construct)
+                ]
+
+            Align: Annotated[_Align, Field(default_factory=_Align.model_construct)]
+
+            class _Allow(BaseModel):
+                """Validate the `[tool.clang-format.Allow]` table."""
+                model_config = ConfigDict(extra="forbid")
+                AllArgumentsOnNextLine: Annotated[bool, Field(default=False)]
+                AllParametersOfDeclarationOnNextLine: Annotated[bool, Field(default=False)]
+                BreakBeforeNoexceptSpecifier: Annotated[
+                    Literal["Never", "OnlyWithParen", "Always"],
+                    Field(default="OnlyWithParen")
+                ]
+                ShortBlocksOnASingleLine: Annotated[
+                    Literal["Never", "Empty", "Always"],
+                    Field(default="Empty")
+                ]
+                ShortCaseExpressionsOnASingleLine: Annotated[bool, Field(default=True)]
+                ShortCaseLabelsOnASingleLine: Annotated[bool, Field(default=True)]
+                ShortCompoundRequirementsOnASingleLine: Annotated[bool, Field(default=True)]
+                ShortEnumsOnASingleLine: Annotated[bool, Field(default=True)]
+                ShortFunctionsOnASingleLine: Annotated[
+                    Literal["None", "InlineOnly", "Empty", "Inline", "All"],
+                    Field(default="All")
+                ]
+                ShortIfStatementsOnASingleLine: Annotated[
+                    Literal["None", "WithoutElse", "OnlyFirstIf", "AllIfsAndElse"],
+                    Field(default="WithoutElse")
+                ]
+                ShortLambdasOnASingleLine: Annotated[
+                    Literal["None", "Empty", "Inline", "All"],
+                    Field(default="All")
+                ]
+                ShortLoopsOnASingleLine: Annotated[bool, Field(default=True)]
+                ShortNamespacesOnASingleLine: Annotated[bool, Field(default=False)]
+
+            Allow: Annotated[_Allow, Field(default_factory=_Allow.model_construct)]
+
+            class _Break(BaseModel):
+                """Validate the `[tool.clang-format.Break]` table."""
+                model_config = ConfigDict(extra="forbid")
+                AdjacentStringLiterals: Annotated[bool, Field(default=True)]
+                AfterAttributes: Annotated[
+                    Literal["Never", "Leave", "Always"],
+                    Field(default="Never")
+                ]
+                AfterOpenBracketBracedList: Annotated[bool, Field(default=True)]
+                AfterOpenBracketFunction: Annotated[bool, Field(default=True)]
+                AfterOpenBracketIf: Annotated[bool, Field(default=True)]
+                AfterOpenBracketLoop: Annotated[bool, Field(default=True)]
+                AfterOpenBracketSwitch: Annotated[bool, Field(default=True)]
+                AfterReturnType: Annotated[
+                    Literal[
+                        "Automatic", "ExceptShortType", "TopLevel",
+                        "TopLevelDefinitions", "All", "AllDefinitions",
+                    ],
+                    Field(default="ExceptShortType")
+                ]
+                BeforeBinaryOperators: Annotated[
+                    Literal["None", "NonAssignment", "All"],
+                    Field(default="None")
+                ]
+                BeforeCloseBracketBracedList: Annotated[bool, Field(default=True)]
+                BeforeCloseBracketFunction: Annotated[bool, Field(default=True)]
+                BeforeCloseBracketIf: Annotated[bool, Field(default=True)]
+                BeforeCloseBracketLoop: Annotated[bool, Field(default=True)]
+                BeforeCloseBracketSwitch: Annotated[bool, Field(default=True)]
+                BeforeConceptDeclarations: Annotated[
+                    Literal["Never", "Allowed", "Always"],
+                    Field(default="Always")
+                ]
+                BeforeInlineASMColon: Annotated[
+                    Literal["Never", "OnlyMultiline", "Always"],
+                    Field(default="OnlyMultiline")
+                ]
+                BeforeTemplateCloser: Annotated[bool, Field(default=True)]
+                BeforeTernaryOperators: Annotated[bool, Field(default=False)]
+                BinaryOperations: Annotated[
+                    Literal["Never", "OnePerLine", "RespectPrecedence"],
+                    Field(default="Never")
+                ]
+                ConstructorInitializers: Annotated[
+                    Literal["BeforeColon", "AfterColon", "BeforeComma", "AfterComma"],
+                    Field(default="AfterColon")
+                ]
+                FunctionDefinitionParameters: Annotated[bool, Field(default=False)]
+                InheritanceList: Annotated[
+                    Literal["BeforeColon", "AfterColon", "BeforeComma", "AfterComma"],
+                    Field(default="AfterColon")
+                ]
+                StringLiterals: Annotated[bool, Field(default=True)]
+                TemplateDeclarations: Annotated[
+                    Literal["Leave", "No", "Multiline", "Yes"],
+                    Field(default="Yes")
+                ]
+
+            Break: Annotated[_Break, Field(default_factory=_Break.model_construct)]
+
+            class _BraceWrapping(BaseModel):
+                """Validate the `[tool.clang-format.BraceWrapping]` table."""
+                model_config = ConfigDict(extra="forbid")
+                AfterCaseLabel: Annotated[bool, Field(default=False)]
+                AfterClass: Annotated[bool, Field(default=False)]
+                AfterControlStatement: Annotated[
+                    Literal["Never", "Multiline", "Always"],
+                    Field(default="Never")
+                ]
+                AfterEnum: Annotated[bool, Field(default=False)]
+                AfterFunction: Annotated[bool, Field(default=False)]
+                AfterNamespace: Annotated[bool, Field(default=False)]
+                AfterStruct: Annotated[bool, Field(default=False)]
+                AfterUnion: Annotated[bool, Field(default=False)]
+                AfterExternBlock: Annotated[bool, Field(default=False)]
+                BeforeCatch: Annotated[bool, Field(default=False)]
+                BeforeElse: Annotated[bool, Field(default=False)]
+                BeforeLambdaBody: Annotated[bool, Field(default=False)]
+                BeforeWhile: Annotated[bool, Field(default=False)]
+                IndentBraces: Annotated[bool, Field(default=False)]
+                SplitEmptyFunction: Annotated[bool, Field(default=False)]
+                SplitEmptyRecord: Annotated[bool, Field(default=False)]
+                SplitEmptyNamespace: Annotated[bool, Field(default=False)]
+
+            BraceWrapping: Annotated[
+                _BraceWrapping,
+                Field(default_factory=_BraceWrapping.model_construct)
+            ]
+
+            class _Indent(BaseModel):
+                """Validate the `[tool.clang-format.Indent]` table."""
+                model_config = ConfigDict(extra="forbid")
+                CaseLabels: Annotated[bool, Field(default=True)]
+                ExportBlock: Annotated[bool, Field(default=True)]
+                ExternBlock: Annotated[bool, Field(default=True)]
+                GotoLabels: Annotated[bool, Field(default=True)]
+                PPDirectives: Annotated[
+                    Literal["None", "BeforeHash", "AfterHash", "Both"],
+                    Field(default="BeforeHash")
+                ]
+                RequiresClause: Annotated[bool, Field(default=True)]
+                Width: Annotated[NonNegativeInt, Field(default=4)]
+                WrappedFunctionNames: Annotated[bool, Field(default=False)]
+
+            Indent: Annotated[_Indent, Field(default_factory=_Indent.model_construct)]
+
+            class _IntegerLiteralSeparator(BaseModel):
+                """Validate the `[tool.clang-format.IntegerLiteralSeparator]`
+                table.
+                """
+                model_config = ConfigDict(extra="forbid")
+                Binary: Annotated[int, Field(default=8, ge=-1)]
+                Decimal: Annotated[int, Field(default=-1, ge=-1)]
+                Hex: Annotated[int, Field(default=4, ge=-1)]
+
+            IntegerLiteralSeparator: Annotated[
+                _IntegerLiteralSeparator,
+                Field(default_factory=_IntegerLiteralSeparator.model_construct)
+            ]
+
+            class _KeepEmptyLines(BaseModel):
+                """Validate the `[tool.clang-format.KeepEmptyLines]` table."""
+                model_config = ConfigDict(extra="forbid")
+                AtEndOfFile: Annotated[bool, Field(default=False)]
+                AtStartOfBlock: Annotated[bool, Field(default=False)]
+                AtStartOfFile: Annotated[bool, Field(default=False)]
+
+            KeepEmptyLines: Annotated[
+                _KeepEmptyLines,
+                Field(default_factory=_KeepEmptyLines.model_construct)
+            ]
+
+            class _NumericLiteralCase(BaseModel):
+                """Validate the `[tool.clang-format.NumericLiteralCase]` table."""
+                model_config = ConfigDict(extra="forbid")
+                ExponentLetter: Annotated[
+                    Literal["Leave", "Upper", "Lower"],
+                    Field(default="Lower")
+                ]
+                HexDigit: Annotated[
+                    Literal["Leave", "Upper", "Lower"],
+                    Field(default="Upper")
+                ]
+                Prefix: Annotated[
+                    Literal["Leave", "Upper", "Lower"],
+                    Field(default="Lower")
+                ]
+                Suffix: Annotated[
+                    Literal["Leave", "Upper", "Lower"],
+                    Field(default="Lower")
+                ]
+
+            NumericLiteralCase: Annotated[
+                _NumericLiteralCase,
+                Field(default_factory=_NumericLiteralCase.model_construct)
+            ]
+
+            class _SortIncludes(BaseModel):
+                """Validate the `[tool.clang-format.SortIncludes]` table."""
+                model_config = ConfigDict(extra="forbid")
+                Enabled: Annotated[bool, Field(default=True)]
+                IgnoreCase: Annotated[bool, Field(default=False)]
+                IgnoreExtension: Annotated[bool, Field(default=False)]
+
+            SortIncludes: Annotated[
+                _SortIncludes,
+                Field(default_factory=_SortIncludes.model_construct)
+            ]
+
+            class _Space(BaseModel):
+                """Validate the `[tool.clang-format.Space]` table."""
+                model_config = ConfigDict(extra="forbid")
+                AfterCStyleCast: Annotated[bool, Field(default=False)]
+                AfterLogicalNot: Annotated[bool, Field(default=False)]
+                AfterOperatorKeyword: Annotated[bool, Field(default=False)]
+                AfterTemplateKeyword: Annotated[bool, Field(default=False)]
+                BeforeAssignmentOperators: Annotated[bool, Field(default=True)]
+                BeforeCaseColon: Annotated[bool, Field(default=False)]
+                BeforeCpp11BracedList: Annotated[bool, Field(default=False)]
+                BeforeCtorInitializerColon: Annotated[bool, Field(default=True)]
+                BeforeInheritanceColon: Annotated[bool, Field(default=True)]
+                BeforeJSonColon: Annotated[bool, Field(default=False)]
+                BeforeRangeBasedForLoopColon: Annotated[bool, Field(default=True)]
+                BeforeSquareBrackets: Annotated[bool, Field(default=False)]
+                InEmptyBraces: Annotated[
+                    Literal["Never", "Block", "Always"],
+                    Field(default="Never")
+                ]
+
+                class _BeforeParensOptions(BaseModel):
+                    """Validate the `[tool.clang-format.Space.BeforeParensOptions]`
+                    table.
+                    """
+                    model_config = ConfigDict(extra="forbid")
+                    AfterControlStatements: Annotated[bool, Field(default=True)]
+                    AfterForeachMacros: Annotated[bool, Field(default=True)]
+                    AfterFunctionDeclarationName: Annotated[bool, Field(default=False)]
+                    AfterFunctionDefinitionName: Annotated[bool, Field(default=False)]
+                    AfterIfMacros: Annotated[bool, Field(default=True)]
+                    AfterNot: Annotated[bool, Field(default=True)]
+                    AfterOverloadedOperator: Annotated[bool, Field(default=False)]
+                    AfterPlacementOperator: Annotated[bool, Field(default=True)]
+                    AfterRequiresInClause: Annotated[bool, Field(default=False)]
+                    AfterRequiresInExpression: Annotated[bool, Field(default=False)]
+                    BeforeNonEmptyParentheses: Annotated[bool, Field(default=False)]
+
+                BeforeParensOptions: Annotated[
+                    _BeforeParensOptions,
+                    Field(default_factory=_BeforeParensOptions.model_construct)
+                ]
+
+                class _InParensOptions(BaseModel):
+                    """Validate the `[tool.clang-format.Space.InParensOptions]`
+                    table.
+                    """
+                    model_config = ConfigDict(extra="forbid")
+                    ExceptDoubleParentheses: Annotated[bool, Field(default=False)]
+                    InConditionalStatements: Annotated[bool, Field(default=False)]
+                    InCStyleCasts: Annotated[bool, Field(default=False)]
+                    InEmptyParentheses: Annotated[bool, Field(default=False)]
+                    Other: Annotated[bool, Field(default=False)]
+
+                InParensOptions: Annotated[
+                    _InParensOptions,
+                    Field(default_factory=_InParensOptions.model_construct)
+                ]
+
+            Space: Annotated[_Space, Field(default_factory=_Space.model_construct)]
 
         clang_format: Annotated[ClangFormat | None, Field(default=None, alias="clang-format")]
 
