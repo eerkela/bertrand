@@ -433,7 +433,10 @@ per-file-ignores = {}               # e.g. { "path/to/file.py": ["E501", "F401"]
 [tool.clangd.Diagnostics]
 UnusedIncludes = "Strict"           # None|Strict
 MissingIncludes = "Strict"          # None|Strict
-Suppress = []                       # diagnostics to suppress by code/category, including clang-tidy
+Suppress = []                       # diagnostics to suppress by code/category,
+                                    # including clang-tidy rules that shouldn't be
+                                    # surfaced in the editor.  "*" can be used to
+                                    # turn off all diagnostics.
 
 [tool.clangd.Index]
 Background = "Build"                # Build|Skip build/update background index
@@ -443,7 +446,7 @@ StandardLibrary = true              # eagerly index STL
 AllScopes = true                    # include symbols from all visible scopes
 ArgumentLists = "FullPlaceholders"  # None|OpenDelimiter|Delimiters|FullPlaceholders
 HeaderInsertion = "IWYU"            # Never|IWYU (include-what-you-use)
-CodePatterns = "All"                # All|None
+CodePatterns = "All"                # None|All
 
 [tool.clangd.InlayHints]
 Enabled = true                      # enable inlay hints globally
@@ -451,7 +454,7 @@ ParameterNames = true               # show argument/parameter name hints
 DeducedTypes = true                 # show deduced type hints for auto/templated code
 Designators = true                  # show designator hints for aggregate init
 BlockEnd = false                    # show closing-brace ownership hints
-DefaultArguments = true             # show default argument values in call sites
+DefaultArguments = false            # show default argument values in call sites
 TypeNameLimit = 24                  # max rendered type-name length for hints
 
 [tool.clangd.Hover]
@@ -461,45 +464,54 @@ MacroContentsLimit = 2048           # max macro expansion bytes shown in hover
 [tool.clangd.Documentation]
 CommentFormat = "Doxygen"           # PlainText|Markdown|Doxygen
 
-# NOTE: rules can be customized for specific (globbed) paths via the `If` array of
-# tables, which accepts all the same table keys as above, but applies them only when an
-# entry's path regexes are satisfied.  Note that if two enmtries match the same path,
-# the latter one will take precedence in the event of a conflict.
+# NOTE: rules can be customized for specific regex paths via the `If` array of tables,
+# which accepts all the same table keys as above, but applies them only when an entry's
+# path regexes are satisfied.  Note that if two enmtries match the same path, the
+# latter one will take precedence in the event of a conflict.
 
 [[tool.clangd.If]]
-PathMatch = ["tests/.*"]          # regex list of paths where this overlay applies
-PathExclude = []                  # regex list of paths excluded from this overlay
+PathMatch = ["tests/.*"]            # regex list of relative paths where this overlay applies
+PathExclude = []                    # regex list of relative paths excluded from this overlay
 
 [tool.clangd.If.Diagnostics]
-Suppress = ["unused-parameter"]   # noisy in unit-test helper signatures
+Suppress = ["unused-parameter"]     # noisy in unit-test signatures
 
 ##########################
 ####    CLANG-TIDY    ####
 ##########################
 
 [tool.clang-tidy]
-FormatStyle = "file"                # always use generated .clang-tidy file
-Checks = [                          # enabled check families (see clang-tidy docs for details)
-    "clang-analyzer-*",
-    "bugprone-*",
-    "performance-*",
-    "readability-*",
-    "modernize-*",
-    "cppcoreguidelines-*",
-]
-CheckOptions = {}                   # check-specific option overrides
-WarningsAsErrors = []               # non-gating by default
-HeaderFilterRegex = ".*"            # display diagnostics from all non-system headers
-ExcludeHeaderFilterRegex = ""       # optional regex for headers to suppress
-SystemHeaders = false               # suppress diagnostics from system headers
-InheritParentConfig = true          # merge parent .clang-tidy configs when present
+DisableFormat = false               # disable clang-format fixes for clang-tidy diagnostics
+HeaderFilterRegex = "^.*$"          # include diagnostics from matching headers
+ExcludeHeaderFilterRegex = "^$"     # ... except for headers matching this pattern
+SystemHeaders = false               # ... and system headers (if false)
 UseColor = true                     # color diagnostics when supported
+
+[[tool.clang-tidy.Checks]]
+Check = "clang-analyzer-*"          # check family (see clang-tidy docs for details)
+Action = "warn"                     # disable|warn|error (default "warn")
+Options = {}                        # check-specific option overrides (see clang-tidy docs)
+
+[[tool.clang-tidy.Checks]]
+Check = "bugprone-*"
+
+[[tool.clang-tidy.Checks]]
+Check = "performance-*"
+
+[[tool.clang-tidy.Checks]]
+Check = "readability-*"
+
+[[tool.clang-tidy.Checks]]
+Check = "modernize-*"
+
+[[tool.clang-tidy.Checks]]
+Check = "cppcoreguidelines-*"
 
 ############################
 ####    CLANG-FORMAT    ####
 ############################
 
-# NOTE: These are opinionated defaults designed to make C++ code as familiar as
+# NOTE: These are opinionated defaults designed to make C++ code as recognizable as
 # possible to Python developers.  If your project has an existing style guide, or
 # you prefer a more traditional C++ style, feel free to disable automatic formatting
 # or modify these settings as needed.

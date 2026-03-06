@@ -645,6 +645,14 @@ def _check_conan_allowed_pattern(pattern: str) -> str:
     return pattern
 
 
+def _check_regex_pattern(value: str) -> str:
+    try:
+        re.compile(value)
+    except re.error as err:
+        raise ValueError(f"invalid regex pattern '{value}': {err}") from err
+    return value
+
+
 def _check_health_log_destination(value: str) -> str:
     if value in ("local", "events_logger"):
         return value
@@ -667,98 +675,138 @@ def _check_health_log_destination(value: str) -> str:
     return path.as_posix()
 
 
-type NonEmpty[S: str] = Annotated[S, StringConstraints(min_length=1)]
-Trimmed = Annotated[str, StringConstraints(strip_whitespace=True)]
-NoCRLF = Annotated[Trimmed, StringConstraints(pattern=r"^[^\r\n]*$")]
-NoWhiteSpace = Annotated[Trimmed, StringConstraints(pattern=r"^\S*$")]
-SemVer = Annotated[NonEmpty[Trimmed], AfterValidator(_check_semver)]
-License = Annotated[NonEmpty[Trimmed], AfterValidator(_check_license)]
-Glob = Annotated[NonEmpty[NoWhiteSpace], AfterValidator(_check_glob)]
-Email = Annotated[NonEmpty[Trimmed], AfterValidator(_check_email)]
-EmailName = Annotated[str, StringConstraints(
+type NonEmpty[SequenceT: Sequence[Any]] = Annotated[SequenceT, Field(min_length=1)]
+type NonNegativeInt = Annotated[int, Field(ge=0)]
+type NonNegativeFloat = Annotated[float, Field(ge=0.0)]
+type Trimmed = Annotated[str, StringConstraints(strip_whitespace=True)]
+type NoCRLF = Annotated[  # pylint: disable=invalid-name
+    str,
+    StringConstraints(strip_whitespace=True, pattern=r"^[^\r\n]*$")
+]
+type NoWhiteSpace = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, pattern=r"^\S*$")
+]
+type RegexPattern = Annotated[NonEmpty[NoCRLF], AfterValidator(_check_regex_pattern)]
+type Glob = Annotated[NonEmpty[NoWhiteSpace], AfterValidator(_check_glob)]
+type SemVer = Annotated[NonEmpty[Trimmed], AfterValidator(_check_semver)]
+type License = Annotated[NonEmpty[Trimmed], AfterValidator(_check_license)]
+type Email = Annotated[NonEmpty[Trimmed], AfterValidator(_check_email)]
+type EmailName = Annotated[str, StringConstraints(
     strip_whitespace=True,
     min_length=1,
     pattern=r"^[^\r\n,]+$"
 )]
-URL = Annotated[NonEmpty[NoCRLF], AfterValidator(_check_url)]
-URLLabel = Annotated[NonEmpty[Trimmed], AfterValidator(_check_url_label)]
-PEP508Requirement = Annotated[NonEmpty[Trimmed], AfterValidator(_check_pep508_requirement)]
-PEP508Name = Annotated[NonEmpty[NoWhiteSpace], AfterValidator(_check_pep508_name)]
-Entrypoint = Annotated[str, StringConstraints(
+type URL = Annotated[  # pylint: disable=invalid-name
+    NonEmpty[NoCRLF],
+    AfterValidator(_check_url)
+]
+type URLLabel = Annotated[NonEmpty[Trimmed], AfterValidator(_check_url_label)]
+type PEP508Requirement = Annotated[
+    NonEmpty[Trimmed],
+    AfterValidator(_check_pep508_requirement)
+]
+type PEP508Name = Annotated[NonEmpty[NoWhiteSpace], AfterValidator(_check_pep508_name)]
+type Entrypoint = Annotated[str, StringConstraints(
     strip_whitespace=True,
     pattern=r"^[A-Za-z_][A-Za-z0-9_]*:[A-Za-z_][A-Za-z0-9_]*$"
 )]
-EntrypointName = Annotated[str, StringConstraints(
+type EntrypointName = Annotated[str, StringConstraints(
     strip_whitespace=True,
     pattern=r"^[a-zA-Z_][a-zA-Z0-9_]*$"
 )]
-Shell = Annotated[NonEmpty[NoWhiteSpace], AfterValidator(_check_shell)]
-IgnoreList = Annotated[list[Glob], AfterValidator(_deduplicate_ignore_list)]
-NetworkMode = Annotated[NonEmpty[NoWhiteSpace], AfterValidator(_check_network_mode)]
-IPAddress = Annotated[NonEmpty[NoWhiteSpace], AfterValidator(_check_ip_address)]
-HostIP = Annotated[NonEmpty[NoWhiteSpace], AfterValidator(_check_host_ip)]
-HostName = Annotated[str, StringConstraints(
+type Shell = Annotated[NonEmpty[NoWhiteSpace], AfterValidator(_check_shell)]
+type IgnoreList = Annotated[list[Glob], AfterValidator(_deduplicate_ignore_list)]
+type NetworkMode = Annotated[NonEmpty[NoWhiteSpace], AfterValidator(_check_network_mode)]
+type IPAddress = Annotated[NonEmpty[NoWhiteSpace], AfterValidator(_check_ip_address)]
+type HostIP = Annotated[  # pylint: disable=invalid-name
+    NonEmpty[NoWhiteSpace],
+    AfterValidator(_check_host_ip)
+]
+type HostName = Annotated[str, StringConstraints(
     strip_whitespace=True,
     min_length=1,
     pattern=HOSTNAME_RE.pattern
 )]
-SanitizedName = Annotated[str, AfterValidator(_check_sanitized_name)]
-AbsolutePath = Annotated[PosixPath, AfterValidator(_check_absolute_path)]
-RelativePath = Annotated[PosixPath, AfterValidator(_check_relative_path)]
-NetworkAlias = Annotated[NonEmpty[NoWhiteSpace], AfterValidator(_check_network_alias)]
-Memory = Annotated[str, StringConstraints(strip_whitespace=True, pattern=r"^\d+[bkmg]?$")]
-ULimitName = Annotated[NonEmpty[NoWhiteSpace], AfterValidator(_check_ulimit_name)]
-Capability = Annotated[NonEmpty[NoWhiteSpace], AfterValidator(_check_capability)]
-SecurityOpt = Annotated[NonEmpty[NoWhiteSpace], AfterValidator(_check_security_opt)]
-UserNS = Annotated[NonEmpty[NoWhiteSpace], AfterValidator(_check_userns)]
-IPCMode = Annotated[NonEmpty[NoWhiteSpace], AfterValidator(_check_ipc)]
-PIDMode = Annotated[NonEmpty[NoWhiteSpace], AfterValidator(_check_pid)]
-UTSMode = Annotated[NonEmpty[NoWhiteSpace], AfterValidator(_check_uts)]
-Instrument = Annotated[NonEmpty[NoWhiteSpace], AfterValidator(_check_instrument)]
-ScreamingSnakeCase = Annotated[str, StringConstraints(
+type SanitizedName = Annotated[str, AfterValidator(_check_sanitized_name)]
+type AbsolutePath = Annotated[PosixPath, AfterValidator(_check_absolute_path)]
+type RelativePath = Annotated[PosixPath, AfterValidator(_check_relative_path)]
+type NetworkAlias = Annotated[NonEmpty[NoWhiteSpace], AfterValidator(_check_network_alias)]
+type Memory = Annotated[str, StringConstraints(strip_whitespace=True, pattern=r"^\d+[bkmg]?$")]
+type ULimitName = Annotated[
+    NonEmpty[NoWhiteSpace],
+    AfterValidator(_check_ulimit_name)
+]
+type Capability = Annotated[NonEmpty[NoWhiteSpace], AfterValidator(_check_capability)]
+type SecurityOpt = Annotated[NonEmpty[NoWhiteSpace], AfterValidator(_check_security_opt)]
+type UserNS = Annotated[  # pylint: disable=invalid-name
+    NonEmpty[NoWhiteSpace],
+    AfterValidator(_check_userns)
+]
+type IPCMode = Annotated[NonEmpty[NoWhiteSpace], AfterValidator(_check_ipc)]
+type PIDMode = Annotated[NonEmpty[NoWhiteSpace], AfterValidator(_check_pid)]
+type UTSMode = Annotated[NonEmpty[NoWhiteSpace], AfterValidator(_check_uts)]
+type Instrument = Annotated[NonEmpty[NoWhiteSpace], AfterValidator(_check_instrument)]
+type ScreamingSnakeCase = Annotated[str, StringConstraints(
     strip_whitespace=True,
     pattern=r"^[A-Z_]?[A-Z0-9_]*$"
 )]
-DevicePermission = Annotated[NonEmpty[NoWhiteSpace], AfterValidator(_check_device_permission)]
-ConanRequirement = Annotated[NonEmpty[NoCRLF], AfterValidator(_check_conan_requirement)]
-ConanOptionName = Annotated[str, StringConstraints(
+type DevicePermission = Annotated[
+    NonEmpty[NoWhiteSpace],
+    AfterValidator(_check_device_permission)
+]
+type ConanRequirement = Annotated[
+    NonEmpty[NoCRLF],
+    AfterValidator(_check_conan_requirement)
+]
+type ConanOptionName = Annotated[str, StringConstraints(
     strip_whitespace=True,
     min_length=1,
     pattern=CONAN_OPTION_NAME_RE.pattern
 )]
-ConanConfNamespace = Annotated[str, StringConstraints(
+type ConanConfNamespace = Annotated[str, StringConstraints(
     strip_whitespace=True,
     min_length=1,
     pattern=r"^[^:\s]+$"
 )]
-ConanConfName = Annotated[str, StringConstraints(
+type ConanConfName = Annotated[str, StringConstraints(
     strip_whitespace=True,
     min_length=1,
     pattern=r"^[^:\s]+$"
 )]
 type ConanScalar = str | bool | int | float
-ConanConf = Annotated[
+type ConanConf = Annotated[
     dict[ConanConfNamespace, dict[ConanConfName, ConanScalar]],
     AfterValidator(_check_conan_conf)
 ]
-ConanRemoteName = Annotated[str, StringConstraints(
+type ConanRemoteName = Annotated[str, StringConstraints(
     strip_whitespace=True,
     min_length=1,
     pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]*$"
 )]
-ConanAllowedPattern = Annotated[
+type ConanAllowedPattern = Annotated[
     NonEmpty[NoWhiteSpace],
     AfterValidator(_check_conan_allowed_pattern)
 ]
-Timeout = Annotated[str, StringConstraints(
+type Timeout = Annotated[str, StringConstraints(
     strip_whitespace=True,
     min_length=1,
     pattern=r"^\d+(\.\d+)?[smhd]?$"
 )]
-HealthLogDestination = Annotated[
+type HealthLogDestination = Annotated[
     NonEmpty[NoCRLF],
     AfterValidator(_check_health_log_destination)
 ]
+type ClangTidyCheckPattern = Annotated[str, StringConstraints(
+    strip_whitespace=True,
+    min_length=1,
+    pattern=r"^[^,\s\r\n]+$"
+)]
+type ClangTidyOptionName = Annotated[str, StringConstraints(
+    strip_whitespace=True,
+    min_length=1,
+    pattern=r"^[A-Za-z_][A-Za-z0-9_]*$"
+)]
 
 
 class Template(BaseModel):
@@ -781,11 +829,11 @@ class Template(BaseModel):
     version: Annotated[str, AfterValidator(_validate_non_empty)]
 
 
-def resource[T: Resource](
+def resource[ResourceT: Resource](
     name: str,
     *,
     template: str | None = None
-) -> Callable[[type[T]], type[T]]:
+) -> Callable[[type[ResourceT]], type[ResourceT]]:
     """A class decorator for defining layout resources.
 
     Parameters
@@ -1268,17 +1316,9 @@ class Clangd(Resource):
         return _dump_yaml(section, resource_id="clangd")
 
 
-# NOTE: "*" indicates a baseline, while other keys act as overlay diffs that merge on
-# top to avoid duplication.
-
-
-# TODO: since profiles and capabilities are now so compact, I can just get rid of the
-# "*" baseline thing and make the system a lot more robust.
-
-
 # Profiles define only resource placement paths: wildcard baseline + profile diffs.
 PROFILES: dict[str, dict[str, PosixPath]] = {
-    "*": {
+    "flat": {
         "publish": PosixPath(".github") / "workflows" / "publish.yml",
         "gitignore": PosixPath(".gitignore"),
         "containerignore": PosixPath(".containerignore"),
@@ -1286,8 +1326,13 @@ PROFILES: dict[str, dict[str, PosixPath]] = {
         "docs": PosixPath("docs"),
         "tests": PosixPath("tests"),
     },
-    "flat": {},
     "src": {
+        "publish": PosixPath(".github") / "workflows" / "publish.yml",
+        "gitignore": PosixPath(".gitignore"),
+        "containerignore": PosixPath(".containerignore"),
+        "containerfile": PosixPath("Containerfile"),
+        "docs": PosixPath("docs"),
+        "tests": PosixPath("tests"),
         "src": PosixPath("src"),
     },
 }
@@ -1297,28 +1342,34 @@ PROFILES: dict[str, dict[str, PosixPath]] = {
 # + profile-specific diffs.
 CAPABILITIES: dict[str, dict[str, dict[str, PosixPath]]] = {
     "python": {
-        "*": {
+        "flat": {
             "pyproject": PosixPath("pyproject.toml"),
         },
-        "flat": {},
-        "src": {},
+        "src": {
+            "pyproject": PosixPath("pyproject.toml"),
+        },
     },
     "cpp": {
-        "*": {
+        "flat": {
             "compile_commands": PosixPath("compile_commands.json"),
             "clang-format": PosixPath(".clang-format"),
             "clang-tidy": PosixPath(".clang-tidy"),
             "clangd": PosixPath(".clangd"),
         },
-        "flat": {},
-        "src": {},
+        "src": {
+            "compile_commands": PosixPath("compile_commands.json"),
+            "clang-format": PosixPath(".clang-format"),
+            "clang-tidy": PosixPath(".clang-tidy"),
+            "clangd": PosixPath(".clangd"),
+        },
     },
     "vscode": {
-        "*": {
+        "flat": {
             "vscode-workspace": PosixPath(".vscode/bertrand.code-workspace"),
         },
-        "flat": {},
-        "src": {},
+        "src": {
+            "vscode-workspace": PosixPath(".vscode/bertrand.code-workspace"),
+        },
     },
 }
 
@@ -1661,10 +1712,10 @@ class Config:
                     AfterValidator(_check_network_aliases),
                     Field(default_factory=list, alias="network-aliases")
                 ]
-                cpus: Annotated[float, Field(default=0.0, ge=0.0)]
+                cpus: Annotated[NonNegativeFloat, Field(default=0.0)]
                 memory: Annotated[Memory, Field(default="0")]
                 pids_limit: Annotated[
-                    PositiveInt,
+                    NonNegativeInt,
                     Field(default=0, alias="pids-limit")
                 ]
 
@@ -1945,7 +1996,7 @@ class Config:
                         ),
                         Field(default="SIGTERM")
                     ]
-                    timeout: Annotated[int, Field(default=10, ge=0)]
+                    timeout: Annotated[NonNegativeInt, Field(default=10)]
 
                 stop: Annotated[Stop, Field(default_factory=Stop.model_construct)]
 
@@ -1956,7 +2007,10 @@ class Config:
                         Literal["no", "on-failure", "always", "unless-stopped"],
                         Field(default="no")
                     ]
-                    max_retries: Annotated[int, Field(default=0, ge=0, alias="max-retries")]
+                    max_retries: Annotated[
+                        NonNegativeInt,
+                        Field(default=0, alias="max-retries")
+                    ]
 
                 restart: Annotated[Restart, Field(default_factory=Restart.model_construct)]
 
@@ -1968,7 +2022,7 @@ class Config:
                         Literal["none", "kill", "stop"],
                         Field(default="kill", alias="on-failure")
                     ]
-                    retries: Annotated[int, Field(default=3, ge=0)]
+                    retries: Annotated[NonNegativeInt, Field(default=3)]
                     interval: Annotated[Timeout, Field(default="30s")]
                     timeout: Annotated[Timeout, Field(default="30s")]
 
@@ -1977,7 +2031,7 @@ class Config:
                         model_config = ConfigDict(extra="forbid")
                         cmd: Annotated[list[str], Field(default_factory=list)]
                         period: Annotated[Timeout, Field(default="0s")]
-                        success: Annotated[int, Field(default=0, ge=0)]
+                        success: Annotated[NonNegativeInt, Field(default=0)]
                         interval: Annotated[Timeout, Field(default="30s")]
                         timeout: Annotated[Timeout, Field(default="30s")]
 
@@ -1987,8 +2041,14 @@ class Config:
                         """Validate the `[tool.bertrand.tags.healthcheck.log]` table."""
                         model_config = ConfigDict(extra="forbid")
                         destination: Annotated[HealthLogDestination, Field(default="local")]
-                        max_count: Annotated[int, Field(default=0, ge=0, alias="max-count")]
-                        max_size: Annotated[int, Field(default=0, ge=0, alias="max-size")]
+                        max_count: Annotated[
+                            NonNegativeInt,
+                            Field(default=0, alias="max-count")
+                        ]
+                        max_size: Annotated[
+                            NonNegativeInt,
+                            Field(default=0, alias="max-size")
+                        ]
 
                     log: Annotated[Log, Field(default_factory=Log.model_construct)]
 
@@ -2096,6 +2156,243 @@ class Config:
                 return self
 
         bertrand: Annotated[Bertrand | None, Field(default=None)]
+
+        class Clangd(BaseModel):
+            """Validate the `[tool.clangd]` table."""
+            model_config = ConfigDict(extra="forbid")
+
+            class _Diagnostics(BaseModel):
+                """Validate the `[tool.clangd.diagnostics]` table."""
+                model_config = ConfigDict(extra="forbid")
+                UnusedIncludes: Annotated[Literal["None", "Strict"], Field(default="Strict")]
+                MissingIncludes: Annotated[Literal["None", "Strict"], Field(default="Strict")]
+                Suppress: Annotated[list[NoCRLF], Field(default_factory=list)]
+
+            Diagnostics: Annotated[
+                _Diagnostics,
+                Field(default_factory=_Diagnostics.model_construct)
+            ]
+
+            class _Index(BaseModel):
+                """Validate the `[tool.clangd.index]` table."""
+                model_config = ConfigDict(extra="forbid")
+                Background: Annotated[Literal["Build", "Skip"], Field(default="Build")]
+                StandardLibrary: Annotated[bool, Field(default=True)]
+
+            Index: Annotated[
+                _Index,
+                Field(default_factory=_Index.model_construct)
+            ]
+
+            class _Completion(BaseModel):
+                """Validate the `[tool.clangd.completion]` table."""
+                model_config = ConfigDict(extra="forbid")
+                AllScopes: Annotated[bool, Field(default=True)]
+                ArgumentLists: Annotated[
+                    Literal["None", "OpenDelimiter", "Delimiters", "FullPlaceholders"],
+                    Field(default="FullPlaceholders")
+                ]
+                HeaderInsertion: Annotated[Literal["Never", "IWYU"], Field(default="IWYU")]
+                CodePatterns: Annotated[Literal["None", "All"], Field(default="All")]
+
+            Completion: Annotated[
+                _Completion,
+                Field(default_factory=_Completion.model_construct)
+            ]
+
+            class _InlayHints(BaseModel):
+                """Validate the `[tool.clangd.inlay-hints]` table."""
+                model_config = ConfigDict(extra="forbid")
+                Enabled: Annotated[bool, Field(default=True)]
+                ParameterNames: Annotated[bool, Field(default=True)]
+                DeducedTypes: Annotated[bool, Field(default=True)]
+                Designators: Annotated[bool, Field(default=True)]
+                BlockEnd: Annotated[bool, Field(default=False)]
+                DefaultArguments: Annotated[bool, Field(default=False)]
+                TypeNameLimit: Annotated[NonNegativeInt, Field(default=24)]
+
+            InlayHints: Annotated[
+                _InlayHints,
+                Field(default_factory=_InlayHints.model_construct)
+            ]
+
+            class _Hover(BaseModel):
+                """Validate the `[tool.clangd.hover]` table."""
+                model_config = ConfigDict(extra="forbid")
+                ShowAKA: Annotated[bool, Field(default=True)]
+                MacroContentsLimit: Annotated[NonNegativeInt, Field(default=2048)]
+
+            Hover: Annotated[
+                _Hover,
+                Field(default_factory=_Hover.model_construct)
+            ]
+
+            class _Documentation(BaseModel):
+                """Validate the `[tool.clangd.documentation]` table."""
+                model_config = ConfigDict(extra="forbid")
+                CommentFormat: Annotated[
+                    Literal["PlainText", "Markdown", "Doxygen"],
+                    Field(default="Doxygen")
+                ]
+
+            Documentation: Annotated[
+                _Documentation,
+                Field(default_factory=_Documentation.model_construct)
+            ]
+
+            class _If(BaseModel):
+                """Validate the `[[tool.clangd.if]]` AoT."""
+                model_config = ConfigDict(extra="forbid")
+                PathMatch: NonEmpty[list[RegexPattern]]
+                PathExclude: Annotated[list[RegexPattern], Field(default_factory=list)]
+
+                class _Diagnostics(BaseModel):
+                    """Validate the `[tool.clangd.diagnostics]` table."""
+                    model_config = ConfigDict(extra="forbid")
+                    UnusedIncludes: Annotated[
+                        Literal["None", "Strict"] | None,
+                        Field(default=None)
+                    ]
+                    MissingIncludes: Annotated[
+                        Literal["None", "Strict"] | None,
+                        Field(default=None)
+                    ]
+                    Suppress: Annotated[
+                        NonEmpty[list[NoCRLF]] | None,
+                        Field(default=None)
+                    ]
+
+                Diagnostics: Annotated[_Diagnostics | None, Field(default=None)]
+
+                class _Index(BaseModel):
+                    """Validate the `[tool.clangd.index]` table."""
+                    model_config = ConfigDict(extra="forbid")
+                    Background: Annotated[
+                        Literal["Build", "Skip"] | None,
+                        Field(default=None)
+                    ]
+                    StandardLibrary: Annotated[bool | None, Field(default=None)]
+
+                Index: Annotated[_Index | None, Field(default=None)]
+
+                class _Completion(BaseModel):
+                    """Validate the `[tool.clangd.completion]` table."""
+                    model_config = ConfigDict(extra="forbid")
+                    AllScopes: Annotated[bool | None, Field(default=None)]
+                    ArgumentLists: Annotated[
+                        Literal["None", "OpenDelimiter", "Delimiters", "FullPlaceholders"] | None,
+                        Field(default=None)
+                    ]
+                    HeaderInsertion: Annotated[
+                        Literal["Never", "IWYU"] | None,
+                        Field(default=None)
+                    ]
+                    CodePatterns: Annotated[
+                        Literal["None", "All"] | None,
+                        Field(default=None)
+                    ]
+
+                Completion: Annotated[_Completion | None, Field(default=None)]
+
+                class _InlayHints(BaseModel):
+                    """Validate the `[tool.clangd.inlay-hints]` table."""
+                    model_config = ConfigDict(extra="forbid")
+                    Enabled: Annotated[bool | None, Field(default=None)]
+                    ParameterNames: Annotated[bool | None, Field(default=None)]
+                    DeducedTypes: Annotated[bool | None, Field(default=None)]
+                    Designators: Annotated[bool | None, Field(default=None)]
+                    BlockEnd: Annotated[bool | None, Field(default=None)]
+                    DefaultArguments: Annotated[bool | None, Field(default=None)]
+                    TypeNameLimit: Annotated[NonNegativeInt | None, Field(default=None)]
+
+                InlayHints: Annotated[_InlayHints | None, Field(default=None)]
+
+                class _Hover(BaseModel):
+                    """Validate the `[tool.clangd.hover]` table."""
+                    model_config = ConfigDict(extra="forbid")
+                    ShowAKA: Annotated[bool | None, Field(default=None)]
+                    MacroContentsLimit: Annotated[NonNegativeInt | None, Field(default=None)]
+
+                Hover: Annotated[_Hover | None, Field(default=None)]
+
+                class _Documentation(BaseModel):
+                    """Validate the `[tool.clangd.documentation]` table."""
+                    model_config = ConfigDict(extra="forbid")
+                    CommentFormat: Annotated[
+                        Literal["PlainText", "Markdown", "Doxygen"] | None,
+                        Field(default=None)
+                    ]
+
+                Documentation: Annotated[_Documentation | None, Field(default=None)]
+
+                @model_validator(mode="after")
+                def _validate_nonempty(self) -> Self:
+                    if (
+                        self.Diagnostics is None and
+                        self.Index is None and
+                        self.Completion is None and
+                        self.InlayHints is None and
+                        self.Hover is None and
+                        self.Documentation is None
+                    ):
+                        raise ValueError(
+                            "each [[tool.clangd.if]] entry must define at least one "
+                            "of 'Diagnostics', 'Index', 'Completion', 'InlayHints', "
+                            "'Hover', or 'Documentation'"
+                        )
+                    return self
+
+            If: Annotated[list[_If], Field(default_factory=list)]
+
+        clangd: Annotated[Clangd | None, Field(default=None)]
+
+        # TODO: DisableFormat -> FormatStyle in generated .clang-tidy config.
+        # InheritParentConfig is implied to be false, to enforce isolation within
+        # the project.
+
+        class ClangTidy(BaseModel):
+            """Validate the `[tool.clang-tidy]` table."""
+            model_config = ConfigDict(extra="forbid")
+
+            class CheckEntry(BaseModel):
+                """Validate entries in the `[[tool.clang-tidy.Checks]]` AoT."""
+                model_config = ConfigDict(extra="forbid")
+                Check: ClangTidyCheckPattern
+                Action: Annotated[Literal["disable", "warn", "error"], Field(default="warn")]
+                Options: Annotated[
+                    dict[ClangTidyOptionName, ConanScalar],
+                    Field(default_factory=dict)
+                ]
+
+            @staticmethod
+            def _check_duplicate_checks(value: list[CheckEntry]) -> list[CheckEntry]:
+                seen: set[ClangTidyCheckPattern] = set()
+                for entry in value:
+                    if entry.Check in seen:
+                        raise ValueError(
+                            f"duplicate clang-tidy check entry: '{entry.Check}'"
+                        )
+                    seen.add(entry.Check)
+                return value
+
+            HeaderFilterRegex: Annotated[RegexPattern, Field(default=".*")]
+            ExcludeHeaderFilterRegex: Annotated[RegexPattern, Field(default="^$")]
+            SystemHeaders: Annotated[bool, Field(default=False)]
+            UseColor: Annotated[bool, Field(default=True)]
+            Checks: Annotated[
+                list[CheckEntry],
+                AfterValidator(_check_duplicate_checks),
+                Field(default_factory=list)
+            ]
+
+        clang_tidy: Annotated[ClangTidy | None, Field(default=None, alias="clang-tidy")]
+
+        class ClangFormat(BaseModel):
+            """Validate the `[tool.clang-format]` table."""
+            model_config = ConfigDict(extra="forbid")
+            # TODO: populate this section
+
+        clang_format: Annotated[ClangFormat | None, Field(default=None, alias="clang-format")]
 
     class _Parse(BaseModel):
         """Validate the output of the `parse()` pass for all resources."""
@@ -2207,6 +2504,9 @@ class Config:
             # return as a resolved Config instance with normalized paths
             return cls(root=env_root, resources=discovered)
 
+    # TODO: init() shouldn't fail if any of the paths are missing during profile
+    # detection?
+
     @classmethod
     def init(
         cls,
@@ -2251,53 +2551,38 @@ class Config:
 
             # normalize the requested profile, inferring from the loaded layout if
             # necessary
-            base_profile = PROFILES.get("*")
-            if base_profile is None:
-                raise ValueError("missing wildcard baseline in PROFILES: '*'")
             if profile is None:
                 # choose the profile with the most matching placements, to prefer src
                 # layouts over flat where both would be valid
                 n = 0
-                for candidate_profile, placements in PROFILES.items():
-                    if candidate_profile == "*":
-                        continue
-                    merged_profile = base_profile.copy()
-                    merged_profile.update(placements)
-                    if len(merged_profile) > n and all(
+                for candidate_profile, candidate in PROFILES.items():
+                    if len(candidate) > n and all(
                         result.resources.get(r_id) == path
-                        for r_id, path in merged_profile.items()
+                        for r_id, path in candidate.items()
                     ):
                         profile = candidate_profile
-                        n = len(merged_profile)
+                        n = len(candidate)
 
                 # if we couldn't infer a profile, then we hard error rather than clobbering
                 # an existing environment
                 if profile is None:
                     raise ValueError(
                         "unable to infer layout profile from environment, please specify "
-                        "explicitly (supported: "
-                        f"{', '.join(sorted(p for p in PROFILES if p != '*'))})"
+                        f"explicitly (supported: {', '.join(sorted(p for p in PROFILES))})"
                     )
             else:
                 profile = profile.strip()
                 if not profile:
                     raise ValueError("layout profile cannot be empty")
-                if profile == "*":
-                    raise ValueError("layout profile cannot be wildcard '*'")
-
-                # merge the selected profile diff on top of the base placements
-                overlay_profile = PROFILES.get(profile)
-                if overlay_profile is None:
+                placements = PROFILES.get(profile)
+                if placements is None:
                     raise ValueError(
                         f"unknown layout profile: {profile} (supported: "
-                        f"{', '.join(sorted(p for p in PROFILES if p != '*'))})"
+                        f"{', '.join(sorted(p for p in PROFILES))})"
                     )
-                merged_profile = base_profile.copy()
-                merged_profile.update(overlay_profile)
 
-                # update the result with placements from the merged profile, checking
-                # for collisions
-                for r_id, path in merged_profile.items():
+                # update the result with the chosen placements, checking for collisions
+                for r_id, path in placements.items():
                     existing = result.resources.setdefault(r_id, path)
                     if existing != path:
                         raise ValueError(
@@ -2313,31 +2598,16 @@ class Config:
                     cap = raw.strip()
                     if cap in seen:
                         continue
-                    if not cap:
-                        raise ValueError("layout capability cannot be empty")
-                    if cap == "*":
-                        raise ValueError("layout capability cannot be wildcard '*'")
-
-                    # start with the wildcard baseline and merge the profile-specific
-                    # diff on top; if a variant does not specify a diff, treat it as an
-                    # empty overlay rather than an error
                     variants = CAPABILITIES.get(cap)
                     if variants is None:
                         raise ValueError(
-                            f"unknown layout capability: {cap} (supported: "
+                            f"unknown layout capability: '{cap}' (supported: "
                             f"{', '.join(sorted(CAPABILITIES))})"
                         )
-                    base_cap = variants.get("*")
-                    if base_cap is None:
-                        raise ValueError(
-                            f"layout capability '{cap}' is missing wildcard baseline '*'"
-                        )
-                    overlay_cap = variants.get(profile, {})
-                    merged_caps = base_cap.copy()
-                    merged_caps.update(overlay_cap)
+                    placements = variants.get(profile, {})
 
                     # check for collisions during merge
-                    for r_id, path in merged_caps.items():
+                    for r_id, path in placements.items():
                         existing = result.resources.setdefault(r_id, path)
                         if existing != path:
                             raise ValueError(
