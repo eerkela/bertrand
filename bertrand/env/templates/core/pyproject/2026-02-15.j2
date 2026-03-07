@@ -488,24 +488,29 @@ SystemHeaders = false               # ... and system headers (if false)
 UseColor = true                     # color diagnostics when supported
 
 [[tool.clang-tidy.Checks]]
-Check = "clang-analyzer-*"          # diagnostic family (see clang-tidy docs for details)
+Enable = "clang-analyzer-*"         # diagnostic family (see clang-tidy docs for details)
 Action = "warn"                     # disable|warn|error (default "warn")
 Options = {}                        # check-specific option overrides (see clang-tidy docs)
 
 [[tool.clang-tidy.Checks]]
-Check = "bugprone-*"
+Enable = "bugprone-*"
 
 [[tool.clang-tidy.Checks]]
-Check = "performance-*"
+Enable = "performance-*"
 
 [[tool.clang-tidy.Checks]]
-Check = "readability-*"
+Enable = "readability-*"
 
 [[tool.clang-tidy.Checks]]
-Check = "modernize-*"
+Enable = "modernize-*"
 
 [[tool.clang-tidy.Checks]]
-Check = "cppcoreguidelines-*"
+Enable = "cppcoreguidelines-*"
+
+# [[tool.clang-tidy.Checks]]
+# Disable = "clang-analyzer-alpha.*"    # example disabling a subset of checks within an
+                                        # enabled family (mutually exclusive with `Enable`).
+                                        # Action and Options are ignored for disabled checks.
 
 ############################
 ####    CLANG-FORMAT    ####
@@ -729,7 +734,7 @@ BeforeCaseColon = false
 BeforeCpp11BracedList = false
 BeforeCtorInitializerColon = true
 BeforeInheritanceColon = true
-BeforeJSonColon = false
+BeforeJsonColon = false
 BeforeRangeBasedForLoopColon = true
 BeforeSquareBrackets = false
 InEmptyBraces = "Never"             # Never|Block|Always
