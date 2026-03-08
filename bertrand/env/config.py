@@ -24,10 +24,9 @@ from dataclasses import asdict, dataclass, field
 from collections.abc import Mapping, Sequence
 from importlib import resources as importlib_resources
 from pathlib import Path, PosixPath
-from types import MappingProxyType, TracebackType
+from types import TracebackType
 from typing import Annotated, Any, Callable, Literal, Self
 
-from jinja2 import Environment, StrictUndefined
 from conan.api.model.list import ListPattern, VersionRange
 from conan.api.model.refs import RecipeReference
 from conan.errors import ConanException
@@ -49,6 +48,7 @@ from pydantic import (
     Field,
     model_validator
 )
+import jinja2
 import yaml
 
 from .pipeline import on_init
@@ -58,13 +58,13 @@ from .version import __version__, VERSION
 # pylint: disable=bare-except
 
 
-# Canonical path definitions for environment control
-ENV_DIR: PosixPath = PosixPath(".bertrand")
-ENV_LOCK: PosixPath = ENV_DIR / ".lock"
-ENV_METADATA: PosixPath = ENV_DIR / "env.json"
-ENV_MOUNT: PosixPath = PosixPath("/env")
-ENV_TMP: PosixPath = ENV_DIR / "tmp"
-ENV_COMMITS: PosixPath = ENV_DIR / "commits"
+# Canonical path definitions for worktree control
+WORKTREE_DIR: PosixPath = PosixPath(".bertrand")
+WORKTREE_LOCK: PosixPath = WORKTREE_DIR / ".lock"
+WORKTREE_METADATA: PosixPath = WORKTREE_DIR / "env.json"
+WORKTREE_MOUNT: PosixPath = PosixPath("/env")
+WORKTREE_TMP: PosixPath = WORKTREE_DIR / "tmp"
+WORKTREE_COMMITS: PosixPath = WORKTREE_DIR / "commits"
 
 
 # Global resource catalog.  Extensions can add resources here with associated behavior,
@@ -820,20 +820,57 @@ class Template(BaseModel):
     """Stable template reference used by layout resources.
 
     Canonical templates are packaged with Bertrand under `env/templates` and addressed
-    by stable `{namespace}/{name}/{version}` references.  They are lazily hydrated into
-    the `on_init` state cache before rendering.
+    by stable `{namespace}/{name}` references.  They are lazily hydrated into the
+    `on_init` state cache before rendering.
     """
-    @staticmethod
-    def _validate_non_empty(value: str) -> str:
-        text = value.strip()
-        if not text:
-            raise ValueError("template reference fields must be non-empty")
-        return text
-
     model_config = ConfigDict(extra="forbid")
-    namespace: Annotated[str, AfterValidator(_validate_non_empty)]
-    name: Annotated[str, AfterValidator(_validate_non_empty)]
-    version: Annotated[str, AfterValidator(_validate_non_empty)]
+    namespace: NonEmpty[NoWhiteSpace]
+    name: NonEmpty[NoWhiteSpace]
+
+    def locate(self, resource_id: str) -> Path:
+        """Locate this template file for the given resource ID.
+
+        Parameters
+        ----------
+        resource_id : str
+            The unique identifier of the resource that this template is associated
+            with.
+
+        Returns
+        -------
+        Path
+            The path to the template file.
+
+        Raises
+        ------
+        FileNotFoundError
+            If the template file does not exist.
+        """
+        path = on_init.state_dir / "templates" / self.namespace / f"{self.name}.j2"
+
+        # if the template doesn't already exist, attempt to copy it from the core
+        # templates included with Bertrand itself
+        if not path.exists():
+            core_templates = importlib_resources.files("bertrand.env").joinpath("templates")
+            with importlib_resources.as_file(
+                core_templates.joinpath(self.namespace, f"{self.name}.j2")
+            ) as source:
+                if not source.exists():
+                    raise FileNotFoundError(
+                        "missing Bertrand template for layout resource "
+                        f"'{resource_id}' reference {self.namespace}/"
+                        f"{self.name}: {source}"
+                    )
+                if not source.is_file():
+                    raise FileNotFoundError(
+                        "missing Bertrand template for layout resource "
+                        f"'{resource_id}' reference {self.namespace}/"
+                        f"{self.name}: {source}"
+                    )
+                path.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy(source, path)
+
+        return path
 
 
 def resource[ResourceT: Resource](
@@ -847,21 +884,20 @@ def resource[ResourceT: Resource](
     ----------
     name : str
         The unique name of this resource, which serves as its stable identifier in the
-        resource catalog.  This should generally match the `name` portion
-        of a corresponding template file, if one is given.
+        resource catalog.  This should generally match the `name` portion of a
+        corresponding template file, if one is given.
     template : str | None, optional
         An optional reference to a Jinja template for this resource, of the form
-        "namespace/name/version".  If given, the resource will be treated as a file,
+        "namespace/name".  If given, the resource will be treated as a file,
         and its initial contents will be rendered from a template file stored in the
-        `on_init` pipeline's state directory, under
-        `templates/{namespace}/{name}/{version}.j2`.  Bertrand provides its own
-        templates as part of its front-end wheel, which are copied into this location
-        by default.  If no template is given (the default), then the resource will be
-        treated as a directory.
+        `on_init` pipeline's state directory, under `templates/{namespace}/{name}.j2`.
+        Bertrand provides its own templates as part of its front-end wheel, which are
+        copied into this location by default.  If no template is given (the default),
+        then the resource will be treated as a directory.
 
     Returns
     -------
-    Callable[[type[T]], type[T]]
+    Callable[[type[ResourceT]], type[ResourceT]]
         A class decorator that registers the decorated class as a layout resource in the
         global `CATALOG` under the given name, with the specified template.
 
@@ -884,14 +920,14 @@ def resource[ResourceT: Resource](
     template_kwargs: dict[str, str] | None = None
     if template is not None:
         parts = template.split("/")
-        if len(parts) != 3:
+        if len(parts) != 2:
             raise TypeError(
                 f"invalid template reference format for resource '{name}': '{template}' "
-                "(expected 'namespace/name/version')"
+                "(expected 'namespace/name')"
             )
-        template_kwargs = {"namespace": parts[0], "name": parts[1], "version": parts[2]}
+        template_kwargs = {"namespace": parts[0], "name": parts[1]}
 
-    def _decorator[U: Resource](cls: type[U]) -> type[U]:
+    def _decorator(cls: type[ResourceT]) -> type[ResourceT]:
         if name in CATALOG:
             raise TypeError(f"duplicate resource name in catalog: '{name}'")
         CATALOG[name] = cls(
@@ -903,9 +939,9 @@ def resource[ResourceT: Resource](
     return _decorator
 
 
-@resource("publish", template="core/publish/2026-02-15")
-@resource("vscode-workspace", template="core/vscode-workspace/2026-02-15")
-@resource("containerfile", template="core/containerfile/2026-02-15")
+@resource("publish", template="core/publish.v1")
+@resource("vscode-workspace", template="core/vscode-workspace.v1")
+@resource("containerfile", template="core/containerfile.v1")
 @resource("docs")
 @resource("tests")
 @resource("src")
@@ -1018,7 +1054,7 @@ class Resource:
         """
         return None
 
-    def render(self, config: Config) -> str | None:
+    def render(self, config: Config, tag: str) -> str | None:
         """A render function that produces text content for this resource that will be
         written to disk during `Config.sync()`.
 
@@ -1027,6 +1063,11 @@ class Resource:
         config : Config
             The active configuration context, which provides access to the valid
             outputs from the `validate()` phase.
+        tag : str
+            The active image tag for the configured environment, which is used to
+            search the `config.bertrand.tags` list for tag-specific overrides during
+            rendering.  Usually, this is supplied by either the build system or an
+            in-container environment variable, but we make no assumptions here.
 
         Returns
         -------
@@ -1042,14 +1083,14 @@ class Resource:
         return None
 
 
-def lock_env(root: Path, timeout: float = LOCK_TIMEOUT) -> Lock:
-    """Lock an environment directory for exclusive access, hiding the lock inside the
-    environment metadata directory.
+def lock_worktree(worktree: Path, timeout: float = LOCK_TIMEOUT) -> Lock:
+    """Lock a worktree for exclusive access, hiding the lock inside the worktree's
+    metadata directory.
 
     Parameters
     ----------
-    root : Path
-        The root path of the environment to lock.
+    worktree : Path
+        The root path of the worktree to lock.
     timeout : float, optional
         The maximum number of seconds to wait for the lock to be acquired before
         raising a `TimeoutError`.  See `Lock()` for the default value.
@@ -1057,10 +1098,11 @@ def lock_env(root: Path, timeout: float = LOCK_TIMEOUT) -> Lock:
     Returns
     -------
     Lock
-         A lock instance representing the acquired lock on the environment directory.
+         A lock instance representing the acquired lock on the worktree directory.
     """
-    # NOTE: pre-touching the lock's parent ensures that lock acquisition is atomic
-    path = root.expanduser().resolve() / ENV_LOCK
+    # NOTE: pre-touching the lock's parent ensures that lock acquisition is always
+    # atomic
+    path = worktree.expanduser().resolve() / WORKTREE_LOCK
     path.parent.mkdir(parents=True, exist_ok=True)
     return Lock(path, timeout=timeout)
 
@@ -1120,7 +1162,7 @@ def _dump_yaml(payload: dict[str, Any], *, resource_id: str) -> str:
     return text
 
 
-@resource("pyproject", template="core/pyproject/2026-02-15")
+@resource("pyproject", template="core/pyproject.v1")
 class PyProject(Resource):
     """A resource describing a `pyproject.toml` file, which is the primary vehicle for
     configuring a top-level Python project, as well as Bertrand itself and its entire
@@ -1279,25 +1321,23 @@ class PyProject(Resource):
         if self.name not in config.raw:
             return None
         result = self.Model.model_validate(config.raw[self.name])
-        result.project.resolve_licenses(config.root)
+        result.project.resolve_licenses(config.worktree)
         return result
 
 
 # TODO: add a conanfile template to support this resource
 
 
-@resource("conanfile", template="core/conanfile/2026-02-15")
+@resource("conanfile", template="core/conanfile.v1")
 class Conanfile(Resource):
-    """A resource describing a `conanfile.txt`, which is used to organize C++
-    dependency management.  This expects a `conanfile.txt` format with sections for
-    `[requires]`, `[options]`, `[conf]`, and `[allowed-packages]` that mirror the
-    relevant fields of the central project configuration.
+    """A resource describing a `conanfile.py`, which is used to organize C++
+    dependencies.
     """
     # pylint: disable=missing-function-docstring, unused-argument, missing-return-doc
 
     class Model(BaseModel):
         """Validate the (global) [conan] table."""
-        model_config = ConfigDict(extra="forbid", populate_by_name=True)
+        model_config = ConfigDict(extra="forbid")
         build_type: Annotated[
             Literal["Release", "Debug"],
             Field(default="Release", alias="build-type")
@@ -1330,7 +1370,7 @@ class Conanfile(Resource):
                     seen.add(pattern)
                 return value
 
-            model_config = ConfigDict(extra="forbid", populate_by_name=True)
+            model_config = ConfigDict(extra="forbid")
             name: ConanRemoteName
             url: URL
             verify_ssl: Annotated[bool, Field(default=True, alias="verify-ssl")]
@@ -1383,11 +1423,16 @@ class Conanfile(Resource):
             return None
         return self.Model.model_validate(table)
 
-    # TODO: write the render hook for the `conanfile` resource, which has to take the
-    # current tag into account
+    # TODO: I should really be rendering a `conanfile.py` rather than `.txt`, since
+    # the latter has reduced features.
 
-    # def render(self, config: Config) -> str | None:
-    #     if config.conan is None:
+    def render(self, config: Config, tag: str) -> str | None:
+        if config.conan is None:
+            return None
+
+        payload: dict[str, Any] = {}
+
+        return ""
 
 
 @resource("bertrand")
@@ -1775,7 +1820,7 @@ class Bertrand(Resource):
 
             class Conan(BaseModel):
                 """Validate the `[bertrand.tags.conan]` table."""
-                model_config = ConfigDict(extra="forbid", populate_by_name=True)
+                model_config = ConfigDict(extra="forbid")
                 build_type: Annotated[
                     Literal["", "Release", "Debug"],
                     Field(default="", alias="build-type")
@@ -1970,12 +2015,12 @@ class Bertrand(Resource):
             return None
         result = self.Model.model_validate(table)
         for tag in result.tags:
-            tag.resolve_containerfile(config.root)
-            tag.resolve_env_files(config.root)
+            tag.resolve_containerfile(config.worktree)
+            tag.resolve_env_files(config.worktree)
         return result
 
 
-@resource("gitignore", template="core/gitignore/2026-02-15")
+@resource("gitignore", template="core/gitignore.v1")
 class GitIgnore(Resource):
     """A resource describing a `.gitignore` file, which is used to exclude files from
     the repository context during version control.  This is generated by the relevant
@@ -1983,7 +2028,7 @@ class GitIgnore(Resource):
     """
     # pylint: disable=missing-function-docstring, unused-argument, missing-return-doc
 
-    def render(self, config: Config) -> str | None:
+    def render(self, config: Config, tag: str) -> str | None:
         if config.bertrand is None:
             return None
         patterns = config.bertrand.ignore.copy()
@@ -1991,7 +2036,7 @@ class GitIgnore(Resource):
         return _dump_ignore_list(patterns)
 
 
-@resource("containerignore", template="core/containerignore/2026-02-15")
+@resource("containerignore", template="core/containerignore.v1")
 class ContainerIgnore(Resource):
     """A resource describing a `.containerignore` file, which is used to exclude files
     from the build context when compiling container images.  This is generated by the
@@ -1999,7 +2044,7 @@ class ContainerIgnore(Resource):
     """
     # pylint: disable=missing-function-docstring, unused-argument, missing-return-doc
 
-    def render(self, config: Config) -> str | None:
+    def render(self, config: Config, tag: str) -> str | None:
         if config.bertrand is None:
             return None
         patterns = config.bertrand.ignore.copy()
@@ -2007,11 +2052,10 @@ class ContainerIgnore(Resource):
         return _dump_ignore_list(patterns)
 
 
-
 # TODO: Kube
 
 
-@resource("compile_commands", template="core/compile_commands/2026-02-15")
+@resource("compile_commands", template="core/compile_commands.v1")
 class CompileCommands(Resource):
     """A resource describing a `compile_commands.json` file, which is used to
     configure C++ projects and tools, and can also be used as a source of truth for
@@ -2054,14 +2098,14 @@ class CompileCommands(Resource):
                 where=f"compile_commands[{idx}].file"
             ))
             if directory_raw is None:
-                base = config.root
+                base = config.worktree
             else:
                 base = Path(_require_str_value(
                     directory_raw,
                     where=f"compile_commands[{idx}].directory"
                 ))
                 if not base.is_absolute():
-                    base = config.root / base
+                    base = config.worktree / base
 
             source = file_rel if file_rel.is_absolute() else base / file_rel
             normalized = source.expanduser().resolve()
@@ -2075,7 +2119,7 @@ class CompileCommands(Resource):
         return out
 
 
-@resource("clangd", template="core/clangd/2026-02-15")
+@resource("clangd", template="core/clangd.v1")
 class Clangd(Resource):
     """A resource describing a `.clangd` file, which is used to configure clangd for
     C++ language server features in editors.  This expects native clangd keys in
@@ -2270,7 +2314,7 @@ class Clangd(Resource):
 
         If: Annotated[list[_If], Field(default_factory=list)]
 
-    def render(self, config: Config) -> str | None:
+    def render(self, config: Config, tag: str) -> str | None:
         tool = config.raw.get("tool")
         if not isinstance(tool, dict):
             return None
@@ -2365,7 +2409,7 @@ class Clangd(Resource):
         return content
 
 
-@resource("clang-tidy", template="core/clang-tidy/2026-02-15")
+@resource("clang-tidy", template="core/clang-tidy.v1")
 class ClangTidy(Resource):
     """A resource describing a `.clang-tidy` file, which is used to configure
     clang-tidy for C++ linting.  This expects native clang-tidy key names in TOML.
@@ -2427,7 +2471,7 @@ class ClangTidy(Resource):
             Field(default_factory=list)
         ]
 
-    def render(self, config: Config) -> str | None:
+    def render(self, config: Config, tag: str) -> str | None:
         tool = config.raw.get("tool")
         if not isinstance(tool, dict):
             return None
@@ -2477,7 +2521,7 @@ class ClangTidy(Resource):
         return _dump_yaml(content, resource_id="clang-tidy")
 
 
-@resource("clang-format", template="core/clang-format/2026-02-15")
+@resource("clang-format", template="core/clang-format.v1")
 class ClangFormat(Resource):
     """A resource describing a `.clang-format` file, which is used to configure
     clang-format for C++ code formatting.  The `[tool.clang-format]` table is
@@ -3015,7 +3059,7 @@ class ClangFormat(Resource):
 
         Space: Annotated[_Space, Field(default_factory=_Space.model_construct)]
 
-    def render(self, config: Config) -> str | None:
+    def render(self, config: Config, tag: str) -> str | None:
         tool = config.raw.get("tool")
         if not isinstance(tool, dict):
             return None
@@ -3311,104 +3355,170 @@ CAPABILITIES: dict[str, dict[str, dict[str, PosixPath]]] = {
 }
 
 
-# TODO: somehow, Config will need to be aware of the worktree layout as well?
-# -> I should just always call Config.load() with the worktree root.
-
-
 @dataclass
 class Config:
     """Read-only view representing resource placements within an environment root,
     as well as normalized config data parsed from resources that implement a `parse()`
     method, without coupling to any particular schema.
     """
-    @dataclass(frozen=True)
-    class Facts:
-        """Jinja context for rendering layout resources."""
-        @staticmethod
-        def _page_size_kib() -> int:
-            try:
-                page_size = os.sysconf("SC_PAGESIZE")
-                if isinstance(page_size, int) and page_size > 0:
-                    return max(1, page_size // 1024)
-            except (AttributeError, OSError, ValueError):
-                pass
-            return 4
+    worktree: Path
+    profile: str
+    capabilities: frozenset[str]
+    _resources: dict[str, PosixPath] = field(default_factory=dict, repr=False)
 
-        @staticmethod
-        def _python_version() -> str:
-            version = VERSION.python
-            if not version:
-                raise OSError(
-                    "missing PYTHON_VERSION in canonical Containerfile; cannot render "
-                    "python_version template fact"
-                )
-            return version
-
-        # TODO: rather than baking things like page size into the template context,
-        # I should just auto-detect it when writing the CMakeLists.txt file in the
-        # pep517 backend, and then eliminate it from the base image's qualified name
-        # in the templated Containerfile.
-
-        env: str = field()
-        paths: dict[str, str] = field()
-        project_name: str = field()
-        max_commits: int = field(default=DEFAULT_MAX_COMMITS)
-        shell: str = field(default=DEFAULT_SHELL)
-        bertrand_version: str = field(default=__version__)
-        python_version: str = field(default_factory=_python_version)
-        cpus: int = field(default_factory=lambda: os.cpu_count() or 1)
-        page_size_kib: int = field(default_factory=_page_size_kib)
-        mount_path: str = field(default=str(ENV_MOUNT))
-        cache_dir: str = field(default="/tmp/.cache")
-
-    root: Path
-    resources: dict[str, PosixPath]
-    raw: dict[str, Any] = field(default_factory=dict, init=False, repr=False)
+    snapshot: dict[str, Any] = field(default_factory=dict, repr=False)
     pyproject: PyProject.Model | None = field(default=None, repr=False)
     conanfile: Conanfile.Model | None = field(default=None, repr=False)
     bertrand: Bertrand.Model | None = field(default=None, repr=False)
+    # clangd: Clangd.Model | None = field(default=None, repr=False)
+    # clang_tidy: ClangTidy.Model | None = field(default=None, repr=False)
+    # clang_format: ClangFormat.Model | None = field(default=None, repr=False)
     _entered: int = field(default=0, repr=False)
-    _key_owner: dict[tuple[str, ...], str] = field(
-        default_factory=dict,
-        init=False,
-        repr=False,
-    )
+    _key_owner: dict[tuple[str, ...], str] = field(default_factory=dict, repr=False)
 
-    @staticmethod
-    def _check_relative_path(path: PosixPath, *, where: str) -> None:
-        if path.is_absolute():
-            raise OSError(f"mapped resource path must be relative at '{where}': {path}")
-        if path == PosixPath("."):
-            raise OSError(f"mapped resource path must not be empty at '{where}'")
-        if any(part == ".." for part in path.parts):
-            raise OSError(
-                f"mapped resource path must not traverse parents at '{where}': {path}"
+    def _merge_placements(
+        self,
+        resource_id: str,
+        path: PosixPath,
+        seen_paths: dict[PosixPath, str],
+        where: str,
+    ) -> None:
+        if resource_id not in CATALOG:
+            raise ValueError(f"unknown resource id in {where}: '{resource_id}'")
+
+        path = _check_relative_path(path)
+        if self._resources.setdefault(resource_id, path) != path:
+            raise ValueError(
+                f"'{resource_id}' maps to multiple paths for {where}: "
+                f"{self._resources[resource_id]} != {path}"
+            )
+
+        other_id = seen_paths.setdefault(path, resource_id)
+        if other_id != resource_id:
+            raise ValueError(
+                f"'{resource_id}' and '{other_id}' both map to '{path}' for {where}"
             )
 
     def __post_init__(self) -> None:
-        self.root = self.root.expanduser().resolve()
-        for r_id, path in self.resources.items():
-            if r_id not in CATALOG:
-                raise ValueError(f"unknown resource id in config: '{r_id}'")
-            self._check_relative_path(path, where=f"resource '{r_id}'")
+        self.worktree = self.worktree.expanduser().resolve()
+        seen_paths: dict[PosixPath, str] = {}
 
-    # TODO: load() should allow missing resources to be detected if they are present
-    # in the project configuration, but yet not on disk.  In fact, maybe `resources`
-    # should just be extended in-place during __enter__, after loading the project
-    # config?  I'm not totally sure the best way to handle this.
+        # resolve profile placements
+        profile = PROFILES.get(self.profile)
+        if profile is None:
+            raise ValueError(f"unknown config profile: '{self.profile}'")
+        for resource_id, path in profile.items():
+            where = f"PROFILES['{self.profile}']"
+            self._merge_placements(resource_id, path, seen_paths, where)
 
-    # TODO: load() should reconstruct the profile and capabilities at the same time,
-    # and use a consensus approach to inferring the corresponding profile.  The
-    # simplest profile with the most matching paths is the chosen candidate.
+        # merge capability placements
+        for capability in self.capabilities:
+            variants = CAPABILITIES.get(capability)
+            if variants is None:
+                raise ValueError(f"unknown config capability: '{capability}'")
+            cap = variants.get(self.profile)
+            if cap is None:
+                raise ValueError(
+                    f"capability '{capability}' does not define placements for "
+                    f"profile '{self.profile}'"
+                )
+            for resource_id, path in cap.items():
+                where = f"CAPABILITIES['{capability}']['{self.profile}']"
+                self._merge_placements(resource_id, path, seen_paths, where)
+
+    @staticmethod
+    def _profile_lookup() -> dict[PosixPath, tuple[str, set[str]]]:
+        # worktree path -> (resource_id, profiles in which it appears)
+        lookup: dict[PosixPath, tuple[str, set[str]]] = {}
+
+        for profile, placements in PROFILES.items():
+            for curr_id, path in placements.items():
+                if curr_id not in CATALOG:
+                    raise ValueError(f"unknown resource id in placement: {curr_id}")
+                path = _check_relative_path(path)
+                prev_id, profiles = lookup.setdefault(path, (curr_id, set()))
+                if prev_id != curr_id:
+                    raise ValueError(
+                        f"resource path collision in placement: '{curr_id}' and "
+                        f"'{prev_id}' both map to '{path}'"
+                    )
+                profiles.add(profile)
+
+        for variants in CAPABILITIES.values():
+            for profile, placements in variants.items():
+                for curr_id, path in placements.items():
+                    if curr_id not in CATALOG:
+                        raise ValueError(f"unknown resource id in placement: {curr_id}")
+                    path = _check_relative_path(path)
+                    prev_id, profiles = lookup.setdefault(path, (curr_id, set()))
+                    if prev_id != curr_id:
+                        raise ValueError(
+                            f"resource path collision in placement: '{curr_id}' and "
+                            f"'{prev_id}' both map to '{path}'"
+                        )
+                    profiles.add(profile)
+
+        return lookup
+
+    @staticmethod
+    def _scan_resources(
+        worktree: Path,
+        lookup: dict[PosixPath, tuple[str, set[str]]]
+    ) -> tuple[list[str], dict[str, PosixPath]]:
+        # narrow down the candidate profiles by checking for matching resource
+        # placements in the worktree and record them in the final resource map
+        candidates: list[str] = list(PROFILES)
+        resources: dict[str, PosixPath] = {}
+        for path, (r_id, profiles) in lookup.items():
+            r = CATALOG[r_id]
+            target = worktree / path
+            if target.exists() and (
+                (r.is_file and target.is_file()) or (r.is_dir and target.is_dir())
+            ):
+                new_candidates = [p for p in candidates if p in profiles]
+                if not new_candidates:
+                    raise ValueError(
+                        f"ambiguous layout profile for resource '{r_id}' at '{path}' "
+                        f"in environment: previous candidates were "
+                        f"[{', '.join(sorted(candidates))}], but the resource only "
+                        f"matches [{', '.join(sorted(profiles))}]"
+                    )
+                candidates = new_candidates
+                if resources.setdefault(r_id, path) != path:
+                    raise ValueError(
+                        f"resource path collision in environment: '{r_id}' maps to "
+                        f"multiple paths: {resources[r_id]} != {path}"
+                    )
+
+        # if multiple candidate profiles remain, choose the simplest one
+        if len(candidates) > 1:
+            candidates.sort(key=lambda p: len(PROFILES[p]))
+        return candidates, resources
+
+    @staticmethod
+    def _infer_capabilities(
+        profile: str,
+        resources: dict[str, PosixPath],
+    ) -> set[str]:
+        capabilities: set[str] = set()
+        for capability, variants in CAPABILITIES.items():
+            placements = variants.get(profile)
+            if placements is None:
+                raise ValueError(
+                    f"no placements defined for CAPABILITIES['{capability}']['{profile}']"
+                )
+            if all(resources.get(r_id) == path for r_id, path in placements.items()):
+                capabilities.add(capability)
+        return capabilities
 
     @classmethod
-    def load(cls, env_root: Path) -> Self:
+    def load(cls, worktree: Path) -> Self:
         """Load layout by scanning the environment root for known resource placements
         based on the `PROFILES` and `CAPABILITIES` maps.
 
         Parameters
         ----------
-        env_root : Path
+        worktree : Path
             The root path of the environment directory.
 
         Returns
@@ -3418,274 +3528,163 @@ class Config:
 
         Raises
         ------
-        OSError
+        ValueError
             If any resource placements reference unknown resource IDs, or if there are
             any path collisions between resources in the environment (either from
             multiple resources mapping to the same path, or from a single resource
             mapping to multiple paths).
         """
-        env_root = env_root.expanduser().resolve()
-        with lock_env(env_root):
-            # build a candidate map of resource locations based on all known placements
-            # across the current profiles and capabilities, so that we don't need to
-            # do a full filesystem walk
-            candidates: list[tuple[str, str, PosixPath]] = [
-                (f"PROFILES['{profile}']['{r_id}']", r_id, path)
-                for profile, placements in PROFILES.items()
-                for r_id, path in placements.items()
-            ]
-            candidates.extend(
-                (f"CAPABILITIES['{capability}']['{profile}']['{r_id}']", r_id, path)
-                for capability, variants in CAPABILITIES.items()
-                for profile, placements in variants.items()
-                for r_id, path in placements.items()
+        worktree = worktree.expanduser().resolve()
+        with lock_worktree(worktree):
+            lookup = cls._profile_lookup()
+            profiles, resources = cls._scan_resources(worktree, lookup)
+            profile = profiles[0]  # always choose simplest valid profile
+            capabilities = cls._infer_capabilities(profile, resources)
+            return cls(
+                worktree=worktree,
+                profile=profile,
+                capabilities=frozenset(capabilities)
             )
-            seen: dict[PosixPath, str] = {}
-            for where, r_id, path in candidates:
-                if r_id not in CATALOG:
-                    raise OSError(
-                        f"unknown resource id in mapped placement '{where}': {r_id}"
-                    )
-                cls._check_relative_path(path, where=where)
-                observed_id = seen.setdefault(path, r_id)
-                if observed_id != r_id:
-                    raise OSError(
-                        f"resource path collision at '{where}': '{r_id}' and "
-                        f"'{observed_id}' both map to '{path}'"
-                    )
-
-            # search the candidate locations to discover the actual resources present
-            # in the environment
-            discovered: dict[str, PosixPath] = {}
-            for path, r_id in seen.items():
-                r = CATALOG[r_id]
-                target = env_root / path
-                if target.exists() and (
-                    (r.is_file and target.is_file()) or
-                    (r.is_dir and target.is_dir())
-                ):
-                    observed_path = discovered.setdefault(r_id, path)
-                    if observed_path != path:
-                        raise OSError(
-                            f"ambiguous mapped resource '{r_id}' in environment at "
-                            f"{env_root}: '{observed_path}' and '{path}'"
-                        )
-
-            # return as a resolved Config instance with normalized paths
-            return cls(root=env_root, resources=discovered)
-
-    # TODO: init() shouldn't fail if any of the paths are missing during profile
-    # detection?
 
     @classmethod
     def init(
         cls,
-        env_root: Path,
-        *,
+        worktree: Path,
         profile: str | None,
-        capabilities: list[str] | None = None
+        capabilities: set[str],
+        /,
+        **facts: Any,
     ) -> Self:
         """Build a layout reflecting the given profile and capabilities.
 
         Parameters
         ----------
-        env_root : Path
-            The root path to the environment described by the layout.
-        profile : str | None, optional
+        worktree : Path
+            The path to the worktree described by the layout.
+        profile : str | None
             The layout profile to use, e.g. 'flat' or 'src'.  Profiles define a base
-            set of resources to include in the layout.  If None (the default), then the
-            resource profile will be inferred from the existing environment where
-            possible, and will error otherwise.
-        capabilities : list[str] | None, optional
-            An optional list of language capabilities to include, e.g. 'python' and
-            'cpp'.  Capabilities define additional resource placements to include
-            based on the languages used in the project.
+            set of resources to include in the layout.  If None, then the resource
+            profile will be inferred from the existing worktree where possible, and
+            will error otherwise.
+        capabilities : set[str]
+            A set of capabilities to include in the generated layout, e.g. 'python'
+            and/or 'cpp'.  Capabilities define additional resource placements to
+            include based on the languages and tools used in the project.  These will
+            always be merged on top of any existing capabilities present in the
+            worktree.
+        facts : Any
+            Arbitrary keyword arguments to use as template facts when rendering layout
+            resources.  These will be passed through directly to the Jinja context, so
+            they should minimally cover the required facts for any templates used by
+            the layout resources.  `Config` does not concern itself with how these
+            facts are generated, or which ones are required by the templates, but this
+            method will raise an error if any required facts are missing during the
+            render process.
 
         Returns
         -------
         Self
-            A Config instance containing the environment root and generated resources.
+            A Config instance describing the worktree and configured resources.
 
         Raises
         ------
         ValueError
             If the specified profile is unknown, if any specified capability is
-            unknown, if wildcard baselines are missing, if any placement references
-            an unknown catalog resource ID, or if there are any invalid resource
+            unknown, if no placements are defined, if any placement references an
+            unknown catalog resource ID, or if there are any invalid resource
             collisions (including path collisions) when merging.
-        """
-        # lock the environment during layout generation
-        with lock_env(env_root):
-            # load any existing resources from the environment
-            result = cls.load(env_root)
-
-            # normalize the requested profile, inferring from the loaded layout if
-            # necessary
-            if profile is None:
-                # choose the profile with the most matching placements, to prefer src
-                # layouts over flat where both would be valid
-                n = 0
-                for candidate_profile, candidate in PROFILES.items():
-                    if len(candidate) > n and all(
-                        result.resources.get(r_id) == path
-                        for r_id, path in candidate.items()
-                    ):
-                        profile = candidate_profile
-                        n = len(candidate)
-
-                # if we couldn't infer a profile, then we hard error rather than clobbering
-                # an existing environment
-                if profile is None:
-                    raise ValueError(
-                        "unable to infer layout profile from environment, please specify "
-                        f"explicitly (supported: {', '.join(sorted(p for p in PROFILES))})"
-                    )
-            else:
-                profile = profile.strip()
-                if not profile:
-                    raise ValueError("layout profile cannot be empty")
-                placements = PROFILES.get(profile)
-                if placements is None:
-                    raise ValueError(
-                        f"unknown layout profile: {profile} (supported: "
-                        f"{', '.join(sorted(p for p in PROFILES))})"
-                    )
-
-                # update the result with the chosen placements, checking for collisions
-                for r_id, path in placements.items():
-                    existing = result.resources.setdefault(r_id, path)
-                    if existing != path:
-                        raise ValueError(
-                            f"layout resource path collision for '{r_id}' while applying "
-                            f"profile '{profile}': {existing} != {path}"
-                        )
-
-            # merge capability resource placements, checking for collisions
-            if capabilities:
-                seen: set[str] = set()
-                for raw in capabilities:
-                    # normalize capability and skip duplicates
-                    cap = raw.strip()
-                    if cap in seen:
-                        continue
-                    variants = CAPABILITIES.get(cap)
-                    if variants is None:
-                        raise ValueError(
-                            f"unknown layout capability: '{cap}' (supported: "
-                            f"{', '.join(sorted(CAPABILITIES))})"
-                        )
-                    placements = variants.get(profile, {})
-
-                    # check for collisions during merge
-                    for r_id, path in placements.items():
-                        existing = result.resources.setdefault(r_id, path)
-                        if existing != path:
-                            raise ValueError(
-                                f"layout resource path collision for '{r_id}' while "
-                                f"applying capability '{cap}': {existing} != {path}"
-                            )
-                    seen.add(cap)
-
-            return result
-
-    def apply(self, *, timeout: float = LOCK_TIMEOUT) -> None:
-        """Apply the layout to the environment directory by rendering templated file
-        resources and writing missing outputs to disk.
-
-        Parameters
-        ----------
-        timeout : float, optional
-            The maximum time to wait for acquiring the environment lock, by default
-            `LOCK_TIMEOUT`.
-
-        Raises
-        ------
+        FileExistsError
+            If any resource placement references a path that already exists on disk,
+            but is not a viable candidate for the resource based on its type (file vs
+            directory).
         OSError
-            If there are any filesystem errors when writing rendered resources to disk.
+            If any template rendering fails.
         """
-        # gather jinja context
-        templates = on_init.state_dir / "templates"
-        base_templates = importlib_resources.files("bertrand.env").joinpath("templates")
-        jinja = Environment(
+        ctx = jinja2.Environment(
             autoescape=False,
-            undefined=StrictUndefined,
+            undefined=jinja2.StrictUndefined,
             keep_trailing_newline=True,
             trim_blocks=False,
             lstrip_blocks=False,
         )
-        replacements = asdict(Config.Facts(
-            env=str(self.root),
-            paths={r_id: str(self.path(r_id)) for r_id in sorted(self.resources)},
-            project_name=sanitize_name(self.root.name, replace="-"),
-        ))
 
-        # lock the environment during application
-        with lock_env(self.root, timeout=timeout):
-            for r_id in sorted(self.resources):
-                path = self.path(r_id)
-                r = self.resource(r_id)
-                if path.exists():
-                    if r.is_file and not path.is_file():
-                        raise OSError(
-                            f"cannot apply layout resource '{r_id}' to {path}: "
-                            "target exists and is not a file"
+        # lock the environment during layout generation
+        with lock_worktree(worktree):
+            # load existing resources and candidate profiles from the worktree
+            lookup = cls._profile_lookup()
+            profiles, on_disk = cls._scan_resources(worktree, lookup)
+
+            # validate requested profile
+            if profile is None:
+                profile = profiles[0]  # choose simplest matching profile
+            elif profile not in profiles:
+                raise ValueError(
+                    f"requested profile '{profile}' does not match detected candidates "
+                    f"[{', '.join(sorted(profiles))}] in worktree at: {worktree}"
+                )
+
+            # merge requested capabilities with existing ones
+            capabilities.update(cls._infer_capabilities(profile, on_disk))
+
+            # get full set of resources to render based on profile and capabilities
+            resources = PROFILES[profile].copy()
+            for capability in capabilities:
+                variants = CAPABILITIES.get(capability)
+                if variants is None:
+                    raise ValueError(f"unknown capability: '{capability}'")
+                cap = variants.get(profile)
+                if cap is None:
+                    raise ValueError(
+                        f"capability '{capability}' does not define placements for "
+                        f"profile '{profile}'"
+                    )
+                for r_id, path in cap.items():
+                    if resources.setdefault(r_id, path) != path:
+                        raise ValueError(
+                            f"'{r_id}' maps to multiple paths for capability "
+                            f"'{capability}': {resources[r_id]} != {path}"
                         )
-                    if r.is_dir and not path.is_dir():
-                        raise OSError(
-                            f"cannot apply layout resource '{r_id}' to {path}: "
-                            "target exists and is not a directory"
-                        )
+
+            # render any resources that are not currently present on disk
+            for r_id, path in resources.items():
+                if r_id in on_disk:
                     continue
+                target = worktree / path
+                if target.exists():
+                    raise FileExistsError(
+                        f"cannot render resource '{r_id}' at '{path}' for profile "
+                        f"'{profile}' because the target path already exists: {target}"
+                    )
 
-                # directories are trivially created
+                # directories are trivial to render
+                r = CATALOG.get(r_id)
+                if r is None:
+                    raise ValueError(f"unknown resource ID: '{r_id}'")
                 if r.is_dir:
-                    path.mkdir(parents=True, exist_ok=True)
+                    target.mkdir(parents=True, exist_ok=False)
                     continue
 
-                # locate file template and copy it into the template directory if it's
-                # not already present
+                # locate file template
                 if r.template is None:
                     raise OSError(f"no template specified for file resource '{r_id}'")
-                template = (
-                    templates /
-                    r.template.namespace /
-                    r.template.name /
-                    f"{r.template.version}.j2"
-                )
-                if not template.exists():
-                    with importlib_resources.as_file(base_templates.joinpath(
-                        r.template.namespace,
-                        r.template.name,
-                        f"{r.template.version}.j2",
-                    )) as source:
-                        if not source.exists():
-                            raise FileNotFoundError(
-                                "missing Bertrand template for layout resource "
-                                f"'{r_id}' reference {r.template.namespace}/"
-                                f"{r.template.name}/{r.template.version}: {source}"
-                            )
-                        if not source.is_file():
-                            raise FileNotFoundError(
-                                "missing Bertrand template for layout resource "
-                                f"'{r_id}' reference {r.template.namespace}/"
-                                f"{r.template.name}/{r.template.version}: {source}"
-                            )
-                        template.parent.mkdir(parents=True, exist_ok=True)
-                        shutil.copy(source, template)
+                template = r.template.locate(r_id)
 
                 # render template to disk
                 try:
                     path.parent.mkdir(parents=True, exist_ok=True)
                     text = template.read_text(encoding="utf-8")
-                    path.write_text(
-                        jinja.from_string(text).render(**replacements),
-                        encoding="utf-8"
-                    )
-                except OSError as err:
+                    path.write_text(ctx.from_string(text).render(**facts), encoding="utf-8")
+                except Exception as err:
                     raise OSError(
                         f"failed to render template for layout resource '{r_id}' at "
                         f"{path}: {err}"
                     ) from err
+
+            return cls(
+                worktree=worktree,
+                profile=profile,
+                capabilities=frozenset(capabilities)
+            )
 
     def _merge_fragment(
         self,
@@ -3752,18 +3751,20 @@ class Config:
             self._entered += 1
             return self
 
+        old_capabilities = self.capabilities
+        old_resources = self._resources.copy()
         try:
-            with lock_env(self.root):
-                raw: dict[str, Any] = {}
+            with lock_worktree(self.worktree):
+                snapshot: dict[str, Any] = {}
                 key_owner: dict[tuple[str, ...], str] = {}
 
                 # invoke parse hooks for all resources in deterministic order
-                for r_id in sorted(self.resources):
+                for r_id in sorted(self._resources):
                     r = CATALOG.get(r_id)
                     if r is None:
                         raise OSError(f"config references unknown resource ID: '{r_id}'")
 
-                    # extract config fragment and ensure key-value mapping
+                    # extract config fragment
                     try:
                         result = r.parse(self)
                         if result is None:
@@ -3775,16 +3776,15 @@ class Config:
                     if not isinstance(result, dict):
                         raise OSError(
                             f"parse hook for resource '{r_id}' must return a string "
-                            "mapping: {result}"
+                            f"mapping: {result}"
                         )
 
                     # merge fragment into snapshot, checking for key collisions
-                    self._merge_fragment(r_id, result, raw, key_owner=key_owner)
-
-                # TODO: this step should probably update the resource map?
+                    self._merge_fragment(r_id, result, snapshot, key_owner=key_owner)
 
                 # validate each parsed fragment against its corresponding resource
-                for r_id in raw:
+                changed = False
+                for r_id in snapshot:
                     r = CATALOG.get(r_id)
                     if r is None:
                         raise OSError(
@@ -3793,16 +3793,51 @@ class Config:
                         )
                     setattr(self, r_id, r.validate(self))
 
-                # validate merged snapshot against expected schema
-                self.raw = raw
+                    # search for resource placement if not already present
+                    if r_id not in self._resources:
+                        found = False
+                        path = PROFILES.get(self.profile, {}).get(r_id)
+                        if path is not None:
+                            changed = True
+                            found = True
+                            self._resources[r_id] = path
+
+                        # if not found in profile, search in capabilities
+                        if not found:
+                            for variants in CAPABILITIES.values():
+                                path = variants.get(self.profile, {}).get(r_id)
+                                if path is not None:
+                                    changed = True
+                                    found = True
+                                    self._resources[r_id] = path
+                                    break
+
+                        # if we didn't find a placement for this resource, then the
+                        # global maps are misconfigured
+                        if not found:
+                            raise OSError(
+                                f"no placement found for resource '{r_id}' with profile "
+                                f"'{self.profile}' in parsed config fragments "
+                            )
+
+                # if any new resources were added, then we may need to update the
+                # configured capabilities
+                if changed:
+                    self.capabilities = frozenset(
+                        self._infer_capabilities(self.profile, self._resources)
+                    )
+                self.snapshot = snapshot
                 self._key_owner = key_owner
                 self._entered += 1
                 return self
         except:
-            self.raw = {}
+            self.capabilities = old_capabilities
+            self._resources = old_resources
+            self.snapshot = {}
             self.pyproject = None
             self.conanfile = None
             self.bertrand = None
+            self._entered = 0
             self._key_owner = {}
             raise
 
@@ -3817,11 +3852,10 @@ class Config:
             raise RuntimeError("layout context is not active")
         self._entered -= 1
         if self._entered == 0:
-            self.build_system = None
-            self.project = None
-            self.conan = None
+            self.snapshot = {}
+            self.pyproject = None
+            self.conanfile = None
             self.bertrand = None
-            self.raw = {}
             self._key_owner = {}
 
     def __bool__(self) -> bool:
@@ -3845,7 +3879,7 @@ class Config:
         KeyError
             If the given resource ID is not detected in the environment.
         """
-        if resource_id not in self.resources:
+        if resource_id not in self._resources:
             raise KeyError(f"unknown resource ID: '{resource_id}'")
         return CATALOG[resource_id]
 
@@ -3867,69 +3901,26 @@ class Config:
         KeyError
             If the given resource ID is not detected in the environment.
         """
-        if resource_id not in self.resources:
+        if resource_id not in self._resources:
             raise KeyError(f"unknown resource ID: '{resource_id}'")
-        return self.root / Path(self.resources[resource_id])
+        return self.worktree / Path(self._resources[resource_id])
 
-    def sources(self) -> list[Path]:
-        """Resolve and deduplicate source file paths from source-capable resources.
+    # TODO: make sure sync() accounts for the new snapshot model, and then go back
+    # and fix the render hooks
 
-        Returns
-        -------
-        list[Path]
-            Absolute source paths deduplicated in first-seen order.
-
-        Raises
-        ------
-        OSError
-            If a source hook fails, returns invalid output, or if resource kind/path
-            validation fails.
-        """
-        out: list[Path] = []
-        seen: set[Path] = set()
-        with lock_env(self.root):
-            for resource_id in sorted(self.resources):
-                r = CATALOG.get(resource_id)
-                if r is None:
-                    raise OSError(f"config references unknown resource ID: '{resource_id}'")
-                try:
-                    paths = r.sources(self)
-                    if paths is None:
-                        continue
-                except Exception as err:
-                    raise OSError(
-                        f"failed to resolve sources for resource '{resource_id}' at "
-                        f"{self.path(resource_id)}: {err}"
-                    ) from err
-                if not isinstance(paths, list):
-                    raise OSError(
-                        f"source hook for resource '{resource_id}' returned non-list output: "
-                        f"{type(paths)}"
-                    )
-
-                # normalize + deduplicate source paths, checking for validity
-                for raw_path in paths:
-                    if not isinstance(raw_path, Path):
-                        raise OSError(
-                            f"source hook for resource '{resource_id}' returned non-Path "
-                            f"entry: {repr(raw_path)}"
-                        )
-                    normalized = raw_path.expanduser()
-                    if not normalized.is_absolute():
-                        normalized = (self.root / normalized).expanduser()
-                    normalized = normalized.resolve()
-                    if normalized in seen:
-                        continue
-                    seen.add(normalized)
-                    out.append(normalized)
-
-        return out
-
-    def sync(self) -> None:
+    def sync(self, tag: str) -> None:
         """Render and write derived artifact resources from active context snapshot.
 
         This requires an active layout context (`with layout:`), because render hooks
         are expected to read parsed snapshot values through `__getitem__`.
+
+        Parameters
+        ----------
+        tag : str
+            The active image tag for the configured environment, which is used to
+            search the `bertrand.tags` list for tag-specific overrides during
+            rendering.  Usually, this is supplied by either the build system or an
+            in-container environment variable, but we make no assumptions here.
 
         Raises
         ------
@@ -3940,18 +3931,16 @@ class Config:
             fails during artifact synchronization.
         """
         if not self:
-            raise RuntimeError(
-                "layout config snapshot is unavailable outside an active layout context"
-            )
+            raise RuntimeError("rendering artifacts requires an active config context")
 
-        with lock_env(self.root):
-            for resource_id in sorted(self.resources):
+        with lock_worktree(self.worktree):
+            for resource_id in sorted(self._resources):
                 r = CATALOG.get(resource_id)
                 if r is None:
                     raise OSError(f"config references unknown resource ID: '{resource_id}'")
                 target = self.path(resource_id)
                 try:
-                    text = r.render(self)
+                    text = r.render(self, tag)
                     if text is None:
                         continue
                 except Exception as err:
@@ -3988,3 +3977,60 @@ class Config:
                         f"failed to write sync output for resource '{resource_id}' at "
                         f"{target}: {err}"
                     ) from err
+
+    # TODO: sources() should not be necessary.  Just access the source paths directly
+    # from the compile_commands resource, which should parse just fine with the current
+    # model.  I just need to add a `compile_commands.validate()` helper.
+    def sources(self) -> list[Path]:
+        """Resolve and deduplicate source file paths from source-capable resources.
+
+        Returns
+        -------
+        list[Path]
+            Absolute source paths deduplicated in first-seen order.
+
+        Raises
+        ------
+        OSError
+            If a source hook fails, returns invalid output, or if resource kind/path
+            validation fails.
+        """
+        out: list[Path] = []
+        seen: set[Path] = set()
+        with lock_worktree(self.worktree):
+            for resource_id in sorted(self.resources):
+                r = CATALOG.get(resource_id)
+                if r is None:
+                    raise OSError(f"config references unknown resource ID: '{resource_id}'")
+                try:
+                    paths = r.sources(self)
+                    if paths is None:
+                        continue
+                except Exception as err:
+                    raise OSError(
+                        f"failed to resolve sources for resource '{resource_id}' at "
+                        f"{self.path(resource_id)}: {err}"
+                    ) from err
+                if not isinstance(paths, list):
+                    raise OSError(
+                        f"source hook for resource '{resource_id}' returned non-list output: "
+                        f"{type(paths)}"
+                    )
+
+                # normalize + deduplicate source paths, checking for validity
+                for raw_path in paths:
+                    if not isinstance(raw_path, Path):
+                        raise OSError(
+                            f"source hook for resource '{resource_id}' returned non-Path "
+                            f"entry: {repr(raw_path)}"
+                        )
+                    normalized = raw_path.expanduser()
+                    if not normalized.is_absolute():
+                        normalized = (self.worktree / normalized).expanduser()
+                    normalized = normalized.resolve()
+                    if normalized in seen:
+                        continue
+                    seen.add(normalized)
+                    out.append(normalized)
+
+        return out
