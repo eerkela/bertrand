@@ -14,13 +14,12 @@ from __future__ import annotations
 
 import json
 import ipaddress
-import os
 import re
 import shutil
 import string
 import tomllib
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from collections.abc import Mapping, Sequence
 from importlib import resources as importlib_resources
 from pathlib import Path, PosixPath
@@ -41,11 +40,13 @@ from pydantic import (
     AnyHttpUrl,
     BaseModel,
     ConfigDict,
+    ValidationInfo,
     PositiveInt,
     StringConstraints,
     TypeAdapter,
     ValidationError,
     Field,
+    field_validator,
     model_validator
 )
 import jinja2
@@ -1107,30 +1108,6 @@ def lock_worktree(worktree: Path, timeout: float = LOCK_TIMEOUT) -> Lock:
     return Lock(path, timeout=timeout)
 
 
-# TODO: try to delete these.  The only thing that needs them is loading the sources
-# for compile_commands.json
-
-
-def _require_dict(value: Any, *, where: str) -> dict[str, Any]:
-    if not isinstance(value, Mapping):
-        raise OSError(f"expected mapping at '{where}', got {type(value).__name__}")
-    out: dict[str, Any] = {}
-    for key, item in value.items():
-        if not isinstance(key, str):
-            raise OSError(f"expected string keys at '{where}', got {type(key).__name__}")
-        out[key] = item
-    return out
-
-
-def _require_str_value(value: Any, *, where: str, allow_empty: bool = False) -> str:
-    if not isinstance(value, str):
-        raise OSError(f"expected string at '{where}', got {type(value).__name__}")
-    text = value.strip()
-    if not allow_empty and not text:
-        raise OSError(f"expected non-empty string at '{where}'")
-    return text
-
-
 def _dump_ignore_list(patterns: list[str]) -> str:
     lines = [
         "# This file is managed by Bertrand.  Direct edits may be overwritten by",
@@ -1318,9 +1295,9 @@ class PyProject(Resource):
         return normalized
 
     def validate(self, config: Config) -> Model | None:
-        if self.name not in config.raw:
+        if self.name not in config.snapshot:
             return None
-        result = self.Model.model_validate(config.raw[self.name])
+        result = self.Model.model_validate(config.snapshot[self.name])
         result.project.resolve_licenses(config.worktree)
         return result
 
@@ -1418,7 +1395,7 @@ class Conanfile(Resource):
         ]
 
     def validate(self, config: Config) -> Model | None:
-        table = config.raw.get("conan")
+        table = config.snapshot.get("conan")
         if not isinstance(table, dict):
             return None
         return self.Model.model_validate(table)
@@ -1427,7 +1404,7 @@ class Conanfile(Resource):
     # the latter has reduced features.
 
     def render(self, config: Config, tag: str) -> str | None:
-        if config.conan is None:
+        if config.conanfile is None:
             return None
 
         payload: dict[str, Any] = {}
@@ -2010,7 +1987,7 @@ class Bertrand(Resource):
             return self
 
     def validate(self, config: Config) -> Model | None:
-        table = config.raw.get("bertrand")
+        table = config.snapshot.get("bertrand")
         if not isinstance(table, dict):
             return None
         result = self.Model.model_validate(table)
@@ -2064,10 +2041,40 @@ class CompileCommands(Resource):
     """
     # pylint: disable=missing-function-docstring, unused-argument, missing-return-doc
 
-    def sources(self, config: Config) -> list[Path] | None:
-        resource_id = "compile_commands"
-        path = config.path(resource_id)
+    class Model(BaseModel):
+        """Validate the contents of `compile_commands.json`."""
+        model_config = ConfigDict(extra="forbid")
 
+        class Entry(BaseModel):
+            """Validate one entry in `compile_commands.json`."""
+            model_config = ConfigDict(extra="forbid")
+
+            @staticmethod
+            def _check_non_empty_path(path: Path) -> Path:
+                if not path.parts:
+                    raise ValueError("compile database entry 'directory' cannot be empty")
+                return path
+
+            type SourcePath = Annotated[Path, AfterValidator(_check_non_empty_path)]
+            directory: SourcePath
+            file: SourcePath
+            command: Annotated[NonEmpty[NoCRLF] | None, Field(default=None)]
+            arguments: Annotated[NonEmpty[list[NonEmpty[NoCRLF]]] | None, Field(default=None)]
+            output: Annotated[SourcePath | None, Field(default=None)]
+
+            @model_validator(mode="after")
+            def _check_command(self) -> Self:
+                if self.command is None and self.arguments is None:
+                    raise ValueError(
+                        "compile database entries must define at least one of "
+                        "'command' or 'arguments'"
+                    )
+                return self
+
+        sources: Annotated[list[Entry], Field(default_factory=list)]
+
+    def parse(self, config: Config) -> dict[str, Any]:
+        path = config.path("compile_commands")
         try:
             text = path.read_text(encoding="utf-8")
         except OSError as err:
@@ -2079,44 +2086,19 @@ class CompileCommands(Resource):
             raise OSError(
                 f"failed to parse compile database JSON at {path}: {err}"
             ) from err
-
         if not isinstance(payload, list):
             raise OSError(
                 f"compile database at {path} must be a JSON list, got "
                 f"{type(payload).__name__}"
             )
 
-        out: list[Path] = []
-        seen: set[Path] = set()
-        for idx, raw_entry in enumerate(payload):
-            entry = _require_dict(raw_entry, where=f"compile_commands[{idx}]")
-            file_raw = entry.get("file")
-            directory_raw = entry.get("directory")
+        return {self.name: {"sources": payload}}
 
-            file_rel = Path(_require_str_value(
-                file_raw,
-                where=f"compile_commands[{idx}].file"
-            ))
-            if directory_raw is None:
-                base = config.worktree
-            else:
-                base = Path(_require_str_value(
-                    directory_raw,
-                    where=f"compile_commands[{idx}].directory"
-                ))
-                if not base.is_absolute():
-                    base = config.worktree / base
-
-            source = file_rel if file_rel.is_absolute() else base / file_rel
-            normalized = source.expanduser().resolve()
-            if not normalized.exists() or not normalized.is_file():
-                continue
-            if normalized in seen:
-                continue
-            seen.add(normalized)
-            out.append(normalized)
-
-        return out
+    def validate(self, config: Config) -> Model | None:
+        data = config.snapshot.get("compile_commands")
+        if data is None:
+            return None
+        return self.Model.model_validate(data, context={"worktree": config.worktree})
 
 
 @resource("clangd", template="core/clangd.v1")
@@ -2127,8 +2109,8 @@ class Clangd(Resource):
     """
     # pylint: disable=missing-function-docstring, unused-argument, missing-return-doc
 
-    class TOML(BaseModel):
-        """Validate the `[tool.clangd]` TOML table."""
+    class Model(BaseModel):
+        """Validate the `[clangd]` table."""
         model_config = ConfigDict(extra="forbid")
 
         class _Diagnostics(BaseModel):
@@ -2314,14 +2296,16 @@ class Clangd(Resource):
 
         If: Annotated[list[_If], Field(default_factory=list)]
 
+    def validate(self, config: Config) -> Model | None:
+        data = config.snapshot.get("clangd")
+        if data is None:
+            return None
+        return self.Model.model_validate(data)
+
     def render(self, config: Config, tag: str) -> str | None:
-        tool = config.raw.get("tool")
-        if not isinstance(tool, dict):
+        if config.clangd is None:
             return None
-        clangd = tool.get("clangd")
-        if not isinstance(clangd, dict):
-            return None
-        model = self.TOML.model_validate(clangd)
+        model = config.clangd
 
         # define top-level config
         top_level: dict[str, Any] = {
@@ -2418,8 +2402,8 @@ class ClangTidy(Resource):
     """
     # pylint: disable=missing-function-docstring, unused-argument, missing-return-doc
 
-    class TOML(BaseModel):
-        """Validate the `[tool.clang-tidy]` TOML table."""
+    class Model(BaseModel):
+        """Validate the `[clang-tidy]` table."""
         model_config = ConfigDict(extra="forbid")
         DisableFormat: Annotated[bool, Field(default=False)]
         HeaderFilterRegex: Annotated[RegexPattern, Field(default="^.*$")]
@@ -2471,14 +2455,16 @@ class ClangTidy(Resource):
             Field(default_factory=list)
         ]
 
+    def validate(self, config: Config) -> Model | None:
+        data = config.snapshot.get("clang-tidy")
+        if data is None:
+            return None
+        return self.Model.model_validate(data)
+
     def render(self, config: Config, tag: str) -> str | None:
-        tool = config.raw.get("tool")
-        if not isinstance(tool, dict):
+        if config.clang_tidy is None:
             return None
-        clang_tidy = tool.get("clang-tidy")
-        if not isinstance(clang_tidy, dict):
-            return None
-        model = self.TOML.model_validate(clang_tidy)
+        model = config.clang_tidy
 
         # define top-level config
         content: dict[str, Any] = {
@@ -2529,8 +2515,8 @@ class ClangFormat(Resource):
     """
     # pylint: disable=missing-function-docstring, unused-argument, missing-return-doc
 
-    class TOML(BaseModel):
-        """Validate the `[tool.clang-format]` table."""
+    class Model(BaseModel):
+        """Validate the `[clang-format]` table."""
         model_config = ConfigDict(extra="forbid")
         DisableFormat: Annotated[bool, Field(default=False)]
         BasedOnStyle: Annotated[
@@ -3059,14 +3045,16 @@ class ClangFormat(Resource):
 
         Space: Annotated[_Space, Field(default_factory=_Space.model_construct)]
 
+    def validate(self, config: Config) -> Model | None:
+        data = config.snapshot.get("clang-format")
+        if data is None:
+            return None
+        return self.Model.model_validate(data)
+
     def render(self, config: Config, tag: str) -> str | None:
-        tool = config.raw.get("tool")
-        if not isinstance(tool, dict):
+        if config.clang_format is None:
             return None
-        clang_format = tool.get("clang-format")
-        if not isinstance(clang_format, dict):
-            return None
-        model = self.TOML.model_validate(clang_format)
+        model = config.clang_format
 
         content: dict[str, Any] = {
             "DisableFormat": model.DisableFormat,
@@ -3301,6 +3289,7 @@ class ClangFormat(Resource):
 PROFILES: dict[str, dict[str, PosixPath]] = {
     "flat": {
         "publish": PosixPath(".github") / "workflows" / "publish.yml",
+        "bertrand": PosixPath(".bertrand"),
         "gitignore": PosixPath(".gitignore"),
         "containerignore": PosixPath(".containerignore"),
         "containerfile": PosixPath("Containerfile"),
@@ -3309,6 +3298,7 @@ PROFILES: dict[str, dict[str, PosixPath]] = {
     },
     "src": {
         "publish": PosixPath(".github") / "workflows" / "publish.yml",
+        "bertrand": PosixPath(".bertrand"),
         "gitignore": PosixPath(".gitignore"),
         "containerignore": PosixPath(".containerignore"),
         "containerfile": PosixPath("Containerfile"),
@@ -3333,15 +3323,15 @@ CAPABILITIES: dict[str, dict[str, dict[str, PosixPath]]] = {
     "cpp": {
         "flat": {
             "compile_commands": PosixPath("compile_commands.json"),
-            "clang-format": PosixPath(".clang-format"),
-            "clang-tidy": PosixPath(".clang-tidy"),
             "clangd": PosixPath(".clangd"),
+            "clang-tidy": PosixPath(".clang-tidy"),
+            "clang-format": PosixPath(".clang-format"),
         },
         "src": {
             "compile_commands": PosixPath("compile_commands.json"),
-            "clang-format": PosixPath(".clang-format"),
-            "clang-tidy": PosixPath(".clang-tidy"),
             "clangd": PosixPath(".clangd"),
+            "clang-tidy": PosixPath(".clang-tidy"),
+            "clang-format": PosixPath(".clang-format"),
         },
     },
     "vscode": {
@@ -3370,9 +3360,10 @@ class Config:
     pyproject: PyProject.Model | None = field(default=None, repr=False)
     conanfile: Conanfile.Model | None = field(default=None, repr=False)
     bertrand: Bertrand.Model | None = field(default=None, repr=False)
-    # clangd: Clangd.Model | None = field(default=None, repr=False)
-    # clang_tidy: ClangTidy.Model | None = field(default=None, repr=False)
-    # clang_format: ClangFormat.Model | None = field(default=None, repr=False)
+    compile_commands: CompileCommands.Model | None = field(default=None, repr=False)
+    clangd: Clangd.Model | None = field(default=None, repr=False)
+    clang_tidy: ClangTidy.Model | None = field(default=None, repr=False)
+    clang_format: ClangFormat.Model | None = field(default=None, repr=False)
     _entered: int = field(default=0, repr=False)
     _key_owner: dict[tuple[str, ...], str] = field(default_factory=dict, repr=False)
 
@@ -3745,6 +3736,8 @@ class Config:
                 f"resources '{owner}' and '{resource_id}'"
             )
 
+    # TODO: document __enter__() more fully
+
     def __enter__(self) -> Self:
         """Load a context-scoped config snapshot from parse-capable resources."""
         if self._entered > 0:  # re-entrant case
@@ -3791,7 +3784,13 @@ class Config:
                             f"config references unknown resource ID in parsed fragment: "
                             f"'{r_id}'"
                         )
-                    setattr(self, r_id, r.validate(self))
+
+                    # record validated output in Config for future access
+                    validated = r.validate(self)
+                    if validated is not None:
+                        if not hasattr(self, r_id):
+                            raise AttributeError(f"Config.{r_id} does not exist")
+                        setattr(self, r_id, validated)
 
                     # search for resource placement if not already present
                     if r_id not in self._resources:
@@ -3905,14 +3904,12 @@ class Config:
             raise KeyError(f"unknown resource ID: '{resource_id}'")
         return self.worktree / Path(self._resources[resource_id])
 
-    # TODO: make sure sync() accounts for the new snapshot model, and then go back
-    # and fix the render hooks
+    # TODO: image_args(tag), container_args(tag)
 
     def sync(self, tag: str) -> None:
         """Render and write derived artifact resources from active context snapshot.
 
-        This requires an active layout context (`with layout:`), because render hooks
-        are expected to read parsed snapshot values through `__getitem__`.
+        This requires an active config context (`with config:`).
 
         Parameters
         ----------
@@ -3925,7 +3922,7 @@ class Config:
         Raises
         ------
         RuntimeError
-            If called outside an active layout context.
+            If called outside an active config context.
         OSError
             If render hooks fail, return invalid output, or if any filesystem I/O
             fails during artifact synchronization.
@@ -3934,11 +3931,13 @@ class Config:
             raise RuntimeError("rendering artifacts requires an active config context")
 
         with lock_worktree(self.worktree):
-            for resource_id in sorted(self._resources):
+            for resource_id, path in sorted(self._resources.items()):
                 r = CATALOG.get(resource_id)
                 if r is None:
                     raise OSError(f"config references unknown resource ID: '{resource_id}'")
-                target = self.path(resource_id)
+                target = self.worktree / path
+
+                # invoke render hook for resource and skip if it returns None
                 try:
                     text = r.render(self, tag)
                     if text is None:
@@ -3977,60 +3976,3 @@ class Config:
                         f"failed to write sync output for resource '{resource_id}' at "
                         f"{target}: {err}"
                     ) from err
-
-    # TODO: sources() should not be necessary.  Just access the source paths directly
-    # from the compile_commands resource, which should parse just fine with the current
-    # model.  I just need to add a `compile_commands.validate()` helper.
-    def sources(self) -> list[Path]:
-        """Resolve and deduplicate source file paths from source-capable resources.
-
-        Returns
-        -------
-        list[Path]
-            Absolute source paths deduplicated in first-seen order.
-
-        Raises
-        ------
-        OSError
-            If a source hook fails, returns invalid output, or if resource kind/path
-            validation fails.
-        """
-        out: list[Path] = []
-        seen: set[Path] = set()
-        with lock_worktree(self.worktree):
-            for resource_id in sorted(self.resources):
-                r = CATALOG.get(resource_id)
-                if r is None:
-                    raise OSError(f"config references unknown resource ID: '{resource_id}'")
-                try:
-                    paths = r.sources(self)
-                    if paths is None:
-                        continue
-                except Exception as err:
-                    raise OSError(
-                        f"failed to resolve sources for resource '{resource_id}' at "
-                        f"{self.path(resource_id)}: {err}"
-                    ) from err
-                if not isinstance(paths, list):
-                    raise OSError(
-                        f"source hook for resource '{resource_id}' returned non-list output: "
-                        f"{type(paths)}"
-                    )
-
-                # normalize + deduplicate source paths, checking for validity
-                for raw_path in paths:
-                    if not isinstance(raw_path, Path):
-                        raise OSError(
-                            f"source hook for resource '{resource_id}' returned non-Path "
-                            f"entry: {repr(raw_path)}"
-                        )
-                    normalized = raw_path.expanduser()
-                    if not normalized.is_absolute():
-                        normalized = (self.worktree / normalized).expanduser()
-                    normalized = normalized.resolve()
-                    if normalized in seen:
-                        continue
-                    seen.add(normalized)
-                    out.append(normalized)
-
-        return out
