@@ -136,6 +136,9 @@ services = []           # optional service orchestration, using tags from the bu
                         # below.  If non-empty, then a `kube.yaml` artifact will be generated
                         # and played when starting the environment.  Each entry will be built
                         # and started in sequence using its matching build matrix definition.
+# NOTE: Generated C/C++ tooling artifacts (`compile_commands.json`, `.clangd`,
+# `.clang-tidy`, `.clang-format`) are rendered out-of-tree under
+# `/tmp/bertrand/artifacts/<worktree-id>/` during in-container build/sync flows.
 
 [tool.bertrand.network.build]
 mode = "pasta"          # -> --network (none|host|private|slirp4netns|pasta|ns:path)

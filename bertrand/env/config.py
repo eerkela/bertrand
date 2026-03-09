@@ -12,6 +12,7 @@ Canonical templates are packaged with Bertrand and lazily hydrated into
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import ipaddress
 import re
@@ -20,7 +21,7 @@ import string
 import tomllib
 
 from dataclasses import dataclass, field
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from importlib import resources as importlib_resources
 from pathlib import Path, PosixPath
 from types import TracebackType
@@ -40,13 +41,11 @@ from pydantic import (
     AnyHttpUrl,
     BaseModel,
     ConfigDict,
-    ValidationInfo,
     PositiveInt,
     StringConstraints,
     TypeAdapter,
     ValidationError,
     Field,
-    field_validator,
     model_validator
 )
 import jinja2
@@ -66,6 +65,7 @@ WORKTREE_METADATA: PosixPath = WORKTREE_DIR / "env.json"
 WORKTREE_MOUNT: PosixPath = PosixPath("/env")
 WORKTREE_TMP: PosixPath = WORKTREE_DIR / "tmp"
 WORKTREE_COMMITS: PosixPath = WORKTREE_DIR / "commits"
+ARTIFACT_ROOT: Path = Path("/tmp/bertrand/artifacts")
 
 
 # Global resource catalog.  Extensions can add resources here with associated behavior,
@@ -874,9 +874,32 @@ class Template(BaseModel):
         return path
 
 
+type ResourceKind = Literal["file", "dir"] | None
+type PlacementRoot = Literal["worktree", "artifact"]
+
+
+@dataclass(frozen=True)
+class Placement:
+    """A root-aware placement for one managed resource."""
+    root: PlacementRoot
+    path: PosixPath
+
+    def __post_init__(self) -> None:
+        if self.root not in {"worktree", "artifact"}:
+            raise ValueError(f"invalid placement root: {self.root}")
+        object.__setattr__(self, "path", _check_relative_path(self.path))
+
+    def resolve(self, worktree: Path) -> Path:
+        if self.root == "worktree":
+            return worktree / Path(self.path)
+        digest = hashlib.sha256(str(worktree).encode("utf-8")).hexdigest()[:16]
+        return ARTIFACT_ROOT / digest / Path(self.path)
+
+
 def resource[ResourceT: Resource](
     name: str,
     *,
+    kind: ResourceKind,
     template: str | None = None
 ) -> Callable[[type[ResourceT]], type[ResourceT]]:
     """A class decorator for defining layout resources.
@@ -887,14 +910,14 @@ def resource[ResourceT: Resource](
         The unique name of this resource, which serves as its stable identifier in the
         resource catalog.  This should generally match the `name` portion of a
         corresponding template file, if one is given.
+    kind : Literal["file", "dir"] | None
+        The kind of resource being registered.  Use "file" for filesystem files,
+        "dir" for directories, or None for virtual/orchestration resources that do
+        not map to any output path.
     template : str | None, optional
         An optional reference to a Jinja template for this resource, of the form
-        "namespace/name".  If given, the resource will be treated as a file,
-        and its initial contents will be rendered from a template file stored in the
-        `on_init` pipeline's state directory, under `templates/{namespace}/{name}.j2`.
-        Bertrand provides its own templates as part of its front-end wheel, which are
-        copied into this location by default.  If no template is given (the default),
-        then the resource will be treated as a directory.
+        "namespace/name".  This is only valid when `kind="file"`, and provides initial
+        contents for `Config.init()` rendering from `templates/{namespace}/{name}.j2`.
 
     Returns
     -------
@@ -906,8 +929,8 @@ def resource[ResourceT: Resource](
     ------
     TypeError
         If the resource name is not lowercase without leading or trailing whitespace,
-        if it is not unique in the `CATALOG`, or if a template is given for a non-file
-        resource.
+        if it is not unique in the `CATALOG`, if kind is invalid, or if a template is
+        given for a non-file resource.
     """
     norm = name.strip().lower()
     if not norm:
@@ -916,6 +939,12 @@ def resource[ResourceT: Resource](
         raise TypeError(
             "resource name must be lowercase and cannot have leading or trailing "
             f"whitespace: '{name}'"
+        )
+    if kind not in {"file", "dir", None}:
+        raise TypeError(f"invalid resource kind for '{name}': {kind}")
+    if kind != "file" and template is not None:
+        raise TypeError(
+            f"resource '{name}' cannot specify a template when kind={kind!r}"
         )
 
     template_kwargs: dict[str, str] | None = None
@@ -933,6 +962,7 @@ def resource[ResourceT: Resource](
             raise TypeError(f"duplicate resource name in catalog: '{name}'")
         CATALOG[name] = cls(
             name=name,
+            kind=kind,
             template=Template(**template_kwargs) if template_kwargs is not None else None,
         )
         return cls
@@ -940,12 +970,12 @@ def resource[ResourceT: Resource](
     return _decorator
 
 
-@resource("publish", template="core/publish.v1")
-@resource("vscode-workspace", template="core/vscode-workspace.v1")
-@resource("containerfile", template="core/containerfile.v1")
-@resource("docs")
-@resource("tests")
-@resource("src")
+@resource("publish", kind="file", template="core/publish.v1")
+@resource("vscode-workspace", kind="file", template="core/vscode-workspace.v1")
+@resource("containerfile", kind="file", template="core/containerfile.v1")
+@resource("docs", kind="dir")
+@resource("tests", kind="dir")
+@resource("src", kind="dir")
 @dataclass(frozen=True)
 class Resource:
     """A base class describing a single file or directory being managed by the layout
@@ -957,16 +987,18 @@ class Resource:
     ----------
     name : str
         The name that was assigned to this resource in `@resource()`.
+    kind : Literal["file", "dir"] | None
+        The kind of resource.  `None` indicates a virtual resource with no associated
+        filesystem path.
     template : Template | None
         The template file that was assigned to this resource in `@resource()`, if any.
-        If None (the default), then this resource will either not be rendered at all,
-        or will be treated as a directory if it is present in any profile or capability
-        set.  Otherwise, the template file will be rendered during `Config.init()`,
-        which sets the initial contents of this resource, which may be overwritten
-        during subsequent `render()` phases, if that hook is defined.
+        If present, this file will be rendered during `Config.init()`.  If None, the
+        resource is either a directory (`kind="dir"`) or a file with output generated
+        only during `render()` (`kind="file"`).
     """
     # pylint: disable=unused-argument, redundant-returns-doc
     name: str
+    kind: ResourceKind
     template: Template | None
 
     @property
@@ -975,10 +1007,9 @@ class Resource:
         Returns
         -------
         bool
-            True if this resource is a file (i.e. has an associated template), or False
-            if it is a directory.
+            True if this resource is a file, or False otherwise.
         """
-        return self.template is not None
+        return self.kind == "file"
 
     @property
     def is_dir(self) -> bool:
@@ -986,10 +1017,14 @@ class Resource:
         Returns
         -------
         bool
-            True if this resource is a directory (i.e. has no associated template), or
-            False if it is a file.
+            True if this resource is a directory, or False otherwise.
         """
-        return self.template is None
+        return self.kind == "dir"
+
+    @property
+    def is_virtual(self) -> bool:
+        """True if this resource has no filesystem mapping."""
+        return self.kind is None
 
     def parse(self, config: Config) -> dict[str, Any] | None:
         """A parse function that can extract normalized config data from this
@@ -1139,7 +1174,7 @@ def _dump_yaml(payload: dict[str, Any], *, resource_id: str) -> str:
     return text
 
 
-@resource("pyproject", template="core/pyproject.v1")
+@resource("pyproject", kind="file", template="core/pyproject.v1")
 class PyProject(Resource):
     """A resource describing a `pyproject.toml` file, which is the primary vehicle for
     configuring a top-level Python project, as well as Bertrand itself and its entire
@@ -1305,7 +1340,7 @@ class PyProject(Resource):
 # TODO: add a conanfile template to support this resource
 
 
-@resource("conanfile", template="core/conanfile.v1")
+@resource("conanfile", kind="file", template="core/conanfile.v1")
 class Conanfile(Resource):
     """A resource describing a `conanfile.py`, which is used to organize C++
     dependencies.
@@ -1412,7 +1447,7 @@ class Conanfile(Resource):
         return ""
 
 
-@resource("bertrand")
+@resource("bertrand", kind=None)
 class Bertrand(Resource):
     """A resource describing the configuration state needed by Bertrand itself, which
     is expected to be provided by another resource (e.g. `pyproject.toml`), and is not
@@ -1997,7 +2032,7 @@ class Bertrand(Resource):
         return result
 
 
-@resource("gitignore", template="core/gitignore.v1")
+@resource("gitignore", kind="file", template="core/gitignore.v1")
 class GitIgnore(Resource):
     """A resource describing a `.gitignore` file, which is used to exclude files from
     the repository context during version control.  This is generated by the relevant
@@ -2013,7 +2048,7 @@ class GitIgnore(Resource):
         return _dump_ignore_list(patterns)
 
 
-@resource("containerignore", template="core/containerignore.v1")
+@resource("containerignore", kind="file", template="core/containerignore.v1")
 class ContainerIgnore(Resource):
     """A resource describing a `.containerignore` file, which is used to exclude files
     from the build context when compiling container images.  This is generated by the
@@ -2032,7 +2067,7 @@ class ContainerIgnore(Resource):
 # TODO: Kube
 
 
-@resource("compile_commands", template="core/compile_commands.v1")
+@resource("compile_commands", kind="file")
 class CompileCommands(Resource):
     """A resource describing a `compile_commands.json` file, which is used to
     configure C++ projects and tools, and can also be used as a source of truth for
@@ -2073,8 +2108,10 @@ class CompileCommands(Resource):
 
         sources: Annotated[list[Entry], Field(default_factory=list)]
 
-    def parse(self, config: Config) -> dict[str, Any]:
+    def parse(self, config: Config) -> dict[str, Any] | None:
         path = config.path("compile_commands")
+        if not path.exists() or not path.is_file():
+            return None
         try:
             text = path.read_text(encoding="utf-8")
         except OSError as err:
@@ -2101,7 +2138,7 @@ class CompileCommands(Resource):
         return self.Model.model_validate(data, context={"worktree": config.worktree})
 
 
-@resource("clangd", template="core/clangd.v1")
+@resource("clangd", kind="file")
 class Clangd(Resource):
     """A resource describing a `.clangd` file, which is used to configure clangd for
     C++ language server features in editors.  This expects native clangd keys in
@@ -2393,7 +2430,7 @@ class Clangd(Resource):
         return content
 
 
-@resource("clang-tidy", template="core/clang-tidy.v1")
+@resource("clang-tidy", kind="file")
 class ClangTidy(Resource):
     """A resource describing a `.clang-tidy` file, which is used to configure
     clang-tidy for C++ linting.  This expects native clang-tidy key names in TOML.
@@ -2507,7 +2544,7 @@ class ClangTidy(Resource):
         return _dump_yaml(content, resource_id="clang-tidy")
 
 
-@resource("clang-format", template="core/clang-format.v1")
+@resource("clang-format", kind="file")
 class ClangFormat(Resource):
     """A resource describing a `.clang-format` file, which is used to configure
     clang-format for C++ code formatting.  The `[tool.clang-format]` table is
@@ -3285,61 +3322,77 @@ class ClangFormat(Resource):
         return _dump_yaml(content, resource_id="clang-format")
 
 
-# Profiles define only resource placement paths: wildcard baseline + profile diffs.
-PROFILES: dict[str, dict[str, PosixPath]] = {
+# Profiles define only resource placements: wildcard baseline + profile diffs.
+PROFILES: dict[str, dict[str, Placement]] = {
     "flat": {
-        "publish": PosixPath(".github") / "workflows" / "publish.yml",
-        "bertrand": PosixPath(".bertrand"),
-        "gitignore": PosixPath(".gitignore"),
-        "containerignore": PosixPath(".containerignore"),
-        "containerfile": PosixPath("Containerfile"),
-        "docs": PosixPath("docs"),
-        "tests": PosixPath("tests"),
+        "publish": Placement(
+            root="worktree",
+            path=PosixPath(".github") / "workflows" / "publish.yml",
+        ),
+        "gitignore": Placement(root="worktree", path=PosixPath(".gitignore")),
+        "containerignore": Placement(root="worktree", path=PosixPath(".containerignore")),
+        "containerfile": Placement(root="worktree", path=PosixPath("Containerfile")),
+        "docs": Placement(root="worktree", path=PosixPath("docs")),
+        "tests": Placement(root="worktree", path=PosixPath("tests")),
     },
     "src": {
-        "publish": PosixPath(".github") / "workflows" / "publish.yml",
-        "bertrand": PosixPath(".bertrand"),
-        "gitignore": PosixPath(".gitignore"),
-        "containerignore": PosixPath(".containerignore"),
-        "containerfile": PosixPath("Containerfile"),
-        "docs": PosixPath("docs"),
-        "tests": PosixPath("tests"),
-        "src": PosixPath("src"),
+        "publish": Placement(
+            root="worktree",
+            path=PosixPath(".github") / "workflows" / "publish.yml",
+        ),
+        "gitignore": Placement(root="worktree", path=PosixPath(".gitignore")),
+        "containerignore": Placement(root="worktree", path=PosixPath(".containerignore")),
+        "containerfile": Placement(root="worktree", path=PosixPath("Containerfile")),
+        "docs": Placement(root="worktree", path=PosixPath("docs")),
+        "tests": Placement(root="worktree", path=PosixPath("tests")),
+        "src": Placement(root="worktree", path=PosixPath("src")),
     },
 }
 
 
 # Capabilities define only language/tool resource placement paths: wildcard baseline
 # + profile-specific diffs.
-CAPABILITIES: dict[str, dict[str, dict[str, PosixPath]]] = {
+CAPABILITIES: dict[str, dict[str, dict[str, Placement]]] = {
     "python": {
         "flat": {
-            "pyproject": PosixPath("pyproject.toml"),
+            "pyproject": Placement(root="worktree", path=PosixPath("pyproject.toml")),
         },
         "src": {
-            "pyproject": PosixPath("pyproject.toml"),
+            "pyproject": Placement(root="worktree", path=PosixPath("pyproject.toml")),
         },
     },
     "cpp": {
         "flat": {
-            "compile_commands": PosixPath("compile_commands.json"),
-            "clangd": PosixPath(".clangd"),
-            "clang-tidy": PosixPath(".clang-tidy"),
-            "clang-format": PosixPath(".clang-format"),
+            "compile_commands": Placement(
+                root="artifact",
+                path=PosixPath("compile_commands.json")
+            ),
+            "clangd": Placement(root="artifact", path=PosixPath(".clangd")),
+            "clang-tidy": Placement(root="artifact", path=PosixPath(".clang-tidy")),
+            "clang-format": Placement(root="artifact", path=PosixPath(".clang-format")),
         },
         "src": {
-            "compile_commands": PosixPath("compile_commands.json"),
-            "clangd": PosixPath(".clangd"),
-            "clang-tidy": PosixPath(".clang-tidy"),
-            "clang-format": PosixPath(".clang-format"),
+            "compile_commands": Placement(
+                root="artifact",
+                path=PosixPath("compile_commands.json")
+            ),
+            "clangd": Placement(root="artifact", path=PosixPath(".clangd")),
+            "clang-tidy": Placement(root="artifact", path=PosixPath(".clang-tidy")),
+            "clang-format": Placement(root="artifact", path=PosixPath(".clang-format")),
         },
     },
     "vscode": {
         "flat": {
-            "vscode-workspace": PosixPath(".vscode/bertrand.code-workspace"),
+            "vscode-workspace": Placement(
+                root="worktree",
+                path=PosixPath(".vscode/bertrand.code-workspace")
+            ),
         },
         "src": {
-            "vscode-workspace": PosixPath(".vscode/bertrand.code-workspace"),
+            "vscode-workspace": Placement(
+                root="worktree",
+                path=PosixPath(".vscode/bertrand.code-workspace")
+            ),
         },
     },
 }
@@ -3347,14 +3400,14 @@ CAPABILITIES: dict[str, dict[str, dict[str, PosixPath]]] = {
 
 @dataclass
 class Config:
-    """Read-only view representing resource placements within an environment root,
-    as well as normalized config data parsed from resources that implement a `parse()`
-    method, without coupling to any particular schema.
+    """Read-only view representing resource placements within a worktree, as well as
+    normalized config data parsed from those resources, without coupling to any
+    particular schema.
     """
     worktree: Path
     profile: str
     capabilities: frozenset[str]
-    _resources: dict[str, PosixPath] = field(default_factory=dict, repr=False)
+    _resources: dict[str, Placement | None] = field(default_factory=dict, repr=False)
 
     snapshot: dict[str, Any] = field(default_factory=dict, repr=False)
     pyproject: PyProject.Model | None = field(default=None, repr=False)
@@ -3370,29 +3423,35 @@ class Config:
     def _merge_placements(
         self,
         resource_id: str,
-        path: PosixPath,
-        seen_paths: dict[PosixPath, str],
+        placement: Placement,
+        seen_paths: dict[tuple[PlacementRoot, PosixPath], str],
         where: str,
     ) -> None:
-        if resource_id not in CATALOG:
+        r = CATALOG.get(resource_id)
+        if r is None:
             raise ValueError(f"unknown resource id in {where}: '{resource_id}'")
-
-        path = _check_relative_path(path)
-        if self._resources.setdefault(resource_id, path) != path:
+        if r.is_virtual:
             raise ValueError(
-                f"'{resource_id}' maps to multiple paths for {where}: "
-                f"{self._resources[resource_id]} != {path}"
+                f"resource '{resource_id}' in {where} is virtual and cannot define a "
+                "filesystem placement"
             )
 
-        other_id = seen_paths.setdefault(path, resource_id)
+        if self._resources.setdefault(resource_id, placement) != placement:
+            raise ValueError(
+                f"'{resource_id}' maps to multiple paths for {where}: "
+                f"{self._resources[resource_id]} != {placement}"
+            )
+
+        key = (placement.root, placement.path)
+        other_id = seen_paths.setdefault(key, resource_id)
         if other_id != resource_id:
             raise ValueError(
-                f"'{resource_id}' and '{other_id}' both map to '{path}' for {where}"
+                f"'{resource_id}' and '{other_id}' both map to '{placement}' for {where}"
             )
 
     def __post_init__(self) -> None:
         self.worktree = self.worktree.expanduser().resolve()
-        seen_paths: dict[PosixPath, str] = {}
+        seen_paths: dict[tuple[PlacementRoot, PosixPath], str] = {}
 
         # resolve profile placements
         profile = PROFILES.get(self.profile)
@@ -3423,29 +3482,40 @@ class Config:
         lookup: dict[PosixPath, tuple[str, set[str]]] = {}
 
         for profile, placements in PROFILES.items():
-            for curr_id, path in placements.items():
+            for curr_id, placement in placements.items():
                 if curr_id not in CATALOG:
                     raise ValueError(f"unknown resource id in placement: {curr_id}")
-                path = _check_relative_path(path)
-                prev_id, profiles = lookup.setdefault(path, (curr_id, set()))
+                if CATALOG[curr_id].is_virtual:
+                    raise ValueError(
+                        f"virtual resource '{curr_id}' cannot be used in profile placement"
+                    )
+                if placement.root != "worktree":
+                    continue
+                prev_id, profiles = lookup.setdefault(placement.path, (curr_id, set()))
                 if prev_id != curr_id:
                     raise ValueError(
                         f"resource path collision in placement: '{curr_id}' and "
-                        f"'{prev_id}' both map to '{path}'"
+                        f"'{prev_id}' both map to '{placement.path}'"
                     )
                 profiles.add(profile)
 
         for variants in CAPABILITIES.values():
             for profile, placements in variants.items():
-                for curr_id, path in placements.items():
+                for curr_id, placement in placements.items():
                     if curr_id not in CATALOG:
                         raise ValueError(f"unknown resource id in placement: {curr_id}")
-                    path = _check_relative_path(path)
-                    prev_id, profiles = lookup.setdefault(path, (curr_id, set()))
+                    if CATALOG[curr_id].is_virtual:
+                        raise ValueError(
+                            f"virtual resource '{curr_id}' cannot be used in capability "
+                            "placement"
+                        )
+                    if placement.root != "worktree":
+                        continue
+                    prev_id, profiles = lookup.setdefault(placement.path, (curr_id, set()))
                     if prev_id != curr_id:
                         raise ValueError(
                             f"resource path collision in placement: '{curr_id}' and "
-                            f"'{prev_id}' both map to '{path}'"
+                            f"'{prev_id}' both map to '{placement.path}'"
                         )
                     profiles.add(profile)
 
@@ -3455,11 +3525,11 @@ class Config:
     def _scan_resources(
         worktree: Path,
         lookup: dict[PosixPath, tuple[str, set[str]]]
-    ) -> tuple[list[str], dict[str, PosixPath]]:
+    ) -> tuple[list[str], dict[str, Placement | None]]:
         # narrow down the candidate profiles by checking for matching resource
         # placements in the worktree and record them in the final resource map
         candidates: list[str] = list(PROFILES)
-        resources: dict[str, PosixPath] = {}
+        resources: dict[str, Placement | None] = {}
         for path, (r_id, profiles) in lookup.items():
             r = CATALOG[r_id]
             target = worktree / path
@@ -3475,10 +3545,11 @@ class Config:
                         f"matches [{', '.join(sorted(profiles))}]"
                     )
                 candidates = new_candidates
-                if resources.setdefault(r_id, path) != path:
+                placement = Placement(root="worktree", path=path)
+                if resources.setdefault(r_id, placement) != placement:
                     raise ValueError(
                         f"resource path collision in environment: '{r_id}' maps to "
-                        f"multiple paths: {resources[r_id]} != {path}"
+                        f"multiple paths: {resources[r_id]} != {placement}"
                     )
 
         # if multiple candidate profiles remain, choose the simplest one
@@ -3489,7 +3560,7 @@ class Config:
     @staticmethod
     def _infer_capabilities(
         profile: str,
-        resources: dict[str, PosixPath],
+        resources: dict[str, Placement | None],
     ) -> set[str]:
         capabilities: set[str] = set()
         for capability, variants in CAPABILITIES.items():
@@ -3498,7 +3569,7 @@ class Config:
                 raise ValueError(
                     f"no placements defined for CAPABILITIES['{capability}']['{profile}']"
                 )
-            if all(resources.get(r_id) == path for r_id, path in placements.items()):
+            if all(resources.get(r_id) == placement for r_id, placement in placements.items()):
                 capabilities.add(capability)
         return capabilities
 
@@ -3591,6 +3662,7 @@ class Config:
         OSError
             If any template rendering fails.
         """
+        worktree = worktree.expanduser().resolve()
         ctx = jinja2.Environment(
             autoescape=False,
             undefined=jinja2.StrictUndefined,
@@ -3629,21 +3701,23 @@ class Config:
                         f"capability '{capability}' does not define placements for "
                         f"profile '{profile}'"
                     )
-                for r_id, path in cap.items():
-                    if resources.setdefault(r_id, path) != path:
+                for r_id, placement in cap.items():
+                    if resources.setdefault(r_id, placement) != placement:
                         raise ValueError(
                             f"'{r_id}' maps to multiple paths for capability "
-                            f"'{capability}': {resources[r_id]} != {path}"
+                            f"'{capability}': {resources[r_id]} != {placement}"
                         )
 
-            # render any resources that are not currently present on disk
-            for r_id, path in resources.items():
+            # render any in-worktree resources that are not currently present on disk
+            for r_id, placement in resources.items():
+                if placement.root != "worktree":
+                    continue
                 if r_id in on_disk:
                     continue
-                target = worktree / path
+                target = placement.resolve(worktree)
                 if target.exists():
                     raise FileExistsError(
-                        f"cannot render resource '{r_id}' at '{path}' for profile "
+                        f"cannot render resource '{r_id}' at '{placement.path}' for profile "
                         f"'{profile}' because the target path already exists: {target}"
                     )
 
@@ -3651,24 +3725,26 @@ class Config:
                 r = CATALOG.get(r_id)
                 if r is None:
                     raise ValueError(f"unknown resource ID: '{r_id}'")
+                if r.is_virtual:
+                    continue
                 if r.is_dir:
                     target.mkdir(parents=True, exist_ok=False)
                     continue
 
-                # locate file template
+                # output-only files are generated during sync
                 if r.template is None:
-                    raise OSError(f"no template specified for file resource '{r_id}'")
+                    continue
                 template = r.template.locate(r_id)
 
                 # render template to disk
                 try:
-                    path.parent.mkdir(parents=True, exist_ok=True)
+                    target.parent.mkdir(parents=True, exist_ok=True)
                     text = template.read_text(encoding="utf-8")
-                    path.write_text(ctx.from_string(text).render(**facts), encoding="utf-8")
+                    target.write_text(ctx.from_string(text).render(**facts), encoding="utf-8")
                 except Exception as err:
                     raise OSError(
                         f"failed to render template for layout resource '{r_id}' at "
-                        f"{path}: {err}"
+                        f"{target}: {err}"
                     ) from err
 
             return cls(
@@ -3736,10 +3812,17 @@ class Config:
                 f"resources '{owner}' and '{resource_id}'"
             )
 
-    # TODO: document __enter__() more fully
-
     def __enter__(self) -> Self:
-        """Load a context-scoped config snapshot from parse-capable resources."""
+        """Parse and validate config data from resources in the environment, which
+        remains valid until the outermost context is exited.
+
+        Raises
+        ------
+        OSError
+            If any resource parsing or validation fails, or if there are any key
+            collisions between parsed config fragments from different resources
+            (enforcing unique ownership).
+        """
         if self._entered > 0:  # re-entrant case
             self._entered += 1
             return self
@@ -3756,6 +3839,11 @@ class Config:
                     r = CATALOG.get(r_id)
                     if r is None:
                         raise OSError(f"config references unknown resource ID: '{r_id}'")
+                    placement = self._resources.get(r_id)
+                    if placement is None:
+                        location = "<virtual>"
+                    else:
+                        location = str(placement.resolve(self.worktree))
 
                     # extract config fragment
                     try:
@@ -3764,7 +3852,7 @@ class Config:
                             continue
                     except Exception as err:
                         raise OSError(
-                            f"failed to parse resource '{r_id}' at {self.path(r_id)}: {err}"
+                            f"failed to parse resource '{r_id}' at {location}: {err}"
                         ) from err
                     if not isinstance(result, dict):
                         raise OSError(
@@ -3794,26 +3882,18 @@ class Config:
 
                     # search for resource placement if not already present
                     if r_id not in self._resources:
-                        found = False
-                        path = PROFILES.get(self.profile, {}).get(r_id)
-                        if path is not None:
-                            changed = True
-                            found = True
-                            self._resources[r_id] = path
-
-                        # if not found in profile, search in capabilities
-                        if not found:
+                        placement = PROFILES.get(self.profile, {}).get(r_id)
+                        if placement is None:
                             for variants in CAPABILITIES.values():
-                                path = variants.get(self.profile, {}).get(r_id)
-                                if path is not None:
-                                    changed = True
-                                    found = True
-                                    self._resources[r_id] = path
+                                placement = variants.get(self.profile, {}).get(r_id)
+                                if placement is not None:
                                     break
-
-                        # if we didn't find a placement for this resource, then the
-                        # global maps are misconfigured
-                        if not found:
+                        if placement is not None:
+                            changed = True
+                            self._resources[r_id] = placement
+                        elif r.is_virtual:
+                            self._resources[r_id] = None
+                        else:
                             raise OSError(
                                 f"no placement found for resource '{r_id}' with profile "
                                 f"'{self.profile}' in parsed config fragments "
@@ -3883,7 +3963,7 @@ class Config:
         return CATALOG[resource_id]
 
     def path(self, resource_id: str) -> Path:
-        """Resolve an absolute path to the given resource within the environment root.
+        """Resolve an absolute path to the given resource.
 
         Parameters
         ----------
@@ -3893,16 +3973,22 @@ class Config:
         Returns
         -------
         Path
-            An absolute path to the resource within the environment root directory.
+            An absolute path to the resource, rooted in either the worktree or the
+            fixed artifact root.
 
         Raises
         ------
         KeyError
             If the given resource ID is not detected in the environment.
+        OSError
+            If the resource has no filesystem placement (i.e. is virtual).
         """
         if resource_id not in self._resources:
             raise KeyError(f"unknown resource ID: '{resource_id}'")
-        return self.worktree / Path(self._resources[resource_id])
+        placement = self._resources[resource_id]
+        if placement is None:
+            raise OSError(f"resource '{resource_id}' has no filesystem path")
+        return placement.resolve(self.worktree)
 
     # TODO: image_args(tag), container_args(tag)
 
@@ -3931,11 +4017,14 @@ class Config:
             raise RuntimeError("rendering artifacts requires an active config context")
 
         with lock_worktree(self.worktree):
-            for resource_id, path in sorted(self._resources.items()):
+            for resource_id, placement in sorted(self._resources.items()):
                 r = CATALOG.get(resource_id)
                 if r is None:
                     raise OSError(f"config references unknown resource ID: '{resource_id}'")
-                target = self.worktree / path
+                if placement is not None:
+                    target = placement.resolve(self.worktree)
+                else:
+                    target = None
 
                 # invoke render hook for resource and skip if it returns None
                 try:
@@ -3944,12 +4033,18 @@ class Config:
                         continue
                 except Exception as err:
                     raise OSError(
-                        f"failed to render sync resource '{resource_id}' at {target}: {err}"
+                        f"failed to render sync resource '{resource_id}' at "
+                        f"{target or '<virtual>'}: {err}"
                     ) from err
                 if not isinstance(text, str):
                     raise OSError(
                         f"sync renderer returned non-string output for resource "
-                        f"'{resource_id}' at {target}"
+                        f"'{resource_id}' at {target or '<virtual>'}"
+                    )
+                if target is None:
+                    raise OSError(
+                        f"sync renderer produced output for virtual resource "
+                        f"'{resource_id}' with no filesystem placement"
                     )
 
                 # skip write if content is unchanged
@@ -3967,6 +4062,15 @@ class Config:
                         ) from err
                     if current == text:
                         continue
+
+                # ensure destination root/parent is writable before writing
+                try:
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                except OSError as err:
+                    raise OSError(
+                        f"failed to prepare sync output directory for resource "
+                        f"'{resource_id}' at {target}: {err}"
+                    ) from err
 
                 # atomically write rendered content to target path
                 try:

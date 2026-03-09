@@ -53,11 +53,12 @@ RUN --mount=type=cache,target={{ cache_dir }}/uv,sharing=locked \
 # In most cases, `bertrand build` and `pyproject.toml` is all you need.
 # C++ tooling rules are sourced from `[tool.conan]`, `[tool.clang-format]`,
 # `[tool.clang-tidy]`, and `[tool.clangd]` in pyproject.toml, then emitted as generated
-# `.clang-*` files at command runtime.  `pyproject.toml` is the single source of truth
-# for dependencies and tooling configuration across both languages.  If you'd like to
-# add your own tools outside of `pyproject.toml`, you can still use raw `uv` or
-# `apt-get` commands directly in this file (although doing so is discouraged).  For
-# example:
+# `.clang-*` files plus `compile_commands.json` under
+# `/tmp/bertrand/artifacts/<worktree-id>/` at command runtime.  `pyproject.toml` is
+# the single source of truth for dependencies and tooling configuration across both
+# languages.  If you'd like to add your own tools outside of `pyproject.toml`, you can
+# still use raw `uv` or `apt-get` commands directly in this file (although doing so is
+# discouraged).  For example:
 # RUN uv pip install <tool1> <tool2>
 # RUN apt-get update && apt-get install -y --no-install-recommends <pkg1> <pkg2>
 
