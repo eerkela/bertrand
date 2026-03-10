@@ -1,5 +1,6 @@
 [build-system]
 requires = ["bertrand"]
+build-backend = "bertrand.env.build"
 
 [project]
 name = "{{ project_name }}"
@@ -26,6 +27,16 @@ classifiers = [
 dependencies = [                    # Python-level dependencies
     "bertrand=={{ bertrand_major }}.{{ bertrand_minor }}.{{ bertrand_patch }}",
 ]
+
+# NOTE: additional Python-level dependencies for specific tags can be declared using
+# `[project.optional-dependencies]`, which are additive with `[project].dependencies`.
+# Keys in this table must exactly match `tag` names in `[[tool.bertrand.tags]]` (and
+# vice versa), which is validated on load.  Use empty lists for tags with no
+# tag-specific Python dependencies.
+
+[project.optional-dependencies]
+default = []
+debug = []
 
 [project.scripts]
 # console entry points built by your project (e.g. my_script = "my_project.cli:main").
@@ -137,8 +148,6 @@ services = []           # optional service orchestration, using tags from the bu
                         # below.  If non-empty, then a `kube.yaml` artifact will be generated
                         # and played when starting the environment.  Each entry will be built
                         # and started in sequence using its matching build matrix definition.
-# NOTE: generated C/C++ artifacts are rendered out-of-tree during sync/build under
-# `/tmp/bertrand/artifacts`, plus `/opt/conan/remotes.json` when remotes are declared.
 
 [tool.bertrand.network.build]
 mode = "pasta"          # -> --network (none|host|private|slirp4netns|pasta|ns:path)
@@ -160,15 +169,14 @@ add-host = {}           # -> --add-host (hostname = ip|"host-gateway", stored in
 ####    BUILD MATRIX    ####
 ############################
 
-# NOTE: `tag = ""` denotes the default container for an environment.  The default tag
-# presented here is intentionally exhaustive and self-documenting, with each option set
-# to its default value.  Non-default tags should typically override only what they
-# need.  See the `podman build` and `podman run` documentation for more details on what
-# each option does.
+# NOTE: `tag = "default"` denotes the default tag for an environment.  The version
+# presented here is intentionally exhaustive and self-documenting, with each option
+# set to its default value for future reference.  Non-default tags should typically
+# override only what they need.  See the `podman build` and `podman run` documentation
+# for more details on what each option does.
 
 [[tool.bertrand.tags]]
-tag = ""
-dependencies = []       # additional Python-level dependencies to install for this tag
+tag = "default"         # tag name (required)
 containerfile = "Containerfile"  # -> --file, relative (posix) path from worktree root
 build-args = {}         # -> --build-arg (key = value), passed into containerfile
 env-file = []           # -> --env-file, relative (posix) path from worktree root
@@ -308,7 +316,6 @@ max-size = 500          # -> --health-max-log-size
 
 [[tool.bertrand.tags]]
 tag = "debug"
-dependencies = []                   # additional Python-level dependencies for this tag
 build-args = { DEBUG = true }
 
 [tool.bertrand.tags.conan]

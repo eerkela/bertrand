@@ -294,46 +294,12 @@ RUN --mount=type=cache,target=/root/.cache/uv,sharing=locked \
     /opt/python/bin/conan --version; \
     /opt/python/bin/python -m pip check
 
-# Create a deterministic default profile for clang/libc++ and Ninja (Conan 2.x)
+# Ensure Conan home exists and is writable by runtime users; the default profile is
+# rendered later as an isolated sync artifact
 RUN set -eux; \
     mkdir -p "$CONAN_HOME"; \
     chmod 1777 "$CONAN_HOME"; \
-    mkdir -p "$CONAN_HOME/profiles"; \
-    \
-    RAW_ARCH="$(dpkg --print-architecture 2>/dev/null || uname -m)"; \
-    case "$RAW_ARCH" in \
-        x86_64|amd64) CONAN_ARCH="x86_64" ;; \
-        aarch64|arm64) CONAN_ARCH="armv8" ;; \
-        *) echo "unsupported Conan arch: $RAW_ARCH" >&2; exit 1 ;; \
-    esac; \
-    \
-    CLANG_VERSION="$("/opt/llvm/bin/clang" -dumpversion)"; \
-    CLANG_MAJOR="${CLANG_VERSION%%.*}"; \
-    case "$CLANG_MAJOR" in \
-        ''|*[!0-9]*) echo "failed to parse clang major version from: $CLANG_VERSION" >&2; exit 1 ;; \
-    esac; \
-    \
-    PROFILE="$CONAN_HOME/profiles/default"; \
-    printf '%s\n' \
-        '[settings]' \
-        'os=Linux' \
-        "arch=${CONAN_ARCH}" \
-        'compiler=clang' \
-        "compiler.version=${CLANG_MAJOR}" \
-        'compiler.libcxx=libc++' \
-        "compiler.cppstd=${CXX_STD}" \
-        'build_type=Release' \
-        '' \
-        '[conf]' \
-        'tools.cmake.cmaketoolchain:generator=Ninja' \
-        'tools.build:compiler_executables={"c":"/opt/llvm/bin/clang","cpp":"/opt/llvm/bin/clang++"}' \
-        '' \
-        '[buildenv]' \
-        'CC=ccache /opt/llvm/bin/clang' \
-        'CXX=ccache /opt/llvm/bin/clang++' \
-        > "$PROFILE"; \
-    echo "Conan default profile: $PROFILE"; \
-    /opt/python/bin/conan profile show -pr default >/dev/null
+    mkdir -p "$CONAN_HOME/profiles"
 
 
 #################################
@@ -450,6 +416,3 @@ RUN clang --version \
     && ruff --version \
     && ty --version \
     && pytest --version
-
-# sleep infinity allows `bertrand enter` to keep the container alive indefinitely
-ENTRYPOINT ["sleep", "infinity"]

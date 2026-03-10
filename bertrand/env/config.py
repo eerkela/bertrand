@@ -52,7 +52,7 @@ import jinja2
 import yaml
 
 from .pipeline import on_init
-from .run import LOCK_TIMEOUT, Lock, atomic_write_text, sanitize_name
+from .run import LOCK_TIMEOUT, Lock, atomic_write_text, run, sanitize_name
 from .version import __version__, VERSION
 
 # pylint: disable=bare-except
@@ -123,6 +123,7 @@ def inside_container() -> bool:
 
 
 # Configuration options that affect CLI behavior
+DEFAULT_TAG: str = "default"
 DEFAULT_MAX_COMMITS: int = 10
 SHELLS: dict[str, tuple[str, ...]] = {
     "bash": ("bash", "-l"),
@@ -628,15 +629,19 @@ def _check_conan_requirement(requirement: str) -> str:
     return ref.repr_notime()
 
 
-def _check_conan_conf(conf: dict[ConanConfNamespace, dict[ConanConfName, Scalar]]) -> None:
+def _check_conan_conf(
+    conf: dict[ConanConfNamespace, dict[ConanConfName, ConanConfValue]]
+) -> None:
     for namespace, values in conf.items():
-        for key in values:
-            key = f"{namespace}:{key}"
+        for key, value in values.items():
+            entry = f"{namespace}:{key}"
             conf_def = ConfDefinition()
             try:
-                conf_def.update(key, 0, profile=True)
+                conf_def.update(entry, value, profile=True)
             except ConanException as err:
-                raise ValueError(f"invalid conan conf key '{key}'") from err
+                raise ValueError(
+                    f"invalid conan conf entry '{entry}' with value {repr(value)}"
+                ) from err
 
 
 def _check_conan_allowed_pattern(pattern: str) -> str:
@@ -695,6 +700,7 @@ type NonEmpty[SequenceT: Sequence[Any]] = Annotated[SequenceT, Field(min_length=
 type NonNegativeInt = Annotated[int, Field(ge=0)]
 type NonNegativeFloat = Annotated[float, Field(ge=0.0)]
 type Scalar = str | bool | int | float
+type ConanConfValue = Scalar | list[ConanConfValue] | dict[str, ConanConfValue]
 type Trimmed = Annotated[str, StringConstraints(strip_whitespace=True)]
 type NoCRLF = Annotated[  # pylint: disable=invalid-name
     str,
@@ -724,6 +730,11 @@ type PEP508Requirement = Annotated[
     AfterValidator(_check_pep508_requirement)
 ]
 type PEP508Name = Annotated[NonEmpty[NoWhiteSpace], AfterValidator(_check_pep508_name)]
+type TagName = Annotated[str, StringConstraints(
+    strip_whitespace=True,
+    min_length=1,
+    pattern=r"^[a-z0-9]+(?:-[a-z0-9]+)*$"
+)]
 type Entrypoint = Annotated[str, StringConstraints(
     strip_whitespace=True,
     pattern=(
@@ -819,7 +830,7 @@ type ConanConfName = Annotated[str, StringConstraints(
     pattern=r"^[^:\s]+$"
 )]
 type ConanConf = Annotated[
-    dict[ConanConfNamespace, dict[ConanConfName, Scalar]],
+    dict[ConanConfNamespace, dict[ConanConfName, ConanConfValue]],
     AfterValidator(_check_conan_conf)
 ]
 type ConanRemoteName = Annotated[str, StringConstraints(
@@ -957,7 +968,7 @@ def resource[ResourceT: Resource](
         raise TypeError(f"invalid resource kind for '{name}': {kind}")
     if kind != "file" and template is not None:
         raise TypeError(
-            f"resource '{name}' cannot specify a template when kind={kind!r}"
+            f"resource '{name}' cannot specify a template when kind={repr(kind)}"
         )
 
     template_kwargs: dict[str, str] | None = None
@@ -1192,6 +1203,33 @@ def _dump_yaml(payload: dict[str, Any], *, resource_id: str) -> str:
     return text
 
 
+def _validate_dependency_groups(*, pyproject: Any | None, bertrand: Any | None) -> None:
+    if pyproject is None or bertrand is None:
+        return  # only fire once both resources have been parsed
+
+    groups = set(pyproject.project.optional_dependencies)
+    tags = {tag.tag for tag in bertrand.tags}
+    unknown = sorted(groups.difference(tags))
+    missing = sorted(tags.difference(groups))
+
+    # enforce exact match
+    problems: list[str] = []
+    if unknown:
+        problems.append(
+            "unknown [project.optional-dependencies] groups with no matching "
+            "[[tool.bertrand.tags]].tag: "
+            f"{', '.join(repr(name) for name in unknown)}"
+        )
+    if missing:
+        problems.append(
+            "missing [project.optional-dependencies] groups for declared "
+            "[[tool.bertrand.tags]].tag values: "
+            f"{', '.join(repr(name) for name in missing)}"
+        )
+    if problems:
+        raise ValueError("; ".join(problems))
+
+
 @resource("pyproject", kind="file", template="core/pyproject.v1")
 class PyProject(Resource):
     """A resource describing a `pyproject.toml` file, which is the primary vehicle for
@@ -1214,7 +1252,21 @@ class PyProject(Resource):
                     raise ValueError("build-system.requires must be set to ['bertrand']")
                 return value
 
+            @staticmethod
+            def _check_backend(value: str) -> str:
+                if value != "bertrand.env.build":
+                    raise ValueError(
+                        "build-system.build-backend must be set to "
+                        "'bertrand.env.build'"
+                    )
+                return value
+
             requires: Annotated[list[str], AfterValidator(_check_requires)]
+            build_backend: Annotated[
+                str,
+                AfterValidator(_check_backend),
+                Field(alias="build-backend")
+            ]
 
         build_system: Annotated[BuildSystem, Field(default=None, alias="build-system")]
 
@@ -1252,7 +1304,7 @@ class PyProject(Resource):
             keywords: Annotated[list[str], Field(default_factory=list)]
             classifiers: Annotated[list[str], Field(default_factory=list)]
             dependencies: Annotated[list[PEP508Requirement], Field(default_factory=list)]
-            optional_dependencies: Annotated[dict[PEP508Name, list[PEP508Requirement]], Field(
+            optional_dependencies: Annotated[dict[TagName, list[PEP508Requirement]], Field(
                 default_factory=dict,
                 alias="optional-dependencies"
             )]
@@ -1330,6 +1382,7 @@ class PyProject(Resource):
             normalized["conan"] = conan
             normalized["conanfile"] = {}
             normalized["conanremotes"] = {}
+            normalized["conanprofile"] = {}
 
         bertrand = tool.get("bertrand")
         if isinstance(bertrand, dict):
@@ -1354,6 +1407,7 @@ class PyProject(Resource):
             return None
         result = self.Model.model_validate(config.snapshot[self.name])
         result.project.resolve_licenses(config.worktree)
+        _validate_dependency_groups(pyproject=result, bertrand=config.bertrand)
         return result
 
 
@@ -1458,22 +1512,11 @@ class ConanFile(Resource):
     # pylint: disable=missing-function-docstring, unused-argument, missing-return-doc
 
     @staticmethod
-    def _merge_conf(
-        base: ConanConf,
-        override: ConanConf,
-    ) -> dict[ConanConfNamespace, dict[ConanConfName, Scalar]]:
-        merged: dict[ConanConfNamespace, dict[ConanConfName, Scalar]] = {}
-        for namespace, values in base.items():
-            merged[namespace] = values.copy()
-        for namespace, values in override.items():
-            merged.setdefault(namespace, {}).update(values)
-        return merged
-
-    def _project_fields(self, config: Config) -> tuple[str, str]:
+    def _project_fields(config: Config) -> tuple[str, str]:
         if config.pyproject:
             return (
-                f"\n    name = \"{config.pyproject.project.name}\"",
-                f"\n    version = \"{config.pyproject.project.version}\""
+                f"\n    name = {repr(config.pyproject.project.name)}",
+                f"\n    version = {repr(config.pyproject.project.version)}"
             )
         return "", ""
 
@@ -1486,39 +1529,29 @@ class ConanFile(Resource):
         result += "    }"
         return result
 
-    def _conf(self, conf: dict[ConanConfNamespace, dict[ConanConfName, Scalar]]) -> str:
-        result = ""
-        for namespace in sorted(conf):
-            for key, value in sorted(conf[namespace].items()):
-                conf_key = f"{namespace}:{key}"
-                result += f"\n        self.conf_info.define({repr(conf_key)}, {repr(value)})"
-        return result
-
     def render(self, config: Config, tag: str) -> str | None:
         if config.conan is None:
             return None
 
-        # start with global Conan config, then merge tag-specific overrides if
+        # start with global requirements, then merge tag-specific additions if
         # applicable
-        build_type = config.conan.build_type
-        conf = self._merge_conf(config.conan.conf, {})
         requires = list(config.conan.requires)
         if config.bertrand is not None:
             active = next((t for t in config.bertrand.tags if t.tag == tag), None)
             if active is not None:
-                if active.conan.build_type:
-                    build_type = active.conan.build_type
-                conf = self._merge_conf(conf, active.conan.conf)
                 requires.extend(active.conan.requires)
 
-        # dedulicate merged requirements and sort into `requires` and `tool_requires`
+        # check merged requirement identities and sort into host/tool requirements
         _requires: list[ConanConfig.Model.Require] = []
         tool_requires: list[ConanConfig.Model.Require] = []
         seen: set[tuple[str, str]] = set()
         for req in requires:
             identity = (req.kind, req.package)
             if identity in seen:
-                continue
+                raise OSError(
+                    f"duplicate effective conan requirement identity for tag '{tag}': "
+                    f"kind='{req.kind}', package='{req.package}'"
+                )
             if req.kind == "host":
                 _requires.append(req)
             elif req.kind == "tool":
@@ -1546,7 +1579,6 @@ class ConanFile(Resource):
         # format output strings for relevant options
         project_name, project_version = self._project_fields(config)
         _default_options = self._default_options(default_options)
-        _conf = self._conf(conf)
         return f"""from conan import ConanFile
 
 class BertrandConanFile(ConanFile):{project_name}{project_version}
@@ -1554,11 +1586,120 @@ class BertrandConanFile(ConanFile):{project_name}{project_version}
     requires = {repr(tuple(req.package for req in requires))}
     tool_requires = {repr(tuple(req.package for req in tool_requires))}{_default_options}
 
-    def configure(self):
-        if self.settings.build_type is None:
-            self.settings.build_type = {repr(build_type)}{_conf}
-
 """
+
+
+@resource("conanprofile", kind="file")
+class ConanProfile(Resource):
+    """A resource describing the effective Conan default profile."""
+    # pylint: disable=missing-function-docstring, unused-argument, missing-return-doc
+
+    ARCH_MAP: dict[str, str] = {
+        "x86_64": "x86_64",
+        "amd64": "x86_64",
+        "aarch64": "armv8",
+        "arm64": "armv8",
+    }
+
+    @staticmethod
+    def _merge_conf(
+        base: ConanConf,
+        override: ConanConf,
+    ) -> dict[ConanConfNamespace, dict[ConanConfName, ConanConfValue]]:
+        merged: dict[ConanConfNamespace, dict[ConanConfName, ConanConfValue]] = {
+            namespace: values.copy() for namespace, values in base.items()
+        }
+        for namespace, values in override.items():
+            merged.setdefault(namespace, {}).update(values)
+        return merged
+
+    def _arch(self) -> str:
+        raw_arch = os.uname().machine.strip().lower()
+        arch = self.ARCH_MAP.get(raw_arch)
+        if arch is None:
+            raise OSError(
+                f"unsupported Conan architecture for current runtime machine: '{raw_arch}'"
+            )
+        return arch
+
+    @staticmethod
+    def _clang_major() -> str:
+        result = run(["/opt/llvm/bin/clang", "-dumpversion"], capture_output=True)
+        version = result.stdout.strip()
+        major = version.split(".", maxsplit=1)[0]
+        if not major or not major.isdigit():
+            raise OSError(
+                "failed to parse clang major version during conan profile generation: "
+                f"{repr(version)}"
+            )
+        return major
+
+    @staticmethod
+    def _cppstd() -> str:
+        value = "" if VERSION.cxx_std is None else str(VERSION.cxx_std).strip()
+        if not value or not value.isdigit():
+            raise OSError(
+                "invalid VERSION.cxx_std during conan profile generation: "
+                f"{repr(VERSION.cxx_std)}"
+            )
+        return value
+
+    def render(self, config: Config, tag: str) -> str | None:
+        if config.conan is None:
+            return None
+
+        # merge global and tag-specific build_type + conf settings
+        build_type = config.conan.build_type
+        conf = self._merge_conf(
+            {
+                "tools.cmake.cmaketoolchain": {"generator": "Ninja"},
+                "tools.build": {
+                    "compiler_executables": {
+                        "c": "/opt/llvm/bin/clang",
+                        "cpp": "/opt/llvm/bin/clang++",
+                    }
+                },
+            },
+            config.conan.conf,
+        )
+        if config.bertrand is not None:
+            active = next((t for t in config.bertrand.tags if t.tag == tag), None)
+            if active is not None:
+                if active.conan.build_type:
+                    build_type = active.conan.build_type
+                conf = self._merge_conf(conf, active.conan.conf)
+        conf_def = ConfDefinition()
+        for namespace in sorted(conf):
+            for key, value in sorted(conf[namespace].items()):
+                conf_def.update(f"{namespace}:{key}", value, profile=True)
+        conf_text = conf_def.dumps()
+
+        # render lines
+        clang_major = self._clang_major()
+        arch = self._arch()
+        cppstd = self._cppstd()
+        lines = [
+            "[settings]",
+            "os=Linux",
+            f"arch={arch}",
+            "compiler=clang",
+            f"compiler.version={clang_major}",
+            "compiler.libcxx=libc++",
+            f"compiler.cppstd={cppstd}",
+            f"build_type={build_type}",
+            "",
+            "[conf]",
+        ]
+        if conf_text:
+            lines.extend(conf_text.splitlines())
+        lines.extend([
+            "",
+            "[buildenv]",
+            "CC=ccache /opt/llvm/bin/clang",
+            "CXX=ccache /opt/llvm/bin/clang++",
+            "",
+        ])
+        return "\n".join(lines)
 
 
 @resource("conanremotes", kind="file")
@@ -1595,9 +1736,6 @@ class ConanRemotes(Resource):
         if not text.endswith("\n"):
             text += "\n"
         return text
-
-
-# TODO: add a ConanProfile resource for replacing the default conan profile
 
 
 @resource("bertrand", kind=None)
@@ -1673,11 +1811,7 @@ class Bertrand(Resource):
         class Tag(BaseModel):
             """Validate entries in the `[[tool.bertrand.tags]]` table."""
             model_config = ConfigDict(extra="forbid")
-            tag: SanitizedName
-            dependencies: Annotated[
-                list[PEP508Requirement],
-                Field(default_factory=list)
-            ]
+            tag: TagName
             containerfile: Annotated[
                 RelativePath,
                 Field(default=PosixPath("Containerfile"))
@@ -2090,8 +2224,24 @@ class Bertrand(Resource):
                     seen.add(path)
 
         tags: Annotated[list[Tag], Field(default_factory=lambda: [
-            Bertrand.Model.Tag.model_construct(tag="")
+            Bertrand.Model.Tag.model_construct(tag=DEFAULT_TAG)
         ])]
+
+        @model_validator(mode="after")
+        def _validate_tags(self) -> Self:
+            seen: set[str] = set()
+            for tag in self.tags:
+                if tag.tag in seen:
+                    raise ValueError(
+                        f"duplicate tag name in 'tool.bertrand.tags': '{tag.tag}'"
+                    )
+                seen.add(tag.tag)
+            if DEFAULT_TAG not in seen:
+                raise ValueError(
+                    "missing required default tag in 'tool.bertrand.tags': "
+                    f"'{DEFAULT_TAG}'"
+                )
+            return self
 
         @model_validator(mode="after")
         def _validate_services(self) -> Self:
@@ -2179,6 +2329,7 @@ class Bertrand(Resource):
         if not isinstance(table, dict):
             return None
         result = self.Model.model_validate(table)
+        _validate_dependency_groups(pyproject=config.pyproject, bertrand=result)
         for tag in result.tags:
             tag.resolve_containerfile(config.worktree)
             tag.resolve_env_files(config.worktree)
@@ -3513,6 +3664,7 @@ CAPABILITIES: dict[str, dict[str, dict[str, PosixPath]]] = {
             "compile_commands": ARTIFACT_ROOT / "compile_commands.json",
             "conanfile": ARTIFACT_ROOT / "conanfile.py",
             "conanremotes": CONAN_HOME / "remotes.json",
+            "conanprofile": CONAN_HOME / "profiles" / "default",
             "clangd": ARTIFACT_ROOT / ".clangd",
             "clang-tidy": ARTIFACT_ROOT / ".clang-tidy",
             "clang-format": ARTIFACT_ROOT / ".clang-format",
@@ -3521,6 +3673,7 @@ CAPABILITIES: dict[str, dict[str, dict[str, PosixPath]]] = {
             "compile_commands": ARTIFACT_ROOT / "compile_commands.json",
             "conanfile": ARTIFACT_ROOT / "conanfile.py",
             "conanremotes": CONAN_HOME / "remotes.json",
+            "conanprofile": CONAN_HOME / "profiles" / "default",
             "clangd": ARTIFACT_ROOT / ".clangd",
             "clang-tidy": ARTIFACT_ROOT / ".clang-tidy",
             "clang-format": ARTIFACT_ROOT / ".clang-format",
@@ -4238,3 +4391,65 @@ class Config:
                         f"failed to write sync output for resource '{resource_id}' at "
                         f"{target}: {err}"
                     ) from err
+
+    def build(self, tag: str) -> None:
+        """Install Python dependencies and builds/installs the project for the given
+        tag.
+
+        This requires an active config context (`with config:`), and is intended to
+        run after `sync()` so generated artifacts are available before invoking build
+        backends.
+
+        Parameters
+        ----------
+        tag : str
+            The active image tag for this build.
+
+        Raises
+        ------
+        RuntimeError
+            If called outside an image context or without an active config context.
+        OSError
+            If required config state is missing, tag/group resolution fails.
+        CommandError
+            If a build command fails.
+        """
+        if not inside_image():
+            raise RuntimeError("build() requires access to a container filesystem")
+        if not self:
+            raise RuntimeError("build() requires an active config context")
+        if self.pyproject is None:
+            raise OSError("build() requires parsed 'pyproject' configuration")
+        if self.bertrand is None:
+            raise OSError("build() requires parsed 'bertrand' configuration")
+        tags = {entry.tag for entry in self.bertrand.tags}
+        if tag not in tags:
+            raise OSError(
+                f"build() received unknown active tag '{tag}' (declared tags: "
+                f"{', '.join(sorted(repr(name) for name in tags))})"
+            )
+        groups = self.pyproject.project.optional_dependencies
+        if tag not in groups:
+            raise OSError(
+                "build() requires matching [project.optional-dependencies] group for "
+                f"active tag '{tag}'"
+            )
+
+        # form 1-step sync command
+        sync_cmd = [
+            "uv",
+            "sync",
+            "--locked",
+            "--system",  # install into system Python
+            "--inexact",  # preserve existing compatible dependencies where possible
+            "--no-default-groups",  # don't install any extras
+            "--no-dev",  # don't install extra dependency groups
+            "--extra", tag,  # only install the group matching the active tag
+            "--no-build-isolation-package", self.pyproject.project.name,  # no isolation
+        ]
+        if not inside_container():
+            sync_cmd.append("--no-editable")  # image build context -> non-editable
+
+        with lock_worktree(self.worktree):
+            run(["uv", "lock"], cwd=self.worktree)  # update lockfile
+            run(sync_cmd, cwd=self.worktree)  # orchestrate build

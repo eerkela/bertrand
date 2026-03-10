@@ -11,6 +11,7 @@ import sys
 from typing import cast
 
 from .env.code import CodeError, open_editor
+from .env.config import inside_image, inside_container
 from .env.pipeline import (
     JSONValue,
     Pipeline,
@@ -35,6 +36,7 @@ from .env.pipeline import (
 from .env.container import Environment
 from .env.config import (
     ARTIFACT_ROOT,
+    DEFAULT_TAG,
     IMAGE_TAG_ENV,
     WORKTREE_MOUNT,
     Config,
@@ -43,15 +45,6 @@ from .env.run import confirm
 from . import __version__
 
 # pylint: disable=unused-argument
-
-
-INTERNAL_ENV: str = "BERTRAND"
-LEGACY_IMAGE_TAG_ENV: str = "BERTRAND_IMAGE"
-RUNTIME_TAG_KEYS: tuple[str, str, str] = (
-    "BERTRAND_ENV",
-    "BERTRAND_IMAGE",
-    "BERTRAND_CONTAINER",
-)
 
 
 # # create swap memory for large builds
@@ -73,43 +66,34 @@ RUNTIME_TAG_KEYS: tuple[str, str, str] = (
 #         swapfile.unlink(missing_ok=True)
 
 
-
-def inside_image() -> bool:
-    """Check if we're currently running inside an image build context (Containerfile
-    or container instance).
-
-    Returns
-    -------
-    bool
-        True if we're either building an image or running inside a container process.
-        False otherwise.
-
-    Notes
-    -----
-    If this is true and `inside_container()` is false, then it means the CLI was
-    invoked from a Containerfile during an image build, which corresponds to AoT
-    compilation for statically-typed languages.  The `build` command takes advantage
-    of this to differentiate between normal and editable installs, for example.
-    """
-    return os.environ.get(INTERNAL_ENV, "") == "1"
-
-
-def inside_container() -> bool:
-    """Check if we're currently running inside a container instance.
-
-    Returns
-    -------
-    bool
-        True if we're running inside a container process, False otherwise.
-    """
-    return all(key in os.environ for key in RUNTIME_TAG_KEYS)
-
-
 def _parse(path: str | None) -> tuple[str | None, str, str]:
     if path is None:
         return (None, "", "")
     else:
         return Environment.parse(path)
+
+
+def _resolve_default_target(
+    env: str | None,
+    image_tag: str,
+    container_tag: str
+) -> tuple[str | None, str, str]:
+    if env is None:
+        return env, image_tag, container_tag
+    if not image_tag:
+        return env, DEFAULT_TAG, DEFAULT_TAG
+    if not container_tag:
+        return env, image_tag, DEFAULT_TAG
+    return env, image_tag, container_tag
+
+
+def _require_active_image_tag() -> str:
+    tag = os.environ.get(IMAGE_TAG_ENV, "").strip()
+    if not tag:
+        raise OSError(
+            f"missing active image tag in container environment: '{IMAGE_TAG_ENV}'"
+        )
+    return tag
 
 
 def _dedupe(values: list[str]) -> list[str]:
@@ -121,14 +105,6 @@ def _dedupe(values: list[str]) -> list[str]:
         seen.add(value)
         out.append(value)
     return out
-
-
-def _active_image_tag() -> str:
-    """Get the active image tag from in-container environment variables."""
-    return (
-        os.environ.get(IMAGE_TAG_ENV, "").strip() or
-        os.environ.get(LEGACY_IMAGE_TAG_ENV, "").strip()
-    )
 
 
 class External:
@@ -1046,7 +1022,7 @@ class External:
         args : argparse.Namespace
             The parsed command-line arguments.
         """
-        env, image_tag, container_tag = _parse(args.path)
+        env, image_tag, container_tag = _resolve_default_target(*_parse(args.path))
         on_enter.do(
             env=env,
             image_tag=image_tag,
@@ -1062,7 +1038,7 @@ class External:
         args : argparse.Namespace
             The parsed command-line arguments.
         """
-        env, image_tag, container_tag = _parse(args.path)
+        env, image_tag, container_tag = _resolve_default_target(*_parse(args.path))
         on_code.do(
             env=env,
             image_tag=image_tag,
@@ -1078,7 +1054,7 @@ class External:
         args : argparse.Namespace
             The parsed command-line arguments.
         """
-        env, image_tag, container_tag = _parse(args.path)
+        env, image_tag, container_tag = _resolve_default_target(*_parse(args.path))
         on_run.do(
             env=env,
             image_tag=image_tag,
@@ -1232,7 +1208,7 @@ class External:
         args : argparse.Namespace
             The parsed command-line arguments.
         """
-        env, image_tag, container_tag = _parse(args.path)
+        env, image_tag, container_tag = _resolve_default_target(*_parse(args.path))
         on_top.do(
             env=env,
             image_tag=image_tag,
@@ -1248,7 +1224,7 @@ class External:
         args : argparse.Namespace
             The parsed command-line arguments.
         """
-        env, image_tag, container_tag = _parse(args.path)
+        env, image_tag, container_tag = _resolve_default_target(*_parse(args.path))
         on_log.do(
             env=env,
             image_tag=image_tag,
@@ -1524,19 +1500,18 @@ class Internal:
 
         Raises
         ------
-        SystemExit
-            If the build process fails with a non-zero exit code.
+        OSError
+            If artifact sync or Python dependency/build orchestration fails.
         """
-        tag = _active_image_tag()
+        tag = os.environ.get(IMAGE_TAG_ENV, "").strip()
+        if not tag:
+            raise OSError(
+                "could not determine active image tag in container environment: "
+                f"'{IMAGE_TAG_ENV}'"
+            )
         with Config.load(WORKTREE_MOUNT) as config:
             config.sync(tag)
-        cmd: list[str] = ["uv", "pip", "install"]
-        if inside_container():
-            cmd.append("-e")
-        cmd.append(".")
-        result = subprocess.run(cmd, check=False, cwd=WORKTREE_MOUNT)
-        if result.returncode != 0:
-            raise SystemExit(result.returncode)
+            config.build(tag)
 
     @staticmethod
     def check(args: argparse.Namespace) -> None:
@@ -1555,7 +1530,7 @@ class Internal:
         SystemExit
             If any check command exits non-zero.
         """
-        tag = _active_image_tag()
+        tag = _require_active_image_tag()
         with Config.load(WORKTREE_MOUNT) as config:
             config.sync(tag)
             files = config.sources()
@@ -1600,7 +1575,7 @@ class Internal:
         SystemExit
             If formatting exits non-zero.
         """
-        tag = _active_image_tag()
+        tag = _require_active_image_tag()
         with Config.load(WORKTREE_MOUNT) as config:
             config.sync(tag)
             files = config.sources()

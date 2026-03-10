@@ -48,6 +48,7 @@ from .code import (
 from .config import (
     CONTAINER_ID_ENV,
     DEFAULT_MAX_COMMITS,
+    DEFAULT_TAG,
     HOST_ENV,
     MOUNT,
     SHELLS,
@@ -3345,7 +3346,7 @@ class Enter(_Command):
             ctx,
             env=env,
             image_tag=image_tag,
-            container_tag="",  # default container
+            container_tag=DEFAULT_TAG,
             args=args,
             code_server_available=code_server_available,
             **kwargs
@@ -3363,8 +3364,8 @@ class Enter(_Command):
         Enter.container(
             ctx,
             env=env,
-            image_tag="",  # default image
-            container_tag="",  # default container
+            image_tag=DEFAULT_TAG,
+            container_tag=DEFAULT_TAG,
             args=args,
             code_server_available=code_server_available,
             **kwargs
@@ -3444,7 +3445,7 @@ class Code(_Command):
             ctx,
             env=env,
             image_tag=image_tag,
-            container_tag="",  # default container
+            container_tag=DEFAULT_TAG,
             code_server_available=code_server_available,
             **kwargs
         )
@@ -3460,8 +3461,8 @@ class Code(_Command):
         Code.container(
             ctx,
             env=env,
-            image_tag="",  # default image
-            container_tag="",  # default container
+            image_tag=DEFAULT_TAG,
+            container_tag=DEFAULT_TAG,
             code_server_available=code_server_available,
             **kwargs
         )
@@ -3540,7 +3541,7 @@ class Run(_Command):
             ctx,
             env=env,
             image_tag=image_tag,
-            container_tag="",  # default container
+            container_tag=DEFAULT_TAG,
             args=args,
             **kwargs
         )
@@ -3556,8 +3557,8 @@ class Run(_Command):
         Run.container(
             ctx,
             env=env,
-            image_tag="",  # default image
-            container_tag="",  # default container
+            image_tag=DEFAULT_TAG,
+            container_tag=DEFAULT_TAG,
             args=args,
             **kwargs
         )
@@ -4637,7 +4638,7 @@ class Top(_Command):
             ctx,
             env=env,
             image_tag=image_tag,
-            container_tag="",  # default container
+            container_tag=DEFAULT_TAG,
             **kwargs
         )
 
@@ -4651,8 +4652,8 @@ class Top(_Command):
         Top.container(
             ctx,
             env=env,
-            image_tag="",  # default image
-            container_tag="",  # default container
+            image_tag=DEFAULT_TAG,
+            container_tag=DEFAULT_TAG,
             **kwargs
         )
 
@@ -4758,9 +4759,9 @@ class Log(_Command):
         if images:
             Log._format_image(image)
         else:
-            container = image.containers.get("")
+            container = image.containers.get(DEFAULT_TAG)
             if container is None:
-                raise KeyError("no container found for tag: ''")
+                raise KeyError(f"no container found for tag: '{DEFAULT_TAG}'")
             Log._format_container(container, since=since, until=until)
 
     @staticmethod
@@ -4776,7 +4777,7 @@ class Log(_Command):
         return Log.image(
             ctx,
             env=env,
-            image_tag="",  # default image
+            image_tag=DEFAULT_TAG,
             images=images,
             since=since,
             until=until,
