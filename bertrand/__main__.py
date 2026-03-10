@@ -34,7 +34,9 @@ from .env.pipeline import (
 )
 from .env.container import Environment
 from .env.config import (
-    MOUNT,
+    ARTIFACT_ROOT,
+    IMAGE_TAG_ENV,
+    WORKTREE_MOUNT,
     Config,
 )
 from .env.run import confirm
@@ -44,6 +46,7 @@ from . import __version__
 
 
 INTERNAL_ENV: str = "BERTRAND"
+LEGACY_IMAGE_TAG_ENV: str = "BERTRAND_IMAGE"
 RUNTIME_TAG_KEYS: tuple[str, str, str] = (
     "BERTRAND_ENV",
     "BERTRAND_IMAGE",
@@ -118,6 +121,14 @@ def _dedupe(values: list[str]) -> list[str]:
         seen.add(value)
         out.append(value)
     return out
+
+
+def _active_image_tag() -> str:
+    """Get the active image tag from in-container environment variables."""
+    return (
+        os.environ.get(IMAGE_TAG_ENV, "").strip() or
+        os.environ.get(LEGACY_IMAGE_TAG_ENV, "").strip()
+    )
 
 
 class External:
@@ -1516,13 +1527,14 @@ class Internal:
         SystemExit
             If the build process fails with a non-zero exit code.
         """
-        with Config.load(MOUNT) as config:
-            config.sync()
+        tag = _active_image_tag()
+        with Config.load(WORKTREE_MOUNT) as config:
+            config.sync(tag)
         cmd: list[str] = ["uv", "pip", "install"]
         if inside_container():
             cmd.append("-e")
         cmd.append(".")
-        result = subprocess.run(cmd, check=False, cwd=MOUNT)
+        result = subprocess.run(cmd, check=False, cwd=WORKTREE_MOUNT)
         if result.returncode != 0:
             raise SystemExit(result.returncode)
 
@@ -1543,22 +1555,30 @@ class Internal:
         SystemExit
             If any check command exits non-zero.
         """
-        with Config.load(MOUNT) as config:
-            config.sync()
+        tag = _active_image_tag()
+        with Config.load(WORKTREE_MOUNT) as config:
+            config.sync(tag)
             files = config.sources()
+        artifact_root = str(ARTIFACT_ROOT)
+        clang_tidy_config = ARTIFACT_ROOT / ".clang-tidy"
 
         # Python static checks
         for cmd in (["ruff", "check", "."], ["ty", "check", "."]):
-            result = subprocess.run(cmd, check=False, cwd=MOUNT)
+            result = subprocess.run(cmd, check=False, cwd=WORKTREE_MOUNT)
             if result.returncode != 0:
                 raise SystemExit(result.returncode)
 
         # C++ static checks over resolved compilation sources.
         for source in files:
             result = subprocess.run(
-                ["clang-tidy", "-p", str(MOUNT), str(source)],
+                [
+                    "clang-tidy",
+                    "-p", artifact_root,
+                    f"--config-file={clang_tidy_config}",
+                    str(source),
+                ],
                 check=False,
-                cwd=MOUNT,
+                cwd=WORKTREE_MOUNT,
             )
             if result.returncode != 0:
                 raise SystemExit(result.returncode)
@@ -1580,21 +1600,23 @@ class Internal:
         SystemExit
             If formatting exits non-zero.
         """
-        with Config.load(MOUNT) as config:
-            config.sync()
+        tag = _active_image_tag()
+        with Config.load(WORKTREE_MOUNT) as config:
+            config.sync(tag)
             files = config.sources()
+        clang_format_config = ARTIFACT_ROOT / ".clang-format"
 
         # Python formatting
-        result = subprocess.run(["ruff", "format", "."], check=False, cwd=MOUNT)
+        result = subprocess.run(["ruff", "format", "."], check=False, cwd=WORKTREE_MOUNT)
         if result.returncode != 0:
             raise SystemExit(result.returncode)
 
         # C++ formatting over resolved compilation sources.
         for source in files:
             result = subprocess.run(
-                ["clang-format", "-i", str(source)],
+                ["clang-format", f"--style=file:{clang_format_config}", "-i", str(source)],
                 check=False,
-                cwd=MOUNT
+                cwd=WORKTREE_MOUNT
             )
             if result.returncode != 0:
                 raise SystemExit(result.returncode)
@@ -1614,7 +1636,7 @@ class Internal:
         SystemExit
             If the test process exits non-zero.
         """
-        result = subprocess.run(["pytest", "-q"], check=False, cwd=MOUNT)
+        result = subprocess.run(["pytest", "-q"], check=False, cwd=WORKTREE_MOUNT)
         if result.returncode != 0:
             raise SystemExit(result.returncode)
 

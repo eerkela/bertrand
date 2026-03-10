@@ -12,9 +12,9 @@ Canonical templates are packaged with Bertrand and lazily hydrated into
 """
 from __future__ import annotations
 
-import hashlib
 import json
 import ipaddress
+import os
 import re
 import shutil
 import string
@@ -65,7 +65,8 @@ WORKTREE_METADATA: PosixPath = WORKTREE_DIR / "env.json"
 WORKTREE_MOUNT: PosixPath = PosixPath("/env")
 WORKTREE_TMP: PosixPath = WORKTREE_DIR / "tmp"
 WORKTREE_COMMITS: PosixPath = WORKTREE_DIR / "commits"
-ARTIFACT_ROOT: Path = Path("/tmp/bertrand/artifacts")
+ARTIFACT_ROOT: PosixPath = PosixPath("/tmp/bertrand/artifacts")
+CONAN_HOME: PosixPath = PosixPath("/opt/conan")
 
 
 # Global resource catalog.  Extensions can add resources here with associated behavior,
@@ -77,6 +78,7 @@ CATALOG: dict[str,  Resource] = {}
 # In-container environment variables for relevant configuration, which are set either
 # at build time or upon starting the container context, and used to control the
 # behavior of the bertrand CLI both inside and outside the container.
+BERTRAND_ENV: str = "BERTRAND"
 CONTAINER_BIN_ENV: str = "BERTRAND_CONTAINER_BIN"
 CONTAINER_ID_ENV: str = "BERTRAND_CONTAINER_ID"
 CONTAINER_TAG_ENV: str = "BERTRAND_CONTAINER_TAG"
@@ -86,6 +88,38 @@ ENV_NAME_ENV: str = "BERTRAND_ENV_NAME"
 ENV_ROOT_ENV: str = "BERTRAND_ENV_ROOT"
 IMAGE_ID_ENV: str = "BERTRAND_IMAGE_ID"
 IMAGE_TAG_ENV: str = "BERTRAND_IMAGE_TAG"
+
+
+def inside_image() -> bool:
+    """Check if we're currently running inside a Bertrand image build context
+    (Containerfile or Bertrand container instance).
+
+    Returns
+    -------
+    bool
+        True if we're either building an image or running inside a container process.
+        False otherwise.
+
+    Notes
+    -----
+    If this is true and `inside_container()` is false, then it means the CLI was
+    invoked from a Containerfile during an image build, which corresponds to
+    ahead-of-time (AoT) compilation for statically-typed languages.  The `build`
+    command takes advantage of this to differentiate between normal (in-image) and
+    editable (in-container) installs, for example.
+    """
+    return os.environ.get(BERTRAND_ENV, "") == "1"
+
+
+def inside_container() -> bool:
+    """Check if we're currently running inside a Bertrand container instance.
+
+    Returns
+    -------
+    bool
+        True if we're running inside a container process, False otherwise.
+    """
+    return all(key in os.environ for key in (CONTAINER_ID_ENV, IMAGE_ID_ENV, ENV_ID_ENV))
 
 
 # Configuration options that affect CLI behavior
@@ -656,6 +690,7 @@ def _check_health_log_destination(value: str) -> str:
     return path.as_posix()
 
 
+type ResourceKind = Literal["file", "dir"] | None
 type NonEmpty[SequenceT: Sequence[Any]] = Annotated[SequenceT, Field(min_length=1)]
 type NonNegativeInt = Annotated[int, Field(ge=0)]
 type NonNegativeFloat = Annotated[float, Field(ge=0.0)]
@@ -874,28 +909,6 @@ class Template(BaseModel):
         return path
 
 
-type ResourceKind = Literal["file", "dir"] | None
-type PlacementRoot = Literal["worktree", "artifact"]
-
-
-@dataclass(frozen=True)
-class Placement:
-    """A root-aware placement for one managed resource."""
-    root: PlacementRoot
-    path: PosixPath
-
-    def __post_init__(self) -> None:
-        if self.root not in {"worktree", "artifact"}:
-            raise ValueError(f"invalid placement root: {self.root}")
-        object.__setattr__(self, "path", _check_relative_path(self.path))
-
-    def resolve(self, worktree: Path) -> Path:
-        if self.root == "worktree":
-            return worktree / Path(self.path)
-        digest = hashlib.sha256(str(worktree).encode("utf-8")).hexdigest()[:16]
-        return ARTIFACT_ROOT / digest / Path(self.path)
-
-
 def resource[ResourceT: Resource](
     name: str,
     *,
@@ -1023,7 +1036,12 @@ class Resource:
 
     @property
     def is_virtual(self) -> bool:
-        """True if this resource has no filesystem mapping."""
+        """
+        Returns
+        -------
+        bool
+            True if this resource has no filesystem mapping.
+        """
         return self.kind is None
 
     def parse(self, config: Config) -> dict[str, Any] | None:
@@ -1309,7 +1327,9 @@ class PyProject(Resource):
 
         conan = tool.get("conan")
         if isinstance(conan, dict):
-            normalized["conanfile"] = conan
+            normalized["conan"] = conan
+            normalized["conanfile"] = {}
+            normalized["conanremotes"] = {}
 
         bertrand = tool.get("bertrand")
         if isinstance(bertrand, dict):
@@ -1337,18 +1357,15 @@ class PyProject(Resource):
         return result
 
 
-# TODO: add a conanfile template to support this resource
-
-
-@resource("conanfile", kind="file", template="core/conanfile.v1")
-class Conanfile(Resource):
-    """A resource describing a `conanfile.py`, which is used to organize C++
-    dependencies.
+@resource("conan", kind=None)
+class ConanConfig(Resource):
+    """A virtual resource that validates Conan configuration data sourced from
+    project config files (e.g. `[tool.conan]` in `pyproject.toml`).
     """
     # pylint: disable=missing-function-docstring, unused-argument, missing-return-doc
 
     class Model(BaseModel):
-        """Validate the (global) [conan] table."""
+        """Validate the global `[tool.conan]` table."""
         model_config = ConfigDict(extra="forbid")
         build_type: Annotated[
             Literal["Release", "Debug"],
@@ -1357,7 +1374,7 @@ class Conanfile(Resource):
         conf: Annotated[ConanConf, Field(default_factory=dict)]
 
         class Require(BaseModel):
-            """Validate entries in the `[[conan.requires]]` AoT."""
+            """Validate entries in `[[tool.conan.requires]]`."""
             model_config = ConfigDict(extra="forbid")
             package: ConanRequirement
             kind: Annotated[Literal["host", "tool"], Field(default="host")]
@@ -1365,10 +1382,9 @@ class Conanfile(Resource):
                 dict[ConanOptionName, Scalar],
                 Field(default_factory=dict)
             ]
-            conf: Annotated[ConanConf, Field(default_factory=dict)]
 
         class Remote(BaseModel):
-            """Validate entries in the `[[conan.remotes]]` AoT."""
+            """Validate entries in `[[tool.conan.remotes]]`."""
             @staticmethod
             def _check_allowed_packages(
                 value: list[ConanAllowedPattern]
@@ -1430,21 +1446,158 @@ class Conanfile(Resource):
         ]
 
     def validate(self, config: Config) -> Model | None:
-        table = config.snapshot.get("conan")
+        table = config.snapshot.get(self.name)
         if not isinstance(table, dict):
             return None
         return self.Model.model_validate(table)
 
-    # TODO: I should really be rendering a `conanfile.py` rather than `.txt`, since
-    # the latter has reduced features.
+
+@resource("conanfile", kind="file")
+class ConanFile(Resource):
+    """A resource describing a generated out-of-tree `conanfile.py` consumer recipe."""
+    # pylint: disable=missing-function-docstring, unused-argument, missing-return-doc
+
+    @staticmethod
+    def _merge_conf(
+        base: ConanConf,
+        override: ConanConf,
+    ) -> dict[ConanConfNamespace, dict[ConanConfName, Scalar]]:
+        merged: dict[ConanConfNamespace, dict[ConanConfName, Scalar]] = {}
+        for namespace, values in base.items():
+            merged[namespace] = values.copy()
+        for namespace, values in override.items():
+            merged.setdefault(namespace, {}).update(values)
+        return merged
+
+    def _project_fields(self, config: Config) -> tuple[str, str]:
+        if config.pyproject:
+            return (
+                f"\n    name = \"{config.pyproject.project.name}\"",
+                f"\n    version = \"{config.pyproject.project.version}\""
+            )
+        return "", ""
+
+    def _default_options(self, default_options: dict[str, Scalar]) -> str:
+        if not default_options:
+            return ""
+        result = "\n    default_options = {\n"
+        for key, value in sorted(default_options.items()):
+            result += f"        {repr(key)}: {repr(value)},\n"
+        result += "    }"
+        return result
+
+    def _conf(self, conf: dict[ConanConfNamespace, dict[ConanConfName, Scalar]]) -> str:
+        result = ""
+        for namespace in sorted(conf):
+            for key, value in sorted(conf[namespace].items()):
+                conf_key = f"{namespace}:{key}"
+                result += f"\n        self.conf_info.define({repr(conf_key)}, {repr(value)})"
+        return result
 
     def render(self, config: Config, tag: str) -> str | None:
-        if config.conanfile is None:
+        if config.conan is None:
             return None
 
-        payload: dict[str, Any] = {}
+        # start with global Conan config, then merge tag-specific overrides if
+        # applicable
+        build_type = config.conan.build_type
+        conf = self._merge_conf(config.conan.conf, {})
+        requires = list(config.conan.requires)
+        if config.bertrand is not None:
+            active = next((t for t in config.bertrand.tags if t.tag == tag), None)
+            if active is not None:
+                if active.conan.build_type:
+                    build_type = active.conan.build_type
+                conf = self._merge_conf(conf, active.conan.conf)
+                requires.extend(active.conan.requires)
 
-        return ""
+        # dedulicate merged requirements and sort into `requires` and `tool_requires`
+        _requires: list[ConanConfig.Model.Require] = []
+        tool_requires: list[ConanConfig.Model.Require] = []
+        seen: set[tuple[str, str]] = set()
+        for req in requires:
+            identity = (req.kind, req.package)
+            if identity in seen:
+                continue
+            if req.kind == "host":
+                _requires.append(req)
+            elif req.kind == "tool":
+                tool_requires.append(req)
+            seen.add(identity)
+        requires = sorted(_requires, key=lambda r: r.package)
+        tool_requires.sort(key=lambda r: r.package)
+
+        # generate Conan options mapping for all requirements
+        default_options: dict[str, Scalar] = {}
+        for req in requires + tool_requires:
+            try:
+                package = RecipeReference.loads(req.package).name
+            except ConanException:
+                package = req.package.split("/", maxsplit=1)[0]
+            for option, value in sorted(req.options.items()):
+                key = f"{package}/*:{option}"
+                inserted = default_options.setdefault(key, value)
+                if inserted != value:
+                    raise OSError(
+                        f"conflicting conan option values for '{key}' across "
+                        f"requirements: {repr(inserted)} vs {repr(value)}"
+                    )
+
+        # format output strings for relevant options
+        project_name, project_version = self._project_fields(config)
+        _default_options = self._default_options(default_options)
+        _conf = self._conf(conf)
+        return f"""from conan import ConanFile
+
+class BertrandConanFile(ConanFile):{project_name}{project_version}
+    settings = "os", "arch", "compiler", "build_type"
+    requires = {repr(tuple(req.package for req in requires))}
+    tool_requires = {repr(tuple(req.package for req in tool_requires))}{_default_options}
+
+    def configure(self):
+        if self.settings.build_type is None:
+            self.settings.build_type = {repr(build_type)}{_conf}
+
+"""
+
+
+@resource("conanremotes", kind="file")
+class ConanRemotes(Resource):
+    """A resource describing Conan remote registry output (`remotes.json`)."""
+    # pylint: disable=missing-function-docstring, unused-argument, missing-return-doc
+
+    def render(self, config: Config, tag: str) -> str | None:
+        if config.conan is None:
+            return None
+        if not config.conan.remotes:
+            # Keep existing remotes.json unchanged when no remotes are configured.
+            return None
+
+        payload: dict[str, list[dict[str, Any]]] = {"remotes": []}
+        for remote in config.conan.remotes:
+            entry: dict[str, Any] = {
+                "name": remote.name,
+                "url": str(remote.url),
+                "verify_ssl": remote.verify_ssl,
+                "disabled": not remote.enabled,
+                "recipes_only": remote.recipes_only,
+            }
+            if remote.allowed_packages:
+                entry["allowed_packages"] = list(remote.allowed_packages)
+            payload["remotes"].append(entry)
+
+        try:
+            text = json.dumps(payload, indent=4, ensure_ascii=False)
+        except (TypeError, ValueError) as err:
+            raise OSError(
+                f"failed to serialize JSON payload for resource '{self.name}': {err}"
+            ) from err
+        if not text.endswith("\n"):
+            text += "\n"
+        return text
+
+
+# TODO: add a ConanProfile resource for replacing the default conan profile
 
 
 @resource("bertrand", kind=None)
@@ -1839,8 +1992,8 @@ class Bertrand(Resource):
                 ]
                 conf: Annotated[ConanConf, Field(default_factory=dict)]
                 requires: Annotated[
-                    list[Conanfile.Model.Require],
-                    AfterValidator(Conanfile.Model._check_requires),
+                    list[ConanConfig.Model.Require],
+                    AfterValidator(ConanConfig.Model._check_requires),
                     Field(default_factory=list)
                 ]
 
@@ -2032,7 +2185,7 @@ class Bertrand(Resource):
         return result
 
 
-@resource("gitignore", kind="file", template="core/gitignore.v1")
+@resource("gitignore", kind="file")
 class GitIgnore(Resource):
     """A resource describing a `.gitignore` file, which is used to exclude files from
     the repository context during version control.  This is generated by the relevant
@@ -2048,7 +2201,7 @@ class GitIgnore(Resource):
         return _dump_ignore_list(patterns)
 
 
-@resource("containerignore", kind="file", template="core/containerignore.v1")
+@resource("containerignore", kind="file")
 class ContainerIgnore(Resource):
     """A resource describing a `.containerignore` file, which is used to exclude files
     from the build context when compiling container images.  This is generated by the
@@ -3323,76 +3476,62 @@ class ClangFormat(Resource):
 
 
 # Profiles define only resource placements: wildcard baseline + profile diffs.
-PROFILES: dict[str, dict[str, Placement]] = {
+PROFILES: dict[str, dict[str, PosixPath]] = {
     "flat": {
-        "publish": Placement(
-            root="worktree",
-            path=PosixPath(".github") / "workflows" / "publish.yml",
-        ),
-        "gitignore": Placement(root="worktree", path=PosixPath(".gitignore")),
-        "containerignore": Placement(root="worktree", path=PosixPath(".containerignore")),
-        "containerfile": Placement(root="worktree", path=PosixPath("Containerfile")),
-        "docs": Placement(root="worktree", path=PosixPath("docs")),
-        "tests": Placement(root="worktree", path=PosixPath("tests")),
+        "publish": PosixPath(".github") / "workflows" / "publish.yml",
+        "gitignore": PosixPath(".gitignore"),
+        "containerignore": PosixPath(".containerignore"),
+        "containerfile": PosixPath("Containerfile"),
+        "docs": PosixPath("docs"),
+        "tests": PosixPath("tests"),
     },
     "src": {
-        "publish": Placement(
-            root="worktree",
-            path=PosixPath(".github") / "workflows" / "publish.yml",
-        ),
-        "gitignore": Placement(root="worktree", path=PosixPath(".gitignore")),
-        "containerignore": Placement(root="worktree", path=PosixPath(".containerignore")),
-        "containerfile": Placement(root="worktree", path=PosixPath("Containerfile")),
-        "docs": Placement(root="worktree", path=PosixPath("docs")),
-        "tests": Placement(root="worktree", path=PosixPath("tests")),
-        "src": Placement(root="worktree", path=PosixPath("src")),
+        "publish": PosixPath(".github") / "workflows" / "publish.yml",
+        "gitignore": PosixPath(".gitignore"),
+        "containerignore": PosixPath(".containerignore"),
+        "containerfile": PosixPath("Containerfile"),
+        "docs": PosixPath("docs"),
+        "tests": PosixPath("tests"),
+        "src": PosixPath("src"),
     },
 }
 
 
 # Capabilities define only language/tool resource placement paths: wildcard baseline
 # + profile-specific diffs.
-CAPABILITIES: dict[str, dict[str, dict[str, Placement]]] = {
+CAPABILITIES: dict[str, dict[str, dict[str, PosixPath]]] = {
     "python": {
         "flat": {
-            "pyproject": Placement(root="worktree", path=PosixPath("pyproject.toml")),
+            "pyproject": PosixPath("pyproject.toml"),
         },
         "src": {
-            "pyproject": Placement(root="worktree", path=PosixPath("pyproject.toml")),
+            "pyproject": PosixPath("pyproject.toml"),
         },
     },
     "cpp": {
         "flat": {
-            "compile_commands": Placement(
-                root="artifact",
-                path=PosixPath("compile_commands.json")
-            ),
-            "clangd": Placement(root="artifact", path=PosixPath(".clangd")),
-            "clang-tidy": Placement(root="artifact", path=PosixPath(".clang-tidy")),
-            "clang-format": Placement(root="artifact", path=PosixPath(".clang-format")),
+            "compile_commands": ARTIFACT_ROOT / "compile_commands.json",
+            "conanfile": ARTIFACT_ROOT / "conanfile.py",
+            "conanremotes": CONAN_HOME / "remotes.json",
+            "clangd": ARTIFACT_ROOT / ".clangd",
+            "clang-tidy": ARTIFACT_ROOT / ".clang-tidy",
+            "clang-format": ARTIFACT_ROOT / ".clang-format",
         },
         "src": {
-            "compile_commands": Placement(
-                root="artifact",
-                path=PosixPath("compile_commands.json")
-            ),
-            "clangd": Placement(root="artifact", path=PosixPath(".clangd")),
-            "clang-tidy": Placement(root="artifact", path=PosixPath(".clang-tidy")),
-            "clang-format": Placement(root="artifact", path=PosixPath(".clang-format")),
+            "compile_commands": ARTIFACT_ROOT / "compile_commands.json",
+            "conanfile": ARTIFACT_ROOT / "conanfile.py",
+            "conanremotes": CONAN_HOME / "remotes.json",
+            "clangd": ARTIFACT_ROOT / ".clangd",
+            "clang-tidy": ARTIFACT_ROOT / ".clang-tidy",
+            "clang-format": ARTIFACT_ROOT / ".clang-format",
         },
     },
     "vscode": {
         "flat": {
-            "vscode-workspace": Placement(
-                root="worktree",
-                path=PosixPath(".vscode/bertrand.code-workspace")
-            ),
+            "vscode-workspace": PosixPath(".vscode/bertrand.code-workspace"),
         },
         "src": {
-            "vscode-workspace": Placement(
-                root="worktree",
-                path=PosixPath(".vscode/bertrand.code-workspace")
-            ),
+            "vscode-workspace": PosixPath(".vscode/bertrand.code-workspace"),
         },
     },
 }
@@ -3407,11 +3546,11 @@ class Config:
     worktree: Path
     profile: str
     capabilities: frozenset[str]
-    _resources: dict[str, Placement | None] = field(default_factory=dict, repr=False)
+    _resources: dict[str, PosixPath | None] = field(default_factory=dict, repr=False)
 
     snapshot: dict[str, Any] = field(default_factory=dict, repr=False)
     pyproject: PyProject.Model | None = field(default=None, repr=False)
-    conanfile: Conanfile.Model | None = field(default=None, repr=False)
+    conan: ConanConfig.Model | None = field(default=None, repr=False)
     bertrand: Bertrand.Model | None = field(default=None, repr=False)
     compile_commands: CompileCommands.Model | None = field(default=None, repr=False)
     clangd: Clangd.Model | None = field(default=None, repr=False)
@@ -3420,11 +3559,17 @@ class Config:
     _entered: int = field(default=0, repr=False)
     _key_owner: dict[tuple[str, ...], str] = field(default_factory=dict, repr=False)
 
+    @staticmethod
+    def _resolve_path(path: PosixPath, worktree: Path) -> Path:
+        if path.is_absolute():
+            return _check_absolute_path(path)
+        return worktree / _check_relative_path(path)
+
     def _merge_placements(
         self,
         resource_id: str,
-        placement: Placement,
-        seen_paths: dict[tuple[PlacementRoot, PosixPath], str],
+        path: PosixPath,
+        seen_paths: dict[PosixPath, str],
         where: str,
     ) -> None:
         r = CATALOG.get(resource_id)
@@ -3436,22 +3581,25 @@ class Config:
                 "filesystem placement"
             )
 
-        if self._resources.setdefault(resource_id, placement) != placement:
+        if path.is_absolute():
+            normalized = _check_absolute_path(path)
+        else:
+            normalized = _check_relative_path(path)
+        if self._resources.setdefault(resource_id, normalized) != normalized:
             raise ValueError(
                 f"'{resource_id}' maps to multiple paths for {where}: "
-                f"{self._resources[resource_id]} != {placement}"
+                f"{self._resources[resource_id]} != {normalized}"
             )
 
-        key = (placement.root, placement.path)
-        other_id = seen_paths.setdefault(key, resource_id)
+        other_id = seen_paths.setdefault(normalized, resource_id)
         if other_id != resource_id:
             raise ValueError(
-                f"'{resource_id}' and '{other_id}' both map to '{placement}' for {where}"
+                f"'{resource_id}' and '{other_id}' both map to '{normalized}' for {where}"
             )
 
     def __post_init__(self) -> None:
         self.worktree = self.worktree.expanduser().resolve()
-        seen_paths: dict[tuple[PlacementRoot, PosixPath], str] = {}
+        seen_paths: dict[PosixPath, str] = {}
 
         # resolve profile placements
         profile = PROFILES.get(self.profile)
@@ -3482,26 +3630,28 @@ class Config:
         lookup: dict[PosixPath, tuple[str, set[str]]] = {}
 
         for profile, placements in PROFILES.items():
-            for curr_id, placement in placements.items():
+            for curr_id, path in placements.items():
                 if curr_id not in CATALOG:
                     raise ValueError(f"unknown resource id in placement: {curr_id}")
                 if CATALOG[curr_id].is_virtual:
                     raise ValueError(
                         f"virtual resource '{curr_id}' cannot be used in profile placement"
                     )
-                if placement.root != "worktree":
+                if path.is_absolute():
+                    _check_absolute_path(path)
                     continue
-                prev_id, profiles = lookup.setdefault(placement.path, (curr_id, set()))
+                path = _check_relative_path(path)
+                prev_id, profiles = lookup.setdefault(path, (curr_id, set()))
                 if prev_id != curr_id:
                     raise ValueError(
                         f"resource path collision in placement: '{curr_id}' and "
-                        f"'{prev_id}' both map to '{placement.path}'"
+                        f"'{prev_id}' both map to '{path}'"
                     )
                 profiles.add(profile)
 
         for variants in CAPABILITIES.values():
             for profile, placements in variants.items():
-                for curr_id, placement in placements.items():
+                for curr_id, path in placements.items():
                     if curr_id not in CATALOG:
                         raise ValueError(f"unknown resource id in placement: {curr_id}")
                     if CATALOG[curr_id].is_virtual:
@@ -3509,13 +3659,15 @@ class Config:
                             f"virtual resource '{curr_id}' cannot be used in capability "
                             "placement"
                         )
-                    if placement.root != "worktree":
+                    if path.is_absolute():
+                        _check_absolute_path(path)
                         continue
-                    prev_id, profiles = lookup.setdefault(placement.path, (curr_id, set()))
+                    path = _check_relative_path(path)
+                    prev_id, profiles = lookup.setdefault(path, (curr_id, set()))
                     if prev_id != curr_id:
                         raise ValueError(
                             f"resource path collision in placement: '{curr_id}' and "
-                            f"'{prev_id}' both map to '{placement.path}'"
+                            f"'{prev_id}' both map to '{path}'"
                         )
                     profiles.add(profile)
 
@@ -3525,11 +3677,11 @@ class Config:
     def _scan_resources(
         worktree: Path,
         lookup: dict[PosixPath, tuple[str, set[str]]]
-    ) -> tuple[list[str], dict[str, Placement | None]]:
+    ) -> tuple[list[str], dict[str, PosixPath | None]]:
         # narrow down the candidate profiles by checking for matching resource
         # placements in the worktree and record them in the final resource map
         candidates: list[str] = list(PROFILES)
-        resources: dict[str, Placement | None] = {}
+        resources: dict[str, PosixPath | None] = {}
         for path, (r_id, profiles) in lookup.items():
             r = CATALOG[r_id]
             target = worktree / path
@@ -3545,11 +3697,10 @@ class Config:
                         f"matches [{', '.join(sorted(profiles))}]"
                     )
                 candidates = new_candidates
-                placement = Placement(root="worktree", path=path)
-                if resources.setdefault(r_id, placement) != placement:
+                if resources.setdefault(r_id, path) != path:
                     raise ValueError(
                         f"resource path collision in environment: '{r_id}' maps to "
-                        f"multiple paths: {resources[r_id]} != {placement}"
+                        f"multiple paths: {resources[r_id]} != {path}"
                     )
 
         # if multiple candidate profiles remain, choose the simplest one
@@ -3560,7 +3711,7 @@ class Config:
     @staticmethod
     def _infer_capabilities(
         profile: str,
-        resources: dict[str, Placement | None],
+        resources: dict[str, PosixPath | None],
     ) -> set[str]:
         capabilities: set[str] = set()
         for capability, variants in CAPABILITIES.items():
@@ -3709,15 +3860,17 @@ class Config:
                         )
 
             # render any in-worktree resources that are not currently present on disk
-            for r_id, placement in resources.items():
-                if placement.root != "worktree":
+            for r_id, path in resources.items():
+                if path.is_absolute():
+                    _check_absolute_path(path)
                     continue
                 if r_id in on_disk:
                     continue
-                target = placement.resolve(worktree)
+                path = _check_relative_path(path)
+                target = worktree / Path(path)
                 if target.exists():
                     raise FileExistsError(
-                        f"cannot render resource '{r_id}' at '{placement.path}' for profile "
+                        f"cannot render resource '{r_id}' at '{path}' for profile "
                         f"'{profile}' because the target path already exists: {target}"
                     )
 
@@ -3839,11 +3992,6 @@ class Config:
                     r = CATALOG.get(r_id)
                     if r is None:
                         raise OSError(f"config references unknown resource ID: '{r_id}'")
-                    placement = self._resources.get(r_id)
-                    if placement is None:
-                        location = "<virtual>"
-                    else:
-                        location = str(placement.resolve(self.worktree))
 
                     # extract config fragment
                     try:
@@ -3851,6 +3999,11 @@ class Config:
                         if result is None:
                             continue
                     except Exception as err:
+                        path = self._resources.get(r_id)
+                        if path is None:
+                            location = "<virtual>"
+                        else:
+                            location = str(self._resolve_path(path, self.worktree))
                         raise OSError(
                             f"failed to parse resource '{r_id}' at {location}: {err}"
                         ) from err
@@ -3882,15 +4035,18 @@ class Config:
 
                     # search for resource placement if not already present
                     if r_id not in self._resources:
-                        placement = PROFILES.get(self.profile, {}).get(r_id)
-                        if placement is None:
+                        path = PROFILES.get(self.profile, {}).get(r_id)
+                        if path is None:
                             for variants in CAPABILITIES.values():
-                                placement = variants.get(self.profile, {}).get(r_id)
-                                if placement is not None:
+                                path = variants.get(self.profile, {}).get(r_id)
+                                if path is not None:
                                     break
-                        if placement is not None:
+                        if path is not None:
                             changed = True
-                            self._resources[r_id] = placement
+                            if path.is_absolute():
+                                self._resources[r_id] = _check_absolute_path(path)
+                            else:
+                                self._resources[r_id] = _check_relative_path(path)
                         elif r.is_virtual:
                             self._resources[r_id] = None
                         else:
@@ -3914,7 +4070,7 @@ class Config:
             self._resources = old_resources
             self.snapshot = {}
             self.pyproject = None
-            self.conanfile = None
+            self.conan = None
             self.bertrand = None
             self._entered = 0
             self._key_owner = {}
@@ -3933,7 +4089,7 @@ class Config:
         if self._entered == 0:
             self.snapshot = {}
             self.pyproject = None
-            self.conanfile = None
+            self.conan = None
             self.bertrand = None
             self._key_owner = {}
 
@@ -3973,8 +4129,8 @@ class Config:
         Returns
         -------
         Path
-            An absolute path to the resource, rooted in either the worktree or the
-            fixed artifact root.
+            An absolute path to the resource.  Relative resource paths are rooted in
+            the worktree; absolute resource paths are used as-is.
 
         Raises
         ------
@@ -3985,10 +4141,10 @@ class Config:
         """
         if resource_id not in self._resources:
             raise KeyError(f"unknown resource ID: '{resource_id}'")
-        placement = self._resources[resource_id]
-        if placement is None:
+        path = self._resources[resource_id]
+        if path is None:
             raise OSError(f"resource '{resource_id}' has no filesystem path")
-        return placement.resolve(self.worktree)
+        return self._resolve_path(path, self.worktree)
 
     # TODO: image_args(tag), container_args(tag)
 
@@ -4008,21 +4164,23 @@ class Config:
         Raises
         ------
         RuntimeError
-            If called outside an active config context.
+            If called outside a a Bertrand image or active config context.
         OSError
             If render hooks fail, return invalid output, or if any filesystem I/O
             fails during artifact synchronization.
         """
+        if not inside_image():
+            raise RuntimeError("sync() artifacts require access to a container filesystem")
         if not self:
-            raise RuntimeError("rendering artifacts requires an active config context")
+            raise RuntimeError("sync() artifact rendering requires an active config context")
 
         with lock_worktree(self.worktree):
-            for resource_id, placement in sorted(self._resources.items()):
+            for resource_id, path in sorted(self._resources.items()):
                 r = CATALOG.get(resource_id)
                 if r is None:
                     raise OSError(f"config references unknown resource ID: '{resource_id}'")
-                if placement is not None:
-                    target = placement.resolve(self.worktree)
+                if path is not None:
+                    target = self._resolve_path(path, self.worktree)
                 else:
                     target = None
 

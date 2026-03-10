@@ -286,7 +286,7 @@ ENV PATH="/opt/llvm/bin:/opt/cmake/bin:/opt/python/bin:${PATH}"
 ENV CONAN_HOME=/opt/conan
 ENV CONAN_USER_HOME=/opt/conan
 
-# Install Conan into /opt/python using uv.
+# Install Conan into /opt/python using uv
 RUN --mount=type=cache,target=/root/.cache/uv,sharing=locked \
     set -eux; \
     /opt/python/bin/uv pip install --no-cache-dir \

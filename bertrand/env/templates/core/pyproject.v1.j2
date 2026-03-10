@@ -80,7 +80,6 @@ build-type = "Release"                      # Release|Debug (may be overridden i
 # package = "fmt/11.0.2"                    # Conan requirement ref/range
 # kind = "host"                             # host|tool (tool dependencies build host dependencies)
 # options = { header_only = true }          # per-dependency options (option name => value)
-# conf = { "tools.build" = { jobs = 8 } }   # optional per-dependency conf override
 
 # NOTE: Conan remotes are resolved in declaration order.  Prefer private remotes first,
 # then optional public fallback remotes last.  Credentials are host-local and must
@@ -95,6 +94,8 @@ build-type = "Release"                      # Release|Debug (may be overridden i
 # enabled = true
 # recipes-only = false
 # allowed-packages = ["myorg/*", "thirdparty/*"]
+# NOTE: when remotes are declared, Bertrand writes `/opt/conan/remotes.json` during
+# sync/build to keep Conan's runtime registry deterministic.
 
 ########################
 ####    BERTRAND    ####
@@ -136,9 +137,8 @@ services = []           # optional service orchestration, using tags from the bu
                         # below.  If non-empty, then a `kube.yaml` artifact will be generated
                         # and played when starting the environment.  Each entry will be built
                         # and started in sequence using its matching build matrix definition.
-# NOTE: Generated C/C++ tooling artifacts (`compile_commands.json`, `.clangd`,
-# `.clang-tidy`, `.clang-format`) are rendered out-of-tree under
-# `/tmp/bertrand/artifacts/<worktree-id>/` during in-container build/sync flows.
+# NOTE: generated C/C++ artifacts are rendered out-of-tree during sync/build under
+# `/tmp/bertrand/artifacts`, plus `/opt/conan/remotes.json` when remotes are declared.
 
 [tool.bertrand.network.build]
 mode = "pasta"          # -> --network (none|host|private|slirp4netns|pasta|ns:path)
@@ -246,7 +246,6 @@ build-type = ""                             # empty => inherit [tool.conan].buil
 # package = "boost/1.86.0"                  # additive with [[tool.conan.requires]]
 # kind = "host"                             # host|tool (tool dependencies build host dependencies)
 # options = { without_test = true }         # per-dependency options (option name => value)
-# conf = { "tools.build" = { jobs = 8 } }   # optional per-dependency conf override
 
 [tool.bertrand.tags.build]
 context = "."           # build context path, relative to worktree root
@@ -430,8 +429,8 @@ per-file-ignores = {}               # e.g. { "path/to/file.py": ["E501", "F401"]
 ######################
 
 # NOTE: clangd compile commands should come from a generated `compile_commands.json`
-# file produced by the build system.  `CompileFlags` is intentionally omitted here
-# to avoid drifting from build-system truth.
+# file produced by the build system and emitted under `/tmp/bertrand/artifacts`.
+# `CompileFlags` is intentionally omitted here to avoid drifting from build-system truth.
 
 [tool.clangd.Diagnostics]
 UnusedIncludes = "Strict"           # None|Strict
