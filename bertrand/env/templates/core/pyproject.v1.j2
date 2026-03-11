@@ -87,6 +87,12 @@ build-type = "Release"                      # Release|Debug (may be overridden i
 # e.g. [tool.conan.conf."tools.build"]
 #      jobs = 16
 
+[tool.conan.options]
+# Namespace tables map to option entries of the form "<namespace>:<name>=<value>".
+# e.g. [tool.conan.options."fmt/*"]
+#      shared = false
+#      header_only = true
+
 # [[tool.conan.requires]]
 # package = "fmt/11.0.2"                    # Conan requirement ref/range
 # kind = "host"                             # host|tool (tool dependencies build host dependencies)
@@ -105,8 +111,6 @@ build-type = "Release"                      # Release|Debug (may be overridden i
 # enabled = true
 # recipes-only = false
 # allowed-packages = ["myorg/*", "thirdparty/*"]
-# NOTE: when remotes are declared, Bertrand writes `/opt/conan/remotes.json` during
-# sync/build to keep Conan's runtime registry deterministic.
 
 ########################
 ####    BERTRAND    ####
@@ -245,10 +249,16 @@ build-type = ""                             # empty => inherit [tool.conan].buil
 
 [tool.bertrand.tags.conan.conf]
 # Namespace tables map to conf entries of the form "<namespace>:<name>=<value>".
-# Conf entries defined here will override conflicts in the global [tool.conan.conf]
-# namespace for this tag.
+# Conf entries defined here will override conflicts in global [tool.conan.conf]
 # e.g. [tool.bertrand.tags.conan.conf."tools.cmake.cmaketoolchain"]
 #      generator = "Ninja"
+
+[tool.bertrand.tags.conan.options]
+# Namespace tables map to option entries of the form "<namespace>:<name>=<value>".
+# Options defined here will override conflicts in global [tool.conan.options]
+# e.g. [tool.bertrand.tags.conan.options."fmt/*"]
+#      shared = false
+#      header_only = true
 
 # [[tool.bertrand.tags.conan.requires]]
 # package = "boost/1.86.0"                  # additive with [[tool.conan.requires]]

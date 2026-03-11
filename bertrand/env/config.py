@@ -640,7 +640,7 @@ def _check_conan_conf(
                 conf_def.update(entry, value, profile=True)
             except ConanException as err:
                 raise ValueError(
-                    f"invalid conan conf entry '{entry}' with value {repr(value)}"
+                    f"invalid conan conf entry '{entry}' with value {value!r}"
                 ) from err
 
 
@@ -842,6 +842,11 @@ type ConanAllowedPattern = Annotated[
     NonEmpty[NoWhiteSpace],
     AfterValidator(_check_conan_allowed_pattern)
 ]
+type ConanOptionPattern = Annotated[
+    NonEmpty[NoWhiteSpace],
+    AfterValidator(_check_conan_allowed_pattern)
+]
+type ConanOptions = dict[ConanOptionPattern, dict[ConanOptionName, Scalar]]
 type Timeout = Annotated[str, StringConstraints(
     strip_whitespace=True,
     min_length=1,
@@ -968,7 +973,7 @@ def resource[ResourceT: Resource](
         raise TypeError(f"invalid resource kind for '{name}': {kind}")
     if kind != "file" and template is not None:
         raise TypeError(
-            f"resource '{name}' cannot specify a template when kind={repr(kind)}"
+            f"resource '{name}' cannot specify a template when kind={kind!r}"
         )
 
     template_kwargs: dict[str, str] | None = None
@@ -1426,6 +1431,7 @@ class ConanConfig(Resource):
             Field(default="Release", alias="build-type")
         ]
         conf: Annotated[ConanConf, Field(default_factory=dict)]
+        options: Annotated[ConanOptions, Field(default_factory=dict)]
 
         class Require(BaseModel):
             """Validate entries in `[[tool.conan.requires]]`."""
@@ -1511,23 +1517,18 @@ class ConanFile(Resource):
     """A resource describing a generated out-of-tree `conanfile.py` consumer recipe."""
     # pylint: disable=missing-function-docstring, unused-argument, missing-return-doc
 
-    @staticmethod
-    def _project_fields(config: Config) -> tuple[str, str]:
-        if config.pyproject:
-            return (
-                f"\n    name = {repr(config.pyproject.project.name)}",
-                f"\n    version = {repr(config.pyproject.project.version)}"
-            )
-        return "", ""
+    GENERATORS: tuple[str, ...] = (
+        "CMakeDeps",
+        "CMakeToolchain",
+        "VirtualBuildEnv",
+        "VirtualRunEnv",
+    )
 
-    def _default_options(self, default_options: dict[str, Scalar]) -> str:
-        if not default_options:
-            return ""
-        result = "\n    default_options = {\n"
-        for key, value in sorted(default_options.items()):
-            result += f"        {repr(key)}: {repr(value)},\n"
-        result += "    }"
-        return result
+    @staticmethod
+    def _merge_options(out: dict[str, Scalar], options: ConanOptions) -> None:
+        for pattern, pattern_options in sorted(options.items(), key=lambda i: i[0]):
+            for option, value in sorted(pattern_options.items()):
+                out[f"{pattern}:{option}"] = value
 
     def render(self, config: Config, tag: str) -> str | None:
         if config.conan is None:
@@ -1535,6 +1536,7 @@ class ConanFile(Resource):
 
         # start with global requirements, then merge tag-specific additions if
         # applicable
+        active = None
         requires = list(config.conan.requires)
         if config.bertrand is not None:
             active = next((t for t in config.bertrand.tags if t.tag == tag), None)
@@ -1560,8 +1562,12 @@ class ConanFile(Resource):
         requires = sorted(_requires, key=lambda r: r.package)
         tool_requires.sort(key=lambda r: r.package)
 
-        # generate Conan options mapping for all requirements
+        # merge global + tag-level Conan options mapping for global/tag tables, then
+        # merge any per-require options
         default_options: dict[str, Scalar] = {}
+        self._merge_options(default_options, config.conan.options)
+        if active is not None:
+            self._merge_options(default_options, active.conan.options)
         for req in requires + tool_requires:
             try:
                 package = RecipeReference.loads(req.package).name
@@ -1573,20 +1579,51 @@ class ConanFile(Resource):
                 if inserted != value:
                     raise OSError(
                         f"conflicting conan option values for '{key}' across "
-                        f"requirements: {repr(inserted)} vs {repr(value)}"
+                        f"requirements: {inserted!r} vs {value!r}"
                     )
 
-        # format output strings for relevant options
-        project_name, project_version = self._project_fields(config)
-        _default_options = self._default_options(default_options)
-        return f"""from conan import ConanFile
-
-class BertrandConanFile(ConanFile):{project_name}{project_version}
-    settings = "os", "arch", "compiler", "build_type"
-    requires = {repr(tuple(req.package for req in requires))}
-    tool_requires = {repr(tuple(req.package for req in tool_requires))}{_default_options}
-
-"""
+        # render lines for Conanfile.py
+        lines: list[str] = [
+            "from conan import ConanFile",
+            "",
+            "class BertrandConanFile(ConanFile):",
+        ]
+        if config.pyproject is not None:
+            project = config.pyproject.project
+            lines.append(f"    name = {project.name!r}")
+            lines.append(f"    version = {project.version!r}")
+            if project.license is not None:
+                lines.append(f"    license = {project.license!r}")
+            if project.description is not None:
+                lines.append(f"    description = {project.description!r}")
+            url = next((str(project.urls[key]) for key in (
+                "homepage",
+                "repository",
+                "documentation"
+            ) if key in project.urls), None)
+            if url is not None:
+                lines.append(f"    url = {url!r}")
+            topics: list[str] = []
+            seen_topics: set[str] = set()
+            for keyword in project.keywords:
+                value = keyword.strip()
+                if not value or value in seen_topics:
+                    continue
+                seen_topics.add(value)
+                topics.append(value)
+            if topics:
+                lines.append(f"    topics = {tuple(topics)!r}")
+        lines.append("    settings = \"os\", \"arch\", \"compiler\", \"build_type\"")
+        lines.append(f"    generators = {self.GENERATORS!r}")
+        lines.append(f"    requires = {tuple(req.package for req in requires)!r}")
+        lines.append(f"    tool_requires = {tuple(req.package for req in tool_requires)!r}")
+        if default_options:
+            lines.append("    default_options = {")
+            for key, value in default_options.items():
+                lines.append(f"        {key!r}: {value!r},")
+            lines.append("    }")
+        lines.append("")
+        return "\n".join(lines)
 
 
 @resource("conanprofile", kind="file")
@@ -1630,7 +1667,7 @@ class ConanProfile(Resource):
         if not major or not major.isdigit():
             raise OSError(
                 "failed to parse clang major version during conan profile generation: "
-                f"{repr(version)}"
+                f"{version!r}"
             )
         return major
 
@@ -1640,7 +1677,7 @@ class ConanProfile(Resource):
         if not value or not value.isdigit():
             raise OSError(
                 "invalid VERSION.cxx_std during conan profile generation: "
-                f"{repr(VERSION.cxx_std)}"
+                f"{VERSION.cxx_std!r}"
             )
         return value
 
@@ -1709,9 +1746,6 @@ class ConanRemotes(Resource):
 
     def render(self, config: Config, tag: str) -> str | None:
         if config.conan is None:
-            return None
-        if not config.conan.remotes:
-            # Keep existing remotes.json unchanged when no remotes are configured.
             return None
 
         payload: dict[str, list[dict[str, Any]]] = {"remotes": []}
@@ -2125,6 +2159,7 @@ class Bertrand(Resource):
                     Field(default="", alias="build-type")
                 ]
                 conf: Annotated[ConanConf, Field(default_factory=dict)]
+                options: Annotated[ConanOptions, Field(default_factory=dict)]
                 requires: Annotated[
                     list[ConanConfig.Model.Require],
                     AfterValidator(ConanConfig.Model._check_requires),

@@ -14,6 +14,7 @@ from .run import run
 
 ARTIFACT_ROOT = Path("/tmp/bertrand/artifacts")
 CONANFILE = ARTIFACT_ROOT / "conanfile.py"
+CONAN_LOCK = ARTIFACT_ROOT / "conan.lock"
 CONAN_OUTPUT = ARTIFACT_ROOT / "conan"
 
 
@@ -23,9 +24,22 @@ type SetuptoolsConfigValue = str | list[str] | None
 type SetuptoolsConfigSettings = dict[str, SetuptoolsConfigValue] | None
 
 
-def _conan_install(*, quiet: bool) -> None:
-    if not CONANFILE.exists() or not CONANFILE.is_file():
-        return  # python-only builds can proceed without Conan artifacts
+def _conan_lock(*, quiet: bool) -> None:
+    run([
+        "conan",
+        "lock",
+        "create",
+        str(CONANFILE),
+        "--profile:host=default",  # always use generated default profile
+        "--profile:build=default",  # always use generated default profile
+        "--build=missing",  # incrementally build missing dependencies
+        "--update",  # refresh dependency graph similarly to `uv lock`
+        f"--lockfile-out={CONAN_LOCK}",  # write deterministic lock into artifact root
+        "-cc", "core:non_interactive=True",  # avoid prompts in image/container builds
+    ], capture_output=quiet)
+
+
+def _conan_install_lock(*, quiet: bool) -> None:
     run([
         "conan",
         "install",
@@ -33,7 +47,9 @@ def _conan_install(*, quiet: bool) -> None:
         "--profile:host=default",  # always use generated default profile
         "--profile:build=default",  # always use generated default profile
         "--build=missing",  # incrementally build missing dependencies
+        f"--lockfile={CONAN_LOCK}",  # install using deterministic lockfile
         f"--output-folder={CONAN_OUTPUT}",  # install into artifact directory
+        "-cc", "core:non_interactive=True",  # avoid prompts in image/container builds
     ], capture_output=quiet)
 
 
@@ -165,7 +181,9 @@ def build_wheel(
     from synced artifacts, then delegates wheel construction to setuptools.
     """
     settings = _setuptools_config_settings(config_settings)
-    _conan_install(quiet=False)
+    if CONANFILE.exists() and CONANFILE.is_file():
+        _conan_lock(quiet=False)
+        _conan_install_lock(quiet=False)
     return setuptools.build_meta.build_wheel(
         wheel_directory,
         settings,
@@ -322,7 +340,9 @@ def build_editable(
     from synced artifacts, then delegates editable wheel construction to setuptools.
     """
     settings = _setuptools_config_settings(config_settings)
-    _conan_install(quiet=False)
+    if CONANFILE.exists() and CONANFILE.is_file():
+        _conan_lock(quiet=False)
+        _conan_install_lock(quiet=False)
     return setuptools.build_meta.build_editable(
         wheel_directory,
         settings,
