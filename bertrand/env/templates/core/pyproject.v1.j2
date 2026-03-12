@@ -148,10 +148,19 @@ container-ignore = [    # additional .containerignore patterns
     ".git/",
     ".gitignore",
 ]
-services = []           # optional service orchestration, using tags from the build matrix
-                        # below.  If non-empty, then a `kube.yaml` artifact will be generated
-                        # and played when starting the environment.  Each entry will be built
-                        # and started in sequence using its matching build matrix definition.
+services = []           # optional kubernetes pod composition, using tags from the
+                        # build matrix.  If non-empty, Bertrand will generate a
+                        # kubernetes deployment where each tag represents a container
+                        # in the bootstrapped pod, in this exact order.  Image refs are
+                        # rendered as deterministic placeholders and rewritten to local
+                        # IDs or published digests by CLI/publish tooling.
+min-replicas = 1        # minimum number of pods to deploy when `services` is non-empty.
+                        # Each pod is an exact copy, allowing for redundancy and simple
+                        # horizontal scaling.
+max-replicas = 1        # maximum number of pods to deploy when `services` is non-empty.
+                        # If greater than `min_replicas`, Bertrand will attempt to
+                        # scale up to this many pods based on resource utilization
+                        # metrics (if available) or manual scaling commands.
 
 [tool.bertrand.network.build]
 mode = "pasta"          # -> --network (none|host|private|slirp4netns|pasta|ns:path)

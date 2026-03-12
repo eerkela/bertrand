@@ -13,7 +13,9 @@ Canonical templates are packaged with Bertrand and lazily hydrated into
 from __future__ import annotations
 
 import json
+import hashlib
 import ipaddress
+import math
 import os
 import re
 import shutil
@@ -79,6 +81,8 @@ CATALOG: dict[str,  Resource] = {}
 # at build time or upon starting the container context, and used to control the
 # behavior of the bertrand CLI both inside and outside the container.
 BERTRAND_ENV: str = "BERTRAND"
+BRANCH_ENV: str = "BERTRAND_BRANCH"
+COMMIT_ENV: str = "BERTRAND_COMMIT"
 CONTAINER_BIN_ENV: str = "BERTRAND_CONTAINER_BIN"
 CONTAINER_ID_ENV: str = "BERTRAND_CONTAINER_ID"
 CONTAINER_TAG_ENV: str = "BERTRAND_CONTAINER_TAG"
@@ -141,6 +145,7 @@ INSTRUMENTS: dict[str, Callable[[dict[str, Any]], Callable[[list[str]], list[str
 
 
 # Validation primitives for config fields
+KUBE_MAX_LENGTH = 63
 GLOB_RE = re.compile(r"^[A-Za-z0-9._/\-\*\?\[\]!]+$")
 HTTP_URL = TypeAdapter(AnyHttpUrl)
 NS_PATH_RE = re.compile(r"^ns:\S+$")
@@ -151,6 +156,8 @@ CAPABILITY_TOKEN_RE = re.compile(r"^CAP_[A-Z0-9_]+$")
 CAPABILITY_DEFINE_RE = re.compile(r"^\s*#define\s+(CAP_[A-Z0-9_]+)\s+([0-9]+)\b")
 SECURITY_OPT_KEY_RE = re.compile(r"^[a-z0-9][a-z0-9_.-]*$")
 CONAN_REF_TOKEN_RE = re.compile(r"^[a-z0-9_][a-z0-9_+.-]{1,100}\Z")
+KUBE_SUB_RE = re.compile(r"[^a-z0-9-]+")
+KUBE_TRIM_RE = re.compile(r"^-+|(?<=-)-+|-+$")
 DEVICE_PERMISSIONS: frozenset[str] = frozenset({"r", "w", "m", "rw", "rm", "wm", "rwm"})
 LINUX_CAPABILITY_HEADERS: tuple[Path, ...] = (
     Path("/usr/include/linux/capability.h"),
@@ -695,11 +702,11 @@ def _check_health_log_destination(value: str) -> str:
     return path.as_posix()
 
 
-type ResourceKind = Literal["file", "dir"] | None
 type NonEmpty[SequenceT: Sequence[Any]] = Annotated[SequenceT, Field(min_length=1)]
 type NonNegativeInt = Annotated[int, Field(ge=0)]
 type NonNegativeFloat = Annotated[float, Field(ge=0.0)]
 type Scalar = str | bool | int | float
+type ResourceKind = Literal["file", "dir"] | None
 type ConanConfValue = Scalar | list[ConanConfValue] | dict[str, ConanConfValue]
 type Trimmed = Annotated[str, StringConstraints(strip_whitespace=True)]
 type NoCRLF = Annotated[  # pylint: disable=invalid-name
@@ -734,6 +741,18 @@ type TagName = Annotated[str, StringConstraints(
     strip_whitespace=True,
     min_length=1,
     pattern=r"^[a-z0-9]+(?:-[a-z0-9]+)*$"
+)]
+type KubeName = Annotated[str, StringConstraints(
+    strip_whitespace=True,
+    min_length=1,
+    max_length=KUBE_MAX_LENGTH,
+    pattern=r"^[a-z0-9]+(?:-[a-z0-9]+)*$"
+)]
+type KubeLabelValue = Annotated[str, StringConstraints(
+    strip_whitespace=True,
+    min_length=1,
+    max_length=KUBE_MAX_LENGTH,
+    pattern=r"^[A-Za-z0-9](?:[-_.A-Za-z0-9]*[A-Za-z0-9])?$"
 )]
 type Entrypoint = Annotated[str, StringConstraints(
     strip_whitespace=True,
@@ -1208,6 +1227,41 @@ def _dump_yaml(payload: dict[str, Any], *, resource_id: str) -> str:
     return text
 
 
+def _kube_name(name: str) -> str:
+    slug = KUBE_TRIM_RE.sub("", KUBE_SUB_RE.sub("-", name.lower()))
+    if not slug:
+        slug = "bertrand-project"
+
+    # if no normalization was needed, return the original name
+    if name == slug and len(name) <= KUBE_MAX_LENGTH:
+        return name
+
+    # otherwise, we need to append a hash to disambiguate
+    suffix = hashlib.sha256(name.encode("utf-8")).hexdigest()[:8]
+    slug = slug[:KUBE_MAX_LENGTH - len(suffix) - 1].rstrip("-")
+    return f"{slug}-{suffix}" if slug else suffix
+
+
+def _kube_instance(
+    name: str,
+    *,
+    branch: str | None = None,
+    commit: str | None = None
+) -> str:
+    if branch and commit:
+        raise OSError(
+            f"invalid environment state: both {BRANCH_ENV} and {COMMIT_ENV} are set"
+        )
+    if branch:
+        return _kube_name(f"{name}-{branch}")
+    if commit:
+        return _kube_name(f"{name}-{commit[:7]}")
+    raise OSError(
+        f"invalid environment state: missing both {BRANCH_ENV} and "
+        f"{COMMIT_ENV} for kube deployment metadata"
+    )
+
+
 def _validate_dependency_groups(*, pyproject: Any | None, bertrand: Any | None) -> None:
     if pyproject is None or bertrand is None:
         return  # only fire once both resources have been parsed
@@ -1278,7 +1332,7 @@ class PyProject(Resource):
         class Project(BaseModel):
             """Validate the `[project]` table."""
             model_config = ConfigDict(extra="allow")
-            name: str
+            name: PEP508Name
             version: str
             description: Annotated[str | None, Field(default=None)]
             readme: Annotated[PosixPath | None, Field(default=None)]
@@ -1392,6 +1446,9 @@ class PyProject(Resource):
         bertrand = tool.get("bertrand")
         if isinstance(bertrand, dict):
             normalized["bertrand"] = bertrand
+            services = bertrand.get("services")
+            if isinstance(services, list) and services:
+                normalized["kube"] = {}
 
         clangd = tool.get("clangd")
         if isinstance(clangd, dict):
@@ -1399,11 +1456,11 @@ class PyProject(Resource):
 
         clang_tidy = tool.get("clang-tidy")
         if isinstance(clang_tidy, dict):
-            normalized["clang-tidy"] = clang_tidy
+            normalized["clang_tidy"] = clang_tidy
 
         clang_format = tool.get("clang-format")
         if isinstance(clang_format, dict):
-            normalized["clang-format"] = clang_format
+            normalized["clang_format"] = clang_format
 
         return normalized
 
@@ -1798,6 +1855,18 @@ class Bertrand(Resource):
             Field(default_factory=list, alias="container-ignore")
         ]
         services: Annotated[list[str], Field(default_factory=list)]
+        min_replicas: Annotated[PositiveInt, Field(default=1, alias="min-replicas")]
+        max_replicas: Annotated[PositiveInt, Field(default=1, alias="max-replicas")]
+
+        @model_validator(mode="after")
+        def _validate_replicas(self) -> Self:
+            if self.min_replicas > self.max_replicas:
+                raise ValueError(
+                    "tool.bertrand.min_replicas cannot be greater than "
+                    f"tool.bertrand.max_replicas ({self.min_replicas} > "
+                    f"{self.max_replicas})"
+                )
+            return self
 
         class Network(BaseModel):
             """Validate the `[bertrand.network]` table."""
@@ -2403,7 +2472,139 @@ class ContainerIgnore(Resource):
         return _dump_ignore_list(patterns)
 
 
-# TODO: Kube
+@resource("kube_deployment", kind="file")
+class KubeDeployment(Resource):
+    """A resource describing a Kubernetes `Deployment` manifest, which is rendered as
+    an output artifact based on Bertrand's tagged build matrix.
+    """
+    # pylint: disable=missing-function-docstring, unused-argument, missing-return-doc
+
+    def _render_containers(
+        self,
+        config: Config,
+        *,
+        deployment_instance: str,
+    ) -> list[dict[str, str]]:
+        assert config.bertrand is not None
+        containers: list[dict[str, str]] = []
+        seen: dict[str, str] = {}
+
+        for tag in config.bertrand.services:
+            suffix = hashlib.sha256(tag.encode("utf-8")).hexdigest()[:8]
+            container_name = KUBE_TRIM_RE.sub("", KUBE_SUB_RE.sub("-", tag.lower()))
+            if not container_name:
+                container_name = "bertrand-project"
+            container_name = container_name[:KUBE_MAX_LENGTH].rstrip("-")
+
+            # attempt to insert under the normalized container name; if there's a
+            # collision, then we need to append a hash to both entries to disambiguate,
+            # but we only do that if it's actually necessary, in order to preserve
+            # readability in the common case where no tags collide
+            prior = seen.setdefault(container_name, tag)
+            if prior != tag:
+                prior_suffix = hashlib.sha256(prior.encode('utf-8')).hexdigest()[:8]
+                new_containers: list[dict[str, str]] = []
+                for container in containers:
+                    prior_name = container["name"]
+                    if prior_name == container_name:
+                        if prior_name.endswith(prior_suffix):
+                            raise OSError(
+                                f"hash collision detected for container name '{prior_name}'"
+                            )
+                        prior_name = prior_name[:KUBE_MAX_LENGTH - len(prior_suffix) - 1]
+                        prior_name = prior_name.rstrip("-")
+                        prior_name += f"-{prior_suffix}"
+                        if seen.setdefault(prior_name, prior) != prior:
+                            raise OSError(
+                                f"hash collision detected for container name '{prior_name}'"
+                            )
+                        container["name"] = prior_name
+                    new_containers.append(container)
+                container_name = container_name[:KUBE_MAX_LENGTH - len(suffix) - 1]
+                container_name = container_name.rstrip("-")
+                container_name += f"-{suffix}"
+                if seen.setdefault(container_name, tag) != tag:
+                    raise OSError(
+                        f"hash collision detected for container name '{container_name}'"
+                    )
+                containers = new_containers
+
+            # TODO: I will have to seriously think about how to handle image storage in
+            # a way that works well with kubernetes.  Probably, this means maintaining
+            # a local registry that the kube deployment can pull from, which should
+            # mirror any public images that I eventually push to a remote registry.  The
+            # trick here is going to be tracking the identifiers in a stable way.
+
+            containers.append({
+                "name": container_name,
+                "image": f"bertrand.local/{deployment_instance}:{tag}",  # TODO: refine later
+                "imagePullPolicy": "IfNotPresent",
+            })
+
+        return containers
+
+    def render(self, config: Config, tag: str) -> str | None:
+        if config.bertrand is None or not config.bertrand.services:
+            return None
+        if config.pyproject is None:
+            raise OSError(
+                "invalid internal state while rendering kube deployment: "
+                "pyproject resource is required"
+            )
+
+        # normalize kubernetes name labels
+        project_name = config.pyproject.project.name
+        deployment_name = _kube_name(project_name)
+        deployment_instance = _kube_instance(
+            project_name,
+            branch=os.environ.get(BRANCH_ENV),
+            commit=os.environ.get(COMMIT_ENV)
+        )
+        metadata_labels = {
+            "app.kubernetes.io/name": deployment_name,
+            "app.kubernetes.io/instance": deployment_instance,
+            "app.kubernetes.io/managed-by": "bertrand",
+            "app.kubernetes.io/version": str(config.pyproject.project.version),
+        }
+
+        # form deployment YAML
+        return _dump_yaml({
+            "apiVersion": "apps/v1",
+            "kind": "Deployment",
+            "metadata": {  # deployment-level metadata
+                "name": deployment_name,
+                "labels": metadata_labels,
+            },
+            "spec": {
+                "replicas": config.bertrand.min_replicas,  # start at min replicas
+                "selector": {
+                    "matchLabels": {  # match the stable /name and /instance labels above
+                        "app.kubernetes.io/name": deployment_name,
+                        "app.kubernetes.io/instance": deployment_instance,
+                    },
+                },
+                "template": {
+                    "metadata": {  # pod-level metadata for each replica
+                        "labels": metadata_labels,  # inherit stable labels to match on
+                        "annotations": {
+                            "bertrand.dev/project-name": project_name,  # original project name
+                            "bertrand.dev/services": json.dumps(
+                                list(config.bertrand.services),
+                                separators=(",", ":")
+                            ),
+                            "bertrand.dev/min-replicas": str(config.bertrand.min_replicas),
+                            "bertrand.dev/max-replicas": str(config.bertrand.max_replicas),
+                        },
+                    },
+                    "spec": {
+                        "containers": self._render_containers(
+                            config,
+                            deployment_instance=deployment_instance,
+                        ),
+                    },
+                },
+            },
+        }, resource_id=self.name)
 
 
 @resource("compile_commands", kind="file")
@@ -2769,7 +2970,7 @@ class Clangd(Resource):
         return content
 
 
-@resource("clang-tidy", kind="file")
+@resource("clang_tidy", kind="file")
 class ClangTidy(Resource):
     """A resource describing a `.clang-tidy` file, which is used to configure
     clang-tidy for C++ linting.  This expects native clang-tidy key names in TOML.
@@ -2880,10 +3081,10 @@ class ClangTidy(Resource):
             content["WarningsAsErrors"] = ",".join(warnings_as_errors)
         if check_options:
             content["CheckOptions"] = check_options
-        return _dump_yaml(content, resource_id="clang-tidy")
+        return _dump_yaml(content, resource_id="clang_tidy")
 
 
-@resource("clang-format", kind="file")
+@resource("clang_format", kind="file")
 class ClangFormat(Resource):
     """A resource describing a `.clang-format` file, which is used to configure
     clang-format for C++ code formatting.  The `[tool.clang-format]` table is
@@ -3658,7 +3859,7 @@ class ClangFormat(Resource):
             "UseTab": model.UseTab,
             "WrapNamespaceBodyWithEmptyLines": model.WrapNamespaceBodyWithEmptyLines,
         }
-        return _dump_yaml(content, resource_id="clang-format")
+        return _dump_yaml(content, resource_id="clang_format")
 
 
 # Profiles define only resource placements: wildcard baseline + profile diffs.
@@ -3667,6 +3868,7 @@ PROFILES: dict[str, dict[str, PosixPath]] = {
         "publish": PosixPath(".github") / "workflows" / "publish.yml",
         "gitignore": PosixPath(".gitignore"),
         "containerignore": PosixPath(".containerignore"),
+        "kube": PosixPath("kube.yaml"),
         "containerfile": PosixPath("Containerfile"),
         "docs": PosixPath("docs"),
         "tests": PosixPath("tests"),
@@ -3675,6 +3877,7 @@ PROFILES: dict[str, dict[str, PosixPath]] = {
         "publish": PosixPath(".github") / "workflows" / "publish.yml",
         "gitignore": PosixPath(".gitignore"),
         "containerignore": PosixPath(".containerignore"),
+        "kube": PosixPath("kube.yaml"),
         "containerfile": PosixPath("Containerfile"),
         "docs": PosixPath("docs"),
         "tests": PosixPath("tests"),
@@ -3701,8 +3904,8 @@ CAPABILITIES: dict[str, dict[str, dict[str, PosixPath]]] = {
             "conanremotes": CONAN_HOME / "remotes.json",
             "conanprofile": CONAN_HOME / "profiles" / "default",
             "clangd": ARTIFACT_ROOT / ".clangd",
-            "clang-tidy": ARTIFACT_ROOT / ".clang-tidy",
-            "clang-format": ARTIFACT_ROOT / ".clang-format",
+            "clang_tidy": ARTIFACT_ROOT / ".clang-tidy",
+            "clang_format": ARTIFACT_ROOT / ".clang-format",
         },
         "src": {
             "compile_commands": ARTIFACT_ROOT / "compile_commands.json",
@@ -3710,8 +3913,8 @@ CAPABILITIES: dict[str, dict[str, dict[str, PosixPath]]] = {
             "conanremotes": CONAN_HOME / "remotes.json",
             "conanprofile": CONAN_HOME / "profiles" / "default",
             "clangd": ARTIFACT_ROOT / ".clangd",
-            "clang-tidy": ARTIFACT_ROOT / ".clang-tidy",
-            "clang-format": ARTIFACT_ROOT / ".clang-format",
+            "clang_tidy": ARTIFACT_ROOT / ".clang-tidy",
+            "clang_format": ARTIFACT_ROOT / ".clang-format",
         },
     },
     "vscode": {

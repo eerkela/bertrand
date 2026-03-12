@@ -390,6 +390,7 @@ class Lock:
                     )
 
         path = path.expanduser().resolve()
+        path.mkdir(parents=True, exist_ok=True)
         path_str = str(path)
         with LOCK_GUARD:
             self = LOCKS.get(path_str)
