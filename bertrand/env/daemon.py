@@ -15,19 +15,32 @@ import subprocess
 import sys
 import time
 import urllib.parse
+import uuid
 
 from dataclasses import dataclass, field
 from pathlib import Path, PosixPath
-from typing import Annotated, Literal, TypeAlias
+from typing import Annotated, Any, Literal, Self
 
-from pydantic import AfterValidator, BaseModel, ConfigDict, Field, ValidationError
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    model_validator,
+)
 
 from .config import (
+    CAPABILITIES,
     CONTAINER_BIN_ENV,
     CONTAINER_ID_ENV,
+    CONTAINER_SOCKET,
     EDITOR_BIN_ENV,
-    HOST_ENV,
-    MOUNT,
+    HOST_SOCKET,
+    PROJECT_ROOT_ENV,
+    SOCKET_ENV,
+    VSCODE_RESOURCE,
+    WORKTREE_MOUNT,
     Config
 )
 from .mcp import sync_vscode_mcp_config
@@ -53,15 +66,18 @@ CODE_LAUNCH_TIMEOUT: float = 10.0
 CODE_PROBE_TIMEOUT: float = 10.0
 CODE_RPC_CLIENT_HEADROOM: float = 2.0
 CODE_RPC_CLIENT_TIMEOUT: float = CODE_LAUNCH_TIMEOUT + CODE_RPC_CLIENT_HEADROOM
+CODE_RPC_METHOD_OPEN: Literal["code.open"] = "code.open"
 CODE_RPC_READ_TIMEOUT: float = CODE_RPC_CLIENT_TIMEOUT
-CODE_SOCKET_VERSION: int = 1
-CODE_SOCKET_OP_OPEN: str = "open_editor"
-CODE_SOCKET: Path = User().home / ".local" / "share" / "bertrand" / "code-rpc" / "listener.sock"
-MAX_REQUEST_BYTES: int = 1024 * 1024  # 1 MiB
-CONTAINER_SOCKET: Path = Path("/run/bertrand/code-rpc") / "listener.sock"
+JSON_RPC_VERSION: Literal["2.0"] = "2.0"
+JSON_RPC_PARSE_ERROR: int = -32700              # standard JSON-RPC error codes
+JSON_RPC_INVALID_REQUEST: int = -32600          # ...
+JSON_RPC_METHOD_NOT_FOUND: int = -32601         # ...
+JSON_RPC_INVALID_PARAMS: int = -32602           # ...
+JSON_RPC_INTERNAL_ERROR: int = -32603           # ...
+JSON_RPC_SERVER_ERROR: int = -32000             # ^
+MAX_REQUEST_BYTES: int = 1024 * 1024            # 1 MiB
 CODE_SERVICE_NAME = "bertrand-code.service"
 CODE_SERVICE_FILE = User().home / ".config" / "systemd" / "user" / CODE_SERVICE_NAME
-CODE_SERVICE_ENV: str = "BERTRAND_CODE_SERVICE"
 
 
 # vscode integration details
@@ -76,7 +92,7 @@ VSCODE_EXECUTABLE_CANDIDATES: tuple[str, ...] = (
 
 class CodeError(OSError):
     """A structured error used to keep RPC failure categories stable."""
-    Category: TypeAlias = Literal[
+    type Category = Literal[
         "probe_timeout",
         "invalid_service_environment",
         "invalid_request",
@@ -87,13 +103,106 @@ class CodeError(OSError):
         "unsupported_editor",
     ]
 
-    def __init__(self, category: CodeError.Category, message: str) -> None:
+    def __init__(self, category: Category, message: str) -> None:
         self.category = category
         self.message = message
         super().__init__(f"{category}: {message}")
 
     def __str__(self) -> str:
         return f"{self.category}: {self.message}"
+
+
+def _check_env_root(env_root: str) -> str:
+    path = Path(env_root)
+    if not path.is_absolute():
+        raise ValueError(f"env_root must be an absolute path: {env_root}")
+    if not path.exists():
+        raise ValueError(f"env_root does not exist: {path}")
+    if not path.is_dir():
+        raise ValueError(f"env_root must be a directory: {path}")
+    return str(path)
+
+
+def _check_container_id(container_id: str) -> str:
+    container_id = container_id.strip()
+    if not container_id:
+        raise ValueError("container_id must be non-empty")
+    return container_id
+
+
+def _check_request_id(request_id: str) -> str:
+    request_id = request_id.strip()
+    if not request_id:
+        raise ValueError("id must be non-empty")
+    return request_id
+
+
+type ContainerID = Annotated[  # pylint: disable=invalid-name
+    str,
+    AfterValidator(_check_container_id)
+]
+type EnvRoot = Annotated[str, AfterValidator(_check_env_root)]
+type RequestID = Annotated[  # pylint: disable=invalid-name
+    str,
+    AfterValidator(_check_request_id)
+]
+
+
+class RPCRequest(BaseModel):
+    """A validated JSON-RPC 2.0 request to Bertrand's host daemon service."""
+    model_config = ConfigDict(extra="forbid")
+    jsonrpc: Literal["2.0"]
+    id: RequestID
+    method: Literal["code.open"]
+
+    class CodeOpen(BaseModel):
+        """Typed params payload for `code.open` JSON-RPC requests."""
+        model_config = ConfigDict(extra="forbid")
+        env_root: EnvRoot
+        container_id: ContainerID
+
+    params: CodeOpen
+
+
+class RPCResponse(BaseModel):
+    """JSON-RPC response schema returned to in-container `bertrand code` calls."""
+    model_config = ConfigDict(extra="forbid")
+    jsonrpc: Literal["2.0"]
+    id: RequestID | None
+
+    class CodeOpen(BaseModel):
+        """Typed result payload for successful `code.open` JSON-RPC responses."""
+        model_config = ConfigDict(extra="forbid")
+        warnings: list[str] = Field(default_factory=list)
+
+    result: CodeOpen | None = None
+
+    class Error(BaseModel):
+        """JSON-RPC 2.0 error object."""
+        model_config = ConfigDict(extra="forbid")
+        code: int
+        message: str
+
+        class CodeOpen(BaseModel):
+            """Additional metadata for JSON-RPC error responses."""
+            model_config = ConfigDict(extra="forbid")
+            category: CodeError.Category | None = None
+            detail: str | None = None
+
+        data: CodeOpen | None = None
+
+    error: Error | None = None
+
+    @model_validator(mode="after")
+    def _validate_result_xor_error(self) -> Self:
+        if (self.result is None) == (self.error is None):
+            raise ValueError("JSON-RPC response must include exactly one of result or error")
+        return self
+
+
+####################
+####    HOST    ####
+####################
 
 
 def _container_bin() -> Path:
@@ -104,7 +213,8 @@ def _container_bin() -> Path:
             "systemd service could not locate the container executable (usually "
             f"indicates a corrupted {CODE_SERVICE_NAME} unit).  This should never "
             "occur; if you see this message, try re-running the `$ bertrand code` or "
-            "`$ bertrand enter` CLI commands to regenerate the unit."
+            "`$ bertrand enter` CLI commands to regenerate the unit, or report an "
+            "issue at if the problem persists."
         )
     candidate = Path(value)
     if not candidate.is_absolute():
@@ -134,76 +244,24 @@ def _editor_bin() -> Path:
     return candidate.expanduser().resolve()
 
 
-def _validate_version(version: int) -> None:
-    if version != CODE_SOCKET_VERSION:
-        raise ValueError(f"unsupported protocol version: {version}")
-
-
-def _validate_env_root(env_root: str) -> None:
-    path = Path(env_root)
-    if not path.is_absolute():
-        raise ValueError(f"env_root must be an absolute path: {env_root}")
-    if not path.exists():
-        raise ValueError(f"env_root does not exist: {path}")
-    if not path.is_dir():
-        raise ValueError(f"env_root must be a directory: {path}")
-
-
-def _validate_container_id(container_id: str) -> None:
-    container_id = container_id.strip()
-    if not container_id:
-        raise ValueError("container_id must be non-empty")
-
-
-Version = Annotated[int, AfterValidator(_validate_version)]
-Operation = Literal["open_editor"]
-EnvRoot = Annotated[str, AfterValidator(_validate_env_root)]
-ContainerID = Annotated[str, AfterValidator(_validate_container_id)]
-
-
-# TODO: These requests should should conform to JSON-RPC 2.0 spec
-
-
-class CodeRequest(BaseModel):
-    """JSON-RPC request schema sent to the host's code RPC service."""
-    model_config = ConfigDict(extra="forbid")
-    version: Version
-    op: Operation
-    env_root: EnvRoot
-    container_id: ContainerID
-
-
-class CodeResponse(BaseModel):
-    """JSON-RPC response schema returned to a container's `bertrand code` command."""
-    model_config = ConfigDict(extra="forbid")
-    ok: bool
-    error: str
-    warnings: list[str] = Field(default_factory=list)
-
-
-####################
-####    HOST    ####
-####################
-
-
 @dataclass
 class CodeServer:
     """A minimal, host-side listener that handles JSON-RPC requests from in-container
     `bertrand code` commands over a Unix socket.  When a request is received, the
     server will attempt to launch the specified editor on the host, pointed at the
-    container's `MOUNT` directory.  The server will then return a JSON-RPC response
-    indicating success or failure, as well as an error message or soft warnings if
-    applicable.
+    container's `WORKTREE_MOUNT` directory.  The server will then return a JSON-RPC
+    response indicating success or failure, as well as an error message or soft
+    warnings if applicable.
 
     Attributes
     ----------
     path : Path, optional
-        The host path to the server's Unix socket file.  Defaults to `CODE_SOCKET`,
+        The host path to the server's Unix socket file.  Defaults to `HOST_SOCKET`,
         which is held in user scope.  This path must be absolute, and the code server
         will only instantiate a socket at this location when its `listen()` method is
         called.
     """
-    path: Path = field(default=CODE_SOCKET)
+    path: Path = field(default=HOST_SOCKET)
     _sock: socket.socket | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
@@ -259,45 +317,134 @@ class CodeServer:
                 conn.close()
                 raise
 
-    def _handle_request(self, line: str) -> CodeResponse:
+    @staticmethod
+    def _request_id(payload: Any) -> str | None:
+        if not isinstance(payload, dict):
+            return None
+        request_id = payload.get("id")
+        if isinstance(request_id, str) and request_id.strip():
+            return request_id
+        return None
+
+    def _rpc_error(
+        self,
+        *,
+        request_id: str | None,
+        code: int,
+        message: str,
+        category: CodeError.Category | None = None,
+        detail: str | None = None,
+    ) -> RPCResponse:
+        data: RPCResponse.Error.CodeOpen | None = None
+        if category is not None or detail is not None:
+            data = RPCResponse.Error.CodeOpen(
+                category=category,
+                detail=detail,
+            )
+        return RPCResponse(
+            jsonrpc=JSON_RPC_VERSION,
+            id=request_id,
+            error=RPCResponse.Error.CodeOpen(code=code, message=message, data=data),
+        )
+
+    def _dispatch(self, envelope: RPCRequest, payload: dict[str, Any]) -> RPCResponse:
+        if envelope.method != CODE_RPC_METHOD_OPEN:
+            return self._rpc_error(
+                request_id=envelope.id,
+                code=JSON_RPC_METHOD_NOT_FOUND,
+                message=f"unknown method: {envelope.method}",
+            )
+
+        try:
+            request = RPCRequest.model_validate(payload)
+        except ValidationError as err:
+            return self._rpc_error(
+                request_id=envelope.id,
+                code=JSON_RPC_INVALID_PARAMS,
+                message=str(err),
+            )
+
+        try:
+            warnings = self._launch_editor(
+                Path(request.params.env_root).expanduser().resolve(),
+                request.params.container_id.strip(),
+            )
+            return RPCResponse(
+                jsonrpc=JSON_RPC_VERSION,
+                id=request.id,
+                result=RPCResponse.CodeOpen(warnings=warnings),
+            )
+        except CodeError as err:
+            return self._rpc_error(
+                request_id=request.id,
+                code=JSON_RPC_SERVER_ERROR,
+                message=err.message,
+                category=err.category,
+                detail=str(err),
+            )
+        except Exception as err:
+            return self._rpc_error(
+                request_id=request.id,
+                code=JSON_RPC_INTERNAL_ERROR,
+                message="failed to launch editor",
+                detail=str(err),
+            )
+
+    def _handle_request(self, line: str) -> RPCResponse:
         if not line:
-            raise CodeError("invalid_request", "empty request")
+            return self._rpc_error(
+                request_id=None,
+                code=JSON_RPC_INVALID_REQUEST,
+                message="empty request",
+            )
         if len(line) > MAX_REQUEST_BYTES:
-            raise CodeError("invalid_request", "request exceeds maximum size")
+            return self._rpc_error(
+                request_id=None,
+                code=JSON_RPC_INVALID_REQUEST,
+                message="request exceeds maximum size",
+            )
         if not line.endswith("\n"):
-            raise CodeError("invalid_request", "request must be newline-terminated")
+            return self._rpc_error(
+                request_id=None,
+                code=JSON_RPC_INVALID_REQUEST,
+                message="request must be newline-terminated",
+            )
         text = line.removesuffix("\n").strip()
         if not text:
-            raise CodeError("invalid_request", "empty request")
+            return self._rpc_error(
+                request_id=None,
+                code=JSON_RPC_INVALID_REQUEST,
+                message="empty request",
+            )
 
         # parse JSON
         try:
             payload = json.loads(text)
         except json.JSONDecodeError as err:
-            raise CodeError("invalid_request", f"malformed JSON request: {err.msg}") from err
+            return self._rpc_error(
+                request_id=None,
+                code=JSON_RPC_PARSE_ERROR,
+                message=f"malformed JSON request: {err.msg}",
+            )
         if not isinstance(payload, dict):
-            raise CodeError("invalid_request", "request must be a JSON object")
+            return self._rpc_error(
+                request_id=None,
+                code=JSON_RPC_INVALID_REQUEST,
+                message="request must be a JSON object",
+            )
+        request_id = self._request_id(payload)
 
-        # validate schema
+        # validate JSON-RPC envelope
         try:
-            request = CodeRequest.model_validate(payload)
+            envelope = RPCRequest.model_validate(payload)
         except ValidationError as err:
-            raise CodeError("invalid_request", str(err)) from err
+            return self._rpc_error(
+                request_id=request_id,
+                code=JSON_RPC_INVALID_REQUEST,
+                message=str(err),
+            )
 
-        # launch editor
-        try:
-            warnings = self._launch_editor(
-                Path(request.env_root).expanduser().resolve(),
-                request.container_id.strip(),
-            )
-            return CodeResponse.model_construct(ok=True, error="", warnings=warnings)
-        except CodeError as err:
-            return CodeResponse.model_construct(ok=False, error=str(err))
-        except Exception as err:
-            return CodeResponse.model_construct(
-                ok=False,
-                error=f"internal_error: failed to launch editor: {err}"
-            )
+        return self._dispatch(envelope, payload)
 
     def _remaining_probe_timeout(self, deadline: float, *, step: str) -> float:
         remaining = deadline - time.monotonic()
@@ -463,7 +610,7 @@ class CodeServer:
         # without notice.  If this breaks, it should have been replaced by something more
         # stable that we can use instead.
         container_id = urllib.parse.quote(container_id, safe="")
-        workspace_file = urllib.parse.quote(str(MOUNT / workspace), safe="/")
+        workspace_file = urllib.parse.quote(str(WORKTREE_MOUNT / workspace), safe="/")
         return f"vscode-remote://attached-container+{container_id}{workspace_file}"
 
     def _launch_editor(self, env_root: Path, container_id: str) -> list[str]:
@@ -479,12 +626,12 @@ class CodeServer:
         self._ensure_remote_containers_extension(editor_bin, deadline=deadline)
         try:
             config = Config.load(env_root)
-            if "vscode-workspace" not in config.resources:
+            if VSCODE_RESOURCE not in config:
                 raise CodeError(
                     "invalid_config",
-                    "layout is missing required 'vscode-workspace' resource"
+                    f"layout is missing required '{VSCODE_RESOURCE}' resource"
                 )
-            workspace_abs_path = config.path("vscode-workspace")
+            workspace_abs_path = config.path(VSCODE_RESOURCE)
             if not workspace_abs_path.exists() or not workspace_abs_path.is_file():
                 raise CodeError(
                     "invalid_config",
@@ -531,7 +678,7 @@ class CodeServer:
 
         # open editor in detached (non-blocking) process
         try:
-            workspace_rel_path = config.resources["vscode-workspace"]
+            workspace_rel_path = CAPABILITIES["vscode"][config.profile][VSCODE_RESOURCE]
             subprocess.Popen(
                 [
                     str(editor_bin),
@@ -561,15 +708,12 @@ class CodeServer:
                 # launch editor and prepare response
                 try:
                     response = self._handle_request(line)
-                except CodeError as err:
-                    response = CodeResponse.model_construct(
-                        ok=False,
-                        error=str(err)
-                    )
                 except Exception as err:
-                    response = CodeResponse.model_construct(
-                        ok=False,
-                        error=f"internal server error: {err}"
+                    response = self._rpc_error(
+                        request_id=None,
+                        code=JSON_RPC_INTERNAL_ERROR,
+                        message="internal server error",
+                        detail=str(err),
                     )
 
                 # send response back to client
@@ -606,7 +750,7 @@ def main() -> None:
     login.
     """
     try:
-        server = CodeServer(CODE_SOCKET)
+        server = CodeServer(HOST_SOCKET)
         try:
             server.listen()
         finally:
@@ -629,10 +773,10 @@ def _render_code_service(env_root: Path) -> str:
     # Editor integration is resource-driven.  For now, host attach is implemented
     # only for vscode-capable environments.
     config = Config.load(env_root)
-    if "vscode-workspace" not in config.resources:
+    if VSCODE_RESOURCE not in config:
         raise CodeError(
             "invalid_config",
-            "environment is missing required 'vscode-workspace' resource for "
+            f"environment is missing required '{VSCODE_RESOURCE}' resource for "
             "host-side editor attach"
         )
 
@@ -703,7 +847,7 @@ def _code_service_reachable(
         raise ValueError(f"interval must be positive: {interval}")
 
     # spin while trying to connect to socket until timeout expires
-    path = str(CODE_SOCKET)
+    path = str(HOST_SOCKET)
     deadline = time.monotonic() + timeout
     while True:
         client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -797,14 +941,14 @@ def start_code_service(ctx: Pipeline.InProgress, *, env_root: Path, strict: bool
         except Exception as err:
             raise CodeError(
                 "invalid_service_environment",
-                f"failed to probe code RPC socket at {CODE_SOCKET} after starting "
+                f"failed to probe code RPC socket at {HOST_SOCKET} after starting "
                 f"service '{CODE_SERVICE_NAME}'.  Check `systemctl --user status "
                 f"{CODE_SERVICE_NAME}` for details.\n{str(err)}"
             ) from err
 
         raise CodeError(
             "probe_timeout",
-            f"code RPC socket at {CODE_SOCKET} did not become reachable within "
+            f"code RPC socket at {HOST_SOCKET} did not become reachable within "
             f"{CODE_PROBE_TIMEOUT} seconds after starting service "
             f"'{CODE_SERVICE_NAME}'.  Check `systemctl --user status {CODE_SERVICE_NAME}` "
             "for details."
@@ -818,16 +962,16 @@ def start_code_service(ctx: Pipeline.InProgress, *, env_root: Path, strict: bool
 
 
 def _send_request(
-    request: CodeRequest,
+    request: RPCRequest,
     *,
     timeout: float = CODE_RPC_CLIENT_TIMEOUT,
-) -> CodeResponse:
+) -> RPCResponse:
     """Send a single request to the code RPC server from inside a container context and
     wait for a single response.
 
     Parameters
     ----------
-    request : CodeRequest
+    request : RPCRequest
         The request to send to the server.  This will be serialized as JSON and sent as
         a single line of text, terminated by a newline character.
     timeout : float, optional
@@ -836,9 +980,9 @@ def _send_request(
 
     Returns
     -------
-    CodeResponse
+    RPCResponse
         The response from the server, parsed from JSON and validated against the
-        `CodeResponse` schema.
+        `RPCResponse` schema.
 
     Raises
     ------
@@ -900,9 +1044,16 @@ def _send_request(
 
     # validate schema
     try:
-        return CodeResponse.model_validate(response)
+        result = RPCResponse.model_validate(response)
     except ValidationError as err:
         raise OSError(f"invalid RPC response: {err}") from err
+
+    if result.id != request.id:
+        raise OSError(
+            "RPC response id mismatch: "
+            f"expected {request.id!r}, got {result.id!r}"
+        )
+    return result
 
 
 def open_editor(timeout: float = CODE_RPC_CLIENT_TIMEOUT) -> list[str]:
@@ -928,7 +1079,7 @@ def open_editor(timeout: float = CODE_RPC_CLIENT_TIMEOUT) -> list[str]:
     """
     # check whether `start_code_service()` returned true when we entered the container
     # shell
-    if os.environ.get(CODE_SERVICE_ENV, "").strip() != "1":
+    if os.environ.get(SOCKET_ENV, "").strip() != "1":
         raise CodeError(
             "invalid_service_environment",
             "Code server not available.  Please exit the environment and re-enter, "
@@ -937,19 +1088,19 @@ def open_editor(timeout: float = CODE_RPC_CLIENT_TIMEOUT) -> list[str]:
         )
 
     # get host environment path from shell variable set by `bertrand enter`
-    env_path = os.environ.get(HOST_ENV)
+    env_path = os.environ.get(PROJECT_ROOT_ENV)
     if env_path is None:
         raise CodeError(
             "invalid_service_environment",
-            f"{HOST_ENV} environment variable is not set.  This variable should be set "
-            "automatically when you enter the environment with `bertrand enter`.  If "
-            "you are seeing this message, ensure that you have entered the environment "
-            "and that your shell session has been properly initialized by the entry "
-            "process."
+            f"{PROJECT_ROOT_ENV} environment variable is not set.  This variable "
+            "should be set automatically when you enter the environment with "
+            "`bertrand enter`.  If you are seeing this message, ensure that you have "
+            "entered the environment and that your shell session has been properly "
+            "initialized by the entry process."
         )
     env_root = PosixPath(env_path)
     if env_root != env_root.expanduser().resolve():
-        raise OSError(f"{HOST_ENV} path is not normalized: {env_root}")
+        raise OSError(f"{PROJECT_ROOT_ENV} path is not normalized: {env_root}")
 
     # get container ID from shell variable set by `bertrand enter`
     container_id = os.environ.get(CONTAINER_ID_ENV)
@@ -965,19 +1116,28 @@ def open_editor(timeout: float = CODE_RPC_CLIENT_TIMEOUT) -> list[str]:
 
     # construct and send request
     response = _send_request(
-        CodeRequest.model_construct(
-            version=CODE_SOCKET_VERSION,
-            op="open_editor",
-            env_root=str(env_root),
-            container_id=container_id,
+        RPCRequest(
+            jsonrpc=JSON_RPC_VERSION,
+            id=str(uuid.uuid4()),
+            method=CODE_RPC_METHOD_OPEN,
+            params=RPCRequest.CodeOpen(
+                env_root=str(env_root),
+                container_id=container_id,
+            ),
         ),
         timeout=timeout,
     )
 
     # handle response and return warnings if successful
-    if not response.ok:
-        raise CodeError(
-            "attach_failed",
-            f"RPC request failed: {response.error}"
+    if response.error is not None:
+        category = (
+            response.error.data.category
+            if response.error.data is not None else None
         )
-    return response.warnings
+        if category is not None:
+            raise CodeError(category, response.error.message)
+        raise OSError(
+            f"RPC request failed ({response.error.code}): {response.error.message}"
+        )
+    assert response.result is not None
+    return response.result.warnings

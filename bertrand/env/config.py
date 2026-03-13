@@ -15,7 +15,6 @@ from __future__ import annotations
 import json
 import hashlib
 import ipaddress
-import math
 import os
 import re
 import shutil
@@ -54,27 +53,26 @@ import jinja2
 import yaml
 
 from .pipeline import on_init
-from .run import LOCK_TIMEOUT, Lock, atomic_write_text, run, sanitize_name
+from .run import LOCK_TIMEOUT, Lock, User, atomic_write_text, run, sanitize_name
 from .version import __version__, VERSION
 
 # pylint: disable=bare-except
 
 
 # Canonical path definitions for worktree control
-WORKTREE_DIR: PosixPath = PosixPath(".bertrand")
-WORKTREE_LOCK: PosixPath = WORKTREE_DIR / ".lock"
-WORKTREE_METADATA: PosixPath = WORKTREE_DIR / "env.json"
-WORKTREE_MOUNT: PosixPath = PosixPath("/env")
-WORKTREE_TMP: PosixPath = WORKTREE_DIR / "tmp"
-WORKTREE_COMMITS: PosixPath = WORKTREE_DIR / "commits"
 ARTIFACT_ROOT: PosixPath = PosixPath("/tmp/bertrand/artifacts")
 CONAN_HOME: PosixPath = PosixPath("/opt/conan")
-
-
-# Global resource catalog.  Extensions can add resources here with associated behavior,
-# and then update the capabilities and/or profiles to place them in the generated
-# layouts, without needing to change any of the core layout parsing or rendering logic.
-CATALOG: dict[str,  Resource] = {}
+CONTAINER_SOCKET: PosixPath = PosixPath("/tmp/bertrand/artifacts/host.sock")
+HOST_SOCKET: Path = (
+    User().home / ".local" / "share" / "bertrand" / "daemon" / "listener.sock"
+)
+METADATA_DIR: PosixPath = PosixPath(".bertrand")
+METADATA_BRANCHES: PosixPath = METADATA_DIR / "branches"
+METADATA_COMMITS: PosixPath = METADATA_DIR / "commits"
+METADATA_LOCK: PosixPath = METADATA_DIR / ".lock"
+METADATA_FILE: PosixPath = METADATA_DIR / "env.json"
+METADATA_TMP: PosixPath = METADATA_DIR / "tmp"
+WORKTREE_MOUNT: PosixPath = PosixPath("/env")
 
 
 # In-container environment variables for relevant configuration, which are set either
@@ -87,11 +85,12 @@ CONTAINER_BIN_ENV: str = "BERTRAND_CONTAINER_BIN"
 CONTAINER_ID_ENV: str = "BERTRAND_CONTAINER_ID"
 CONTAINER_TAG_ENV: str = "BERTRAND_CONTAINER_TAG"
 EDITOR_BIN_ENV: str = "BERTRAND_EDITOR_BIN"
-ENV_ID_ENV: str = "BERTRAND_ENV_ID"
-ENV_NAME_ENV: str = "BERTRAND_ENV_NAME"
-ENV_ROOT_ENV: str = "BERTRAND_ENV_ROOT"
 IMAGE_ID_ENV: str = "BERTRAND_IMAGE_ID"
 IMAGE_TAG_ENV: str = "BERTRAND_IMAGE_TAG"
+PROJECT_ID_ENV: str = "BERTRAND_PROJECT_ID"
+PROJECT_NAME_ENV: str = "BERTRAND_PROJECT_NAME"
+PROJECT_ROOT_ENV: str = "BERTRAND_PROJECT_ROOT"
+SOCKET_ENV: str = "BERTRAND_SOCKET"
 
 
 def inside_image() -> bool:
@@ -123,7 +122,37 @@ def inside_container() -> bool:
     bool
         True if we're running inside a container process, False otherwise.
     """
-    return all(key in os.environ for key in (CONTAINER_ID_ENV, IMAGE_ID_ENV, ENV_ID_ENV))
+    return all(key in os.environ for key in (CONTAINER_ID_ENV, IMAGE_ID_ENV, PROJECT_ID_ENV))
+
+
+# Canonical resource names for built-in resources
+BERTRAND_RESOURCE = "bertrand"
+CLANG_FORMAT_RESOURCE = "clang_format"
+CLANG_TIDY_RESOURCE = "clang_tidy"
+CLANGD_RESOURCE = "clangd"
+CONAN_RESOURCE = "conan"
+CONANFILE_RESOURCE = "conanfile"
+CONANPROFILE_RESOURCE = "conanprofile"
+CONANREMOTES_RESOURCE = "conanremotes"
+CONTAINERFILE_RESOURCE = "containerfile"
+CONTAINERIGNORE_RESOURCE = "containerignore"
+COMPILE_COMMANDS_RESOURCE = "compile_commands"
+DOCS_RESOURCE = "docs"
+GITIGNORE_RESOURCE = "gitignore"
+KUBE_DEPLOYMENT_RESOURCE = "kube_deployment"
+KUBE_JOB_RESOURCE = "kube_job"
+KUBE_SERVICE_RESOURCE = "kube_service"
+PUBLISH_RESOURCE = "publish"
+PYPROJECT_RESOURCE = "pyproject"
+SRC_RESOURCE = "src"
+TESTS_RESOURCE = "tests"
+VSCODE_RESOURCE = "vscode_workspace"
+
+
+# Global resource catalog.  Extensions can add resources here with associated behavior,
+# and then update the capabilities and/or profiles to place them in the generated
+# layouts, without needing to change any of the core layout parsing or rendering logic.
+CATALOG: dict[str,  Resource] = {}
 
 
 # Configuration options that affect CLI behavior
@@ -1018,12 +1047,12 @@ def resource[ResourceT: Resource](
     return _decorator
 
 
-@resource("publish", kind="file", template="core/publish.v1")
-@resource("vscode-workspace", kind="file", template="core/vscode-workspace.v1")
-@resource("containerfile", kind="file", template="core/containerfile.v1")
-@resource("docs", kind="dir")
-@resource("tests", kind="dir")
-@resource("src", kind="dir")
+@resource(PUBLISH_RESOURCE, kind="file", template="core/publish.v1")
+@resource(VSCODE_RESOURCE, kind="file", template="core/vscode-workspace.v1")
+@resource(CONTAINERFILE_RESOURCE, kind="file", template="core/containerfile.v1")
+@resource(DOCS_RESOURCE, kind="dir")
+@resource(TESTS_RESOURCE, kind="dir")
+@resource(SRC_RESOURCE, kind="dir")
 @dataclass(frozen=True)
 class Resource:
     """A base class describing a single file or directory being managed by the layout
@@ -1191,7 +1220,7 @@ def lock_worktree(worktree: Path, timeout: float = LOCK_TIMEOUT) -> Lock:
     """
     # NOTE: pre-touching the lock's parent ensures that lock acquisition is always
     # atomic
-    path = worktree.expanduser().resolve() / WORKTREE_LOCK
+    path = worktree.expanduser().resolve() / METADATA_LOCK
     path.parent.mkdir(parents=True, exist_ok=True)
     return Lock(path, timeout=timeout)
 
@@ -1289,7 +1318,7 @@ def _validate_dependency_groups(*, pyproject: Any | None, bertrand: Any | None) 
         raise ValueError("; ".join(problems))
 
 
-@resource("pyproject", kind="file", template="core/pyproject.v1")
+@resource(PYPROJECT_RESOURCE, kind="file", template="core/pyproject.v1")
 class PyProject(Resource):
     """A resource describing a `pyproject.toml` file, which is the primary vehicle for
     configuring a top-level Python project, as well as Bertrand itself and its entire
@@ -1405,12 +1434,12 @@ class PyProject(Resource):
 
     def parse(self, config: Config) -> dict[str, Any] | None:
         # get content of the current worktree's `pyproject.toml`
-        path = config.path("pyproject")
+        path = config.path(self.name)
         try:
             text = path.read_text(encoding="utf-8")
         except OSError as err:
             raise OSError(
-                f"failed to read pyproject for resource 'pyproject' at {path}: {err}"
+                f"failed to read pyproject for resource '{self.name}' at {path}: {err}"
             ) from err
 
         # load toml mapping
@@ -1418,7 +1447,7 @@ class PyProject(Resource):
             parsed = tomllib.loads(text)
         except tomllib.TOMLDecodeError as err:
             raise OSError(
-                f"failed to parse pyproject TOML for resource 'pyproject' at {path}: {err}"
+                f"failed to parse pyproject TOML for resource '{self.name}' at {path}: {err}"
             ) from err
         if not isinstance(parsed, dict):
             raise OSError(f"expected mapping at 'pyproject', got {type(parsed).__name__}")
@@ -1436,31 +1465,31 @@ class PyProject(Resource):
         if not isinstance(tool, dict):
             return normalized
 
-        conan = tool.get("conan")
+        conan = tool.get(CONAN_RESOURCE)
         if isinstance(conan, dict):
-            normalized["conan"] = conan
-            normalized["conanfile"] = {}
-            normalized["conanremotes"] = {}
-            normalized["conanprofile"] = {}
+            normalized[CONAN_RESOURCE] = conan
+            normalized[CONANFILE_RESOURCE] = {}
+            normalized[CONANREMOTES_RESOURCE] = {}
+            normalized[CONANPROFILE_RESOURCE] = {}
 
-        bertrand = tool.get("bertrand")
+        bertrand = tool.get(BERTRAND_RESOURCE)
         if isinstance(bertrand, dict):
-            normalized["bertrand"] = bertrand
+            normalized[BERTRAND_RESOURCE] = bertrand
             services = bertrand.get("services")
             if isinstance(services, list) and services:
                 normalized["kube"] = {}
 
-        clangd = tool.get("clangd")
+        clangd = tool.get(CLANGD_RESOURCE)
         if isinstance(clangd, dict):
-            normalized["clangd"] = clangd
+            normalized[CLANGD_RESOURCE] = clangd
 
-        clang_tidy = tool.get("clang-tidy")
+        clang_tidy = tool.get(CLANG_TIDY_RESOURCE)
         if isinstance(clang_tidy, dict):
-            normalized["clang_tidy"] = clang_tidy
+            normalized[CLANG_TIDY_RESOURCE] = clang_tidy
 
-        clang_format = tool.get("clang-format")
+        clang_format = tool.get(CLANG_FORMAT_RESOURCE)
         if isinstance(clang_format, dict):
-            normalized["clang_format"] = clang_format
+            normalized[CLANG_FORMAT_RESOURCE] = clang_format
 
         return normalized
 
@@ -1473,7 +1502,7 @@ class PyProject(Resource):
         return result
 
 
-@resource("conan", kind=None)
+@resource(CONAN_RESOURCE, kind=None)
 class ConanConfig(Resource):
     """A virtual resource that validates Conan configuration data sourced from
     project config files (e.g. `[tool.conan]` in `pyproject.toml`).
@@ -1569,7 +1598,7 @@ class ConanConfig(Resource):
         return self.Model.model_validate(table)
 
 
-@resource("conanfile", kind="file")
+@resource(CONANFILE_RESOURCE, kind="file")
 class ConanFile(Resource):
     """A resource describing a generated out-of-tree `conanfile.py` consumer recipe."""
     # pylint: disable=missing-function-docstring, unused-argument, missing-return-doc
@@ -1683,7 +1712,7 @@ class ConanFile(Resource):
         return "\n".join(lines)
 
 
-@resource("conanprofile", kind="file")
+@resource(CONANPROFILE_RESOURCE, kind="file")
 class ConanProfile(Resource):
     """A resource describing the effective Conan default profile."""
     # pylint: disable=missing-function-docstring, unused-argument, missing-return-doc
@@ -1796,7 +1825,7 @@ class ConanProfile(Resource):
         return "\n".join(lines)
 
 
-@resource("conanremotes", kind="file")
+@resource(CONANREMOTES_RESOURCE, kind="file")
 class ConanRemotes(Resource):
     """A resource describing Conan remote registry output (`remotes.json`)."""
     # pylint: disable=missing-function-docstring, unused-argument, missing-return-doc
@@ -1829,7 +1858,7 @@ class ConanRemotes(Resource):
         return text
 
 
-@resource("bertrand", kind=None)
+@resource(BERTRAND_RESOURCE, kind=None)
 class Bertrand(Resource):
     """A resource describing the configuration state needed by Bertrand itself, which
     is expected to be provided by another resource (e.g. `pyproject.toml`), and is not
@@ -2429,7 +2458,7 @@ class Bertrand(Resource):
             return self
 
     def validate(self, config: Config) -> Model | None:
-        table = config.snapshot.get("bertrand")
+        table = config.snapshot.get(self.name)
         if not isinstance(table, dict):
             return None
         result = self.Model.model_validate(table)
@@ -2440,7 +2469,7 @@ class Bertrand(Resource):
         return result
 
 
-@resource("gitignore", kind="file")
+@resource(GITIGNORE_RESOURCE, kind="file")
 class GitIgnore(Resource):
     """A resource describing a `.gitignore` file, which is used to exclude files from
     the repository context during version control.  This is generated by the relevant
@@ -2456,7 +2485,7 @@ class GitIgnore(Resource):
         return _dump_ignore_list(patterns)
 
 
-@resource("containerignore", kind="file")
+@resource(CONTAINERIGNORE_RESOURCE, kind="file")
 class ContainerIgnore(Resource):
     """A resource describing a `.containerignore` file, which is used to exclude files
     from the build context when compiling container images.  This is generated by the
@@ -2472,12 +2501,19 @@ class ContainerIgnore(Resource):
         return _dump_ignore_list(patterns)
 
 
-@resource("kube_deployment", kind="file")
+@resource(KUBE_DEPLOYMENT_RESOURCE, kind="file")
 class KubeDeployment(Resource):
     """A resource describing a Kubernetes `Deployment` manifest, which is rendered as
     an output artifact based on Bertrand's tagged build matrix.
     """
     # pylint: disable=missing-function-docstring, unused-argument, missing-return-doc
+
+    # TODO: kubernetes support is an awesome long-term goal, but I should not pursue it
+    # for v1, and should just focus on getting the core CLI and local container
+    # execution working properly, and then figure out a way to layer kubernetes
+    # deployments + jobs, services, etc. on top later.  Performance-sensitive local
+    # apps won't want to use kubernetes anyways, so we need to support both modes
+    # regardless.
 
     def _render_containers(
         self,
@@ -2607,7 +2643,7 @@ class KubeDeployment(Resource):
         }, resource_id=self.name)
 
 
-@resource("compile_commands", kind="file")
+@resource(COMPILE_COMMANDS_RESOURCE, kind="file")
 class CompileCommands(Resource):
     """A resource describing a `compile_commands.json` file, which is used to
     configure C++ projects and tools, and can also be used as a source of truth for
@@ -2649,7 +2685,7 @@ class CompileCommands(Resource):
         sources: Annotated[list[Entry], Field(default_factory=list)]
 
     def parse(self, config: Config) -> dict[str, Any] | None:
-        path = config.path("compile_commands")
+        path = config.path(self.name)
         if not path.exists() or not path.is_file():
             return None
         try:
@@ -2672,13 +2708,13 @@ class CompileCommands(Resource):
         return {self.name: {"sources": payload}}
 
     def validate(self, config: Config) -> Model | None:
-        data = config.snapshot.get("compile_commands")
+        data = config.snapshot.get(self.name)
         if data is None:
             return None
         return self.Model.model_validate(data, context={"worktree": config.worktree})
 
 
-@resource("clangd", kind="file")
+@resource(CLANGD_RESOURCE, kind="file")
 class Clangd(Resource):
     """A resource describing a `.clangd` file, which is used to configure clangd for
     C++ language server features in editors.  This expects native clangd keys in
@@ -2874,7 +2910,7 @@ class Clangd(Resource):
         If: Annotated[list[_If], Field(default_factory=list)]
 
     def validate(self, config: Config) -> Model | None:
-        data = config.snapshot.get("clangd")
+        data = config.snapshot.get(self.name)
         if data is None:
             return None
         return self.Model.model_validate(data)
@@ -2918,7 +2954,7 @@ class Clangd(Resource):
                 "CommentFormat": model.Documentation.CommentFormat,
             },
         }
-        content = _dump_yaml(top_level, resource_id="clangd")
+        content = _dump_yaml(top_level, resource_id=self.name)
 
         # Add fragments for each `If` section
         for section in model.If:
@@ -2965,12 +3001,12 @@ class Clangd(Resource):
                 fragment["Documentation"] = {
                     "CommentFormat": section.Documentation.CommentFormat,
                 }
-            content += "---\n" + _dump_yaml(fragment, resource_id="clangd")
+            content += "---\n" + _dump_yaml(fragment, resource_id=self.name)
 
         return content
 
 
-@resource("clang_tidy", kind="file")
+@resource(CLANG_TIDY_RESOURCE, kind="file")
 class ClangTidy(Resource):
     """A resource describing a `.clang-tidy` file, which is used to configure
     clang-tidy for C++ linting.  This expects native clang-tidy key names in TOML.
@@ -3033,7 +3069,7 @@ class ClangTidy(Resource):
         ]
 
     def validate(self, config: Config) -> Model | None:
-        data = config.snapshot.get("clang-tidy")
+        data = config.snapshot.get(self.name)
         if data is None:
             return None
         return self.Model.model_validate(data)
@@ -3081,10 +3117,10 @@ class ClangTidy(Resource):
             content["WarningsAsErrors"] = ",".join(warnings_as_errors)
         if check_options:
             content["CheckOptions"] = check_options
-        return _dump_yaml(content, resource_id="clang_tidy")
+        return _dump_yaml(content, resource_id=self.name)
 
 
-@resource("clang_format", kind="file")
+@resource(CLANG_FORMAT_RESOURCE, kind="file")
 class ClangFormat(Resource):
     """A resource describing a `.clang-format` file, which is used to configure
     clang-format for C++ code formatting.  The `[tool.clang-format]` table is
@@ -3623,7 +3659,7 @@ class ClangFormat(Resource):
         Space: Annotated[_Space, Field(default_factory=_Space.model_construct)]
 
     def validate(self, config: Config) -> Model | None:
-        data = config.snapshot.get("clang-format")
+        data = config.snapshot.get(self.name)
         if data is None:
             return None
         return self.Model.model_validate(data)
@@ -3859,29 +3895,27 @@ class ClangFormat(Resource):
             "UseTab": model.UseTab,
             "WrapNamespaceBodyWithEmptyLines": model.WrapNamespaceBodyWithEmptyLines,
         }
-        return _dump_yaml(content, resource_id="clang_format")
+        return _dump_yaml(content, resource_id=self.name)
 
 
 # Profiles define only resource placements: wildcard baseline + profile diffs.
 PROFILES: dict[str, dict[str, PosixPath]] = {
     "flat": {
-        "publish": PosixPath(".github") / "workflows" / "publish.yml",
-        "gitignore": PosixPath(".gitignore"),
-        "containerignore": PosixPath(".containerignore"),
-        "kube": PosixPath("kube.yaml"),
-        "containerfile": PosixPath("Containerfile"),
-        "docs": PosixPath("docs"),
-        "tests": PosixPath("tests"),
+        PUBLISH_RESOURCE: PosixPath(".github") / "workflows" / "publish.yml",
+        GITIGNORE_RESOURCE: PosixPath(".gitignore"),
+        CONTAINERIGNORE_RESOURCE: PosixPath(".containerignore"),
+        CONTAINERFILE_RESOURCE: PosixPath("Containerfile"),
+        DOCS_RESOURCE: PosixPath("docs"),
+        TESTS_RESOURCE: PosixPath("tests"),
     },
     "src": {
-        "publish": PosixPath(".github") / "workflows" / "publish.yml",
-        "gitignore": PosixPath(".gitignore"),
-        "containerignore": PosixPath(".containerignore"),
-        "kube": PosixPath("kube.yaml"),
-        "containerfile": PosixPath("Containerfile"),
-        "docs": PosixPath("docs"),
-        "tests": PosixPath("tests"),
-        "src": PosixPath("src"),
+        PUBLISH_RESOURCE: PosixPath(".github") / "workflows" / "publish.yml",
+        GITIGNORE_RESOURCE: PosixPath(".gitignore"),
+        CONTAINERIGNORE_RESOURCE: PosixPath(".containerignore"),
+        CONTAINERFILE_RESOURCE: PosixPath("Containerfile"),
+        DOCS_RESOURCE: PosixPath("docs"),
+        TESTS_RESOURCE: PosixPath("tests"),
+        SRC_RESOURCE: PosixPath("src"),
     },
 }
 
@@ -3891,38 +3925,38 @@ PROFILES: dict[str, dict[str, PosixPath]] = {
 CAPABILITIES: dict[str, dict[str, dict[str, PosixPath]]] = {
     "python": {
         "flat": {
-            "pyproject": PosixPath("pyproject.toml"),
+            PYPROJECT_RESOURCE: PosixPath("pyproject.toml"),
         },
         "src": {
-            "pyproject": PosixPath("pyproject.toml"),
+            PYPROJECT_RESOURCE: PosixPath("pyproject.toml"),
         },
     },
     "cpp": {
         "flat": {
-            "compile_commands": ARTIFACT_ROOT / "compile_commands.json",
-            "conanfile": ARTIFACT_ROOT / "conanfile.py",
-            "conanremotes": CONAN_HOME / "remotes.json",
-            "conanprofile": CONAN_HOME / "profiles" / "default",
-            "clangd": ARTIFACT_ROOT / ".clangd",
-            "clang_tidy": ARTIFACT_ROOT / ".clang-tidy",
-            "clang_format": ARTIFACT_ROOT / ".clang-format",
+            COMPILE_COMMANDS_RESOURCE: ARTIFACT_ROOT / "compile_commands.json",
+            CONANFILE_RESOURCE: ARTIFACT_ROOT / "conanfile.py",
+            CONANREMOTES_RESOURCE: CONAN_HOME / "remotes.json",
+            CONANPROFILE_RESOURCE: CONAN_HOME / "profiles" / "default",
+            CLANGD_RESOURCE: ARTIFACT_ROOT / ".clangd",
+            CLANG_TIDY_RESOURCE: ARTIFACT_ROOT / ".clang-tidy",
+            CLANG_FORMAT_RESOURCE: ARTIFACT_ROOT / ".clang-format",
         },
         "src": {
-            "compile_commands": ARTIFACT_ROOT / "compile_commands.json",
-            "conanfile": ARTIFACT_ROOT / "conanfile.py",
-            "conanremotes": CONAN_HOME / "remotes.json",
-            "conanprofile": CONAN_HOME / "profiles" / "default",
-            "clangd": ARTIFACT_ROOT / ".clangd",
-            "clang_tidy": ARTIFACT_ROOT / ".clang-tidy",
-            "clang_format": ARTIFACT_ROOT / ".clang-format",
+            COMPILE_COMMANDS_RESOURCE: ARTIFACT_ROOT / "compile_commands.json",
+            CONANFILE_RESOURCE: ARTIFACT_ROOT / "conanfile.py",
+            CONANREMOTES_RESOURCE: CONAN_HOME / "remotes.json",
+            CONANPROFILE_RESOURCE: CONAN_HOME / "profiles" / "default",
+            CLANGD_RESOURCE: ARTIFACT_ROOT / ".clangd",
+            CLANG_TIDY_RESOURCE: ARTIFACT_ROOT / ".clang-tidy",
+            CLANG_FORMAT_RESOURCE: ARTIFACT_ROOT / ".clang-format",
         },
     },
     "vscode": {
         "flat": {
-            "vscode-workspace": PosixPath(".vscode/bertrand.code-workspace"),
+            VSCODE_RESOURCE: PosixPath(".vscode/bertrand.code-workspace"),
         },
         "src": {
-            "vscode-workspace": PosixPath(".vscode/bertrand.code-workspace"),
+            VSCODE_RESOURCE: PosixPath(".vscode/bertrand.code-workspace"),
         },
     },
 }
@@ -4487,6 +4521,21 @@ class Config:
     def __bool__(self) -> bool:
         return self._entered > 0
 
+    def __contains__(self, key: str) -> bool:
+        """Check if a resource ID is present in the environment.
+
+        Parameters
+        ----------
+        key : str
+            The stable identifier of the resource to check for, as defined in `CATALOG`.
+
+        Returns
+        -------
+        bool
+            True if the resource ID is present in the environment, False otherwise.
+        """
+        return key in self._resources
+
     def resource(self, resource_id: str) -> Resource:
         """Retrieve the resource specification for the given resource ID.
 
@@ -4537,7 +4586,53 @@ class Config:
             raise OSError(f"resource '{resource_id}' has no filesystem path")
         return self._resolve_path(path, self.worktree)
 
-    # TODO: image_args(tag), container_args(tag)
+    def image_args(self, tag: str) -> list[str]:
+        """Retrieve a set of `podman build` arguments to apply during image builds for
+        the given tag.
+
+        Parameters
+        ----------
+        tag : str
+            The active image tag for the configured environment, which is used to
+            search the `bertrand.tags` list for tag-specific overrides when generating
+            build arguments.  Usually, this is supplied by either the build system or an
+            in-container environment variable, but we make no assumptions here.
+
+        Returns
+        -------
+        list[str]
+            A list of arguments to append to the `podman build` command when building
+            the specified image.
+        """
+        result: list[str] = []
+
+        # TODO: gather all the relevant arguments
+
+        return result
+
+    def container_args(self, tag: str) -> list[str]:
+        """Retrieve a set of `podman run` arguments to apply during container runs for
+        the given tag.
+
+        Parameters
+        ----------
+        tag : str
+            The active image tag for the configured environment, which is used to
+            search the `bertrand.tags` list for tag-specific overrides when generating
+            run arguments.  Usually, this is supplied by either the build system or an
+            in-container environment variable, but we make no assumptions here.
+            
+        Returns
+        -------
+        list[str]
+            A list of arguments to append to the `podman run` command when running the
+            specified image.
+        """
+        result: list[str] = []
+
+        # TODO: gather all the relevant arguments
+
+        return result
 
     def sync(self, tag: str) -> None:
         """Render and write derived artifact resources from active context snapshot.

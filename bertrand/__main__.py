@@ -10,7 +10,7 @@ import subprocess
 import sys
 from typing import cast
 
-from .env.code import CodeError, open_editor
+from .env.daemon import CodeError, open_editor
 from .env.config import inside_image, inside_container
 from .env.pipeline import (
     JSONValue,

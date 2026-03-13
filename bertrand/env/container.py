@@ -9,7 +9,6 @@ import os
 import re
 import shutil
 import sys
-from unicodedata import name
 import uuid
 
 from collections.abc import Mapping
@@ -26,7 +25,7 @@ from typing import (
     TypeAlias,
     TypedDict,
     cast,
-    overload
+    overload,
 )
 
 from pydantic import (
@@ -39,7 +38,7 @@ from pydantic import (
     StringConstraints,
 )
 
-from .code import (
+from .daemon import (
     CODE_SERVICE_ENV,
     CODE_SOCKET,
     CONTAINER_SOCKET,
@@ -49,11 +48,11 @@ from .config import (
     CONTAINER_ID_ENV,
     DEFAULT_MAX_COMMITS,
     DEFAULT_TAG,
-    HOST_ENV,
-    MOUNT,
+    ENV_ROOT_ENV,
+    WORKTREE_MOUNT,
     SHELLS,
     Config,
-    lock_env,
+    lock_worktree,
 )
 from .pipeline import (
     DelegateUserControllers,
@@ -784,7 +783,7 @@ def _load_registry() -> EnvironmentRegistry:
                 environments={}
             )
             for root in _discover_environment_mounts():
-                with lock_env(root, timeout=TIMEOUT):
+                with lock_worktree(root, timeout=TIMEOUT):
                     env = _check_env(root)
                     if env is None:
                         continue
@@ -794,7 +793,7 @@ def _load_registry() -> EnvironmentRegistry:
         # remove any stale entries
         normalized: dict[EnvironmentId, AbsolutePath] = {}
         for env_id, root in registry.environments.items():
-            with lock_env(root, timeout=TIMEOUT):
+            with lock_worktree(root, timeout=TIMEOUT):
                 env = _check_env(root, env_id=env_id)
                 if env is None or normalized.setdefault(env.id, root) != root:
                     changed = True
@@ -818,7 +817,7 @@ def _reconcile_registry(add: Path | None = None) -> tuple[Environment.JSON | Non
     # claim the requested root
     if add is not None:
         add = add.expanduser().resolve()
-        with lock_env(add, timeout=TIMEOUT):
+        with lock_worktree(add, timeout=TIMEOUT):
             env = _check_env(add)
             env_changed = False
             if env is None:
@@ -1310,7 +1309,7 @@ class Container(BaseModel):
         """
         mounts = inspect.get("Mounts") or []
         for m in mounts:
-            if m.get("Type") == "bind" and m.get("Destination") == str(MOUNT):
+            if m.get("Type") == "bind" and m.get("Destination") == str(WORKTREE_MOUNT):
                 src = m.get("Source")
                 if src:
                     return Path(src).expanduser().resolve()
@@ -1509,7 +1508,7 @@ class Image(BaseModel):
                 "--label", f"BERTRAND_CONTAINER={tag}",
 
                 # mount worktree as copy-on-write overlay to keep host worktree immutable
-                "-v", f"{str(worktree)}:{str(MOUNT)}:O",  # worktree uses COW overlay
+                "-v", f"{str(worktree)}:{str(WORKTREE_MOUNT)}:O",  # worktree uses COW overlay
                 "--mount",
                 (
                     "type=bind,"
@@ -2087,7 +2086,7 @@ class Environment:
         self.root = root.expanduser().resolve()
         self._json = self.JSON.model_construct(version=0, host="", id="", commits={})
         self._config = None
-        self._lock = lock_env(self.root, timeout=timeout)
+        self._lock = lock_worktree(self.root, timeout=timeout)
         self._entered = 0
 
     def __enter__(self) -> Environment:
@@ -2231,7 +2230,7 @@ class Environment:
             "BERTRAND_IMAGE" in os.environ and
             "BERTRAND_CONTAINER" in os.environ
         ):
-            return Environment(root=MOUNT)
+            return Environment(root=WORKTREE_MOUNT)
         return None
 
     @property
@@ -2867,7 +2866,7 @@ class Build(_Command):
                 "--label", f"BERTRAND_CONTAINER={container_tag}",
 
                 # mount environment directory
-                "-v", f"{str(env.root)}:{str(MOUNT)}",
+                "-v", f"{str(env.root)}:{str(WORKTREE_MOUNT)}",
                 "--mount",
                 (
                     "type=bind,"
@@ -3324,8 +3323,8 @@ class Enter(_Command):
         podman_exec([
             "exec",
             "-it",
-            "-w", str(MOUNT),
-            "-e", f"{HOST_ENV}={str(env.root)}",
+            "-w", str(WORKTREE_MOUNT),
+            "-e", f"{ENV_ROOT_ENV}={str(env.root)}",
             "-e", f"{CONTAINER_ID_ENV}={container.id}",
             "-e", f"{CODE_SERVICE_ENV}={'1' if code_server_available else '0'}",
             container.id,
@@ -3424,8 +3423,8 @@ class Code(_Command):
         podman_cmd([
             "exec",
             "-i",
-            "-w", str(MOUNT),
-            "-e", f"{HOST_ENV}={str(env.root)}",
+            "-w", str(WORKTREE_MOUNT),
+            "-e", f"{ENV_ROOT_ENV}={str(env.root)}",
             "-e", f"{CONTAINER_ID_ENV}={container.id}",
             "-e", f"{CODE_SERVICE_ENV}={'1' if code_server_available else '0'}",
             container.id,
@@ -3523,7 +3522,7 @@ class Run(_Command):
         podman_cmd([
             "exec",
             *cmd,
-            "-w", str(MOUNT),
+            "-w", str(WORKTREE_MOUNT),
             container.id,
             *args
         ])
