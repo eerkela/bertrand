@@ -25,7 +25,6 @@ from typing import (
     Iterator,
     Literal,
     Protocol,
-    TypeAlias,
     overload,
 )
 
@@ -50,13 +49,13 @@ STATE_DIR = User().home / ".local" / "share" / "bertrand" / "pipelines"
 STATE_LOCK = STATE_DIR / ".lock"
 MISSING: Literal["<missing>"] = "<missing>"  # not a valid SHA-256 hexdigest
 ATOMIC_UNDO: dict[str, Callable[[Pipeline.InProgress, dict[str, JSONValue], bool], None]] = {}
-QualName = Annotated[
+type QualName = Annotated[
     str,
     StringConstraints(pattern=r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*$")
 ]
-UUID4Hex = Annotated[str, StringConstraints(pattern=r"^[a-f0-9]{32}$")]
-Hash256 = Annotated[str, StringConstraints(pattern=r"^[a-f0-9]{64}$")]
-JSONValue: TypeAlias = (
+type UUID4Hex = Annotated[str, StringConstraints(pattern=r"^[a-f0-9]{32}$")]
+type Hash256 = Annotated[str, StringConstraints(pattern=r"^[a-f0-9]{64}$")]
+type JSONValue = (
     None
     | bool
     | int
@@ -65,7 +64,7 @@ JSONValue: TypeAlias = (
     | list["JSONValue"]
     | dict[str, "JSONValue"]
 )
-JSONView: TypeAlias = (
+type JSONView = (
     None
     | bool
     | int

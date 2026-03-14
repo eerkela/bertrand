@@ -38,7 +38,7 @@ from pydantic import (
     StringConstraints,
 )
 
-from .daemon import (
+from .rpc import (
     CODE_SERVICE_ENV,
     CODE_SOCKET,
     CONTAINER_SOCKET,
