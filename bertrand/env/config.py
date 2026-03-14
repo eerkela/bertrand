@@ -72,6 +72,7 @@ METADATA_COMMITS: PosixPath = METADATA_DIR / "commits"
 METADATA_LOCK: PosixPath = METADATA_DIR / ".lock"
 METADATA_FILE: PosixPath = METADATA_DIR / "env.json"
 METADATA_TMP: PosixPath = METADATA_DIR / "tmp"
+VSCODE_WORKSPACE_FILE: PosixPath = ARTIFACT_ROOT / "vscode.code-workspace"
 WORKTREE_MOUNT: PosixPath = PosixPath("/env")
 
 
@@ -83,7 +84,6 @@ BRANCH_ENV: str = "BERTRAND_BRANCH"
 COMMIT_ENV: str = "BERTRAND_COMMIT"
 CONTAINER_BIN_ENV: str = "BERTRAND_CONTAINER_BIN"
 CONTAINER_ID_ENV: str = "BERTRAND_CONTAINER_ID"
-CONTAINER_TAG_ENV: str = "BERTRAND_CONTAINER_TAG"
 EDITOR_BIN_ENV: str = "BERTRAND_EDITOR_BIN"
 IMAGE_ID_ENV: str = "BERTRAND_IMAGE_ID"
 IMAGE_TAG_ENV: str = "BERTRAND_IMAGE_TAG"
@@ -91,6 +91,7 @@ PROJECT_ID_ENV: str = "BERTRAND_PROJECT_ID"
 PROJECT_NAME_ENV: str = "BERTRAND_PROJECT_NAME"
 PROJECT_ROOT_ENV: str = "BERTRAND_PROJECT_ROOT"
 SOCKET_ENV: str = "BERTRAND_SOCKET"
+WORKTREE_ENV: str = "BERTRAND_WORKTREE"
 
 
 def inside_image() -> bool:
@@ -157,13 +158,18 @@ CATALOG: dict[str,  Resource] = {}
 
 # Configuration options that affect CLI behavior
 DEFAULT_TAG: str = "default"
-DEFAULT_MAX_COMMITS: int = 10
 SHELLS: dict[str, tuple[str, ...]] = {
     "bash": ("bash", "-l"),
 }
 DEFAULT_SHELL: str = "bash"
 if DEFAULT_SHELL not in SHELLS:
     raise RuntimeError(f"default shell is unsupported: {DEFAULT_SHELL}")
+EDITORS: dict[str, tuple[str, ...]] = {
+    "vscode": ("code",)
+}
+DEFAULT_EDITOR: str = "vscode"
+if DEFAULT_EDITOR not in EDITORS:
+    raise RuntimeError(f"default editor is unsupported: {DEFAULT_EDITOR}")
 INSTRUMENTS: dict[str, Callable[[dict[str, Any]], Callable[[list[str]], list[str]]]] = {
     # NOTE: instruments are identified by a unique name, which limits what can appear
     # in a tag's `instruments` field as part of a configured build matrix.  They map
@@ -281,6 +287,14 @@ def _check_shell(shell: str) -> str:
             f"unsupported shell: '{shell}' (supported shells: {', '.join(SHELLS)})"
         )
     return shell
+
+
+def _check_editor(editor: str) -> str:
+    if editor not in EDITORS:
+        raise ValueError(
+            f"unsupported editor: '{editor}' (supported editors: {', '.join(EDITORS)})"
+        )
+    return editor
 
 
 def _deduplicate_ignore_list(ignore: list[Glob]) -> list[Glob]:
@@ -795,6 +809,7 @@ type EntrypointName = Annotated[str, StringConstraints(
     pattern=r"^[a-zA-Z_][a-zA-Z0-9_]*$"
 )]
 type Shell = Annotated[NonEmpty[NoWhiteSpace], AfterValidator(_check_shell)]
+type Editor = Annotated[NonEmpty[NoWhiteSpace], AfterValidator(_check_editor)]
 type IgnoreList = Annotated[list[Glob], AfterValidator(_deduplicate_ignore_list)]
 type NetworkMode = Annotated[
     str,
@@ -1869,11 +1884,8 @@ class Bertrand(Resource):
     class Model(BaseModel):
         """Validate the `[bertrand]` table."""
         model_config = ConfigDict(extra="forbid")
-        max_commits: Annotated[PositiveInt, Field(
-            default=DEFAULT_MAX_COMMITS,
-            alias="max-commits"
-        )]
         shell: Annotated[Shell, Field(default=DEFAULT_SHELL)]
+        editor: Annotated[Editor, Field(default=DEFAULT_EDITOR)]
         ignore: Annotated[IgnoreList, Field(default_factory=list)]
         git_ignore: Annotated[
             IgnoreList,
@@ -3953,10 +3965,10 @@ CAPABILITIES: dict[str, dict[str, dict[str, PosixPath]]] = {
     },
     "vscode": {
         "flat": {
-            VSCODE_RESOURCE: PosixPath(".vscode/bertrand.code-workspace"),
+            VSCODE_RESOURCE: VSCODE_WORKSPACE_FILE,
         },
         "src": {
-            VSCODE_RESOURCE: PosixPath(".vscode/bertrand.code-workspace"),
+            VSCODE_RESOURCE: VSCODE_WORKSPACE_FILE,
         },
     },
 }
@@ -4148,6 +4160,10 @@ class Config:
             if all(resources.get(r_id) == placement for r_id, placement in placements.items()):
                 capabilities.add(capability)
         return capabilities
+
+    # TODO: I need to clarify how loading an environment and locating its
+    # resources actually works, and whether it is robust.  I should maybe only look
+    # for in-tree (relative path) resources, for example.
 
     @classmethod
     def load(cls, worktree: Path) -> Self:

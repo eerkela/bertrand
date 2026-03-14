@@ -91,6 +91,9 @@ def _warning(path: Path, reason: str) -> str:
     return f"failed to sync VSCode MCP config ({path}): {reason}"
 
 
+# TODO: vscode mcp.json should be a config output artifact
+
+
 def sync_vscode_mcp_config(env_root: Path) -> str | None:
     """Update `.vscode/mcp.json` to register the Bertrand MCP server.  Once configured,
     VSCode will automatically start the MCP server when the user opens the workspace,

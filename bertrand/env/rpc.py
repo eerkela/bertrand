@@ -18,35 +18,33 @@ import urllib.parse
 import uuid
 
 from dataclasses import dataclass, field
-from pathlib import Path, PosixPath
+from pathlib import Path
 from typing import Annotated, Callable, Literal, Mapping, NoReturn, Protocol, Self
 
 from pydantic import (
     AfterValidator,
     BaseModel,
     ConfigDict,
-    Field,
     PositiveFloat,
     ValidationError,
     model_validator,
 )
 
 from .config import (
-    CAPABILITIES,
     CONTAINER_BIN_ENV,
     CONTAINER_ID_ENV,
     CONTAINER_SOCKET,
     EDITOR_BIN_ENV,
     HOST_SOCKET,
-    PROJECT_ROOT_ENV,
+    IMAGE_TAG_ENV,
     SOCKET_ENV,
-    VSCODE_RESOURCE,
+    VSCODE_WORKSPACE_FILE,
+    WORKTREE_ENV,
     WORKTREE_MOUNT,
-    Config
+    Config,
+    inside_image,
 )
-from .mcp import sync_vscode_mcp_config
 from .pipeline import (
-    JSONValue,
     Pipeline,
     ReloadDaemon,
     StartService,
@@ -70,21 +68,20 @@ JSON_RPC_METHOD_NOT_FOUND: int = -32601         # The method does not exist / is
 JSON_RPC_INVALID_PARAMS: int = -32602           # Invalid method parameter(s)
 JSON_RPC_INTERNAL_ERROR: int = -32603           # Internal JSON-RPC error
 JSON_RPC_TIMEOUT_ERROR: int = 0                 # Custom error code for timeouts
-JSON_RPC_CODE_ERROR: int = 1                    # Custom error code for CodeError exceptions
 MAX_REQUEST_BYTES: int = 1024 * 1024            # 1 MiB, to prevent malicious payloads
 RPC_SERVICE_NAME: str = "bertrand-rpc"
 RPC_SERVICE_FILE: Path = User().home / ".config" / "systemd" / "user" / RPC_SERVICE_NAME
 RPC_TIMEOUT: float = 30.0
 
 
-def _check_worktree_root(worktree_root: Path) -> Path:
-    if not worktree_root.is_absolute():
-        raise ValueError(f"worktree must be an absolute path: {worktree_root}")
-    if not worktree_root.exists():
-        raise ValueError(f"worktree does not exist: {worktree_root}")
-    if not worktree_root.is_dir():
-        raise ValueError(f"worktree must be a directory: {worktree_root}")
-    return worktree_root
+def _check_worktree(worktree: Path) -> Path:
+    if not worktree.is_absolute():
+        raise ValueError(f"worktree must be an absolute path: {worktree}")
+    if not worktree.exists():
+        raise ValueError(f"worktree does not exist: {worktree}")
+    if not worktree.is_dir():
+        raise ValueError(f"worktree must be a directory: {worktree}")
+    return worktree.expanduser().resolve()
 
 
 def _check_container_id(container_id: str) -> str:
@@ -101,41 +98,17 @@ def _check_request_id(request_id: str) -> str:
     return request_id
 
 
-type JSONRPCVersion = Literal["2.0"]
-type MethodName = Literal["code.open"]
 type ContainerID = Annotated[  # pylint: disable=invalid-name
     str,
     AfterValidator(_check_container_id)
 ]
-type WorktreeRoot = Annotated[Path, AfterValidator(_check_worktree_root)]
+type JSONRPCVersion = Literal["2.0"]
+type MethodName = Literal["code.open"]
 type RequestID = Annotated[  # pylint: disable=invalid-name
     str,
     AfterValidator(_check_request_id)
 ]
-
-
-class CodeError(OSError):
-    """A structured error used to keep RPC failure categories stable."""
-    type Category = Literal[
-        "probe_timeout",
-        "invalid_service_environment",
-        "invalid_request",
-        "container_not_found",
-        "prereq_missing",
-        "invalid_config",
-        "attach_failed",
-        "unsupported_editor",
-    ]
-    category: Category
-    detail: str
-
-    def __init__(self, category: Category, detail: str) -> None:
-        self.category = category
-        self.detail = detail
-        super().__init__(f"{category}: {detail}")
-
-    def __str__(self) -> str:
-        return f"{self.category}: {self.detail}"
+type Worktree = Annotated[Path, AfterValidator(_check_worktree)]
 
 
 class RPCRequest(BaseModel):
@@ -145,14 +118,16 @@ class RPCRequest(BaseModel):
     id: RequestID
     method: MethodName
 
-    class CodeOpen(BaseModel):
+    class CodeOpenRequest(BaseModel):
         """Typed params payload for `code.open` JSON-RPC requests."""
         model_config = ConfigDict(extra="forbid")
-        deadline: PositiveFloat
         container_id: ContainerID
-        worktree_root: WorktreeRoot
+        worktree: Worktree
+        editor: str
+        deadline: PositiveFloat
 
-    params: RPCRequest.CodeOpen
+    type Params = CodeOpenRequest
+    params: Params
 
 
 class RPCResponse(BaseModel):
@@ -161,12 +136,8 @@ class RPCResponse(BaseModel):
     jsonrpc: JSONRPCVersion
     id: RequestID | None
 
-    class CodeOpen(BaseModel):
-        """Typed result payload for successful `code.open` JSON-RPC responses."""
-        model_config = ConfigDict(extra="forbid")
-        warnings: list[str] = Field(default_factory=list)
-
-    result: RPCResponse.CodeOpen | None = None
+    type Result = None
+    result: None = None
 
     class Error(BaseModel):
         """JSON-RPC 2.0 error object."""
@@ -174,19 +145,14 @@ class RPCResponse(BaseModel):
         code: int
         message: str
 
-        class Parse(BaseModel):
+        class ParseError(BaseModel):
             """Additional metadata for JSON-RPC parse errors."""
             model_config = ConfigDict(extra="forbid")
             doc: str
             pos: int
 
-        class CodeOpen(BaseModel):
-            """Additional metadata for JSON-RPC error responses."""
-            model_config = ConfigDict(extra="forbid")
-            category: CodeError.Category
-            detail: str
-
-        data: RPCResponse.Error.Parse | RPCResponse.Error.CodeOpen | None = None
+        type Data = ParseError
+        data: Data | None = None
 
     error: Error | None = None
 
@@ -272,19 +238,13 @@ def _throw_method_not_found(err: RPCResponse.Error) -> NoReturn:
 
 
 def _throw_parse_error(err: RPCResponse.Error) -> NoReturn:
-    if isinstance(err.data, RPCResponse.Error.Parse):
+    if isinstance(err.data, RPCResponse.Error.ParseError):
         raise json.JSONDecodeError(err.message, doc=err.data.doc, pos=err.data.pos)
     raise TypeError(err.message)
 
 
 def _throw_timeout_error(err: RPCResponse.Error) -> NoReturn:
     raise TimeoutError(err.message)
-
-
-def _throw_code_error(err: RPCResponse.Error) -> NoReturn:
-    if isinstance(err.data, RPCResponse.Error.CodeOpen):
-        raise CodeError(category=err.data.category, detail=err.data.detail)
-    raise OSError(err.message)
 
 
 def _catch_internal_error(err: Exception) -> RPCResponse.Error:
@@ -308,7 +268,7 @@ def _catch_parse_error(err: Exception) -> RPCResponse.Error:
         return RPCResponse.Error(
             code=JSON_RPC_PARSE_ERROR,
             message=str(err),
-            data=RPCResponse.Error.Parse(doc=err.doc, pos=err.pos)
+            data=RPCResponse.Error.ParseError(doc=err.doc, pos=err.pos)
         )
     return RPCResponse.Error(code=JSON_RPC_PARSE_ERROR, message=str(err))
 
@@ -317,18 +277,7 @@ def _catch_timeout_error(err: Exception) -> RPCResponse.Error:
     return RPCResponse.Error(code=JSON_RPC_TIMEOUT_ERROR, message=str(err))
 
 
-def _catch_code_error(err: Exception) -> RPCResponse.Error:
-    if isinstance(err, CodeError):
-        return RPCResponse.Error(
-            code=JSON_RPC_CODE_ERROR,
-            message=str(err),
-            data=RPCResponse.Error.CodeOpen(category=err.category, detail=err.detail)
-        )
-    return RPCResponse.Error(code=JSON_RPC_CODE_ERROR, message=str(err))
-
-
 JSON_RPC_THROW_ERR: Mapping[int, Callable[[RPCResponse.Error], NoReturn]] = {
-    JSON_RPC_CODE_ERROR: _throw_code_error,
     JSON_RPC_INTERNAL_ERROR: _throw_internal_error,
     JSON_RPC_INVALID_PARAMS: _throw_invalid_params,
     JSON_RPC_INVALID_REQUEST: _throw_invalid_request,
@@ -337,7 +286,6 @@ JSON_RPC_THROW_ERR: Mapping[int, Callable[[RPCResponse.Error], NoReturn]] = {
     JSON_RPC_TIMEOUT_ERROR: _throw_timeout_error,
 }
 JSON_RPC_CATCH_ERR: Mapping[type[Exception], Callable[[Exception], RPCResponse.Error]] = {
-    CodeError: _catch_code_error,
     json.JSONDecodeError: _catch_parse_error,
     NotImplementedError: _catch_method_not_found,
     RuntimeError: _catch_internal_error,
@@ -380,7 +328,7 @@ class Listener:
 
     def __post_init__(self) -> None:
         if not self.path.is_absolute():
-            raise CodeError("invalid_request", f"socket path must be absolute: {self.path}")
+            raise RuntimeError(f"socket path must be absolute: {self.path}")
 
     def _ensure_socket(self) -> None:
         # make private directory and clear existing socket file if needed
@@ -409,7 +357,7 @@ class Listener:
         while True:
             # accept one connection at a time
             conn, _ = self._sock.accept()
-            conn.settimeout(CODE_RPC_READ_TIMEOUT)
+            conn.settimeout(RPC_TIMEOUT)
 
             # read a single line of input from the connection, rejecting malformed or
             # maliciously-sized payloads
@@ -639,6 +587,14 @@ WantedBy=default.target
         the container context, since it passes host executable paths to the generated
         systemd service.
         """
+        if inside_image():
+            raise RuntimeError(
+                "RPC service cannot be started from inside a container.  This should "
+                "never occur; if you see this message, try re-entering the environment "
+                "to regenerate the systemd unit file, or report an issue if the "
+                "problem persists."
+            )
+
         try:
             # render up-to-date systemd unit file
             text = Listener._render_service({
@@ -722,9 +678,8 @@ WantedBy=default.target
             raise RuntimeError(
                 "systemd service could not locate the container executable (usually "
                 f"indicates a corrupted {RPC_SERVICE_NAME} unit).  This should never "
-                "occur; if you see this message, try re-running the `$ bertrand code` "
-                "or `$ bertrand enter` CLI commands to regenerate the unit, or report "
-                "an issue at if the problem persists."
+                "occur; if you see this message, try re-entering the environment to "
+                "regenerate the unit, or report an issue at if the problem persists."
             )
         candidate = Path(value)
         if not candidate.is_absolute():
@@ -752,9 +707,8 @@ WantedBy=default.target
             raise RuntimeError(
                 "systemd service could not locate the editor executable (usually "
                 f"indicates a corrupted {RPC_SERVICE_NAME} unit).  This should never "
-                "occur; if you see this message, try re-running the `$ bertrand code` "
-                "or `$ bertrand enter` CLI commands to regenerate the unit, or report "
-                "an issue at if the problem persists."
+                "occur; if you see this message, try re-entering the environment to "
+                "regenerate the unit, or report an issue if the problem persists."
             )
         candidate = Path(value)
         if not candidate.is_absolute():
@@ -779,7 +733,7 @@ def main() -> None:
         return
 
 
-def rpc(method: Callable[[], RPCRequest]) -> JSONValue:
+def rpc(method: Callable[[], RPCRequest]) -> RPCResponse.Result | None:
     """Send a request to the host RPC listener and return the result, or raise an
     appropriate Python exception if the request fails or the listener is unavailable.
 
@@ -804,17 +758,23 @@ def rpc(method: Callable[[], RPCRequest]) -> JSONValue:
         If the requested method is not recognized by the listener.
     ValueError
         If the request parameters were invalid for the chosen method.
-    CodeError
-        If the method involves launching a host text editor, and failed internally for
-        some reason.  The error text gives more details.
     TimeoutError
         If the request times out before a response is received.
     RuntimeError
         If any other error occurred during request handling.
     """
-    # TODO: assert that we're running inside a container and the RPC service is
-    # available, otherwise raise an error
-
+    if not inside_image():
+        raise RuntimeError(
+            "RPC client cannot be used from the host environment.  This should never "
+            "occur; if you see this message, try re-entering the environment to "
+            "regenerate the systemd unit file, or report an issue if the problem "
+            "persists."
+        )
+    if os.environ.get(SOCKET_ENV, "") != "1":
+        raise RuntimeError(
+            "Code server not available.  Please exit the environment and re-enter "
+            "to restart the RPC service."
+        )
 
     # form and serialize JSON-RPC request
     request = method()
@@ -863,11 +823,9 @@ def rpc(method: Callable[[], RPCRequest]) -> JSONValue:
         )
 
     # handle errors
-    if response.result is None:
-        if response.error is not None:
-            _rpc_throw(response.error)
-        return None
-    return response.result.model_dump(mode="python")
+    if response.error is not None:
+        _rpc_throw(response.error)
+    return response.result
 
 
 ####################
@@ -875,26 +833,140 @@ def rpc(method: Callable[[], RPCRequest]) -> JSONValue:
 ####################
 
 
-CODE_LAUNCH_TIMEOUT: float = 10.0
-CODE_PROBE_TIMEOUT: float = 10.0
-CODE_RPC_CLIENT_HEADROOM: float = 2.0
-CODE_RPC_CLIENT_TIMEOUT: float = CODE_LAUNCH_TIMEOUT + CODE_RPC_CLIENT_HEADROOM
-CODE_RPC_METHOD_OPEN: MethodName = "code.open"
-CODE_RPC_READ_TIMEOUT: float = CODE_RPC_CLIENT_TIMEOUT
+# TODO: vscode recommended extensions are currently hardcoded in the generated workspace
+# file, but `config.py` should have a more general mechanism for recommending
+# editor extensions based on which tools are actually present in the container.
+
+
+CODE_OPEN_TIMEOUT: float = 30.0
+CODE_OPEN_METHOD: MethodName = "code.open"
 VSCODE_REMOTE_EXTENSION = "ms-vscode-remote.remote-containers"
 
 
-@rpc_method(CODE_RPC_METHOD_OPEN)
+def _check_vscode_open_prereqs(method: CodeOpen, config: Config) -> None:
+    _ = config
+
+    # check for managed workspace file
+    if not VSCODE_WORKSPACE_FILE.exists() or not VSCODE_WORKSPACE_FILE.is_file():
+        raise RuntimeError(
+            "VSCode workspace file not found at expected container path: "
+            f"{VSCODE_WORKSPACE_FILE}\nThis file should be automatically created as a "
+            "configuration artifact.  If you see this message, try re-running the "
+            "`$ bertrand code` command to regenerate the workspace file, or report an "
+            "issue if the problem persists."
+        )
+
+    # check for mounted tools and warn if any are missing
+    expired = False
+    for tool, warning_hint in (
+        ("clangd", "C/C++ language features may be degraded in this editor session."),
+        ("ruff", "Python linting/formatting features may be degraded in this editor session."),
+        ("ty", (
+            "Python type-checking/language-service features may be degraded in "
+            "this editor session."
+        )),
+        ("pytest", (
+            "Python test discovery/execution features may be degraded in this "
+            "editor session."
+        )),
+        ("bertrand-mcp", "MCP server integration may be unavailable in this editor session."),
+    ):
+        remaining = method.deadline - time.monotonic()
+        try:
+            if remaining <= 0:
+                expired = True
+            else:
+                run(["which", tool], capture_output=True, timeout=remaining)
+        except TimeoutExpired:
+            expired = True
+        except CommandError as err:
+            print(f"{str(err)}\n\t{warning_hint}")
+        if expired:
+            raise TimeoutError(
+                "deadline exhausted before the RPC service could confirm the presence "
+                f"of '{tool}' inside the container context"
+            )
+
+
+CODE_OPEN_PRECHECK: dict[str, Callable[[CodeOpen, Config], None]] = {
+    "vscode": _check_vscode_open_prereqs,
+}
+
+
+def _launch_vscode(params: RPCRequest.CodeOpenRequest) -> None:
+    editor_bin = Listener.editor_bin()
+    remaining = params.deadline - time.monotonic()
+    expired = False
+
+    # check for required remote containers extension on host vscode
+    try:
+        if remaining <= 0:
+            expired = True
+        else:
+            result = run([str(editor_bin), "--list-extensions"], timeout=remaining)
+            found = False
+            search = VSCODE_REMOTE_EXTENSION.lower()
+            for ext in result.stdout.splitlines():
+                if ext.strip().lower() == search:
+                    found = True
+                    break
+            if not found:
+                raise RuntimeError(
+                    f"required VSCode extension is missing: {VSCODE_REMOTE_EXTENSION}"
+                )
+    except TimeoutExpired:
+        expired = True
+    if expired:
+        raise TimeoutError(
+            "deadline exhausted before the RPC service could confirm the presence of "
+            "required VSCode extensions"
+        )
+
+    # open editor in detached (non-blocking) process
+    remaining = params.deadline - time.monotonic()
+    try:
+        if remaining <= 0:
+            expired = True
+        else:
+            # NOTE: this URI allows the VSCode Remote Containers extension to attach to
+            # a running container by ID, but is not technically part of the public API.
+            # It is well-documented in various issues and discussions, but may be
+            # subject to change without notice.  If this breaks, it should have been
+            # replaced by something more stable that we can use instead.
+            uri = (
+                "vscode-remote://attached-container+"
+                f"{urllib.parse.quote(params.container_id, safe='')}"
+                f"{urllib.parse.quote(str(VSCODE_WORKSPACE_FILE), safe='/')}"
+            )
+            subprocess.Popen(
+                [str(editor_bin), "--file-uri", uri],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+    except OSError as err:
+        raise RuntimeError(
+            f"failed to launch VS Code container attach session: {err}",
+        ) from err
+    if expired:
+        raise TimeoutError(
+            "deadline exhausted before the RPC service could launch the VSCode editor"
+        )
+
+
+CODE_OPEN: dict[str, Callable[[RPCRequest.CodeOpenRequest], None]] = {
+    "vscode": _launch_vscode,
+}
+
+
+@rpc_method(CODE_OPEN_METHOD)
 @dataclass(frozen=True)
 class CodeOpen:
     """A request object for the `code.open` RPC method, which opens a text editor on
     the host system, pointed at a given container workspace.
     """
-    container_id: ContainerID
-    worktree_root: WorktreeRoot = field(default=WORKTREE_MOUNT)
-    deadline: float = field(
-        default_factory=lambda: time.monotonic() + CODE_RPC_CLIENT_TIMEOUT
-    )
+    deadline: float = field(default_factory=lambda: time.monotonic() + CODE_OPEN_TIMEOUT)
 
     def request(self) -> RPCRequest:
         """Form a `code.open` RPC request on the client side.
@@ -903,20 +975,74 @@ class CodeOpen:
         -------
         RPCRequest
             The request to send to the host listener.
+
+        Raises
+        ------
+        RuntimeError
+            If the project configuration cannot be loaded or is missing required
+            fields.
         """
+        # load host worktree path from environment
+        _worktree = os.environ.get(WORKTREE_ENV)
+        if _worktree is None:
+            raise RuntimeError(
+                "worktree environment variable is missing.  This should never "
+                "occur; if you see this message, try re-entering the environment to "
+                "regenerate its environment variables, or report an issue if the "
+                "problem persists."
+            )
+        worktree = Path(_worktree.strip())
+        if not worktree.is_absolute():
+            raise RuntimeError(f"worktree path must be absolute: {worktree}")
+        worktree = worktree.expanduser().resolve()
+
+        # load current container id from environment
+        container_id = os.environ.get(CONTAINER_ID_ENV)
+        if container_id is None:
+            raise RuntimeError(
+                "container ID environment variable is missing.  This should never "
+                "occur; if you see this message, try re-entering the environment to "
+                "regenerate its environment variables, or report an issue if the "
+                "problem persists."
+            )
+        container_id = container_id.strip()
+
+        # load current image tag from environment
+        image_tag = os.environ.get(IMAGE_TAG_ENV)
+        if image_tag is None:
+            raise RuntimeError(
+                "image tag environment variable is missing.  This should never "
+                "occur; if you see this message, try re-entering the environment to "
+                "reset its environment variables, or report an issue if the problem "
+                "persists."
+            )
+
+        # load editor selection from worktree config
+        with Config.load(WORKTREE_MOUNT) as config:
+            config.sync(image_tag)
+            if not config.bertrand:
+                raise RuntimeError(
+                    f"Bertrand configuration is missing from the worktree config at "
+                    f"{worktree}.  This should never occur; if you see this message, "
+                    "try re-running `bertrand init` to regenerate your project "
+                    "configuration, or report an issue if the problem persists."
+                )
+            editor = config.bertrand.editor
+
+            # run editor-specific prechecks inside container context
+            CODE_OPEN_PRECHECK[editor](self, config)
+
         return RPCRequest(
             jsonrpc=JSON_RPC_VERSION,
             id=uuid.uuid4().hex,
-            method=CODE_RPC_METHOD_OPEN,
-            params=RPCRequest.CodeOpen(
+            method=CODE_OPEN_METHOD,
+            params=RPCRequest.CodeOpenRequest(
+                worktree=worktree,
+                container_id=container_id,
+                editor=editor,
                 deadline=self.deadline,
-                worktree_root=self.worktree_root,
-                container_id=self.container_id,
             )
         )
-
-
-    # TODO: all the helpers necessary to implement the `code.open` method
 
     @staticmethod
     def response(request: RPCRequest) -> RPCResponse:
@@ -933,302 +1059,8 @@ class CodeOpen:
             The response to send back to the client, which should include any warnings
             about missing extensions or other issues encountered during the request.
         """
-        warnings = _launch_editor(
-            request.params.worktree_root.expanduser().resolve(),
-            request.params.container_id.strip(),
-        )
         return RPCResponse(
             jsonrpc=JSON_RPC_VERSION,
             id=request.id,
-            result=RPCResponse.CodeOpen(warnings=warnings),
+            result=CODE_OPEN[request.params.editor](request.params),
         )
-
-
-
-
-
-def _remaining_probe_timeout(deadline: float, *, step: str) -> float:
-    remaining = deadline - time.monotonic()
-    if remaining <= 0:
-        raise CodeError(
-            "probe_timeout",
-            f"launch budget exhausted before probe step '{step}' could run",
-        )
-    return min(CODE_PROBE_TIMEOUT, remaining)
-
-
-def _ensure_remote_containers_extension( editor_bin: Path, *, deadline: float) -> None:
-    # list editor extensions
-    try:
-        result = run(
-            [str(editor_bin), "--list-extensions"],
-            timeout=_remaining_probe_timeout(
-                deadline,
-                step="vscode extension listing"
-            ),
-        )
-    except TimeoutExpired as err:
-        raise CodeError(
-            "prereq_missing",
-            "timed out while checking for required VS Code extensions"
-        ) from err
-    except CommandError as err:
-        stdout = err.stdout.strip()
-        stderr = err.stderr.strip()
-        detail: list[str] = []
-        if stderr:
-            detail.append(stderr)
-        if stdout:
-            detail.append(stdout)
-        suffix = f": {'\n'.join(detail)}" if detail else ""
-        raise CodeError(
-            "prereq_missing",
-            f"failed to query VS Code extensions{suffix}"
-        ) from err
-
-    # check for remote extensions in output list
-    search = VSCODE_REMOTE_EXTENSION.lower()
-    for ext in result.stdout.splitlines():
-        if ext.strip().lower() == search:
-            return
-    raise CodeError(
-        "prereq_missing",
-        f"required VS Code extension is missing: {VSCODE_REMOTE_EXTENSION}",
-    )
-
-
-def _check_for_container_tool(
-    container_bin: Path,
-    container_id: str,
-    *,
-    tool: str,
-    deadline: float,
-) -> None:
-    # check for tool in container by invoking `command -v` through `container exec`
-    try:
-        result = run(
-            [
-                str(container_bin),
-                "exec",
-                container_id,
-                "sh", "-lc", f"command -v {shlex.quote(tool)}"
-            ],
-            timeout=_remaining_probe_timeout(
-                deadline,
-                step=f"{tool} lookup",
-            ),
-        )
-    except TimeoutExpired as err:
-        raise CodeError(
-            "prereq_missing",
-            f"timed out while checking for {tool} in container '{container_id}'"
-        ) from err
-    except CommandError as err:
-        stdout = err.stdout.strip()
-        stderr = err.stderr.strip()
-        detail: list[str] = []
-        if stderr:
-            detail.append(stderr)
-        if stdout:
-            detail.append(stdout)
-        suffix = f": {'\n'.join(detail)}" if detail else ""
-        raise CodeError(
-            "prereq_missing",
-            f"failed to check for {tool} in container '{container_id}'{suffix}"
-        ) from err
-
-    # no output implies tool is missing
-    stdout = result.stdout.strip()
-    if not stdout:
-        stderr = result.stderr.strip()
-        suffix = f": {stderr}" if stderr else ""
-        raise CodeError(
-            "prereq_missing",
-            f"{tool} is not available in container '{container_id}'{suffix}",
-        )
-
-
-def _vscode_workspace_uri(container_id: str, workspace: PosixPath) -> str:
-    # NOTE: this URI allows the VSCode Remote Containers extension to attach to a
-    # running container by ID, but is not technically part of the public API.  It is
-    # well-documented in various issues and discussions, but may be subject to change
-    # without notice.  If this breaks, it should have been replaced by something more
-    # stable that we can use instead.
-    container_id = urllib.parse.quote(container_id, safe="")
-    workspace_file = urllib.parse.quote(str(WORKTREE_MOUNT / workspace), safe="/")
-    return f"vscode-remote://attached-container+{container_id}{workspace_file}"
-
-
-def _launch_editor(env_root: Path, container_id: str) -> list[str]:
-    deadline = time.monotonic() + CODE_LAUNCH_TIMEOUT
-
-    # get container and editor executables from systemd environment variables
-    container_bin = Listener.container_bin()
-    editor_bin = Listener.editor_bin()
-
-    # ensure container is running and we can attach it to the container's toolchain
-    # without altering any user-owned .vscode/settings.json
-    _ensure_remote_containers_extension(editor_bin, deadline=deadline)
-    try:
-        config = Config.load(env_root)
-        if VSCODE_RESOURCE not in config:
-            raise CodeError(
-                "invalid_config",
-                f"layout is missing required '{VSCODE_RESOURCE}' resource"
-            )
-        workspace_abs_path = config.path(VSCODE_RESOURCE)
-        if not workspace_abs_path.exists() or not workspace_abs_path.is_file():
-            raise CodeError(
-                "invalid_config",
-                "missing VS Code workspace file at "
-                f"{workspace_abs_path}; rerun `bertrand init` to regenerate it."
-            )
-    except CodeError:
-        raise
-    except OSError as err:
-        raise CodeError("invalid_config", str(err)) from err
-
-    # check for tools inside container and warn if any are missing
-    warnings: list[str] = []
-    for tool, warning_hint in (
-        ("clangd", "C/C++ language features may be degraded in this editor session."),
-        ("ruff", "Python linting/formatting features may be degraded in this editor session."),
-        ("ty", (
-            "Python type-checking/language-service features may be degraded in "
-            "this editor session."
-        )),
-        ("pytest", (
-            "Python test discovery/execution features may be degraded in this "
-            "editor session."
-        )),
-        ("bertrand-mcp", (
-            "MCP server integration may be unavailable in this editor session."
-        )),
-    ):
-        try:
-            _check_for_container_tool(
-                container_bin,
-                container_id,
-                tool=tool,
-                deadline=deadline,
-            )
-        except CodeError as err:
-            warnings.append(f"{str(err)}\n\t{warning_hint}")
-
-    # add Bertrand's MCP entry into workspace-level VSCode MCP config, without
-    # touching other entries
-    mcp_warning = sync_vscode_mcp_config(env_root)
-    if mcp_warning is not None:
-        warnings.append(mcp_warning)
-
-    # open editor in detached (non-blocking) process
-    try:
-        workspace_rel_path = CAPABILITIES["vscode"][config.profile][VSCODE_RESOURCE]
-        subprocess.Popen(
-            [
-                str(editor_bin),
-                "--file-uri",
-                _vscode_workspace_uri(container_id, workspace_rel_path)
-            ],
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-        )
-    except OSError as err:
-        raise CodeError(
-            "attach_failed",
-            f"failed to launch VS Code container attach session: {err}",
-        ) from err
-    return warnings
-
-
-# TODO: the open_editor() client function needs to turn into a functor that can be
-# supplied to the `rpc()` function
-
-
-def open_editor(timeout: float = CODE_RPC_CLIENT_TIMEOUT) -> list[str]:
-    """Send a request from a container context to the code RPC service in order to
-    launch an editor session on the host and attach it to the current container.
-
-    Parameters
-    ----------
-    timeout : float, optional
-        The maximum number of seconds to wait for a response from the server before
-        raising a timeout error.  Defaults to `CODE_RPC_CLIENT_TIMEOUT`.
-
-    Returns
-    -------
-    list[str]
-        Non-fatal warnings returned by the host-side launch flow.
-
-    Raises
-    ------
-    OSError
-        If `env_root` is not an absolute path, or if there is an error processing the
-        RPC request.
-    """
-    # check whether `start_code_service()` returned true when we entered the container
-    # shell
-    if os.environ.get(SOCKET_ENV, "").strip() != "1":
-        raise CodeError(
-            "invalid_service_environment",
-            "Code server not available.  Please exit the environment and re-enter, "
-            "or call `bertrand code` outside of a container to start the RPC "
-            "service."
-        )
-
-    # get host environment path from shell variable set by `bertrand enter`
-    env_path = os.environ.get(PROJECT_ROOT_ENV)
-    if env_path is None:
-        raise CodeError(
-            "invalid_service_environment",
-            f"{PROJECT_ROOT_ENV} environment variable is not set.  This variable "
-            "should be set automatically when you enter the environment with "
-            "`bertrand enter`.  If you are seeing this message, ensure that you have "
-            "entered the environment and that your shell session has been properly "
-            "initialized by the entry process."
-        )
-    env_root = PosixPath(env_path)
-    if env_root != env_root.expanduser().resolve():
-        raise OSError(f"{PROJECT_ROOT_ENV} path is not normalized: {env_root}")
-
-    # get container ID from shell variable set by `bertrand enter`
-    container_id = os.environ.get(CONTAINER_ID_ENV)
-    if container_id is None:
-        raise CodeError(
-            "invalid_service_environment",
-            f"{CONTAINER_ID_ENV} environment variable is not set.  This variable "
-            "should be set automatically when you enter the environment with "
-            "`bertrand enter`.  If you are seeing this message, ensure that you have "
-            "entered the environment and that your shell session has been properly "
-            "initialized by the entry process."
-        )
-
-    # construct and send request
-    response = _send_request(
-        RPCRequest(
-            jsonrpc=JSON_RPC_VERSION,
-            id=str(uuid.uuid4()),
-            method=CODE_RPC_METHOD_OPEN,
-            params=RPCRequest.CodeOpen(
-                env_root=str(env_root),
-                container_id=container_id,
-            ),
-        ),
-        timeout=timeout,
-    )
-
-    # handle response and return warnings if successful
-    if response.error is not None:
-        category = (
-            response.error.data.category
-            if response.error.data is not None else None
-        )
-        if category is not None:
-            raise CodeError(category, response.error.message)
-        raise OSError(
-            f"RPC request failed ({response.error.code}): {response.error.message}"
-        )
-    assert response.result is not None
-    return response.result.warnings

@@ -117,8 +117,8 @@ build-type = "Release"                      # Release|Debug (may be overridden i
 ########################
 
 [tool.bertrand]
-max-commits = {{ max_commits }}        # number of commits to store, after which LRU eviction begins
 shell = "{{ shell }}"          # sh|bash|zsh|fish (shell to execute during `bertrand enter`)
+editor = "{{ editor }}"       # vscode (editor to launch during `bertrand code`)
 ignore = [              # ignore patterns shared between .gitignore and .containerignore
     ".bertrand/",
     "**/.bertrand/",
