@@ -20,6 +20,7 @@ import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Annotated, Callable, Literal, Mapping, NoReturn, Protocol, Self
+from warnings import warn
 
 from pydantic import (
     AfterValidator,
@@ -42,9 +43,11 @@ from .config import (
     WORKTREE_ENV,
     WORKTREE_MOUNT,
     Config,
+    Editor,
     inside_image,
 )
 from .pipeline import (
+    JSONValue,
     Pipeline,
     ReloadDaemon,
     StartService,
@@ -63,15 +66,36 @@ from .run import (
 
 JSON_RPC_VERSION: JSONRPCVersion = "2.0"
 JSON_RPC_PARSE_ERROR: int = -32700              # Invalid JSON was received by the server
-JSON_RPC_INVALID_REQUEST: int = -32600          # The JSON sent is not a valid Request object
-JSON_RPC_METHOD_NOT_FOUND: int = -32601         # The method does not exist / is not available
-JSON_RPC_INVALID_PARAMS: int = -32602           # Invalid method parameter(s)
 JSON_RPC_INTERNAL_ERROR: int = -32603           # Internal JSON-RPC error
-JSON_RPC_TIMEOUT_ERROR: int = 0                 # Custom error code for timeouts
+JSON_RPC_INVALID_PARAMS: int = -32602           # Invalid method parameter(s)
+JSON_RPC_METHOD_NOT_FOUND: int = -32601         # The method does not exist / is not available
+JSON_RPC_INVALID_REQUEST: int = -32600          # The JSON sent is not a valid Request object
+JSON_RPC_TIMEOUT_ERROR: int = -32000            # Custom error code for timeouts
 MAX_REQUEST_BYTES: int = 1024 * 1024            # 1 MiB, to prevent malicious payloads
 RPC_SERVICE_NAME: str = "bertrand-rpc"
 RPC_SERVICE_FILE: Path = User().home / ".config" / "systemd" / "user" / RPC_SERVICE_NAME
 RPC_TIMEOUT: float = 30.0
+
+
+def _check_container_id(container_id: str) -> str:
+    container_id = container_id.strip()
+    if not container_id:
+        raise ValueError("container_id must be non-empty")
+    return container_id
+
+
+def _check_method_name(method_name: str) -> str:
+    method_name = method_name.strip()
+    if method_name not in METHODS:
+        raise NotImplementedError(f"unknown method: {method_name}")
+    return method_name
+
+
+def _check_request_id(request_id: str) -> str:
+    request_id = request_id.strip()
+    if not request_id:
+        raise ValueError("id must be non-empty")
+    return request_id
 
 
 def _check_worktree(worktree: Path) -> Path:
@@ -84,26 +108,12 @@ def _check_worktree(worktree: Path) -> Path:
     return worktree.expanduser().resolve()
 
 
-def _check_container_id(container_id: str) -> str:
-    container_id = container_id.strip()
-    if not container_id:
-        raise ValueError("container_id must be non-empty")
-    return container_id
-
-
-def _check_request_id(request_id: str) -> str:
-    request_id = request_id.strip()
-    if not request_id:
-        raise ValueError("id must be non-empty")
-    return request_id
-
-
 type ContainerID = Annotated[  # pylint: disable=invalid-name
     str,
     AfterValidator(_check_container_id)
 ]
 type JSONRPCVersion = Literal["2.0"]
-type MethodName = Literal["code.open"]
+type MethodName = Annotated[str, AfterValidator(_check_method_name)]
 type RequestID = Annotated[  # pylint: disable=invalid-name
     str,
     AfterValidator(_check_request_id)
@@ -123,7 +133,7 @@ class RPCRequest(BaseModel):
         model_config = ConfigDict(extra="forbid")
         container_id: ContainerID
         worktree: Worktree
-        editor: str
+        editor: Editor
         deadline: PositiveFloat
 
     type Params = CodeOpenRequest
@@ -136,8 +146,13 @@ class RPCResponse(BaseModel):
     jsonrpc: JSONRPCVersion
     id: RequestID | None
 
-    type Result = None
-    result: None = None
+    class CodeOpenResult(BaseModel):
+        """Typed result payload for successful `code.open` JSON-RPC responses."""
+        model_config = ConfigDict(extra="forbid")
+        success: bool
+
+    type Result = CodeOpenResult
+    result: Result | None = None
 
     class Error(BaseModel):
         """JSON-RPC 2.0 error object."""
@@ -159,7 +174,9 @@ class RPCResponse(BaseModel):
     @model_validator(mode="after")
     def _validate_result_xor_error(self) -> Self:
         if (self.result is None) == (self.error is None):
-            raise ValueError("JSON-RPC response must include exactly one of result or error")
+            raise ValueError(
+                "JSON-RPC response must include exactly one of result or error"
+            )
         return self
 
 
@@ -176,9 +193,8 @@ class RPCMethod(Protocol):
     response(request: RPCRequest) -> RPCResponse
         A static method that handles an incoming `RPCRequest` produced by this class's
         `request()` method, and returns the appropriate `RPCResponse` to send back to
-        the client.  This method will be registered as the handler for the RPC method
-        name returned by `request()`, and should include any warnings about missing
-        extensions or other issues encountered during the request in the response.
+        the client.  This method will be registered as the handler for the RPC request
+        returned by `request()`.
     """
     # pylint: disable=missing-function-docstring
     def request(self) -> RPCRequest: ...
@@ -287,6 +303,7 @@ JSON_RPC_THROW_ERR: Mapping[int, Callable[[RPCResponse.Error], NoReturn]] = {
 }
 JSON_RPC_CATCH_ERR: Mapping[type[Exception], Callable[[Exception], RPCResponse.Error]] = {
     json.JSONDecodeError: _catch_parse_error,
+    KeyError: _catch_method_not_found,
     NotImplementedError: _catch_method_not_found,
     RuntimeError: _catch_internal_error,
     TimeoutError: _catch_timeout_error,
@@ -297,7 +314,10 @@ JSON_RPC_CATCH_ERR: Mapping[type[Exception], Callable[[Exception], RPCResponse.E
 
 
 def _rpc_catch(err: Exception, *, request: RequestID | None) -> RPCResponse:
-    handler = JSON_RPC_CATCH_ERR.get(type(err), _catch_internal_error)
+    handler = next(
+        (handler for cls, handler in JSON_RPC_CATCH_ERR.items() if isinstance(err, cls)),
+        _catch_internal_error
+    )
     return RPCResponse(jsonrpc=JSON_RPC_VERSION, id=request, error=handler(err))
 
 
@@ -379,19 +399,17 @@ class Listener:
                 conn.close()
                 raise
 
-    def _parse_request(self, line: str) -> RPCRequest:
+    def _parse_request(self, line: str) -> JSONValue:
         if not line:
             raise TypeError("empty request")
         if len(line) > MAX_REQUEST_BYTES:
             raise TypeError("request exceeds maximum size")
         if not line.endswith("\n"):
             raise TypeError("request must be newline-terminated")
-
         text = line.removesuffix("\n").strip()
         if not text:
             raise TypeError("empty request")
-
-        return RPCRequest.model_validate(json.loads(text))
+        return json.loads(text)
 
     def _check_running_container(self, request: RPCRequest) -> None:
         container_id = request.params.container_id
@@ -446,19 +464,18 @@ class Listener:
             conn, line = self._read_line()
             try:
                 try:
-                    request = self._parse_request(line)
+                    data = self._parse_request(line)
                     try:
-                        handler = METHODS.get(request.method)
-                        if handler is not None:
-                            self._check_running_container(request)
-                            response = handler(request)
-                        else:
-                            response = _rpc_catch(
-                                NotImplementedError(f"unknown method: {request.method}"),
-                                request=request.id
-                            )
+                        request = RPCRequest.model_validate(data)
+                        self._check_running_container(request)
+                        response = METHODS[request.method](request)
                     except Exception as err:
-                        response = _rpc_catch(err, request=request.id)
+                        request_id: str | None = None
+                        if isinstance(data, Mapping):
+                            _request_id = data.get("id")
+                            if isinstance(_request_id, str):
+                                request_id = _request_id
+                        response = _rpc_catch(err, request=request_id)
                 except Exception as err:
                     response = _rpc_catch(err, request=None)
 
@@ -833,9 +850,13 @@ def rpc(method: Callable[[], RPCRequest]) -> RPCResponse.Result | None:
 ####################
 
 
-# TODO: vscode recommended extensions are currently hardcoded in the generated workspace
-# file, but `config.py` should have a more general mechanism for recommending
+# TODO: vscode recommended extensions are currently hardcoded in the generated
+# workspace file, but `config.py` should have a more general mechanism for recommending
 # editor extensions based on which tools are actually present in the container.
+# -> This would be a good thing to tackle during the MCP refactor, and I should
+# generally make sure that the editor integration is solid by the time I complete that.
+# Just like the container runtime, it may require future edits to `config.py` to
+# support everything.
 
 
 CODE_OPEN_TIMEOUT: float = 30.0
@@ -843,7 +864,7 @@ CODE_OPEN_METHOD: MethodName = "code.open"
 VSCODE_REMOTE_EXTENSION = "ms-vscode-remote.remote-containers"
 
 
-def _check_vscode_open_prereqs(method: CodeOpen, config: Config) -> None:
+def _vscode_open_prereqs(method: CodeOpen, config: Config) -> None:
     _ = config
 
     # check for managed workspace file
@@ -858,7 +879,7 @@ def _check_vscode_open_prereqs(method: CodeOpen, config: Config) -> None:
 
     # check for mounted tools and warn if any are missing
     expired = False
-    for tool, warning_hint in (
+    for tool, hint in (
         ("clangd", "C/C++ language features may be degraded in this editor session."),
         ("ruff", "Python linting/formatting features may be degraded in this editor session."),
         ("ty", (
@@ -877,10 +898,10 @@ def _check_vscode_open_prereqs(method: CodeOpen, config: Config) -> None:
                 expired = True
             else:
                 run(["which", tool], capture_output=True, timeout=remaining)
+        except CommandError as err:
+            warn(f"{str(err)}\n\t{hint}", UserWarning)
         except TimeoutExpired:
             expired = True
-        except CommandError as err:
-            print(f"{str(err)}\n\t{warning_hint}")
         if expired:
             raise TimeoutError(
                 "deadline exhausted before the RPC service could confirm the presence "
@@ -888,12 +909,7 @@ def _check_vscode_open_prereqs(method: CodeOpen, config: Config) -> None:
             )
 
 
-CODE_OPEN_PRECHECK: dict[str, Callable[[CodeOpen, Config], None]] = {
-    "vscode": _check_vscode_open_prereqs,
-}
-
-
-def _launch_vscode(params: RPCRequest.CodeOpenRequest) -> None:
+def _vscode_open(params: RPCRequest.CodeOpenRequest) -> RPCResponse.CodeOpenResult:
     editor_bin = Listener.editor_bin()
     remaining = params.deadline - time.monotonic()
     expired = False
@@ -912,7 +928,7 @@ def _launch_vscode(params: RPCRequest.CodeOpenRequest) -> None:
                     break
             if not found:
                 raise RuntimeError(
-                    f"required VSCode extension is missing: {VSCODE_REMOTE_EXTENSION}"
+                    f"required VSCode extension is missing: '{VSCODE_REMOTE_EXTENSION}'"
                 )
     except TimeoutExpired:
         expired = True
@@ -954,9 +970,14 @@ def _launch_vscode(params: RPCRequest.CodeOpenRequest) -> None:
             "deadline exhausted before the RPC service could launch the VSCode editor"
         )
 
+    return RPCResponse.CodeOpenResult(success=True)
 
-CODE_OPEN: dict[str, Callable[[RPCRequest.CodeOpenRequest], None]] = {
-    "vscode": _launch_vscode,
+
+CODE_OPEN_PREREQS: dict[str, Callable[[CodeOpen, Config], None]] = {
+    "vscode": _vscode_open_prereqs,
+}
+CODE_OPEN: dict[str, Callable[[RPCRequest.CodeOpenRequest], RPCResponse.CodeOpenResult]] = {
+    "vscode": _vscode_open,
 }
 
 
@@ -1030,7 +1051,7 @@ class CodeOpen:
             editor = config.bertrand.editor
 
             # run editor-specific prechecks inside container context
-            CODE_OPEN_PRECHECK[editor](self, config)
+            CODE_OPEN_PREREQS[editor](self, config)
 
         return RPCRequest(
             jsonrpc=JSON_RPC_VERSION,
@@ -1056,8 +1077,7 @@ class CodeOpen:
         Returns
         -------
         RPCResponse
-            The response to send back to the client, which should include any warnings
-            about missing extensions or other issues encountered during the request.
+            The response to send back to the client.
         """
         return RPCResponse(
             jsonrpc=JSON_RPC_VERSION,
