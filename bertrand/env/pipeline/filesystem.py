@@ -129,7 +129,7 @@ def _remove_path(path: Path, force: bool) -> None:
             raise
 
 
-def _stash_existing(
+async def _stash_existing(
     ctx: Pipeline.InProgress,
     payload: dict[str, JSONValue],
     path: Path
@@ -137,17 +137,17 @@ def _stash_existing(
     if _exists(path):
         existing: dict[str, JSONValue] = {}
         payload["existing"] = existing
-        Stash(path=path).do(ctx, existing)
+        await Stash(path=path).do(ctx, existing)
 
 
-def _unstash_existing(
+async def _unstash_existing(
     ctx: Pipeline.InProgress,
     payload: dict[str, JSONValue],
     force: bool
 ) -> None:
     existing = payload.get("existing")
     if isinstance(existing, dict):
-        Stash.undo(ctx, existing, force=force)
+        await Stash.undo(ctx, existing, force=force)
         payload.pop("existing", None)
         ctx.dump()
 
@@ -198,7 +198,7 @@ def _clear_id(
         ctx.dump()
 
 
-def _resolve_conflict(
+async def _resolve_conflict(
     ctx: Pipeline.InProgress,
     payload: dict[str, JSONValue],
     path: Path,
@@ -210,7 +210,7 @@ def _resolve_conflict(
     if not _exists(path):
         return
     if replace is True:
-        _stash_existing(ctx, payload, path)
+        await _stash_existing(ctx, payload, path)
         return
     if replace is None:
         _remove_path(path, force=False)
@@ -218,7 +218,7 @@ def _resolve_conflict(
     raise FileExistsError(error_message)
 
 
-def _resolve_write_conflict(
+async def _resolve_write_conflict(
     ctx: Pipeline.InProgress,
     payload: dict[str, JSONValue],
     path: Path,
@@ -234,7 +234,7 @@ def _resolve_write_conflict(
     if not _exists(path):
         return
     if replace is True:
-        _stash_existing(ctx, payload, path)
+        await _stash_existing(ctx, payload, path)
         return
     if replace is None:
         if _is_dir(path):
@@ -255,7 +255,7 @@ class Remove:
     """
     path: Path
 
-    def do(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+    async def do(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
         src = self.path.absolute()
         if not _exists(src):
             return
@@ -267,7 +267,7 @@ class Remove:
             src.unlink()
 
     @staticmethod
-    def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
+    async def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
         return  # no-op
 
 
@@ -283,7 +283,7 @@ class Stash:
     """
     path: Path
 
-    def do(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+    async def do(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
         src = self.path.absolute()
         if not _exists(src):
             return
@@ -303,7 +303,7 @@ class Stash:
         _move_preserve_lstat(src, dst)
 
     @staticmethod
-    def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
+    async def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
         src_str = payload.get("source")
         dst_str = payload.get("stashed_at")
         if not isinstance(src_str, str) or not isinstance(dst_str, str):
@@ -366,12 +366,12 @@ class Mkdir:
     private: bool = False
     rmtree: bool = False
 
-    def do(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+    async def do(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
         path = self.path.absolute()
         created = True
         if _exists(path):
             if not _is_dir(path):
-                _resolve_conflict(
+                await _resolve_conflict(
                     ctx,
                     payload,
                     path,
@@ -407,7 +407,11 @@ class Mkdir:
             _record_id(ctx, payload, path)
 
     @staticmethod
-    def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
+    async def undo(
+        ctx: Pipeline.InProgress,
+        payload: dict[str, JSONValue],
+        force: bool
+    ) -> None:
         path_str = payload.get("path")
         private = payload.get("private")
         created = payload.get("created")
@@ -417,7 +421,7 @@ class Mkdir:
             not isinstance(created, bool)
         ):
             _clear_id(ctx, payload)
-            _unstash_existing(ctx, payload, force=force)
+            await _unstash_existing(ctx, payload, force=force)
             return
         rmtree = payload.get("rmtree")
         if not isinstance(rmtree, bool):
@@ -458,7 +462,7 @@ class Mkdir:
                         pass
 
         # step 2: restore whatever was there before
-        _unstash_existing(ctx, payload, force=force)
+        await _unstash_existing(ctx, payload, force=force)
 
 
 @atomic
@@ -485,9 +489,9 @@ class WriteBytes:
     replace: bool | None = False
     private: bool = False
 
-    def do(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+    async def do(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
         path = self.path.absolute()
-        _resolve_write_conflict(
+        await _resolve_write_conflict(
             ctx,
             payload,
             path,
@@ -507,12 +511,16 @@ class WriteBytes:
         _record_id(ctx, payload, path)
 
     @staticmethod
-    def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
+    async def undo(
+        ctx: Pipeline.InProgress,
+        payload: dict[str, JSONValue],
+        force: bool
+    ) -> None:
         # delete written file
         path_str = payload.get("path")
         if not isinstance(path_str, str):
             _clear_id(ctx, payload)
-            _unstash_existing(ctx, payload, force=force)
+            await _unstash_existing(ctx, payload, force=force)
             return
 
         # step 1: remove the file we wrote, but only if it's the same one
@@ -537,7 +545,7 @@ class WriteBytes:
                 _clear_id(ctx, payload)
 
         # step 2: restore whatever was there before, if stashed
-        _unstash_existing(ctx, payload, force=force)
+        await _unstash_existing(ctx, payload, force=force)
 
 
 @atomic
@@ -567,9 +575,9 @@ class WriteText:
     replace: bool | None = False
     private: bool = False
 
-    def do(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+    async def do(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
         payload["encoding"] = self.encoding
-        WriteBytes(
+        await WriteBytes(
             path=self.path,
             data=self.text.encode(self.encoding),
             replace=self.replace,
@@ -577,8 +585,8 @@ class WriteText:
         ).do(ctx, payload)
 
     @staticmethod
-    def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
-        WriteBytes.undo(ctx, payload, force=force)
+    async def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
+        await WriteBytes.undo(ctx, payload, force=force)
 
 
 @atomic
@@ -607,13 +615,13 @@ class Copy:
     target: Path
     replace: bool | None = False
 
-    def _stash(
+    async def _stash(
         self,
         ctx: Pipeline.InProgress,
         payload: dict[str, JSONValue],
         path: Path
     ) -> None:
-        _resolve_conflict(
+        await _resolve_conflict(
             ctx,
             payload,
             path,
@@ -621,7 +629,7 @@ class Copy:
             error_message=f"could not copy to target; path occupied: {path}",
         )
 
-    def _do(
+    async def _do(
         self,
         ctx: Pipeline.InProgress,
         payload: dict[str, JSONValue],
@@ -634,7 +642,7 @@ class Copy:
         if stat.S_ISLNK(mode):
             payload["kind"] = "symlink"
             ctx.dump()
-            self._stash(ctx, payload, target)
+            await self._stash(ctx, payload, target)
             target.parent.mkdir(parents=True, exist_ok=True)
             os.symlink(os.readlink(source), target)
             _record_id(ctx, payload, target)
@@ -643,7 +651,7 @@ class Copy:
         elif stat.S_ISREG(mode):
             payload["kind"] = "file"
             ctx.dump()
-            self._stash(ctx, payload, target)
+            await self._stash(ctx, payload, target)
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source, target, follow_symlinks=False)
             fingerprint = hashlib.sha256(target.read_bytes()).hexdigest()
@@ -664,7 +672,7 @@ class Copy:
                     payload["created"] = False
                     ctx.dump()
                 else:
-                    self._stash(ctx, payload, target)
+                    await self._stash(ctx, payload, target)
                     payload["created"] = True
                     ctx.dump()
                     target.mkdir(parents=True, exist_ok=True)
@@ -683,12 +691,12 @@ class Copy:
                 }
                 contents.append(item_payload)
                 ctx.dump()
-                self._do(ctx, item_payload, item, item_target)
+                await self._do(ctx, item_payload, item, item_target)
 
         else:
             raise OSError(f"Unsupported file type for copy: {source}")
 
-    def do(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+    async def do(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
         source = self.source.absolute()
         target = self.target.absolute()
         if source == target:
@@ -700,10 +708,10 @@ class Copy:
         payload["target"] = str(target)
         payload["replace"] = self.replace
         ctx.dump()
-        self._do(ctx, payload, source, target)
+        await self._do(ctx, payload, source, target)
 
     @staticmethod
-    def _undo(
+    async def _undo(
         ctx: Pipeline.InProgress,
         payload: dict[str, JSONValue],
         target: Path,
@@ -714,11 +722,11 @@ class Copy:
         if force:
             if not isinstance(kind, str) or kind not in ("symlink", "file", "dir"):
                 _clear_id(ctx, payload)
-                _unstash_existing(ctx, payload, force=True)
+                await _unstash_existing(ctx, payload, force=True)
                 return
             if not _exists(target):
                 _clear_id(ctx, payload)
-                _unstash_existing(ctx, payload, force=True)
+                await _unstash_existing(ctx, payload, force=True)
                 return
             if kind in ("symlink", "file"):
                 _remove_path(target, force=True)
@@ -734,14 +742,14 @@ class Copy:
                             item_target_str = item_payload.get("target")
                             if isinstance(item_target_str, str):
                                 item_target = Path(item_target_str)
-                                Copy._undo(ctx, item_payload, item_target, errors, force=True)
+                                await Copy._undo(ctx, item_payload, item_target, errors, force=True)
                 else:
                     _remove_path(target, force=True)
                 created = payload.get("created")
                 if isinstance(created, bool) and created:
                     _remove_path(target, force=True)
                     _clear_id(ctx, payload)
-            _unstash_existing(ctx, payload, force=True)
+            await _unstash_existing(ctx, payload, force=True)
             return
 
         if not isinstance(kind, str):
@@ -755,7 +763,7 @@ class Copy:
         if not _exists(target):
             _clear_id(ctx, payload)
             try:
-                _unstash_existing(ctx, payload, force=force)
+                await _unstash_existing(ctx, payload, force=force)
             except Exception as e:
                 errors.append(f"[{kind}] error unstashing previous target: {e}")
             return
@@ -821,7 +829,7 @@ class Copy:
                     item_target_str = item_payload.get("target")
                     if isinstance(item_target_str, str):
                         item_target = Path(item_target_str)
-                        Copy._undo(ctx, item_payload, item_target, errors, force)
+                        await Copy._undo(ctx, item_payload, item_target, errors, force)
 
             # avoid clobbering if we didn't create the directory
             created = payload.get("created")
@@ -835,21 +843,21 @@ class Copy:
 
         # restore whatever was there before
         try:
-            _unstash_existing(ctx, payload, force=force)
+            await _unstash_existing(ctx, payload, force=force)
         except Exception as e:
             errors.append(f"[{kind}] error unstashing previous target: {e}")
 
     @staticmethod
-    def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
+    async def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
         target_str = payload.get("target")
         if isinstance(target_str, str):
             errors: list[str] = []
-            Copy._undo(ctx, payload, Path(target_str), errors, force)
+            await Copy._undo(ctx, payload, Path(target_str), errors, force)
             if errors and not force:
                 raise OSError(f"Errors occurred during copy undo:\n{'\n'.join(errors)}")
         else:
             _clear_id(ctx, payload)
-            _unstash_existing(ctx, payload, force=force)
+            await _unstash_existing(ctx, payload, force=force)
 
 
 @atomic
@@ -879,13 +887,13 @@ class Move:
     target: Path
     replace: bool | None = False
 
-    def _stash(
+    async def _stash(
         self,
         ctx: Pipeline.InProgress,
         payload: dict[str, JSONValue],
         path: Path
     ) -> None:
-        _resolve_conflict(
+        await _resolve_conflict(
             ctx,
             payload,
             path,
@@ -893,7 +901,7 @@ class Move:
             error_message=f"could not move to target; path occupied: {path}",
         )
 
-    def _do(
+    async def _do(
         self,
         ctx: Pipeline.InProgress,
         payload: dict[str, JSONValue],
@@ -906,7 +914,7 @@ class Move:
         if stat.S_ISLNK(mode):
             payload["kind"] = "symlink"
             ctx.dump()
-            self._stash(ctx, payload, target)
+            await self._stash(ctx, payload, target)
             _move_preserve_lstat(source, target)
             _record_id(ctx, payload, target)
 
@@ -914,7 +922,7 @@ class Move:
         elif stat.S_ISREG(mode):
             payload["kind"] = "file"
             ctx.dump()
-            self._stash(ctx, payload, target)
+            await self._stash(ctx, payload, target)
             _move_preserve_lstat(source, target)
             fingerprint = hashlib.sha256(target.read_bytes()).hexdigest()
             payload["fingerprint"] = fingerprint
@@ -934,7 +942,7 @@ class Move:
                     payload["created"] = False
                     ctx.dump()
                 else:
-                    self._stash(ctx, payload, target)
+                    await self._stash(ctx, payload, target)
                     payload["created"] = True
                     ctx.dump()
                     target.mkdir(parents=True, exist_ok=True)
@@ -953,7 +961,7 @@ class Move:
                 }
                 contents.append(item_payload)
                 ctx.dump()
-                self._do(ctx, item_payload, item, item_target)
+                await self._do(ctx, item_payload, item, item_target)
 
             # remove the now-empty source directory
             try:
@@ -966,7 +974,7 @@ class Move:
         else:
             raise OSError(f"Unsupported file type for move: {source}")
 
-    def do(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+    async def do(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
         source = self.source.absolute()
         target = self.target.absolute()
         if source == target:
@@ -979,10 +987,10 @@ class Move:
         payload["target"] = str(target)
         payload["replace"] = self.replace
         ctx.dump()
-        self._do(ctx, payload, source, target)
+        await self._do(ctx, payload, source, target)
 
     @staticmethod
-    def _undo(
+    async def _undo(
         ctx: Pipeline.InProgress,
         payload: dict[str, JSONValue],
         source: Path,
@@ -994,11 +1002,11 @@ class Move:
         if force:
             if not isinstance(kind, str) or kind not in ("symlink", "file", "dir"):
                 _clear_id(ctx, payload)
-                _unstash_existing(ctx, payload, force=True)
+                await _unstash_existing(ctx, payload, force=True)
                 return
             if not _exists(target):
                 _clear_id(ctx, payload)
-                _unstash_existing(ctx, payload, force=True)
+                await _unstash_existing(ctx, payload, force=True)
                 return
             if kind in ("symlink", "file"):
                 if _exists(source):
@@ -1025,7 +1033,7 @@ class Move:
                             ):
                                 item_source = Path(item_source_str)
                                 item_target = Path(item_target_str)
-                                Move._undo(
+                                await Move._undo(
                                     ctx,
                                     item_payload,
                                     item_source,
@@ -1039,7 +1047,7 @@ class Move:
                 if isinstance(created, bool) and created:
                     _remove_path(target, force=True)
                     _clear_id(ctx, payload)
-            _unstash_existing(ctx, payload, force=True)
+            await _unstash_existing(ctx, payload, force=True)
             return
 
         if not isinstance(kind, str):
@@ -1053,7 +1061,7 @@ class Move:
         if not _exists(target):
             _clear_id(ctx, payload)
             try:
-                _unstash_existing(ctx, payload, force=force)
+                await _unstash_existing(ctx, payload, force=force)
             except Exception as e:
                 errors.append(f"[{kind}] error unstashing previous target: {e}")
             return
@@ -1133,7 +1141,7 @@ class Move:
                     if isinstance(item_source_str, str) and isinstance(item_target_str, str):
                         item_source = Path(item_source_str)
                         item_target = Path(item_target_str)
-                        Move._undo(ctx, item_payload, item_source, item_target, errors, force)
+                        await Move._undo(ctx, item_payload, item_source, item_target, errors, force)
 
             # avoid clobbering if we didn't create the directory
             created = payload.get("created")
@@ -1147,22 +1155,22 @@ class Move:
 
         # restore whatever was there before
         try:
-            _unstash_existing(ctx, payload, force=force)
+            await _unstash_existing(ctx, payload, force=force)
         except Exception as e:
             errors.append(f"[unstash] error unstashing existing: {e}")
 
     @staticmethod
-    def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
+    async def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
         source_str = payload.get("source")
         target_str = payload.get("target")
         if isinstance(source_str, str) and isinstance(target_str, str):
             errors: list[str] = []
-            Move._undo(ctx, payload, Path(source_str), Path(target_str), errors, force)
+            await Move._undo(ctx, payload, Path(source_str), Path(target_str), errors, force)
             if errors and not force:
                 raise OSError(f"Errors occurred during move undo:\n{'\n'.join(errors)}")
         else:
             _clear_id(ctx, payload)
-            _unstash_existing(ctx, payload, force=force)
+            await _unstash_existing(ctx, payload, force=force)
 
 
 @atomic
@@ -1186,11 +1194,11 @@ class Symlink:
     target: Path
     replace: bool | None = False
 
-    def do(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+    async def do(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
         # resolve cwd, but not symlinks
         source = self.source
         target = self.target.absolute()
-        _resolve_conflict(
+        await _resolve_conflict(
             ctx,
             payload,
             target,
@@ -1212,11 +1220,11 @@ class Symlink:
         _record_id(ctx, payload, target)
 
     @staticmethod
-    def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
+    async def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
         target_str = payload.get("target")
         if not isinstance(target_str, str):
             _clear_id(ctx, payload)
-            _unstash_existing(ctx, payload, force=force)
+            await _unstash_existing(ctx, payload, force=force)
             return
 
         # step 1: remove the symlink we created, but only if it's the same one
@@ -1239,7 +1247,7 @@ class Symlink:
                 _clear_id(ctx, payload)
 
         # step 2: restore whatever was there before
-        _unstash_existing(ctx, payload, force=force)
+        await _unstash_existing(ctx, payload, force=force)
 
 
 @atomic
@@ -1257,7 +1265,7 @@ class Swap:
     first: Path
     second: Path
 
-    def do(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+    async def do(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
         first = self.first.absolute()
         second = self.second.absolute()
         if os.path.samefile(first, second):
@@ -1278,7 +1286,7 @@ class Swap:
         _move_preserve_lstat(temp, second)
 
     @staticmethod
-    def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
+    async def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
         first_str = payload.get("first")
         second_str = payload.get("second")
         if not isinstance(first_str, str) or not isinstance(second_str, str):
@@ -1340,7 +1348,7 @@ class Chmod:
     path: Path
     mode: int
 
-    def do(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+    async def do(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
         path = self.path.absolute()
         if not _exists(path):
             return
@@ -1366,7 +1374,7 @@ class Chmod:
         path.chmod(self.mode)
 
     @staticmethod
-    def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
+    async def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
         if payload.get("symlink", False):
             return  # no-op on symlinks
 
@@ -1412,7 +1420,7 @@ class Chown:
     uid: int | None = None
     gid: int | None = None
 
-    def do(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+    async def do(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
         path = self.path.absolute()
         if not _exists(path):
             return
@@ -1439,7 +1447,7 @@ class Chown:
         )
 
     @staticmethod
-    def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
+    async def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
         if payload.get("symlink", False):
             return  # no-op on symlinks
 
@@ -1489,7 +1497,7 @@ class Touch:
     atime_ns: int | None = None
     mtime_ns: int | None = None
 
-    def do(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+    async def do(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
         path = self.path.absolute()
         if not _exists(path):
             return
@@ -1518,7 +1526,7 @@ class Touch:
         os.utime(path, ns=(atime_ns, mtime_ns))
 
     @staticmethod
-    def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
+    async def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
         if payload.get("symlink", False):
             return  # no-op on symlinks
 
@@ -1568,7 +1576,7 @@ class Extract:
     target: Path
     replace: bool | None = False
 
-    def do(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+    async def do(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
         archive = self.archive.absolute()
         target = self.target.absolute()
         if not _exists(archive) or not _is_file(archive):
@@ -1589,17 +1597,17 @@ class Extract:
         move_payload: dict[str, JSONValue] = {}
         payload["move"] = move_payload
         ctx.dump()
-        Move(temp, target, replace=self.replace).do(ctx, move_payload)
+        await Move(temp, target, replace=self.replace).do(ctx, move_payload)
 
         # delete temporary directory
         shutil.rmtree(temp, ignore_errors=True)
 
     @staticmethod
-    def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
+    async def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
         # undo move
         move_payload = payload.get("move")
         if isinstance(move_payload, dict):
-            Move.undo(ctx, move_payload, force=force)
+            await Move.undo(ctx, move_payload, force=force)
 
         # delete temporary directory
         temp_str = payload.get("temp")

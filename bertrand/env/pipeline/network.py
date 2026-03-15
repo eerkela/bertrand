@@ -51,9 +51,9 @@ class Download:
     replace: bool | None = False
     sha256: str | None = None
 
-    def do(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+    async def do(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
         target = self.target.absolute()
-        _resolve_write_conflict(
+        await _resolve_write_conflict(
             ctx,
             payload,
             target,
@@ -107,11 +107,11 @@ class Download:
         ctx.dump()
 
     @staticmethod
-    def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
+    async def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
         target_str = payload.get("target")
         if not isinstance(target_str, str):
             _clear_id(ctx, payload)
-            _unstash_existing(ctx, payload, force=force)
+            await _unstash_existing(ctx, payload, force=force)
             return
 
         # remove downloaded file if it can be verified
@@ -154,4 +154,4 @@ class Download:
                     pass
 
         # restore stashed file (if any)
-        _unstash_existing(ctx, payload, force=force)
+        await _unstash_existing(ctx, payload, force=force)

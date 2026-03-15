@@ -8,12 +8,12 @@ import platform
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Literal, cast
+from typing import Awaitable, Callable, Literal, cast
 
 from .core import JSONValue, Pipeline, atomic
 from .filesystem import WriteBytes, WriteText
 from .network import Download
-from ..run import run, sudo_prefix
+from ..run import can_escalate, run, sudo
 
 # pylint: disable=unused-argument, missing-function-docstring, broad-exception-caught
 # pylint: disable=bare-except
@@ -42,11 +42,11 @@ def _read_os_release() -> dict[str, str]:
     return data
 
 
-def _detect_apt_arch() -> str | None:
+async def _detect_apt_arch() -> str | None:
     """Detect the Debian/Ubuntu architecture string (e.g., amd64, arm64)."""
     if shutil.which("dpkg"):
         try:
-            result = run(["dpkg", "--print-architecture"], capture_output=True)
+            result = await run(["dpkg", "--print-architecture"], capture_output=True)
             arch = result.stdout.strip()
             if arch:
                 return arch
@@ -189,7 +189,7 @@ class InstallSpec:
         The flags to assume yes for refresh commands.
     noninteractive_env : dict[str, str] | None
         Environment variables to set for non-interactive operation, or None.
-    query : Callable[[str], tuple[bool, str | None]]
+    query : Callable[[str], Awaitable[tuple[bool, str | None]]]
         A function to query if a package is installed, returning (installed, version),
         where version may be None if unknown.
     """
@@ -200,7 +200,7 @@ class InstallSpec:
     yes_remove: list[str]
     yes_refresh: list[str]
     noninteractive_env: dict[str, str] | None
-    query: Callable[[str], tuple[bool, str | None]]
+    query: Callable[[str], Awaitable[tuple[bool, str | None]]]
 
 
 @dataclass(frozen=True)
@@ -255,8 +255,8 @@ class CACertSpec:
     noninteractive_env: dict[str, str] | None
 
 
-def _query_dpkg(pkg: str) -> tuple[bool, str | None]:
-    cp = run(
+async def _query_dpkg(pkg: str) -> tuple[bool, str | None]:
+    cp = await run(
         ["dpkg-query", "-W", "-f=${Version}", pkg],
         check=False,
         capture_output=True,
@@ -267,8 +267,8 @@ def _query_dpkg(pkg: str) -> tuple[bool, str | None]:
     return True, version or None
 
 
-def _query_rpm(pkg: str) -> tuple[bool, str | None]:
-    cp = run(
+async def _query_rpm(pkg: str) -> tuple[bool, str | None]:
+    cp = await run(
         ["rpm", "-q", "--qf", "%{VERSION}-%{RELEASE}.%{ARCH}", pkg],
         check=False,
         capture_output=True,
@@ -279,8 +279,8 @@ def _query_rpm(pkg: str) -> tuple[bool, str | None]:
     return True, version or None
 
 
-def _query_pacman(pkg: str) -> tuple[bool, str | None]:
-    cp = run(["pacman", "-Q", pkg], check=False, capture_output=True)
+async def _query_pacman(pkg: str) -> tuple[bool, str | None]:
+    cp = await run(["pacman", "-Q", pkg], check=False, capture_output=True)
     if cp.returncode != 0:
         return False, None
     parts = cp.stdout.strip().split()
@@ -289,11 +289,11 @@ def _query_pacman(pkg: str) -> tuple[bool, str | None]:
     return True, None
 
 
-def _query_apk(pkg: str) -> tuple[bool, str | None]:
-    cp = run(["apk", "info", "-e", pkg], check=False, capture_output=True)
+async def _query_apk(pkg: str) -> tuple[bool, str | None]:
+    cp = await run(["apk", "info", "-e", pkg], check=False, capture_output=True)
     if cp.returncode != 0:
         return False, None
-    cp = run(["apk", "info", pkg], check=False, capture_output=True)
+    cp = await run(["apk", "info", pkg], check=False, capture_output=True)
     if cp.returncode != 0:
         return True, None
     for line in cp.stdout.splitlines():
@@ -489,8 +489,8 @@ def _normalize_fingerprint(value: str) -> str:
     return "".join(value.split()).upper()
 
 
-def _gpg_fingerprint(path: Path) -> str | None:
-    cp = run(
+async def _gpg_fingerprint(path: Path) -> str | None:
+    cp = await run(
         ["gpg", "--show-keys", "--with-fingerprint", str(path)],
         check=False,
         capture_output=True,
@@ -540,7 +540,7 @@ class InstallPackage:
     assume_yes: bool = False
     refresh: bool = True
 
-    def do(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+    async def do(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
         if os.name != "posix":
             raise OSError("Package manager operations require a POSIX system.")
         _valid_install_manager(self.manager)
@@ -548,8 +548,8 @@ class InstallPackage:
         _ensure_manager_cmd(self.manager, spec)
 
         # ensure we can elevate if needed
-        sudo = sudo_prefix(non_interactive=self.assume_yes)
-        if os.name == "posix" and os.geteuid() != 0 and not sudo:
+        sudo_cmd = sudo([], non_interactive=self.assume_yes)
+        if os.name == "posix" and os.geteuid() != 0 and not can_escalate():
             raise PermissionError(
                 "Package installation requires root privileges; sudo not available."
             )
@@ -575,7 +575,7 @@ class InstallPackage:
         # snapshot preinstalled state
         preinstalled: dict[str, JSONValue] = {}
         for p in packages:
-            p_installed, p_version = spec.query(p)
+            p_installed, p_version = await spec.query(p)
             if p_installed:
                 preinstalled[p] = p_version
         if preinstalled:
@@ -592,26 +592,26 @@ class InstallPackage:
                     spec.refresh,
                     spec.yes_refresh,
                     [],
-                    sudo=sudo,
+                    sudo=sudo_cmd,
                     assume_yes=self.assume_yes,
                 )
-                run(cmd, env=env)
+                await run(cmd, env=env)
 
             # install packages
             cmd = _build_cmd(
                 spec.install,
                 spec.yes_install,
                 packages,
-                sudo=sudo,
+                sudo=sudo_cmd,
                 assume_yes=self.assume_yes,
             )
-            run(cmd, env=env)
+            await run(cmd, env=env)
 
         # record successfully installed packages even if installation fails
         finally:
             present: list[dict[str, JSONValue]] = []
             for pkg in packages:
-                pkg_installed, pkg_version = spec.query(pkg)
+                pkg_installed, pkg_version = await spec.query(pkg)
                 if not pkg_installed:
                     continue
                 if pkg in preinstalled:
@@ -623,7 +623,7 @@ class InstallPackage:
             ctx.dump()
 
     @staticmethod
-    def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
+    async def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
         if os.name != "posix":
             raise OSError("Package manager operations require a POSIX system.")
         manager = payload.get("manager")
@@ -639,8 +639,8 @@ class InstallPackage:
 
         # ensure we can elevate if needed
         assume_yes = bool(payload.get("assume_yes", False))
-        sudo = sudo_prefix(non_interactive=assume_yes)
-        if os.name == "posix" and os.geteuid() != 0 and not sudo:
+        sudo_cmd = sudo([], non_interactive=assume_yes)
+        if os.name == "posix" and os.geteuid() != 0 and not can_escalate():
             raise PermissionError(
                 "Package removal requires root privileges; sudo not available."
             )
@@ -657,7 +657,7 @@ class InstallPackage:
                 continue
 
             # ensure versions match what we installed
-            installed, current = spec.query(name)
+            installed, current = await spec.query(name)
             if not installed:
                 continue
             if current is None:
@@ -675,10 +675,10 @@ class InstallPackage:
                     spec.remove,
                     spec.yes_remove,
                     to_remove,
-                    sudo=sudo,
+                    sudo=sudo_cmd,
                     assume_yes=assume_yes,
                 )
-                run(cmd, env=_cmd_env(spec.noninteractive_env, assume_yes))
+                await run(cmd, env=_cmd_env(spec.noninteractive_env, assume_yes))
             except Exception as e:
                 errors.append(str(e))
 
@@ -712,7 +712,7 @@ class UninstallPackage:
     assume_yes: bool = False
     refresh: bool = False
 
-    def do(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+    async def do(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
         if os.name != "posix":
             raise OSError("Package manager operations require a POSIX system.")
         _valid_install_manager(self.manager)
@@ -722,8 +722,8 @@ class UninstallPackage:
             raise FileNotFoundError(f"Remove command not found: {spec.remove[0]}")
 
         # ensure we can elevate if needed
-        sudo = sudo_prefix(non_interactive=self.assume_yes)
-        if os.name == "posix" and os.geteuid() != 0 and not sudo:
+        sudo_cmd = sudo([], non_interactive=self.assume_yes)
+        if os.name == "posix" and os.geteuid() != 0 and not can_escalate():
             raise PermissionError(
                 "Package removal requires root privileges; sudo not available."
             )
@@ -749,7 +749,7 @@ class UninstallPackage:
         # snapshot preinstalled state
         preinstalled: dict[str, JSONValue] = {}
         for p in packages:
-            p_installed, p_version = spec.query(p)
+            p_installed, p_version = await spec.query(p)
             if p_installed:
                 preinstalled[p] = p_version
         if preinstalled:
@@ -766,26 +766,26 @@ class UninstallPackage:
                     spec.refresh,
                     spec.yes_refresh,
                     [],
-                    sudo=sudo,
+                    sudo=sudo_cmd,
                     assume_yes=self.assume_yes,
                 )
-                run(cmd, env=env)
+                await run(cmd, env=env)
 
             # remove packages
             cmd = _build_cmd(
                 spec.remove,
                 spec.yes_remove,
                 list(preinstalled),
-                sudo=sudo,
+                sudo=sudo_cmd,
                 assume_yes=self.assume_yes,
             )
-            run(cmd, env=env)
+            await run(cmd, env=env)
 
         # record successfully removed packages even if removal fails
         finally:
             removed: list[dict[str, JSONValue]] = []
             for pkg, pkg_version in preinstalled.items():
-                pkg_installed, _ = spec.query(pkg)
+                pkg_installed, _ = await spec.query(pkg)
                 if pkg_installed:
                     continue
                 if pkg_version is None:
@@ -795,7 +795,7 @@ class UninstallPackage:
             ctx.dump()
 
     @staticmethod
-    def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
+    async def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
         if os.name != "posix":
             raise OSError("Package manager operations require a POSIX system.")
         manager = payload.get("manager")
@@ -811,8 +811,8 @@ class UninstallPackage:
 
         # ensure we can elevate if needed
         assume_yes = bool(payload.get("assume_yes", False))
-        sudo = sudo_prefix(non_interactive=assume_yes)
-        if os.name == "posix" and os.geteuid() != 0 and not sudo:
+        sudo_cmd = sudo([], non_interactive=assume_yes)
+        if os.name == "posix" and os.geteuid() != 0 and not can_escalate():
             raise PermissionError(
                 "Package installation requires root privileges; sudo not available."
             )
@@ -828,7 +828,7 @@ class UninstallPackage:
             version = item.get("version")
             if not isinstance(name, str) or not isinstance(version, str):
                 continue
-            installed, _ = spec.query(name)
+            installed, _ = await spec.query(name)
             if installed:
                 continue
             try:
@@ -847,16 +847,16 @@ class UninstallPackage:
                     spec.install,
                     spec.yes_install,
                     to_install,
-                    sudo=sudo,
+                    sudo=sudo_cmd,
                     assume_yes=assume_yes,
                 )
-                run(cmd, env=_cmd_env(spec.noninteractive_env, assume_yes))
+                await run(cmd, env=_cmd_env(spec.noninteractive_env, assume_yes))
             except Exception as e:
                 errors.append(str(e))
 
             # verify re-installation
             for name, version in expected.items():
-                installed, current = spec.query(name)
+                installed, current = await spec.query(name)
                 if not installed:
                     errors.append(f"[{name}] not installed after undo")
                     continue
@@ -935,7 +935,7 @@ class AddRepository:
     key_sha256: str | None = None
     key_fingerprint: str | None = None
 
-    def _get_components(self) -> tuple[str | None, list[str] | None, str | None]:
+    async def _get_components(self) -> tuple[str | None, list[str] | None, str | None]:
         suite = self.suite
         components = self.components
         arch = self.arch
@@ -955,7 +955,7 @@ class AddRepository:
                 raise OSError("Unable to determine APT suite from /etc/os-release.")
 
         if arch is None:
-            arch = _detect_apt_arch()
+            arch = await _detect_apt_arch()
             if not arch:
                 raise OSError("Unable to determine APT architecture.")
 
@@ -995,7 +995,7 @@ class AddRepository:
             lines.append(f"gpgkey=file://{key_path}")
         return "\n".join(lines) + "\n"
 
-    def _from_repo_url(
+    async def _from_repo_url(
         self,
         ctx: Pipeline.InProgress,
         payload: dict[str, JSONValue],
@@ -1007,7 +1007,7 @@ class AddRepository:
         repo_payload: dict[str, JSONValue] = {}
         payload["repo_download"] = repo_payload
         ctx.dump()
-        Download(
+        await Download(
             url=self.url,
             target=repo_path,
             replace=self.replace,
@@ -1036,7 +1036,7 @@ class AddRepository:
                 download_payload = {}
                 payload["download"] = download_payload
                 ctx.dump()
-            Download(
+            await Download(
                 url=self.key_url,
                 target=key_path,
                 replace=self.replace,
@@ -1045,7 +1045,7 @@ class AddRepository:
 
             # verify key fingerprint if given
             if self.key_fingerprint is not None:
-                actual = _gpg_fingerprint(key_path)
+                actual = await _gpg_fingerprint(key_path)
                 if actual is None:
                     raise OSError(f"Failed to read GPG fingerprint: {key_path}")
                 expected = _normalize_fingerprint(self.key_fingerprint)
@@ -1059,7 +1059,7 @@ class AddRepository:
             if os.geteuid() == 0:
                 os.chown(key_path, 0, 0)
 
-    def _write_repo_file(
+    async def _write_repo_file(
         self,
         ctx: Pipeline.InProgress,
         payload: dict[str, JSONValue],
@@ -1086,7 +1086,7 @@ class AddRepository:
                 download_payload = {}
                 payload["download"] = download_payload
                 ctx.dump()
-            Download(
+            await Download(
                 url=self.key_url,
                 target=key_path,
                 replace=self.replace,
@@ -1095,7 +1095,7 @@ class AddRepository:
 
             # verify key fingerprint if given
             if self.key_fingerprint is not None:
-                actual = _gpg_fingerprint(key_path)
+                actual = await _gpg_fingerprint(key_path)
                 if actual is None:
                     raise OSError(f"Failed to read GPG fingerprint: {key_path}")
                 expected = _normalize_fingerprint(self.key_fingerprint)
@@ -1113,13 +1113,13 @@ class AddRepository:
         write_payload: dict[str, JSONValue] = {}
         payload["write"] = write_payload
         ctx.dump()
-        WriteText(
+        await WriteText(
             repo_path,
             self._repo_text(suite, components, arch, key_path),
             replace=self.replace
         ).do(ctx, write_payload)
 
-    def do(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+    async def do(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
         if os.name != "posix":
             raise OSError("Package manager operations require a POSIX system.")
         if os.geteuid() != 0:
@@ -1142,7 +1142,7 @@ class AddRepository:
                 raise ValueError("key_ext must be '.asc' or '.gpg'")
         if not self.url:
             raise ValueError("Repository URL is required.")
-        suite, components, arch = self._get_components()
+        suite, components, arch = await self._get_components()
 
         # persist intent before mutating
         payload["manager"] = self.manager
@@ -1168,15 +1168,15 @@ class AddRepository:
             payload["key_fingerprint"] = self.key_fingerprint
         ctx.dump()
         env = _cmd_env(spec.noninteractive_env, self.assume_yes)
-        sudo = sudo_prefix()
+        sudo_cmd = sudo([])
 
         # download trusted repo file and set key path from it if given
         if self.repo_url:
-            self._from_repo_url(ctx, payload, spec, repo_path, key_ext)
+            await self._from_repo_url(ctx, payload, spec, repo_path, key_ext)
 
         # write repo file from structured input and download key to standard location
         else:
-            self._write_repo_file(
+            await self._write_repo_file(
                 ctx,
                 payload,
                 spec,
@@ -1195,13 +1195,13 @@ class AddRepository:
                 spec.refresh,
                 spec.yes_refresh,
                 [],
-                sudo=sudo,
+                sudo=sudo_cmd,
                 assume_yes=self.assume_yes,
             )
-            run(cmd, env=env)
+            await run(cmd, env=env)
 
     @staticmethod
-    def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
+    async def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
         manager = payload.get("manager")
         if not isinstance(manager, str):
             return
@@ -1214,7 +1214,7 @@ class AddRepository:
         write_payload = payload.get("write")
         if isinstance(write_payload, dict):
             try:
-                WriteText.undo(ctx, write_payload, force=force)
+                await WriteText.undo(ctx, write_payload, force=force)
             except:
                 pass
 
@@ -1222,7 +1222,7 @@ class AddRepository:
         repo_payload = payload.get("repo_download")
         if isinstance(repo_payload, dict):
             try:
-                Download.undo(ctx, repo_payload, force=force)
+                await Download.undo(ctx, repo_payload, force=force)
             except:
                 pass
 
@@ -1230,7 +1230,7 @@ class AddRepository:
         download_payload = payload.get("download")
         if isinstance(download_payload, dict):
             try:
-                Download.undo(ctx, download_payload, force=force)
+                await Download.undo(ctx, download_payload, force=force)
             except:
                 pass
 
@@ -1263,7 +1263,7 @@ class InstallCACert:
     replace: bool | None = False
     refresh: bool = True
 
-    def do(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+    async def do(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
         if os.name != "posix":
             raise OSError("Package manager operations require a POSIX system.")
         if os.geteuid() != 0:
@@ -1297,7 +1297,7 @@ class InstallCACert:
         write_payload: dict[str, JSONValue] = {}
         payload["write"] = write_payload
         ctx.dump()
-        WriteBytes(target, data, replace=self.replace).do(ctx, write_payload)
+        await WriteBytes(target, data, replace=self.replace).do(ctx, write_payload)
 
         # refresh trust store if requested and supported
         if self.refresh and spec.refresh:
@@ -1307,13 +1307,13 @@ class InstallCACert:
                 spec.refresh,
                 spec.yes_refresh,
                 [],
-                sudo=sudo_prefix(),
+                sudo=sudo([]),
                 assume_yes=False,
             )
-            run(cmd, env=_cmd_env(spec.noninteractive_env, False))
+            await run(cmd, env=_cmd_env(spec.noninteractive_env, False))
 
     @staticmethod
-    def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
+    async def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
         manager = payload.get("manager")
         if not isinstance(manager, str):
             return
@@ -1326,7 +1326,7 @@ class InstallCACert:
         write_payload = payload.get("write")
         if isinstance(write_payload, dict):
             try:
-                WriteBytes.undo(ctx, write_payload, force=force)
+                await WriteBytes.undo(ctx, write_payload, force=force)
             except:
                 pass
 
@@ -1338,9 +1338,9 @@ class InstallCACert:
                     spec.refresh,
                     spec.yes_refresh,
                     [],
-                    sudo=sudo_prefix(),
+                    sudo=sudo([]),
                     assume_yes=False,
                 )
-                run(cmd, env=_cmd_env(spec.noninteractive_env, False))
+                await run(cmd, env=_cmd_env(spec.noninteractive_env, False))
             except:
                 pass

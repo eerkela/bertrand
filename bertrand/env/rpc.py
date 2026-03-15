@@ -307,6 +307,7 @@ JSON_RPC_CATCH_ERR: Mapping[type[Exception], Callable[[Exception], RPCResponse.E
     NotImplementedError: _catch_method_not_found,
     RuntimeError: _catch_internal_error,
     TimeoutError: _catch_timeout_error,
+    TimeoutExpired: _catch_timeout_error,
     TypeError: _catch_invalid_request,
     ValidationError: _catch_invalid_request,
     ValueError: _catch_invalid_params,
@@ -430,6 +431,7 @@ class Listener:
                     "--format", "{{.State.Status}}",
                     container_id
                 ],
+                capture_output=True,
                 timeout=remaining,
             )
         except TimeoutExpired as err:
@@ -482,7 +484,7 @@ class Listener:
                 # send response back to client (may be an error code)
                 try:
                     payload = json.dumps(
-                        response.model_dump(mode="json"),
+                        response.model_dump(mode="json", exclude_none=True),
                         separators=(",", ":")
                     ) + "\n"
                     conn.sendall(payload.encode("utf-8"))
@@ -750,7 +752,7 @@ def main() -> None:
         return
 
 
-def rpc(method: Callable[[], RPCRequest]) -> RPCResponse.Result | None:
+def rpc(method: Callable[[], RPCRequest]) -> RPCResponse.Result:
     """Send a request to the host RPC listener and return the result, or raise an
     appropriate Python exception if the request fails or the listener is unavailable.
 
@@ -834,7 +836,7 @@ def rpc(method: Callable[[], RPCRequest]) -> RPCResponse.Result | None:
     if not text:
         raise TypeError("empty response from RPC server")
     response = RPCResponse.model_validate(json.loads(text))
-    if response.id != request.id:
+    if response.id is not None and response.id != request.id:
         raise RuntimeError(
             f"RPC response id mismatch: expected {request.id!r}, got {response.id!r}"
         )
@@ -842,6 +844,8 @@ def rpc(method: Callable[[], RPCRequest]) -> RPCResponse.Result | None:
     # handle errors
     if response.error is not None:
         _rpc_throw(response.error)
+    if response.result is None:
+        raise RuntimeError("RPC response missing result")
     return response.result
 
 
@@ -919,7 +923,11 @@ def _vscode_open(params: RPCRequest.CodeOpenRequest) -> RPCResponse.CodeOpenResu
         if remaining <= 0:
             expired = True
         else:
-            result = run([str(editor_bin), "--list-extensions"], timeout=remaining)
+            result = run(
+                [str(editor_bin), "--list-extensions"],
+                capture_output=True,
+                timeout=remaining
+            )
             found = False
             search = VSCODE_REMOTE_EXTENSION.lower()
             for ext in result.stdout.splitlines():

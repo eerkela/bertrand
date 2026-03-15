@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import cast
 
 from .core import JSONValue, Pipeline, atomic
-from ..run import atomic_write_text, confirm, run, sudo_prefix
+from ..run import atomic_write_text, can_escalate, confirm, run, sudo
 
 # pylint: disable=unused-argument, missing-function-docstring, broad-exception-caught
 # pylint: disable=bare-except
@@ -89,7 +89,13 @@ def _choose_non_overlapping_start(ranges: list[SubIDRange], needed: int) -> int:
     return start
 
 
-def _append_subid(path: Path, user: str, start: int, count: int, sudo: list[str]) -> None:
+async def _append_subid(
+    path: Path,
+    user: str,
+    start: int,
+    count: int,
+    sudo_cmd: list[str]
+) -> None:
     line = f"{user}:{start}:{count}"
     quoted_line = shlex.quote(line)
     quoted_path = shlex.quote(str(path))
@@ -101,7 +107,7 @@ def _append_subid(path: Path, user: str, start: int, count: int, sudo: list[str]
         "fi; "
         f"grep -F -x -q {quoted_line} {quoted_path} || echo {quoted_line} >> {quoted_path}"
     )
-    run([*sudo, "sh", "-lc", cmd])
+    await run([*sudo_cmd, "sh", "-lc", cmd])
 
 
 def _group_has_user(user: str, group: str) -> bool:
@@ -131,8 +137,8 @@ def _ensure_user(name: str) -> pwd.struct_passwd:
     return _user_info(name)
 
 
-def _passwd_status(name: str) -> str | None:
-    cp = run(["passwd", "-S", name], check=False, capture_output=True)
+async def _passwd_status(name: str) -> str | None:
+    cp = await run(["passwd", "-S", name], check=False, capture_output=True)
     if cp.returncode != 0:
         return None
     parts = (cp.stdout or "").strip().split()
@@ -161,7 +167,7 @@ def _ssh_home(user: str) -> Path:
     return Path(_ensure_user(user).pw_dir)
 
 
-def _ensure_ssh_dir(path: Path, uid: int, gid: int) -> None:
+async def _ensure_ssh_dir(path: Path, uid: int, gid: int) -> None:
     if path.exists():
         if not path.is_dir():
             raise FileExistsError(f"Path exists and is not a directory: {path}")
@@ -172,10 +178,10 @@ def _ensure_ssh_dir(path: Path, uid: int, gid: int) -> None:
         "Creating .ssh directories requires root privileges or the target user."
     )
 
-    run(["mkdir", "-p", str(path)])
+    await run(["mkdir", "-p", str(path)])
     if is_root:
-        run(["chown", f"{uid}:{gid}", str(path)])
-    run(["chmod", "700", str(path)])
+        await run(["chown", f"{uid}:{gid}", str(path)])
+    await run(["chmod", "700", str(path)])
 
 
 def _read_authorized_keys(path: Path) -> list[str]:
@@ -246,7 +252,7 @@ class EnsureSubIDs:
     )
     assume_yes: bool = False
 
-    def do(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+    async def do(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
         if os.name != "posix":
             raise OSError("User management operations require a POSIX system.")
         user = self.user or _current_user()
@@ -265,8 +271,8 @@ class EnsureSubIDs:
         ):
             return
 
-        sudo = sudo_prefix(non_interactive=self.assume_yes)
-        if os.geteuid() != 0 and not sudo:
+        sudo_cmd = sudo([], non_interactive=self.assume_yes)
+        if os.geteuid() != 0 and not can_escalate():
             raise PermissionError(
                 "Subuid/subgid provisioning requires root privileges; no sudo available."
             )
@@ -276,8 +282,8 @@ class EnsureSubIDs:
         # choose non-overlapping ranges and append to files
         start_uid = _choose_non_overlapping_start(uid_ranges, self.needed)
         start_gid = _choose_non_overlapping_start(gid_ranges, self.needed)
-        _append_subid(self.subuid_path, user, start_uid, self.needed, sudo)
-        _append_subid(self.subgid_path, user, start_gid, self.needed, sudo)
+        await _append_subid(self.subuid_path, user, start_uid, self.needed, sudo_cmd)
+        await _append_subid(self.subgid_path, user, start_gid, self.needed, sudo_cmd)
 
         # verify
         uid_ranges = _read_subid_file(self.subuid_path)
@@ -289,7 +295,7 @@ class EnsureSubIDs:
             raise OSError("Failed to provision subuid/subgid ranges correctly.")
 
     @staticmethod
-    def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
+    async def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
         return  # no-op
 
 
@@ -316,7 +322,7 @@ class EnsureUserNamespaces:
     )
     assume_yes: bool = False
 
-    def do(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+    async def do(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
         if os.name != "posix":
             raise OSError("User management operations require a POSIX system.")
         payload["needed"] = self.needed
@@ -332,8 +338,8 @@ class EnsureUserNamespaces:
             return
 
         # prompt for sudo if needed
-        sudo = sudo_prefix(non_interactive=self.assume_yes)
-        if os.geteuid() != 0 and not sudo:
+        sudo_cmd = sudo([], non_interactive=self.assume_yes)
+        if os.geteuid() != 0 and not can_escalate():
             raise PermissionError(
                 "Enabling user namespaces requires root privileges; no sudo available."
             )
@@ -342,10 +348,10 @@ class EnsureUserNamespaces:
 
         # enable unprivileged user namespaces
         if unpriv == 0:
-            run([*sudo, "sysctl", "-w", "kernel.unprivileged_userns_clone=1"])
+            await run([*sudo_cmd, "sysctl", "-w", "kernel.unprivileged_userns_clone=1"])
         if maxns is not None and maxns < self.needed:
-            run([
-                *sudo,
+            await run([
+                *sudo_cmd,
                 "sysctl",
                 "-w",
                 f"user.max_user_namespaces={self.needed}",
@@ -358,7 +364,7 @@ class EnsureUserNamespaces:
             raise OSError("Failed to enable unprivileged user namespaces.")
 
     @staticmethod
-    def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
+    async def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
         return  # no-op
 
 
@@ -369,7 +375,7 @@ class AddUserToGroup:
     user: str
     group: str
 
-    def do(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+    async def do(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
         if os.name != "posix":
             raise OSError("User management operations require a POSIX system.")
         user = self.user
@@ -385,18 +391,18 @@ class AddUserToGroup:
         if was_member:
             return
 
-        sudo = sudo_prefix()
-        if os.name == "posix" and os.geteuid() != 0 and not sudo:
+        sudo_cmd = sudo([])
+        if os.name == "posix" and os.geteuid() != 0 and not can_escalate():
             raise PermissionError(
                 "Modifying group membership requires root privileges; no sudo available."
             )
-        run([*sudo, "usermod", "-aG", group, user])
+        await run([*sudo_cmd, "usermod", "-aG", group, user])
 
         if not _group_has_user(user, group):
             raise OSError(f"Failed to add user '{user}' to group '{group}'.")
 
     @staticmethod
-    def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
+    async def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
         user = payload.get("user")
         group = payload.get("group")
         was_member = payload.get("was_member")
@@ -407,13 +413,13 @@ class AddUserToGroup:
         if not _group_has_user(user, group):
             return
 
-        sudo = sudo_prefix()
-        if os.name == "posix" and os.geteuid() != 0 and not sudo:
+        sudo_cmd = sudo([])
+        if os.name == "posix" and os.geteuid() != 0 and not can_escalate():
             raise PermissionError(
                 "Modifying group membership requires root privileges; no sudo available."
             )
         try:
-            run([*sudo, "gpasswd", "-d", user, group], check=False)
+            await run([*sudo_cmd, "gpasswd", "-d", user, group], check=False)
         except:
             pass
 
@@ -425,7 +431,7 @@ class RemoveUserFromGroup:
     user: str
     group: str
 
-    def do(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+    async def do(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
         if os.name != "posix":
             raise OSError("User management operations require a POSIX system.")
         user = self.user
@@ -441,18 +447,18 @@ class RemoveUserFromGroup:
         if not was_member:
             return
 
-        sudo = sudo_prefix()
-        if os.name == "posix" and os.geteuid() != 0 and not sudo:
+        sudo_cmd = sudo([])
+        if os.name == "posix" and os.geteuid() != 0 and not can_escalate():
             raise PermissionError(
                 "Modifying group membership requires root privileges; no sudo available."
             )
-        run([*sudo, "gpasswd", "-d", user, group])
+        await run([*sudo_cmd, "gpasswd", "-d", user, group])
 
         if _group_has_user(user, group):
             raise OSError(f"Failed to remove user '{user}' from group '{group}'.")
 
     @staticmethod
-    def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
+    async def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
         user = payload.get("user")
         group = payload.get("group")
         was_member = payload.get("was_member")
@@ -463,13 +469,13 @@ class RemoveUserFromGroup:
         if _group_has_user(user, group):
             return
 
-        sudo = sudo_prefix()
-        if os.name == "posix" and os.geteuid() != 0 and not sudo:
+        sudo_cmd = sudo([])
+        if os.name == "posix" and os.geteuid() != 0 and not can_escalate():
             raise PermissionError(
                 "Modifying group membership requires root privileges; no sudo available."
             )
         try:
-            run([*sudo, "usermod", "-aG", group, user])
+            await run([*sudo_cmd, "usermod", "-aG", group, user])
         except:
             pass
 
@@ -495,7 +501,7 @@ class EnableLinger:
     )
     assume_yes: bool = False
 
-    def do(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+    async def do(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
         if os.name != "posix":
             raise OSError("User management operations require a POSIX system.")
         if not shutil.which("loginctl"):
@@ -506,7 +512,7 @@ class EnableLinger:
         ctx.dump()
 
         # check current linger status
-        cp = run(
+        cp = await run(
             ["loginctl", "show-user", user, "-p", "Linger"],
             check=False,
             capture_output=True,
@@ -519,17 +525,17 @@ class EnableLinger:
         ctx.dump()
 
         # enable linger
-        sudo = sudo_prefix()
-        if os.geteuid() != 0 and not sudo:
+        sudo_cmd = sudo([])
+        if os.geteuid() != 0 and not can_escalate():
             raise PermissionError(
                 "Enabling linger requires root privileges; no sudo available."
             )
         if not confirm(self.prompt, assume_yes=self.assume_yes):
             raise OSError("User declined to enable systemd linger.")
-        run([*sudo, "loginctl", "enable-linger", user])
+        await run([*sudo_cmd, "loginctl", "enable-linger", user])
 
     @staticmethod
-    def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
+    async def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
         return  # no-op
 
 
@@ -554,7 +560,7 @@ class DisableLinger:
     )
     assume_yes: bool = False
 
-    def do(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+    async def do(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
         if os.name != "posix":
             raise OSError("User management operations require a POSIX system.")
         if not shutil.which("loginctl"):
@@ -565,7 +571,7 @@ class DisableLinger:
         ctx.dump()
 
         # check current linger status
-        cp = run(
+        cp = await run(
             ["loginctl", "show-user", user, "-p", "Linger"],
             check=False,
             capture_output=True,
@@ -578,17 +584,17 @@ class DisableLinger:
         ctx.dump()
 
         # disable linger
-        sudo = sudo_prefix()
-        if os.geteuid() != 0 and not sudo:
+        sudo_cmd = sudo([])
+        if os.geteuid() != 0 and not can_escalate():
             raise PermissionError(
                 "Disabling linger requires root privileges; no sudo available."
             )
         if not confirm(self.prompt, assume_yes=self.assume_yes):
             raise OSError("User declined to disable systemd linger.")
-        run([*sudo, "loginctl", "disable-linger", user])
+        await run([*sudo_cmd, "loginctl", "disable-linger", user])
 
     @staticmethod
-    def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
+    async def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
         return  # no-op
 
 
@@ -608,7 +614,7 @@ class CreateGroup:
     name: str
     system: bool = False
 
-    def do(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+    async def do(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
         if os.name != "posix":
             raise OSError("User management operations require a POSIX system.")
         name = self.name
@@ -627,25 +633,25 @@ class CreateGroup:
         payload["was_present"] = False
         ctx.dump()
 
-        sudo = sudo_prefix()
-        if os.name == "posix" and os.geteuid() != 0 and not sudo:
+        sudo_cmd = sudo([])
+        if os.name == "posix" and os.geteuid() != 0 and not can_escalate():
             raise PermissionError(
                 "Creating groups requires root privileges; no sudo available."
             )
 
         # create group
-        cmd = [*sudo, "groupadd"]
+        cmd = [*sudo_cmd, "groupadd"]
         if self.system:
             cmd.append("--system")
         cmd.append(name)
-        run(cmd)
+        await run(cmd)
 
         # record created group info
         payload["gid"] = grp.getgrnam(name).gr_gid
         ctx.dump()
 
     @staticmethod
-    def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
+    async def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
         name = payload.get("name")
         was_present = payload.get("was_present")
         gid = payload.get("gid")
@@ -668,15 +674,15 @@ class CreateGroup:
 
         # delete group
         # Conservative force policy: keep checks, suppress undo errors.
-        sudo = sudo_prefix()
-        if os.name == "posix" and os.geteuid() != 0 and not sudo:
+        sudo_cmd = sudo([])
+        if os.name == "posix" and os.geteuid() != 0 and not can_escalate():
             if force:
                 return
             raise PermissionError(
                 "Removing groups requires root privileges; no sudo available."
             )
         try:
-            run([*sudo, "groupdel", name])
+            await run([*sudo_cmd, "groupdel", name])
         except:
             if not force:
                 raise
@@ -705,7 +711,7 @@ class CreateUser:
     create_home: bool = False
     shell: str | None = None
 
-    def do(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+    async def do(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
         if os.name != "posix":
             raise OSError("User management operations require a POSIX system.")
         name = self.name
@@ -730,14 +736,14 @@ class CreateUser:
         payload["was_present"] = False
         ctx.dump()
 
-        sudo = sudo_prefix()
-        if os.name == "posix" and os.geteuid() != 0 and not sudo:
+        sudo_cmd = sudo([])
+        if os.name == "posix" and os.geteuid() != 0 and not can_escalate():
             raise PermissionError(
                 "Creating users requires root privileges; no sudo available."
             )
 
         # create user
-        cmd = [*sudo, "useradd"]
+        cmd = [*sudo_cmd, "useradd"]
         if self.system:
             cmd.append("--system")
         if self.create_home:
@@ -747,7 +753,7 @@ class CreateUser:
         if self.shell is not None:
             cmd.extend(["--shell", self.shell])
         cmd.append(name)
-        run(cmd)
+        await run(cmd)
 
         # record created user info
         created = _user_info(name)
@@ -758,7 +764,7 @@ class CreateUser:
         ctx.dump()
 
     @staticmethod
-    def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
+    async def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
         name = payload.get("name")
         was_present = payload.get("was_present")
         uid = payload.get("uid")
@@ -779,8 +785,8 @@ class CreateUser:
         if current.pw_uid != uid:
             return
 
-        sudo = sudo_prefix()
-        if os.name == "posix" and os.geteuid() != 0 and not sudo:
+        sudo_cmd = sudo([])
+        if os.name == "posix" and os.geteuid() != 0 and not can_escalate():
             if force:
                 return
             raise PermissionError(
@@ -789,7 +795,7 @@ class CreateUser:
 
         # delete user and optionally home directory if empty
         try:
-            run([*sudo, "userdel", name])
+            await run([*sudo_cmd, "userdel", name])
         except:
             if not force:
                 raise
@@ -816,7 +822,7 @@ class SetUserShell:
     name: str
     shell: Path
 
-    def do(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+    async def do(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
         if os.name != "posix":
             raise OSError("User management operations require a POSIX system.")
         name = self.name
@@ -836,12 +842,12 @@ class SetUserShell:
         ctx.dump()
 
         # set new shell
-        sudo = sudo_prefix()
-        if os.name == "posix" and os.geteuid() != 0 and not sudo:
+        sudo_cmd = sudo([])
+        if os.name == "posix" and os.geteuid() != 0 and not can_escalate():
             raise PermissionError(
                 "Modifying user shells requires root privileges; no sudo available."
             )
-        run([*sudo, "usermod", "-s", str(shell), name])
+        await run([*sudo_cmd, "usermod", "-s", str(shell), name])
 
         # verify change
         updated = _ensure_user(name)
@@ -849,7 +855,7 @@ class SetUserShell:
             raise OSError(f"Failed to set shell for user '{name}'.")
 
     @staticmethod
-    def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
+    async def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
         name = payload.get("name")
         was_changed = payload.get("was_changed")
         uid = payload.get("uid")
@@ -873,15 +879,15 @@ class SetUserShell:
             return
 
         # revert shell
-        sudo = sudo_prefix()
-        if os.name == "posix" and os.geteuid() != 0 and not sudo:
+        sudo_cmd = sudo([])
+        if os.name == "posix" and os.geteuid() != 0 and not can_escalate():
             if force:
                 return
             raise PermissionError(
                 "Modifying user shells requires root privileges; no sudo available."
             )
         try:
-            run([*sudo, "usermod", "-s", old_shell, name])
+            await run([*sudo_cmd, "usermod", "-s", old_shell, name])
         except:
             if not force:
                 raise
@@ -899,7 +905,7 @@ class LockUser:
     """
     name: str
 
-    def do(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+    async def do(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
         if os.name != "posix":
             raise OSError("User management operations require a POSIX system.")
         name = self.name
@@ -907,7 +913,7 @@ class LockUser:
 
         # record current state
         payload["name"] = name
-        status = _passwd_status(name)
+        status = await _passwd_status(name)
         if status == "L":
             payload["was_locked"] = True
             ctx.dump()
@@ -919,20 +925,20 @@ class LockUser:
         ctx.dump()
 
         # lock user
-        sudo = sudo_prefix()
-        if os.name == "posix" and os.geteuid() != 0 and not sudo:
+        sudo_cmd = sudo([])
+        if os.name == "posix" and os.geteuid() != 0 and not can_escalate():
             raise PermissionError(
                 "Locking users requires root privileges; no sudo available."
             )
-        run([*sudo, "usermod", "-L", name])
+        await run([*sudo_cmd, "usermod", "-L", name])
 
         # verify lock
-        status = _passwd_status(name)
+        status = await _passwd_status(name)
         if status is not None and status != "L":
             raise OSError(f"Failed to lock user '{name}'.")
 
     @staticmethod
-    def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
+    async def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
         name = payload.get("name")
         was_locked = payload.get("was_locked")
         if not isinstance(name, str):
@@ -941,20 +947,20 @@ class LockUser:
             return
 
         # only unlock if user is currently locked
-        status = _passwd_status(name)
+        status = await _passwd_status(name)
         if status != "L":
             return
 
         # unlock user
-        sudo = sudo_prefix()
-        if os.name == "posix" and os.geteuid() != 0 and not sudo:
+        sudo_cmd = sudo([])
+        if os.name == "posix" and os.geteuid() != 0 and not can_escalate():
             if force:
                 return
             raise PermissionError(
                 "Unlocking users requires root privileges; no sudo available."
             )
         try:
-            run([*sudo, "usermod", "-U", name])
+            await run([*sudo_cmd, "usermod", "-U", name])
         except:
             if not force:
                 raise
@@ -972,7 +978,7 @@ class UnlockUser:
     """
     name: str
 
-    def do(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+    async def do(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
         if os.name != "posix":
             raise OSError("User management operations require a POSIX system.")
         name = self.name
@@ -980,7 +986,7 @@ class UnlockUser:
 
         # record current state
         payload["name"] = name
-        status = _passwd_status(name)
+        status = await _passwd_status(name)
         if status in {"P", "NP"}:
             payload["was_locked"] = False
             ctx.dump()
@@ -992,20 +998,20 @@ class UnlockUser:
         ctx.dump()
 
         # unlock user
-        sudo = sudo_prefix()
-        if os.name == "posix" and os.geteuid() != 0 and not sudo:
+        sudo_cmd = sudo([])
+        if os.name == "posix" and os.geteuid() != 0 and not can_escalate():
             raise PermissionError(
                 "Unlocking users requires root privileges; no sudo available."
             )
-        run([*sudo, "usermod", "-U", name])
+        await run([*sudo_cmd, "usermod", "-U", name])
 
         # verify unlock
-        status = _passwd_status(name)
+        status = await _passwd_status(name)
         if status is not None and status == "L":
             raise OSError(f"Failed to unlock user '{name}'.")
 
     @staticmethod
-    def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
+    async def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
         name = payload.get("name")
         was_locked = payload.get("was_locked")
         if not isinstance(name, str):
@@ -1014,20 +1020,20 @@ class UnlockUser:
             return
 
         # only lock if user is currently unlocked
-        status = _passwd_status(name)
+        status = await _passwd_status(name)
         if status not in {"P", "NP"}:
             return
 
         # lock user
-        sudo = sudo_prefix()
-        if os.name == "posix" and os.geteuid() != 0 and not sudo:
+        sudo_cmd = sudo([])
+        if os.name == "posix" and os.geteuid() != 0 and not can_escalate():
             if force:
                 return
             raise PermissionError(
                 "Locking users requires root privileges; no sudo available."
             )
         try:
-            run([*sudo, "usermod", "-L", name])
+            await run([*sudo_cmd, "usermod", "-L", name])
         except:
             if not force:
                 raise
@@ -1052,7 +1058,7 @@ class CreateHomeDir:
     path: Path | None = None
     mode: int = 0o700
 
-    def do(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+    async def do(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
         if os.name != "posix":
             raise OSError("User management operations require a POSIX system.")
         name = self.name
@@ -1075,14 +1081,14 @@ class CreateHomeDir:
         ctx.dump()
 
         # create home directory with correct ownership and permissions
-        sudo = sudo_prefix()
-        if os.name == "posix" and os.geteuid() != 0 and not sudo:
+        sudo_cmd = sudo([])
+        if os.name == "posix" and os.geteuid() != 0 and not can_escalate():
             raise PermissionError(
                 "Creating home directories requires root privileges; no sudo available."
             )
-        run([*sudo, "mkdir", "-p", str(home_path)])
-        run([*sudo, "chown", f"{info.pw_uid}:{info.pw_gid}", str(home_path)])
-        run([*sudo, "chmod", f"{self.mode:o}", str(home_path)])
+        await run([*sudo_cmd, "mkdir", "-p", str(home_path)])
+        await run([*sudo_cmd, "chown", f"{info.pw_uid}:{info.pw_gid}", str(home_path)])
+        await run([*sudo_cmd, "chmod", f"{self.mode:o}", str(home_path)])
 
         # verify creation
         st = os.lstat(home_path)
@@ -1093,7 +1099,7 @@ class CreateHomeDir:
         ctx.dump()
 
     @staticmethod
-    def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
+    async def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
         name = payload.get("name")
         created = payload.get("created")
         home = payload.get("home")
@@ -1129,15 +1135,15 @@ class CreateHomeDir:
             return
 
         # delete home directory with root privileges
-        sudo = sudo_prefix()
-        if os.name == "posix" and os.geteuid() != 0 and not sudo:
+        sudo_cmd = sudo([])
+        if os.name == "posix" and os.geteuid() != 0 and not can_escalate():
             if force:
                 return
             raise PermissionError(
                 "Removing home directories requires root privileges; no sudo available."
             )
         try:
-            run([*sudo, "rmdir", str(home_path)])
+            await run([*sudo_cmd, "rmdir", str(home_path)])
         except:
             if not force:
                 raise
@@ -1165,7 +1171,7 @@ class InstallSSHKey:
     replace: bool = False
     comment: str | None = None
 
-    def do(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+    async def do(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
         if os.name != "posix":
             raise OSError("SSH authorized_keys management requires a POSIX system.")
         user = self.user
@@ -1177,7 +1183,7 @@ class InstallSSHKey:
         payload["key"] = key
         payload["authorized_keys_path"] = str(auth_keys)
         payload["replace"] = self.replace
-        _ensure_ssh_dir(ssh_dir, info.pw_uid, info.pw_gid)
+        await _ensure_ssh_dir(ssh_dir, info.pw_uid, info.pw_gid)
 
         # check for existing key
         existing = _read_authorized_keys(auth_keys)
@@ -1203,11 +1209,11 @@ class InstallSSHKey:
         )
         _write_authorized_keys(auth_keys, new_lines)
         if is_root:
-            run(["chown", f"{info.pw_uid}:{info.pw_gid}", str(auth_keys)])
-        run(["chmod", "600", str(auth_keys)])
+            await run(["chown", f"{info.pw_uid}:{info.pw_gid}", str(auth_keys)])
+        await run(["chmod", "600", str(auth_keys)])
 
     @staticmethod
-    def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
+    async def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
         user = payload.get("user")
         key = payload.get("key")
         path = payload.get("authorized_keys_path")
@@ -1272,7 +1278,7 @@ class RemoveSSHKey:
     user: str
     key: str
 
-    def do(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+    async def do(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
         if os.name != "posix":
             raise OSError("SSH authorized_keys management requires a POSIX system.")
         user = self.user
@@ -1303,7 +1309,7 @@ class RemoveSSHKey:
         _write_authorized_keys(auth_keys, new_lines)
 
     @staticmethod
-    def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
+    async def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
         user = payload.get("user")
         key = payload.get("key")
         path = payload.get("authorized_keys_path")
@@ -1318,7 +1324,7 @@ class RemoveSSHKey:
         ssh_dir = auth_keys.parent
         try:
             info = _ensure_user(user)
-            _ensure_ssh_dir(ssh_dir, info.pw_uid, info.pw_gid)
+            await _ensure_ssh_dir(ssh_dir, info.pw_uid, info.pw_gid)
 
             # re-add the key if not present
             current = _read_authorized_keys(auth_keys)
