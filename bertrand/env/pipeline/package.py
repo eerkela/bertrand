@@ -623,7 +623,11 @@ class InstallPackage:
             ctx.dump()
 
     @staticmethod
-    async def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
+    async def undo(
+        ctx: Pipeline.InProgress,
+        payload: dict[str, JSONValue],
+        force: bool
+    ) -> None:
         if os.name != "posix":
             raise OSError("Package manager operations require a POSIX system.")
         manager = payload.get("manager")
@@ -795,7 +799,11 @@ class UninstallPackage:
             ctx.dump()
 
     @staticmethod
-    async def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
+    async def undo(
+        ctx: Pipeline.InProgress,
+        payload: dict[str, JSONValue],
+        force: bool
+    ) -> None:
         if os.name != "posix":
             raise OSError("Package manager operations require a POSIX system.")
         manager = payload.get("manager")
@@ -1201,7 +1209,11 @@ class AddRepository:
             await run(cmd, env=env)
 
     @staticmethod
-    async def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
+    async def undo(
+        ctx: Pipeline.InProgress,
+        payload: dict[str, JSONValue],
+        force: bool
+    ) -> None:
         manager = payload.get("manager")
         if not isinstance(manager, str):
             return
@@ -1313,7 +1325,11 @@ class InstallCACert:
             await run(cmd, env=_cmd_env(spec.noninteractive_env, False))
 
     @staticmethod
-    async def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
+    async def undo(
+        ctx: Pipeline.InProgress,
+        payload: dict[str, JSONValue],
+        force: bool
+    ) -> None:
         manager = payload.get("manager")
         if not isinstance(manager, str):
             return

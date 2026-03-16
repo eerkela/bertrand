@@ -107,7 +107,11 @@ class Download:
         ctx.dump()
 
     @staticmethod
-    async def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
+    async def undo(
+        ctx: Pipeline.InProgress,
+        payload: dict[str, JSONValue],
+        force: bool
+    ) -> None:
         target_str = payload.get("target")
         if not isinstance(target_str, str):
             _clear_id(ctx, payload)

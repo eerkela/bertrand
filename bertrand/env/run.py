@@ -16,7 +16,7 @@ import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import TracebackType
-from typing import Any, Callable, Mapping, Self, TextIO
+from typing import Any, Mapping, Self, TextIO
 
 
 import psutil
@@ -77,9 +77,7 @@ def can_escalate() -> bool:
         True if privilege escalation is possible on the current system, false
         otherwise.
     """
-    if os.name != "posix":
-        return False
-    return bool(shutil.which("sudo") or shutil.which("doas"))
+    return os.name == "posix" and bool(shutil.which("sudo") or shutil.which("doas"))
 
 
 def sudo(argv: list[str], *, non_interactive: bool = False) -> list[str]:

@@ -5,11 +5,11 @@ used by future in-container `bertrand code` clients.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import shlex
 import shutil
-import socket
 import stat
 import subprocess
 import sys
@@ -19,7 +19,17 @@ import uuid
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Annotated, Callable, Literal, Mapping, NoReturn, Protocol, Self
+from types import TracebackType
+from typing import (
+    Annotated,
+    Awaitable,
+    Callable,
+    Literal,
+    Mapping,
+    NoReturn,
+    Protocol,
+    Self
+)
 from warnings import warn
 
 from pydantic import (
@@ -197,12 +207,12 @@ class RPCMethod(Protocol):
         returned by `request()`.
     """
     # pylint: disable=missing-function-docstring
-    def request(self) -> RPCRequest: ...
+    async def request(self) -> RPCRequest: ...
     @staticmethod
-    def response(request: RPCRequest) -> RPCResponse: ...
+    async def response(request: RPCRequest) -> RPCResponse: ...
 
 
-METHODS: dict[str, Callable[[RPCRequest], RPCResponse]] = {}
+METHODS: dict[str, Callable[[RPCRequest], Awaitable[RPCResponse]]] = {}
 
 
 def rpc_method[RPCMethodT: RPCMethod](
@@ -226,6 +236,8 @@ def rpc_method[RPCMethodT: RPCMethod](
     ------
     ValueError
         If a method is already registered with the given name.
+    TypeError
+        If the method's `request()` or `response()` handlers are not async.
     """
     if name in METHODS:
         raise ValueError(f"RPC method already registered with name: {name}")
@@ -302,12 +314,14 @@ JSON_RPC_THROW_ERR: Mapping[int, Callable[[RPCResponse.Error], NoReturn]] = {
     JSON_RPC_TIMEOUT_ERROR: _throw_timeout_error,
 }
 JSON_RPC_CATCH_ERR: Mapping[type[Exception], Callable[[Exception], RPCResponse.Error]] = {
+    asyncio.TimeoutError: _catch_timeout_error,
     json.JSONDecodeError: _catch_parse_error,
     KeyError: _catch_method_not_found,
     NotImplementedError: _catch_method_not_found,
     RuntimeError: _catch_internal_error,
     TimeoutError: _catch_timeout_error,
     TimeoutExpired: _catch_timeout_error,
+    UnicodeError: _catch_parse_error,
     TypeError: _catch_invalid_request,
     ValidationError: _catch_invalid_request,
     ValueError: _catch_invalid_params,
@@ -345,7 +359,7 @@ class Listener:
         method is called.
     """
     path: Path
-    _sock: socket.socket | None = field(default=None, repr=False)
+    _server: asyncio.AbstractServer | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         if not self.path.is_absolute():
@@ -361,45 +375,6 @@ class Listener:
                 raise OSError(f"socket path occupied: {self.path}")
             self.path.unlink(missing_ok=True)
 
-        # create Unix socket with restrictive permissions and bind to path
-        server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        try:
-            server.bind(str(self.path))
-            server.listen()
-            self.path.chmod(0o600)
-        except:
-            server.close()
-            raise
-
-        self._sock = server
-
-    def _read_line(self) -> tuple[socket.socket, str]:
-        assert self._sock is not None, "server socket is not initialized"
-        while True:
-            # accept one connection at a time
-            conn, _ = self._sock.accept()
-            conn.settimeout(RPC_TIMEOUT)
-
-            # read a single line of input from the connection, rejecting malformed or
-            # maliciously-sized payloads
-            try:
-                reader = conn.makefile("r", encoding="utf-8", newline="\n")
-                try:
-                    line = reader.readline(MAX_REQUEST_BYTES + 1)
-                finally:
-                    reader.close()
-                return conn, line
-
-            # drop stalled/broken clients without taking down the listener loop
-            except (TimeoutError, socket.timeout, OSError, UnicodeError):
-                conn.close()
-                continue
-
-            # more serious errors should be raised to the caller
-            except:
-                conn.close()
-                raise
-
     def _parse_request(self, line: str) -> JSONValue:
         if not line:
             raise TypeError("empty request")
@@ -412,7 +387,7 @@ class Listener:
             raise TypeError("empty request")
         return json.loads(text)
 
-    def _check_running_container(self, request: RPCRequest) -> None:
+    async def _check_running_container(self, request: RPCRequest) -> None:
         container_id = request.params.container_id
         container_bin = self.container_bin()
         remaining = request.params.deadline - time.monotonic()
@@ -424,7 +399,7 @@ class Listener:
 
         # inspect container using service's container runtime executable
         try:
-            result = run(
+            result = await run(
                 [
                     str(container_bin),
                     "container", "inspect",
@@ -457,50 +432,70 @@ class Listener:
                 f"container '{container_id}' is '{stdout}' (expected running)"
             )
 
-    def _listen(self) -> None:
-        """Serve requests indefinitely until `close()` is called."""
-        self._ensure_socket()
-        while True:
-            # read a single line of input from the socket, blocking until a client
-            # connects
-            conn, line = self._read_line()
+    async def _handle_client(
+        self,
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+    ) -> None:
+        data: JSONValue | None = None
+        try:
+            line = await asyncio.wait_for(reader.readline(), timeout=RPC_TIMEOUT)
+            text = line.decode("utf-8")
             try:
+                data = self._parse_request(text)
                 try:
-                    data = self._parse_request(line)
-                    try:
-                        request = RPCRequest.model_validate(data)
-                        self._check_running_container(request)
-                        response = METHODS[request.method](request)
-                    except Exception as err:
-                        request_id: str | None = None
-                        if isinstance(data, Mapping):
-                            _request_id = data.get("id")
-                            if isinstance(_request_id, str):
-                                request_id = _request_id
-                        response = _rpc_catch(err, request=request_id)
+                    request = RPCRequest.model_validate(data)
+                    await self._check_running_container(request)
+                    response = await METHODS[request.method](request)
                 except Exception as err:
-                    response = _rpc_catch(err, request=None)
+                    request_id: str | None = None
+                    if isinstance(data, Mapping):
+                        _request_id = data.get("id")
+                        if isinstance(_request_id, str):
+                            request_id = _request_id
+                    response = _rpc_catch(err, request=request_id)
+            except Exception as err:
+                response = _rpc_catch(err, request=None)
 
-                # send response back to client (may be an error code)
-                try:
-                    payload = json.dumps(
-                        response.model_dump(mode="json", exclude_none=True),
-                        separators=(",", ":")
-                    ) + "\n"
-                    conn.sendall(payload.encode("utf-8"))
-                except OSError:
-                    pass
+            # send response back to client (may be an error code)
+            try:
+                payload = json.dumps(
+                    response.model_dump(mode="json", exclude_none=True),
+                    separators=(",", ":")
+                ) + "\n"
+                writer.write(payload.encode("utf-8"))
+                await writer.drain()
+            except OSError:
+                pass
+        finally:
+            writer.close()
+            try:
+                await writer.wait_closed()
+            except OSError:
+                pass
 
-            # close connection to client and return to listening for next request
-            finally:
-                conn.close()
+    async def __aenter__(self) -> Self:
+        self._ensure_socket()
+        self._server = await asyncio.start_unix_server(
+            self._handle_client,
+            path=str(self.path),
+            limit=MAX_REQUEST_BYTES + 1,
+        )
+        self.path.chmod(0o600)
+        async with self._server:
+            await self._server.serve_forever()
+        return self
 
-    def _close(self) -> None:
-        """Close the server and clean up the socket file."""
-        if self._sock is None:
-            return
-        self._sock.close()
-        self._sock = None
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        if self._server is not None:
+            self._server.close()
+            await self._server.wait_closed()
+            self._server = None
         try:
             if self.path.exists() and stat.S_ISSOCK(self.path.lstat().st_mode):
                 self.path.unlink(missing_ok=True)
@@ -533,7 +528,7 @@ WantedBy=default.target
 """
 
     @staticmethod
-    def _service_reachable(*, deadline: float, interval: float) -> bool:
+    async def _service_reachable(*, deadline: float, interval: float) -> bool:
         if deadline <= 0.0:
             raise ValueError(f"deadline must be positive: {deadline}")
         if interval <= 0.0:
@@ -542,21 +537,24 @@ WantedBy=default.target
         # spin while trying to connect to socket until timeout expires
         path = str(HOST_SOCKET)
         while True:
-            client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-            client.settimeout(max(0.001, deadline - time.monotonic()))
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
             try:
-                client.connect(path)
-                break
-            except OSError:
+                _, writer = await asyncio.wait_for(
+                    asyncio.open_unix_connection(path),
+                    timeout=max(0.001, remaining)
+                )
+                writer.close()
+                await writer.wait_closed()
+                return True
+            except (asyncio.TimeoutError, OSError):
                 if time.monotonic() >= deadline:
                     return False
-                time.sleep(max(0.0, min(interval, deadline - time.monotonic())))
-            finally:
-                client.close()
-        return True
+                await asyncio.sleep(max(0.0, min(interval, deadline - time.monotonic())))
 
     @staticmethod
-    def start(
+    async def start(
         ctx: Pipeline.InProgress,
         *,
         deadline: float,
@@ -625,13 +623,13 @@ WantedBy=default.target
                 RPC_SERVICE_FILE.read_text(encoding="utf-8") != text
             ):
                 try:
-                    ctx.do(WriteText(path=RPC_SERVICE_FILE, text=text, replace=None))
+                    await ctx.do(WriteText(path=RPC_SERVICE_FILE, text=text, replace=None))
                 except Exception as err:
                     raise RuntimeError(
                         f"failed to write systemd unit file at {RPC_SERVICE_FILE}\n{str(err)}"
                     ) from err
                 try:
-                    ctx.do(ReloadDaemon(user=True))
+                    await ctx.do(ReloadDaemon(user=True))
                 except Exception as err:
                     raise RuntimeError(
                         "failed to reload systemd user daemon after writing unit file "
@@ -640,7 +638,7 @@ WantedBy=default.target
 
             # start systemd service if it is not already running
             try:
-                ctx.do(StartService(name=RPC_SERVICE_NAME, user=True), undo=False)
+                await ctx.do(StartService(name=RPC_SERVICE_NAME, user=True), undo=False)
             except Exception as err:
                 raise RuntimeError(
                     f"failed to start systemd user service '{RPC_SERVICE_NAME}'.  Check "
@@ -649,7 +647,7 @@ WantedBy=default.target
 
             # wait until service is reachable
             try:
-                if Listener._service_reachable(deadline=deadline, interval=0.1):
+                if await Listener._service_reachable(deadline=deadline, interval=0.1):
                     return True
             except Exception as err:
                 raise RuntimeError(
@@ -735,24 +733,24 @@ WantedBy=default.target
         return candidate.expanduser().resolve()
 
 
+async def _main() -> None:
+    async with Listener(path=HOST_SOCKET):
+        pass
+
+
 def main() -> None:
     """Entry point for the RPC service, which starts the server and begins listening
     for RPC requests.  This is exported as a script in `pyproject.toml` and invoked by
     the systemd unit file rendered in `Listener.start()`, which should be called on the
     host before any in-container commands can touch the RPC service.
     """
-    # pylint: disable=protected-access
     try:
-        server = Listener(path=HOST_SOCKET)
-        try:
-            server._listen()
-        finally:
-            server._close()
+        asyncio.run(_main())
     except KeyboardInterrupt:
         return
 
 
-def rpc(method: Callable[[], RPCRequest]) -> RPCResponse.Result:
+async def rpc(method: Callable[[], Awaitable[RPCRequest]]) -> RPCResponse.Result:
     """Send a request to the host RPC listener and return the result, or raise an
     appropriate Python exception if the request fails or the listener is unavailable.
 
@@ -796,15 +794,15 @@ def rpc(method: Callable[[], RPCRequest]) -> RPCResponse.Result:
         )
 
     # form and serialize JSON-RPC request
-    request = method()
+    request = await method()
     serial = json.dumps(request.model_dump(mode="json"), separators=(",", ":")) + "\n"
-    timeout = request.params.deadline - time.monotonic()
-    if timeout <= 0:
+    remaining = request.params.deadline - time.monotonic()
+    if remaining <= 0:
         raise TimeoutError(
             f"deadline exhausted before '{request.method}' RPC request could be sent"
         )
 
-    # send serialized request to socket
+    # open concurrent socket connection
     path = CONTAINER_SOCKET.expanduser()
     if not path.is_absolute():
         raise RuntimeError(f"RPC socket path must be absolute: {path}")
@@ -812,20 +810,44 @@ def rpc(method: Callable[[], RPCRequest]) -> RPCResponse.Result:
         raise RuntimeError(f"RPC socket does not exist: {path}")
     if not path.is_socket():
         raise RuntimeError(f"RPC socket path is not a socket: {path}")
-    client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    client.settimeout(timeout)
     try:
-        client.connect(str(path))
-        client.sendall(serial.encode("utf-8"))
-        reader = client.makefile("r", encoding="utf-8", newline="\n")
-        try:
-            line = reader.readline(MAX_REQUEST_BYTES + 1)
-        finally:
-            reader.close()  # close socket file wrapper
+        reader, writer = await asyncio.wait_for(
+            asyncio.open_unix_connection(str(path), limit=MAX_REQUEST_BYTES + 1),
+            timeout=max(0.001, remaining)
+        )
+    except asyncio.TimeoutError as err:
+        raise TimeoutError(
+            f"deadline exhausted before '{request.method}' RPC request could connect"
+        ) from err
+
+    # write request and read response line
+    try:
+        remaining = request.params.deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError(
+                f"deadline exhausted before '{request.method}' RPC request could be sent"
+            )
+        writer.write(serial.encode("utf-8"))
+        await asyncio.wait_for(writer.drain(), timeout=max(0.001, remaining))
+        remaining = request.params.deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError(
+                f"deadline exhausted before '{request.method}' RPC response could be read"
+            )
+        line_bytes = await asyncio.wait_for(reader.readline(), timeout=max(0.001, remaining))
+    except asyncio.TimeoutError as err:
+        raise TimeoutError(
+            f"deadline exhausted while processing '{request.method}' RPC request"
+        ) from err
     finally:
-        client.close()  # close client socket
+        writer.close()
+        try:
+            await writer.wait_closed()
+        except OSError:
+            pass
 
     # parse + validate response line
+    line = line_bytes.decode("utf-8")
     if not line:
         raise TypeError("empty response from RPC server")
     if len(line) > MAX_REQUEST_BYTES:
@@ -868,7 +890,7 @@ CODE_OPEN_METHOD: MethodName = "code.open"
 VSCODE_REMOTE_EXTENSION = "ms-vscode-remote.remote-containers"
 
 
-def _vscode_open_prereqs(method: CodeOpen, config: Config) -> None:
+async def _vscode_open_prereqs(method: CodeOpen, config: Config) -> None:
     _ = config
 
     # check for managed workspace file
@@ -901,7 +923,7 @@ def _vscode_open_prereqs(method: CodeOpen, config: Config) -> None:
             if remaining <= 0:
                 expired = True
             else:
-                run(["which", tool], capture_output=True, timeout=remaining)
+                await run(["which", tool], capture_output=True, timeout=remaining)
         except CommandError as err:
             warn(f"{str(err)}\n\t{hint}", UserWarning)
         except TimeoutExpired:
@@ -913,7 +935,7 @@ def _vscode_open_prereqs(method: CodeOpen, config: Config) -> None:
             )
 
 
-def _vscode_open(params: RPCRequest.CodeOpenRequest) -> RPCResponse.CodeOpenResult:
+async def _vscode_open(params: RPCRequest.CodeOpenRequest) -> RPCResponse.CodeOpenResult:
     editor_bin = Listener.editor_bin()
     remaining = params.deadline - time.monotonic()
     expired = False
@@ -923,7 +945,7 @@ def _vscode_open(params: RPCRequest.CodeOpenRequest) -> RPCResponse.CodeOpenResu
         if remaining <= 0:
             expired = True
         else:
-            result = run(
+            result = await run(
                 [str(editor_bin), "--list-extensions"],
                 capture_output=True,
                 timeout=remaining
@@ -981,10 +1003,13 @@ def _vscode_open(params: RPCRequest.CodeOpenRequest) -> RPCResponse.CodeOpenResu
     return RPCResponse.CodeOpenResult(success=True)
 
 
-CODE_OPEN_PREREQS: dict[str, Callable[[CodeOpen, Config], None]] = {
+CODE_OPEN_PREREQS: dict[str, Callable[[CodeOpen, Config], Awaitable[None]]] = {
     "vscode": _vscode_open_prereqs,
 }
-CODE_OPEN: dict[str, Callable[[RPCRequest.CodeOpenRequest], RPCResponse.CodeOpenResult]] = {
+CODE_OPEN: dict[
+    str,
+    Callable[[RPCRequest.CodeOpenRequest], Awaitable[RPCResponse.CodeOpenResult]]
+] = {
     "vscode": _vscode_open,
 }
 
@@ -997,7 +1022,7 @@ class CodeOpen:
     """
     deadline: float = field(default_factory=lambda: time.monotonic() + CODE_OPEN_TIMEOUT)
 
-    def request(self) -> RPCRequest:
+    async def request(self) -> RPCRequest:
         """Form a `code.open` RPC request on the client side.
 
         Returns
@@ -1047,8 +1072,8 @@ class CodeOpen:
             )
 
         # load editor selection from worktree config
-        with Config.load(WORKTREE_MOUNT) as config:
-            config.sync(image_tag)
+        async with await Config.load(WORKTREE_MOUNT) as config:
+            await config.sync(image_tag)
             if not config.bertrand:
                 raise RuntimeError(
                     f"Bertrand configuration is missing from the worktree config at "
@@ -1059,7 +1084,7 @@ class CodeOpen:
             editor = config.bertrand.editor
 
             # run editor-specific prechecks inside container context
-            CODE_OPEN_PREREQS[editor](self, config)
+            await CODE_OPEN_PREREQS[editor](self, config)
 
         return RPCRequest(
             jsonrpc=JSON_RPC_VERSION,
@@ -1074,7 +1099,7 @@ class CodeOpen:
         )
 
     @staticmethod
-    def response(request: RPCRequest) -> RPCResponse:
+    async def response(request: RPCRequest) -> RPCResponse:
         """Handle the `code.open` RPC request on the host side.
 
         Parameters
@@ -1090,5 +1115,5 @@ class CodeOpen:
         return RPCResponse(
             jsonrpc=JSON_RPC_VERSION,
             id=request.id,
-            result=CODE_OPEN[request.params.editor](request.params),
+            result=await CODE_OPEN[request.params.editor](request.params),
         )

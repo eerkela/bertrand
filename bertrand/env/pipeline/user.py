@@ -295,7 +295,11 @@ class EnsureSubIDs:
             raise OSError("Failed to provision subuid/subgid ranges correctly.")
 
     @staticmethod
-    async def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
+    async def undo(
+        ctx: Pipeline.InProgress,
+        payload: dict[str, JSONValue],
+        force: bool
+    ) -> None:
         return  # no-op
 
 
@@ -364,7 +368,11 @@ class EnsureUserNamespaces:
             raise OSError("Failed to enable unprivileged user namespaces.")
 
     @staticmethod
-    async def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
+    async def undo(
+        ctx: Pipeline.InProgress,
+        payload: dict[str, JSONValue],
+        force: bool
+    ) -> None:
         return  # no-op
 
 
@@ -402,7 +410,11 @@ class AddUserToGroup:
             raise OSError(f"Failed to add user '{user}' to group '{group}'.")
 
     @staticmethod
-    async def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
+    async def undo(
+        ctx: Pipeline.InProgress,
+        payload: dict[str, JSONValue],
+        force: bool
+    ) -> None:
         user = payload.get("user")
         group = payload.get("group")
         was_member = payload.get("was_member")
@@ -458,7 +470,11 @@ class RemoveUserFromGroup:
             raise OSError(f"Failed to remove user '{user}' from group '{group}'.")
 
     @staticmethod
-    async def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
+    async def undo(
+        ctx: Pipeline.InProgress,
+        payload: dict[str, JSONValue],
+        force: bool
+    ) -> None:
         user = payload.get("user")
         group = payload.get("group")
         was_member = payload.get("was_member")
@@ -535,7 +551,11 @@ class EnableLinger:
         await run([*sudo_cmd, "loginctl", "enable-linger", user])
 
     @staticmethod
-    async def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
+    async def undo(
+        ctx: Pipeline.InProgress,
+        payload: dict[str, JSONValue],
+        force: bool
+    ) -> None:
         return  # no-op
 
 
@@ -594,7 +614,11 @@ class DisableLinger:
         await run([*sudo_cmd, "loginctl", "disable-linger", user])
 
     @staticmethod
-    async def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
+    async def undo(
+        ctx: Pipeline.InProgress,
+        payload: dict[str, JSONValue],
+        force: bool
+    ) -> None:
         return  # no-op
 
 
@@ -651,7 +675,11 @@ class CreateGroup:
         ctx.dump()
 
     @staticmethod
-    async def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
+    async def undo(
+        ctx: Pipeline.InProgress,
+        payload: dict[str, JSONValue],
+        force: bool
+    ) -> None:
         name = payload.get("name")
         was_present = payload.get("was_present")
         gid = payload.get("gid")
@@ -764,7 +792,11 @@ class CreateUser:
         ctx.dump()
 
     @staticmethod
-    async def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
+    async def undo(
+        ctx: Pipeline.InProgress,
+        payload: dict[str, JSONValue],
+        force: bool
+    ) -> None:
         name = payload.get("name")
         was_present = payload.get("was_present")
         uid = payload.get("uid")
@@ -855,7 +887,11 @@ class SetUserShell:
             raise OSError(f"Failed to set shell for user '{name}'.")
 
     @staticmethod
-    async def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
+    async def undo(
+        ctx: Pipeline.InProgress,
+        payload: dict[str, JSONValue],
+        force: bool
+    ) -> None:
         name = payload.get("name")
         was_changed = payload.get("was_changed")
         uid = payload.get("uid")
@@ -938,7 +974,11 @@ class LockUser:
             raise OSError(f"Failed to lock user '{name}'.")
 
     @staticmethod
-    async def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
+    async def undo(
+        ctx: Pipeline.InProgress,
+        payload: dict[str, JSONValue],
+        force: bool
+    ) -> None:
         name = payload.get("name")
         was_locked = payload.get("was_locked")
         if not isinstance(name, str):
@@ -1011,7 +1051,11 @@ class UnlockUser:
             raise OSError(f"Failed to unlock user '{name}'.")
 
     @staticmethod
-    async def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
+    async def undo(
+        ctx: Pipeline.InProgress,
+        payload: dict[str, JSONValue],
+        force: bool
+    ) -> None:
         name = payload.get("name")
         was_locked = payload.get("was_locked")
         if not isinstance(name, str):
@@ -1099,7 +1143,11 @@ class CreateHomeDir:
         ctx.dump()
 
     @staticmethod
-    async def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
+    async def undo(
+        ctx: Pipeline.InProgress,
+        payload: dict[str, JSONValue],
+        force: bool
+    ) -> None:
         name = payload.get("name")
         created = payload.get("created")
         home = payload.get("home")
@@ -1213,7 +1261,11 @@ class InstallSSHKey:
         await run(["chmod", "600", str(auth_keys)])
 
     @staticmethod
-    async def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
+    async def undo(
+        ctx: Pipeline.InProgress,
+        payload: dict[str, JSONValue],
+        force: bool
+    ) -> None:
         user = payload.get("user")
         key = payload.get("key")
         path = payload.get("authorized_keys_path")
@@ -1309,7 +1361,11 @@ class RemoveSSHKey:
         _write_authorized_keys(auth_keys, new_lines)
 
     @staticmethod
-    async def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
+    async def undo(
+        ctx: Pipeline.InProgress,
+        payload: dict[str, JSONValue],
+        force: bool
+    ) -> None:
         user = payload.get("user")
         key = payload.get("key")
         path = payload.get("authorized_keys_path")

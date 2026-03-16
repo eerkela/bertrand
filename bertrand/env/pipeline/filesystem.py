@@ -267,7 +267,11 @@ class Remove:
             src.unlink()
 
     @staticmethod
-    async def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
+    async def undo(
+        ctx: Pipeline.InProgress,
+        payload: dict[str, JSONValue],
+        force: bool
+    ) -> None:
         return  # no-op
 
 
@@ -303,7 +307,11 @@ class Stash:
         _move_preserve_lstat(src, dst)
 
     @staticmethod
-    async def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
+    async def undo(
+        ctx: Pipeline.InProgress,
+        payload: dict[str, JSONValue],
+        force: bool
+    ) -> None:
         src_str = payload.get("source")
         dst_str = payload.get("stashed_at")
         if not isinstance(src_str, str) or not isinstance(dst_str, str):
@@ -585,7 +593,11 @@ class WriteText:
         ).do(ctx, payload)
 
     @staticmethod
-    async def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
+    async def undo(
+        ctx: Pipeline.InProgress,
+        payload: dict[str, JSONValue],
+        force: bool
+    ) -> None:
         await WriteBytes.undo(ctx, payload, force=force)
 
 
@@ -848,7 +860,11 @@ class Copy:
             errors.append(f"[{kind}] error unstashing previous target: {e}")
 
     @staticmethod
-    async def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
+    async def undo(
+        ctx: Pipeline.InProgress,
+        payload: dict[str, JSONValue],
+        force: bool
+    ) -> None:
         target_str = payload.get("target")
         if isinstance(target_str, str):
             errors: list[str] = []
@@ -1160,7 +1176,11 @@ class Move:
             errors.append(f"[unstash] error unstashing existing: {e}")
 
     @staticmethod
-    async def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
+    async def undo(
+        ctx: Pipeline.InProgress,
+        payload: dict[str, JSONValue],
+        force: bool
+    ) -> None:
         source_str = payload.get("source")
         target_str = payload.get("target")
         if isinstance(source_str, str) and isinstance(target_str, str):
@@ -1220,7 +1240,11 @@ class Symlink:
         _record_id(ctx, payload, target)
 
     @staticmethod
-    async def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
+    async def undo(
+        ctx: Pipeline.InProgress,
+        payload: dict[str, JSONValue],
+        force: bool
+    ) -> None:
         target_str = payload.get("target")
         if not isinstance(target_str, str):
             _clear_id(ctx, payload)
@@ -1286,7 +1310,11 @@ class Swap:
         _move_preserve_lstat(temp, second)
 
     @staticmethod
-    async def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
+    async def undo(
+        ctx: Pipeline.InProgress,
+        payload: dict[str, JSONValue],
+        force: bool
+    ) -> None:
         first_str = payload.get("first")
         second_str = payload.get("second")
         if not isinstance(first_str, str) or not isinstance(second_str, str):
@@ -1374,7 +1402,11 @@ class Chmod:
         path.chmod(self.mode)
 
     @staticmethod
-    async def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
+    async def undo(
+        ctx: Pipeline.InProgress,
+        payload: dict[str, JSONValue],
+        force: bool
+    ) -> None:
         if payload.get("symlink", False):
             return  # no-op on symlinks
 
@@ -1447,7 +1479,11 @@ class Chown:
         )
 
     @staticmethod
-    async def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
+    async def undo(
+        ctx: Pipeline.InProgress,
+        payload: dict[str, JSONValue],
+        force: bool
+    ) -> None:
         if payload.get("symlink", False):
             return  # no-op on symlinks
 
@@ -1526,7 +1562,11 @@ class Touch:
         os.utime(path, ns=(atime_ns, mtime_ns))
 
     @staticmethod
-    async def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
+    async def undo(
+        ctx: Pipeline.InProgress,
+        payload: dict[str, JSONValue],
+        force: bool
+    ) -> None:
         if payload.get("symlink", False):
             return  # no-op on symlinks
 
@@ -1603,7 +1643,11 @@ class Extract:
         shutil.rmtree(temp, ignore_errors=True)
 
     @staticmethod
-    async def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
+    async def undo(
+        ctx: Pipeline.InProgress,
+        payload: dict[str, JSONValue],
+        force: bool
+    ) -> None:
         # undo move
         move_payload = payload.get("move")
         if isinstance(move_payload, dict):

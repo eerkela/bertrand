@@ -137,7 +137,6 @@ CONANPROFILE_RESOURCE = "conanprofile"
 CONANREMOTES_RESOURCE = "conanremotes"
 CONTAINERFILE_RESOURCE = "containerfile"
 CONTAINERIGNORE_RESOURCE = "containerignore"
-COMPILE_COMMANDS_RESOURCE = "compile_commands"
 DOCS_RESOURCE = "docs"
 GITIGNORE_RESOURCE = "gitignore"
 KUBE_DEPLOYMENT_RESOURCE = "kube_deployment"
@@ -1123,7 +1122,7 @@ class Resource:
         """
         return self.kind is None
 
-    def parse(self, config: Config) -> dict[str, Any] | None:
+    async def parse(self, config: Config) -> dict[str, Any] | None:
         """A parse function that can extract normalized config data from this
         resource when entering the `Config` context.
 
@@ -1187,7 +1186,7 @@ class Resource:
         """
         return None
 
-    def render(self, config: Config, tag: str) -> str | None:
+    async def render(self, config: Config, tag: str) -> str | None:
         """A render function that produces text content for this resource that will be
         written to disk during `Config.sync()`.
 
@@ -1447,7 +1446,7 @@ class PyProject(Resource):
 
         project: Annotated[Project, Field(default=None)]
 
-    def parse(self, config: Config) -> dict[str, Any] | None:
+    async def parse(self, config: Config) -> dict[str, Any] | None:
         # get content of the current worktree's `pyproject.toml`
         path = config.path(self.name)
         try:
@@ -1631,7 +1630,7 @@ class ConanFile(Resource):
             for option, value in sorted(pattern_options.items()):
                 out[f"{pattern}:{option}"] = value
 
-    def render(self, config: Config, tag: str) -> str | None:
+    async def render(self, config: Config, tag: str) -> str | None:
         if config.conan is None:
             return None
 
@@ -1761,8 +1760,8 @@ class ConanProfile(Resource):
         return arch
 
     @staticmethod
-    def _clang_major() -> str:
-        result = run(["/opt/llvm/bin/clang", "-dumpversion"], capture_output=True)
+    async def _clang_major() -> str:
+        result = await run(["/opt/llvm/bin/clang", "-dumpversion"], capture_output=True)
         version = result.stdout.strip()
         major = version.split(".", maxsplit=1)[0]
         if not major or not major.isdigit():
@@ -1782,7 +1781,7 @@ class ConanProfile(Resource):
             )
         return value
 
-    def render(self, config: Config, tag: str) -> str | None:
+    async def render(self, config: Config, tag: str) -> str | None:
         if config.conan is None:
             return None
 
@@ -1813,7 +1812,7 @@ class ConanProfile(Resource):
         conf_text = conf_def.dumps()
 
         # render lines
-        clang_major = self._clang_major()
+        clang_major = await self._clang_major()
         arch = self._arch()
         cppstd = self._cppstd()
         lines = [
@@ -1845,7 +1844,7 @@ class ConanRemotes(Resource):
     """A resource describing Conan remote registry output (`remotes.json`)."""
     # pylint: disable=missing-function-docstring, unused-argument, missing-return-doc
 
-    def render(self, config: Config, tag: str) -> str | None:
+    async def render(self, config: Config, tag: str) -> str | None:
         if config.conan is None:
             return None
 
@@ -2489,7 +2488,7 @@ class GitIgnore(Resource):
     """
     # pylint: disable=missing-function-docstring, unused-argument, missing-return-doc
 
-    def render(self, config: Config, tag: str) -> str | None:
+    async def render(self, config: Config, tag: str) -> str | None:
         if config.bertrand is None:
             return None
         patterns = config.bertrand.ignore.copy()
@@ -2505,7 +2504,7 @@ class ContainerIgnore(Resource):
     """
     # pylint: disable=missing-function-docstring, unused-argument, missing-return-doc
 
-    def render(self, config: Config, tag: str) -> str | None:
+    async def render(self, config: Config, tag: str) -> str | None:
         if config.bertrand is None:
             return None
         patterns = config.bertrand.ignore.copy()
@@ -2591,7 +2590,7 @@ class KubeDeployment(Resource):
 
         return containers
 
-    def render(self, config: Config, tag: str) -> str | None:
+    async def render(self, config: Config, tag: str) -> str | None:
         if config.bertrand is None or not config.bertrand.services:
             return None
         if config.pyproject is None:
@@ -2653,77 +2652,6 @@ class KubeDeployment(Resource):
                 },
             },
         }, resource_id=self.name)
-
-
-@resource(COMPILE_COMMANDS_RESOURCE, kind="file")
-class CompileCommands(Resource):
-    """A resource describing a `compile_commands.json` file, which is used to
-    configure C++ projects and tools, and can also be used as a source of truth for
-    C++ resource placement by exposing the set of source files referenced in the
-    compilation database.
-    """
-    # pylint: disable=missing-function-docstring, unused-argument, missing-return-doc
-
-    class Model(BaseModel):
-        """Validate the contents of `compile_commands.json`."""
-        model_config = ConfigDict(extra="forbid")
-
-        class Entry(BaseModel):
-            """Validate one entry in `compile_commands.json`."""
-            model_config = ConfigDict(extra="forbid")
-
-            @staticmethod
-            def _check_non_empty_path(path: Path) -> Path:
-                if not path.parts:
-                    raise ValueError("compile database entry 'directory' cannot be empty")
-                return path
-
-            type SourcePath = Annotated[Path, AfterValidator(_check_non_empty_path)]
-            directory: SourcePath
-            file: SourcePath
-            command: Annotated[NonEmpty[NoCRLF] | None, Field(default=None)]
-            arguments: Annotated[NonEmpty[list[NonEmpty[NoCRLF]]] | None, Field(default=None)]
-            output: Annotated[SourcePath | None, Field(default=None)]
-
-            @model_validator(mode="after")
-            def _check_command(self) -> Self:
-                if self.command is None and self.arguments is None:
-                    raise ValueError(
-                        "compile database entries must define at least one of "
-                        "'command' or 'arguments'"
-                    )
-                return self
-
-        sources: Annotated[list[Entry], Field(default_factory=list)]
-
-    def parse(self, config: Config) -> dict[str, Any] | None:
-        path = config.path(self.name)
-        if not path.exists() or not path.is_file():
-            return None
-        try:
-            text = path.read_text(encoding="utf-8")
-        except OSError as err:
-            raise OSError(f"failed to read compile database at {path}: {err}") from err
-
-        try:
-            payload = json.loads(text)
-        except json.JSONDecodeError as err:
-            raise OSError(
-                f"failed to parse compile database JSON at {path}: {err}"
-            ) from err
-        if not isinstance(payload, list):
-            raise OSError(
-                f"compile database at {path} must be a JSON list, got "
-                f"{type(payload).__name__}"
-            )
-
-        return {self.name: {"sources": payload}}
-
-    def validate(self, config: Config) -> Model | None:
-        data = config.snapshot.get(self.name)
-        if data is None:
-            return None
-        return self.Model.model_validate(data, context={"worktree": config.worktree})
 
 
 @resource(CLANGD_RESOURCE, kind="file")
@@ -2927,7 +2855,7 @@ class Clangd(Resource):
             return None
         return self.Model.model_validate(data)
 
-    def render(self, config: Config, tag: str) -> str | None:
+    async def render(self, config: Config, tag: str) -> str | None:
         if config.clangd is None:
             return None
         model = config.clangd
@@ -3086,7 +3014,7 @@ class ClangTidy(Resource):
             return None
         return self.Model.model_validate(data)
 
-    def render(self, config: Config, tag: str) -> str | None:
+    async def render(self, config: Config, tag: str) -> str | None:
         if config.clang_tidy is None:
             return None
         model = config.clang_tidy
@@ -3676,7 +3604,7 @@ class ClangFormat(Resource):
             return None
         return self.Model.model_validate(data)
 
-    def render(self, config: Config, tag: str) -> str | None:
+    async def render(self, config: Config, tag: str) -> str | None:
         if config.clang_format is None:
             return None
         model = config.clang_format
@@ -3945,7 +3873,6 @@ CAPABILITIES: dict[str, dict[str, dict[str, PosixPath]]] = {
     },
     "cpp": {
         "flat": {
-            COMPILE_COMMANDS_RESOURCE: ARTIFACT_ROOT / "compile_commands.json",
             CONANFILE_RESOURCE: ARTIFACT_ROOT / "conanfile.py",
             CONANREMOTES_RESOURCE: CONAN_HOME / "remotes.json",
             CONANPROFILE_RESOURCE: CONAN_HOME / "profiles" / "default",
@@ -3954,7 +3881,6 @@ CAPABILITIES: dict[str, dict[str, dict[str, PosixPath]]] = {
             CLANG_FORMAT_RESOURCE: ARTIFACT_ROOT / ".clang-format",
         },
         "src": {
-            COMPILE_COMMANDS_RESOURCE: ARTIFACT_ROOT / "compile_commands.json",
             CONANFILE_RESOURCE: ARTIFACT_ROOT / "conanfile.py",
             CONANREMOTES_RESOURCE: CONAN_HOME / "remotes.json",
             CONANPROFILE_RESOURCE: CONAN_HOME / "profiles" / "default",
@@ -3989,7 +3915,6 @@ class Config:
     pyproject: PyProject.Model | None = field(default=None, repr=False)
     conan: ConanConfig.Model | None = field(default=None, repr=False)
     bertrand: Bertrand.Model | None = field(default=None, repr=False)
-    compile_commands: CompileCommands.Model | None = field(default=None, repr=False)
     clangd: Clangd.Model | None = field(default=None, repr=False)
     clang_tidy: ClangTidy.Model | None = field(default=None, repr=False)
     clang_format: ClangFormat.Model | None = field(default=None, repr=False)
@@ -4166,7 +4091,7 @@ class Config:
     # for in-tree (relative path) resources, for example.
 
     @classmethod
-    def load(cls, worktree: Path) -> Self:
+    async def load(cls, worktree: Path) -> Self:
         """Load layout by scanning the environment root for known resource placements
         based on the `PROFILES` and `CAPABILITIES` maps.
 
@@ -4189,7 +4114,7 @@ class Config:
             mapping to multiple paths).
         """
         worktree = worktree.expanduser().resolve()
-        with lock_worktree(worktree):
+        async with lock_worktree(worktree):
             lookup = cls._profile_lookup()
             profiles, resources = cls._scan_resources(worktree, lookup)
             profile = profiles[0]  # always choose simplest valid profile
@@ -4201,7 +4126,7 @@ class Config:
             )
 
     @classmethod
-    def init(
+    async def init(
         cls,
         worktree: Path,
         profile: str | None,
@@ -4264,7 +4189,7 @@ class Config:
         )
 
         # lock the environment during layout generation
-        with lock_worktree(worktree):
+        async with lock_worktree(worktree):
             # load existing resources and candidate profiles from the worktree
             lookup = cls._profile_lookup()
             profiles, on_disk = cls._scan_resources(worktree, lookup)
@@ -4406,7 +4331,7 @@ class Config:
                 f"resources '{owner}' and '{resource_id}'"
             )
 
-    def __enter__(self) -> Self:
+    async def __aenter__(self) -> Self:
         """Parse and validate config data from resources in the environment, which
         remains valid until the outermost context is exited.
 
@@ -4424,7 +4349,7 @@ class Config:
         old_capabilities = self.capabilities
         old_resources = self._resources.copy()
         try:
-            with lock_worktree(self.worktree):
+            async with lock_worktree(self.worktree):
                 snapshot: dict[str, Any] = {}
                 key_owner: dict[tuple[str, ...], str] = {}
 
@@ -4436,7 +4361,7 @@ class Config:
 
                     # extract config fragment
                     try:
-                        result = r.parse(self)
+                        result = await r.parse(self)
                         if result is None:
                             continue
                     except Exception as err:
@@ -4517,7 +4442,7 @@ class Config:
             self._key_owner = {}
             raise
 
-    def __exit__(
+    async def __aexit__(
         self,
         exc_type: type[BaseException] | None,
         exc: BaseException | None,
@@ -4650,10 +4575,10 @@ class Config:
 
         return result
 
-    def sync(self, tag: str) -> None:
+    async def sync(self, tag: str) -> None:
         """Render and write derived artifact resources from active context snapshot.
 
-        This requires an active config context (`with config:`).
+        This requires an active config context (`async with config:`).
 
         Parameters
         ----------
@@ -4676,7 +4601,7 @@ class Config:
         if not self:
             raise RuntimeError("sync() artifact rendering requires an active config context")
 
-        with lock_worktree(self.worktree):
+        async with lock_worktree(self.worktree):
             for resource_id, path in sorted(self._resources.items()):
                 r = CATALOG.get(resource_id)
                 if r is None:
@@ -4688,7 +4613,7 @@ class Config:
 
                 # invoke render hook for resource and skip if it returns None
                 try:
-                    text = r.render(self, tag)
+                    text = await r.render(self, tag)
                     if text is None:
                         continue
                 except Exception as err:
@@ -4741,11 +4666,11 @@ class Config:
                         f"{target}: {err}"
                     ) from err
 
-    def build(self, tag: str) -> None:
+    async def build(self, tag: str) -> None:
         """Install Python dependencies and builds/installs the project for the given
         tag.
 
-        This requires an active config context (`with config:`), and is intended to
+        This requires an active config context (`async with config:`), and is intended to
         run after `sync()` so generated artifacts are available before invoking build
         backends.
 
@@ -4799,6 +4724,6 @@ class Config:
         if not inside_container():
             sync_cmd.append("--no-editable")  # image build context -> non-editable
 
-        with lock_worktree(self.worktree):
-            run(["uv", "lock"], cwd=self.worktree)  # update lockfile
-            run(sync_cmd, cwd=self.worktree)  # orchestrate build
+        async with lock_worktree(self.worktree):
+            await run(["uv", "lock"], cwd=self.worktree)  # update lockfile
+            await run(sync_cmd, cwd=self.worktree)  # orchestrate build

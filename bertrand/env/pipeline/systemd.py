@@ -136,7 +136,11 @@ class StartService:
             ctx.dump()
 
     @staticmethod
-    async def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
+    async def undo(
+        ctx: Pipeline.InProgress,
+        payload: dict[str, JSONValue],
+        force: bool
+    ) -> None:
         name = payload.get("name")
         user = payload.get("user")
         env = payload.get("env")
@@ -245,7 +249,11 @@ class StopService:
             ctx.dump()
 
     @staticmethod
-    async def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
+    async def undo(
+        ctx: Pipeline.InProgress,
+        payload: dict[str, JSONValue],
+        force: bool
+    ) -> None:
         name = payload.get("name")
         user = payload.get("user")
         env = payload.get("env")
@@ -324,7 +332,11 @@ class RestartService:
         await run([*cmd_prefix, "try-restart", name], env=env)
 
     @staticmethod
-    async def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
+    async def undo(
+        ctx: Pipeline.InProgress,
+        payload: dict[str, JSONValue],
+        force: bool
+    ) -> None:
         return  # no-op
 
 
@@ -378,7 +390,11 @@ class EnableService:
         await run([*cmd_prefix, "enable", name], env=env)
 
     @staticmethod
-    async def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
+    async def undo(
+        ctx: Pipeline.InProgress,
+        payload: dict[str, JSONValue],
+        force: bool
+    ) -> None:
         name = payload.get("name")
         user = payload.get("user")
         env = payload.get("env")
@@ -454,7 +470,11 @@ class DisableService:
         await run([*cmd_prefix, "disable", name], env=env)
 
     @staticmethod
-    async def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
+    async def undo(
+        ctx: Pipeline.InProgress,
+        payload: dict[str, JSONValue],
+        force: bool
+    ) -> None:
         name = payload.get("name")
         user = payload.get("user")
         env = payload.get("env")
@@ -517,7 +537,11 @@ class ReloadDaemon:
         await run([*cmd_prefix, "daemon-reload"], env=env)
 
     @staticmethod
-    async def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
+    async def undo(
+        ctx: Pipeline.InProgress,
+        payload: dict[str, JSONValue],
+        force: bool
+    ) -> None:
         return  # no-op
 
 
@@ -581,5 +605,9 @@ class DelegateUserControllers:
         await run(sudo(["systemctl", "daemon-reload"], non_interactive=self.assume_yes))
 
     @staticmethod
-    async def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
+    async def undo(
+        ctx: Pipeline.InProgress,
+        payload: dict[str, JSONValue],
+        force: bool
+    ) -> None:
         return  # no-op
