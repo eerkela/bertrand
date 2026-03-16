@@ -475,10 +475,9 @@ def _build_cmd(
     yes_flags: list[str],
     packages: list[str],
     *,
-    sudo: list[str],
     assume_yes: bool,
 ) -> list[str]:
-    cmd = [*sudo, *base]
+    cmd = sudo(base, non_interactive=assume_yes)
     if assume_yes and yes_flags:
         cmd.extend(yes_flags)
     cmd.extend(packages)
@@ -548,7 +547,6 @@ class InstallPackage:
         _ensure_manager_cmd(self.manager, spec)
 
         # ensure we can elevate if needed
-        sudo_cmd = sudo([], non_interactive=self.assume_yes)
         if os.name == "posix" and os.geteuid() != 0 and not can_escalate():
             raise PermissionError(
                 "Package installation requires root privileges; sudo not available."
@@ -592,7 +590,6 @@ class InstallPackage:
                     spec.refresh,
                     spec.yes_refresh,
                     [],
-                    sudo=sudo_cmd,
                     assume_yes=self.assume_yes,
                 )
                 await run(cmd, env=env)
@@ -602,7 +599,6 @@ class InstallPackage:
                 spec.install,
                 spec.yes_install,
                 packages,
-                sudo=sudo_cmd,
                 assume_yes=self.assume_yes,
             )
             await run(cmd, env=env)
@@ -643,7 +639,6 @@ class InstallPackage:
 
         # ensure we can elevate if needed
         assume_yes = bool(payload.get("assume_yes", False))
-        sudo_cmd = sudo([], non_interactive=assume_yes)
         if os.name == "posix" and os.geteuid() != 0 and not can_escalate():
             raise PermissionError(
                 "Package removal requires root privileges; sudo not available."
@@ -679,7 +674,6 @@ class InstallPackage:
                     spec.remove,
                     spec.yes_remove,
                     to_remove,
-                    sudo=sudo_cmd,
                     assume_yes=assume_yes,
                 )
                 await run(cmd, env=_cmd_env(spec.noninteractive_env, assume_yes))
@@ -726,7 +720,6 @@ class UninstallPackage:
             raise FileNotFoundError(f"Remove command not found: {spec.remove[0]}")
 
         # ensure we can elevate if needed
-        sudo_cmd = sudo([], non_interactive=self.assume_yes)
         if os.name == "posix" and os.geteuid() != 0 and not can_escalate():
             raise PermissionError(
                 "Package removal requires root privileges; sudo not available."
@@ -770,7 +763,6 @@ class UninstallPackage:
                     spec.refresh,
                     spec.yes_refresh,
                     [],
-                    sudo=sudo_cmd,
                     assume_yes=self.assume_yes,
                 )
                 await run(cmd, env=env)
@@ -780,7 +772,6 @@ class UninstallPackage:
                 spec.remove,
                 spec.yes_remove,
                 list(preinstalled),
-                sudo=sudo_cmd,
                 assume_yes=self.assume_yes,
             )
             await run(cmd, env=env)
@@ -819,7 +810,6 @@ class UninstallPackage:
 
         # ensure we can elevate if needed
         assume_yes = bool(payload.get("assume_yes", False))
-        sudo_cmd = sudo([], non_interactive=assume_yes)
         if os.name == "posix" and os.geteuid() != 0 and not can_escalate():
             raise PermissionError(
                 "Package installation requires root privileges; sudo not available."
@@ -855,7 +845,6 @@ class UninstallPackage:
                     spec.install,
                     spec.yes_install,
                     to_install,
-                    sudo=sudo_cmd,
                     assume_yes=assume_yes,
                 )
                 await run(cmd, env=_cmd_env(spec.noninteractive_env, assume_yes))
@@ -1176,7 +1165,6 @@ class AddRepository:
             payload["key_fingerprint"] = self.key_fingerprint
         ctx.dump()
         env = _cmd_env(spec.noninteractive_env, self.assume_yes)
-        sudo_cmd = sudo([])
 
         # download trusted repo file and set key path from it if given
         if self.repo_url:
@@ -1203,7 +1191,6 @@ class AddRepository:
                 spec.refresh,
                 spec.yes_refresh,
                 [],
-                sudo=sudo_cmd,
                 assume_yes=self.assume_yes,
             )
             await run(cmd, env=env)
@@ -1319,7 +1306,6 @@ class InstallCACert:
                 spec.refresh,
                 spec.yes_refresh,
                 [],
-                sudo=sudo([]),
                 assume_yes=False,
             )
             await run(cmd, env=_cmd_env(spec.noninteractive_env, False))
@@ -1354,7 +1340,6 @@ class InstallCACert:
                     spec.refresh,
                     spec.yes_refresh,
                     [],
-                    sudo=sudo([]),
                     assume_yes=False,
                 )
                 await run(cmd, env=_cmd_env(spec.noninteractive_env, False))

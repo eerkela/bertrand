@@ -7,7 +7,6 @@ import grp
 import os
 import pwd
 import re
-import stat
 import shlex
 import shutil
 from dataclasses import dataclass
@@ -94,7 +93,8 @@ async def _append_subid(
     user: str,
     start: int,
     count: int,
-    sudo_cmd: list[str]
+    *,
+    assume_yes: bool
 ) -> None:
     line = f"{user}:{start}:{count}"
     quoted_line = shlex.quote(line)
@@ -107,7 +107,7 @@ async def _append_subid(
         "fi; "
         f"grep -F -x -q {quoted_line} {quoted_path} || echo {quoted_line} >> {quoted_path}"
     )
-    await run([*sudo_cmd, "sh", "-lc", cmd])
+    await run(sudo(["sh", "-lc", cmd], non_interactive=assume_yes))
 
 
 def _group_has_user(user: str, group: str) -> bool:
@@ -135,16 +135,6 @@ def _user_info(name: str) -> pwd.struct_passwd:
 
 def _ensure_user(name: str) -> pwd.struct_passwd:
     return _user_info(name)
-
-
-async def _passwd_status(name: str) -> str | None:
-    cp = await run(["passwd", "-S", name], check=False, capture_output=True)
-    if cp.returncode != 0:
-        return None
-    parts = (cp.stdout or "").strip().split()
-    if len(parts) < 2:
-        return None
-    return parts[1]
 
 
 def _read_proc_sys(path: str) -> int | None:
@@ -271,7 +261,6 @@ class EnsureSubIDs:
         ):
             return
 
-        sudo_cmd = sudo([], non_interactive=self.assume_yes)
         if os.geteuid() != 0 and not can_escalate():
             raise PermissionError(
                 "Subuid/subgid provisioning requires root privileges; no sudo available."
@@ -282,8 +271,20 @@ class EnsureSubIDs:
         # choose non-overlapping ranges and append to files
         start_uid = _choose_non_overlapping_start(uid_ranges, self.needed)
         start_gid = _choose_non_overlapping_start(gid_ranges, self.needed)
-        await _append_subid(self.subuid_path, user, start_uid, self.needed, sudo_cmd)
-        await _append_subid(self.subgid_path, user, start_gid, self.needed, sudo_cmd)
+        await _append_subid(
+            self.subuid_path,
+            user,
+            start_uid,
+            self.needed,
+            assume_yes=self.assume_yes
+        )
+        await _append_subid(
+            self.subgid_path,
+            user,
+            start_gid,
+            self.needed,
+            assume_yes=self.assume_yes
+        )
 
         # verify
         uid_ranges = _read_subid_file(self.subuid_path)
@@ -342,7 +343,6 @@ class EnsureUserNamespaces:
             return
 
         # prompt for sudo if needed
-        sudo_cmd = sudo([], non_interactive=self.assume_yes)
         if os.geteuid() != 0 and not can_escalate():
             raise PermissionError(
                 "Enabling user namespaces requires root privileges; no sudo available."
@@ -352,14 +352,15 @@ class EnsureUserNamespaces:
 
         # enable unprivileged user namespaces
         if unpriv == 0:
-            await run([*sudo_cmd, "sysctl", "-w", "kernel.unprivileged_userns_clone=1"])
+            await run(sudo(
+                ["sysctl", "-w", "kernel.unprivileged_userns_clone=1"],
+                non_interactive=self.assume_yes
+            ))
         if maxns is not None and maxns < self.needed:
-            await run([
-                *sudo_cmd,
-                "sysctl",
-                "-w",
-                f"user.max_user_namespaces={self.needed}",
-            ])
+            await run(sudo(
+                ["sysctl", "-w", f"user.max_user_namespaces={self.needed}"],
+                non_interactive=self.assume_yes
+            ))
 
         # verify
         unpriv = _read_proc_sys("kernel/unprivileged_userns_clone")
@@ -399,12 +400,11 @@ class AddUserToGroup:
         if was_member:
             return
 
-        sudo_cmd = sudo([])
         if os.name == "posix" and os.geteuid() != 0 and not can_escalate():
             raise PermissionError(
                 "Modifying group membership requires root privileges; no sudo available."
             )
-        await run([*sudo_cmd, "usermod", "-aG", group, user])
+        await run(sudo(["usermod", "-aG", group, user]))
 
         if not _group_has_user(user, group):
             raise OSError(f"Failed to add user '{user}' to group '{group}'.")
@@ -425,13 +425,12 @@ class AddUserToGroup:
         if not _group_has_user(user, group):
             return
 
-        sudo_cmd = sudo([])
         if os.name == "posix" and os.geteuid() != 0 and not can_escalate():
             raise PermissionError(
                 "Modifying group membership requires root privileges; no sudo available."
             )
         try:
-            await run([*sudo_cmd, "gpasswd", "-d", user, group], check=False)
+            await run(sudo(["gpasswd", "-d", user, group]), check=False)
         except:
             pass
 
@@ -459,12 +458,11 @@ class RemoveUserFromGroup:
         if not was_member:
             return
 
-        sudo_cmd = sudo([])
         if os.name == "posix" and os.geteuid() != 0 and not can_escalate():
             raise PermissionError(
                 "Modifying group membership requires root privileges; no sudo available."
             )
-        await run([*sudo_cmd, "gpasswd", "-d", user, group])
+        await run(sudo(["gpasswd", "-d", user, group]))
 
         if _group_has_user(user, group):
             raise OSError(f"Failed to remove user '{user}' from group '{group}'.")
@@ -485,13 +483,12 @@ class RemoveUserFromGroup:
         if _group_has_user(user, group):
             return
 
-        sudo_cmd = sudo([])
         if os.name == "posix" and os.geteuid() != 0 and not can_escalate():
             raise PermissionError(
                 "Modifying group membership requires root privileges; no sudo available."
             )
         try:
-            await run([*sudo_cmd, "usermod", "-aG", group, user])
+            await run(sudo(["usermod", "-aG", group, user]))
         except:
             pass
 
@@ -541,14 +538,13 @@ class EnableLinger:
         ctx.dump()
 
         # enable linger
-        sudo_cmd = sudo([])
         if os.geteuid() != 0 and not can_escalate():
             raise PermissionError(
                 "Enabling linger requires root privileges; no sudo available."
             )
         if not confirm(self.prompt, assume_yes=self.assume_yes):
             raise OSError("User declined to enable systemd linger.")
-        await run([*sudo_cmd, "loginctl", "enable-linger", user])
+        await run(sudo(["loginctl", "enable-linger", user]))
 
     @staticmethod
     async def undo(
@@ -604,14 +600,13 @@ class DisableLinger:
         ctx.dump()
 
         # disable linger
-        sudo_cmd = sudo([])
         if os.geteuid() != 0 and not can_escalate():
             raise PermissionError(
                 "Disabling linger requires root privileges; no sudo available."
             )
         if not confirm(self.prompt, assume_yes=self.assume_yes):
             raise OSError("User declined to disable systemd linger.")
-        await run([*sudo_cmd, "loginctl", "disable-linger", user])
+        await run(sudo(["loginctl", "disable-linger", user]))
 
     @staticmethod
     async def undo(
@@ -657,14 +652,13 @@ class CreateGroup:
         payload["was_present"] = False
         ctx.dump()
 
-        sudo_cmd = sudo([])
         if os.name == "posix" and os.geteuid() != 0 and not can_escalate():
             raise PermissionError(
                 "Creating groups requires root privileges; no sudo available."
             )
 
         # create group
-        cmd = [*sudo_cmd, "groupadd"]
+        cmd = sudo(["groupadd"])
         if self.system:
             cmd.append("--system")
         cmd.append(name)
@@ -701,8 +695,6 @@ class CreateGroup:
             return
 
         # delete group
-        # Conservative force policy: keep checks, suppress undo errors.
-        sudo_cmd = sudo([])
         if os.name == "posix" and os.geteuid() != 0 and not can_escalate():
             if force:
                 return
@@ -710,488 +702,7 @@ class CreateGroup:
                 "Removing groups requires root privileges; no sudo available."
             )
         try:
-            await run([*sudo_cmd, "groupdel", name])
-        except:
-            if not force:
-                raise
-
-
-@atomic
-@dataclass(frozen=True)
-class CreateUser:
-    """Create a system user.
-
-    Attributes
-    ----------
-    name : str
-        The username.
-    system : bool, optional
-        If true, create a system user.  Defaults to true.  System users typically
-        have lower UIDs and are used for system services.
-    create_home : bool, optional
-        If true, create a home directory for the user.  Defaults to false.
-    shell : str | None, optional
-        The login shell for the user.  If not provided, the system default will be
-        used.
-    """
-    name: str
-    system: bool = True
-    create_home: bool = False
-    shell: str | None = None
-
-    async def do(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
-        if os.name != "posix":
-            raise OSError("User management operations require a POSIX system.")
-        name = self.name
-        payload["name"] = name
-        payload["system"] = self.system
-        payload["create_home"] = self.create_home
-        if self.shell is not None:
-            payload["shell"] = self.shell
-
-        # check if user exists
-        try:
-            existing = _user_info(name)
-            payload["was_present"] = True
-            payload["uid"] = existing.pw_uid
-            payload["gid"] = existing.pw_gid
-            payload["home"] = existing.pw_dir
-            payload["shell"] = existing.pw_shell
-            ctx.dump()
-            return
-        except KeyError:
-            pass
-        payload["was_present"] = False
-        ctx.dump()
-
-        sudo_cmd = sudo([])
-        if os.name == "posix" and os.geteuid() != 0 and not can_escalate():
-            raise PermissionError(
-                "Creating users requires root privileges; no sudo available."
-            )
-
-        # create user
-        cmd = [*sudo_cmd, "useradd"]
-        if self.system:
-            cmd.append("--system")
-        if self.create_home:
-            cmd.append("--create-home")
-        else:
-            cmd.append("--no-create-home")
-        if self.shell is not None:
-            cmd.extend(["--shell", self.shell])
-        cmd.append(name)
-        await run(cmd)
-
-        # record created user info
-        created = _user_info(name)
-        payload["uid"] = created.pw_uid
-        payload["gid"] = created.pw_gid
-        payload["home"] = created.pw_dir
-        payload["shell"] = created.pw_shell
-        ctx.dump()
-
-    @staticmethod
-    async def undo(
-        ctx: Pipeline.InProgress,
-        payload: dict[str, JSONValue],
-        force: bool
-    ) -> None:
-        name = payload.get("name")
-        was_present = payload.get("was_present")
-        uid = payload.get("uid")
-        home = payload.get("home")
-        create_home = payload.get("create_home")
-        if not isinstance(name, str):
-            return
-        if was_present is not False:
-            return
-        if not isinstance(uid, int):
-            return
-
-        # verify user still exists and has same UID
-        try:
-            current = _user_info(name)
-        except KeyError:
-            return
-        if current.pw_uid != uid:
-            return
-
-        sudo_cmd = sudo([])
-        if os.name == "posix" and os.geteuid() != 0 and not can_escalate():
-            if force:
-                return
-            raise PermissionError(
-                "Removing users requires root privileges; no sudo available."
-            )
-
-        # delete user and optionally home directory if empty
-        try:
-            await run([*sudo_cmd, "userdel", name])
-        except:
-            if not force:
-                raise
-        if create_home and isinstance(home, str):
-            home_path = Path(home)
-            try:
-                home_path.rmdir()
-            except OSError:
-                pass
-
-
-@atomic
-@dataclass(frozen=True)
-class SetUserShell:
-    """Set a user's login shell.
-
-    Attributes
-    ----------
-    name : str
-        The username.
-    shell : Path
-        The path to the new login shell binary.
-    """
-    name: str
-    shell: Path
-
-    async def do(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
-        if os.name != "posix":
-            raise OSError("User management operations require a POSIX system.")
-        name = self.name
-        shell = self.shell
-        info = _ensure_user(name)
-
-        # record current state
-        payload["name"] = name
-        payload["old_shell"] = info.pw_shell
-        payload["new_shell"] = str(shell)
-        payload["uid"] = info.pw_uid
-        if info.pw_shell == shell:
-            payload["was_changed"] = False
-            ctx.dump()
-            return
-        payload["was_changed"] = True
-        ctx.dump()
-
-        # set new shell
-        sudo_cmd = sudo([])
-        if os.name == "posix" and os.geteuid() != 0 and not can_escalate():
-            raise PermissionError(
-                "Modifying user shells requires root privileges; no sudo available."
-            )
-        await run([*sudo_cmd, "usermod", "-s", str(shell), name])
-
-        # verify change
-        updated = _ensure_user(name)
-        if updated.pw_shell != str(shell):
-            raise OSError(f"Failed to set shell for user '{name}'.")
-
-    @staticmethod
-    async def undo(
-        ctx: Pipeline.InProgress,
-        payload: dict[str, JSONValue],
-        force: bool
-    ) -> None:
-        name = payload.get("name")
-        was_changed = payload.get("was_changed")
-        uid = payload.get("uid")
-        old_shell = payload.get("old_shell")
-        new_shell = payload.get("new_shell")
-        if not isinstance(name, str) or not isinstance(uid, int):
-            return
-        if was_changed is not True:
-            return
-        if not isinstance(old_shell, str) or not isinstance(new_shell, str):
-            return
-
-        # don't revert if user has changed UID or shell since
-        try:
-            current = _ensure_user(name)
-        except KeyError:
-            return
-        if current.pw_uid != uid:
-            return
-        if current.pw_shell != new_shell:
-            return
-
-        # revert shell
-        sudo_cmd = sudo([])
-        if os.name == "posix" and os.geteuid() != 0 and not can_escalate():
-            if force:
-                return
-            raise PermissionError(
-                "Modifying user shells requires root privileges; no sudo available."
-            )
-        try:
-            await run([*sudo_cmd, "usermod", "-s", old_shell, name])
-        except:
-            if not force:
-                raise
-
-
-@atomic
-@dataclass(frozen=True)
-class LockUser:
-    """Lock a user account, preventing login.
-
-    Attributes
-    ----------
-    name : str
-        The username to lock.
-    """
-    name: str
-
-    async def do(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
-        if os.name != "posix":
-            raise OSError("User management operations require a POSIX system.")
-        name = self.name
-        _ensure_user(name)
-
-        # record current state
-        payload["name"] = name
-        status = await _passwd_status(name)
-        if status == "L":
-            payload["was_locked"] = True
-            ctx.dump()
-            return
-        if status in {"P", "NP"}:
-            payload["was_locked"] = False
-        else:
-            payload["was_locked"] = None
-        ctx.dump()
-
-        # lock user
-        sudo_cmd = sudo([])
-        if os.name == "posix" and os.geteuid() != 0 and not can_escalate():
-            raise PermissionError(
-                "Locking users requires root privileges; no sudo available."
-            )
-        await run([*sudo_cmd, "usermod", "-L", name])
-
-        # verify lock
-        status = await _passwd_status(name)
-        if status is not None and status != "L":
-            raise OSError(f"Failed to lock user '{name}'.")
-
-    @staticmethod
-    async def undo(
-        ctx: Pipeline.InProgress,
-        payload: dict[str, JSONValue],
-        force: bool
-    ) -> None:
-        name = payload.get("name")
-        was_locked = payload.get("was_locked")
-        if not isinstance(name, str):
-            return
-        if was_locked is not False:
-            return
-
-        # only unlock if user is currently locked
-        status = await _passwd_status(name)
-        if status != "L":
-            return
-
-        # unlock user
-        sudo_cmd = sudo([])
-        if os.name == "posix" and os.geteuid() != 0 and not can_escalate():
-            if force:
-                return
-            raise PermissionError(
-                "Unlocking users requires root privileges; no sudo available."
-            )
-        try:
-            await run([*sudo_cmd, "usermod", "-U", name])
-        except:
-            if not force:
-                raise
-
-
-@atomic
-@dataclass(frozen=True)
-class UnlockUser:
-    """Unlock a user account, allowing login.
-
-    Attributes
-    ----------
-    name : str
-        The username to unlock.
-    """
-    name: str
-
-    async def do(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
-        if os.name != "posix":
-            raise OSError("User management operations require a POSIX system.")
-        name = self.name
-        _ensure_user(name)
-
-        # record current state
-        payload["name"] = name
-        status = await _passwd_status(name)
-        if status in {"P", "NP"}:
-            payload["was_locked"] = False
-            ctx.dump()
-            return
-        if status == "L":
-            payload["was_locked"] = True
-        else:
-            payload["was_locked"] = None
-        ctx.dump()
-
-        # unlock user
-        sudo_cmd = sudo([])
-        if os.name == "posix" and os.geteuid() != 0 and not can_escalate():
-            raise PermissionError(
-                "Unlocking users requires root privileges; no sudo available."
-            )
-        await run([*sudo_cmd, "usermod", "-U", name])
-
-        # verify unlock
-        status = await _passwd_status(name)
-        if status is not None and status == "L":
-            raise OSError(f"Failed to unlock user '{name}'.")
-
-    @staticmethod
-    async def undo(
-        ctx: Pipeline.InProgress,
-        payload: dict[str, JSONValue],
-        force: bool
-    ) -> None:
-        name = payload.get("name")
-        was_locked = payload.get("was_locked")
-        if not isinstance(name, str):
-            return
-        if was_locked is not True:
-            return
-
-        # only lock if user is currently unlocked
-        status = await _passwd_status(name)
-        if status not in {"P", "NP"}:
-            return
-
-        # lock user
-        sudo_cmd = sudo([])
-        if os.name == "posix" and os.geteuid() != 0 and not can_escalate():
-            if force:
-                return
-            raise PermissionError(
-                "Locking users requires root privileges; no sudo available."
-            )
-        try:
-            await run([*sudo_cmd, "usermod", "-L", name])
-        except:
-            if not force:
-                raise
-
-
-@atomic
-@dataclass(frozen=True)
-class CreateHomeDir:
-    """Create a user's home directory if it does not exist.
-
-    Attributes
-    ----------
-    name : str
-        The username.
-    path : Path | None, optional
-        The path to the home directory.  If not provided, the user's default home
-        directory will be used.
-    mode : int, optional
-        The permissions mode to set on the home directory.  Defaults to `0o700`.
-    """
-    name: str
-    path: Path | None = None
-    mode: int = 0o700
-
-    async def do(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
-        if os.name != "posix":
-            raise OSError("User management operations require a POSIX system.")
-        name = self.name
-        info = _ensure_user(name)
-        home_path = Path(self.path) if self.path is not None else Path(info.pw_dir)
-
-        # record intent
-        payload["name"] = name
-        payload["home"] = str(home_path)
-        payload["uid"] = info.pw_uid
-        payload["gid"] = info.pw_gid
-        payload["mode"] = self.mode
-        if home_path.exists():
-            if home_path.is_dir():
-                payload["created"] = False
-                ctx.dump()
-                return
-            raise FileExistsError(f"Path exists and is not a directory: {home_path}")
-        payload["created"] = True
-        ctx.dump()
-
-        # create home directory with correct ownership and permissions
-        sudo_cmd = sudo([])
-        if os.name == "posix" and os.geteuid() != 0 and not can_escalate():
-            raise PermissionError(
-                "Creating home directories requires root privileges; no sudo available."
-            )
-        await run([*sudo_cmd, "mkdir", "-p", str(home_path)])
-        await run([*sudo_cmd, "chown", f"{info.pw_uid}:{info.pw_gid}", str(home_path)])
-        await run([*sudo_cmd, "chmod", f"{self.mode:o}", str(home_path)])
-
-        # verify creation
-        st = os.lstat(home_path)
-        if not stat.S_ISDIR(st.st_mode):
-            raise OSError(f"Failed to create home directory: {home_path}")
-        payload["created_dev"] = st.st_dev
-        payload["created_ino"] = st.st_ino
-        ctx.dump()
-
-    @staticmethod
-    async def undo(
-        ctx: Pipeline.InProgress,
-        payload: dict[str, JSONValue],
-        force: bool
-    ) -> None:
-        name = payload.get("name")
-        created = payload.get("created")
-        home = payload.get("home")
-        dev = payload.get("created_dev")
-        ino = payload.get("created_ino")
-        if not isinstance(name, str) or not isinstance(home, str):
-            return
-        if created is not True:
-            return
-        if not isinstance(dev, int) or not isinstance(ino, int):
-            return
-
-        # verify home directory still exists and is empty
-        home_path = Path(home)
-        if not home_path.exists():
-            return
-        try:
-            st = os.lstat(home_path)
-        except OSError:
-            return
-        if st.st_dev != dev or st.st_ino != ino:
-            return
-        if not stat.S_ISDIR(st.st_mode):
-            return
-
-        # check if directory is empty
-        try:
-            next(home_path.iterdir())
-            return
-        except StopIteration:
-            pass
-        except OSError:
-            return
-
-        # delete home directory with root privileges
-        sudo_cmd = sudo([])
-        if os.name == "posix" and os.geteuid() != 0 and not can_escalate():
-            if force:
-                return
-            raise PermissionError(
-                "Removing home directories requires root privileges; no sudo available."
-            )
-        try:
-            await run([*sudo_cmd, "rmdir", str(home_path)])
+            await run(sudo(["groupdel", name]))
         except:
             if not force:
                 raise

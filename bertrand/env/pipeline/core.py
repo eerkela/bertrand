@@ -47,7 +47,6 @@ from ..run import LOCK_TIMEOUT, Lock, User, atomic_write_text, mkdir_private
 #pylint: disable=broad-except
 SYNTAX: int = 1
 STATE_DIR = User().home / ".local" / "share" / "bertrand" / "pipelines"
-STATE_LOCK = STATE_DIR / ".lock"
 MISSING: Literal["<missing>"] = "<missing>"  # not a valid SHA-256 hexdigest
 ATOMIC_UNDO: dict[
     str,
@@ -378,14 +377,13 @@ class Pipeline:
     _facts: dict[str, Pipeline.Fact] = field(default_factory=dict, repr=False)
     _completed: dict[Pipeline.Target, PositiveInt] = field(default_factory=dict, repr=False)
     _run_id: UUID4Hex = field(init=False, repr=False)
-    # Context ownership is object-local, not inferred from shared lock recursion.
     _entered: int = field(default=0, init=False, repr=False)
 
     def __post_init__(self) -> None:
         if self.keep < 1:
             raise ValueError("pipeline must keep at least one attempt per step")
         mkdir_private(self.state_dir)
-        self._lock = Lock(path=STATE_LOCK, timeout=self.timeout)
+        self._lock = Lock(path=self.state_dir / ".lock", timeout=self.timeout)
 
     @staticmethod
     def _json(obj: Any) -> str:
@@ -395,9 +393,9 @@ class Pipeline:
         return json.dumps(
             obj,
             sort_keys=True,
-            indent=2,
             ensure_ascii=True,
-            allow_nan=False
+            allow_nan=False,
+            separators=(",", ":"),
         )
 
     @staticmethod
