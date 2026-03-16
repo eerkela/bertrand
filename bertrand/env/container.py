@@ -39,8 +39,6 @@ from pydantic import (
 )
 
 from .rpc import (
-    CODE_SERVICE_ENV,
-    CODE_SOCKET,
     CONTAINER_SOCKET,
     start_code_service,
 )
@@ -48,9 +46,11 @@ from .config import (
     CONTAINER_ID_ENV,
     DEFAULT_MAX_COMMITS,
     DEFAULT_TAG,
-    ENV_ROOT_ENV,
-    WORKTREE_MOUNT,
+    HOST_SOCKET,
+    PROJECT_ROOT_ENV,
     SHELLS,
+    SOCKET_ENV,
+    WORKTREE_MOUNT,
     Config,
     lock_worktree,
 )
@@ -93,7 +93,8 @@ from .run import (
     run,
     sanitize_name,
 )
-#pylint: disable=redefined-builtin, redefined-outer-name, broad-except, bare-except
+
+# pylint: disable=redefined-builtin, redefined-outer-name, broad-except, bare-except
 
 
 # environment metadata info
@@ -163,11 +164,15 @@ def _init_assume_yes(ctx: Pipeline.InProgress) -> bool:
     raise TypeError(f"invalid 'yes' fact type: {type(raw).__name__}")
 
 
-def _podman_ready() -> bool:
+async def _podman_ready() -> bool:
     """Return True when podman is installed and usable for the current user."""
     if not shutil.which("podman"):
         return False
-    result = run(["podman", "info", "--format", "json"], check=False, capture_output=True)
+    result = await run(
+        ["podman", "info", "--format", "json"],
+        check=False,
+        capture_output=True
+    )
     return result.returncode == 0
 
 
@@ -243,11 +248,15 @@ class PurgeBertrandArtifacts:
     """
     # pylint: disable=missing-function-docstring, broad-exception-caught, unused-argument
 
-    def do(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
+    async def do(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
         return  # no-op; cleanup is handled in undo
 
     @staticmethod
-    def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
+    async def undo(
+        ctx: Pipeline.InProgress,
+        payload: dict[str, JSONValue],
+        force: bool
+    ) -> None:
         if not shutil.which("podman"):
             return
 
@@ -261,7 +270,7 @@ class PurgeBertrandArtifacts:
         try:
             containers = _podman_ids("container")
             if containers:
-                podman_cmd([
+                await podman_cmd([
                     "container",
                     "rm",
                     "--depend",
@@ -273,10 +282,10 @@ class PurgeBertrandArtifacts:
                 ], check=False)
             images = _podman_ids("image")
             if images:
-                podman_cmd(["image", "rm", "-f", "-i", *images], check=False)
+                await podman_cmd(["image", "rm", "-f", "-i", *images], check=False)
             volumes = _podman_ids("volume")
             if volumes:
-                podman_cmd(["volume", "rm", "-f", "-i", *volumes], check=False)
+                await podman_cmd(["volume", "rm", "-f", "-i", *volumes], check=False)
         except:
             pass
 
@@ -292,7 +301,11 @@ class InstallPodman(InstallPackage):
     # pylint: disable=missing-function-docstring, broad-exception-caught, unused-argument
 
     @staticmethod
-    def undo(ctx: Pipeline.InProgress, payload: dict[str, JSONValue], force: bool) -> None:
+    async def undo(
+        ctx: Pipeline.InProgress,
+        payload: dict[str, JSONValue],
+        force: bool
+    ) -> None:
         # Conservative: if host state is unknown or in use, skip uninstall to avoid
         # clobbering user-managed podman resources.
         try:
@@ -305,13 +318,13 @@ class InstallPodman(InstallPackage):
             volumes = _podman_ids("volume")
             if volumes:
                 return
-            InstallPackage.undo(ctx, payload, force)
+            await InstallPackage.undo(ctx, payload, force)
         except:
             return
 
 
 @on_init(requires=[], version=1)
-def detect_platform(ctx: Pipeline.InProgress) -> None:
+async def detect_platform(ctx: Pipeline.InProgress) -> None:
     """Detect the host platform and package manager to use when installing the
     container backend.  These are persisted as facts in the pipeline context.
 
@@ -333,7 +346,7 @@ def detect_platform(ctx: Pipeline.InProgress) -> None:
 
 
 @on_init(requires=[detect_platform], version=1)
-def install_container_cli(ctx: Pipeline.InProgress) -> None:
+async def install_container_cli(ctx: Pipeline.InProgress) -> None:
     """Install the base packages required for the container backend via the detected
     package manager.  This may prompt for confirmation unless init is running with
     `--yes`.
@@ -355,7 +368,7 @@ def install_container_cli(ctx: Pipeline.InProgress) -> None:
     if cli:
         # remember to delete all Bertrand-owned images/containers/artifacts, but do
         # not remove podman itself, since it was pre-installed.
-        ctx.do(PurgeBertrandArtifacts())
+        await ctx.do(PurgeBertrandArtifacts())
         return
 
     # prompt to install dependencies
@@ -381,7 +394,7 @@ def install_container_cli(ctx: Pipeline.InProgress) -> None:
         packages.append("uidmap")
     elif package_manager == "dnf":
         packages.append("shadow-utils")
-    ctx.do(InstallPodman(
+    await ctx.do(InstallPodman(
         manager=package_manager,
         packages=packages,
         assume_yes=assume_yes,
@@ -397,11 +410,11 @@ def install_container_cli(ctx: Pipeline.InProgress) -> None:
         )
 
     # remember to delete all images/containers/artifacts on `clean`
-    ctx.do(PurgeBertrandArtifacts())
+    await ctx.do(PurgeBertrandArtifacts())
 
 
 @on_init(requires=[install_container_cli], version=1)
-def enable_user_namespaces(ctx: Pipeline.InProgress) -> None:
+async def enable_user_namespaces(ctx: Pipeline.InProgress) -> None:
     """Ensure unprivileged user namespaces are enabled on the host system, which are
     required for the rootless container cli.  Prompts are auto-accepted when init is
     run with `--yes`; permission failures still raise.
@@ -412,10 +425,10 @@ def enable_user_namespaces(ctx: Pipeline.InProgress) -> None:
         The in-flight pipeline context.
     """
     assume_yes = _init_assume_yes(ctx)
-    if _podman_ready():
+    if await _podman_ready():
         return
 
-    ctx.do(EnsureUserNamespaces(
+    await ctx.do(EnsureUserNamespaces(
         needed=15000,
         prompt=(
             "Rootless containers require unprivileged user namespaces to be enabled on "
@@ -427,7 +440,7 @@ def enable_user_namespaces(ctx: Pipeline.InProgress) -> None:
 
 
 @on_init(requires=[install_container_cli], version=1)
-def provision_subids(ctx: Pipeline.InProgress) -> None:
+async def provision_subids(ctx: Pipeline.InProgress) -> None:
     """Ensure subordinate UID/GID ranges are allocated for the host user in
     /etc/subuid and /etc/subgid, which are required for rootless Podman operation.
     Prompts are auto-accepted when init is run with `--yes`; permission failures still
@@ -445,13 +458,13 @@ def provision_subids(ctx: Pipeline.InProgress) -> None:
         `detect_platform` step.
     """
     assume_yes = _init_assume_yes(ctx)
-    if _podman_ready():
+    if await _podman_ready():
         return
 
     user = ctx.get(USER)
     if not isinstance(user, str):
         raise OSError(f"Invalid user: {user}")
-    ctx.do(EnsureSubIDs(
+    await ctx.do(EnsureSubIDs(
         user=user,
         needed=65536,
         prompt=(
@@ -485,8 +498,8 @@ def _user_cgroup_controllers(uid: int) -> set[str] | None:
     return set(text.split()) if text else set()
 
 
-def _systemd_version() -> int | None:
-    cp = run(["systemctl", "--version"], check=False, capture_output=True)
+async def _systemd_version() -> int | None:
+    cp = await run(["systemctl", "--version"], check=False, capture_output=True)
     if cp.returncode != 0:
         return None
     line = ""
@@ -514,7 +527,7 @@ def _dropin_delegate_controllers(path: Path) -> set[str] | None:
 
 
 @on_init(requires=[provision_subids, enable_user_namespaces], version=1)
-def delegate_controllers(ctx: Pipeline.InProgress) -> None:
+async def delegate_controllers(ctx: Pipeline.InProgress) -> None:
     """Configure systemd controller delegation for the rootless container CLI, if not
     already configured.  This allows the container CLI to manage resource limits on
     cgroup v2 hosts.  Prompts are auto-accepted when init is run with `--yes`;
@@ -531,7 +544,7 @@ def delegate_controllers(ctx: Pipeline.InProgress) -> None:
         If systemd is not found, or if elevation is required but not available.
     """
     assume_yes = _init_assume_yes(ctx)
-    if _podman_ready():
+    if await _podman_ready():
         return
 
     uid = ctx.get(UID)
@@ -544,7 +557,7 @@ def delegate_controllers(ctx: Pipeline.InProgress) -> None:
         required = {"cpu", "io", "memory", "pids"}
 
         # systemd 244+ is required for cpuset delegation
-        systemd_version = _systemd_version()
+        systemd_version = await _systemd_version()
         if "cpuset" in root_controllers:
             if systemd_version is not None and systemd_version >= 244:
                 required.add("cpuset")
@@ -569,7 +582,7 @@ def delegate_controllers(ctx: Pipeline.InProgress) -> None:
 
             # prompt and update delegation if needed
             else:
-                ctx.do(DelegateUserControllers(
+                await ctx.do(DelegateUserControllers(
                     controllers=sorted(required),
                     prompt=(
                         "Enforcing resource limits for rootless containers requires "
@@ -595,7 +608,7 @@ def delegate_controllers(ctx: Pipeline.InProgress) -> None:
 
 
 @on_init(requires=[delegate_controllers], version=1)
-def assert_container_cli_ready(ctx: Pipeline.InProgress) -> None:
+async def assert_container_cli_ready(ctx: Pipeline.InProgress) -> None:
     """Assert that the rootless container backend is usable after host bootstrap.
 
     Parameters
@@ -611,7 +624,7 @@ def assert_container_cli_ready(ctx: Pipeline.InProgress) -> None:
         controller delegation), and should be investigated by checking `podman info`
         and verifying the host meets all prerequisites.
     """
-    if _podman_ready():
+    if await _podman_ready():
         return
 
     assume_yes = _init_assume_yes(ctx)
@@ -659,17 +672,17 @@ def _write_metadata(root: Path, metadata: Environment.JSON) -> None:
     )
 
 
-def _discover_environment_mounts() -> list[Path]:
+async def _discover_environment_mounts() -> list[Path]:
     container_ids = _podman_ids("container")
     if not container_ids:
         return []
 
     # inspect all containers
     try:
-        inspects = json_parser.loads(podman_cmd(
+        inspects = json_parser.loads((await podman_cmd(
             ["container", "inspect", *container_ids],
             capture_output=True
-        ).stdout)
+        )).stdout)
     except:
         return []
     if not isinstance(inspects, list):
@@ -886,7 +899,7 @@ def _reconcile_registry(add: Path | None = None) -> tuple[Environment.JSON | Non
 
 
 @on_init(requires=[assert_container_cli_ready], ephemeral=True)
-def init_environment(ctx: Pipeline.InProgress) -> None:
+async def init_environment(ctx: Pipeline.InProgress) -> None:
     """Initialize an environment directory using discovered/requested resources and
     templates.
 
@@ -937,11 +950,11 @@ def init_environment(ctx: Pipeline.InProgress) -> None:
     cfg = Config.init(root, profile=profile, capabilities=capabilities)
     cfg.apply(timeout=TIMEOUT)
     with cfg:
-        cfg.sync()  # synchronize any config-based artifacts
+        await cfg.sync()  # synchronize any config-based artifacts
 
 
 @on_init(requires=[init_environment], ephemeral=True)
-def init_repository(ctx: Pipeline.InProgress) -> None:
+async def init_repository(ctx: Pipeline.InProgress) -> None:
     """Initialize a git repository in the environment directory.
 
     Parameters
@@ -973,17 +986,21 @@ def init_repository(ctx: Pipeline.InProgress) -> None:
     # initialize repo and make an initial commit with the newly-rendered environment
     stage = "initialize git repository"
     try:
-        run(["git", "init", "--quiet"], cwd=root, capture_output=True)
+        await run(["git", "init", "--quiet"], cwd=root, capture_output=True)
         stage = "stage files for initial commit"
-        run(["git", "add", "-A"], cwd=root, capture_output=True)
+        await run(["git", "add", "-A"], cwd=root, capture_output=True)
         stage = "create initial commit"
-        run(["git", "commit", "--quiet", "-m", "Initial commit"], cwd=root, capture_output=True)
+        await run(
+            ["git", "commit", "--quiet", "-m", "Initial commit"],
+            cwd=root,
+            capture_output=True
+        )
     except CommandError as err:
         print(f"bertrand: warning: failed to {stage} in {root}\n{err}", file=sys.stderr)
 
 
 @on_init(requires=[init_repository], ephemeral=True)
-def register_environment(ctx: Pipeline.InProgress) -> None:
+async def register_environment(ctx: Pipeline.InProgress) -> None:
     """Register the environment in the global registry to enable management by CLI
     commands.
 
@@ -1009,7 +1026,7 @@ def register_environment(ctx: Pipeline.InProgress) -> None:
         _reconcile_registry(root)
 
 
-def podman_cmd(
+async def podman_cmd(
     args: list[str],
     *,
     check: bool = True,
@@ -1049,7 +1066,7 @@ def podman_cmd(
     CommandError
         If the command fails and `check` is True.
     """
-    return run(
+    return await run(
         ["podman", *args],
         check=check,
         capture_output=capture_output,
@@ -1083,7 +1100,7 @@ def podman_exec(args: list[str], *, env: Mapping[str, str] | None = None) -> Non
         os.execvpe("podman", ["podman", *args], env)
 
 
-def _podman_ids(
+async def _podman_ids(
     mode: Literal["container", "image", "volume"],
     labels: Sequence[str] = (),
     *,
@@ -1113,7 +1130,7 @@ def _podman_ids(
     try:
         # return all statuses by default
         if status is None:
-            result = podman_cmd(cmd, capture_output=True, check=False)
+            result = await podman_cmd(cmd, capture_output=True, check=False)
             if result.returncode == 0:
                 for raw_id in result.stdout.splitlines():
                     container_id = raw_id.strip()
@@ -1125,7 +1142,7 @@ def _podman_ids(
 
         # filter by status
         for stat in status:
-            result = podman_cmd(
+            result = await podman_cmd(
                 [*cmd, "--filter", f"status={stat}"],
                 capture_output=True,
                 check=False
@@ -1143,9 +1160,9 @@ def _podman_ids(
     return out
 
 
-def _ensure_volume(name: str, env_id: str, kind: str) -> str:
+async def _ensure_volume(name: str, env_id: str, kind: str) -> str:
     try:
-        podman_cmd([
+        await podman_cmd([
             "volume",
             "create",
             "--label", "BERTRAND=1",
@@ -1158,21 +1175,21 @@ def _ensure_volume(name: str, env_id: str, kind: str) -> str:
     return name
 
 
-def _remove_dangling_volumes(*, force: bool, missing_ok: bool) -> None:
-    volumes = list(podman_cmd([
+async def _remove_dangling_volumes(*, force: bool, missing_ok: bool) -> None:
+    volumes = list((await podman_cmd([
         "volume",
         "ls",
         "-q",
         "--filter", "label=BERTRAND=1",
         "--filter", "dangling=true",
-    ], capture_output=True).stdout.splitlines())
+    ], capture_output=True)).stdout.splitlines())
     if volumes:
         cmd = ["volume", "rm"]
         if force:
             cmd.append("-f")
         if missing_ok:
             cmd.append("-i")
-        podman_cmd([*cmd, *volumes])
+        await podman_cmd([*cmd, *volumes])
 
 
 class Container(BaseModel):
@@ -1238,7 +1255,7 @@ class Container(BaseModel):
     id: ContainerId
     created: CreatedAt
 
-    def remove(self, *, force: bool, timeout: int, missing_ok: bool) -> None:
+    async def remove(self, *, force: bool, timeout: int, missing_ok: bool) -> None:
         """Remove this container via podman.
 
         Parameters
@@ -1269,12 +1286,12 @@ class Container(BaseModel):
             cmd.append("-f")
         if missing_ok:
             cmd.append("-i")
-        podman_cmd([*cmd, self.id])
+        await podman_cmd([*cmd, self.id])
 
         # remove any now-dangling volumes
-        _remove_dangling_volumes(force=force, missing_ok=missing_ok)
+        await _remove_dangling_volumes(force=force, missing_ok=missing_ok)
 
-    def inspect(self) -> Container.Inspect | None:
+    async def inspect(self) -> Container.Inspect | None:
         """Invoke podman to inspect this container.
 
         Returns
@@ -1282,7 +1299,11 @@ class Container(BaseModel):
         Container.Inspect | None
             A JSON response from podman or None if the container could not be found.
         """
-        result = podman_cmd(["container", "inspect", self.id], check=False, capture_output=True)
+        result = await podman_cmd(
+            ["container", "inspect", self.id],
+            check=False,
+            capture_output=True
+        )
         if result.returncode != 0:
             return None
         stdout = result.stdout.strip()
@@ -1316,7 +1337,7 @@ class Container(BaseModel):
         return None
 
     @staticmethod
-    def start(inspect: Container.Inspect, check: bool = True) -> None:
+    async def start(inspect: Container.Inspect, check: bool = True) -> None:
         """Start a container if it is not already running.
 
         Parameters
@@ -1345,9 +1366,9 @@ class Container(BaseModel):
             raise KeyError("invalid container inspect data: missing 'Id'")
 
         if state.get("Paused"):
-            podman_cmd(["container", "unpause", id], check=check)
+            await podman_cmd(["container", "unpause", id], check=check)
         else:
-            podman_cmd(["container", "start", id], check=check)
+            await podman_cmd(["container", "start", id], check=check)
 
 
 class Image(BaseModel):
@@ -1402,11 +1423,11 @@ class Image(BaseModel):
             return False
         return bool(state.get("Running") or state.get("Restarting") or state.get("Paused"))
 
-    def _volume(self, env: Environment, commit: Commit, kind: str) -> str:
+    async def _volume(self, env: Environment, commit: Commit, kind: str) -> str:
         cache_prefix = f"bertrand-{env.id[:13]}-{commit.id[:7]}"
         name = f"{cache_prefix}-{kind}"
         try:
-            podman_cmd([
+            await podman_cmd([
                 "volume",
                 "create",
                 "--label", "BERTRAND=1",
@@ -1419,7 +1440,7 @@ class Image(BaseModel):
             pass
         return name
 
-    def run(
+    async def run(
         self,
         env: Environment,
         commit: Commit,
@@ -1470,11 +1491,11 @@ class Image(BaseModel):
         # return pre-existing containers if they are still running
         existing = self.containers.get(tag)
         if existing is not None:
-            inspect = existing.inspect()
+            inspect = await existing.inspect()
             if inspect is not None:
                 if self._running(inspect):
                     return existing  # existing container is still running
-                existing.remove(force=True, timeout=env.timeout, missing_ok=True)
+                await existing.remove(force=True, timeout=env.timeout, missing_ok=True)
             self.containers.pop(tag)
 
         # build candidate container
@@ -1487,7 +1508,7 @@ class Image(BaseModel):
         )
         cid_file = _cid_file(env.root, f"create-{uuid.uuid4().hex}")
         try:
-            mkdir_private(CODE_SOCKET.parent)
+            mkdir_private(HOST_SOCKET.parent)
             cid_file.parent.mkdir(parents=True, exist_ok=True)
             uv_cache = self._volume(env, commit, "uv")
             bertrand_cache = self._volume(env, commit, "bertrand")
@@ -1512,7 +1533,7 @@ class Image(BaseModel):
                 "--mount",
                 (
                     "type=bind,"
-                    f"src={str(CODE_SOCKET.parent)},"
+                    f"src={str(HOST_SOCKET.parent)},"
                     f"dst={str(CONTAINER_SOCKET.parent)},"
                     "ro=true"
                 ),
@@ -1544,7 +1565,7 @@ class Image(BaseModel):
                 if not all(isinstance(part, str) for part in cmd):
                     raise TypeError("cmd override must be a list of strings")
                 argv.extend(["--entrypoint", cmd[0], self.id, *cmd[1:]])
-            podman_cmd(argv, capture_output=quiet)
+            await podman_cmd(argv, capture_output=quiet)
             container.id = cid_file.read_text(encoding="utf-8").strip()
         finally:
             cid_file.unlink(missing_ok=True)
@@ -1552,7 +1573,7 @@ class Image(BaseModel):
         try:
             # best-effort probe after launch.  Ephemeral containers may exit and
             # auto-remove before inspection succeeds.
-            inspect = container.inspect()
+            inspect = await container.inspect()
             if inspect is not None:
                 if self._running(inspect):
                     self.containers[tag] = container
@@ -1561,10 +1582,10 @@ class Image(BaseModel):
             return container
         except:
             if container.id:
-                container.remove(force=True, timeout=env.timeout, missing_ok=True)
+                await container.remove(force=True, timeout=env.timeout, missing_ok=True)
             raise
 
-    def __getitem__(self, tag: SanitizedName) -> Container:
+    async def __getitem__(self, tag: SanitizedName) -> Container:
         """Get a running container by its tag, raising a KeyError if it does not exist,
         or has exited and is pending removal.
 
@@ -1585,15 +1606,15 @@ class Image(BaseModel):
         """
         container = self.containers.get(tag)
         if container is not None:  # registered
-            inspect = container.inspect()
+            inspect = await container.inspect()
             if inspect is not None:  # alive
                 if self._running(inspect):  # currently running
                     return container
-                container.remove(force=True, timeout=TIMEOUT, missing_ok=True)
+                await container.remove(force=True, timeout=TIMEOUT, missing_ok=True)
             self.containers.pop(tag, None)
         raise KeyError(f"container with tag '{tag}' does not exist for this image")
 
-    def __contains__(self, tag: SanitizedName) -> bool:
+    async def __contains__(self, tag: SanitizedName) -> bool:
         """Check if a container with the given tag exists and is currently running
         within this image.
 
@@ -1610,10 +1631,10 @@ class Image(BaseModel):
         container = self.containers.get(tag)
         if container is None:
             return False
-        inspect = container.inspect()
+        inspect = await container.inspect()
         return inspect is not None and self._running(inspect)
 
-    def get[T](
+    async def get[T](
         self,
         tag: SanitizedName,
         default: T = None  # type: ignore[assignment]
@@ -1635,15 +1656,15 @@ class Image(BaseModel):
         """
         container = self.containers.get(tag)
         if container is not None:  # registered
-            inspect = container.inspect()
+            inspect = await container.inspect()
             if inspect is not None:  # alive
                 if self._running(inspect):  # currently running
                     return container
-                container.remove(force=True, timeout=TIMEOUT, missing_ok=True)
+                await container.remove(force=True, timeout=TIMEOUT, missing_ok=True)
             self.containers.pop(tag, None)
         return default
 
-    def remove(self, *, force: bool, timeout: int, missing_ok: bool) -> None:
+    async def remove(self, *, force: bool, timeout: int, missing_ok: bool) -> None:
         """Remove this image via podman.  Will also remove all containers built from
         this image.
 
@@ -1668,14 +1689,14 @@ class Image(BaseModel):
             If any of the podman commands fail.
         """
         # remove descendant containers first to avoid dangling references
-        containers = list(podman_cmd([
+        containers = list((await podman_cmd([
             "container",
             "ls",
             "-a",
             "-q",
             "--no-trunc",
             "--filter", f"ancestor={self.id}",
-        ], capture_output=True).stdout.splitlines())
+        ], capture_output=True)).stdout.splitlines())
         if containers:
             cmd = [
                 "container",
@@ -1688,7 +1709,7 @@ class Image(BaseModel):
                 cmd.append("-f")
             if missing_ok:
                 cmd.append("-i")
-            podman_cmd([*cmd, *containers])
+            await podman_cmd([*cmd, *containers])
 
         # remove image
         cmd = ["image", "rm"]
@@ -1696,12 +1717,12 @@ class Image(BaseModel):
             cmd.append("-f")
         if missing_ok:
             cmd.append("-i")
-        podman_cmd([*cmd, self.id])
+        await podman_cmd([*cmd, self.id])
 
         # remove any now-dangling volumes
-        _remove_dangling_volumes(force=force, missing_ok=missing_ok)
+        await _remove_dangling_volumes(force=force, missing_ok=missing_ok)
 
-    def inspect(self) -> Image.Inspect | None:
+    async def inspect(self) -> Image.Inspect | None:
         """Invoke podman to inspect this image.
 
         Returns
@@ -1709,7 +1730,11 @@ class Image(BaseModel):
         Image.Inspect | None
             A JSON response from podman or None if the image could not be found.
         """
-        result = podman_cmd(["image", "inspect", self.id], check=False, capture_output=True)
+        result = await podman_cmd(
+            ["image", "inspect", self.id],
+            check=False,
+            capture_output=True
+        )
         if result.returncode != 0 or not result.stdout:
             return None
         data = json_parser.loads(result.stdout)
@@ -2851,7 +2876,7 @@ class Build(_Command):
         _ensure_volume(bertrand_volume, env.id, "bertrand")
         _ensure_volume(ccache_volume, env.id, "ccache")
         _ensure_volume(conan_volume, env.id, "conan")
-        mkdir_private(CODE_SOCKET.parent)
+        mkdir_private(HOST_SOCKET.parent)
         try:
             cid_file.parent.mkdir(parents=True, exist_ok=True)
             podman_cmd([
@@ -2870,7 +2895,7 @@ class Build(_Command):
                 "--mount",
                 (
                     "type=bind,"
-                    f"src={str(CODE_SOCKET.parent)},"
+                    f"src={str(HOST_SOCKET.parent)},"
                     f"dst={str(CONTAINER_SOCKET.parent)},"
                     "ro=true"
                 ),
@@ -3324,9 +3349,9 @@ class Enter(_Command):
             "exec",
             "-it",
             "-w", str(WORKTREE_MOUNT),
-            "-e", f"{ENV_ROOT_ENV}={str(env.root)}",
+            "-e", f"{PROJECT_ROOT_ENV}={str(env.root)}",
             "-e", f"{CONTAINER_ID_ENV}={container.id}",
-            "-e", f"{CODE_SERVICE_ENV}={'1' if code_server_available else '0'}",
+            "-e", f"{SOCKET_ENV}={'1' if code_server_available else '0'}",
             container.id,
             *shell,
         ])
@@ -3424,9 +3449,9 @@ class Code(_Command):
             "exec",
             "-i",
             "-w", str(WORKTREE_MOUNT),
-            "-e", f"{ENV_ROOT_ENV}={str(env.root)}",
+            "-e", f"{PROJECT_ROOT_ENV}={str(env.root)}",
             "-e", f"{CONTAINER_ID_ENV}={container.id}",
-            "-e", f"{CODE_SERVICE_ENV}={'1' if code_server_available else '0'}",
+            "-e", f"{SOCKET_ENV}={'1' if code_server_available else '0'}",
             container.id,
             "bertrand", "code",
         ])
@@ -4796,80 +4821,80 @@ class Log(_Command):
 
 
 @on_build(ephemeral=True)
-def podman_build(ctx: Pipeline.InProgress) -> None:
+async def podman_build(ctx: Pipeline.InProgress) -> None:
     Build()(ctx)
 
 
 @on_publish(ephemeral=True)
-def podman_publish(ctx: Pipeline.InProgress) -> None:
+async def podman_publish(ctx: Pipeline.InProgress) -> None:
     Publish()(ctx)
 
 
 @on_start(ephemeral=True)
-def podman_start(ctx: Pipeline.InProgress) -> None:
+async def podman_start(ctx: Pipeline.InProgress) -> None:
     Start()(ctx)
 
 
 @on_code(ephemeral=True)
-def podman_code(ctx: Pipeline.InProgress) -> None:
+async def podman_code(ctx: Pipeline.InProgress) -> None:
     Code()(ctx)
 
 
 @on_enter(ephemeral=True)
-def podman_enter(ctx: Pipeline.InProgress) -> None:
+async def podman_enter(ctx: Pipeline.InProgress) -> None:
     Enter()(ctx)
 
 
 @on_run(ephemeral=True)
-def podman_run(ctx: Pipeline.InProgress) -> None:
+async def podman_run(ctx: Pipeline.InProgress) -> None:
     Run()(ctx)
 
 
 @on_stop(ephemeral=True)
-def podman_stop(ctx: Pipeline.InProgress) -> None:
+async def podman_stop(ctx: Pipeline.InProgress) -> None:
     Stop()(ctx)
 
 
 @on_pause(ephemeral=True)
-def podman_pause(ctx: Pipeline.InProgress) -> None:
+async def podman_pause(ctx: Pipeline.InProgress) -> None:
     Pause()(ctx)
 
 
 @on_resume(ephemeral=True)
-def podman_resume(ctx: Pipeline.InProgress) -> None:
+async def podman_resume(ctx: Pipeline.InProgress) -> None:
     Resume()(ctx)
 
 
 @on_restart(ephemeral=True)
-def podman_restart(ctx: Pipeline.InProgress) -> None:
+async def podman_restart(ctx: Pipeline.InProgress) -> None:
     Restart()(ctx)
 
 
 @on_prune(ephemeral=True)
-def podman_prune(ctx: Pipeline.InProgress) -> None:
+async def podman_prune(ctx: Pipeline.InProgress) -> None:
     Prune()(ctx)
 
 
 @on_rm(ephemeral=True)
-def podman_rm(ctx: Pipeline.InProgress) -> None:
+async def podman_rm(ctx: Pipeline.InProgress) -> None:
     Rm()(ctx)
 
 
 @on_ls(ephemeral=True)
-def podman_ls(ctx: Pipeline.InProgress) -> None:
+async def podman_ls(ctx: Pipeline.InProgress) -> None:
     Ls()(ctx)
 
 
 @on_monitor(ephemeral=True)
-def podman_monitor(ctx: Pipeline.InProgress) -> None:
+async def podman_monitor(ctx: Pipeline.InProgress) -> None:
     Monitor()(ctx)
 
 
 @on_top(ephemeral=True)
-def podman_top(ctx: Pipeline.InProgress) -> None:
+async def podman_top(ctx: Pipeline.InProgress) -> None:
     Top()(ctx)
 
 
 @on_log(ephemeral=True)
-def podman_log(ctx: Pipeline.InProgress) -> None:
+async def podman_log(ctx: Pipeline.InProgress) -> None:
     Log()(ctx)
