@@ -22,6 +22,7 @@ from typing import (
     Callable,
     Literal,
     Sequence,
+    Self,
     TypeAlias,
     TypedDict,
     cast,
@@ -51,7 +52,9 @@ from .config import (
     SHELLS,
     SOCKET_ENV,
     WORKTREE_MOUNT,
+    AbsolutePath,
     Config,
+    inside_image,
     lock_worktree,
 )
 from .pipeline import (
@@ -182,13 +185,6 @@ def _check_boolean(value: Any) -> bool:
     return value
 
 
-def _check_absolute_path(value: Any) -> Path:
-    p = Path(value)
-    if p != p.expanduser().resolve():
-        raise ValueError(f"path must be absolute: {value}")
-    return p
-
-
 def _check_list_field(value: Any, field: str) -> list[str]:
     if not isinstance(value, list) or not all(isinstance(x, str) for x in value):
         raise ValueError(f"missing or invalid '{field}' field: {value}")
@@ -226,7 +222,6 @@ def _to_utc(value: datetime) -> datetime:
     return value.astimezone(timezone.utc)
 
 
-AbsolutePath: TypeAlias = Annotated[Path, BeforeValidator(_check_absolute_path)]
 HostId: TypeAlias = Annotated[str, BeforeValidator(_check_uuid_str)]
 EnvironmentId: TypeAlias = Annotated[str, BeforeValidator(_check_uuid_str)]
 CommitId: TypeAlias = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
@@ -268,7 +263,7 @@ class PurgeBertrandArtifacts:
         # rm -f, which can occur if the environment registry is incomplete and the
         # environment has no containers, preventing us from discovering its mount point
         try:
-            containers = _podman_ids("container")
+            containers = await _podman_ids("container")
             if containers:
                 await podman_cmd([
                     "container",
@@ -280,10 +275,10 @@ class PurgeBertrandArtifacts:
                     "-t", str(TIMEOUT),
                     *containers
                 ], check=False)
-            images = _podman_ids("image")
+            images = await _podman_ids("image")
             if images:
                 await podman_cmd(["image", "rm", "-f", "-i", *images], check=False)
-            volumes = _podman_ids("volume")
+            volumes = await _podman_ids("volume")
             if volumes:
                 await podman_cmd(["volume", "rm", "-f", "-i", *volumes], check=False)
         except:
@@ -309,13 +304,13 @@ class InstallPodman(InstallPackage):
         # Conservative: if host state is unknown or in use, skip uninstall to avoid
         # clobbering user-managed podman resources.
         try:
-            containers = _podman_ids("container")
+            containers = await _podman_ids("container")
             if containers:
                 return
-            images = _podman_ids("image")
+            images = await _podman_ids("image")
             if images:
                 return
-            volumes = _podman_ids("volume")
+            volumes = await _podman_ids("volume")
             if volumes:
                 return
             await InstallPackage.undo(ctx, payload, force)
@@ -673,7 +668,7 @@ def _write_metadata(root: Path, metadata: Environment.JSON) -> None:
 
 
 async def _discover_environment_mounts() -> list[Path]:
-    container_ids = _podman_ids("container")
+    container_ids = await _podman_ids("container")
     if not container_ids:
         return []
 
@@ -1193,28 +1188,18 @@ async def _remove_dangling_volumes(*, force: bool, missing_ok: bool) -> None:
 
 
 class Container(BaseModel):
-    """In-memory metadata representing a local Bertrand container, which acts as a
-    runtime harness for a compiled image.  An image can have many containers, each
-    built with a different runtime configuration, and each container is considered to
-    be immutable once created.
+    """Type hint for container inspect output.  Note that due to the ephemeral
+    container architecture, this is not persisted to disk, unlike image metadata.
 
-    Specific care is taken not to store anything that references the host filesystem or
-    container name, in order to allow renaming/relocation of the environment directory.
-
-    Attributes
-    ----------
-    version : int
-        The version number for backwards compatibility.
-    tag : str
-        The user-friendly tag for this container, which is unique within the enclosing
-        image.
-    id : str
-        The unique podman container ID.
-    created : datetime
-        The ISO timestamp when the container was created.
+    https://docs.podman.io/en/latest/markdown/podman-container-inspect.1.html#examples
     """
-    class State(TypedDict, total=False):
+    model_config = ConfigDict(extra="allow")
+    Id: ContainerId
+    Created: CreatedAt
+
+    class _State(BaseModel, total=False):
         """Type hint for container state information."""
+        model_config = ConfigDict(extra="allow")
         Status: Literal[
             "created",
             "restarting",
@@ -1230,30 +1215,62 @@ class Container(BaseModel):
         OOMKilled: bool
         Dead: bool
 
-    class Mounts(TypedDict, total=False):
+    State: _State
+    Image: ImageId
+
+    class _Mounts(BaseModel, total=False):
         """Type hint for container mount information."""
+        model_config = ConfigDict(extra="allow")
         Type: Literal["bind", "volume", "tmpfs", "npipe"]
-        Source: str
-        Destination: str
+        Source: AbsolutePath
+        Destination: AbsolutePath
         RW: bool
         Propagation: Literal["shared", "slave", "private", "rshared", "rslave", "rprivate"]
 
-    class Inspect(TypedDict, total=False):
-        """Type hint for container inspect output.
+    Mounts: list[_Mounts]
 
-        https://docs.podman.io/en/latest/markdown/podman-container-inspect.1.html#examples
+    @property
+    def worktree(self) -> Path | None:
+        """Extract the root path of the worktree directory mounted to a container from
+        its inspection data.
+
+        Returns
+        -------
+        Path | None
+            The root path of the worktree directory mounted to the container, or None
+            if no such mount exists.
         """
-        Id: ContainerId
-        Created: CreatedAt
-        State: Container.State
-        Image: ImageId
-        Mounts: list[Container.Mounts]
+        for m in self.Mounts:
+            if m.Type == "bind" and m.Destination == str(WORKTREE_MOUNT):
+                src = m.Source
+                if src:
+                    return Path(src).expanduser().resolve()
+        return None
 
-    model_config = ConfigDict(extra="forbid")
-    version: PositiveInt
-    tag: SanitizedName
-    id: ContainerId
-    created: CreatedAt
+    # TODO: delete start()?
+
+    async def start(self, *, check: bool) -> None:
+        """Start a container if it is not already running.
+
+        Parameters
+        ----------
+        check : bool, optional
+            If True, raise CommandError if the container fails to start.  Default is
+            True.
+
+        Raises
+        ------
+        KeyError
+            If the inspection data is missing required fields.
+        CommandError
+            If the container fails to start and `check` is True.
+        """
+        if self.State.Running or self.State.Restarting:
+            return
+        if self.State.Paused:
+            await podman_cmd(["container", "unpause", self.Id], check=check)
+        else:
+            await podman_cmd(["container", "start", self.Id], check=check)
 
     async def remove(self, *, force: bool, timeout: int, missing_ok: bool) -> None:
         """Remove this container via podman.
@@ -1286,21 +1303,29 @@ class Container(BaseModel):
             cmd.append("-f")
         if missing_ok:
             cmd.append("-i")
-        await podman_cmd([*cmd, self.id])
+        cmd.append(self.Id)
+        await podman_cmd(cmd)
 
         # remove any now-dangling volumes
         await _remove_dangling_volumes(force=force, missing_ok=missing_ok)
 
-    async def inspect(self) -> Container.Inspect | None:
-        """Invoke podman to inspect this container.
+    @classmethod
+    async def inspect(cls, id: ContainerId) -> Self | None:
+        """Invoke podman to inspect this container and return the parsed result.
+
+        Parameters
+        ----------
+        id : ContainerId
+            The unique podman container ID.
 
         Returns
         -------
-        Container.Inspect | None
-            A JSON response from podman or None if the container could not be found.
+        Self | None
+            A validated JSON response from podman or None if the container could not be
+            found.
         """
         result = await podman_cmd(
-            ["container", "inspect", self.id],
+            ["container", "inspect", id],
             check=False,
             capture_output=True
         )
@@ -1310,72 +1335,14 @@ class Container(BaseModel):
         if not stdout:
             return None
         data = json_parser.loads(stdout)
-        return data[0] if data else None
-
-    @staticmethod
-    def mount(inspect: Container.Inspect) -> Path | None:
-        """Extract the root path of the environment directory mounted to this container
-        from its inspection data.
-
-        Parameters
-        ----------
-        inspect : Container.Inspect
-            The output of `Container.inspect()` for the container to query.
-
-        Returns
-        -------
-        Path | None
-            The root path of the environment directory mounted to the container, or
-            None if no such mount exists.
-        """
-        mounts = inspect.get("Mounts") or []
-        for m in mounts:
-            if m.get("Type") == "bind" and m.get("Destination") == str(WORKTREE_MOUNT):
-                src = m.get("Source")
-                if src:
-                    return Path(src).expanduser().resolve()
-        return None
-
-    @staticmethod
-    async def start(inspect: Container.Inspect, check: bool = True) -> None:
-        """Start a container if it is not already running.
-
-        Parameters
-        ----------
-        inspect : Container.Inspect
-            The output of `Container.inspect()` for the container to start.
-        check : bool, optional
-            If True, raise CommandError if the container fails to start.  Default is
-            True.
-
-        Raises
-        ------
-        KeyError
-            If the inspection data is missing required fields.
-        CommandError
-            If the container fails to start and `check` is True.
-        """
-        state = inspect.get("State")
-        if not isinstance(state, dict):
-            raise KeyError("invalid container inspect data: missing 'State'")
-        if state.get("Running") or state.get("Restarting"):
-            return
-
-        id = inspect.get("Id")
-        if not isinstance(id, str):
-            raise KeyError("invalid container inspect data: missing 'Id'")
-
-        if state.get("Paused"):
-            await podman_cmd(["container", "unpause", id], check=check)
-        else:
-            await podman_cmd(["container", "start", id], check=check)
+        return cls.model_validate(data[0]) if data else None
 
 
 class Image(BaseModel):
-    """In-memory metadata representing a local Bertrand image, which acts as a compiled
-    snapshot of an environment with a particular set of build arguments.  An
-    environment can have many images, each built with a different set of Containerfile
-    arguments, and each image is considered to be immutable once created.
+    """Persistent metadata representing a local Bertrand image, which acts as a
+    compiled snapshot of an environment worktree.  An environment can have many images,
+    each built with a different set of image and container arguments, and each is
+    considered to be immutable once created.
 
     Specific care is taken not to store anything that references the host filesystem,
     in order to allow renaming/relocation of the environment directory.
@@ -1386,24 +1353,22 @@ class Image(BaseModel):
         The version number for backwards compatibility.
     tag : str
         The user-friendly tag for this image, which is unique within the enclosing
+        environment.
     id : str
-        The unique podman image ID.  This is equivalent to the metadata file name in
-        `image_dir`.
+        The unique podman image ID.
     created : datetime
         The ISO timestamp when the image was created.
     image_args : list[str]
         The original `podman build` args used to build the image.
     container_args : list[str]
         The `podman create` args used to build containers from this image.
-    containers : dict[SanitizedName, Container]
-        A mapping from container tags to their corresponding `Container` metadata
-        objects built from this image.
     """
-    class Inspect(TypedDict, total=False):
+    class Inspect(BaseModel):
         """Type hint for `podman image inspect` output.
 
         https://docs.podman.io/en/latest/markdown/podman-image-inspect.1.html#example
         """
+        model_config = ConfigDict(extra="allow")
         Id: ImageId
         Created: CreatedAt
 
@@ -1414,14 +1379,6 @@ class Image(BaseModel):
     created: CreatedAt
     image_args: ArgsList
     container_args: ArgsList
-    containers: dict[SanitizedName, Container]
-
-    @staticmethod
-    def _running(inspect: Container.Inspect) -> bool:
-        state = inspect.get("State")
-        if not isinstance(state, dict):
-            return False
-        return bool(state.get("Running") or state.get("Restarting") or state.get("Paused"))
 
     async def _volume(self, env: Environment, commit: Commit, kind: str) -> str:
         cache_prefix = f"bertrand-{env.id[:13]}-{commit.id[:7]}"
@@ -1440,15 +1397,10 @@ class Image(BaseModel):
             pass
         return name
 
-    async def run(
-        self,
-        env: Environment,
-        commit: Commit,
-        tag: SanitizedName,
-        cmd: list[str] | None,
-        *,
-        quiet: bool
-    ) -> Container:
+    # TODO: environments need to track whether they belong to a branch or commit, and
+    # mount the worktree as read-write or read-only, respectively.
+
+    async def run(self, env: Environment, cmd: list[str] | None, *, quiet: bool) -> Container:
         """Build and run an ephemeral container from this image if it does not already
         exist.
 
@@ -1458,16 +1410,8 @@ class Image(BaseModel):
         Parameters
         ----------
         env : Environment
-            The parent environment this commit belongs to, which describes the root of
-            the commit's git repository.
-        commit : Commit
-            The parent commit this image belongs to, which manages the commit's
-            worktree, from which the image will be built.
-        tag : SanitizedName
-            A tag to assign to the container built from this image, for future
-            reference.  All containers built from this image will have identical
-            configurations, but may require unique IDs in order to reference multiple
-            independent container instances.
+            The parent environment this image belongs to, which describes the worktree
+            directory that will be mounted into the container.
         cmd : list[str] | None
             An optional command to override the container's default entry point.  If
             None, then the container will run the default startup behavior from its
@@ -1493,7 +1437,7 @@ class Image(BaseModel):
         if existing is not None:
             inspect = await existing.inspect()
             if inspect is not None:
-                if self._running(inspect):
+                if inspect.State.Running or inspect.State.Restarting or inspect.State.Paused:
                     return existing  # existing container is still running
                 await existing.remove(force=True, timeout=env.timeout, missing_ok=True)
             self.containers.pop(tag)
@@ -1575,7 +1519,7 @@ class Image(BaseModel):
             # auto-remove before inspection succeeds.
             inspect = await container.inspect()
             if inspect is not None:
-                if self._running(inspect):
+                if inspect.State.Running or inspect.State.Restarting or inspect.State.Paused:
                     self.containers[tag] = container
                 else:
                     self.containers.pop(tag, None)
@@ -1584,85 +1528,6 @@ class Image(BaseModel):
             if container.id:
                 await container.remove(force=True, timeout=env.timeout, missing_ok=True)
             raise
-
-    async def __getitem__(self, tag: SanitizedName) -> Container:
-        """Get a running container by its tag, raising a KeyError if it does not exist,
-        or has exited and is pending removal.
-
-        Parameters
-        ----------
-        tag : SanitizedName
-            The tag of the container to retrieve.
-
-        Returns
-        -------
-        Container
-            The container with the given tag if it exists and is running.
-
-        Raises
-        ------
-        KeyError
-            If the container does not exist, or has exited and is pending removal.
-        """
-        container = self.containers.get(tag)
-        if container is not None:  # registered
-            inspect = await container.inspect()
-            if inspect is not None:  # alive
-                if self._running(inspect):  # currently running
-                    return container
-                await container.remove(force=True, timeout=TIMEOUT, missing_ok=True)
-            self.containers.pop(tag, None)
-        raise KeyError(f"container with tag '{tag}' does not exist for this image")
-
-    async def __contains__(self, tag: SanitizedName) -> bool:
-        """Check if a container with the given tag exists and is currently running
-        within this image.
-
-        Parameters
-        ----------
-        tag : SanitizedName
-            The tag of the container to check.
-
-        Returns
-        -------
-        bool
-            True if the container exists and is running, False otherwise.
-        """
-        container = self.containers.get(tag)
-        if container is None:
-            return False
-        inspect = await container.inspect()
-        return inspect is not None and self._running(inspect)
-
-    async def get[T](
-        self,
-        tag: SanitizedName,
-        default: T = None  # type: ignore[assignment]
-    ) -> Container | T:
-        """Get a running container by its tag, returning a default value if it does not
-        exist, or has exited and is pending removal.
-
-        Parameters
-        ----------
-        tag : SanitizedName
-            The tag of the container to retrieve.
-        default : T, optional
-            The value to return if the container does not exist, by default None.
-
-        Returns
-        -------
-        Container | T
-            The container if it exists and is running, otherwise the default value.
-        """
-        container = self.containers.get(tag)
-        if container is not None:  # registered
-            inspect = await container.inspect()
-            if inspect is not None:  # alive
-                if self._running(inspect):  # currently running
-                    return container
-                await container.remove(force=True, timeout=TIMEOUT, missing_ok=True)
-            self.containers.pop(tag, None)
-        return default
 
     async def remove(self, *, force: bool, timeout: int, missing_ok: bool) -> None:
         """Remove this image via podman.  Will also remove all containers built from
@@ -1709,7 +1574,8 @@ class Image(BaseModel):
                 cmd.append("-f")
             if missing_ok:
                 cmd.append("-i")
-            await podman_cmd([*cmd, *containers])
+            cmd.extend(containers)
+            await podman_cmd(cmd)
 
         # remove image
         cmd = ["image", "rm"]
@@ -1717,7 +1583,8 @@ class Image(BaseModel):
             cmd.append("-f")
         if missing_ok:
             cmd.append("-i")
-        await podman_cmd([*cmd, self.id])
+        cmd.append(self.id)
+        await podman_cmd(cmd)
 
         # remove any now-dangling volumes
         await _remove_dangling_volumes(force=force, missing_ok=missing_ok)
@@ -1738,36 +1605,254 @@ class Image(BaseModel):
         if result.returncode != 0 or not result.stdout:
             return None
         data = json_parser.loads(result.stdout)
-        return data[0] if data else None
+        return Image.Inspect.model_validate(data[0]) if data else None
 
 
-class Commit(BaseModel):
-    """On-disk metadata representing a git commit for an environment repository,
-    including tags for all images built from that commit.  A list of these are stored
-    in `env.json` and subjected to an LRU eviction policy in order to keep the N most
-    recent commits with active containers.  If we exceed N, then we scan from the back
-    of the list to find commits with no active containers, and remove them until the
-    size of the list drops to N, or we run out of commits to scan.
+class Environment:
+    """On-disk metadata representing environment-level data structures, which map from
+    human-readable, stable tags to the corresponding images and containers built within
+    this environment directory.
+
+    This class is meant to be used as a context manager, which will automatically
+    acquire and release a lock on the environment directory in order to prevent
+    concurrent modifications.  The environment metadata will be loaded upon entering
+    the outermost context, and written back to disk upon exiting it, in order to
+    synchronize any changes made during the context's lifetime.
+
+    Parameters
+    ----------
+    root : Path
+        The root path of the environment directory.
+    timeout : int, optional
+        The maximum time in seconds to wait for acquiring the environment lock.
+        Defaults to `TIMEOUT`, which equates to 30 seconds.
+
+    Attributes
+    ----------
+    root : Path
+        An absolute root path to the environment directory.  This is not stored in the
+        on-disk JSON in order to allow relocation of the environment directory..
     """
-    model_config = ConfigDict(extra="forbid")
-    version: PositiveInt
-    id: CommitId
-    created: CreatedAt
-    images: dict[SanitizedName, Image]
+    class JSON(BaseModel):
+        """Pydantic model representing JSON metadata for a Bertrand environment."""
+        model_config = ConfigDict(extra="forbid")
+        version: PositiveInt
+        host: HostId
+        id: EnvironmentId
+        images: dict[SanitizedName, Image]
+
+    worktree: Path
+    _json: JSON
+    _config: Config | None
+    _lock: Lock
+    _entered: int
+
+    def __init__(self, worktree: Path, timeout: int = TIMEOUT) -> None:
+        self.worktree = worktree.expanduser().resolve()
+        self._json = self.JSON.model_construct(version=0, host="", id="", images={})
+        self._config = None
+        self._lock = lock_worktree(self.worktree, timeout=timeout)
+        self._entered = 0
+
+    def __enter__(self) -> Environment:
+        # obey registry > environment lock order
+        with Lock(_registry_lock(), timeout=self.timeout):
+            self._lock.__enter__()
+            self._entered += 1
+            if self._entered > 1:
+                return self  # re-entrant case
+
+            # add to/synchronize the environment registry with on-disk metadata
+            try:
+                self._json, _ = _reconcile_registry(self.root)
+                self._config = Config.load(self.root)
+                self._config.__enter__()
+                return self
+
+            except Exception as err:
+                self._entered -= 1
+                self._config = None
+                self._lock.__exit__(type(err), err, getattr(err, "__traceback__", None))
+                raise
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None
+    ) -> None:
+        if self._entered < 1:
+            raise RuntimeError("environment context manager was not entered")
+
+        try:
+            env_dir = _env_dir(self.root)
+            if self._entered == 1 and env_dir.exists():
+                # evict old commits with no active containers if we exceed the max
+                # commit count
+                max_commits = self.config.get("max_commits", DEFAULT_MAX_COMMITS)
+                if not isinstance(max_commits, int) or max_commits < 1:
+                    raise TypeError(
+                        "'max_commits' in project configuration must be a positive integer"
+                    )
+                if len(self._json.commits) > max_commits:
+                    commits: list[Commit] = []
+                    removed: list[Commit] = []
+                    n = len(self._json.commits) - max_commits
+                    for c in reversed(self._json.commits.values()):
+                        if len(removed) < n and not c.running:
+                            removed.append(c)
+                        else:
+                            commits.append(c)
+                    self._json.commits = {c.id: c for c in reversed(commits)}
+                    for c in removed:
+                        c.remove(self.root, timeout=self.timeout)
+
+                # write metadata back to disk
+                _write_metadata(self.root, self._json)
+
+        # always release the lock and local context depth
+        finally:
+            if self._entered == 1 and self._config is not None:
+                self._config.__exit__(exc_type, exc_value, traceback)
+                self._config = None
+            self._entered -= 1
+            self._lock.__exit__(exc_type, exc_value, traceback)
+
+    def __hash__(self) -> int:
+        return hash(self.worktree)
+
+    def __eq__(self, other: Any) -> bool:
+        if not isinstance(other, Environment):
+            return NotImplemented
+        return self.worktree == other.worktree
+
+    @staticmethod
+    def parse(spec: str) -> tuple[str, str]:
+        """Parse a string of the form `<env_root>[:<image_tag>[:<container_tag>]]` into
+        its constituent parts.
+
+        Parameters
+        ----------
+        spec : str
+            The container specification string to parse, which is usually provided from
+            the command line or `$ bertrand ls`.
+
+        Returns
+        -------
+        tuple[str, str, str]
+            A tuple containing the environment root path, image tag, and container tag.
+            The environment root path is expanded and resolved into an absolute path.
+            The image and container tags will be empty strings if not provided.
+
+        Raises
+        ------
+        OSError
+            If the environment path could not be resolved, or either tag is empty or
+            contains invalid characters.
+        """
+        prev, sep, tag = spec.rpartition(":")
+        if not sep or os.path.sep in tag:
+            return str(Path(spec.strip()).expanduser().resolve()), ""
+        tag = tag.strip()
+        if not tag:
+            raise OSError(f"tag must not be empty: '{spec}'")
+        san = sanitize_name(tag)
+        if tag != san:
+            raise OSError(
+                f"tag contains invalid characters: '{tag}' (sanitizes to: '{san}')"
+            )
+        return str(Path(prev.strip()).expanduser().resolve()), san
+
+    @staticmethod
+    def current() -> Environment | None:
+        """Detect whether the current process is running inside a Bertrand container.
+
+        Returns
+        -------
+        Environment | None
+            An `Environment` metadata object with the proper mount path if invoked
+            within a Bertrand container, or None otherwise.  Note that the result is
+            disengaged, and must be acquired as a context manager before it can be
+            used to access or modify the environment.
+        """
+        if inside_image():
+            return Environment(worktree=WORKTREE_MOUNT)
+        return None
 
     @property
-    def running(self) -> list[ContainerId]:
+    def timeout(self) -> int:
         """
         Returns
         -------
-        list[ContainerId]
-            A list of all running container IDs referencing this commit.
+        int
+            The maximum time in seconds to wait for acquiring the environment lock.
         """
-        return _podman_ids(
-            "container",
-            labels=[f"BERTRAND_COMMIT={self.id}"],
-            status=["running", "paused", "restarting"]
-        )
+        return math.ceil(self._lock.timeout)
+
+    @property
+    def version(self) -> int:
+        """
+        Returns
+        -------
+        int
+            The version number for this environment's metadata format.  This is used for
+            backwards compatibility.
+        """
+        return self._json.version
+
+    @property
+    def id(self) -> str:
+        """
+        Returns
+        -------
+        str
+            A UUID for this environment.  This is used to label all images and
+            containers associated with this environment, to allow for easy lookup.
+        """
+        return self._json.id
+
+    # TODO: head would need to be moved elsewhere
+
+    @property
+    def head(self) -> CommitId:
+        """
+        Returns
+        -------
+        CommitId
+            The commit ID of the current head of the environment's repository.
+
+        Raises
+        ------
+        OSError
+            If the environment's repository cannot be accessed, or if HEAD cannot be
+            resolved to a commit ID.
+        """
+        try:
+            return run(
+                ["git", "rev-parse", "--verify", "--quiet", "HEAD^{commit}"],
+                cwd=self.root,
+                capture_output=True
+            ).stdout.strip()
+        except Exception as err:
+            raise OSError(
+                f"failed to resolve HEAD for git repository at {self.root}"
+            ) from err
+
+    @property
+    def images(self) -> dict[SanitizedName, Image]:
+        """
+        Returns
+        -------
+        dict[SanitizedName, Image]
+            A dictionary mapping sanitized image names to their corresponding image objects.
+            across all commits in this environment, which may be useful for performing
+            environment-level operations across all images.
+        """
+        return self._json.images
+
+    # TODO: not sure if .containers is actually necessary under the ephemeral container
+    # model.  I can potentially just return running containers, though, which would
+    # allow this to act as a liveness check.
 
     @property
     def containers(self) -> dict[SanitizedName, list[Container]]:
@@ -1775,33 +1860,122 @@ class Commit(BaseModel):
         Returns
         -------
         dict[SanitizedName, list[Container]]
-            A mapping from sanitized container tags to list of `Container` metadata
-            objects built from this commit, which may be useful for performing
-            commit-level operations across all containers.
+            A dictionary mapping sanitized container names to lists of matching
+            containers across all commits in this environment, which may be useful for
+            performing environment-level operations across all containers.
         """
         result: dict[SanitizedName, list[Container]] = {}
-        for image in self.images.values():
-            for container in image.containers.values():
-                result.setdefault(container.tag, []).append(container)
+        for commit in self._json.commits.values():
+            for image in commit.images.values():
+                for container in image.containers.values():
+                    result.setdefault(container.tag, []).append(container)
         return result
 
-    def worktree(self, env_root: Path) -> Path:
-        """Get the path to the git worktree for this commit, whose `Containerfile`
-        drives image builds, and which will be mounted for all containers originating
-        from this commit.
+    @property
+    def config(self) -> Config:
+        """
+        Returns
+        -------
+        Config
+            The configuration object representing the layout of the environment
+            directory and registered image/container tags and their arguments.
+
+        Raises
+        ------
+        OSError
+            If the environment has not been acquired as a context manager, or if the
+            configuration was not loaded from disk.
+        """
+        if self._entered < 1 or self._config is None:
+            raise OSError(
+                "environment must be acquired as a context manager before accessing "
+                "configuration"
+            )
+        return self._config
+
+    async def remove(self, *, force: bool, timeout: int, missing_ok: bool) -> None:
+        """Remove this environment via podman, including all descendant images and
+        containers.  Note that this does not delete the referencing tags, meaning the
+        images and containers will be rebuilt again if referenced in the future.
 
         Parameters
         ----------
-        env_root : Path
-            The root path of the environment directory, which is needed in order to
-            locate the git worktree for this commit.
+        force : bool
+            If True, remove images even if they have dependent containers, removing
+            the containers as well.  If False, only remove images that have no
+            dependent containers.
+        timeout : int
+            The maximum time in seconds to wait for dependent containers to stop before
+            forcefully killing them.  -1 indicates an infinite wait.
+        missing_ok : bool
+            If True, do not raise an error if the environment or any descendant image or
+            container is already removed or otherwise missing.
 
-        Returns
-        -------
-        Path
-            The path to the git worktree for this commit.
+        Raises
+        ------
+        OSError
+            If `force` is False and there are still images or containers referencing
+            this environment.
+        CommandError
+            If any of the podman commands fail and `missing_ok` is False.
         """
-        return env_root / ".bertrand" / "commits" / self.id
+        # find all descendant containers + images
+        containers = await _podman_ids("container", labels=[f"BERTRAND_ENV={self.id}"])
+        images = await _podman_ids("image", labels=[f"BERTRAND_ENV={self.id}"])
+
+        # remove containers first
+        if containers:
+            cmd = [
+                "container",
+                "rm",
+                "--depend",  # remove dependents
+                "-v",  # remove anonymous volumes
+                "-t", str(timeout),
+            ]
+            if force:
+                cmd.append("-f")
+            if missing_ok:
+                cmd.append("-i")
+            cmd.extend(containers)
+            await podman_cmd(cmd)
+
+        # remove images
+        if images:
+            cmd = ["image", "rm"]
+            if force:
+                cmd.append("-f")
+            if missing_ok:
+                cmd.append("-i")
+            cmd.extend(images)
+            await podman_cmd(cmd)
+
+        # remove any now-dangling volumes
+        await _remove_dangling_volumes(force=force, missing_ok=missing_ok)
+
+        # TODO: remove git worktree here?
+        # worktree = self.worktree(env_root)
+        # if worktree.exists() and worktree.is_dir():
+        #     run(
+        #         ["git", "worktree", "remove", "--force", str(worktree)],
+        #         cwd=env_root,
+        #         check=False,
+        #         capture_output=True,
+        #     )
+        #     run(
+        #         ["git", "worktree", "prune", "--expire", "now"],
+        #         cwd=env_root,
+        #         check=False,
+        #         capture_output=True,
+        #     )
+
+        # remove environment metadata and lock
+        try:
+            self._json.images.clear()
+            shutil.rmtree(_env_dir(self.worktree), ignore_errors=True)
+        except:
+            pass
+
+    # TODO: this build implementation was taken from commits
 
     def build(self, env: Environment, tag: SanitizedName, *, quiet: bool) -> Image:
         """Build an image from this commit worktree, looking up its arguments from the
@@ -1951,648 +2125,6 @@ class Commit(BaseModel):
                     capture_output=True,
                 )
             raise
-
-    def __getitem__(self, tag: SanitizedName) -> Image:
-        """Get an image by its tag, raising a KeyError if it has not been built.
-
-        Parameters
-        ----------
-        tag : SanitizedName
-            The tag of the image to retrieve.
-
-        Returns
-        -------
-        Image
-            The image with the given tag if it exists.
-
-        Raises
-        ------
-        KeyError
-            If the image has not been built.
-        """
-        image = self.images.get(tag)
-        if image is not None:
-            return image
-        raise KeyError(f"image with tag '{tag}' does not exist for this commit")
-
-    def __contains__(self, tag: SanitizedName) -> bool:
-        """Check if an image with the given tag has been built within this commit.
-
-        Parameters
-        ----------
-        tag : SanitizedName
-            The tag of the image to check.
-
-        Returns
-        -------
-        bool
-            True if the image has been built, False otherwise.
-        """
-        return tag in self.images
-
-    def get[T](
-        self,
-        tag: SanitizedName,
-        default: T = None  # type: ignore[assignment]
-    ) -> Image | T:
-        """Get an image by its tag, returning a default value if it has not been built.
-
-        Parameters
-        ----------
-        tag : SanitizedName
-            The tag of the image to retrieve.
-        default : T, optional
-            The value to return if the image has not been built, by default None.
-
-        Returns
-        -------
-        Image | T
-            The image if it exists, otherwise the default value.
-        """
-        image = self.images.get(tag)
-        if image is not None:
-            return image
-        return default
-
-    def remove(self, env_root: Path, *, timeout: int) -> None:
-        """Remove all images for this commit and delete its git worktree.
-
-        Parameters
-        ----------
-        env_root : Path
-            The root path of the environment directory, which is needed in order to
-            locate the git worktree for this commit.
-        timeout : int
-            The maximum time in seconds to wait for running containers to stop before
-            forcefully killing them.  -1 indicates an infinite wait.
-        """
-        # remove all descendant containers
-        containers = _podman_ids("container", labels=[f"BERTRAND_COMMIT={self.id}"])
-        if containers:
-            podman_cmd(
-                [
-                    "container",
-                    "rm",
-                    "-f",
-                    "-i",
-                    "--depend",  # remove dependent containers
-                    "-v",  # remove anonymous volumes
-                    "-t", str(timeout),
-                    *containers
-                ],
-                check=False
-            )
-
-        # remove all descendant images
-        images = _podman_ids("image", labels=[f"BERTRAND_COMMIT={self.id}"])
-        if images:
-            podman_cmd(["image", "rm", "-f", "-i", *images], check=False)
-
-        # remove any now-dangling volumes
-        _remove_dangling_volumes(force=True, missing_ok=True)
-
-        # remove git worktree
-        worktree = self.worktree(env_root)
-        if worktree.exists() and worktree.is_dir():
-            run(
-                ["git", "worktree", "remove", "--force", str(worktree)],
-                cwd=env_root,
-                check=False,
-                capture_output=True,
-            )
-            run(
-                ["git", "worktree", "prune", "--expire", "now"],
-                cwd=env_root,
-                check=False,
-                capture_output=True,
-            )
-
-
-class Environment:
-    """On-disk metadata representing environment-level data structures, which map from
-    human-readable, stable tags to the corresponding images and containers built within
-    this environment directory.
-
-    This class is meant to be used as a context manager, which will automatically
-    acquire and release a lock on the environment directory in order to prevent
-    concurrent modifications.  The environment metadata will be loaded upon entering
-    the outermost context, and written back to disk upon exiting it, in order to
-    synchronize any changes made during the context's lifetime.
-
-    Parameters
-    ----------
-    root : Path
-        The root path of the environment directory.
-    timeout : int, optional
-        The maximum time in seconds to wait for acquiring the environment lock.
-        Defaults to `TIMEOUT`, which equates to 30 seconds.
-
-    Attributes
-    ----------
-    root : Path
-        An absolute root path to the environment directory.  This is not stored in the
-        on-disk JSON in order to allow relocation of the environment directory..
-    """
-    class JSON(BaseModel):
-        """Pydantic model representing JSON metadata for a Bertrand environment."""
-        model_config = ConfigDict(extra="forbid", validate_assignment=True)
-        version: PositiveInt
-        host: HostId
-        id: EnvironmentId
-        commits: dict[CommitId, Commit]
-
-    root: Path
-    _json: JSON
-    _config: Config | None
-    _lock: Lock
-    _entered: int
-
-    def __init__(self, root: Path, timeout: int = TIMEOUT) -> None:
-        self.root = root.expanduser().resolve()
-        self._json = self.JSON.model_construct(version=0, host="", id="", commits={})
-        self._config = None
-        self._lock = lock_worktree(self.root, timeout=timeout)
-        self._entered = 0
-
-    def __enter__(self) -> Environment:
-        # obey registry > environment lock order
-        with Lock(_registry_lock(), timeout=self.timeout):
-            self._lock.__enter__()
-            self._entered += 1
-            if self._entered > 1:
-                return self  # re-entrant case
-
-            # add to/synchronize the environment registry with on-disk metadata
-            try:
-                self._json, _ = _reconcile_registry(self.root)
-                self._config = Config.load(self.root)
-                self._config.__enter__()
-                return self
-
-            except Exception as err:
-                self._entered -= 1
-                self._config = None
-                self._lock.__exit__(type(err), err, getattr(err, "__traceback__", None))
-                raise
-
-    def __exit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc_value: BaseException | None,
-        traceback: TracebackType | None
-    ) -> None:
-        if self._entered < 1:
-            raise RuntimeError("environment context manager was not entered")
-
-        try:
-            env_dir = _env_dir(self.root)
-            if self._entered == 1 and env_dir.exists():
-                # evict old commits with no active containers if we exceed the max
-                # commit count
-                max_commits = self.config.get("max_commits", DEFAULT_MAX_COMMITS)
-                if not isinstance(max_commits, int) or max_commits < 1:
-                    raise TypeError(
-                        "'max_commits' in project configuration must be a positive integer"
-                    )
-                if len(self._json.commits) > max_commits:
-                    commits: list[Commit] = []
-                    removed: list[Commit] = []
-                    n = len(self._json.commits) - max_commits
-                    for c in reversed(self._json.commits.values()):
-                        if len(removed) < n and not c.running:
-                            removed.append(c)
-                        else:
-                            commits.append(c)
-                    self._json.commits = {c.id: c for c in reversed(commits)}
-                    for c in removed:
-                        c.remove(self.root, timeout=self.timeout)
-
-                # write metadata back to disk
-                _write_metadata(self.root, self._json)
-
-        # always release the lock and local context depth
-        finally:
-            if self._entered == 1 and self._config is not None:
-                self._config.__exit__(exc_type, exc_value, traceback)
-                self._config = None
-            self._entered -= 1
-            self._lock.__exit__(exc_type, exc_value, traceback)
-
-    def __hash__(self) -> int:
-        return hash(self.root)
-
-    def __eq__(self, other: Any) -> bool:
-        if not isinstance(other, Environment):
-            return NotImplemented
-        return self.root == other.root
-
-    @staticmethod
-    def parse(spec: str) -> tuple[str, str, str]:
-        """Parse a string of the form `<env_root>[:<image_tag>[:<container_tag>]]` into
-        its constituent parts.
-
-        Parameters
-        ----------
-        spec : str
-            The container specification string to parse, which is usually provided from
-            the command line or `$ bertrand ls`.
-
-        Returns
-        -------
-        tuple[str, str, str]
-            A tuple containing the environment root path, image tag, and container tag.
-            The environment root path is expanded and resolved into an absolute path.
-            The image and container tags will be empty strings if not provided.
-
-        Raises
-        ------
-        OSError
-            If the environment path could not be resolved, or either tag is empty or
-            contains invalid characters.
-        """
-        # resolve rightmost tag
-        prev, sep, tag1 = spec.rpartition(":")
-        if not sep or os.path.sep in tag1:
-            return str(Path(spec.strip()).expanduser().resolve()), "", ""
-        tag1 = tag1.strip()
-        if not tag1:
-            raise OSError(f"tag must not be empty: '{spec}'")
-        san1 = sanitize_name(tag1)
-        if tag1 != san1:
-            raise OSError(
-                f"tag contains invalid characters: '{tag1}' (sanitizes to: '{san1}')"
-            )
-
-        # resolve middle tag
-        prev, sep, tag2 = prev.rpartition(":")
-        if not sep or os.path.sep in tag2:
-            return str(Path(prev.strip()).expanduser().resolve()), san1, ""
-        tag2 = tag2.strip()
-        if not tag2:
-            raise OSError(f"tag must not be empty: '{spec}'")
-        san2 = sanitize_name(tag2)
-        if tag2 != san2:
-            raise OSError(
-                f"tag contains invalid characters: '{tag2}' (sanitizes to: '{san2}')"
-            )
-        return str(Path(prev.strip()).expanduser().resolve()), san2, san1
-
-    @staticmethod
-    def current() -> Environment | None:
-        """Detect whether the current process is running inside a Bertrand container.
-
-        Returns
-        -------
-        Environment | None
-            An `Environment` metadata object with the proper mount path if invoked
-            within a Bertrand container, or None otherwise.  Note that the result is
-            disengaged, and must be acquired as a context manager before it can be
-            used to access or modify the environment.
-        """
-        if (
-            os.environ.get("BERTRAND", "0") == "1" and
-            "BERTRAND_ENV" in os.environ and
-            "BERTRAND_IMAGE" in os.environ and
-            "BERTRAND_CONTAINER" in os.environ
-        ):
-            return Environment(root=WORKTREE_MOUNT)
-        return None
-
-    @property
-    def timeout(self) -> int:
-        """
-        Returns
-        -------
-        int
-            The maximum time in seconds to wait for acquiring the environment lock.
-        """
-        return math.ceil(self._lock.timeout)
-
-    @property
-    def version(self) -> int:
-        """
-        Returns
-        -------
-        int
-            The version number for this environment's metadata format.  This is used for
-            backwards compatibility.
-        """
-        return self._json.version
-
-    @property
-    def id(self) -> str:
-        """
-        Returns
-        -------
-        str
-            A UUID for this environment.  This is used to label all images and
-            containers associated with this environment, to allow for easy lookup.
-        """
-        return self._json.id
-
-    @property
-    def head(self) -> CommitId:
-        """
-        Returns
-        -------
-        CommitId
-            The commit ID of the current head of the environment's repository.
-
-        Raises
-        ------
-        OSError
-            If the environment's repository cannot be accessed, or if HEAD cannot be
-            resolved to a commit ID.
-        """
-        try:
-            return run(
-                ["git", "rev-parse", "--verify", "--quiet", "HEAD^{commit}"],
-                cwd=self.root,
-                capture_output=True
-            ).stdout.strip()
-        except Exception as err:
-            raise OSError(
-                f"failed to resolve HEAD for git repository at {self.root}"
-            ) from err
-
-    @property
-    def commits(self) -> dict[CommitId, Commit]:
-        """
-        Returns
-        -------
-        dict[CommitId, Commit]
-            A mapping from git commit IDs to metadata objects representing their
-            corresponding commit objects.  Each commit contains a nested mapping from
-            image tags to downstream image objects, and each image contains a mapping
-            from container tags to downstream containers.  Note that only built
-            commits, images, and containers are represented in this mapping, and
-            commits are stored in LRU order, with the most recently accessed commits at
-            the front.
-        """
-        return self._json.commits
-
-    @property
-    def images(self) -> dict[SanitizedName, list[Image]]:
-        """
-        Returns
-        -------
-        dict[SanitizedName, list[Image]]
-            A dictionary mapping sanitized image names to lists of matching images
-            across all commits in this environment, which may be useful for performing
-            environment-level operations across all images.
-        """
-        result: dict[SanitizedName, list[Image]] = {}
-        for commit in self._json.commits.values():
-            for image in commit.images.values():
-                result.setdefault(image.tag, []).append(image)
-        return result
-
-    @property
-    def containers(self) -> dict[SanitizedName, list[Container]]:
-        """
-        Returns
-        -------
-        dict[SanitizedName, list[Container]]
-            A dictionary mapping sanitized container names to lists of matching
-            containers across all commits in this environment, which may be useful for
-            performing environment-level operations across all containers.
-        """
-        result: dict[SanitizedName, list[Container]] = {}
-        for commit in self._json.commits.values():
-            for image in commit.images.values():
-                for container in image.containers.values():
-                    result.setdefault(container.tag, []).append(container)
-        return result
-
-    @property
-    def config(self) -> Config:
-        """
-        Returns
-        -------
-        Config
-            The configuration object representing the layout of the environment
-            directory and registered image/container tags and their arguments.
-
-        Raises
-        ------
-        OSError
-            If the environment has not been acquired as a context manager, or if the
-            configuration was not loaded from disk.
-        """
-        if self._entered < 1 or self._config is None:
-            raise OSError(
-                "environment must be acquired as a context manager before accessing "
-                "configuration"
-            )
-        return self._config
-
-    def __contains__(self, commit: CommitId) -> bool:
-        """Check whether a given git commit ID or reference exists in the environment's
-        repository history.
-
-        Parameters
-        ----------
-        commit : CommitId
-            The git commit ID or reference to check, which must exist in the git
-            repository for this environment.  This can be a full or abbreviated commit
-            hash, or any other valid git reference that resolves to a commit.
-        """
-        return run(
-            ["git", "rev-parse", "--verify", "--quiet", f"{commit}^{{commit}}"],
-            cwd=self.root,
-            check=False,
-            capture_output=True
-        ).returncode == 0
-
-    def __getitem__(self, commit: CommitId) -> Commit:
-        """Access a specific git commit ID or reference within this environment,
-        loading or creating a corresponding `Commit` object as needed, according to
-        LRU semantics.
-
-        Parameters
-        ----------
-        commit : CommitId
-            The git commit ID or reference to access, which must exist in the git
-            repository for this environment.  This can be a full or abbreviated commit
-            hash, or any other valid git reference that resolves to a commit.
-
-        Returns
-        -------
-        Commit
-            A metadata object representing the indicated commit, which may have been
-            newly-built or reused from the in-memory cache.
-
-        Raises
-        ------
-        OSError
-            If the environment has not been acquired as a context manager, or if the
-            indicated commit does not exist in the git repository for this environment.
-        """
-        if self._entered < 1:
-            raise OSError(
-                "environment must be acquired as a context manager before accessing"
-            )
-        if not isinstance(commit, str):
-            raise TypeError("commit ID must be a string")
-
-        # check git to see if the commit exists and expand to its full hash
-        try:
-            commit = run(
-                ["git", "rev-parse", "--verify", "--quiet", f"{commit}^{{commit}}"],
-                cwd=self.root,
-                capture_output=True
-            ).stdout.strip()
-        except Exception as err:
-            raise OSError(
-                f"commit '{commit}' does not exist in git repository at {self.root}"
-            ) from err
-
-        # if the commit has already been built, update its position in the LRU order
-        # and return it directly
-        result = self._json.commits.get(commit)
-        if result is not None:
-            lru_order = {commit: result}
-            lru_order.update((k, v) for k, v in self._json.commits.items() if k != commit)
-            self._json.commits = lru_order
-            return result
-
-        # add a new entry to the front of the commit list
-        result = Commit.model_construct(
-            version=VERSION,
-            id=commit,
-            created=datetime.now(timezone.utc),
-            images={}
-        )
-        self._json.commits = {commit: result, **self._json.commits}
-        return result
-
-    def get[T](self, commit: CommitId, default: T = None) -> Commit | T:  # type: ignore[assignment]
-        """Access a specific git commit ID or reference within this environment, returning
-        a default value if it does not exist.
-
-        Parameters
-        ----------
-        commit : CommitId
-            The git commit ID or reference to access, which must exist in the git
-            repository for this environment.  This can be a full or abbreviated commit
-            hash, or any other valid git reference that resolves to a commit.
-        default : T, optional
-            The default value to return if the indicated commit does not exist in the
-            git repository for this environment.  Default is None.
-
-        Returns
-        -------
-        Commit | T
-            A metadata object representing the indicated commit, or the default value
-            if the commit does not exist.
-
-        Raises
-        ------
-        OSError
-            If the environment has not been acquired as a context manager.
-        TypeError
-            If the commit ID is not a string.
-        """
-        if self._entered < 1:
-            raise OSError(
-                "environment must be acquired as a context manager before accessing"
-            )
-        if not isinstance(commit, str):
-            raise TypeError("commit ID must be a string")
-
-        # if the commit has already been built, update its position in the LRU order
-        # and return it directly
-        result = self._json.commits.get(commit)
-        if result is not None:
-            lru_order = {commit: result}
-            lru_order.update((k, v) for k, v in self._json.commits.items() if k != commit)
-            self._json.commits = lru_order
-            return result
-
-        # otherwise, check git to see if the commit exists and expand to its full hash
-        rc = run(
-            ["git", "rev-parse", "--verify", "--quiet", f"{commit}^{{commit}}"],
-            cwd=self.root,
-            check=False,
-            capture_output=True
-        )
-        if rc.returncode != 0:
-            return default
-        commit = rc.stdout.strip()
-
-        # add a new entry to the front of the commit list
-        result = Commit.model_construct(
-            version=VERSION,
-            id=commit,
-            created=datetime.now(timezone.utc),
-            images={}
-        )
-        self._json.commits = {commit: result, **self._json.commits}
-        return result
-
-    def remove(self, *, force: bool, timeout: int, missing_ok: bool) -> None:
-        """Remove this environment via podman, including all descendant images and
-        containers.  Note that this does not delete the referencing tags, meaning the
-        images and containers will be rebuilt again if referenced in the future.
-
-        Parameters
-        ----------
-        force : bool
-            If True, remove images even if they have dependent containers, removing
-            the containers as well.  If False, only remove images that have no
-            dependent containers.
-        timeout : int
-            The maximum time in seconds to wait for dependent containers to stop before
-            forcefully killing them.  -1 indicates an infinite wait.
-        missing_ok : bool
-            If True, do not raise an error if the environment or any descendant image or
-            container is already removed or otherwise missing.
-
-        Raises
-        ------
-        OSError
-            If `force` is False and there are still images or containers referencing
-            this environment.
-        CommandError
-            If any of the podman commands fail and `missing_ok` is False.
-        """
-        # find all descendant containers + images
-        containers = _podman_ids("container", labels=[f"BERTRAND_ENV={self.id}"])
-        images = _podman_ids("image", labels=[f"BERTRAND_ENV={self.id}"])
-
-        # remove containers first
-        if containers:
-            cmd = [
-                "container",
-                "rm",
-                "--depend",  # remove dependents
-                "-v",  # remove anonymous volumes
-                "-t", str(timeout),
-            ]
-            if force:
-                cmd.append("-f")
-            if missing_ok:
-                cmd.append("-i")
-            podman_cmd([*cmd, *containers])
-
-        # remove images
-        if images:
-            cmd = ["image", "rm"]
-            if force:
-                cmd.append("-f")
-            if missing_ok:
-                cmd.append("-i")
-            podman_cmd([*cmd, *images])
-
-        # remove any now-dangling volumes
-        _remove_dangling_volumes(force=force, missing_ok=missing_ok)
-
-        # remove environment metadata and lock
-        try:
-            self._json.commits.clear()
-            shutil.rmtree(_env_dir(self.root), ignore_errors=True)
-        except:
-            pass
 
 
 Validator: TypeAlias = Callable[[JSONView], Any]
