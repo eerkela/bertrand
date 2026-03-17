@@ -3991,6 +3991,7 @@ class Config:
         # worktree path -> (resource_id, profiles in which it appears)
         lookup: dict[PosixPath, tuple[str, set[str]]] = {}
 
+        # start with direct profile placements
         for profile, placements in PROFILES.items():
             for curr_id, path in placements.items():
                 if curr_id not in CATALOG:
@@ -4001,7 +4002,7 @@ class Config:
                     )
                 if path.is_absolute():
                     _check_absolute_path(path)
-                    continue
+                    continue  # skip out-of-tree placements
                 path = _check_relative_path(path)
                 prev_id, profiles = lookup.setdefault(path, (curr_id, set()))
                 if prev_id != curr_id:
@@ -4011,6 +4012,7 @@ class Config:
                     )
                 profiles.add(profile)
 
+        # continue with capability placements, which may match multiple profiles
         for variants in CAPABILITIES.values():
             for profile, placements in variants.items():
                 for curr_id, path in placements.items():
@@ -4023,7 +4025,7 @@ class Config:
                         )
                     if path.is_absolute():
                         _check_absolute_path(path)
-                        continue
+                        continue  # skip out-of-tree placements
                     path = _check_relative_path(path)
                     prev_id, profiles = lookup.setdefault(path, (curr_id, set()))
                     if prev_id != curr_id:

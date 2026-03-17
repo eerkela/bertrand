@@ -23,7 +23,6 @@ from typing import (
     Literal,
     Sequence,
     Self,
-    TypeAlias,
     TypedDict,
     cast,
     overload,
@@ -39,13 +38,9 @@ from pydantic import (
     StringConstraints,
 )
 
-from .rpc import (
-    CONTAINER_SOCKET,
-    start_code_service,
-)
+from .rpc import CONTAINER_SOCKET, Listener
 from .config import (
     CONTAINER_ID_ENV,
-    DEFAULT_MAX_COMMITS,
     DEFAULT_TAG,
     HOST_SOCKET,
     PROJECT_ROOT_ENV,
@@ -106,8 +101,11 @@ CACHES: str = "/tmp/.cache"
 TIMEOUT: int = 30
 ENV_DIR_NAME: str = ".bertrand"
 ENV_FILE_NAME: str = "env.json"
-ENV_REGISTRY_FILE = "env-registry.json"
-ENV_REGISTRY_LOCK = "env-registry.lock"
+REGISTRY_FILE = on_init.state_dir / "registry.json"
+REGISTRY_LOCK = on_init.state_dir / "registry.lock"
+
+# TODO: review all these constants
+DEFAULT_MAX_COMMITS: int = 10
 
 
 # shared fact names during init/enter pipelines
@@ -148,14 +146,6 @@ def _cid_file(env_root: Path, name: str) -> Path:
 
 def _iid_file(env_root: Path, name: str) -> Path:
     return _env_tmp_dir(env_root) / f"{name}.iid"
-
-
-def _registry_file() -> Path:
-    return on_init.state_dir / ENV_REGISTRY_FILE
-
-
-def _registry_lock() -> Path:
-    return on_init.state_dir / ENV_REGISTRY_LOCK
 
 
 def _init_assume_yes(ctx: Pipeline.InProgress) -> bool:
@@ -222,14 +212,18 @@ def _to_utc(value: datetime) -> datetime:
     return value.astimezone(timezone.utc)
 
 
-HostId: TypeAlias = Annotated[str, BeforeValidator(_check_uuid_str)]
-EnvironmentId: TypeAlias = Annotated[str, BeforeValidator(_check_uuid_str)]
-CommitId: TypeAlias = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
-ImageId: TypeAlias = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
-ContainerId: TypeAlias = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
-SanitizedName: TypeAlias = Annotated[str, AfterValidator(_check_sanitized_str)]
-CreatedAt: TypeAlias = Annotated[AwareDatetime, AfterValidator(_to_utc)]
-ArgsList: TypeAlias = Annotated[
+# TODO: reuse some of the type aliases from config.py, including NonEmpty[NoCRLF] for
+# args lists, etc.
+
+
+type HostId = Annotated[str, BeforeValidator(_check_uuid_str)]
+type EnvironmentId = Annotated[str, BeforeValidator(_check_uuid_str)]
+type CommitId = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+type ImageId = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+type ContainerId = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+type SanitizedName = Annotated[str, AfterValidator(_check_sanitized_str)]
+type CreatedAt = Annotated[AwareDatetime, AfterValidator(_to_utc)]
+type ArgsList = Annotated[
     list[Annotated[str, StringConstraints(min_length=1)]],
     BeforeValidator(_check_args_field)
 ]
@@ -667,56 +661,7 @@ def _write_metadata(root: Path, metadata: Environment.JSON) -> None:
     )
 
 
-async def _discover_environment_mounts() -> list[Path]:
-    container_ids = await _podman_ids("container")
-    if not container_ids:
-        return []
-
-    # inspect all containers
-    try:
-        inspects = json_parser.loads((await podman_cmd(
-            ["container", "inspect", *container_ids],
-            capture_output=True
-        )).stdout)
-    except:
-        return []
-    if not isinstance(inspects, list):
-        return []
-
-    # retrieve unique bind mounts
-    seen: set[Path] = set()
-    result: list[Path] = []
-    for inspect in inspects:
-        if not isinstance(inspect, dict):
-            continue
-        try:
-            mount = Container.mount(inspect)  # type: ignore[arg-type]
-        except:
-            continue
-        if mount is None or mount in seen:
-            continue
-        seen.add(mount)
-        result.append(mount)
-
-    return result
-
-
-def _check_env(root: Path, env_id: EnvironmentId | None = None) -> Environment.JSON | None:
-    try:
-        root = root.expanduser().resolve()
-        env_file = _env_file(root)
-        if env_file.exists() and env_file.is_file():
-            metadata = _read_metadata(root)
-            if metadata is not None:
-                Config.load(root)
-                if env_id is None or metadata.id == env_id:
-                    return metadata
-    except:
-        pass
-    return None
-
-
-class EnvironmentRegistry(BaseModel):
+class Registry(BaseModel):
     """Serialized registry of environments that have been built on this system.
 
     A global registry of this form is stored in the `init` pipeline's state directory,
@@ -745,95 +690,184 @@ class EnvironmentRegistry(BaseModel):
     host: HostId
     environments: dict[EnvironmentId, AbsolutePath]
 
+    @staticmethod
+    def lock(*, timeout: float) -> Lock:
+        """Acquire the registry lock to synchronize access to the registry file.
 
-# NOTE: lock order is always registry > environment, and never the reverse, in order to
-# avoid deadlocks.  As a result of this, the `_dump_registry`, `_load_registry`, and
-# `_reconcile_registry` methods all assume that the registry lock has already been
-# acquired before they can be safely called.
+        Parameters
+        ----------
+        timeout : float
+            The maximum time to wait for the lock in seconds.
 
+        Returns
+        -------
+        Lock
+            An async context manager that must be entered to acquire the lock, and
+            releases it on exit.
+        """
+        return Lock(REGISTRY_LOCK, timeout=timeout)
 
-def _dump_registry(registry: EnvironmentRegistry) -> None:
-    atomic_write_text(
-        _registry_file(),
-        json_parser.dumps({
-            "host": registry.host,
-            "environments": {env_id: str(root) for env_id, root in sorted(
-                registry.environments.items(),
-                key=lambda item: item[0]
-            )}
-        }, indent=2) + "\n",
-        encoding="utf-8",
-        private=True
-    )
+    # NOTE: lock order is always registry > environment, and never the reverse, in
+    # order to avoid deadlocks.  As a result, the registry methods all assume that the
+    # registry lock has already been acquired before they can be safely called.
 
-
-def _load_registry() -> EnvironmentRegistry:
-    # touch a new registry if none exists
-    path = _registry_file()
-    changed = False
-    if not path.exists():
-        registry = EnvironmentRegistry(host=uuid.uuid4().hex, environments={})
-        changed = True
-
-    # otherwise, try to parse registry JSON
-    else:
+    @staticmethod
+    async def _check_env(
+        root: Path,
+        env_id: EnvironmentId | None = None
+    ) -> Environment.JSON | None:
         try:
-            data = json_parser.loads(path.read_text(encoding="utf-8"))
-            if not isinstance(data, dict):
-                raise ValueError("registry JSON must be an object")
-            registry = EnvironmentRegistry.model_validate(data)
-
-        # if the registry is corrupted or otherwise invalid, attempt to rebuild it using
-        # active mounts as the source of truth (best-effort)
+            root = root.expanduser().resolve()
+            env_file = _env_file(root)
+            if env_file.exists() and env_file.is_file():
+                metadata = _read_metadata(root)
+                if metadata is not None:
+                    await Config.load(root)
+                    if env_id is None or metadata.id == env_id:
+                        return metadata
         except:
-            registry = EnvironmentRegistry(
-                host=uuid.uuid4().hex,
-                environments={}
-            )
-            for root in _discover_environment_mounts():
-                with lock_worktree(root, timeout=TIMEOUT):
-                    env = _check_env(root)
-                    if env is None:
-                        continue
-                registry.environments.setdefault(env.id, root.expanduser().resolve())
+            pass
+        return None
+
+    @staticmethod
+    async def _discover_environment_mounts() -> list[Path]:
+        container_ids = await _podman_ids("container")
+        if not container_ids:
+            return []
+
+        # inspect all containers
+        try:
+            inspects = json_parser.loads((await podman_cmd(
+                ["container", "inspect", *container_ids],
+                capture_output=True
+            )).stdout)
+        except:
+            return []
+        if not isinstance(inspects, list):
+            return []
+
+        # retrieve unique bind mounts
+        seen: set[Path] = set()
+        result: list[Path] = []
+        for inspect in inspects:
+            if not isinstance(inspect, dict):
+                continue
+            try:
+                mount = Container.mount(inspect)  # type: ignore[arg-type]
+            except:
+                continue
+            if mount is None or mount in seen:
+                continue
+            seen.add(mount)
+            result.append(mount)
+
+        return result
+
+    @classmethod
+    async def load(cls) -> Self:
+        """Load the environment registry from disk, or create a new one if it doesn't
+        exist.  If the registry is invalid or corrupted, then a best-effort attempt is
+        made to rebuild the registry by inspecting active container mounts and their
+        metadata.  Any missed environments will be re-registered the next time they are
+        accessed, and any stale entries will be automatically removed.
+
+        Returns
+        -------
+        Registry
+            The loaded or newly created environment registry.
+
+        Raises
+        ------
+        ValueError
+            If the registry JSON is invalid, or if any environment metadata is invalid
+            or doesn't match the expected format.
+        """
+        # touch a new registry if none exists
+        changed = False
+        if not REGISTRY_FILE.exists():
+            registry = cls(host=uuid.uuid4().hex, environments={})
             changed = True
 
-        # remove any stale entries
-        normalized: dict[EnvironmentId, AbsolutePath] = {}
-        for env_id, root in registry.environments.items():
-            with lock_worktree(root, timeout=TIMEOUT):
-                env = _check_env(root, env_id=env_id)
-                if env is None or normalized.setdefault(env.id, root) != root:
-                    changed = True
-        registry.environments = normalized
+        # otherwise, try to parse registry JSON
+        else:
+            try:
+                data = json_parser.loads(REGISTRY_FILE.read_text(encoding="utf-8"))
+                if not isinstance(data, dict):
+                    raise ValueError("registry JSON must be an object")
+                registry = cls.model_validate(data)
 
-    # write registry back to disk if anything changed
-    if changed:
-        _dump_registry(registry)
-    return registry
+            # if the registry is corrupted or otherwise invalid, attempt to rebuild it using
+            # active mounts as the source of truth (best-effort)
+            except:
+                registry = cls(host=uuid.uuid4().hex, environments={})
+                for root in await cls._discover_environment_mounts():
+                    with lock_worktree(root, timeout=TIMEOUT):
+                        env = await cls._check_env(root)
+                        if env is None:
+                            continue
+                    registry.environments.setdefault(env.id, root.expanduser().resolve())
+                changed = True
 
+            # remove any stale entries
+            normalized: dict[EnvironmentId, AbsolutePath] = {}
+            for env_id, root in registry.environments.items():
+                with lock_worktree(root, timeout=TIMEOUT):
+                    env = await cls._check_env(root, env_id=env_id)
+                    if env is None or normalized.setdefault(env.id, root) != root:
+                        changed = True
+            registry.environments = normalized
 
-@overload
-def _reconcile_registry(add: None = ...) -> tuple[None, list[Path]]: ...
-@overload
-def _reconcile_registry(add: Path) -> tuple[Environment.JSON, list[Path]]: ...
-def _reconcile_registry(add: Path | None = None) -> tuple[Environment.JSON | None, list[Path]]:
-    env: Environment.JSON | None = None
-    registry = _load_registry()
-    registry_changed = False
+        # write registry back to disk if anything changed
+        if changed:
+            await registry.dump()
+        return registry
 
-    # claim the requested root
-    if add is not None:
-        add = add.expanduser().resolve()
-        with lock_worktree(add, timeout=TIMEOUT):
-            env = _check_env(add)
+    async def dump(self) -> None:
+        """Write the registry back to disk.  This should always be called before
+        releasing the registry lock, in order to persist any changes made by the
+        `load()` and/or `add()` methods.
+        """
+        atomic_write_text(
+            REGISTRY_FILE,
+            json_parser.dumps({
+                "host": self.host,
+                "environments": {env_id: str(root) for env_id, root in sorted(
+                    self.environments.items(),
+                    key=lambda item: item[0]
+                )}
+            }, separators=(",", ":")) + "\n",
+            encoding="utf-8",
+            private=True
+        )
+
+    async def add(self, path: Path) -> Environment.JSON:
+        """Claim a new environment path in the registry and resolve relocation or
+        duplication if the path or environment metadata already exists, or if the
+        environment was created on a different host.
+
+        Parameters
+        ----------
+        path : Path
+            The root path of the environment to claim in the registry.
+
+        Returns
+        -------
+        Environment.JSON
+            The environment metadata read from the environment path, after correcting
+            for relocation/duplication.
+        """
+        path = path.expanduser().resolve()
+
+        # claim the requested root
+        with lock_worktree(path, timeout=TIMEOUT):
+            env = await self._check_env(path)
             env_changed = False
             if env is None:
                 env = Environment.JSON(
                     version=VERSION,
-                    host=registry.host,
+                    host=self.host,
                     id=uuid.uuid4().hex,
-                    commits={}
+                    images={}
                 )
                 env_changed = True
 
@@ -842,55 +876,48 @@ def _reconcile_registry(add: Path | None = None) -> tuple[Environment.JSON | Non
             # this by clearing the environment's built commits to force a rebuild of
             # all downstream images and containers on the new host, and then
             # proceed like normal
-            if env.host != registry.host:
-                env.commits.clear()
-                env.host = registry.host
+            if env.host != self.host:
+                env.images.clear()
+                env.host = self.host
                 env_changed = True
 
             # if the environment is not already registered, insert it directly
-            owner = registry.environments.get(env.id)
+            owner = self.environments.get(env.id)
             if owner is None:
-                registry.environments[env.id] = add
-                registry_changed = True
+                self.environments[env.id] = path
 
             # otherwise, if the root has drifted, then it signals a same-host copy
             # or move
-            elif owner != add:
+            elif owner != path:
                 # if the previous root exists and matches the expected UUID, then
                 # the new environment constitutes a copy, and we need to clear its
                 # commits and re-key it to guarantee uniqueness
-                owner_env = _check_env(owner, env_id=env.id)
+                owner_env = await Registry._check_env(owner, env_id=env.id)
                 if owner_env is not None:
-                    env.commits.clear()
+                    env.images.clear()
                     env.id = uuid.uuid4().hex
-                    while env.id in registry.environments:
+                    while env.id in self.environments:
                         env.id = uuid.uuid4().hex
                     env_changed = True
 
                 # otherwise, the new environment constitutes a move, and we can
                 # transfer ownership by deleting the old containers (but not
                 # images), to avoid coupling with the previous path
-                for commit in env.commits.values():
-                    for image in commit.images.values():
-                        while image.containers:
-                            _, container = image.containers.popitem()
-                            container.remove(force=True, timeout=TIMEOUT, missing_ok=True)
-                            env_changed = True
+                for image in env.images.values():
+                    while image.containers:
+                        _, container = image.containers.popitem()
+                        container.remove(force=True, timeout=TIMEOUT, missing_ok=True)
+                        env_changed = True
 
                 # in both cases, we need to update the environment metadata and
                 # then the registry to point to the new root
-                registry.environments[env.id] = add
-                registry_changed = True
+                self.environments[env.id] = path
 
             # persist new environment metadata if it changed
             if env_changed:
-                _write_metadata(add, env)
+                await _write_metadata(path, env)
 
-    # persist new registry metadata if it changed
-    if registry_changed:
-        _dump_registry(registry)
-
-    return env, list(registry.environments.values())
+        return env
 
 
 @on_init(requires=[assert_container_cli_ready], ephemeral=True)
@@ -1017,8 +1044,10 @@ async def register_environment(ctx: Pipeline.InProgress) -> None:
     root = Path(env).expanduser().resolve()
 
     # add to global environment registry
-    with Lock(_registry_lock(), timeout=TIMEOUT):
-        _reconcile_registry(root)
+    async with Registry.lock(timeout=TIMEOUT):
+        registry = await Registry.load()
+        await registry.add(root)
+        await registry.dump()
 
 
 async def podman_cmd(
@@ -1308,6 +1337,10 @@ class Container(BaseModel):
 
         # remove any now-dangling volumes
         await _remove_dangling_volumes(force=force, missing_ok=missing_ok)
+
+    # TODO: modify this inspect() method to take an arbitrary number of ids and return
+    # a list of validated results, to cut down on the number of hand-rolled podman
+    # calls.
 
     @classmethod
     async def inspect(cls, id: ContainerId) -> Self | None:
@@ -1654,28 +1687,30 @@ class Environment:
         self._lock = lock_worktree(self.worktree, timeout=timeout)
         self._entered = 0
 
-    def __enter__(self) -> Environment:
+    async def __aenter__(self) -> Self:
         # obey registry > environment lock order
-        with Lock(_registry_lock(), timeout=self.timeout):
-            self._lock.__enter__()
+        async with Registry.lock(timeout=self.timeout):
+            await self._lock.__aenter__()
             self._entered += 1
             if self._entered > 1:
                 return self  # re-entrant case
 
             # add to/synchronize the environment registry with on-disk metadata
             try:
-                self._json, _ = _reconcile_registry(self.root)
-                self._config = Config.load(self.root)
-                self._config.__enter__()
+                registry = await Registry.load()
+                self._json = await registry.add(self.worktree)
+                await registry.dump()
+                self._config = await Config.load(self.worktree)
+                await self._config.__aenter__()
                 return self
 
             except Exception as err:
                 self._entered -= 1
                 self._config = None
-                self._lock.__exit__(type(err), err, getattr(err, "__traceback__", None))
+                await self._lock.__aexit__(type(err), err, getattr(err, "__traceback__", None))
                 raise
 
-    def __exit__(
+    async def __aexit__(
         self,
         exc_type: type[BaseException] | None,
         exc_value: BaseException | None,
@@ -1685,38 +1720,18 @@ class Environment:
             raise RuntimeError("environment context manager was not entered")
 
         try:
-            env_dir = _env_dir(self.root)
+            # write metadata back to disk
+            env_dir = _env_dir(self.worktree)
             if self._entered == 1 and env_dir.exists():
-                # evict old commits with no active containers if we exceed the max
-                # commit count
-                max_commits = self.config.get("max_commits", DEFAULT_MAX_COMMITS)
-                if not isinstance(max_commits, int) or max_commits < 1:
-                    raise TypeError(
-                        "'max_commits' in project configuration must be a positive integer"
-                    )
-                if len(self._json.commits) > max_commits:
-                    commits: list[Commit] = []
-                    removed: list[Commit] = []
-                    n = len(self._json.commits) - max_commits
-                    for c in reversed(self._json.commits.values()):
-                        if len(removed) < n and not c.running:
-                            removed.append(c)
-                        else:
-                            commits.append(c)
-                    self._json.commits = {c.id: c for c in reversed(commits)}
-                    for c in removed:
-                        c.remove(self.root, timeout=self.timeout)
-
-                # write metadata back to disk
-                _write_metadata(self.root, self._json)
+                _write_metadata(self.worktree, self._json)
 
         # always release the lock and local context depth
         finally:
             if self._entered == 1 and self._config is not None:
-                self._config.__exit__(exc_type, exc_value, traceback)
+                await self._config.__aexit__(exc_type, exc_value, traceback)
                 self._config = None
             self._entered -= 1
-            self._lock.__exit__(exc_type, exc_value, traceback)
+            await self._lock.__aexit__(exc_type, exc_value, traceback)
 
     def __hash__(self) -> int:
         return hash(self.worktree)
@@ -2127,13 +2142,15 @@ class Environment:
             raise
 
 
-Validator: TypeAlias = Callable[[JSONView], Any]
+type Validator = Callable[[JSONView], Any]
 
 
-def _all_environments() -> list[Path]:
+async def _all_environments() -> list[Path]:
     try:
-        with Lock(_registry_lock(), timeout=TIMEOUT):
-            _, environments = _reconcile_registry()
+        async with Registry.lock(timeout=TIMEOUT):
+            registry = await Registry.load()
+            environments = list(registry.environments.values())
+            await registry.dump()
             return environments
     except OSError as err:
         print(
@@ -2843,7 +2860,7 @@ class Enter(_Command):
             )
 
         # start/refresh systemd code service, but do not fail if it is unavailable
-        ctx[CODE_SERVER_AVAILABLE] = start_code_service(ctx, env_root=env.root, strict=False)
+        ctx[CODE_SERVER_AVAILABLE] = Listener.start(ctx, env_root=env.root, strict=False)
 
         # start container if necessary
         Start.container(
@@ -2957,7 +2974,7 @@ class Code(_Command):
         **kwargs: Any
     ) -> None:
         # start/refresh systemd code service
-        ctx[CODE_SERVER_AVAILABLE] = start_code_service(ctx, env_root=env.root, strict=True)
+        ctx[CODE_SERVER_AVAILABLE] = Listener.start(ctx, env_root=env.root, strict=True)
 
         # start container
         Start.container(
