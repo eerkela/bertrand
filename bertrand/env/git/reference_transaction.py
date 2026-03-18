@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# bertrand-managed: reference-transaction
+# NOTE: the above marker is used to allow Bertrand to automatically rewrite this file
+# in-place when the packaged version is updated, rather than warning in the event of a
+# mismatch.
 """A git reference-transaction hook that tracks changes to branches and mirrors them
 in the project directory, so that Bertrand can avoid any manual branch management and
 treat git as the sole source of truth for its isolated worktree model.

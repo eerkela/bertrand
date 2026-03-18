@@ -14,6 +14,7 @@ import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass, asdict, field
 from datetime import datetime, timezone
+from importlib import resources as importlib_resources
 from pathlib import Path
 from types import TracebackType
 from typing import (
@@ -105,6 +106,8 @@ REGISTRY_LOCK = on_init.state_dir / "registry.lock"
 
 # TODO: review all these constants
 DEFAULT_MAX_COMMITS: int = 10
+REFERENCE_TRANSACTION_HOOK: str = "hooks/reference-transaction"
+REFERENCE_TRANSACTION_MARKER: str = "# bertrand-managed: reference-transaction"
 
 
 # shared fact names during init/enter pipelines
@@ -145,6 +148,37 @@ def _cid_file(env_root: Path, name: str) -> Path:
 
 def _iid_file(env_root: Path, name: str) -> Path:
     return _env_tmp_dir(env_root) / f"{name}.iid"
+
+
+def _load_reference_transaction_hook() -> str:
+    source = importlib_resources.files("bertrand.env").joinpath(
+        "git",
+        "reference_transaction.py",
+    ).read_text(encoding="utf-8")
+    lines = source.splitlines()
+    if not lines:
+        raise ValueError("packaged reference_transaction.py is empty")
+    if lines[0].strip() != "#!/usr/bin/env python3":
+        raise ValueError(
+            "packaged reference_transaction.py must start with '#!/usr/bin/env python3'"
+        )
+    return "\n".join([
+        lines[0],
+        REFERENCE_TRANSACTION_MARKER,
+        *lines[1:]
+    ]).rstrip("\n") + "\n"
+
+
+async def _resolve_git_path(root: Path, git_path: str) -> Path:
+    result = await run(
+        ["git", "rev-parse", "--git-path", git_path],
+        cwd=root,
+        capture_output=True,
+    )
+    resolved = Path(result.stdout.strip())
+    if not resolved.is_absolute():
+        resolved = root / resolved
+    return resolved.resolve()
 
 
 def _init_assume_yes(ctx: Pipeline.InProgress) -> bool:
@@ -1004,7 +1038,7 @@ async def init_repository(ctx: Pipeline.InProgress) -> None:
     if git_dir.exists():
         return
 
-    # initialize repo and make an initial commit with the newly-rendered environment
+    # initialize repo and make an initial commit with the rendered environment
     stage = "initialize git repository"
     try:
         await run(["git", "init", "--quiet"], cwd=root, capture_output=True)
@@ -1016,11 +1050,80 @@ async def init_repository(ctx: Pipeline.InProgress) -> None:
             cwd=root,
             capture_output=True
         )
-    except CommandError as err:
+    except Exception as err:
         print(f"bertrand: warning: failed to {stage} in {root}\n{err}", file=sys.stderr)
 
 
 @on_init(requires=[init_repository], ephemeral=True)
+async def install_git_hooks(  # pylint: disable=missing-raises-doc
+    ctx: Pipeline.InProgress
+) -> None:
+    """Install git hooks in the environment repository to enable automatic lifecycle
+    management for branch worktrees.
+
+    Parameters
+    ----------
+    ctx : Pipeline.InProgress
+        The in-flight pipeline context.
+
+    Raises
+    ------
+    TypeError
+        If the "env" fact is missing or not a string.
+    """
+    env = ctx.get("env")
+    if env is None:
+        return
+    if not isinstance(env, str):
+        raise TypeError("environment path must be a string")
+    root = Path(env).expanduser().resolve()
+
+    # check if git is available
+    if not shutil.which("git"):
+        return
+
+    # check if repo is not initialized
+    git_dir = root / ".git"
+    if not git_dir.exists():
+        return
+
+    # load git hooks from packaged resources
+    stage = "load packaged reference-transaction hook"
+    try:
+        hook_text = _load_reference_transaction_hook()
+        stage = f"resolve git hook path for '{REFERENCE_TRANSACTION_HOOK}'"
+        hook_path = await _resolve_git_path(root, REFERENCE_TRANSACTION_HOOK)
+
+        # check for conflicts
+        install_hook = True
+        if hook_path.exists():  # do not clobber non-Bertrand hooks
+            if not hook_path.is_file():
+                raise OSError(f"git hook path is not a file: {hook_path}")
+            existing = hook_path.read_text(encoding="utf-8")
+            if existing == hook_text:
+                install_hook = False  # already installed and up-to-date
+            elif not REFERENCE_TRANSACTION_MARKER in existing:
+                print(
+                    f"existing git hook at {hook_path} is not managed by Bertrand; "
+                    f"skipping to avoid clobbering user-managed hook.",
+                    file=sys.stderr
+                )
+                install_hook = False
+
+        # install hook into git directory
+        if install_hook:
+            stage = f"write git hook to {hook_path}"
+            atomic_write_text(hook_path, hook_text, encoding="utf-8")
+            stage = f"set executable permissions on git hook {hook_path}"
+            try:
+                hook_path.chmod(0o755)
+            except OSError:
+                pass
+    except Exception as err:
+        print(f"bertrand: warning: failed to {stage} in {root}\n{err}", file=sys.stderr)
+
+
+@on_init(requires=[install_git_hooks], ephemeral=True)
 async def register_environment(ctx: Pipeline.InProgress) -> None:
     """Register the environment in the global registry to enable management by CLI
     commands.
