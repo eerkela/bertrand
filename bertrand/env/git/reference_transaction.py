@@ -9,31 +9,15 @@ import os
 import subprocess
 import sys
 
-from dataclasses import dataclass
 from pathlib import Path
-from collections.abc import Sequence
-from typing import NoReturn, Self, TextIO
 
 
 HEADS_PREFIX = "refs/heads/"
 STATES = {"prepared", "committed", "aborted"}
-ZERO_OID_CHARS = {"0"}
-
-# standardized exit codes
-EXIT_INVALID_INVOCATION = 2
-EXIT_MALFORMED_TRANSACTION = 3
-EXIT_CONTEXT_LOAD_FAILED = 4
-EXIT_RECONCILE_FAILED = 5
-
-
-def _fail(stderr: TextIO, code: int, message: str) -> NoReturn:
-    """Write a diagnostic and abort hook execution with the given exit code."""
-    print(f"bertrand: {message}", file=stderr)
-    raise SystemExit(code)
 
 
 def git(
-    args: Sequence[str],
+    args: list[str],
     *,
     input: str | None = None,  # pylint: disable=redefined-builtin
     env: dict[str, str] | None = None
@@ -45,7 +29,7 @@ def git(
 
     Parameters
     ----------
-    args : Sequence[str]
+    args : list[str]
         Git command arguments, excluding the initial "git".
     input : str | None, optional
         Optional text to pass as stdin to the git process.  Defaults to None (no
@@ -94,12 +78,16 @@ def strip_env(env: dict[str, str] | None = None) -> dict[str, str]:
     return env
 
 
-@dataclass(frozen=True)
 class RefUpdate:
     """A single reference update received from git on stdin."""
     old: str
     new: str
     ref: str
+
+    def __init__(self, old: str, new: str, ref: str) -> None:
+        self.old = old
+        self.new = new
+        self.ref = ref
 
     @property
     def is_head(self) -> bool:
@@ -118,14 +106,7 @@ class RefUpdate:
         -------
         str
             The short branch name for `refs/heads/*` updates.
-
-        Raises
-        ------
-        ValueError
-            If this update does not target `refs/heads/*`.
         """
-        if not self.is_head:
-            raise ValueError(f"not a branch ref: {self.ref}")
         return self.ref[len(HEADS_PREFIX):]
 
     @property
@@ -149,7 +130,7 @@ class RefUpdate:
         return any((c != "0" for c in self.old)) and all((c == "0" for c in self.new))
 
     @classmethod
-    def parse(cls, stdin: str, *, stderr: TextIO) -> list[Self]:
+    def parse(cls, stdin: str) -> list[RefUpdate]:
         """Parse and validate transaction update lines from stdin.
 
         Parameters
@@ -157,9 +138,6 @@ class RefUpdate:
         stdin : str
             The raw stdin input containing reference update lines, typically read from
             the `reference-transaction` hook's standard input stream.
-        stderr : TextIO
-            The standard error stream to write diagnostics to in case of malformed
-            input.
 
         Returns
         -------
@@ -168,57 +146,61 @@ class RefUpdate:
 
         Raises
         ------
-        SystemExit
+        ValueError
             If any line is malformed.
         """
-        updates: list[Self] = []
+        updates: list[RefUpdate] = []
         for index, raw in enumerate(stdin.splitlines(), start=1):
             line = raw.strip()
             if not line:
                 continue
             parts = line.split()
             if len(parts) != 3:
-                _fail(
-                    stderr,
-                    EXIT_MALFORMED_TRANSACTION,
-                    "malformed git transaction line "
-                    f"{index}: expected '<old> <new> <ref>', got: {raw!r}",
+                raise ValueError(
+                    f"malformed git transaction line {index}: expected "
+                    f"'<old> <new> <ref>', got: {raw!r}"
                 )
             old, new, ref = (part.strip() for part in parts)
             if not ref:
-                _fail(
-                    stderr,
-                    EXIT_MALFORMED_TRANSACTION,
-                    f"malformed git transaction line {index}: empty ref",
+                raise ValueError(
+                    f"malformed git transaction line {index}: ref must not be empty"
                 )
             updates.append(cls(old=old, new=new, ref=ref))
         return updates
 
 
-@dataclass(frozen=True)
 class Project:
     """Resolved repository context for hook operations."""
     git_dir: Path
     project_root: Path
     branches: set[str]
 
-    @dataclass(frozen=True)
     class Worktree:
         """A single entry from `git worktree list --porcelain`."""
         path: Path
         branch: str | None = None
 
+        def __init__(self, path: Path, branch: str | None = None) -> None:
+            self.path = path
+            self.branch = branch
+
     worktrees: list[Worktree]
 
-    @classmethod
-    def load(cls, *, stderr: TextIO) -> Self:
-        """Resolve git context and current repository/worktree state.
+    def __init__(
+        self,
+        git_dir: Path,
+        project_root: Path,
+        branches: set[str],
+        worktrees: list[Worktree],
+    ) -> None:
+        self.git_dir = git_dir
+        self.project_root = project_root
+        self.branches = branches
+        self.worktrees = worktrees
 
-        Parameters
-        ----------
-        stderr : TextIO
-            The standard error stream to write diagnostics to in case of context load
-            failures.
+    @classmethod
+    def load(cls) -> Project:
+        """Resolve git context and current repository/worktree state.
 
         Returns
         -------
@@ -228,38 +210,36 @@ class Project:
 
         Raises
         ------
-        SystemExit
-            If repository context cannot be loaded.
+        FileNotFoundError
+            If the git directory or project root cannot be resolved.
+        OSError
+            If git commands fail to list branches or worktrees.
         """
+        # resolve absolute path to the repository's .git/ directory
         result = git(["rev-parse", "--absolute-git-dir"])
         if result.returncode != 0:
-            _fail(
-                stderr,
-                EXIT_CONTEXT_LOAD_FAILED,
+            raise FileNotFoundError(
                 "failed to resolve absolute git dir:\n"
-                f"{(result.stderr or result.stdout).strip()}",
+                f"{(result.stderr or result.stdout).strip()}"
             )
         git_dir = Path(result.stdout.strip()).expanduser().resolve()
         if not git_dir.exists() or not git_dir.is_dir():
-            _fail(
-                stderr,
-                EXIT_CONTEXT_LOAD_FAILED,
-                f"resolved git dir does not exist or is not a directory: {git_dir}",
+            raise FileNotFoundError(
+                f"resolved git dir does not exist or is not a directory: {git_dir}"
             )
 
+        # scan upward from the git dir to find the project root, which is assumed to be
+        # the parent of the nearest ancestor directory that ends with ".git"
         project_root: Path | None = None
         for ancestor in (git_dir, *git_dir.parents):
             if ancestor.name.endswith(".git"):
                 project_root = ancestor.parent
                 break
         if project_root is None:
-            _fail(
-                stderr,
-                EXIT_CONTEXT_LOAD_FAILED,
-                f"could not derive project root from git dir: {git_dir}",
-            )
+            raise FileNotFoundError(f"could not derive project root from git dir: {git_dir}")
         project_root = project_root.expanduser().resolve()
 
+        # list tracked branches from the repository
         result = git([
             f"--git-dir={str(git_dir)}",
             "for-each-ref",
@@ -267,21 +247,16 @@ class Project:
             "refs/heads",
         ])
         if result.returncode != 0:
-            _fail(
-                stderr,
-                EXIT_CONTEXT_LOAD_FAILED,
-                "failed to list local branches:\n"
-                f"{(result.stderr or result.stdout).strip()}",
+            raise OSError(
+                f"failed to list local branches:\n{(result.stderr or result.stdout).strip()}"
             )
         branches = {line.strip() for line in result.stdout.splitlines() if line.strip()}
 
+        # find local worktrees for checked-out branches, where applicable
         result = git([f"--git-dir={str(git_dir)}", "worktree", "list", "--porcelain"])
         if result.returncode != 0:
-            _fail(
-                stderr,
-                EXIT_CONTEXT_LOAD_FAILED,
-                "failed to list worktrees:\n"
-                f"{(result.stderr or result.stdout).strip()}",
+            raise OSError(
+                f"failed to list worktrees:\n{(result.stderr or result.stdout).strip()}"
             )
         worktrees: list[Project.Worktree] = []
         curr_path: Path | None = None
@@ -310,6 +285,120 @@ class Project:
             worktrees=worktrees,
         )
 
+    def _current_branches(self) -> dict[str, Path]:
+        current: dict[str, Path] = {}
+        for wt in self.worktrees:
+            if wt.branch is not None:
+                existing = current.setdefault(wt.branch, wt.path)
+                if existing != wt.path:
+                    raise FileExistsError(
+                        f"multiple worktrees mapped to branch '{wt.branch}': "
+                        f"{existing} and {wt.path}"
+                    )
+        return current
+
+    def _intended_changes(
+        self,
+        updates: list[RefUpdate]
+    ) -> tuple[list[str], list[str], list[tuple[str, str]]]:
+        # get creation/destruction intent from transaction updates
+        _created: dict[str, list[str]] = {}
+        _destroyed: dict[str, list[str]] = {}
+        created: list[str] = []
+        destroyed: list[str] = []
+        for update in updates:
+            if update.created:
+                created.append(update.branch)
+                _created.setdefault(update.new, []).append(update.branch)
+            elif update.destroyed:
+                destroyed.append(update.branch)
+                _destroyed.setdefault(update.old, []).append(update.branch)
+
+        # infer rename hints from unambiguous create + destroy pairs on the same object
+        renamed: list[tuple[str, str]] = []
+        for oid in sorted(set(_created) & set(_destroyed)):
+            c = _created[oid]
+            d = _destroyed[oid]
+            if len(c) == 1 and len(d) == 1:
+                old_branch = d[0]
+                new_branch = c[0]
+                renamed.append((old_branch, new_branch))
+                destroyed.remove(old_branch)
+                created.remove(new_branch)
+
+        return created, destroyed, renamed
+
+    @staticmethod
+    def _branch_conflict(left: str, right: str) -> bool:
+        if left == right:
+            return False
+        left_parts = left.split("/")
+        right_parts = right.split("/")
+        min_len = min(len(left_parts), len(right_parts))
+        return left_parts[:min_len] == right_parts[:min_len]
+
+    def _filter_conflicts(
+        self,
+        *,
+        desired: dict[str, Path],
+        current: dict[str, Path],
+        created: list[str],
+    ) -> dict[str, Path]:
+        # sort branches by conflict priority, then filter out any whose slash-separated
+        # paths would create a nested worktree conflict
+        winners: list[str] = []
+        for branch in sorted(desired, key=lambda b: (
+            0 if b in current else 1,  # prioritize existing
+            0 if b not in created else 1,  # ... then prioritize non-created branches
+            b,  # ... then break ties lexically
+        )):
+            conflict = next(
+                (winner for winner in winners if self._branch_conflict(branch, winner)),
+                None
+            )
+            if conflict is None:
+                winners.append(branch)
+                continue
+            print(
+                f"bertrand: skipping branch '{branch}' due nested path conflict with "
+                f"'{conflict}'",
+                file=sys.stderr
+            )
+
+        return {branch: desired[branch] for branch in winners}
+
+    def _move_worktree(self, branch: str, source: Path, target: Path) -> bool:
+        if not source.exists() or not source.is_dir():
+            print(
+                f"bertrand: could not move worktree for branch '{branch}': missing "
+                f"source path ({source})",
+                file=sys.stderr
+            )
+            return False
+        if target.exists():
+            print(
+                f"bertrand: could not move worktree for branch '{branch}': destination "
+                f"already exists ({target})",
+                file=sys.stderr
+            )
+            return False
+        target.parent.mkdir(parents=True, exist_ok=True)
+        result = git([
+            f"--git-dir={str(self.git_dir)}",
+            "worktree",
+            "move",
+            str(source),
+            str(target),
+        ])
+        if result.returncode != 0:
+            print(
+                f"bertrand: failed to move worktree for branch '{branch}' from "
+                f"{source} to {target}:\n{(result.stderr or result.stdout).strip()}",
+                file=sys.stderr
+            )
+            return False
+        return True
+
     def _belongs_to_repo(self, path: Path, env: dict[str, str]) -> bool:
         result = git(["-C", str(path), "rev-parse", "--git-common-dir"], env=env)
         if result.returncode != 0:
@@ -321,54 +410,55 @@ class Project:
             owner = owner.resolve()
         return self.git_dir == owner
 
-    def _destroy_worktree(self, *, branch: str, path: Path, stderr: TextIO) -> None:
+    def _destroy_worktree(self, *, branch: str, path: Path) -> bool:
         if not path.exists():
-            _fail(
-                stderr,
-                EXIT_RECONCILE_FAILED,
-                f"cannot remove worktree for branch '{branch}': missing path ({path})",
+            print(
+                f"bertrand: could not remove worktree for branch '{branch}': missing "
+                f"path ({path})",
+                file=sys.stderr
             )
+            return False
         if not path.is_dir():
-            _fail(
-                stderr,
-                EXIT_RECONCILE_FAILED,
-                f"cannot remove worktree for branch '{branch}': "
-                f"path is not a directory ({path})",
+            print(
+                f"bertrand: could not remove worktree for branch '{branch}': path is "
+                f"not a directory ({path})",
+                file=sys.stderr
             )
-
+            return False
         env = strip_env()
         if not self._belongs_to_repo(path, env):
-            _fail(
-                stderr,
-                EXIT_RECONCILE_FAILED,
-                f"cannot remove worktree for branch '{branch}': "
-                f"worktree does not belong to this repository ({path})",
+            print(
+                f"bertrand: could not remove worktree for branch '{branch}': worktree "
+                f"does not belong to this repository ({path})",
+                file=sys.stderr
             )
-
+            return False
         clean = git(["-C", str(path), "status", "--porcelain"], env=env)
         if clean.returncode != 0:
-            _fail(
-                stderr,
-                EXIT_RECONCILE_FAILED,
-                f"cannot remove worktree for branch '{branch}': failed to check "
-                f"worktree status at {path}",
+            print(
+                f"bertrand: could not remove worktree for branch '{branch}': failed to "
+                f"check worktree status at {path}",
+                file=sys.stderr
             )
+            return False
         if clean.stdout.strip():
-            _fail(
-                stderr,
-                EXIT_RECONCILE_FAILED,
-                f"cannot remove worktree for branch '{branch}': "
-                f"worktree is dirty ({path})",
+            print(
+                f"bertrand: could not remove worktree for branch '{branch}': worktree "
+                f"is dirty ({path})",
+                file=sys.stderr
             )
+            return False
 
+        # remove the worktree using git, which will also properly clean up the
+        # associated gitdir and any linked metadata
         result = git([f"--git-dir={str(self.git_dir)}", "worktree", "remove", str(path)])
         if result.returncode != 0:
-            _fail(
-                stderr,
-                EXIT_RECONCILE_FAILED,
-                f"failed to remove worktree for branch '{branch}' at {path}:\n"
-                f"{(result.stderr or result.stdout).strip()}",
+            print(
+                f"bertrand: failed to remove worktree for branch '{branch}' at "
+                f"{path}:\n{(result.stderr or result.stdout).strip()}",
+                file=sys.stderr
             )
+            return False
 
         # clean up now-empty parent directories up to project root to account for
         # branch names that contain path separators.
@@ -381,52 +471,16 @@ class Project:
             except OSError:
                 break
             cursor = cursor.parent
+        return True
 
-    def _move_worktree(
-        self,
-        *,
-        branch: str,
-        source: Path,
-        target: Path,
-        stderr: TextIO,
-    ) -> None:
-        if not source.exists() or not source.is_dir():
-            _fail(
-                stderr,
-                EXIT_RECONCILE_FAILED,
-                f"cannot move worktree for branch '{branch}': invalid source ({source})",
-            )
+    def _create_worktree(self, *, branch: str, target: Path) -> bool:
         if target.exists():
-            _fail(
-                stderr,
-                EXIT_RECONCILE_FAILED,
-                f"cannot move worktree for branch '{branch}': "
-                f"destination already exists ({target})",
+            print(
+                f"bertrand: could not create worktree for branch '{branch}': path "
+                f"already exists ({target})",
+                file=sys.stderr
             )
-        target.parent.mkdir(parents=True, exist_ok=True)
-        result = git([
-            f"--git-dir={str(self.git_dir)}",
-            "worktree",
-            "move",
-            str(source),
-            str(target),
-        ])
-        if result.returncode != 0:
-            _fail(
-                stderr,
-                EXIT_RECONCILE_FAILED,
-                f"failed to move worktree for branch '{branch}' from "
-                f"{source} to {target}:\n{(result.stderr or result.stdout).strip()}",
-            )
-
-    def _create_worktree(self, *, branch: str, target: Path, stderr: TextIO) -> None:
-        if target.exists():
-            _fail(
-                stderr,
-                EXIT_RECONCILE_FAILED,
-                f"cannot create worktree for branch '{branch}': "
-                f"path already exists ({target})",
-            )
+            return False
         target.parent.mkdir(parents=True, exist_ok=True)
         result = git([
             f"--git-dir={str(self.git_dir)}",
@@ -436,67 +490,83 @@ class Project:
             branch,
         ])
         if result.returncode != 0:
-            _fail(
-                stderr,
-                EXIT_RECONCILE_FAILED,
-                f"failed to create worktree for branch '{branch}' at {target}:\n"
-                f"{(result.stderr or result.stdout).strip()}",
+            print(
+                f"bertrand: failed to create worktree for branch '{branch}' at "
+                f"{target}:\n{(result.stderr or result.stdout).strip()}",
+                file=sys.stderr
             )
+            return False
+        return True
 
-    def update(self, *, stderr: TextIO) -> None:
-        """Converge worktrees to the authoritative branch set using a delta pass.
+    def update(self, updates: list[RefUpdate]) -> None:
+        """Converge worktrees to the authoritative branch set using a hybrid
+        intent-first delta pass.
 
         Parameters
         ----------
-        stderr : TextIO
-            The standard error stream to write diagnostics to in case of reconciliation
-            failures.
-
-        Raises
-        ------
-        SystemExit
-            If reconcile operations fail.
+        updates : list[RefUpdate]
+            The parsed reference updates received from git on stdin, which will be used
+            to derive explicit intent for branch creations and destructions, as well as
+            implicit hints for branch renames where creation and destruction are paired
+            on the same object.
         """
-        current: dict[str, Path] = {}
-        for wt in self.worktrees:
-            if wt.branch is None:
-                continue
-            existing = current.setdefault(wt.branch, wt.path)
-            if existing != wt.path:
-                _fail(
-                    stderr,
-                    EXIT_RECONCILE_FAILED,
-                    f"multiple worktrees mapped to branch '{wt.branch}': "
-                    f"{existing} and {wt.path}",
-                )
-
+        # derive current and desired branch-to-path mappings
+        current = self._current_branches()
         desired = {branch: (self.project_root / branch) for branch in self.branches}
 
-        # 1) remove branches no longer present in the repository
-        stale = sorted(set(current) - set(desired))
-        for branch in stale:
-            self._destroy_worktree(branch=branch, path=current[branch], stderr=stderr)
-            current.pop(branch, None)
+        # derive explicit intent from transaction updates, preserving order
+        created, destroyed, renamed = self._intended_changes(updates)
+        desired = self._filter_conflicts(desired=desired, current=current, created=created)
 
-        # 2) move branches that are present but located at non-canonical paths
-        shared = sorted(set(current) & set(desired))
-        for branch in shared:
+        # apply rename hints first (when they map cleanly to current state)
+        for old_branch, new_branch in renamed:
+            source = current.get(old_branch)
+            if source is None:
+                continue
+            target = desired.get(new_branch)
+            if target is None or new_branch in current:
+                continue
+            if source == target or self._move_worktree(new_branch, source, target):
+                current.pop(old_branch, None)
+                current[new_branch] = target
+
+        # apply explicit destroys for branches still present in current state
+        for branch in destroyed:
+            path = current.get(branch)
+            if path is None or branch in desired:
+                continue
+            if self._destroy_worktree(branch=branch, path=path):
+                current.pop(branch, None)
+
+        # apply explicit creates for branches that are still missing
+        for branch in created:
+            if branch in current or branch not in desired:
+                continue
+            target = desired[branch]
+            if self._create_worktree(branch=branch, target=target):
+                current[branch] = target
+
+        # remove branches no longer present in the repository
+        stale = set(current) - set(desired)
+        for branch in sorted(stale):
+            if self._destroy_worktree(branch=branch, path=current[branch]):
+                current.pop(branch, None)
+
+        # move branches that are present but located at non-canonical paths
+        shared = set(current) & set(desired)
+        for branch in sorted(shared):
             source = current[branch]
             target = desired[branch]
             if source == target:
                 continue
-            self._move_worktree(
-                branch=branch,
-                source=source,
-                target=target,
-                stderr=stderr,
-            )
-            current[branch] = target
+            if self._move_worktree(branch, source, target):
+                current[branch] = target
 
-        # 3) create worktrees for branches that don't yet have one
-        missing = sorted(set(desired) - set(current))
-        for branch in missing:
-            self._create_worktree(branch=branch, target=desired[branch], stderr=stderr)
+        # create worktrees for branches that don't yet have one
+        missing = set(desired) - set(current)
+        for branch in sorted(missing):
+            if self._create_worktree(branch=branch, target=desired[branch]):
+                current[branch] = desired[branch]
 
 
 def main() -> None:
@@ -504,34 +574,29 @@ def main() -> None:
 
     Raises
     ------
-    SystemExit
-        With a non-zero exit code if an error occurs during processing.
+    TypeError
+        If the hook is invoked with an invalid state argument.
     """
     argv = list(sys.argv[1:])
-    stdin = sys.stdin
-    stderr = sys.stderr
-
     if len(argv) != 1:
-        _fail(
-            stderr,
-            EXIT_INVALID_INVOCATION,
-            "expected exactly one state argument: 'prepared', 'committed', or "
-            "'aborted'",
-        )
-
+        raise TypeError(f"expected exactly one state argument in {sorted(STATES)}")
     state = argv[0].strip()
     if state not in STATES:
-        _fail(stderr, EXIT_INVALID_INVOCATION, f"invalid state argument: {state!r}")
+        raise TypeError(
+            f"invalid state argument: {state!r} (expected one of: {sorted(STATES)})"
+        )
     if state != "committed":
         return  # no-op outside committed phase
 
-    updates = RefUpdate.parse(stdin.read(), stderr=stderr)
+    # parse transaction and filter for branch updates
+    updates = RefUpdate.parse(sys.stdin.read())
     head_updates = [u for u in updates if u.is_head]
     if not head_updates:
-        return
+        return  # nothing to do
 
-    project = Project.load(stderr=stderr)
-    project.update(stderr=stderr)
+    # load project context and apply updates to branch worktrees
+    project = Project.load()
+    project.update(head_updates)
 
 
 if __name__ == "__main__":
