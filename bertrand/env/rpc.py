@@ -917,7 +917,7 @@ async def _vscode_open_prereqs(method: CodeOpen, config: Config) -> None:
             else:
                 await run(["which", tool], capture_output=True, timeout=remaining)
         except CommandError as err:
-            warn(f"{str(err)}\n\t{hint}", UserWarning)
+            warn(f"{str(err)}\n\t{hint}", category=UserWarning)
         except TimeoutExpired:
             expired = True
         if expired:

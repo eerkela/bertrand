@@ -25,7 +25,6 @@ from typing import (
     Self,
     TypedDict,
     cast,
-    overload,
 )
 
 from pydantic import (
@@ -915,7 +914,7 @@ class Registry(BaseModel):
 
             # persist new environment metadata if it changed
             if env_changed:
-                await _write_metadata(path, env)
+                _write_metadata(path, env)
 
         return env
 
