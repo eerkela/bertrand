@@ -80,16 +80,12 @@ WORKTREE_MOUNT: PosixPath = PosixPath("/env")
 # at build time or upon starting the container context, and used to control the
 # behavior of the bertrand CLI both inside and outside the container.
 BERTRAND_ENV: str = "BERTRAND"
-BRANCH_ENV: str = "BERTRAND_BRANCH"
-COMMIT_ENV: str = "BERTRAND_COMMIT"
 CONTAINER_BIN_ENV: str = "BERTRAND_CONTAINER_BIN"
 CONTAINER_ID_ENV: str = "BERTRAND_CONTAINER_ID"
 EDITOR_BIN_ENV: str = "BERTRAND_EDITOR_BIN"
+ENV_ID_ENV: str = "BERTRAND_ENV_ID"
 IMAGE_ID_ENV: str = "BERTRAND_IMAGE_ID"
 IMAGE_TAG_ENV: str = "BERTRAND_IMAGE_TAG"
-PROJECT_ID_ENV: str = "BERTRAND_PROJECT_ID"
-PROJECT_NAME_ENV: str = "BERTRAND_PROJECT_NAME"
-PROJECT_ROOT_ENV: str = "BERTRAND_PROJECT_ROOT"
 SOCKET_ENV: str = "BERTRAND_SOCKET"
 WORKTREE_ENV: str = "BERTRAND_WORKTREE"
 
@@ -123,7 +119,7 @@ def inside_container() -> bool:
     bool
         True if we're running inside a container process, False otherwise.
     """
-    return all(key in os.environ for key in (CONTAINER_ID_ENV, IMAGE_ID_ENV, PROJECT_ID_ENV))
+    return all(key in os.environ for key in (CONTAINER_ID_ENV, IMAGE_ID_ENV, ENV_ID_ENV))
 
 
 # Canonical resource names for built-in resources
@@ -327,7 +323,7 @@ def _check_sanitized_name(name: str) -> str:
     return name
 
 
-def _check_absolute_path(path: PosixPath) -> PosixPath:
+def _check_absolute_path[PathT: Path](path: PathT) -> PathT:
     if not path.is_absolute():
         raise ValueError(f"path must be absolute: '{path}'")
     parts = path.parts
@@ -832,8 +828,10 @@ type HostName = Annotated[str, StringConstraints(
         r"(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$"
 )]
 type SanitizedName = Annotated[str, AfterValidator(_check_sanitized_name)]
-type AbsolutePath = Annotated[PosixPath, AfterValidator(_check_absolute_path)]
-type RelativePath = Annotated[PosixPath, AfterValidator(_check_relative_path)]
+type AbsolutePath = Annotated[Path, AfterValidator(_check_absolute_path)]
+type AbsolutePosixPath = Annotated[PosixPath, AfterValidator(_check_absolute_path)]
+type RelativePath = Annotated[Path, AfterValidator(_check_relative_path)]
+type RelativePosixPath = Annotated[PosixPath, AfterValidator(_check_relative_path)]
 type BuildContextPath = Annotated[PosixPath, AfterValidator(_check_build_context_path)]
 type BuildArgName = Annotated[str, StringConstraints(
     strip_whitespace=True,
@@ -1268,41 +1266,6 @@ def _dump_yaml(payload: dict[str, Any], *, resource_id: str) -> str:
     if not text.endswith("\n"):
         text += "\n"
     return text
-
-
-def _kube_name(name: str) -> str:
-    slug = KUBE_TRIM_RE.sub("", KUBE_SUB_RE.sub("-", name.lower()))
-    if not slug:
-        slug = "bertrand-project"
-
-    # if no normalization was needed, return the original name
-    if name == slug and len(name) <= KUBE_MAX_LENGTH:
-        return name
-
-    # otherwise, we need to append a hash to disambiguate
-    suffix = hashlib.sha256(name.encode("utf-8")).hexdigest()[:8]
-    slug = slug[:KUBE_MAX_LENGTH - len(suffix) - 1].rstrip("-")
-    return f"{slug}-{suffix}" if slug else suffix
-
-
-def _kube_instance(
-    name: str,
-    *,
-    branch: str | None = None,
-    commit: str | None = None
-) -> str:
-    if branch and commit:
-        raise OSError(
-            f"invalid environment state: both {BRANCH_ENV} and {COMMIT_ENV} are set"
-        )
-    if branch:
-        return _kube_name(f"{name}-{branch}")
-    if commit:
-        return _kube_name(f"{name}-{commit[:7]}")
-    raise OSError(
-        f"invalid environment state: missing both {BRANCH_ENV} and "
-        f"{COMMIT_ENV} for kube deployment metadata"
-    )
 
 
 def _validate_dependency_groups(*, pyproject: Any | None, bertrand: Any | None) -> None:
@@ -1956,7 +1919,7 @@ class Bertrand(Resource):
             model_config = ConfigDict(extra="forbid")
             tag: TagName
             containerfile: Annotated[
-                RelativePath,
+                RelativePosixPath,
                 Field(default=PosixPath("Containerfile"))
             ]
             build_args: Annotated[
@@ -1964,7 +1927,7 @@ class Bertrand(Resource):
                 Field(default_factory=dict, alias="build-args")
             ]
             env_file: Annotated[
-                list[RelativePath],
+                list[RelativePosixPath],
                 Field(default_factory=list, alias="env-file")
             ]
 
@@ -2151,7 +2114,7 @@ class Bertrand(Resource):
                     id: ScreamingSnakeCase
                     required: bool = True
                     container_path: Annotated[
-                        AbsolutePath | None,
+                        AbsolutePosixPath | None,
                         Field(default=None, alias="container-path")
                     ]
                     permissions: Annotated[DevicePermission, Field(default="rwm")]
@@ -2510,148 +2473,6 @@ class ContainerIgnore(Resource):
         patterns = config.bertrand.ignore.copy()
         patterns.extend(config.bertrand.container_ignore)
         return _dump_ignore_list(patterns)
-
-
-@resource(KUBE_DEPLOYMENT_RESOURCE, kind="file")
-class KubeDeployment(Resource):
-    """A resource describing a Kubernetes `Deployment` manifest, which is rendered as
-    an output artifact based on Bertrand's tagged build matrix.
-    """
-    # pylint: disable=missing-function-docstring, unused-argument, missing-return-doc
-
-    # TODO: kubernetes support is an awesome long-term goal, but I should not pursue it
-    # for v1, and should just focus on getting the core CLI and local container
-    # execution working properly, and then figure out a way to layer kubernetes
-    # deployments + jobs, services, etc. on top later.  Performance-sensitive local
-    # apps won't want to use kubernetes anyways, so we need to support both modes
-    # regardless.
-
-    def _render_containers(
-        self,
-        config: Config,
-        *,
-        deployment_instance: str,
-    ) -> list[dict[str, str]]:
-        assert config.bertrand is not None
-        containers: list[dict[str, str]] = []
-        seen: dict[str, str] = {}
-
-        for tag in config.bertrand.services:
-            suffix = hashlib.sha256(tag.encode("utf-8")).hexdigest()[:8]
-            container_name = KUBE_TRIM_RE.sub("", KUBE_SUB_RE.sub("-", tag.lower()))
-            if not container_name:
-                container_name = "bertrand-project"
-            container_name = container_name[:KUBE_MAX_LENGTH].rstrip("-")
-
-            # attempt to insert under the normalized container name; if there's a
-            # collision, then we need to append a hash to both entries to disambiguate,
-            # but we only do that if it's actually necessary, in order to preserve
-            # readability in the common case where no tags collide
-            prior = seen.setdefault(container_name, tag)
-            if prior != tag:
-                prior_suffix = hashlib.sha256(prior.encode('utf-8')).hexdigest()[:8]
-                new_containers: list[dict[str, str]] = []
-                for container in containers:
-                    prior_name = container["name"]
-                    if prior_name == container_name:
-                        if prior_name.endswith(prior_suffix):
-                            raise OSError(
-                                f"hash collision detected for container name '{prior_name}'"
-                            )
-                        prior_name = prior_name[:KUBE_MAX_LENGTH - len(prior_suffix) - 1]
-                        prior_name = prior_name.rstrip("-")
-                        prior_name += f"-{prior_suffix}"
-                        if seen.setdefault(prior_name, prior) != prior:
-                            raise OSError(
-                                f"hash collision detected for container name '{prior_name}'"
-                            )
-                        container["name"] = prior_name
-                    new_containers.append(container)
-                container_name = container_name[:KUBE_MAX_LENGTH - len(suffix) - 1]
-                container_name = container_name.rstrip("-")
-                container_name += f"-{suffix}"
-                if seen.setdefault(container_name, tag) != tag:
-                    raise OSError(
-                        f"hash collision detected for container name '{container_name}'"
-                    )
-                containers = new_containers
-
-            # TODO: I will have to seriously think about how to handle image storage in
-            # a way that works well with kubernetes.  Probably, this means maintaining
-            # a local registry that the kube deployment can pull from, which should
-            # mirror any public images that I eventually push to a remote registry.  The
-            # trick here is going to be tracking the identifiers in a stable way.
-
-            containers.append({
-                "name": container_name,
-                "image": f"bertrand.local/{deployment_instance}:{tag}",  # TODO: refine later
-                "imagePullPolicy": "IfNotPresent",
-            })
-
-        return containers
-
-    async def render(self, config: Config, tag: str) -> str | None:
-        if config.bertrand is None or not config.bertrand.services:
-            return None
-        if config.pyproject is None:
-            raise OSError(
-                "invalid internal state while rendering kube deployment: "
-                "pyproject resource is required"
-            )
-
-        # normalize kubernetes name labels
-        project_name = config.pyproject.project.name
-        deployment_name = _kube_name(project_name)
-        deployment_instance = _kube_instance(
-            project_name,
-            branch=os.environ.get(BRANCH_ENV),
-            commit=os.environ.get(COMMIT_ENV)
-        )
-        metadata_labels = {
-            "app.kubernetes.io/name": deployment_name,
-            "app.kubernetes.io/instance": deployment_instance,
-            "app.kubernetes.io/managed-by": "bertrand",
-            "app.kubernetes.io/version": str(config.pyproject.project.version),
-        }
-
-        # form deployment YAML
-        return _dump_yaml({
-            "apiVersion": "apps/v1",
-            "kind": "Deployment",
-            "metadata": {  # deployment-level metadata
-                "name": deployment_name,
-                "labels": metadata_labels,
-            },
-            "spec": {
-                "replicas": config.bertrand.min_replicas,  # start at min replicas
-                "selector": {
-                    "matchLabels": {  # match the stable /name and /instance labels above
-                        "app.kubernetes.io/name": deployment_name,
-                        "app.kubernetes.io/instance": deployment_instance,
-                    },
-                },
-                "template": {
-                    "metadata": {  # pod-level metadata for each replica
-                        "labels": metadata_labels,  # inherit stable labels to match on
-                        "annotations": {
-                            "bertrand.dev/project-name": project_name,  # original project name
-                            "bertrand.dev/services": json.dumps(
-                                list(config.bertrand.services),
-                                separators=(",", ":")
-                            ),
-                            "bertrand.dev/min-replicas": str(config.bertrand.min_replicas),
-                            "bertrand.dev/max-replicas": str(config.bertrand.max_replicas),
-                        },
-                    },
-                    "spec": {
-                        "containers": self._render_containers(
-                            config,
-                            deployment_instance=deployment_instance,
-                        ),
-                    },
-                },
-            },
-        }, resource_id=self.name)
 
 
 @resource(CLANGD_RESOURCE, kind="file")
@@ -4547,6 +4368,16 @@ class Config:
             A list of arguments to append to the `podman build` command when building
             the specified image.
         """
+        if self.bertrand is None:
+            raise TypeError(
+                f"missing 'bertrand' configuration for environment at {self.worktree}"
+            )
+        cfg = next((t for t in self.bertrand.tags if t.tag == tag), None)
+        if cfg is None:
+            raise ValueError(
+                f"unknown image tag '{tag}' for environment at {self.worktree}"
+            )
+
         result: list[str] = []
 
         # TODO: gather all the relevant arguments
@@ -4571,6 +4402,16 @@ class Config:
             A list of arguments to append to the `podman run` command when running the
             specified image.
         """
+        if self.bertrand is None:
+            raise TypeError(
+                f"missing 'bertrand' configuration for environment at {self.worktree}"
+            )
+        cfg = next((t for t in self.bertrand.tags if t.tag == tag), None)
+        if cfg is None:
+            raise ValueError(
+                f"unknown image tag '{tag}' for environment at {self.worktree}"
+            )
+
         result: list[str] = []
 
         # TODO: gather all the relevant arguments
