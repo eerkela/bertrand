@@ -383,6 +383,10 @@ LOCK_TIMEOUT: float = 30.0
 LOCKS: dict[str, Lock] = {}
 
 
+# TODO: Lock should probably implement a `try_lock()` method that attempts to acquire
+# the lock and returns immediately with a boolean success value, instead of blocking.
+
+
 class Lock:
     """A lock that can be used from both sync and async contexts.
 

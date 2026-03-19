@@ -3,7 +3,6 @@ CLI.
 """
 from __future__ import annotations
 
-import asyncio
 import json as json_parser
 import math
 import os
@@ -30,10 +29,11 @@ from typing import (
 )
 
 from pydantic import (
+    AfterValidator,
     AwareDatetime,
     BaseModel,
-    AfterValidator,
     ConfigDict,
+    Field,
     PositiveInt,
 )
 
@@ -41,10 +41,14 @@ from .rpc import CONTAINER_SOCKET, Listener
 from .config import (
     BERTRAND_ENV,
     CONTAINER_ID_ENV,
+    CONTAINERFILE_RESOURCE,
     DEFAULT_TAG,
     ENV_ID_ENV,
     HOST_SOCKET,
     IMAGE_TAG_ENV,
+    METADATA_DIR,
+    METADATA_FILE,
+    METADATA_TMP,
     SHELLS,
     SOCKET_ENV,
     WORKTREE_ENV,
@@ -102,18 +106,16 @@ from .run import (
 
 
 # environment metadata info
-VERSION: int = 1
 CACHES: str = "/tmp/.cache"
-TIMEOUT: int = 30
-ENV_DIR_NAME: str = ".bertrand"
-ENV_FILE_NAME: str = "env.json"
-REGISTRY_FILE = on_init.state_dir / "registry.json"
-REGISTRY_LOCK = on_init.state_dir / "registry.lock"
-
-# TODO: review all these constants
 DEFAULT_MAX_COMMITS: int = 10
 REFERENCE_TRANSACTION_HOOK: str = "hooks/reference-transaction"
 REFERENCE_TRANSACTION_MARKER: str = "# bertrand-managed: reference-transaction"
+REGISTRY_FILE = on_init.state_dir / "registry.json"
+REGISTRY_LOCK = on_init.state_dir / "registry.lock"
+REGISTRY_PURGE_BATCH: int = 16
+REGISTRY_PURGE_EVERY: int = 64
+TIMEOUT: int = 30
+VERSION: int = 1
 
 
 # shared fact names during init/enter pipelines
@@ -136,58 +138,25 @@ NORMALIZE_ARCH = {
 }
 
 
-# TODO: _env_dir and _env_file can be deleted
+def _check_uuid(value: str) -> str:
+    try:
+        return uuid.UUID(value).hex
+    except Exception as err:
+        raise ValueError(f"'id' must be a valid UUID: {value}") from err
 
 
-def _env_dir(root: Path) -> Path:
-    return root.expanduser().resolve() / ENV_DIR_NAME
+def _to_utc(value: datetime) -> datetime:
+    if value.tzinfo is None or value.tzinfo.utcoffset(value) is None:
+        raise ValueError(f"'created' must be a valid ISO timestamp: {value}")
+    return value.astimezone(timezone.utc)
 
 
-def _env_file(root: Path) -> Path:
-    return _env_dir(root) / ENV_FILE_NAME
-
-
-def _env_tmp_dir(env_root: Path) -> Path:
-    return _env_dir(env_root) / "tmp"
-
-
-def _cid_file(env_root: Path, name: str) -> Path:
-    return _env_tmp_dir(env_root) / f"{name}.cid"
-
-
-def _iid_file(env_root: Path, name: str) -> Path:
-    return _env_tmp_dir(env_root) / f"{name}.iid"
-
-
-def _load_reference_transaction_hook() -> str:
-    source = importlib_resources.files("bertrand.env").joinpath(
-        "git",
-        "reference_transaction.py",
-    ).read_text(encoding="utf-8")
-    lines = source.splitlines()
-    if not lines:
-        raise ValueError("packaged reference_transaction.py is empty")
-    if lines[0].strip() != "#!/usr/bin/env python3":
-        raise ValueError(
-            "packaged reference_transaction.py must start with '#!/usr/bin/env python3'"
-        )
-    return "\n".join([
-        lines[0],
-        REFERENCE_TRANSACTION_MARKER,
-        *lines[1:]
-    ]).rstrip("\n") + "\n"
-
-
-async def _resolve_git_path(root: Path, git_path: str) -> Path:
-    result = await run(
-        ["git", "rev-parse", "--git-path", git_path],
-        cwd=root,
-        capture_output=True,
-    )
-    resolved = Path(result.stdout.strip())
-    if not resolved.is_absolute():
-        resolved = root / resolved
-    return resolved.resolve()
+type UUIDStr = Annotated[NonEmpty[NoWhiteSpace], AfterValidator(_check_uuid)]
+type CommitId = NonEmpty[NoWhiteSpace]
+type ImageId = NonEmpty[NoWhiteSpace]
+type ContainerId = NonEmpty[NoWhiteSpace]
+type CreatedAt = Annotated[AwareDatetime, AfterValidator(_to_utc)]
+type ArgsList = list[NonEmpty[Trimmed]]
 
 
 def _init_assume_yes(ctx: Pipeline.InProgress) -> bool:
@@ -209,27 +178,6 @@ async def _podman_ready() -> bool:
         capture_output=True
     )
     return result.returncode == 0
-
-
-def _check_uuid(value: str) -> str:
-    try:
-        return uuid.UUID(value).hex
-    except Exception as err:
-        raise ValueError(f"'id' must be a valid UUID: {value}") from err
-
-
-def _to_utc(value: datetime) -> datetime:
-    if value.tzinfo is None or value.tzinfo.utcoffset(value) is None:
-        raise ValueError(f"'created' must be a valid ISO timestamp: {value}")
-    return value.astimezone(timezone.utc)
-
-
-type UUIDStr = Annotated[NonEmpty[NoWhiteSpace], AfterValidator(_check_uuid)]
-type CommitId = NonEmpty[NoWhiteSpace]
-type ImageId = NonEmpty[NoWhiteSpace]
-type ContainerId = NonEmpty[NoWhiteSpace]
-type CreatedAt = Annotated[AwareDatetime, AfterValidator(_to_utc)]
-type ArgsList = list[NonEmpty[Trimmed]]
 
 
 @atomic
@@ -626,7 +574,7 @@ async def assert_container_cli_ready(ctx: Pipeline.InProgress) -> None:
 
 
 def _read_metadata(worktree: Path, *, missing_ok: bool = False) -> Environment.JSON | None:
-    env_file = _env_file(worktree)
+    env_file = worktree / METADATA_FILE
     if not env_file.exists():
         if missing_ok:
             return None
@@ -649,7 +597,7 @@ def _read_metadata(worktree: Path, *, missing_ok: bool = False) -> Environment.J
 
 def _write_metadata(worktree: Path, metadata: Environment.JSON) -> None:
     atomic_write_text(
-        _env_file(worktree),
+        worktree / METADATA_FILE,
         json_parser.dumps(metadata.model_dump(mode="json"), indent=2) + "\n",
         encoding="utf-8",
         private=True
@@ -681,9 +629,16 @@ class Registry(BaseModel):
         with isolated tags.  If the previous path is no longer valid or doesn't match
         the UUID, then the new environment constitutes a move, and we can transfer
         ownership to the new path.
+    ops_since_purge : int
+        Counts successful `add()` operations since the last incremental purge trigger.
+    purge_cursor : UUIDStr | None
+        Cursor used to scan environment IDs in deterministic batches when purging stale
+        entries.
     """
     host: UUIDStr
     environments: dict[UUIDStr, AbsolutePath]
+    ops_since_purge: Annotated[int, Field(ge=0)]
+    purge_cursor: UUIDStr | None = None
 
     @staticmethod
     def lock(*, timeout: float) -> Lock:
@@ -702,11 +657,18 @@ class Registry(BaseModel):
         """
         return Lock(REGISTRY_LOCK, timeout=timeout)
 
+    # NOTE: we have to strictly obey registry > environment locking order to avoid
+    # deadlocks, since `add()` and purge both need to acquire environment locks to
+    # validate metadata.  If environment operations consistently acquire the registry
+    # lock first, then we can guarantee that deadlocks won't occur, since there will
+    # never be simultaneous env -> registry and registry -> env edges.  The following
+    # methods assume the locks have already been handled by the caller.
+
     @staticmethod
     async def _check_env(root: Path, env_id: UUIDStr | None = None) -> Environment.JSON | None:
         try:
             root = root.expanduser().resolve()
-            env_file = _env_file(root)
+            env_file = root / METADATA_FILE
             if env_file.exists() and env_file.is_file():
                 metadata = _read_metadata(root)
                 if metadata is not None:
@@ -757,7 +719,12 @@ class Registry(BaseModel):
         # touch a new registry if none exists
         changed = False
         if not REGISTRY_FILE.exists():
-            self = cls(host=uuid.uuid4().hex, environments={})
+            self = cls(
+                host=uuid.uuid4().hex,
+                ops_since_purge=0,
+                purge_cursor=None,
+                environments={}
+            )
             changed = True
 
         # otherwise, try to parse registry JSON
@@ -771,7 +738,12 @@ class Registry(BaseModel):
             # if the registry is corrupted or otherwise invalid, attempt to rebuild it
             # using active mounts as the source of truth (best-effort)
             except:
-                self = cls(host=uuid.uuid4().hex, environments={})
+                self = cls(
+                    host=uuid.uuid4().hex,
+                    ops_since_purge=0,
+                    purge_cursor=None,
+                    environments={}
+                )
                 for root in await cls._discover_environment_mounts():
                     with lock_worktree(root, timeout=TIMEOUT):
                         env = await cls._check_env(root)
@@ -794,6 +766,8 @@ class Registry(BaseModel):
             REGISTRY_FILE,
             json_parser.dumps({
                 "host": self.host,
+                "ops_since_purge": self.ops_since_purge,
+                "purge_cursor": self.purge_cursor,
                 "environments": {env_id: str(root) for env_id, root in sorted(
                     self.environments.items(),
                     key=lambda item: item[0]
@@ -802,6 +776,46 @@ class Registry(BaseModel):
             encoding="utf-8",
             private=True
         )
+
+    def _purge_candidates(self, *, batch_size: int) -> list[UUIDStr]:
+        env_ids = sorted(self.environments)
+        if not env_ids:
+            self.purge_cursor = None
+            return []
+
+        start = 0
+        if self.purge_cursor is not None:
+            try:
+                start = (env_ids.index(self.purge_cursor) + 1) % len(env_ids)
+            except ValueError:
+                start = 0
+
+        count = min(batch_size, len(env_ids))
+        batch = [env_ids[(start + i) % len(env_ids)] for i in range(count)]
+        self.purge_cursor = batch[-1]
+        return batch
+
+    async def _purge_incremental(self, *, batch_size: int) -> None:
+        for env_id in self._purge_candidates(batch_size=batch_size):
+            root = self.environments.get(env_id)
+            if root is None:
+                continue
+
+            # fast path: missing path can be removed without further validation
+            if not root.exists():
+                self.environments.pop(env_id, None)
+                continue
+
+            try:
+                with lock_worktree(root, timeout=TIMEOUT):
+                    env = await self._check_env(root, env_id=env_id)
+                if env is None:
+                    self.environments.pop(env_id, None)
+            except TimeoutError:
+                continue  # busy worktree; skip and retry in a future purge batch
+
+        if not self.environments:
+            self.purge_cursor = None
 
     async def add(self, worktree: Path) -> Environment.JSON:
         """Claim a new environment worktree in the registry and resolve relocation or
@@ -878,8 +892,33 @@ class Registry(BaseModel):
         if env_changed:
             _write_metadata(worktree, env)
 
+        # trigger an incremental stale-entry purge at a low frequency to amortize cost
+        self.ops_since_purge += 1
+        if self.ops_since_purge >= REGISTRY_PURGE_EVERY:
+            await self._purge_incremental(batch_size=REGISTRY_PURGE_BATCH)
+            self.ops_since_purge = 0
+
         return env
 
+    async def purge(self) -> None:
+        """Remove any stale registry entries that point to non-existent or invalid
+        environment roots.  `add()` will trigger an incremental purge at a low
+        frequency, but this method can be called to trigger a full purge on demand,
+        which is necessary before any command that targets all environments on the
+        system, disregarding stale ones.
+        """
+        normalized: dict[UUIDStr, AbsolutePath] = {}
+        for env_id, root in self.environments.items():
+            with lock_worktree(root, timeout=TIMEOUT):
+                env = await self._check_env(root, env_id=env_id)
+                if env is None:
+                    continue
+                normalized.setdefault(env.id, root)  # preserve first match if duplicates
+
+        self.environments = normalized
+        self.ops_since_purge = 0
+        if self.purge_cursor not in self.environments:
+            self.purge_cursor = None
 
 @on_init(requires=[assert_container_cli_ready], ephemeral=True)
 async def init_environment(ctx: Pipeline.InProgress) -> None:
@@ -977,7 +1016,38 @@ async def init_repository(ctx: Pipeline.InProgress) -> None:
             capture_output=True
         )
     except Exception as err:
-        print(f"bertrand: warning: failed to {stage} in {root}\n{err}", file=sys.stderr)
+        print(f"bertrand: failed to {stage} in {root}\n{err}", file=sys.stderr)
+
+
+def _load_reference_transaction_hook() -> str:
+    source = importlib_resources.files("bertrand.env").joinpath(
+        "git",
+        "reference_transaction.py",
+    ).read_text(encoding="utf-8")
+    lines = source.splitlines()
+    if not lines:
+        raise ValueError("packaged reference_transaction.py is empty")
+    if lines[0].strip() != "#!/usr/bin/env python3":
+        raise ValueError(
+            "packaged reference_transaction.py must start with '#!/usr/bin/env python3'"
+        )
+    return "\n".join([
+        lines[0],
+        REFERENCE_TRANSACTION_MARKER,
+        *lines[1:]
+    ]).rstrip("\n") + "\n"
+
+
+async def _resolve_git_path(root: Path, git_path: str) -> Path:
+    result = await run(
+        ["git", "rev-parse", "--git-path", git_path],
+        cwd=root,
+        capture_output=True,
+    )
+    resolved = Path(result.stdout.strip())
+    if not resolved.is_absolute():
+        resolved = root / resolved
+    return resolved.resolve()
 
 
 @on_init(requires=[init_repository], ephemeral=True)
@@ -1028,7 +1098,7 @@ async def install_git_hooks(  # pylint: disable=missing-raises-doc
             existing = hook_path.read_text(encoding="utf-8")
             if existing == hook_text:
                 install_hook = False  # already installed and up-to-date
-            elif not REFERENCE_TRANSACTION_MARKER in existing:
+            elif REFERENCE_TRANSACTION_MARKER not in existing:
                 print(
                     f"existing git hook at {hook_path} is not managed by Bertrand; "
                     f"skipping to avoid clobbering user-managed hook.",
@@ -1046,7 +1116,7 @@ async def install_git_hooks(  # pylint: disable=missing-raises-doc
             except OSError:
                 pass
     except Exception as err:
-        print(f"bertrand: warning: failed to {stage} in {root}\n{err}", file=sys.stderr)
+        print(f"bertrand: failed to {stage} in {root}\n{err}", file=sys.stderr)
 
 
 @on_init(requires=[install_git_hooks], ephemeral=True)
@@ -1071,9 +1141,9 @@ async def register_environment(ctx: Pipeline.InProgress) -> None:
         raise TypeError("environment path must be a string")
     worktree = Path(env).expanduser().resolve()
 
-    # add to global environment registry, respecting environment > registry lock order
-    with lock_worktree(worktree, timeout=TIMEOUT):
-        async with Registry.lock(timeout=TIMEOUT):
+    # add to global environment registry, respecting registry > environment lock order
+    async with Registry.lock(timeout=TIMEOUT):
+        async with lock_worktree(worktree, timeout=TIMEOUT):
             registry = await Registry.load()
             await registry.add(worktree)
             await registry.dump()
@@ -1561,7 +1631,7 @@ class Image(BaseModel):
             id="",  # corrected after create
             created=datetime.now(timezone.utc),
         )
-        cid_file = _cid_file(env.root, f"create-{uuid.uuid4().hex}")
+        cid_file = env.root / METADATA_TMP / f"create-{uuid.uuid4().hex}.cid"
         try:
             mkdir_private(HOST_SOCKET.parent)
             cid_file.parent.mkdir(parents=True, exist_ok=True)
@@ -1688,27 +1758,34 @@ class Environment:
         self._entered = 0
 
     async def __aenter__(self) -> Self:
-        # lock environment worktree for duration of load
-        await self._lock.__aenter__()
-        self._entered += 1
-        if self._entered > 1:
-            return self  # re-entrant case
-
-        # load config from worktree
-        self._config = await Config.load(self.worktree)
-        await self._config.__aenter__()
+        entered = self._entered
         try:
-            # add to the environment registry, respecting environment > registry lock order
+            # obey registry > environment lock order
             async with Registry.lock(timeout=self.timeout):
+                await self._lock.__aenter__()
+                self._entered += 1
+                if self._entered > 1:
+                    return self  # re-entrant case
+
+                # add to the environment registry while lock is held
                 registry = await Registry.load()
                 self._json = await registry.add(self.worktree)
                 await registry.dump()
-                return self
+
+            # release registry lock before loading environment config to minimize contention
+            self._config = await Config.load(self.worktree)
+            await self._config.__aenter__()
+            return self
+
         except Exception as err:
-            await self._config.__aexit__(type(err), err, getattr(err, "__traceback__", None))
-            self._config = None
-            self._entered -= 1
-            await self._lock.__aexit__(type(err), err, getattr(err, "__traceback__", None))
+            if self._entered > entered:
+                self._config = None
+                self._entered -= 1
+                await self._lock.__aexit__(
+                    type(err),
+                    err,
+                    getattr(err, "__traceback__", None)
+                )
             raise
 
     async def __aexit__(
@@ -1722,7 +1799,7 @@ class Environment:
 
         try:
             # write metadata back to disk
-            env_dir = _env_dir(self.worktree)
+            env_dir = self.worktree / METADATA_DIR
             if self._entered == 1 and env_dir.exists():
                 _write_metadata(self.worktree, self._json)
 
@@ -1731,8 +1808,8 @@ class Environment:
             if self._entered == 1 and self._config is not None:
                 await self._config.__aexit__(exc_type, exc_value, traceback)
                 self._config = None
-            self._entered -= 1
             await self._lock.__aexit__(exc_type, exc_value, traceback)
+            self._entered -= 1
 
     def __hash__(self) -> int:
         return hash(self.worktree)
@@ -1952,7 +2029,7 @@ class Environment:
         # remove environment metadata and lock
         try:
             self._json.images.clear()
-            shutil.rmtree(_env_dir(self.worktree), ignore_errors=True)
+            shutil.rmtree(self.worktree / METADATA_DIR, ignore_errors=True)
         except:
             pass
 
@@ -2007,12 +2084,12 @@ class Environment:
             container_args=container_args,
         )
         image_name = f"{project_name}.{tag}.{self.id[:7]}"
-        iid_file = _iid_file(self.worktree, image_name)
+        iid_file = self.worktree / METADATA_TMP / f"{image_name}.iid"
         iid_file.parent.mkdir(parents=True, exist_ok=True)
         await podman_cmd([
             "build",
             "-t", image_name,
-            "-f", str(config.path("containerfile")),
+            "-f", str(config.path(CONTAINERFILE_RESOURCE)),
             "--iidfile", str(iid_file),
             "--label", f"{BERTRAND_ENV}=1",
             "--label", f"{ENV_ID_ENV}={self.id}",
@@ -2054,28 +2131,19 @@ class Environment:
 type Validator = Callable[[JSONView], Any]
 
 
-# TODO: anything depending on _all_environments should probably just be deleted, since
-# pruning the registry violates the optimal lock ordering.
-
-
-# async def _all_environments() -> list[Path]:
-#     try:
-#         # NOTE: we need to separate the locks in order to minimize contention and
-#         # avoid deadlocks by violating the environment > registry lock order invariant.
-#         # `.prune()` only acquires environment locks.
-#         lock = Registry.lock(timeout=TIMEOUT)
-#         async with lock:
-#             registry = await Registry.load()
-#         await registry.prune()
-#         async with lock:
-#             await registry.dump()
-#         return list(registry.environments.values())
-#     except OSError as err:
-#         print(
-#             f"bertrand: warning: failed to load global environment registry: {err}",
-#             file=sys.stderr
-#         )
-#         return []
+async def _all_environments() -> list[Path]:
+    try:
+        async with Registry.lock(timeout=TIMEOUT):
+            registry = await Registry.load()
+            await registry.purge()
+            await registry.dump()
+        return list(registry.environments.values())
+    except OSError as err:
+        print(
+            f"bertrand: failed to load global environment registry: {err}",
+            file=sys.stderr
+        )
+        return []
 
 
 def _check_boolean(value: Any) -> bool:
@@ -2231,13 +2299,13 @@ class Build(_Command):
         for arg in args:
             build_args.append(f"--build-arg={arg}")
             build_args.append(f"--env={arg}")
-        iid_file = _iid_file(env.root, image_name)
+        iid_file = env.root / METADATA_TMP / f"{image_name}.iid"
         try:
             iid_file.parent.mkdir(parents=True, exist_ok=True)
             podman_cmd([
                 "build",
                 "-t", image_name,
-                "-f", str(env.config.path("containerfile")),
+                "-f", str(env.config.path(CONTAINERFILE_RESOURCE)),
                 "--iidfile", str(iid_file),
                 "--label", "BERTRAND=1",
                 "--label", f"BERTRAND_ENV={env.id}",
@@ -2339,7 +2407,7 @@ class Build(_Command):
             created=datetime.now(timezone.utc),
             args=args,
         )
-        cid_file = _cid_file(env.root, f"create-{uuid.uuid4().hex}")
+        cid_file = env.root / METADATA_TMP / f"create-{uuid.uuid4().hex}.cid"
         cache_prefix = f"bertrand-{env.id[:13]}"
         uv_volume = f"{cache_prefix}-uv"
         bertrand_volume = f"{cache_prefix}-bertrand"
