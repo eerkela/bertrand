@@ -232,6 +232,9 @@ async def run(
     OSError
         If we failed to open the subprocess or its output streams.
     """
+    if timeout is not None and timeout < 0:
+        raise TimeoutExpired(cmd=argv, timeout=timeout, output=None, stderr=None)
+
     # capture_output=False -> inherit terminal streams and do not capture output
     if capture_output is False:
         proc = await asyncio.create_subprocess_exec(
@@ -429,6 +432,8 @@ class Lock:
     _depth: int
 
     def __new__(cls, path: Path, timeout: float = LOCK_TIMEOUT) -> Lock:
+        if timeout < 0:
+            raise TimeoutError(f"Lock timeout must be non-negative, got {timeout}")
         if path.exists():
             if not path.is_dir():
                 raise OSError(f"Lock path must be a directory: {path}")

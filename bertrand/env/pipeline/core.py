@@ -25,7 +25,9 @@ from typing import (
     Iterable,
     Iterator,
     Literal,
+    Mapping,
     Protocol,
+    Sequence,
     overload,
 )
 
@@ -58,23 +60,14 @@ type QualName = Annotated[
 ]
 type UUID4Hex = Annotated[str, StringConstraints(pattern=r"^[a-f0-9]{32}$")]
 type Hash256 = Annotated[str, StringConstraints(pattern=r"^[a-f0-9]{64}$")]
-type JSONValue = (
+type JSONValue = (  # pylint: disable=invalid-name
     None
     | bool
     | int
     | float
     | str
-    | list["JSONValue"]
-    | dict[str, "JSONValue"]
-)
-type JSONView = (
-    None
-    | bool
-    | int
-    | float
-    | str
-    | tuple["JSONView", ...]
-    | MappingProxyType[str, "JSONView"]
+    | Sequence["JSONValue"]
+    | Mapping[str, "JSONValue"]
 )
 
 
@@ -352,14 +345,14 @@ class Pipeline:
             may have originated from kwargs passed to `pipeline.do()`.
         hash : Hash256
             The SHA-256 hash of the JSON-serialized value of this fact.
-        value : JSONView
+        value : JSONValue
             The deserialized value of this fact.  If the value is a mutable type (e.g.
             list or dict), then it will be wrapped in a read-only proxy to prevent
             accidental modification by dependent steps.
         """
         origin: QualName | None
         hash: Hash256
-        value: JSONView
+        value: JSONValue
 
     # pipeline-wide config
     state_dir: Path
@@ -399,7 +392,7 @@ class Pipeline:
         )
 
     @staticmethod
-    def _readonly(obj: JSONValue) -> JSONView:
+    def _readonly(obj: JSONValue) -> JSONValue:
         if isinstance(obj, list):
             return tuple(Pipeline._readonly(v) for v in obj)
         if isinstance(obj, dict):
@@ -786,7 +779,7 @@ class Pipeline:
             raise OSError("must acquire pipeline context before accessing facts")
         return key in self._facts
 
-    def __getitem__(self, key: str) -> JSONView:
+    def __getitem__(self, key: str) -> JSONValue:
         """Look up a fact stored in the global pipeline context.
 
         Parameters
@@ -800,7 +793,7 @@ class Pipeline:
 
         Returns
         -------
-        JSONView
+        JSONValue
             A read-only JSON view of the requested fact, where lists are converted to
             tuples and dictionaries to `MappingProxyType` instances in order to
             discourage modification.
@@ -816,7 +809,7 @@ class Pipeline:
             raise OSError("must acquire pipeline context before accessing facts")
         return self._facts[key].value
 
-    def get(self, key: str, default: JSONValue = None) -> JSONView:
+    def get(self, key: str, default: JSONValue = None) -> JSONValue:
         """Look up a fact stored in the global pipeline context, returning a default
         value if the fact is not found.
 
@@ -830,7 +823,7 @@ class Pipeline:
 
         Returns
         -------
-        JSONView | None
+        JSONValue | None
             A read-only JSON view of the requested fact if it is found, or default
             value otherwise, where lists are converted to tuples and dictionaries to
             `MappingProxyType` instances in order to discourage modification.
@@ -899,7 +892,7 @@ class Pipeline:
             """
             return self.pipeline.state_dir
 
-        def __getitem__(self, key: str) -> JSONView:
+        def __getitem__(self, key: str) -> JSONValue:
             """Look up a fact stored in the pipeline context.
 
             Parameters
@@ -911,7 +904,7 @@ class Pipeline:
 
             Returns
             -------
-            JSONView
+            JSONValue
                 A read-only JSON view of the requested fact, where lists are converted
                 to tuples and dictionaries to `MappingProxyType` instances in order to
                 discourage modification.
@@ -1044,7 +1037,7 @@ class Pipeline:
                 self.record.accesses[key] = MISSING
             return False
 
-        def get(self, key: str, default: JSONValue = None) -> JSONView:
+        def get(self, key: str, default: JSONValue = None) -> JSONValue:
             """Look up a fact stored in the pipeline context, preferring the local
             step context and falling back to the global context.
 
@@ -1057,7 +1050,7 @@ class Pipeline:
 
             Returns
             -------
-            JSONView
+            JSONValue
                 The value of the requested fact, or the default value if not found.
 
             Raises
@@ -1229,7 +1222,7 @@ class Pipeline:
                 self.record.ended_at = datetime.now(timezone.utc)
             self.pipeline._dump()
 
-    async def do(self, **kwargs: JSONValue) -> dict[str, JSONView]:
+    async def do(self, **kwargs: JSONValue) -> dict[str, JSONValue]:
         """Run the pipeline with the given keyword arguments.
 
         Parameters
@@ -1243,7 +1236,7 @@ class Pipeline:
 
         Returns
         -------
-        dict[str, JSONView]
+        dict[str, JSONValue]
             The final set of facts in the pipeline context after execution, as
             read-only views.
 
@@ -1420,9 +1413,4 @@ on_stop = Pipeline(state_dir=STATE_DIR / "stop", keep=5)
 on_pause = Pipeline(state_dir=STATE_DIR / "pause", keep=5)
 on_resume = Pipeline(state_dir=STATE_DIR / "resume", keep=5)
 on_restart = Pipeline(state_dir=STATE_DIR / "restart", keep=5)
-on_prune = Pipeline(state_dir=STATE_DIR / "prune", keep=5)
 on_rm = Pipeline(state_dir=STATE_DIR / "rm", keep=5)
-on_ls = Pipeline(state_dir=STATE_DIR / "ls", keep=5)
-on_monitor = Pipeline(state_dir=STATE_DIR / "monitor", keep=5)
-on_log = Pipeline(state_dir=STATE_DIR / "log", keep=5)
-on_top = Pipeline(state_dir=STATE_DIR / "top", keep=5)

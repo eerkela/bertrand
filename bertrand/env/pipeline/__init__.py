@@ -5,7 +5,6 @@ this way outside a container context, in order to minimize impact on the host sy
 from .core import (
     Atomic,
     JSONValue,
-    JSONView,
     Pipeline,
     atomic,
     on_init,
@@ -19,12 +18,7 @@ from .core import (
     on_pause,
     on_resume,
     on_restart,
-    on_prune,
     on_rm,
-    on_ls,
-    on_monitor,
-    on_log,
-    on_top,
 )
 from .filesystem import (
     Chmod,
@@ -62,16 +56,11 @@ from .systemd import (
 from .user import (
     AddUserToGroup,
     CreateGroup,
-    CreateHomeDir,
-    CreateUser,
     DisableLinger,
     EnableLinger,
     EnsureSubIDs,
     EnsureUserNamespaces,
     InstallSSHKey,
-    LockUser,
     RemoveSSHKey,
     RemoveUserFromGroup,
-    SetUserShell,
-    UnlockUser,
 )

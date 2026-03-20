@@ -13,7 +13,6 @@ Canonical templates are packaged with Bertrand and lazily hydrated into
 from __future__ import annotations
 
 import json
-import hashlib
 import ipaddress
 import os
 import re
@@ -42,6 +41,8 @@ from pydantic import (
     AnyHttpUrl,
     BaseModel,
     ConfigDict,
+    NonNegativeInt,
+    NonNegativeFloat,
     PositiveInt,
     StringConstraints,
     TypeAdapter,
@@ -738,8 +739,6 @@ def _check_health_log_destination(value: str) -> str:
 
 
 type NonEmpty[SequenceT: Sequence[Any]] = Annotated[SequenceT, Field(min_length=1)]
-type NonNegativeInt = Annotated[int, Field(ge=0)]
-type NonNegativeFloat = Annotated[float, Field(ge=0.0)]
 type Scalar = str | bool | int | float
 type ResourceKind = Literal["file", "dir"] | None
 type ConanConfValue = Scalar | list[ConanConfValue] | dict[str, ConanConfValue]

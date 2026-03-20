@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json as json_parser
 import os
 import shutil
 import subprocess
 import sys
+import time
+
+from datetime import datetime
 from typing import cast
 
 from .env.rpc import CodeError, open_editor
@@ -26,14 +30,16 @@ from .env.pipeline import (
     on_pause,
     on_resume,
     on_restart,
-    on_prune,
     on_rm,
-    on_ls,
-    on_monitor,
-    on_top,
-    on_log,
 )
-from .env.container import Environment
+from .env.container import (
+    TIMEOUT,
+    Environment,
+    podman_log,
+    podman_ls,
+    podman_monitor,
+    podman_top,
+)
 from .env.config import (
     ARTIFACT_ROOT,
     DEFAULT_TAG,
@@ -41,7 +47,7 @@ from .env.config import (
     WORKTREE_MOUNT,
     Config,
 )
-from .env.run import confirm
+from .env.run import TimeoutExpired, confirm
 from . import __version__
 
 # pylint: disable=unused-argument
@@ -145,7 +151,6 @@ class External:
             self.pause()
             self.resume()
             self.restart()
-            self.prune()
             self.rm()
             self.ls()
             self.monitor()
@@ -538,36 +543,6 @@ class External:
             )
             command.set_defaults(handler=External.restart)
 
-        def prune(self) -> None:
-            """Add the 'prune' command to the parser."""
-            command = self.commands.add_parser(
-                "prune",
-                help=
-                    "Remove stopped Bertrand containers at the specified path, scoping "
-                    "to specific images or containers if desired.  This is similar to "
-                    "'bertrand rm', but only applies to stopped containers, and never "
-                    "affects images.  Note that the environment directory is "
-                    "unaffected, but any data stored in a stopped container's writable "
-                    "layer will be permanently lost.",
-            )
-            command.add_argument(
-                "path",
-                nargs="?",
-                metavar="ENV[:IMAGE[:CONTAINER]]",
-                help=
-                    "A path to the specified environment directory.  This may be an "
-                    "absolute or relative path, and must point to an environment "
-                    "directory produced by 'bertrand init'.  The path may include "
-                    "optional image and container tags (e.g. "
-                    "'/path/to/env:image:container'), which can be used to scope the "
-                    "command to specific images or containers within the environment.  "
-                    "If an image or environment scope is given, then all stopped "
-                    "containers matching that scope will be pruned.  If no path is "
-                    "given, then all stopped Bertrand containers on the host system "
-                    "will be pruned, after prompting the user to confirm.",
-            )
-            command.set_defaults(handler=External.prune)
-
         def rm(self) -> None:
             """Add the 'rm' command to the parser."""
             command = self.commands.add_parser(
@@ -633,32 +608,20 @@ class External:
                     "listed.",
             )
             command.add_argument(
+                "-t", "--timeout",
+                type=int,
+                default=TIMEOUT,
+                help=
+                    "Maximum duration (in seconds) to wait for this command.  May be "
+                    "rounded up to the nearest second depending on the underlying "
+                    "implementation.",
+            )
+            command.add_argument(
                 "--images",
                 action="store_true",
                 help=
                     "Show Bertrand images in the current scope instead of containers "
                     "(which is the default).",
-            )
-            status = command.add_mutually_exclusive_group()
-            status.add_argument(
-                "--running",
-                action="store_true",
-                help=
-                    "Show only running Bertrand images or containers.  By default, all "
-                    "images or containers are displayed, regardless of their status.  "
-                    "In this context, 'running' covers the 'running', 'paused', and "
-                    "'restarting' states.  An image is considered to be running if any "
-                    "running container references it.",
-            )
-            status.add_argument(
-                "--stopped",
-                action="store_true",
-                help=
-                    "Show only stopped Bertrand images or containers.  By default, all "
-                    "images or containers are displayed, regardless of their status.  "
-                    "In this context, 'stopped' covers the 'created', 'removing', "
-                    "'exited', and 'dead' states.  An image is considered to be "
-                    "stopped if no running container references it.",
             )
             command.add_argument(
                 "--json",
@@ -695,6 +658,16 @@ class External:
                     "will be monitored.",
             )
             command.add_argument(
+                "-t", "--timeout",
+                type=int,
+                default=TIMEOUT,
+                help=
+                    "Maximum duration (in seconds) to wait for this command.  May be "
+                    "rounded up to the nearest second depending on the underlying "
+                    "implementation.  If 'interval' is positive, then this timeout "
+                    "will not disregard the live updates to the statistics.",
+            )
+            command.add_argument(
                 "-i", "--interval",
                 type=int,
                 default=0,
@@ -719,19 +692,32 @@ class External:
             command = self.commands.add_parser(
                 "top",
                 help=
-                    "Display the active processes within a running Bertrand container "
-                    "at the specified path."
+                    "Display the active processes running within Bertrand containers "
+                    "associated with a given worktree and/or workload"
             )
             command.add_argument(
                 "path",
-                metavar="ENV[:IMAGE[:CONTAINER]]",
+                metavar="ENV[@WORKLOAD][:TAG]",
                 help=
                     "A path to the specified environment directory.  This may be an "
                     "absolute or relative path, and must point to an environment "
-                    "directory produced by 'bertrand init'.  If no image or container "
-                    "tag is given, then the default container for the parent "
-                    "environment or image will be used.  Otherwise, the container tag "
-                    "must correspond to a previous bertrand start' command.",
+                    "worktree produced by Bertrand's git hooks, or a root repository "
+                    "created by 'bertrand init', in which case the repository's "
+                    "current HEAD branch will be targeted.  If a kubernetes workload "
+                    "is specified, then it will be started before proceeding.  If a "
+                    "tag is specified, then it will target a specific member of the "
+                    "kubernetes workload, or a specific image if no workload is "
+                    "given.  If no tag is given, then the default tag for the parent "
+                    "workload or environment will be chosen."
+            )
+            command.add_argument(
+                "-t", "--timeout",
+                type=int,
+                default=TIMEOUT,
+                help=
+                    "Maximum duration (in seconds) to wait for this command.  May be "
+                    "rounded up to the nearest second depending on the underlying "
+                    "implementation.",
             )
             command.set_defaults(handler=External.top)
 
@@ -753,6 +739,15 @@ class External:
                     "tag is given, then the default container for the parent "
                     "environment or image will be used.  Otherwise, the container tag "
                     "must correspond to a previous bertrand start' command.",
+            )
+            command.add_argument(
+                "-t", "--timeout",
+                type=int,
+                default=TIMEOUT,
+                help=
+                    "Maximum duration (in seconds) to wait for this command.  May be "
+                    "rounded up to the nearest second depending on the underlying "
+                    "implementation.",
             )
             command.add_argument(
                 "--images",
@@ -1129,22 +1124,6 @@ class External:
         )
 
     @staticmethod
-    def prune(args: argparse.Namespace) -> None:
-        """Execute the `bertrand prune` CLI command.
-
-        Parameters
-        ----------
-        args : argparse.Namespace
-            The parsed command-line arguments.
-        """
-        env, image_tag, container_tag = _parse(args.path)
-        on_prune.do(
-            env=env,
-            image_tag=image_tag,
-            container_tag=container_tag,
-        )
-
-    @staticmethod
     def rm(args: argparse.Namespace) -> None:
         """Execute the `bertrand rm` CLI command.
 
@@ -1169,17 +1148,34 @@ class External:
         ----------
         args : argparse.Namespace
             The parsed command-line arguments.
+
+        Raises
+        ------
+        TimeoutError
+            If the command does not complete within the specified timeout.
         """
-        env, image_tag, container_tag = _parse(args.path)
-        on_ls.do(
-            env=env,
-            image_tag=image_tag,
-            container_tag=container_tag,
-            images=args.images,
-            running=args.running,
-            stopped=args.stopped,
-            json=args.json,
-        )
+        deadline = time.time() + args.timeout
+        with asyncio.Runner() as runner:
+            worktree, workload, tag = runner.run(Environment.parse(args.path))
+            try:
+                result = runner.run(podman_ls(
+                    worktree,
+                    workload,
+                    tag,
+                    deadline=deadline,
+                    images=args.images,
+                    json=args.json,
+                ))
+                if result is not None:
+                    print(result)
+            except (TimeoutError, TimeoutExpired) as err:
+                _deadline = datetime.fromtimestamp(deadline)
+                raise TimeoutError(
+                    f"timed out during 'bertrand ls' with deadline {_deadline}\n"
+                    f"worktree: {worktree}\n"
+                    f"workload: {workload!r}\n"
+                    f"tag: {tag!r}"
+                ) from err
 
     @staticmethod
     def monitor(args: argparse.Namespace) -> None:
@@ -1189,15 +1185,34 @@ class External:
         ----------
         args : argparse.Namespace
             The parsed command-line arguments.
+
+        Raises
+        ------
+        TimeoutError
+            If the command does not complete within the specified timeout.
         """
-        env, image_tag, container_tag = _parse(args.path)
-        on_monitor.do(
-            env=env,
-            image_tag=image_tag,
-            container_tag=container_tag,
-            interval=args.interval,
-            json=args.json,
-        )
+        deadline = time.time() + args.timeout
+        with asyncio.Runner() as runner:
+            worktree, workload, tag = runner.run(Environment.parse(args.path))
+            try:
+                result = runner.run(podman_monitor(
+                    worktree,
+                    workload,
+                    tag,
+                    deadline=deadline,
+                    interval=args.interval,
+                    json=args.json,
+                ))
+                if result is not None:
+                    print(result)
+            except (TimeoutError, TimeoutExpired) as err:
+                _deadline = datetime.fromtimestamp(deadline)
+                raise TimeoutError(
+                    f"timed out during 'bertrand monitor' with deadline {_deadline}\n"
+                    f"worktree: {worktree}\n"
+                    f"workload: {workload!r}\n"
+                    f"tag: {tag!r}"
+                ) from err
 
     @staticmethod
     def top(args: argparse.Namespace) -> None:
@@ -1207,13 +1222,30 @@ class External:
         ----------
         args : argparse.Namespace
             The parsed command-line arguments.
+
+        Raises
+        ------
+        TimeoutError
+            If the command does not complete within the specified timeout.
         """
-        env, image_tag, container_tag = _resolve_default_target(*_parse(args.path))
-        on_top.do(
-            env=env,
-            image_tag=image_tag,
-            container_tag=container_tag,
-        )
+        deadline = time.time() + args.timeout
+        with asyncio.Runner() as runner:
+            worktree, workload, tag = runner.run(Environment.parse(args.path))
+            try:
+                print("---\n".join(runner.run(podman_top(
+                    worktree,
+                    workload,
+                    tag,
+                    deadline=deadline,
+                ))))
+            except (TimeoutError, TimeoutExpired) as err:
+                _deadline = datetime.fromtimestamp(deadline)
+                raise TimeoutError(
+                    f"timed out during 'bertrand top' with deadline {_deadline}\n"
+                    f"worktree: {worktree}\n"
+                    f"workload: {workload!r}\n"
+                    f"tag: {tag!r}"
+                ) from err
 
     @staticmethod
     def log(args: argparse.Namespace) -> None:
@@ -1223,16 +1255,33 @@ class External:
         ----------
         args : argparse.Namespace
             The parsed command-line arguments.
+
+        Raises
+        ------
+        TimeoutError
+            If the command does not complete within the specified timeout.
         """
-        env, image_tag, container_tag = _resolve_default_target(*_parse(args.path))
-        on_log.do(
-            env=env,
-            image_tag=image_tag,
-            container_tag=container_tag,
-            images=args.images,
-            since=args.since,
-            until=args.until,
-        )
+        deadline = time.time() + args.timeout
+        with asyncio.Runner() as runner:
+            worktree, workload, tag = runner.run(Environment.parse(args.path))
+            try:
+                print("---\n".join(runner.run(podman_log(
+                    worktree,
+                    workload,
+                    tag,
+                    deadline=deadline,
+                    images=args.images,
+                    since=args.since,
+                    until=args.until
+                ))))
+            except (TimeoutError, TimeoutExpired) as err:
+                _deadline = datetime.fromtimestamp(deadline)
+                raise TimeoutError(
+                    f"timed out during 'bertrand log' with deadline {_deadline}\n"
+                    f"worktree: {worktree}\n"
+                    f"workload: {workload!r}\n"
+                    f"tag: {tag!r}"
+                ) from err
 
     pipelines: dict[str, Pipeline] = {
         "init": on_init,
@@ -1246,12 +1295,7 @@ class External:
         "pause": on_pause,
         "resume": on_resume,
         "restart": on_restart,
-        "prune": on_prune,
         "rm": on_rm,
-        "ls": on_ls,
-        "monitor": on_monitor,
-        "top": on_top,
-        "log": on_log,
     }
 
     @staticmethod
@@ -1316,12 +1360,7 @@ class External:
         # NOTE: a specific ordering is necessary to ensure that pipelines are undone
         # in a safe manner, and never leave the system in a broken state.
         for pipe in (
-            on_top,
-            on_log,
-            on_monitor,
-            on_ls,
             on_rm,
-            on_prune,
             on_stop,
             on_pause,
             on_resume,
