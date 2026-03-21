@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import json as json_parser
 import os
 import shutil
 import subprocess
@@ -164,7 +163,6 @@ class External:
             self.monitor()
             self.top()
             self.log()
-            self.journal()
             self.clean()
 
         # TODO: path arguments should be updated to new workload/tag syntax
@@ -773,34 +771,6 @@ class External:
                     "option has no effect if used in conjunction with '--image'.",
             )
 
-        # TODO: delete journal?
-
-        def journal(self) -> None:
-            """Add the 'journal' command to the parser."""
-            command = self.commands.add_parser(
-                "journal",
-                help=
-                    "Run a predefined pipeline of commands within a Bertrand virtual "
-                    "environment at the specified path.  This is similar to 'bertrand "
-                    "run', but executes a sequence of commands defined in a JSON file "
-                    "within the environment directory, rather than a single arbitrary "
-                    "command passed directly from the command line.  This allows for "
-                    "more complex workflows and automation, while still providing some "
-                    "level of abstraction and safety compared to 'bertrand run'.",
-            )
-            command.add_argument(
-                "subcommand",
-                metavar="COMMAND",
-                help=
-                    "The command to dump the journal of.  This should correspond to "
-                    "another 'bertrand' command (e.g. 'build', 'start', 'enter', etc.) "
-                    "which records a journal of its activity.  Such journals allow "
-                    "Bertrand to safely resume or undo the effects of a command, and "
-                    "provide a limited form of logging in order to debug issues with "
-                    "Bertrand itself."
-            )
-            command.set_defaults(handler=External.journal)
-
         def clean(self) -> None:
             """Add the 'clean' command to the parser."""
             command = self.commands.add_parser(
@@ -1394,39 +1364,6 @@ class External:
         "publish": on_publish,
         "init": on_init,
     }
-
-    @staticmethod
-    def journal(args: argparse.Namespace) -> None:
-        """Execute the `bertrand journal` CLI command.
-
-        Parameters
-        ----------
-        args : argparse.Namespace
-            The parsed command-line arguments.
-
-        Raises
-        ------
-        KeyError
-            If the specified command is invalid or not recognized.
-        """
-        pipe = External.pipelines.get(args.subcommand, None)
-        if pipe is None:
-            raise KeyError(f"Invalid subcommand '{args.subcommand}'.")
-
-        async def _print() -> None:
-            # load journal for the specified pipeline and dump it to stdout in JSON format
-            async with pipe:
-                journal = pipe.state_dir / "journal.json"
-                if not journal.exists():
-                    print(
-                        f"bertrand: no journal found for '{args.subcommand}'",
-                        file=sys.stderr
-                    )
-                    return
-                data = json_parser.loads(journal.read_text())
-                print(json_parser.dumps(data, indent=2))
-
-        asyncio.run(_print())
 
     @staticmethod
     def clean(args: argparse.Namespace) -> None:
