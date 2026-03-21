@@ -72,8 +72,6 @@ from .pipeline import (
     atomic,
     detect_package_manager,
     on_init,
-    on_build,
-    on_start,
     on_enter,
     on_code,
     on_restart,
@@ -1793,6 +1791,9 @@ class Environment:
             await self._lock.__aexit__(exc_type, exc_value, traceback)
             self._entered -= 1
 
+    def __bool__(self) -> bool:
+        return self._entered > 0 and self._config is not None
+
     def __hash__(self) -> int:
         return hash(self.worktree)
 
@@ -2036,100 +2037,6 @@ class Environment:
         except:
             pass
 
-    async def image(self, tag: SanitizedName, *, quiet: bool) -> Image:
-        """Build an image of this worktree, looking up its arguments from the versioned
-        project configuration.
-
-        Parameters
-        ----------
-        tag : SanitizedName
-            The tag to build, which must be declared in the project's build matrix.
-        quiet : bool
-            If True, suppress output from the `podman build` command.  If False, allow
-            output to be printed to the console.
-
-        Returns
-        -------
-        Image
-            The built image metadata.  This may have been reused from a previous build.
-
-        Raises
-        ------
-        TypeError
-            If the commit's project configuration is missing or malformed.
-        OSError
-            If the environment hasn't been acquired as a context manager or the image
-            fails to build.
-        """
-        if self._entered < 1 or self._config is None:
-            raise OSError(
-                "environment must be acquired as a context manager before building "
-                "images"
-            )
-        config = self._config
-
-        # get config for the commit we are about to build, which may differ from
-        # that of the enclosing environment
-        image_args = config.image_args(tag)
-        container_args = config.container_args(tag)
-        if config.pyproject is not None:
-            project_name = config.pyproject.project.name
-        else:
-            raise TypeError("could not determine project name")
-
-        # build candidate image
-        candidate = Image.model_construct(
-            version=VERSION,
-            tag=tag,
-            id="",  # corrected from iid file after build
-            created=datetime.now(timezone.utc),
-            image_args=image_args,
-            container_args=container_args,
-        )
-        image_name = f"{project_name}.{tag}.{self.id[:7]}"
-        iid_file = self.worktree / METADATA_TMP / f"{image_name}.iid"
-        iid_file.parent.mkdir(parents=True, exist_ok=True)
-        await podman_cmd([
-            "build",
-            "-t", image_name,
-            "-f", str(config.path(CONTAINERFILE_RESOURCE)),
-            "--iidfile", str(iid_file),
-            "--label", f"{BERTRAND_ENV}=1",
-            "--label", f"{ENV_ID_ENV}={self.id}",
-            "--label", f"{IMAGE_TAG_ENV}={tag}",
-            *image_args,
-            str(self.worktree)
-        ], cwd=self.worktree, capture_output=quiet)
-        candidate.id = iid_file.read_text(encoding="utf-8").strip()
-        iid_file.unlink(missing_ok=True)
-        existing = self.images.get(tag)
-        new = existing is None or existing.id != candidate.id
-        try:
-            if candidate.inspect() is None:
-                raise OSError(
-                    f"failed to build image '{tag}' for environment at {self.worktree}"
-                )
-        except:
-            if new:
-                await podman_cmd(
-                    ["image", "rm", "-f", candidate.id],
-                    check=False,
-                    capture_output=quiet
-                )
-            raise
-
-        # replace existing image with new candidate and clean up the old image if it
-        # differs
-        if new:
-            self.images[tag] = candidate
-            if existing is not None:
-                await existing.remove(
-                    force=True,
-                    timeout=self.timeout,
-                    missing_ok=True
-                )
-        return candidate
-
 
 async def _all_environments() -> list[Path]:
     try:
@@ -2260,307 +2167,6 @@ class _Command:
         if Environment.current() is not None:
             raise OSError("cannot invoke podman from within a Bertrand container")
         self._call(ctx)
-
-
-@dataclass
-class Build(_Command):
-    """Incrementally build Bertrand images and materialize declared containers within
-    an environment, scoping to specific images/containers if desired.  This command
-    does not start containers, and all build/create arguments are resolved from project
-    configuration files.
-    """
-
-    @staticmethod
-    def _image(
-        ctx: Pipeline.InProgress,
-        *,
-        env: Environment,
-        image_tag: str,
-        publish: bool,
-    ) -> tuple[Image, bool]:
-        changed = False
-        declared = env.config["images"].get(image_tag)
-        if declared is None:
-            raise KeyError(
-                f"undeclared image tag '{image_tag}' for environment at {env.root}."
-            )
-        args = list(declared["args"])
-
-        # build candidate image
-        # NOTE: podman + the OCI build system will automatically reuse cached layers as
-        # long as none of the inputs have changed (including the contents of the
-        # environment directory, excluding patterns in .containerignore).  Therefore,
-        # we can build unconditionally, and check whether the ID has changed afterwards
-        # to detect whether a rebuild was necessary.
-        candidate = Image.model_construct(
-            version=VERSION,
-            id="",  # corrected after build
-            created=datetime.now(timezone.utc),
-            args=args,
-            containers={},
-        )
-        image_name = f"{sanitize_name(env.root.name)}.{image_tag}.{env.id[:13]}"
-        build_args: list[str] = []
-        for arg in args:
-            build_args.append(f"--build-arg={arg}")
-            build_args.append(f"--env={arg}")
-        iid_file = env.root / METADATA_TMP / f"{image_name}.iid"
-        try:
-            iid_file.parent.mkdir(parents=True, exist_ok=True)
-            podman_cmd([
-                "build",
-                "-t", image_name,
-                "-f", str(env.config.path(CONTAINERFILE_RESOURCE)),
-                "--iidfile", str(iid_file),
-                "--label", "BERTRAND=1",
-                "--label", f"BERTRAND_ENV={env.id}",
-                "--label", f"BERTRAND_IMAGE={image_tag}",
-                *build_args,
-                str(env.root)
-            ], cwd=env.root, capture_output=publish)
-            candidate.id = iid_file.read_text(encoding="utf-8").strip()
-            try:
-                # confirm that the image was actually built and is reachable
-                if candidate.inspect() is None:
-                    raise OSError(
-                        f"failed to build image '{image_tag}' for environment at {env.root}"
-                    )
-
-                # rebuild all downstream containers if the image changed
-                existing = env.tags.get(image_tag)
-                changed = existing is None or candidate.id != existing.id
-                if changed and not publish:
-                    for container_tag in declared["containers"]:
-                        Build._container(
-                            ctx,
-                            env=env,
-                            image_tag=image_tag,
-                            image=candidate,  # build using the temp image
-                            container_tag=container_tag,
-                        )
-
-                # otherwise, preserve original timestamp and containers
-                elif existing is not None:
-                    candidate.created = existing.created
-                    candidate.containers = existing.containers
-
-            except:
-                cmd = ["container", "rm", "-f"]
-                cmd.extend(c.id for c in candidate.containers.values())
-                podman_cmd(cmd, check=False)
-                podman_cmd(["image", "rm", "-f", candidate.id], check=False)
-                raise
-
-            # swap and delete old image if it exists
-            env.tags[image_tag] = candidate
-            if changed and existing is not None:
-                existing.remove(force=True, timeout=env.timeout, missing_ok=True)
-            return candidate, changed
-
-        finally:
-            iid_file.unlink(missing_ok=True)
-
-    @staticmethod
-    def _container(
-        ctx: Pipeline.InProgress,
-        *,
-        env: Environment,
-        image_tag: str,
-        image: Image | None,
-        container_tag: str,
-    ) -> tuple[Container, bool]:
-        declared_image = env.config["images"].get(image_tag)
-        if declared_image is None:
-            raise KeyError(
-                f"undeclared image tag '{image_tag}' for environment at {env.root}"
-            )
-        args = declared_image["containers"].get(container_tag)
-        if args is None:
-            raise KeyError(
-                f"undeclared container tag '{container_tag}' for image '{image_tag}' in "
-                f"environment at {env.root}"
-            )
-        args = list(args)
-
-        # attempt to build the parent image first
-        if image is None:
-            image, changed = Build._image(
-                ctx,
-                env=env,
-                image_tag=image_tag,
-                publish=False,
-            )
-            if changed:  # implicitly rebuilt container along with image
-                return image.containers[container_tag], True
-
-        # reuse container if args match and container has not been relocated
-        existing = image.containers.get(container_tag)
-        if existing is not None and list(existing.args) == args:
-            inspect = existing.inspect()
-            if inspect is not None:
-                mount = Container.mount(inspect)
-                try:
-                    if mount is not None and os.path.samefile(mount, env.root):
-                        return existing, False  # no change
-                except OSError:
-                    pass
-
-        # build new container
-        container = Container.model_construct(
-            version=VERSION,
-            id="",  # corrected after create
-            created=datetime.now(timezone.utc),
-            args=args,
-        )
-        cid_file = env.root / METADATA_TMP / f"create-{uuid.uuid4().hex}.cid"
-        cache_prefix = f"bertrand-{env.id[:13]}"
-        uv_volume = f"{cache_prefix}-uv"
-        bertrand_volume = f"{cache_prefix}-bertrand"
-        ccache_volume = f"{cache_prefix}-ccache"
-        conan_volume = f"{cache_prefix}-conan"
-        _ensure_volume(uv_volume, env.id, "uv")
-        _ensure_volume(bertrand_volume, env.id, "bertrand")
-        _ensure_volume(ccache_volume, env.id, "ccache")
-        _ensure_volume(conan_volume, env.id, "conan")
-        mkdir_private(HOST_SOCKET.parent)
-        try:
-            cid_file.parent.mkdir(parents=True, exist_ok=True)
-            podman_cmd([
-                "create",
-                "--init",
-                "--cidfile", str(cid_file),
-
-                # labels for podman-level lookup
-                "--label", "BERTRAND=1",
-                "--label", f"BERTRAND_ENV={env.id}",
-                "--label", f"BERTRAND_IMAGE={image_tag}",
-                "--label", f"BERTRAND_CONTAINER={container_tag}",
-
-                # mount environment directory
-                "-v", f"{str(env.root)}:{str(WORKTREE_MOUNT)}",
-                "--mount",
-                (
-                    "type=bind,"
-                    f"src={str(HOST_SOCKET.parent)},"
-                    f"dst={str(CONTAINER_SOCKET.parent)},"
-                    "ro=true"
-                ),
-
-                # persistent caches for incremental builds
-                "--mount", f"type=volume,src={uv_volume},dst={CACHES}/uv",
-                "--mount", f"type=volume,src={bertrand_volume},dst={CACHES}/bertrand",
-                "--mount", f"type=volume,src={ccache_volume},dst={CACHES}/ccache",
-                "--mount", f"type=volume,src={conan_volume},dst=/opt/conan",
-
-                # environment variables for Bertrand runtime
-                "-e", "BERTRAND=1",
-                "-e", f"BERTRAND_ENV={env.id}",
-                "-e", f"BERTRAND_IMAGE={image_tag}",
-                "-e", f"BERTRAND_CONTAINER={container_tag}",
-
-                # any additional user-specified args
-                *args,
-                image.id,
-                "sleep", "infinity",
-            ])
-            container.id = cid_file.read_text(encoding="utf-8").strip()
-            try:
-                # confirm that the container was actually built and is reachable
-                if container.inspect() is None:
-                    raise OSError(
-                        f"failed to create container '{container_tag}' for image "
-                        f"'{image_tag}' in environment at {env.root}"
-                    )
-            except:
-                podman_cmd(["container", "rm", "-f", container.id], check=False)
-                raise
-
-            # delete old container if it exists
-            image.containers[container_tag] = container
-            if existing is not None:
-                existing.remove(force=True, timeout=env.timeout, missing_ok=True)
-            return container, True  # container was rebuilt
-
-        finally:
-            cid_file.unlink(missing_ok=True)
-
-    @staticmethod
-    def container(
-        ctx: Pipeline.InProgress,
-        *,
-        env: Environment,
-        image_tag: str,
-        container_tag: str,
-        **kwargs: Any
-    ) -> None:
-        Build._container(
-            ctx,
-            env=env,
-            image_tag=image_tag,
-            image=None,  # build or reuse image as needed
-            container_tag=container_tag,
-        )
-
-    @staticmethod
-    def image(
-        ctx: Pipeline.InProgress,
-        *,
-        env: Environment,
-        image_tag: str,
-        **kwargs: Any
-    ) -> None:
-        image, changed = Build._image(
-            ctx,
-            env=env,
-            image_tag=image_tag,
-            publish=False,
-        )
-
-        # if we didn't rebuild the image itself, make sure to rebuild all descendant
-        # containers in order to enforce proper CLI scope
-        if not changed:
-            for container_tag in env.config["images"][image_tag]["containers"]:
-                Build._container(
-                    ctx,
-                    env=env,
-                    image_tag=image_tag,
-                    image=image,  # reuse built image
-                    container_tag=container_tag,
-                )
-
-    @staticmethod
-    def environment(
-        ctx: Pipeline.InProgress,
-        *,
-        env: Environment,
-        **kwargs: Any
-    ) -> None:
-        for image_tag in env.config["images"]:
-            image, changed = Build._image(
-                ctx,
-                env=env,
-                image_tag=image_tag,
-                publish=False,
-            )
-
-            # if we didn't rebuild the image itself, make sure to rebuild all descendant
-            # containers in order to enforce proper CLI scope
-            if not changed:
-                for container_tag in env.config["images"][image_tag]["containers"]:
-                    Build._container(
-                        ctx,
-                        env=env,
-                        image_tag=image_tag,
-                        image=image,  # reuse built image
-                        container_tag=container_tag,
-                    )
-
-    @staticmethod
-    def all(
-        ctx: Pipeline.InProgress,
-        **kwargs: Any
-    ) -> None:
-        raise OSError("cannot build all environments")
 
 
 @dataclass
@@ -2721,101 +2327,6 @@ class Publish(_Command):
         **kwargs: Any
     ) -> None:
         raise OSError("cannot publish all environments")
-
-
-@dataclass
-class Start(_Command):
-    """Start Bertrand containers within an environment, scoping to specific images and
-    containers if desired.  This is equivalent to `Build` followed by a
-    `podman container start` command on all referenced containers.
-    """
-
-    @staticmethod
-    def container(
-        ctx: Pipeline.InProgress,
-        *,
-        env: Environment,
-        image_tag: str,
-        container_tag: str,
-        **kwargs: Any
-    ) -> None:
-        Build.container(
-            ctx,
-            env=env,
-            image_tag=image_tag,
-            container_tag=container_tag,
-            publish=None,
-            repo="",
-            **kwargs,
-        )
-        # TODO: env[image] is no longer valid.  Now you have to reference a commit
-        # first
-        container = env[image_tag, container_tag]
-        if container is None:
-            raise OSError(
-                f"unable to build container '{container_tag}' in image '{image_tag}'"
-            )
-        inspect = container.inspect()
-        if inspect is None:
-            container.remove(force=True, timeout=env.timeout, missing_ok=True)
-            raise OSError(
-                f"failed to build container '{container_tag}' for image '{image_tag}' "
-                f"in environment at {env.root}"
-            )
-        Container.start(inspect)
-
-    @staticmethod
-    def image(
-        ctx: Pipeline.InProgress,
-        *,
-        env: Environment,
-        image_tag: str,
-        **kwargs: Any
-    ) -> None:
-        Build.image(ctx, env=env, image_tag=image_tag, publish=None, repo="", **kwargs)
-        # TODO: env[image] is no longer valid.  Now you have to reference a commit
-        # first
-        image = env[image_tag]
-        if image is None:
-            raise OSError(
-                f"unable to build image '{image_tag}' in environment at {env.root}"
-            )
-        for container_tag, container in image.containers.items():
-            inspect = container.inspect()
-            if inspect is None:
-                container.remove(force=True, timeout=env.timeout, missing_ok=True)
-                raise OSError(
-                    f"failed to build container '{container_tag}' for image '{image_tag}' "
-                    f"in environment at {env.root}"
-                )
-            Container.start(inspect)
-
-    @staticmethod
-    def environment(
-        ctx: Pipeline.InProgress,
-        *,
-        env: Environment,
-        **kwargs: Any
-    ) -> None:
-        for image_tag in env.config["images"]:
-            Start.image(ctx, env=env, image_tag=image_tag, **kwargs)
-
-    @staticmethod
-    def all(
-        ctx: Pipeline.InProgress,
-        **kwargs: Any
-    ) -> None:
-        if confirm(
-            "This will start all Bertrand containers on this system.  This may take "
-            "a long time depending on the number and complexity of the environments.\n"
-            "Are you sure you want to continue? [y/N] "
-        ):
-            for env_path in _all_environments():
-                try:
-                    with Environment(env_path) as env:
-                        Start.environment(ctx, env=env)
-                except Exception as err:
-                    print(err, file=sys.stderr)
 
 
 @dataclass
@@ -3252,9 +2763,153 @@ async def _cli_images(
     return await _podman_ids("image", labels=labels, timeout=timeout)
 
 
-@on_build(ephemeral=True)
-async def podman_build(ctx: Pipeline.InProgress) -> None:
-    Build()(ctx)
+def _parse_output_format(value: str, *, allow_id: bool) -> tuple[str, str | None]:
+    raw = value.strip()
+    if not raw:
+        raise ValueError("format must not be empty")
+
+    mode, _, tail = raw.partition(" ")
+    mode = mode.strip().lower()
+    template = tail.strip() or None
+    if mode == "table":
+        return mode, template
+    if template is not None:
+        raise ValueError(
+            "only table format accepts a template (expected: 'table' or "
+            "'table <template>')"
+        )
+    if mode == "json":
+        return mode, None
+    if mode == "id":
+        if not allow_id:
+            raise ValueError("format 'id' is only supported for the 'ls' command")
+        return mode, None
+
+    if allow_id:
+        expected = "id, json, table, or table <template>"
+    else:
+        expected = "json, table, or table <template>"
+    raise ValueError(f"invalid format: {raw!r} (expected {expected})")
+
+
+async def podman_build(
+    worktree: Path,
+    workload: str | None,
+    tag: str | None,
+    *,
+    quiet: bool,
+) -> Image:
+    """Incrementally build Bertrand images within an environment.
+
+    Parameters
+    ----------
+    worktree : Path
+        A valid environment worktree path.
+    workload : str | None
+        The kubernetes workload to target, if applicable.  If None, then the command
+        will target tags in the environment's build matrix.  Otherwise, it will start
+        the workload and target tags within it.
+    tag : str | None
+        The member to target, if any.  All images matching the tag will be included in
+        the output, according to the workload.
+    quiet : bool
+        Whether to suppress build output from podman.  If true, then nothing will be
+        printed to stdout or stderr unless an error occurs.
+
+    Returns
+    -------
+    Image
+        The most recently built image for the specified tag, which may be the same as
+        the previously cached image if no changes were detected.
+
+    Raises
+    ------
+    TypeError
+        If the commit's project configuration is missing or malformed.
+    OSError
+        If the environment hasn't been acquired as a context manager or the image
+        fails to build.
+
+    Notes
+    -----
+    This command does not materialize or start any containers; it only builds images,
+    which corresponds to Ahead of Time (AoT) compilation of the container environment.
+    The precise build arguments are resolved from the project's configuration files
+    for the selected worktree, using tags defined in its build matrix.
+    """
+    if workload is not None:
+        raise NotImplementedError("kubernetes workloads are not yet supported")
+    if tag is None:
+        tag = DEFAULT_TAG
+
+    async with Environment(worktree, timeout=TIMEOUT) as env:
+        config = env._config  # pylint: disable=protected-access
+        if config is None:
+            raise OSError(f"could not load environment at {worktree}")
+
+        # get config for the commit we are about to build, which may differ from
+        # that of the enclosing environment
+        image_args = config.image_args(tag)
+        container_args = config.container_args(tag)
+        if config.pyproject is not None:
+            project_name = config.pyproject.project.name
+        else:
+            raise TypeError("could not determine project name")
+
+        # build candidate image
+        candidate = Image.model_construct(
+            version=VERSION,
+            tag=tag,
+            id="",  # corrected from iid file after build
+            created=datetime.now(timezone.utc),
+            image_args=image_args,
+            container_args=container_args,
+        )
+        image_name = f"{project_name}.{tag}.{env.id[:7]}"
+        iid_file = env.worktree / METADATA_TMP / f"{image_name}.iid"
+        iid_file.parent.mkdir(parents=True, exist_ok=True)
+        await podman_cmd([
+            "build",
+            "-t", image_name,
+            "-f", str(config.path(CONTAINERFILE_RESOURCE)),
+            "--iidfile", str(iid_file),
+            "--label", f"{BERTRAND_ENV}=1",
+            "--label", f"{ENV_ID_ENV}={env.id}",
+            "--label", f"{IMAGE_TAG_ENV}={tag}",
+            *image_args,
+            str(env.worktree)
+        ], cwd=env.worktree, capture_output=quiet)
+        candidate.id = iid_file.read_text(encoding="utf-8").strip()
+        iid_file.unlink(missing_ok=True)
+        existing = env.images.get(tag)
+        changed = existing is None or existing.id != candidate.id
+        try:
+            if candidate.inspect() is None:
+                raise OSError(
+                    f"failed to build image '{tag}' for environment at {env.worktree}"
+                )
+        except:
+            if changed:
+                await podman_cmd(
+                    ["image", "rm", "-f", candidate.id],
+                    check=False,
+                    capture_output=quiet
+                )
+            raise
+
+        # replace existing image with new candidate and clean up the old image if it
+        # differs
+        if changed:
+            env.images[tag] = candidate
+            if existing is not None:
+                await existing.remove(
+                    force=True,
+                    timeout=env.timeout,
+                    missing_ok=True
+                )
+            return candidate
+        assert existing is not None
+        return existing
 
 
 @on_publish(ephemeral=True)
@@ -3262,9 +2917,50 @@ async def podman_publish(ctx: Pipeline.InProgress) -> None:
     Publish()(ctx)
 
 
-@on_start(ephemeral=True)
-async def podman_start(ctx: Pipeline.InProgress) -> None:
-    Start()(ctx)
+# TODO: the best thing to do for start is probably to allow arbitrary argv to follow
+# `bertrand run myproject/branch@workload:tag sleep infinity`, which will override the
+# default entry point for the generated container.
+
+
+async def podman_start(
+    worktree: Path,
+    workload: str | None,
+    tag: str | None,
+    *,
+    quiet: bool,
+) -> None:
+    """Start Bertrand containers within an environment.
+
+    Parameters
+    ----------
+    worktree : Path
+        A valid environment worktree path.
+    workload : str | None
+        The kubernetes workload to target, if applicable.  If None, then the command
+        will target tags in the environment's build matrix.  Otherwise, it will start
+        the workload and target tags within it.
+    tag : str | None
+        The member to target, if any.  All containers matching the tag will be included
+        in the output, according to the workload.
+    quiet : bool
+        Whether to suppress output from podman.  If true, then nothing will be printed
+        to stdout or stderr unless an error occurs.
+    """
+    if workload is not None:
+        raise NotImplementedError("kubernetes workloads are not yet supported")
+    if tag is None:
+        tag = DEFAULT_TAG
+
+    async with Environment(worktree, timeout=TIMEOUT) as env:
+        config = env._config  # pylint: disable=protected-access
+        if config is None:
+            raise OSError(f"could not load environment at {worktree}")
+
+        # TODO: support cmd argument?
+
+        # build/update image first, then materialize container from it
+        image = await podman_build(worktree, workload, tag, quiet=quiet)
+        await image.container(env, None, quiet=quiet)
 
 
 @on_code(ephemeral=True)
@@ -3457,22 +3153,14 @@ async def podman_rm(
                 )
 
 
-# TODO: 'ls' should support an `--id` flag that only returns container/image IDs
-# as newline-delimited output, to make it easier to script against.  Also, all these
-# containers' `images` fields should be made singular.  `--id` is mutually exclusive
-# with `--json`, and should be generalized into a `--format` flag that may also
-# support custom Go templates for formatting table output, as well as `id` and
-# `json` literals.
-
-
 async def podman_ls(
     worktree: Path,
     workload: str | None,
     tag: str | None,
     *,
     deadline: float,
-    images: bool,
-    json: bool,
+    image: bool,
+    format: str,
 ) -> None:
     """Gather status information for all containers in a Bertrand environment, scoping
     to specific images and containers if desired.
@@ -3491,19 +3179,36 @@ async def podman_ls(
     deadline : float
         The timestamp before which this command should complete, relative to the
         epoch.
-    images : bool
+    image : bool
         If True, then the output will include images instead of containers.  Otherwise,
         the output will only include containers.
-    json : bool
-        If True, then the output will be parsed and returned as a list of JSON
-        dictionaries, one per container.  Otherwise, all information will be returned
-        in a human-readable table format.
+    format : str
+        A string describing the output format.  This can be one of the following:
+            -   `id`: print only the container or image IDs, one per line.
+            -   `json`: print the full output as JSON, with one object per container or
+                image.
+            -   `table`: print the output as a human-readable table with default
+                columns.
+            -   `table <template>`: print the output as a human-readable table with
+                columns specified by the Go template string `<template>`.  See the
+                podman documentation for the available fields for containers and
+                images.
     """
     if workload is not None:
         raise NotImplementedError("kubernetes workloads are not yet supported")
+    format_mode, table_template = _parse_output_format(format, allow_id=True)
 
     async with Environment(worktree, timeout=deadline - time.time()) as env:
-        if images:
+        if format_mode == "id":
+            if image:
+                ids = await _cli_images(env, tag, timeout=deadline - time.time())
+            else:
+                ids = await _cli_containers(env, tag, timeout=deadline - time.time())
+            for id in ids:
+                print(id)
+            return
+
+        if image:
             cmd = [
                 "image",
                 "ls",
@@ -3512,13 +3217,17 @@ async def podman_ls(
                 "--filter", f"label={ENV_ID_ENV}={env.id}",
                 "--filter", f"label={IMAGE_TAG_ENV}={tag}",
             ]
-            if json:
+            if format_mode == "json":
                 cmd.append("--no-trunc")
                 cmd.append("--format=json")
             else:
+                template = (
+                    table_template or
+                    "{{.Names}}\t{{.CreatedAt}}\t{{.Containers}}\t{{.ReadOnly}}\t"
+                    "{{.Size}}\t{{.History}}"
+                )
                 cmd.append(
-                    "--format=table {{.Names}}\t{{.CreatedAt}}\t{{.Containers}}\t"
-                    "{{.ReadOnly}}\t{{.Size}}\t{{.History}}"
+                    f"--format=table {template}"
                 )
         else:
             cmd = [
@@ -3530,14 +3239,18 @@ async def podman_ls(
                 "--filter", f"label={ENV_ID_ENV}={env.id}",
                 "--filter", f"label={IMAGE_TAG_ENV}={tag}",
             ]
-            if json:
+            if format_mode == "json":
                 cmd.append("--no-trunc")
                 cmd.append("--format=json")
             else:
+                template = (
+                    table_template or
+                    "{{.Names}}\t{{.CreatedAt}}\t{{.State}}\t{{.Command}}\t"
+                    "{{.RunningFor}}\t{{.Status}}\t{{.Restarts}}\t{{.Size}}\t"
+                    "{{.Mounts}}\t{{.Networks}}\t{{.Ports}}"
+                )
                 cmd.append(
-                    "--format=table {{.Names}}\t{{.CreatedAt}}\t{{.State}}\t"
-                    "{{.Command}}\t{{.RunningFor}}\t{{.Status}}\t{{.Restarts}}\t"
-                    "{{.Size}}\t{{.Mounts}}\t{{.Networks}}\t{{.Ports}}"
+                    f"--format=table {template}"
                 )
 
         await podman_cmd(cmd, timeout=deadline - time.time())
@@ -3550,7 +3263,7 @@ async def podman_monitor(
     *,
     deadline: float,
     interval: int,
-    json: bool,
+    format: str,
 ) -> None:
     """Gather resource utilization statistics for a family of containers in a Bertrand
     environment, printing the output to stdout.
@@ -3575,23 +3288,29 @@ async def podman_monitor(
         streaming format every `interval` seconds.  Otherwise, the output will be
         printed once and the command will exit.  `interval` is incompatible with
         `json`.
-    json : bool
-        If True, then the output will be parsed and returned as a list of JSON
-        dictionaries, one per container.  Otherwise, all information will be returned
-        in a human-readable table format, and nothing will be returned by this
-        function.  `json` is incompatible with `interval`.
+    format : str
+        A string describing the output format.  This can be one of the following:
+            -   `json`: print the full output as JSON, with one object per container or
+                image.
+            -   `table`: print the output as a human-readable table with default
+                columns.
+            -   `table <template>`: print the output as a human-readable table with
+                columns specified by the Go template string `<template>`.  See the
+                podman documentation for the available fields for containers and
+                images.
     """
     if workload is not None:
         raise NotImplementedError("kubernetes workloads are not yet supported")
-    if json and interval:
-        raise ValueError("cannot use 'json' and 'interval' together")
     if interval < 0:
         raise ValueError("interval must be non-negative")
+    format_mode, table_template = _parse_output_format(format, allow_id=False)
+    if format_mode == "json" and interval:
+        raise ValueError("cannot use 'json' and 'interval' together")
 
     async with Environment(worktree, timeout=deadline - time.time()) as env:
         ids = await _cli_containers(env, tag, timeout=deadline - time.time())
         if not ids:
-            if json:
+            if format_mode == "json":
                 print("[]")
             return
 
@@ -3601,15 +3320,19 @@ async def podman_monitor(
         else:
             cmd.append(f"--interval={interval}")
 
-        if json:
+        if format_mode == "json":
             cmd.append("--no-trunc")
             cmd.append("--format=json")
             cmd.extend(ids)
             await podman_cmd(cmd, timeout=deadline - time.time())
         else:
+            template = (
+                table_template or
+                "{{.Name}}\t{{.AVGCPU}}\t{{.CPUPerc}}\t{{.PIDs}}\t{{.MemUsage}}\t"
+                "{{.NetIO}}\t{{.BlockIO}}"
+            )
             cmd.append(
-                "--format=table {{.Name}}\t{{.AVGCPU}}\t{{.CPUPerc}}\t{{.PIDs}}\t"
-                "{{.MemUsage}}\t{{.NetIO}}\t{{.BlockIO}}"
+                f"--format=table {template}"
             )
             cmd.extend(ids)
             await podman_cmd(cmd, timeout=deadline - time.time())
@@ -3659,7 +3382,7 @@ async def podman_log(
     tag: str | None,
     *,
     deadline: float,
-    images: bool,
+    image: bool,
     since: str | None,
     until: str | None,
 ) -> None:
@@ -3680,7 +3403,7 @@ async def podman_log(
     deadline : float
         The timestamp before which this command should complete, relative to the
         epoch.
-    images : bool
+    image : bool
         If True, then the logs will show image history instead of container logs.
     since : str | None
         Only show logs since this timestamp.  Should be a string parsable by Podman,
@@ -3695,7 +3418,7 @@ async def podman_log(
         raise NotImplementedError("kubernetes workloads are not yet supported")
 
     async with Environment(worktree, timeout=deadline - time.time()) as env:
-        if images:
+        if image:
             ids = await _cli_images(env, tag, timeout=deadline - time.time())
             cmd = [
                 "image",
@@ -3706,6 +3429,10 @@ async def podman_log(
                     "{{.Size}}\t{{.Comment}}"
                 ),
             ]
+            if since is not None:
+                raise ValueError("cannot use 'since' with image logs")
+            if until is not None:
+                raise ValueError("cannot use 'until' with image logs")
         else:
             ids = await _cli_containers(env, tag, timeout=deadline - time.time())
             cmd = [

@@ -21,9 +21,7 @@ from .env.pipeline import (
     JSONValue,
     Pipeline,
     on_init,
-    on_build,
     on_publish,
-    on_start,
     on_enter,
     on_code,
     on_restart,
@@ -31,12 +29,14 @@ from .env.pipeline import (
 from .env.container import (
     TIMEOUT,
     Environment,
+    podman_build,
     podman_log,
     podman_ls,
     podman_monitor,
     podman_pause,
     podman_resume,
     podman_rm,
+    podman_start,
     podman_stop,
     podman_top,
 )
@@ -169,7 +169,6 @@ class External:
 
         # TODO: path arguments should be updated to new workload/tag syntax
         # TODO: zero timeouts should wait indefinitely?
-        # -> just outlaw that, probably
 
         def version(self) -> None:
             """Add the 'version' query to the parser."""
@@ -602,18 +601,22 @@ class External:
                     "implementation.",
             )
             command.add_argument(
-                "--images",
+                "--image",
                 action="store_true",
                 help=
                     "Show Bertrand images in the current scope instead of containers "
                     "(which is the default).",
             )
             command.add_argument(
-                "--json",
-                action="store_true",
+                "--format",
+                type=str,
+                default="table",
+                metavar="FORMAT",
                 help=
-                    "Output the list in indented JSON format.  If omitted, the list "
-                    "will be printed as a human-readable table.",
+                    "Output format for list results.  Accepted values: 'id', 'json', "
+                    "'table', or 'table <template>' where <template> is a single "
+                    "quoted Go template string forwarded directly to podman.  "
+                    "Defaults to 'table'.",
             )
             command.set_defaults(handler=External.ls)
 
@@ -662,13 +665,15 @@ class External:
                     "not be updated after the initial display.",
             )
             command.add_argument(
-                "--json",
-                action="store_true",
+                "--format",
+                type=str,
+                default="table",
+                metavar="FORMAT",
                 help=
-                    "Output the statistics in indented JSON format.  If omitted, the "
-                    "statistics will be printed as a human-readable table.  Not "
-                    "compatible with the '--interval' option, which must be set to 0 "
-                    "if '--json' is used.",
+                    "Output format for monitor results.  Accepted values: 'json', "
+                    "'table', or 'table <template>' where <template> is a single "
+                    "quoted Go template string forwarded directly to podman.  "
+                    "Defaults to 'table'.  JSON mode requires '--interval=0'.",
             )
             command.set_defaults(handler=External.monitor)
 
@@ -735,7 +740,7 @@ class External:
                     "implementation.",
             )
             command.add_argument(
-                "--images",
+                "--image",
                 action="store_true",
                 help=
                     "Show logs for Bertrand images instead of containers (which is the "
@@ -753,7 +758,7 @@ class External:
                     "for the 'since' parameter of the 'podman container logs' command, "
                     "which supports both absolute timestamps (e.g. "
                     "'2024-01-01T00:00:00') and relative timestamps (e.g. '5m').  This "
-                    "option has no effect if used in conjunction with '--images'.",
+                    "option has no effect if used in conjunction with '--image'.",
             )
             command.set_defaults(handler=External.log)
             command.add_argument(
@@ -765,8 +770,10 @@ class External:
                     "for the 'until' parameter of the 'podman container logs' command, "
                     "which supports both absolute timestamps (e.g. "
                     "'2024-01-01T00:00:00') and relative timestamps (e.g. '5m').  This "
-                    "option has no effect if used in conjunction with '--images'.",
+                    "option has no effect if used in conjunction with '--image'.",
             )
+
+        # TODO: delete journal?
 
         def journal(self) -> None:
             """Add the 'journal' command to the parser."""
@@ -819,26 +826,6 @@ class External:
             )
             command.set_defaults(handler=External.clean)
 
-        def _validate_args(self, args: argparse.Namespace) -> None:
-            command = args.command
-
-            if command == "monitor":
-                if args.json and args.interval != 0:
-                    self.root.error("monitor --json requires --interval=0")
-                return
-
-            if command == "log":
-                if args.images and (args.since is not None or args.until is not None):
-                    self.root.error("log --images cannot be combined with --since/--until")
-                return
-
-            if command == "journal":
-                if args.subcommand not in External.pipelines:
-                    self.root.error(
-                        f"invalid journal subcommand '{args.subcommand}'; must be one of: "
-                        f"{', '.join(sorted(External.pipelines))}"
-                    )
-
         def __call__(self) -> argparse.Namespace:
             """Run the command-line parser.
 
@@ -847,9 +834,7 @@ class External:
             argparse.Namespace
                 The parsed command-line arguments.
             """
-            args = self.root.parse_args()
-            self._validate_args(args)
-            return args
+            return self.root.parse_args()
 
     @staticmethod
     def version(args: argparse.Namespace) -> None:
@@ -920,6 +905,10 @@ class External:
             yes=args.yes,
         )
 
+    # TODO: --quiet should probably be removed from both build and start.  You can
+    # always just pipe to /dev/null if you don't want output, and this leaves me
+    # margin to add more options later.
+
     @staticmethod
     def build(args: argparse.Namespace) -> None:
         """Execute the `bertrand build` CLI command.
@@ -931,16 +920,33 @@ class External:
 
         Raises
         ------
-        OSError
-            If the specified path includes an image or container tag, which is not
-            allowed when building an environment.
+        TimeoutExpired
+            If a nested command times out while building the container.  This should
+            never occur under normal circumstances, and the 'build' command
+            intentionally does not accept a timeout argument, so this can only be
+            surfaced from an internal error.
         """
-        env, image_tag, container_tag = _parse(args.path)
-        on_build.do(
-            env=env,
-            image_tag=image_tag,
-            container_tag=container_tag,
-        )
+        now = time.time()
+        deadline = now + args.timeout
+        with asyncio.Runner() as runner:
+            worktree, workload, tag = runner.run(Environment.parse(args.path))
+            try:
+                runner.run(podman_build(
+                    worktree,
+                    workload,
+                    tag,
+                    quiet=False,
+                ))
+            except (TimeoutError, TimeoutExpired) as err:
+                start = datetime.fromtimestamp(now)
+                stop = datetime.fromtimestamp(deadline)
+                cmd = ["bertrand", "build", _recover_spec(worktree, workload, tag)]
+                raise TimeoutExpired(
+                    cmd=cmd,
+                    timeout=args.timeout,
+                    output=None,
+                    stderr=f"started: {start}\nstopped: {stop}\n"
+                ) from err
 
     @staticmethod
     def publish(args: argparse.Namespace) -> None:
@@ -977,6 +983,9 @@ class External:
             manifest=args.manifest,
         )
 
+    # TODO: probably rename start to run and then allow arbitrary argv instead of
+    # quiet.
+
     @staticmethod
     def start(args: argparse.Namespace) -> None:
         """Execute the `bertrand start` CLI command.
@@ -985,13 +994,36 @@ class External:
         ----------
         args : argparse.Namespace
             The parsed command-line arguments.
+
+        Raises
+        ------
+        TimeoutExpired
+            If a nested command times out while starting the container.  This should
+            never occur under normal circumstances, and the 'start' command
+            intentionally does not accept a timeout argument, so this can only be
+            surfaced from an internal error.
         """
-        env, image_tag, container_tag = _parse(args.path)
-        on_start.do(
-            env=env,
-            image_tag=image_tag,
-            container_tag=container_tag,
-        )
+        now = time.time()
+        deadline = now + args.timeout
+        with asyncio.Runner() as runner:
+            worktree, workload, tag = runner.run(Environment.parse(args.path))
+            try:
+                runner.run(podman_start(
+                    worktree,
+                    workload,
+                    tag,
+                    quiet=False,
+                ))
+            except (TimeoutError, TimeoutExpired) as err:
+                start = datetime.fromtimestamp(now)
+                stop = datetime.fromtimestamp(deadline)
+                cmd = ["bertrand", "start", _recover_spec(worktree, workload, tag)]
+                raise TimeoutExpired(
+                    cmd=cmd,
+                    timeout=args.timeout,
+                    output=None,
+                    stderr=f"started: {start}\nstopped: {stop}\n"
+                ) from err
 
     @staticmethod
     def enter(args: argparse.Namespace) -> None:
@@ -1213,17 +1245,16 @@ class External:
                     workload,
                     tag,
                     deadline=deadline,
-                    images=args.images,
-                    json=args.json,
+                    image=args.image,
+                    format=args.format,
                 ))
             except (TimeoutError, TimeoutExpired) as err:
                 start = datetime.fromtimestamp(now)
                 stop = datetime.fromtimestamp(deadline)
                 cmd = ["bertrand", "ls", _recover_spec(worktree, workload, tag)]
-                if args.images:
-                    cmd.append("--images")
-                if args.json:
-                    cmd.append("--json")
+                if args.image:
+                    cmd.append("--image")
+                cmd.extend(["--format", args.format])
                 raise TimeoutExpired(
                     cmd=cmd,
                     timeout=args.timeout,
@@ -1256,7 +1287,7 @@ class External:
                     tag,
                     deadline=deadline,
                     interval=args.interval,
-                    json=args.json,
+                    format=args.format,
                 ))
             except (TimeoutError, TimeoutExpired) as err:
                 start = datetime.fromtimestamp(now)
@@ -1264,8 +1295,7 @@ class External:
                 cmd = ["bertrand", "monitor", _recover_spec(worktree, workload, tag)]
                 if args.interval:
                     cmd.append(f"--interval={args.interval}")
-                if args.json:
-                    cmd.append("--json")
+                cmd.extend(["--format", args.format])
                 raise TimeoutExpired(
                     cmd=cmd,
                     timeout=args.timeout,
@@ -1333,7 +1363,7 @@ class External:
                     workload,
                     tag,
                     deadline=deadline,
-                    images=args.images,
+                    image=args.image,
                     since=args.since,
                     until=args.until
                 ))
@@ -1341,8 +1371,8 @@ class External:
                 start = datetime.fromtimestamp(now)
                 stop = datetime.fromtimestamp(deadline)
                 cmd = ["bertrand", "log", _recover_spec(worktree, workload, tag)]
-                if args.images:
-                    cmd.append("--images")
+                if args.image:
+                    cmd.append("--image")
                 if args.since:
                     cmd.append(f"--since={args.since}")
                 if args.until:
@@ -1361,9 +1391,7 @@ class External:
         "restart": on_restart,
         "code": on_code,
         "enter": on_enter,
-        "start": on_start,
         "publish": on_publish,
-        "build": on_build,
         "init": on_init,
     }
 
