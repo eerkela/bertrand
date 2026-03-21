@@ -72,15 +72,10 @@ from .pipeline import (
     atomic,
     detect_package_manager,
     on_init,
-    on_rm,
     on_build,
     on_start,
     on_enter,
     on_code,
-    on_run,
-    on_stop,
-    on_pause,
-    on_resume,
     on_restart,
     on_publish,
 )
@@ -1430,7 +1425,7 @@ class Container(BaseModel):
         ids: list[ContainerId],
         *,
         force: bool,
-        timeout: int,
+        timeout: float,
         missing_ok: bool
     ) -> None:
         """Remove this container via podman.
@@ -1459,7 +1454,7 @@ class Container(BaseModel):
             "rm",
             "--depend",  # remove dependent containers
             "-v",  # remove anonymous volumes
-            "-t", str(timeout),
+            "-t", str(int(math.ceil(timeout))),
         ]
         if force:
             cmd.append("-f")
@@ -1546,7 +1541,7 @@ class Image(BaseModel):
         data = json_parser.loads(result.stdout)
         return Image.Inspect.model_validate(data[0]) if data else None
 
-    async def remove(self, *, force: bool, timeout: int, missing_ok: bool) -> None:
+    async def remove(self, *, force: bool, timeout: float, missing_ok: bool) -> None:
         """Remove this image via podman.  Will also remove all containers built from
         this image.
 
@@ -1556,9 +1551,9 @@ class Image(BaseModel):
             If True, forcefully remove the image even if it has running containers.
             If False, only remove stopped containers, and then remove the image if no
             containers remain.
-        timeout : int
+        timeout : float
             The maximum time in seconds to wait for running containers to stop before
-            forcefully killing them.  -1 indicates an infinite wait.
+            forcefully killing them.  0 indicates an infinite wait.
         missing_ok : bool
             If True, do not raise an error if the image or any descendant container is
             already removed or otherwise missing.
@@ -1985,7 +1980,7 @@ class Environment:
         )
         return await Container.inspect(ids)
 
-    async def remove(self, *, force: bool, timeout: int, missing_ok: bool) -> None:
+    async def remove(self, *, force: bool, timeout: float, missing_ok: bool) -> None:
         """Remove this environment via podman, including all descendant images and
         containers.  Note that this does not delete the referencing tags, meaning the
         images and containers will be rebuilt again if referenced in the future.
@@ -1996,9 +1991,9 @@ class Environment:
             If True, remove images even if they have dependent containers, removing
             the containers as well.  If False, only remove images that have no
             dependent containers.
-        timeout : int
+        timeout : float
             The maximum time in seconds to wait for dependent containers to stop before
-            forcefully killing them.  -1 indicates an infinite wait.
+            forcefully killing them.  0 indicates an infinite wait.
         missing_ok : bool
             If True, do not raise an error if the environment or any descendant image or
             container is already removed or otherwise missing.
@@ -3053,338 +3048,6 @@ class Code(_Command):
 
 
 @dataclass
-class Run(_Command):
-    """Run an arbitrary command inside a container's context, starting or rebuilding it
-    as necessary.  This is equivalent to `Start` followed by a `podman container exec`
-    command on a single container, forwarding any arguments to the `exec` portion.
-    """
-    args: Validator = field(default=_validate_args)
-
-    @staticmethod
-    def container(
-        ctx: Pipeline.InProgress,
-        *,
-        env: Environment,
-        image_tag: str,
-        container_tag: str,
-        args: list[str],
-        **kwargs: Any
-    ) -> None:
-        Start.container(
-            ctx,
-            env=env,
-            image_tag=image_tag,
-            container_tag=container_tag,
-            **kwargs
-        )
-        # TODO: env[image] is no longer valid.  Now you have to reference a commit
-        # first
-        container = env[image_tag, container_tag]
-        if container is None:
-            raise OSError(
-                f"unable to start container '{container_tag}' in image '{image_tag}'"
-            )
-
-        # always run in interactive mode, but only add a TTY if we're currently attached
-        # to one
-        cmd = ["-i"]
-        if (
-            sys.stdin.isatty() and
-            sys.stdout.isatty() and
-            sys.stderr.isatty() and
-            os.environ.get("TERM", "") not in ("", "dumb")
-        ):
-            cmd.append("-t")
-        podman_cmd([
-            "exec",
-            *cmd,
-            "-w", str(WORKTREE_MOUNT),
-            container.id,
-            *args
-        ])
-
-    @staticmethod
-    def image(
-        ctx: Pipeline.InProgress,
-        *,
-        env: Environment,
-        image_tag: str,
-        args: list[str],
-        **kwargs: Any
-    ) -> None:
-        Run.container(
-            ctx,
-            env=env,
-            image_tag=image_tag,
-            container_tag=DEFAULT_TAG,
-            args=args,
-            **kwargs
-        )
-
-    @staticmethod
-    def environment(
-        ctx: Pipeline.InProgress,
-        *,
-        env: Environment,
-        args: list[str],
-        **kwargs: Any
-    ) -> None:
-        Run.container(
-            ctx,
-            env=env,
-            image_tag=DEFAULT_TAG,
-            container_tag=DEFAULT_TAG,
-            args=args,
-            **kwargs
-        )
-
-    @staticmethod
-    def all(
-        ctx: Pipeline.InProgress,
-        *,
-        args: list[str],
-        **kwargs: Any
-    ) -> None:
-        raise OSError("must specify a container to run a command in")
-
-
-@dataclass
-class Stop(_Command):
-    """Stop running Bertrand containers within an environment, scoping to specific images
-    and containers if desired.
-    """
-
-    @staticmethod
-    def _validate_timeout(x: JSONValue) -> int:
-        if x is None:
-            return TIMEOUT
-        if not isinstance(x, int):
-            raise TypeError("timeout must be an integer")
-        if x < -1:
-            raise ValueError("timeout must be non-negative or -1 for no timeout")
-        return x
-
-    timeout: Validator = field(default=_validate_timeout)
-
-    @staticmethod
-    def _batch(labels: list[str], timeout: int) -> None:
-        ids = _podman_ids("container", labels, status=("running", "restarting", "paused"))
-        if ids:
-            podman_cmd(["container", "stop", "-t", str(timeout), *ids], check=False)
-
-    @staticmethod
-    def container(
-        ctx: Pipeline.InProgress,
-        *,
-        env: Environment,
-        image_tag: str,
-        container_tag: str,
-        timeout: int,
-        **kwargs: Any
-    ) -> None:
-        image = env.tags.get(image_tag)
-        if image is None:
-            raise KeyError(f"no image found for tag: '{image_tag}'")
-
-        container = image.containers.get(container_tag)
-        if container is None:
-            raise KeyError(f"no container found for tag: '{container_tag}'")
-
-        inspect = container.inspect()
-        if inspect is None:
-            image.containers.pop(container_tag, None)
-        else:
-            state = inspect.get("State")
-            if not isinstance(state, dict):
-                raise OSError(f"invalid container state for container '{container_tag}'")
-            if state.get("Running") or state.get("Restarting") or state.get("Paused"):
-                id = inspect.get("Id")
-                if not isinstance(id, str):
-                    raise OSError(f"invalid container ID for container '{container_tag}'")
-                podman_cmd(["container", "stop", id, "-t", str(timeout)])
-
-    @staticmethod
-    def image(
-        ctx: Pipeline.InProgress,
-        *,
-        env: Environment,
-        image_tag: str,
-        timeout: int,
-        **kwargs: Any
-    ) -> None:
-        image = env.tags.get(image_tag)
-        if image is None:
-            raise KeyError(f"no image found for tag: '{image_tag}'")
-        image_inspect = image.inspect()
-        if image_inspect is None:
-            raise OSError(f"failed to inspect image '{image_tag}'")
-        Stop._batch([f"BERTRAND_ENV={env.id}", f"BERTRAND_IMAGE={image_tag}"], timeout)
-
-    @staticmethod
-    def environment(
-        ctx: Pipeline.InProgress,
-        *,
-        env: Environment,
-        timeout: int,
-        **kwargs: Any
-    ) -> None:
-        Stop._batch([f"BERTRAND_ENV={env.id}"], timeout)
-
-    @staticmethod
-    def all(
-        ctx: Pipeline.InProgress,
-        *,
-        timeout: int,
-        **kwargs: Any
-    ) -> None:
-        if confirm(
-            "This will stop all running Bertrand containers on this system.\n"
-            "Are you sure you want to continue? [y/N] "
-        ):
-            Stop._batch([], timeout)
-
-
-@dataclass
-class Pause(_Command):
-    """Pause running Bertrand containers within an environment, scoping to specific
-    images and containers if desired.
-    """
-
-    @staticmethod
-    def _batch(labels: list[str]) -> None:
-        ids = _podman_ids("container", labels, status=("running", "restarting"))
-        if ids:
-            podman_cmd(["container", "pause", *ids], check=False)
-
-    @staticmethod
-    def container(
-        ctx: Pipeline.InProgress,
-        *,
-        env: Environment,
-        image_tag: str,
-        container_tag: str,
-        **kwargs: Any
-    ) -> None:
-        image = env.tags.get(image_tag)
-        if image is None:
-            raise KeyError(f"no image found for tag: '{image_tag}'")
-        container = image.containers.get(container_tag)
-        if container is None:
-            raise KeyError(f"no container found for tag: '{container_tag}'")
-        inspect = container.inspect()
-        if inspect is None:
-            image.containers.pop(container_tag, None)
-        else:
-            state = inspect.get("State")
-            if not isinstance(state, dict):
-                raise OSError(f"invalid container state for container '{container_tag}'")
-            if state.get("Running") or state.get("Restarting"):
-                id = inspect.get("Id")
-                if not isinstance(id, str):
-                    raise OSError(f"invalid container ID for container '{container_tag}'")
-                podman_cmd(["container", "pause", id])
-
-    @staticmethod
-    def image(
-        ctx: Pipeline.InProgress,
-        *,
-        env: Environment,
-        image_tag: str,
-        **kwargs: Any
-    ) -> None:
-        image = env.tags.get(image_tag)
-        if image is None:
-            raise KeyError(f"no image found for tag: '{image_tag}'")
-        Pause._batch([f"BERTRAND_ENV={env.id}", f"BERTRAND_IMAGE={image_tag}"])
-
-    @staticmethod
-    def environment(ctx: Pipeline.InProgress, *, env: Environment, **kwargs: Any) -> None:
-        Pause._batch([f"BERTRAND_ENV={env.id}"])
-
-    @staticmethod
-    def all(ctx: Pipeline.InProgress, **kwargs: Any) -> None:
-        if confirm(
-            "This will pause all running Bertrand containers on this system.\n"
-            "Are you sure you want to continue? [y/N] "
-        ):
-            Pause._batch([])
-
-
-@dataclass
-class Resume(_Command):
-    """Resume paused Bertrand containers within an environment, scoping to specific
-    images and containers if desired.
-    """
-
-    @staticmethod
-    def _batch(labels: list[str]) -> None:
-        ids = _podman_ids("container", labels, status=("paused",))
-        if ids:
-            podman_cmd(["container", "unpause", *ids], check=False)
-
-    @staticmethod
-    def container(
-        ctx: Pipeline.InProgress,
-        *,
-        env: Environment,
-        image_tag: str,
-        container_tag: str,
-        **kwargs: Any
-    ) -> None:
-        image = env.tags.get(image_tag)
-        if image is None:
-            raise KeyError(f"no image found for tag: '{image_tag}'")
-        container = image.containers.get(container_tag)
-        if container is None:
-            raise KeyError(f"no container found for tag: '{container_tag}'")
-        inspect = container.inspect()
-        if inspect is None:
-            image.containers.pop(container_tag, None)
-        else:
-            state = inspect.get("State")
-            if not isinstance(state, dict):
-                raise OSError(f"invalid container state for container '{container_tag}'")
-            if state.get("Paused"):
-                id = inspect.get("Id")
-                if not isinstance(id, str):
-                    raise OSError(f"invalid container ID for container '{container_tag}'")
-                podman_cmd(["container", "unpause", id])
-
-    @staticmethod
-    def image(
-        ctx: Pipeline.InProgress,
-        *,
-        env: Environment,
-        image_tag: str,
-        **kwargs: Any
-    ) -> None:
-        image = env.tags.get(image_tag)
-        if image is None:
-            raise KeyError(f"no image found for tag: '{image_tag}'")
-        Resume._batch([f"BERTRAND_ENV={env.id}", f"BERTRAND_IMAGE={image_tag}"])
-
-    @staticmethod
-    def environment(
-        ctx: Pipeline.InProgress,
-        *,
-        env: Environment,
-        **kwargs: Any
-    ) -> None:
-        Resume._batch([f"BERTRAND_ENV={env.id}"])
-
-    @staticmethod
-    def all(
-        ctx: Pipeline.InProgress,
-        **kwargs: Any
-    ) -> None:
-        if confirm(
-            "This will resume all paused Bertrand containers on this system.\n"
-            "Are you sure you want to continue? [y/N] "
-        ):
-            Resume._batch([])
-
-
-@dataclass
 class Restart(_Command):
     """Restart running or paused Bertrand containers within an environment, scoping to
     specific images and containers if desired.  If an image or container is out of
@@ -3410,7 +3073,7 @@ class Restart(_Command):
         env: Environment,
         image_tag: str,
         container_tag: str,
-        timeout: int,
+        timeout: float,
         **kwargs: Any
     ) -> None:
         image = env.tags.get(image_tag)
@@ -3459,7 +3122,12 @@ class Restart(_Command):
                 id = inspect.get("Id")
                 if not isinstance(id, str):
                     raise OSError(f"invalid container ID for container '{container_tag}'")
-                podman_cmd(["container", "restart", id, "-t", str(timeout)])
+                podman_cmd([
+                    "container",
+                    "restart",
+                    id,
+                    "-t", "-1" if not timeout else str(int(math.ceil(timeout)))
+                ])
 
     @staticmethod
     def image(
@@ -3467,7 +3135,7 @@ class Restart(_Command):
         *,
         env: Environment,
         image_tag: str,
-        timeout: int,
+        timeout: float,
         **kwargs: Any
     ) -> None:
         image = env.tags.get(image_tag)
@@ -3517,14 +3185,19 @@ class Restart(_Command):
                 id = inspect.get("Id")
                 if not isinstance(id, str):
                     raise OSError(f"invalid container ID for container '{container_tag}'")
-                podman_cmd(["container", "restart", id, "-t", str(timeout)])
+                podman_cmd([
+                    "container",
+                    "restart",
+                    id,
+                    "-t", "-1" if not timeout else str(int(math.ceil(timeout)))
+                ])
 
     @staticmethod
     def environment(
         ctx: Pipeline.InProgress,
         *,
         env: Environment,
-        timeout: int,
+        timeout: float,
         **kwargs: Any
     ) -> None:
         for image_tag in env.tags:
@@ -3534,7 +3207,7 @@ class Restart(_Command):
     def all(
         ctx: Pipeline.InProgress,
         *,
-        timeout: int,
+        timeout: float,
         **kwargs: Any
     ) -> None:
         if confirm(
@@ -3550,124 +3223,20 @@ class Restart(_Command):
                     print(err, file=sys.stderr)
 
 
-@dataclass
-class Rm(_Command):
-    """Delete Bertrand entities on the system, scoping to images and containers within
-    an environment if desired.
-
-    This command only deletes images and containers, and never alters the host
-    filesystem.  The environment directory may be safely deleted after invoking this
-    command.
-    """
-
-    @staticmethod
-    def _validate_timeout(x: JSONValue) -> int:
-        if x is None:
-            return TIMEOUT
-        if not isinstance(x, int):
-            raise TypeError("timeout must be an integer")
-        if x < -1:
-            raise ValueError("timeout must be non-negative or -1 for no timeout")
-        return x
-
-    force: Validator = field(default=_check_boolean)
-    timeout: Validator = field(default=_validate_timeout)
-
-    @staticmethod
-    def container(
-        ctx: Pipeline.InProgress,
-        *,
-        env: Environment,
-        image_tag: str,
-        container_tag: str,
-        force: bool,
-        timeout: int,
-        **kwargs: Any
-    ) -> None:
-        i = env.tags.get(image_tag)
-        if i is None:
-            return
-        c = i.containers.get(container_tag)
-        if c is None:
-            return
-        c.remove(force=force, timeout=timeout, missing_ok=True)
-        i.containers.pop(container_tag)
-
-    @staticmethod
-    def image(
-        ctx: Pipeline.InProgress,
-        *,
-        env: Environment,
-        image_tag: str,
-        force: bool,
-        timeout: int,
-        **kwargs: Any
-    ) -> None:
-        i = env.tags.get(image_tag)
-        if i is None:
-            return
-        i.remove(force=force, timeout=timeout, missing_ok=True)
-        env.tags.pop(image_tag)
-
-    @staticmethod
-    def environment(
-        ctx: Pipeline.InProgress,
-        *,
-        env: Environment,
-        force: bool,
-        timeout: int,
-        **kwargs: Any
-    ) -> None:
-        env.remove(force=force, timeout=timeout, missing_ok=True)
-        env.tags.clear()
-
-    @staticmethod
-    def _all(
-        *,
-        force: bool,
-        timeout: int,
-        **kwargs: Any
-    ) -> None:
-        for env_path in _all_environments():
-            try:
-                with Environment(env_path) as env:
-                    env.remove(force=force, timeout=timeout, missing_ok=True)
-                    env.tags.clear()
-            except Exception as err:
-                print(err, file=sys.stderr)
-
-    @staticmethod
-    def all(
-        ctx: Pipeline.InProgress,
-        *,
-        force: bool,
-        timeout: int,
-        **kwargs: Any
-    ) -> None:
-        if confirm(
-            "This will remove all Bertrand images, containers, and volumes on this "
-            "system.  This action cannot be undone.\n"
-            "Are you sure you want to continue? [y/N] "
-        ):
-            Rm._all(force=force, timeout=timeout, **kwargs)
-
-
 async def _cli_containers(
     env: Environment,
     tag: str | None,
     *,
+    status: tuple[str, ...] = ("created", "paused", "restarting", "running"),
     timeout: float,
 ) -> list[ContainerId]:
     if tag is None:
         labels = {ENV_ID_ENV: env.id}
+    elif tag not in env.images:
+        raise KeyError(f"no image found for tag: '{tag}'")
     else:
         labels = {ENV_ID_ENV: env.id, IMAGE_TAG_ENV: tag}
-    return await _podman_ids(
-        "container",
-        labels=labels,
-        status=("created", "paused", "restarting", "running"),
-        timeout=timeout,
-    )
+    return await _podman_ids("container", labels=labels, status=status, timeout=timeout)
 
 
 async def _cli_images(
@@ -3680,11 +3249,7 @@ async def _cli_images(
         labels = {ENV_ID_ENV: env.id}
     else:
         labels = {ENV_ID_ENV: env.id, IMAGE_TAG_ENV: tag}
-    return await _podman_ids(
-        "image",
-        labels=labels,
-        timeout=timeout,
-    )
+    return await _podman_ids("image", labels=labels, timeout=timeout)
 
 
 @on_build(ephemeral=True)
@@ -3712,24 +3277,127 @@ async def podman_enter(ctx: Pipeline.InProgress) -> None:
     Enter()(ctx)
 
 
-@on_run(ephemeral=True)
-async def podman_run(ctx: Pipeline.InProgress) -> None:
-    Run()(ctx)
+async def podman_stop(
+    worktree: Path,
+    workload: str | None,
+    tag: str | None,
+    *,
+    deadline: float,
+) -> None:
+    """Pause running Bertrand containers within an environment.
+
+    Parameters
+    ----------
+    worktree : Path
+        A valid environment worktree path.
+    workload : str | None
+        The kubernetes workload to target, if applicable.  If None, then the command
+        will target tags in the environment's build matrix.  Otherwise, it will start
+        the workload and target tags within it.
+    tag : str | None
+        The member to target, if any.  All containers matching the tag will be included
+        in the output, according to the workload.
+    deadline : float
+        The timestamp before which this command should complete, relative to the
+        epoch.
+    """
+    if workload is not None:
+        raise NotImplementedError("kubernetes workloads are not yet supported")
+
+    async with Environment(worktree, timeout=deadline - time.time()) as env:
+        ids = await _cli_containers(
+            env,
+            tag,
+            status=("running", "restarting", "paused"),
+            timeout=deadline - time.time()
+        )
+        if ids:
+            timeout = deadline - time.time()
+            await podman_cmd(
+                [
+                    "container",
+                    "stop",
+                    "-t", str(int(math.ceil(timeout))),
+                    *ids
+                ],
+                timeout=timeout
+            )
 
 
-@on_stop(ephemeral=True)
-async def podman_stop(ctx: Pipeline.InProgress) -> None:
-    Stop()(ctx)
+async def podman_pause(
+    worktree: Path,
+    workload: str | None,
+    tag: str | None,
+    *,
+    deadline: float
+) -> None:
+    """Pause running Bertrand containers within an environment.
+
+    Parameters
+    ----------
+    worktree : Path
+        A valid environment worktree path.
+    workload : str | None
+        The kubernetes workload to target, if applicable.  If None, then the command
+        will target tags in the environment's build matrix.  Otherwise, it will start
+        the workload and target tags within it.
+    tag : str | None
+        The member to target, if any.  All containers matching the tag will be included
+        in the output, according to the workload.
+    deadline : float
+        The timestamp before which this command should complete, relative to the
+        epoch.
+    """
+    if workload is not None:
+        raise NotImplementedError("kubernetes workloads are not yet supported")
+
+    async with Environment(worktree, timeout=deadline - time.time()) as env:
+        ids = await _cli_containers(
+            env,
+            tag,
+            status=("running", "restarting"),
+            timeout=deadline - time.time()
+        )
+        if ids:
+            await podman_cmd(["container", "pause", *ids], timeout=deadline - time.time())
 
 
-@on_pause(ephemeral=True)
-async def podman_pause(ctx: Pipeline.InProgress) -> None:
-    Pause()(ctx)
+async def podman_resume(
+    worktree: Path,
+    workload: str | None,
+    tag: str | None,
+    *,
+    deadline: float
+) -> None:
+    """Resume paused Bertrand containers within an environment.
 
+    Parameters
+    ----------
+    worktree : Path
+        A valid environment worktree path.
+    workload : str | None
+        The kubernetes workload to target, if applicable.  If None (the default), then
+        the command will target tags in the environment's build matrix.  Otherwise, it
+        will start the workload and target tags within it.
+    tag : str | None
+        The member to target, if any.  All containers matching the tag will be included
+        in the output, according to the workload.
+    deadline : float
+        The timestamp before which this command should complete, relative to the
+        epoch.
+    """
+    if workload is not None:
+        raise NotImplementedError("kubernetes workloads are not yet supported")
 
-@on_resume(ephemeral=True)
-async def podman_resume(ctx: Pipeline.InProgress) -> None:
-    Resume()(ctx)
+    async with Environment(worktree, timeout=deadline - time.time()) as env:
+        ids = await _cli_containers(
+            env,
+            tag,
+            status=("paused",),
+            timeout=deadline - time.time()
+        )
+        if ids:
+            await podman_cmd(["container", "unpause", *ids], timeout=deadline - time.time())
 
 
 @on_restart(ephemeral=True)
@@ -3737,9 +3405,64 @@ async def podman_restart(ctx: Pipeline.InProgress) -> None:
     Restart()(ctx)
 
 
-@on_rm(ephemeral=True)
-async def podman_rm(ctx: Pipeline.InProgress) -> None:
-    Rm()(ctx)
+async def podman_rm(
+    worktree: Path,
+    workload: str | None,
+    tag: str | None,
+    *,
+    deadline: float,
+    force: bool,
+) -> None:
+    """Delete Bertrand entities on the system, scoping to images and containers within
+    an environment if desired.
+
+    Parameters
+    ----------
+    worktree : Path
+        A valid environment worktree path.
+    workload : str | None
+        The kubernetes workload to target, if applicable.  If None (the default), then
+        the command will target tags in the environment's build matrix.  Otherwise, it
+        will start the workload and target tags within it.
+    tag : str | None
+        The member to target, if any.  All containers matching the tag will be included
+        in the output, according to the workload.
+    deadline : float
+        The timestamp before which this command should complete, relative to the
+        epoch.
+    force : bool
+        If True, then all containers will be forcefully removed.  Otherwise, only
+        stopped containers will be removed, and any running containers will be left
+        alone.
+
+    Notes
+    -----
+    This command only deletes images and containers, and never alters the host
+    filesystem.  The environment directory may be safely deleted after successfully
+    invoking this command.
+    """
+    if workload is not None:
+        raise NotImplementedError("kubernetes workloads are not yet supported")
+
+    async with Environment(worktree, timeout=deadline - time.time()) as env:
+        if tag is None:
+            await env.remove(force=force, timeout=deadline - time.time(), missing_ok=True)
+        else:
+            image = env.images.pop(tag)
+            if image is not None:
+                await image.remove(
+                    force=force,
+                    timeout=deadline - time.time(),
+                    missing_ok=True
+                )
+
+
+# TODO: 'ls' should support an `--id` flag that only returns container/image IDs
+# as newline-delimited output, to make it easier to script against.  Also, all these
+# containers' `images` fields should be made singular.  `--id` is mutually exclusive
+# with `--json`, and should be generalized into a `--format` flag that may also
+# support custom Go templates for formatting table output, as well as `id` and
+# `json` literals.
 
 
 async def podman_ls(
@@ -3750,7 +3473,7 @@ async def podman_ls(
     deadline: float,
     images: bool,
     json: bool,
-) -> str:
+) -> None:
     """Gather status information for all containers in a Bertrand environment, scoping
     to specific images and containers if desired.
 
@@ -3775,7 +3498,6 @@ async def podman_ls(
         If True, then the output will be parsed and returned as a list of JSON
         dictionaries, one per container.  Otherwise, all information will be returned
         in a human-readable table format.
-
     """
     if workload is not None:
         raise NotImplementedError("kubernetes workloads are not yet supported")
@@ -3818,17 +3540,7 @@ async def podman_ls(
                     "{{.Size}}\t{{.Mounts}}\t{{.Networks}}\t{{.Ports}}"
                 )
 
-        result = await podman_cmd(
-            cmd,
-            capture_output=True,
-            timeout=deadline - time.time()
-        )
-        if json:
-            out = json_parser.loads(result.stdout)
-            if not isinstance(out, list):
-                out = [out]
-            return json_parser.dumps(out, separators=(",", ":"))
-        return result.stdout
+        await podman_cmd(cmd, timeout=deadline - time.time())
 
 
 async def podman_monitor(
@@ -3839,9 +3551,9 @@ async def podman_monitor(
     deadline: float,
     interval: int,
     json: bool,
-) -> str | None:
+) -> None:
     """Gather resource utilization statistics for a family of containers in a Bertrand
-    environment.
+    environment, printing the output to stdout.
 
     Parameters
     ----------
@@ -3868,14 +3580,6 @@ async def podman_monitor(
         dictionaries, one per container.  Otherwise, all information will be returned
         in a human-readable table format, and nothing will be returned by this
         function.  `json` is incompatible with `interval`.
-
-    Returns
-    -------
-    str | None
-        If interval is 0, then the output of `podman stats` for the targeted
-        containers, either as a JSON string or in a human-readable table format.  If
-        interval is positive, then None, since the output will be continuously printed
-        to stdout.
     """
     if workload is not None:
         raise NotImplementedError("kubernetes workloads are not yet supported")
@@ -3887,38 +3591,28 @@ async def podman_monitor(
     async with Environment(worktree, timeout=deadline - time.time()) as env:
         ids = await _cli_containers(env, tag, timeout=deadline - time.time())
         if not ids:
-            return "[]" if json else None
+            if json:
+                print("[]")
+            return
 
-        # build stats command with appropriate flags
         cmd = ["container", "stats"]
         if not interval:
             cmd.append("--no-stream")
         else:
             cmd.append(f"--interval={interval}")
 
-        # parse JSON
         if json:
             cmd.append("--no-trunc")
             cmd.append("--format=json")
             cmd.extend(ids)
-            result = await podman_cmd(
-                cmd,
-                capture_output=True,
-                timeout=deadline - time.time()
+            await podman_cmd(cmd, timeout=deadline - time.time())
+        else:
+            cmd.append(
+                "--format=table {{.Name}}\t{{.AVGCPU}}\t{{.CPUPerc}}\t{{.PIDs}}\t"
+                "{{.MemUsage}}\t{{.NetIO}}\t{{.BlockIO}}"
             )
-            out = json_parser.loads(result.stdout)
-            if not isinstance(out, list):
-                out = [out]
-            return json_parser.dumps(out, separators=(",", ":"))
-
-        # print table
-        cmd.append(
-            "--format=table {{.Name}}\t{{.AVGCPU}}\t{{.CPUPerc}}\t{{.PIDs}}\t"
-            "{{.MemUsage}}\t{{.NetIO}}\t{{.BlockIO}}"
-        )
-        cmd.extend(ids)
-        await podman_cmd(cmd, timeout=deadline - time.time())
-        return None
+            cmd.extend(ids)
+            await podman_cmd(cmd, timeout=deadline - time.time())
 
 
 async def podman_top(
@@ -3927,9 +3621,9 @@ async def podman_top(
     tag: str | None,
     *,
     deadline: float
-) -> list[str]:
+) -> None:
     """Display the running processes for a family of containers in a Bertrand
-    environment.
+    environment, printing them to stdout as newline-delimited tables.
 
     Parameters
     ----------
@@ -3945,26 +3639,18 @@ async def podman_top(
     deadline : float
         The timestamp before which this command should complete, relative to the
         epoch.
-
-    Returns
-    -------
-    list[str]
-        The output of `podman top` for each targeted container.
     """
     if workload is not None:
         raise NotImplementedError("kubernetes workloads are not yet supported")
 
     async with Environment(worktree, timeout=deadline - time.time()) as env:
         ids = await _cli_containers(env, tag, timeout=deadline - time.time())
-        output: list[str] = []
         for id in ids:
-            result = await podman_cmd(
+            await podman_cmd(
                 ["container", "top", id],
-                capture_output=True,
                 timeout=deadline - time.time(),
             )
-            output.append(result.stdout)
-        return output
+            print()  # delimiter between containers
 
 
 async def podman_log(
@@ -3976,8 +3662,9 @@ async def podman_log(
     images: bool,
     since: str | None,
     until: str | None,
-) -> list[str]:
-    """View the logs for a specific image or container in a Bertrand environment.
+) -> None:
+    """Print the logs for a specific image or container in a Bertrand environment to
+    stdout as newline-delimited tables.
 
     Parameters
     ----------
@@ -4003,12 +3690,6 @@ async def podman_log(
         Only show logs until this timestamp.  Should be a string parsable by Podman,
         such as "2024-01-01T00:00:00" or "5m" for 5 minutes ago.  If None, then all
         logs up to the current time will be shown.
-
-    Returns
-    -------
-    list[str]
-        The output of `podman logs` for each targeted container, or the output of
-        `podman history` for each targeted image if `images` is True.
     """
     if workload is not None:
         raise NotImplementedError("kubernetes workloads are not yet supported")
@@ -4042,15 +3723,9 @@ async def podman_log(
                 cmd.append("--until")
                 cmd.append(until)
 
-        output: list[str] = []
+        # print results to stdout, delimiting each container with a newline
         for id in ids:
             tmp = cmd.copy()
             tmp.append(id)
-            result = await podman_cmd(
-                tmp,
-                capture_output=True,
-                timeout=deadline - time.time()
-            )
-            output.append(result.stdout)
-
-        return output
+            await podman_cmd(tmp, timeout=deadline - time.time())
+            print()  # delimiter between containers

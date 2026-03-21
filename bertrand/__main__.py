@@ -12,6 +12,7 @@ import sys
 import time
 
 from datetime import datetime
+from pathlib import Path
 from typing import cast
 
 from .env.rpc import CodeError, open_editor
@@ -25,12 +26,7 @@ from .env.pipeline import (
     on_start,
     on_enter,
     on_code,
-    on_run,
-    on_stop,
-    on_pause,
-    on_resume,
     on_restart,
-    on_rm,
 )
 from .env.container import (
     TIMEOUT,
@@ -38,6 +34,10 @@ from .env.container import (
     podman_log,
     podman_ls,
     podman_monitor,
+    podman_pause,
+    podman_resume,
+    podman_rm,
+    podman_stop,
     podman_top,
 )
 from .env.config import (
@@ -113,6 +113,15 @@ def _dedupe(values: list[str]) -> list[str]:
     return out
 
 
+def _recover_spec(worktree: Path, workload: str | None, tag: str | None) -> str:
+    spec = str(worktree)
+    if workload:
+        spec += f"@{workload}"
+    if tag:
+        spec += f":{tag}"
+    return spec
+
+
 class External:
     """External CLI for Bertrand."""
 
@@ -146,7 +155,6 @@ class External:
             self.start()
             self.enter()
             self.code()
-            self.run()
             self.stop()
             self.pause()
             self.resume()
@@ -158,6 +166,10 @@ class External:
             self.log()
             self.journal()
             self.clean()
+
+        # TODO: path arguments should be updated to new workload/tag syntax
+        # TODO: zero timeouts should wait indefinitely?
+        # -> just outlaw that, probably
 
         def version(self) -> None:
             """Add the 'version' query to the parser."""
@@ -383,42 +395,6 @@ class External:
             )
             command.set_defaults(handler=External.code)
 
-        def run(self) -> None:
-            """Add the 'run' command to the parser."""
-            command = self.commands.add_parser(
-                "run",
-                help=
-                    "Run a one-off command within a Bertrand virtual environment at "
-                    "the specified path.  This is similar to 'bertrand enter' followed "
-                    "by the command to run, but does not require an interactive shell "
-                    "session.",
-            )
-            command.add_argument(
-                "path",
-                metavar="ENV[:IMAGE[:CONTAINER]]",
-                help=
-                    "A path to the specified environment directory.  If no image or "
-                    "container tag is given, then the default container for the parent "
-                    "environment or image will be used.  Otherwise, the container tag "
-                    "must be declared in the project metadata according to the "
-                    "'--lang' options chosen during 'bertrand init'.",
-            )
-            command.add_argument(
-                "cmd",
-                nargs=argparse.REMAINDER,
-                metavar="CMD",
-                help=
-                    "The command to run within the environment context.  Note that "
-                    "Bertrand makes no attempt to parse, validate, or sanitize the "
-                    "command; it is passed directly to the container as-is.  WARNING: "
-                    "never pass untrusted input to this command, as it may lead to "
-                    "arbitrary code execution within the container context.  "
-                    "Bertrand's containers are rootless, so the host system should "
-                    "remain insulated, but this is not guaranteed, and should not be "
-                    "trusted.",
-            )
-            command.set_defaults(handler=External.run)
-
         def stop(self) -> None:
             """Add the 'stop' command to the parser."""
             command = self.commands.add_parser(
@@ -568,6 +544,15 @@ class External:
                     "containers matching that scope will be deleted.  If no path is "
                     "given, then all Bertrand images and containers on the host system "
                     "will be deleted, after prompting the user to confirm.",
+            )
+            command.add_argument(
+                "-t", "--timeout",
+                type=int,
+                default=TIMEOUT,
+                help=
+                    "Maximum duration (in seconds) to wait for this command.  May be "
+                    "rounded up to the nearest second depending on the underlying "
+                    "implementation.",
             )
             command.add_argument(
                 "-f", "--force",
@@ -1041,23 +1026,6 @@ class External:
         )
 
     @staticmethod
-    def run(args: argparse.Namespace) -> None:
-        """Execute the `bertrand run` CLI command.
-
-        Parameters
-        ----------
-        args : argparse.Namespace
-            The parsed command-line arguments.
-        """
-        env, image_tag, container_tag = _resolve_default_target(*_parse(args.path))
-        on_run.do(
-            env=env,
-            image_tag=image_tag,
-            container_tag=container_tag,
-            args=args.cmd,
-        )
-
-    @staticmethod
     def stop(args: argparse.Namespace) -> None:
         """Execute the `bertrand stop` CLI command.
 
@@ -1065,14 +1033,33 @@ class External:
         ----------
         args : argparse.Namespace
             The parsed command-line arguments.
+
+        Raises
+        ------
+        TimeoutExpired
+            If the command does not complete within the specified timeout.
         """
-        env, image_tag, container_tag = _parse(args.path)
-        on_stop.do(
-            env=env,
-            image_tag=image_tag,
-            container_tag=container_tag,
-            timeout=args.timeout,
-        )
+        now = time.time()
+        deadline = now + args.timeout
+        with asyncio.Runner() as runner:
+            worktree, workload, tag = runner.run(Environment.parse(args.path))
+            try:
+                runner.run(podman_stop(
+                    worktree,
+                    workload,
+                    tag,
+                    deadline=deadline,
+                ))
+            except (TimeoutError, TimeoutExpired) as err:
+                start = datetime.fromtimestamp(now)
+                stop = datetime.fromtimestamp(deadline)
+                cmd = ["bertrand", "stop", _recover_spec(worktree, workload, tag)]
+                raise TimeoutExpired(
+                    cmd=cmd,
+                    timeout=args.timeout,
+                    output=None,
+                    stderr=f"started: {start}\nstopped: {stop}\n"
+                ) from err
 
     @staticmethod
     def pause(args: argparse.Namespace) -> None:
@@ -1082,13 +1069,33 @@ class External:
         ----------
         args : argparse.Namespace
             The parsed command-line arguments.
+
+        Raises
+        ------
+        TimeoutExpired
+            If the command does not complete within the specified timeout.
         """
-        env, image_tag, container_tag = _parse(args.path)
-        on_pause.do(
-            env=env,
-            image_tag=image_tag,
-            container_tag=container_tag,
-        )
+        now = time.time()
+        deadline = now + args.timeout
+        with asyncio.Runner() as runner:
+            worktree, workload, tag = runner.run(Environment.parse(args.path))
+            try:
+                runner.run(podman_pause(
+                    worktree,
+                    workload,
+                    tag,
+                    deadline=deadline,
+                ))
+            except (TimeoutError, TimeoutExpired) as err:
+                start = datetime.fromtimestamp(now)
+                stop = datetime.fromtimestamp(deadline)
+                cmd = ["bertrand", "pause", _recover_spec(worktree, workload, tag)]
+                raise TimeoutExpired(
+                    cmd=cmd,
+                    timeout=args.timeout,
+                    output=None,
+                    stderr=f"started: {start}\nstopped: {stop}\n"
+                ) from err
 
     @staticmethod
     def resume(args: argparse.Namespace) -> None:
@@ -1098,13 +1105,33 @@ class External:
         ----------
         args : argparse.Namespace
             The parsed command-line arguments.
+
+        Raises
+        ------
+        TimeoutExpired
+            If the command does not complete within the specified timeout.
         """
-        env, image_tag, container_tag = _parse(args.path)
-        on_resume.do(
-            env=env,
-            image_tag=image_tag,
-            container_tag=container_tag,
-        )
+        now = time.time()
+        deadline = now + args.timeout
+        with asyncio.Runner() as runner:
+            worktree, workload, tag = runner.run(Environment.parse(args.path))
+            try:
+                runner.run(podman_resume(
+                    worktree,
+                    workload,
+                    tag,
+                    deadline=deadline,
+                ))
+            except (TimeoutError, TimeoutExpired) as err:
+                start = datetime.fromtimestamp(now)
+                stop = datetime.fromtimestamp(deadline)
+                cmd = ["bertrand", "resume", _recover_spec(worktree, workload, tag)]
+                raise TimeoutExpired(
+                    cmd=cmd,
+                    timeout=args.timeout,
+                    output=None,
+                    stderr=f"started: {start}\nstopped: {stop}\n"
+                ) from err
 
     @staticmethod
     def restart(args: argparse.Namespace) -> None:
@@ -1131,14 +1158,36 @@ class External:
         ----------
         args : argparse.Namespace
             The parsed command-line arguments.
+
+        Raises
+        ------
+        TimeoutExpired
+            If the command does not complete within the specified timeout.
         """
-        env, image_tag, container_tag = _parse(args.path)
-        on_rm.do(
-            env=env,
-            image_tag=image_tag,
-            container_tag=container_tag,
-            force=args.force,
-        )
+        now = time.time()
+        deadline = now + args.timeout
+        with asyncio.Runner() as runner:
+            worktree, workload, tag = runner.run(Environment.parse(args.path))
+            try:
+                runner.run(podman_rm(
+                    worktree,
+                    workload,
+                    tag,
+                    deadline=deadline,
+                    force=args.force,
+                ))
+            except (TimeoutError, TimeoutExpired) as err:
+                start = datetime.fromtimestamp(now)
+                stop = datetime.fromtimestamp(deadline)
+                cmd = ["bertrand", "rm", _recover_spec(worktree, workload, tag)]
+                if args.force:
+                    cmd.append("--force")
+                raise TimeoutExpired(
+                    cmd=cmd,
+                    timeout=args.timeout,
+                    output=None,
+                    stderr=f"started: {start}\nstopped: {stop}\n"
+                ) from err
 
     @staticmethod
     def ls(args: argparse.Namespace) -> None:
@@ -1151,14 +1200,15 @@ class External:
 
         Raises
         ------
-        TimeoutError
+        TimeoutExpired
             If the command does not complete within the specified timeout.
         """
-        deadline = time.time() + args.timeout
+        now = time.time()
+        deadline = now + args.timeout
         with asyncio.Runner() as runner:
             worktree, workload, tag = runner.run(Environment.parse(args.path))
             try:
-                result = runner.run(podman_ls(
+                runner.run(podman_ls(
                     worktree,
                     workload,
                     tag,
@@ -1166,15 +1216,19 @@ class External:
                     images=args.images,
                     json=args.json,
                 ))
-                if result is not None:
-                    print(result)
             except (TimeoutError, TimeoutExpired) as err:
-                _deadline = datetime.fromtimestamp(deadline)
-                raise TimeoutError(
-                    f"timed out during 'bertrand ls' with deadline {_deadline}\n"
-                    f"worktree: {worktree}\n"
-                    f"workload: {workload!r}\n"
-                    f"tag: {tag!r}"
+                start = datetime.fromtimestamp(now)
+                stop = datetime.fromtimestamp(deadline)
+                cmd = ["bertrand", "ls", _recover_spec(worktree, workload, tag)]
+                if args.images:
+                    cmd.append("--images")
+                if args.json:
+                    cmd.append("--json")
+                raise TimeoutExpired(
+                    cmd=cmd,
+                    timeout=args.timeout,
+                    output=None,
+                    stderr=f"started: {start}\nstopped: {stop}\n"
                 ) from err
 
     @staticmethod
@@ -1188,14 +1242,15 @@ class External:
 
         Raises
         ------
-        TimeoutError
+        TimeoutExpired
             If the command does not complete within the specified timeout.
         """
-        deadline = time.time() + args.timeout
+        now = time.time()
+        deadline = now + args.timeout
         with asyncio.Runner() as runner:
             worktree, workload, tag = runner.run(Environment.parse(args.path))
             try:
-                result = runner.run(podman_monitor(
+                runner.run(podman_monitor(
                     worktree,
                     workload,
                     tag,
@@ -1203,15 +1258,19 @@ class External:
                     interval=args.interval,
                     json=args.json,
                 ))
-                if result is not None:
-                    print(result)
             except (TimeoutError, TimeoutExpired) as err:
-                _deadline = datetime.fromtimestamp(deadline)
-                raise TimeoutError(
-                    f"timed out during 'bertrand monitor' with deadline {_deadline}\n"
-                    f"worktree: {worktree}\n"
-                    f"workload: {workload!r}\n"
-                    f"tag: {tag!r}"
+                start = datetime.fromtimestamp(now)
+                stop = datetime.fromtimestamp(deadline)
+                cmd = ["bertrand", "monitor", _recover_spec(worktree, workload, tag)]
+                if args.interval:
+                    cmd.append(f"--interval={args.interval}")
+                if args.json:
+                    cmd.append("--json")
+                raise TimeoutExpired(
+                    cmd=cmd,
+                    timeout=args.timeout,
+                    output=None,
+                    stderr=f"started: {start}\nstopped: {stop}\n"
                 ) from err
 
     @staticmethod
@@ -1225,26 +1284,29 @@ class External:
 
         Raises
         ------
-        TimeoutError
+        TimeoutExpired
             If the command does not complete within the specified timeout.
         """
-        deadline = time.time() + args.timeout
+        now = time.time()
+        deadline = now + args.timeout
         with asyncio.Runner() as runner:
             worktree, workload, tag = runner.run(Environment.parse(args.path))
             try:
-                print("---\n".join(runner.run(podman_top(
+                runner.run(podman_top(
                     worktree,
                     workload,
                     tag,
                     deadline=deadline,
-                ))))
+                ))
             except (TimeoutError, TimeoutExpired) as err:
-                _deadline = datetime.fromtimestamp(deadline)
-                raise TimeoutError(
-                    f"timed out during 'bertrand top' with deadline {_deadline}\n"
-                    f"worktree: {worktree}\n"
-                    f"workload: {workload!r}\n"
-                    f"tag: {tag!r}"
+                start = datetime.fromtimestamp(now)
+                stop = datetime.fromtimestamp(deadline)
+                cmd = ["bertrand", "top", _recover_spec(worktree, workload, tag)]
+                raise TimeoutExpired(
+                    cmd=cmd,
+                    timeout=args.timeout,
+                    output=None,
+                    stderr=f"started: {start}\nstopped: {stop}\n"
                 ) from err
 
     @staticmethod
@@ -1258,14 +1320,15 @@ class External:
 
         Raises
         ------
-        TimeoutError
+        TimeoutExpired
             If the command does not complete within the specified timeout.
         """
-        deadline = time.time() + args.timeout
+        now = time.time()
+        deadline = now + args.timeout
         with asyncio.Runner() as runner:
             worktree, workload, tag = runner.run(Environment.parse(args.path))
             try:
-                print("---\n".join(runner.run(podman_log(
+                runner.run(podman_log(
                     worktree,
                     workload,
                     tag,
@@ -1273,29 +1336,35 @@ class External:
                     images=args.images,
                     since=args.since,
                     until=args.until
-                ))))
+                ))
             except (TimeoutError, TimeoutExpired) as err:
-                _deadline = datetime.fromtimestamp(deadline)
-                raise TimeoutError(
-                    f"timed out during 'bertrand log' with deadline {_deadline}\n"
-                    f"worktree: {worktree}\n"
-                    f"workload: {workload!r}\n"
-                    f"tag: {tag!r}"
+                start = datetime.fromtimestamp(now)
+                stop = datetime.fromtimestamp(deadline)
+                cmd = ["bertrand", "log", _recover_spec(worktree, workload, tag)]
+                if args.images:
+                    cmd.append("--images")
+                if args.since:
+                    cmd.append(f"--since={args.since}")
+                if args.until:
+                    cmd.append(f"--until={args.until}")
+                raise TimeoutExpired(
+                    cmd=cmd,
+                    timeout=args.timeout,
+                    output=None,
+                    stderr=f"started: {start}\nstopped: {stop}\n"
                 ) from err
 
+    # NOTE: order is important here, as it defines the order in which pipelines are
+    # undone during cleanup, which must be done in a safe ordering to avoid leaving
+    # the system in an inconsistent state.
     pipelines: dict[str, Pipeline] = {
-        "init": on_init,
-        "build": on_build,
-        "publish": on_publish,
-        "start": on_start,
-        "enter": on_enter,
-        "code": on_code,
-        "run": on_run,
-        "stop": on_stop,
-        "pause": on_pause,
-        "resume": on_resume,
         "restart": on_restart,
-        "rm": on_rm,
+        "code": on_code,
+        "enter": on_enter,
+        "start": on_start,
+        "publish": on_publish,
+        "build": on_build,
+        "init": on_init,
     }
 
     @staticmethod
@@ -1316,17 +1385,20 @@ class External:
         if pipe is None:
             raise KeyError(f"Invalid subcommand '{args.subcommand}'.")
 
-        # load journal for the specified pipeline and dump it to stdout in JSON format
-        with pipe:
-            journal = pipe.state_dir / "journal.json"
-            if not journal.exists():
-                print(
-                    f"bertrand: no journal found for '{args.subcommand}'",
-                    file=sys.stderr
-                )
-                return
-            data = json_parser.loads(journal.read_text())
-            print(json_parser.dumps(data, indent=2))
+        async def _print() -> None:
+            # load journal for the specified pipeline and dump it to stdout in JSON format
+            async with pipe:
+                journal = pipe.state_dir / "journal.json"
+                if not journal.exists():
+                    print(
+                        f"bertrand: no journal found for '{args.subcommand}'",
+                        file=sys.stderr
+                    )
+                    return
+                data = json_parser.loads(journal.read_text())
+                print(json_parser.dumps(data, indent=2))
+
+        asyncio.run(_print())
 
     @staticmethod
     def clean(args: argparse.Namespace) -> None:
@@ -1350,30 +1422,13 @@ class External:
         ):
             raise OSError("clean declined by user.")
 
-        def _clean(pipe: Pipeline) -> None:
-            try:
-                pipe.undo(force=True)
-                shutil.rmtree(pipe.state_dir, ignore_errors=True)
-            except Exception as e:  # pylint: disable=broad-exception-caught
-                print(f"bertrand: error during cleanup: {e}", file=sys.stderr)
-
-        # NOTE: a specific ordering is necessary to ensure that pipelines are undone
-        # in a safe manner, and never leave the system in a broken state.
-        for pipe in (
-            on_rm,
-            on_stop,
-            on_pause,
-            on_resume,
-            on_restart,
-            on_run,
-            on_code,
-            on_enter,
-            on_start,
-            on_publish,
-            on_build,
-            on_init,
-        ):
-            _clean(pipe)
+        with asyncio.Runner() as runner:
+            for pipe in External.pipelines.values():
+                try:
+                    runner.run(pipe.undo(force=True))
+                    shutil.rmtree(pipe.state_dir, ignore_errors=True)
+                except Exception as e:  # pylint: disable=broad-exception-caught
+                    print(f"bertrand: error during cleanup: {e}", file=sys.stderr)
 
     def __call__(self) -> None:
         parser = External.Parser()

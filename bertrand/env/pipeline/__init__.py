@@ -13,12 +13,7 @@ from .core import (
     on_start,
     on_enter,
     on_code,
-    on_run,
-    on_stop,
-    on_pause,
-    on_resume,
     on_restart,
-    on_rm,
 )
 from .filesystem import (
     Chmod,
