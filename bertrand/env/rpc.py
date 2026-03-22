@@ -18,6 +18,7 @@ import urllib.parse
 import uuid
 
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import (
     Annotated,
@@ -55,17 +56,12 @@ from .config import (
     Editor,
     inside_image,
 )
-from .pipeline import (
-    JSONValue,
-    Pipeline,
-    ReloadDaemon,
-    StartService,
-    WriteText,
-)
+from .pipeline import JSONValue
 from .run import (
     CommandError,
     TimeoutExpired,
     User,
+    atomic_write_text,
     mkdir_private,
     run
 )
@@ -389,7 +385,7 @@ class Listener:
     async def _check_running_container(self, request: RPCRequest) -> None:
         container_id = request.params.container_id
         container_bin = self.container_bin()
-        remaining = request.params.deadline - time.monotonic()
+        remaining = request.params.deadline - time.time()
         if remaining <= 0:
             raise TimeoutError(
                 "launch deadline exhausted before the RPC service could confirm the "
@@ -527,14 +523,17 @@ WantedBy=default.target
     @staticmethod
     async def _service_reachable(*, deadline: float, interval: float) -> bool:
         if deadline <= 0.0:
-            raise ValueError(f"deadline must be positive: {deadline}")
+            raise ValueError(
+                "timed out before the RPC service became reachable: "
+                f"{datetime.fromtimestamp(deadline)}"
+            )
         if interval <= 0.0:
             raise ValueError(f"interval must be positive: {interval}")
 
         # spin while trying to connect to socket until timeout expires
         path = str(HOST_SOCKET)
         while True:
-            remaining = deadline - time.monotonic()
+            remaining = deadline - time.time()
             if remaining <= 0:
                 return False
             try:
@@ -546,15 +545,14 @@ WantedBy=default.target
                 await writer.wait_closed()
                 return True
             except (asyncio.TimeoutError, OSError):
-                if time.monotonic() >= deadline:
+                if time.time() >= deadline:
                     return False
-                await asyncio.sleep(max(0.0, min(interval, deadline - time.monotonic())))
+                await asyncio.sleep(max(0.0, min(interval, deadline - time.time())))
 
     @staticmethod
     async def start(
-        ctx: Pipeline.InProgress,
         *,
-        deadline: float,
+        timeout: float,
         strict: bool,
         container_bin: Path,
         editor_bin: Path,
@@ -563,14 +561,8 @@ WantedBy=default.target
 
         Parameters
         ----------
-        ctx: Pipeline.InProgress
-            The current pipeline context, which is used to record the atomic operations
-            used to start the service.
-        deadline: float
-            The timestamp before which the service must be reachable in order to be
-            considered successfully started.  This may be shared with other operations
-            that are part of the startup process, in order to enforce an overall
-            timeout on RPC commands.
+        timeout: float
+            The maximum time in seconds to wait for the service to become reachable.
         strict : bool
             If true, raise a hard OSError if the service fails to start or become
             reachable.  Otherwise, print a warning to stderr and return False.
@@ -609,6 +601,7 @@ WantedBy=default.target
                 "problem persists."
             )
 
+        deadline = time.time() + timeout
         try:
             # render up-to-date systemd unit file
             text = Listener._render_service({
@@ -620,13 +613,16 @@ WantedBy=default.target
                 RPC_SERVICE_FILE.read_text(encoding="utf-8") != text
             ):
                 try:
-                    await ctx.do(WriteText(path=RPC_SERVICE_FILE, text=text, replace=None))
+                    atomic_write_text(RPC_SERVICE_FILE, text, encoding="utf-8")
                 except Exception as err:
                     raise RuntimeError(
                         f"failed to write systemd unit file at {RPC_SERVICE_FILE}\n{str(err)}"
                     ) from err
                 try:
-                    await ctx.do(ReloadDaemon(user=True))
+                    await run(
+                        ["systemctl", "--user", "daemon-reload"],
+                        timeout=deadline - time.time()
+                    )
                 except Exception as err:
                     raise RuntimeError(
                         "failed to reload systemd user daemon after writing unit file "
@@ -634,13 +630,28 @@ WantedBy=default.target
                     ) from err
 
             # start systemd service if it is not already running
-            try:
-                await ctx.do(StartService(name=RPC_SERVICE_NAME, user=True), undo=False)
-            except Exception as err:
-                raise RuntimeError(
-                    f"failed to start systemd user service '{RPC_SERVICE_NAME}'.  Check "
-                    f"`systemctl --user status {RPC_SERVICE_NAME}` for details.\n{str(err)}"
-                ) from err
+            if (await run(
+                [
+                    "systemctl",
+                    "--user",
+                    "is-active",
+                    "--quiet",
+                    RPC_SERVICE_NAME
+                ],
+                check=False,
+                timeout=deadline - time.time()
+            )).returncode != 0:
+                try:
+                    await run(
+                        ["systemctl", "--user", "start", RPC_SERVICE_NAME],
+                        timeout=deadline - time.time()
+                    )
+                except Exception as err:
+                    raise RuntimeError(
+                        f"failed to start systemd user service '{RPC_SERVICE_NAME}'.  "
+                        f"Check `systemctl --user status {RPC_SERVICE_NAME}` for "
+                        f"details.\n{str(err)}"
+                    ) from err
 
             # wait until service is reachable
             try:
@@ -788,7 +799,7 @@ async def rpc(method: Callable[[], Awaitable[RPCRequest]]) -> RPCResponse.Result
     # form and serialize JSON-RPC request
     request = await method()
     serial = json.dumps(request.model_dump(mode="json"), separators=(",", ":")) + "\n"
-    remaining = request.params.deadline - time.monotonic()
+    remaining = request.params.deadline - time.time()
     if remaining <= 0:
         raise TimeoutError(
             f"deadline exhausted before '{request.method}' RPC request could be sent"
@@ -814,14 +825,14 @@ async def rpc(method: Callable[[], Awaitable[RPCRequest]]) -> RPCResponse.Result
 
     # write request and read response line
     try:
-        remaining = request.params.deadline - time.monotonic()
+        remaining = request.params.deadline - time.time()
         if remaining <= 0:
             raise TimeoutError(
                 f"deadline exhausted before '{request.method}' RPC request could be sent"
             )
         writer.write(serial.encode("utf-8"))
         await asyncio.wait_for(writer.drain(), timeout=max(0.001, remaining))
-        remaining = request.params.deadline - time.monotonic()
+        remaining = request.params.deadline - time.time()
         if remaining <= 0:
             raise TimeoutError(
                 f"deadline exhausted before '{request.method}' RPC response could be read"
@@ -910,7 +921,7 @@ async def _vscode_open_prereqs(method: CodeOpen, config: Config) -> None:
         )),
         ("bertrand-mcp", "MCP server integration may be unavailable in this editor session."),
     ):
-        remaining = method.deadline - time.monotonic()
+        remaining = method.deadline - time.time()
         try:
             if remaining <= 0:
                 expired = True
@@ -929,7 +940,7 @@ async def _vscode_open_prereqs(method: CodeOpen, config: Config) -> None:
 
 async def _vscode_open(params: RPCRequest.CodeOpenRequest) -> RPCResponse.CodeOpenResult:
     editor_bin = Listener.editor_bin()
-    remaining = params.deadline - time.monotonic()
+    remaining = params.deadline - time.time()
     expired = False
 
     # check for required remote containers extension on host vscode
@@ -961,7 +972,7 @@ async def _vscode_open(params: RPCRequest.CodeOpenRequest) -> RPCResponse.CodeOp
         )
 
     # open editor in detached (non-blocking) process
-    remaining = params.deadline - time.monotonic()
+    remaining = params.deadline - time.time()
     try:
         if remaining <= 0:
             expired = True
@@ -1012,7 +1023,7 @@ class CodeOpen:
     """A request object for the `code.open` RPC method, which opens a text editor on
     the host system, pointed at a given container workspace.
     """
-    deadline: float = field(default_factory=lambda: time.monotonic() + CODE_OPEN_TIMEOUT)
+    deadline: float = field(default_factory=lambda: time.time() + CODE_OPEN_TIMEOUT)
 
     async def request(self) -> RPCRequest:
         """Form a `code.open` RPC request on the client side.

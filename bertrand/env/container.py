@@ -2752,9 +2752,95 @@ async def podman_code(ctx: Pipeline.InProgress) -> None:
     Code()(ctx)
 
 
-@on_enter(ephemeral=True)
-async def podman_enter(ctx: Pipeline.InProgress) -> None:
-    Enter()(ctx)
+
+# TODO: the best way to design `enter` is to launch a detached container with the shell
+# as the entry point and --rm set normally.  Then, we will launch a sidecar process
+# with a private RPC socket and resolved paths to the requested editors on the host
+# system, and then `podman attach` to the container's TTY, which blocks the
+# `podman_enter` command until the shell exits.  A `finally` block will then kill the
+# sidecar process and clean up the socket, which ensures proper ephemeral lifetime
+# and completely eliminates any reliance on systemd and long-lived host daemons in
+# general.  It's also more secure, since the editor paths are never exposed to the
+# container environment at all.
+
+
+async def podman_enter(
+    worktree: Path,
+    workload: str | None,
+    tag: str | None,
+    *,
+    shell: str | None,
+) -> None:
+    """Replace the current process with an interactive shell inside the specified
+    container, starting or rebuilding it as necessary.
+
+    Parameters
+    ----------
+    worktree : Path
+        A valid environment worktree path.
+    workload : str | None
+        The kubernetes workload to target, if applicable.  If None, then the command
+        will target tags in the environment's build matrix.  Otherwise, it will start
+        the workload and target tags within it.
+    tag : str | None
+        The member to target, if any.  All containers matching the tag will be included
+        in the output, according to the workload.
+    shell : str | None
+        An optional shell to override the default for the container.  If provided, then
+        this shell will be used instead of the default defined in the project's build
+        matrix for the selected tag.  Must be a shell recognized by `bertrand init`.
+    """
+    if workload is not None:
+        raise NotImplementedError("kubernetes workloads are not yet supported")
+
+    # ensure interactive TTY
+    if not sys.stdin.isatty() or not sys.stdout.isatty():
+        cmd = ["bertrand", "enter", _recover_spec(worktree, workload, tag)]
+        if shell is not None:
+            cmd.append(shell)
+        raise CommandError(
+            returncode=1,
+            cmd=cmd,
+            output="",
+            stderr="'bertrand enter' requires both stdin and stdout to be a TTY."
+        )
+
+    async with Environment(worktree, timeout=TIMEOUT) as env:
+        # find container and text editor binaries on host filesystem
+        container_bin = shutil.which("podman")
+        if container_bin is None:
+            raise OSError("could not find a podman executable on PATH")
+        bertrand = env.config.bertrand
+        if not bertrand:
+            raise OSError(
+                f"Bertrand configuration is missing from the worktree config at "
+                f"{worktree}.  This should never occur; if you see this message, "
+                "try re-running `bertrand init` to regenerate your project "
+                "configuration, or report an issue if the problem persists."
+            )
+
+        # TODO: load editor choice from env.config and locate it on the host system.
+        # -> What may be better is to have the service do that internally, and just
+        # have each request just tell the service which editor to choose.
+
+        # start/refresh the RPC service before entering the container
+        # Listener.start(
+        #     timeout=env.timeout,
+        #     strict=False,  # warn if the service fails to start
+        # )
+
+        # load shell command from environment config
+        shell = SHELLS.get(bertrand.shell)
+        if shell is None:
+            raise ValueError(f"unrecognized shell: {bertrand.shell}")
+
+        # TODO: the run model in this case is a little bit complicated because of
+        # ephemeral containers, so this is going to require a bit of thought.
+        # What I should probably do is use `podman_start` to materialize a container
+        # with a sleep infinity entry point and then `exec` a shell as a subprocess,
+        # but that's kind of inelegant, and violates the ephemeral container concept.
+        # What would be better is if I could tie the container lifetime to the shell
+        # itself.  Codex should have a better idea of how to do this.
 
 
 async def podman_stop(

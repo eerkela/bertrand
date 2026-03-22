@@ -11,7 +11,6 @@ import sys
 import time
 
 from datetime import datetime
-from pathlib import Path
 from typing import cast
 
 from .env.rpc import CodeError, open_editor
@@ -100,17 +99,6 @@ def _require_active_image_tag() -> str:
             f"missing active image tag in container environment: '{IMAGE_TAG_ENV}'"
         )
     return tag
-
-
-def _dedupe(values: list[str]) -> list[str]:
-    seen: set[str] = set()
-    out: list[str] = []
-    for value in values:
-        if value in seen:
-            continue
-        seen.add(value)
-        out.append(value)
-    return out
 
 
 class External:
@@ -860,11 +848,19 @@ class External:
 
         # resolve profile + capabilities
         profile = args.profile if args.profile is not None else "src"
-        langs = list(args.lang) if args.lang is not None else ["python", "cpp"]
-        code_capability = args.code if args.code is not None else "vscode"
-        capabilities = _dedupe(
-            langs + ([] if code_capability == "none" else [code_capability])
-        )
+        capabilities = list(args.lang) if args.lang is not None else ["python", "cpp"]
+        if args.code is not None:
+            capabilities.append(args.code)
+        else:
+            capabilities.append("vscode")
+        seen: set[str] = set()
+        deduped: list[str] = []
+        for cap in capabilities:
+            if cap in seen:
+                continue
+            seen.add(cap)
+            deduped.append(cap)
+        capabilities = deduped
         if not capabilities:
             raise OSError("init capabilities must not be empty")
 

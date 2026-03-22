@@ -157,8 +157,46 @@ SHELLS: dict[str, tuple[str, ...]] = {
 DEFAULT_SHELL: str = "bash"
 if DEFAULT_SHELL not in SHELLS:
     raise RuntimeError(f"default shell is unsupported: {DEFAULT_SHELL}")
-EDITORS: dict[str, tuple[str, ...]] = {
-    "vscode": ("code",)
+EDITORS: dict[str, list[str]] = {
+    # TODO: only include commands that support the remote containers extensions in
+    # rpc.py
+    "vscode": [
+        # PATH-resolved command names (Linux/macOS/Windows/WSL)
+        "code",
+        "code-insiders",
+        "code-oss",
+        "codium",
+        "com.visualstudio.code",
+        "com.visualstudio.code-insiders",
+        "code.cmd",
+        "code-insiders.cmd",
+        "code.exe",
+        "code-insiders.exe",
+
+        # Linux common absolute install/export paths
+        "/usr/bin/code",
+        "/usr/local/bin/code",
+        "/snap/bin/code",
+        "/var/lib/flatpak/exports/bin/com.visualstudio.code",
+        "/var/lib/flatpak/exports/bin/com.visualstudio.code-insiders",
+        "~/.local/share/flatpak/exports/bin/com.visualstudio.code",
+        "~/.local/share/flatpak/exports/bin/com.visualstudio.code-insiders",
+        "/opt/visual-studio-code/bin/code",
+        "/usr/share/code/bin/code",
+        "/usr/share/code-insiders/bin/code-insiders",
+        "/usr/bin/code-oss",
+        "/usr/bin/codium",
+
+        # macOS app bundle shims
+        "/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code",
+        "/Applications/Visual Studio Code - Insiders.app/Contents/Resources/app/bin/code-insiders",
+        "~/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code",
+        "~/Applications/Visual Studio Code - Insiders.app/Contents/Resources/app/bin/code-insiders",
+
+        # WSL/Windows common locations
+        "/mnt/c/Program Files/Microsoft VS Code/bin/code.cmd",
+        "/mnt/c/Program Files/Microsoft VS Code Insiders/bin/code-insiders.cmd",
+    ]
 }
 DEFAULT_EDITOR: str = "vscode"
 if DEFAULT_EDITOR not in EDITORS:
