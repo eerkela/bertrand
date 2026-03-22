@@ -6,6 +6,7 @@ from __future__ import annotations
 import json as json_parser
 import math
 import os
+import pathlib
 import re
 import shutil
 import sys
@@ -33,6 +34,7 @@ from pydantic import (
     AwareDatetime,
     BaseModel,
     ConfigDict,
+    Field,
     PositiveInt,
     NonNegativeInt,
 )
@@ -207,12 +209,7 @@ class PurgeBertrandArtifacts:
         try:
             containers = await _podman_ids("container", {})
             if containers:
-                await Container.remove(
-                    containers,
-                    force=True,
-                    timeout=TIMEOUT,
-                    missing_ok=True
-                )
+                await Container.remove(containers, force=True, timeout=TIMEOUT)
             images = await _podman_ids("image", {})
             if images:
                 await podman_cmd(["image", "rm", "-f", "-i", *images], check=False)
@@ -841,7 +838,8 @@ class Registry(BaseModel):
                 version=VERSION,
                 host=self.host,
                 id=uuid.uuid4().hex,
-                images={}
+                images={},
+                retired=[],
             )
             env_changed = True
 
@@ -870,19 +868,25 @@ class Registry(BaseModel):
                     env.id = uuid.uuid4().hex
                 env_changed = True
 
-            # TODO: is this right with new retiring model?
-
             # otherwise, the new environment constitutes a move, and we can
             # transfer ownership by deleting the old containers (but not
             # images), to avoid coupling with the previous path
             while env.images:
                 tag, image = env.images.popitem()
                 try:
-                    await image.remove(force=True, timeout=TIMEOUT, missing_ok=True)
+                    ids = await _podman_ids(
+                        "container",
+                        labels={
+                            ENV_ID_ENV: env.id,
+                            IMAGE_ID_ENV: image.id
+                        },
+                    )
+                    if ids:
+                        await Container.remove(ids, force=True, timeout=TIMEOUT)
+                        env_changed = True
                 except:
                     env.images[tag] = image
                     raise
-                env_changed = True
 
             # in both cases, we need to update the registry to point to the new root
             self.environments[env.id] = worktree
@@ -1358,6 +1362,8 @@ class Container(BaseModel):
 
     State: _State
     Image: ImageId
+    Path: Trimmed | None = None
+    Args: list[str] = Field(default_factory=list)
 
     class _Mounts(BaseModel, total=False):
         """Type hint for container mount information."""
@@ -1371,7 +1377,7 @@ class Container(BaseModel):
     Mounts: list[_Mounts]
 
     @property
-    def worktree(self) -> Path | None:
+    def worktree(self) -> pathlib.Path | None:
         """Extract the root path of the worktree directory mounted to a container from
         its inspection data.
 
@@ -1421,13 +1427,7 @@ class Container(BaseModel):
         return [cls.model_validate(item) for item in data]
 
     @staticmethod
-    async def remove(
-        ids: list[ContainerId],
-        *,
-        force: bool,
-        timeout: float,
-        missing_ok: bool
-    ) -> None:
+    async def remove(ids: list[ContainerId], *, force: bool, timeout: float) -> None:
         """Remove this container via podman.
 
         Parameters
@@ -1440,9 +1440,6 @@ class Container(BaseModel):
         timeout : int
             The maximum time in seconds to wait for a running container to stop before
             forcefully killing it.  -1 indicates an infinite wait.
-        missing_ok : bool
-            If True, do not raise an error if the container is already removed or
-            otherwise missing.
 
         Raises
         ------
@@ -1454,12 +1451,11 @@ class Container(BaseModel):
             "rm",
             "--depend",  # remove dependent containers
             "-v",  # remove anonymous volumes
+            "-i",  # ignore missing containers
             "-t", str(int(math.ceil(timeout))),
         ]
         if force:
             cmd.append("-f")
-        if missing_ok:
-            cmd.append("-i")
         cmd.extend(ids)
         await podman_cmd(cmd)
 
@@ -1472,11 +1468,9 @@ class Container(BaseModel):
             "--filter", "dangling=true",
         ], capture_output=True)).stdout.splitlines())
         if volumes:
-            cmd = ["volume", "rm"]
+            cmd = ["volume", "rm", "-i"]
             if force:
                 cmd.append("-f")
-            if missing_ok:
-                cmd.append("-i")
             cmd.extend(volumes)
             await podman_cmd(cmd)
 
@@ -1541,7 +1535,7 @@ class Image(BaseModel):
         data = json_parser.loads(result.stdout)
         return Image.Inspect.model_validate(data[0]) if data else None
 
-    async def remove(self, *, force: bool, timeout: float, missing_ok: bool) -> None:
+    async def remove(self, *, force: bool, timeout: float) -> bool:
         """Remove this image via podman.  Will also remove all containers built from
         this image.
 
@@ -1554,9 +1548,12 @@ class Image(BaseModel):
         timeout : float
             The maximum time in seconds to wait for running containers to stop before
             forcefully killing them.  0 indicates an infinite wait.
-        missing_ok : bool
-            If True, do not raise an error if the image or any descendant container is
-            already removed or otherwise missing.
+
+        Returns
+        -------
+        bool
+            True if `force=True` or the image had no running containers, and the image
+            was successfully removed.  False otherwise.
 
         Raises
         ------
@@ -1565,28 +1562,39 @@ class Image(BaseModel):
         CommandError
             If any of the podman commands fail.
         """
-        # remove descendant containers first to avoid dangling references
-        containers = await _podman_ids(
+        deadline = time.monotonic() + timeout
+
+        # identify descendant containers to remove, and filter running containers
+        ids = await _podman_ids(
             "container",
             labels={IMAGE_ID_ENV: self.id},
             timeout=timeout
         )
-        if containers:
-            await Container.remove(
-                containers,
-                force=force,
-                timeout=timeout,
-                missing_ok=missing_ok
-            )
+        retire = False
+        if not force:
+            running = set(await _podman_ids(
+                "container",
+                labels={IMAGE_ID_ENV: self.id},
+                status=("paused", "restarting", "running"),
+                timeout=deadline - time.monotonic()
+            ))
+            if running:
+                ids = [id for id in ids if id not in running]
+                retire = True
 
-        # remove image
-        cmd = ["image", "rm"]
+        # remove stopped containers
+        if ids:
+            await Container.remove(ids, force=force, timeout=deadline - time.monotonic())
+        if retire:
+            return False  # retire image instead of removing it
+
+        # no containers remain; safe to remove image
+        cmd = ["image", "rm", "-i"]
         if force:
             cmd.append("-f")
-        if missing_ok:
-            cmd.append("-i")
         cmd.append(self.id)
-        await podman_cmd(cmd)
+        await podman_cmd(cmd, timeout=deadline - time.monotonic())
+        return True
 
     async def _volume(self, env: Environment, kind: str) -> str:
         name = f"bertrand-{env.id[:13]}-{kind}"
@@ -1723,7 +1731,16 @@ class Environment:
         host: UUIDStr
         id: UUIDStr
         images: dict[SanitizedName, Image]
-        retired: list[Image]
+
+        class RetiredImage(BaseModel):
+            """An entry in the retired images list, which allows garbage collection
+            for outdated images that may still have running containers.
+            """
+            model_config = ConfigDict(extra="forbid")
+            force: bool
+            image: Image
+
+        retired: list[RetiredImage]
 
     worktree: Path
     _json: JSON
@@ -1780,16 +1797,23 @@ class Environment:
 
         try:
             # attempt to empty the retired images list
-            retired: list[Image] = []
-            for image in self._json.retired:
-                # TODO: remove(force=False) should return a bool indicating whether
-                # the image was removed, so that this works
-                if not await image.remove(
-                    force=False,
-                    timeout=self.timeout,
-                    missing_ok=True
-                ):
-                    retired.append(image)
+            retired: list[Environment.JSON.RetiredImage] = []
+            keep: set[ImageId] = set(image.id for image in self._json.images.values())
+            pending: dict[ImageId, bool] = {}
+            for ret in self._json.retired:
+                pending[ret.image.id] = pending.get(ret.image.id, ret.force) or ret.force
+            for ret in self._json.retired:
+                if ret.image.id in keep:
+                    continue  # resurrect active images
+                force = pending.pop(ret.image.id, None)
+                if force is None:
+                    continue  # already processed
+                ret.force = force
+                try:
+                    if not await ret.image.remove(force=force, timeout=self.timeout):
+                        retired.append(ret)  # propagate to next generation
+                except:
+                    retired.append(ret)
             self._json.retired = retired
 
             # write metadata back to disk
@@ -1929,9 +1953,6 @@ class Environment:
             )
         return self._config
 
-    # TODO: return a float, and then apply math.ceil in the podman commands that
-    # require it.
-
     @property
     def timeout(self) -> float:
         """
@@ -1977,20 +1998,6 @@ class Environment:
         return self._json.images
 
     @property
-    def retired(self) -> list[Image]:
-        """
-        Returns
-        -------
-        list[Image]
-            A list of retired images that have become outdated and scheduled for
-            removal.  Each command will attempt to empty this list by checking whether
-            the images are still referenced by any active containers, and removing them
-            if not, allowing the containers to run to completion normally, unless
-            stopped by another command.
-        """
-        return self._json.retired
-
-    @property
     async def containers(self) -> list[Container]:
         """
         Returns
@@ -2008,62 +2015,6 @@ class Environment:
             status=["created", "paused", "restarting", "running"]
         )
         return await Container.inspect(ids)
-
-    async def remove(self, *, force: bool, timeout: float, missing_ok: bool) -> None:
-        """Remove this environment via podman, including all descendant images and
-        containers.  Note that this does not delete the referencing tags, meaning the
-        images and containers will be rebuilt again if referenced in the future.
-
-        Parameters
-        ----------
-        force : bool
-            If True, remove images even if they have dependent containers, removing
-            the containers as well.  If False, only remove images that have no
-            dependent containers.
-        timeout : float
-            The maximum time in seconds to wait for dependent containers to stop before
-            forcefully killing them.  0 indicates an infinite wait.
-        missing_ok : bool
-            If True, do not raise an error if the environment or any descendant image or
-            container is already removed or otherwise missing.
-
-        Raises
-        ------
-        OSError
-            If `force` is False and there are still images or containers referencing
-            this environment.
-        CommandError
-            If any of the podman commands fail and `missing_ok` is False.
-        """
-        # find all descendant containers + images
-        containers = await _podman_ids("container", {ENV_ID_ENV: self.id})
-        images = await _podman_ids("image", {ENV_ID_ENV: self.id})
-
-        # remove containers first
-        if containers:
-            await Container.remove(
-                containers,
-                force=force,
-                timeout=timeout,
-                missing_ok=missing_ok,
-            )
-
-        # remove images
-        if images:
-            cmd = ["image", "rm"]
-            if force:
-                cmd.append("-f")
-            if missing_ok:
-                cmd.append("-i")
-            cmd.extend(images)
-            await podman_cmd(cmd)
-
-        # remove environment metadata and lock
-        try:
-            self._json.images.clear()
-            shutil.rmtree(self.worktree / METADATA_DIR, ignore_errors=True)
-        except:
-            pass
 
 
 def _check_boolean(value: Any) -> bool:
@@ -2090,11 +2041,6 @@ def _validate_code_server_available(x: JSONValue) -> bool:
 
 # pylint: disable=missing-function-docstring, missing-param-doc
 # pylint: disable=missing-return-doc, unused-argument, protected-access
-
-
-# TODO: I should try to update the simplest commands first and remove their
-# corresponding pipelines.  I'll handle the build/start/enter/code/publish commands
-# last.
 
 
 @dataclass
@@ -2600,6 +2546,15 @@ async def _cli_images(
     return await _podman_ids("image", labels=labels, timeout=timeout)
 
 
+def _recover_spec(worktree: Path, workload: str | None, tag: str | None) -> str:
+    spec = str(worktree)
+    if workload:
+        spec += f"@{workload}"
+    if tag:
+        spec += f":{tag}"
+    return spec
+
+
 def _parse_output_format(value: str, *, allow_id: bool) -> tuple[str, str | None]:
     raw = value.strip()
     if not raw:
@@ -2721,7 +2676,7 @@ async def podman_build(
         existing = env.images.get(tag)
         changed = existing is None or existing.id != candidate.id
         try:
-            if candidate.inspect() is None:
+            if await candidate.inspect() is None:
                 raise OSError(
                     f"failed to build image '{tag}' for environment at {env.worktree}"
                 )
@@ -2737,8 +2692,11 @@ async def podman_build(
         # retire existing image in favor of new candidate if they differ
         if changed:
             env.images[tag] = candidate
-            if existing is not None:
-                env.retired.append(existing)
+            if existing is not None:  # retire the previous image
+                env._json.retired.append(Environment.JSON.RetiredImage(
+                    force=False,
+                    image=existing
+                ))
             return candidate
         assert existing is not None
         return existing
@@ -2749,17 +2707,12 @@ async def podman_publish(ctx: Pipeline.InProgress) -> None:
     Publish()(ctx)
 
 
-# TODO: the best thing to do for start is probably to allow arbitrary argv to follow
-# `bertrand run myproject/branch@workload:tag sleep infinity`, which will override the
-# default entry point for the generated container.
-
-
 async def podman_start(
     worktree: Path,
     workload: str | None,
     tag: str | None,
     *,
-    quiet: bool,
+    cmd: list[str] | None,
 ) -> None:
     """Start Bertrand containers within an environment.
 
@@ -2774,9 +2727,10 @@ async def podman_start(
     tag : str | None
         The member to target, if any.  All containers matching the tag will be included
         in the output, according to the workload.
-    quiet : bool
-        Whether to suppress output from podman.  If true, then nothing will be printed
-        to stdout or stderr unless an error occurs.
+    cmd : list[str] | None
+        An optional command to override the default entry point for the container.  If
+        provided, then this command will be used instead of the default entry point
+        defined in the project's build matrix for the selected tag.
     """
     if workload is not None:
         raise NotImplementedError("kubernetes workloads are not yet supported")
@@ -2788,11 +2742,9 @@ async def podman_start(
         if config is None:
             raise OSError(f"could not load environment at {worktree}")
 
-        # TODO: support cmd argument?
-
         # build/update image first, then materialize container from it
-        image = await podman_build(worktree, workload, tag, quiet=quiet)
-        await image.container(env, None, quiet=quiet)
+        image = await podman_build(worktree, workload, tag, quiet=False)
+        await image.container(env, cmd, quiet=False)
 
 
 @on_code(ephemeral=True)
@@ -2958,57 +2910,69 @@ async def podman_restart(
         else:
             tags = [tag]
         for tag in tags:
-            # get all running containers matching the specified tag
-            ids = await _cli_containers(
+            # snapshot all running containers matching the specified tag
+            containers = await Container.inspect(await _cli_containers(
                 env,
                 tag,
                 status=("running", "restarting", "paused"),
                 timeout=env.timeout
-            )
-            if not ids:
+            ))
+            if not containers:
                 continue  # nothing to restart
 
-            # update image
-            updated = await podman_build(
+            # incrementally rebuild image
+            image = await podman_build(
                 worktree,
                 workload,
                 tag,
-                quiet=True  # TODO: delete this?
+                quiet=False
             )
 
             # stop outdated containers and restart those that were not affected
-            to_restart = set(await _podman_ids(
-                "container",
-                labels={
-                    ENV_ID_ENV: env.id,
-                    IMAGE_ID_ENV: updated.id,
-                    IMAGE_TAG_ENV: tag,
-                },
-                timeout=env.timeout
-            ))
             defer: list[list[str]] = []
-            for id in ids:
-                if id in to_restart:
-                    await podman_cmd(
-                        ["container", "restart", "-t", str(int(math.ceil(env.timeout))), id],
-                        timeout=env.timeout
+            for container in containers:
+                try:
+                    if container.Image == image.id:  # restart directly
+                        await podman_cmd(
+                            [
+                                "container",
+                                "restart",
+                                "-t", str(int(math.ceil(env.timeout))),
+                                container.Id
+                            ],
+                            timeout=env.timeout
+                        )
+                    else:  # stop and restart on updated image
+                        await podman_cmd(
+                            [
+                                "container",
+                                "stop",
+                                "-t", str(int(math.ceil(env.timeout))),
+                                container.Id
+                            ],
+                            timeout=env.timeout
+                        )
+                        if container.Path:
+                            defer.append([container.Path, *container.Args])
+                        else:
+                            print(
+                                "bertrand: could not recover container argv during "
+                                f"restart of {_recover_spec(worktree, workload, tag)}: "
+                                f"{container.Id}",
+                                file=sys.stderr
+                            )
+                except Exception as err:
+                    print(
+                        f"bertrand: failed to stop container during restart of "
+                        f"{_recover_spec(worktree, workload, tag)}: {container.Id}\n"
+                        f"{err}",
+                        file=sys.stderr
                     )
-                else:
-                    await podman_cmd(
-                        ["container", "stop", "-t", str(int(math.ceil(env.timeout))), id],
-                        timeout=env.timeout
-                    )
-                    # TODO: record the command used to start the original container
-                    defer.append([])
 
             # if we have to restart outdated containers, rebuild them from the newest
             # image and start them with the same arguments as before
             for cmd in defer:
-                await updated.container(
-                    env,
-                    cmd,
-                    quiet=True  # TODO: delete this and pass a command instead
-                )
+                await image.container(env, cmd, quiet=False)
 
 
 async def podman_rm(
@@ -3052,15 +3016,19 @@ async def podman_rm(
 
     async with Environment(worktree, timeout=deadline - time.time()) as env:
         if tag is None:
-            await env.remove(force=force, timeout=deadline - time.time(), missing_ok=True)
+            while env.images:
+                tag, image = env.images.popitem()
+                env._json.retired.append(Environment.JSON.RetiredImage(
+                    force=force,
+                    image=image,
+                ))
         else:
             image = env.images.pop(tag)
             if image is not None:
-                await image.remove(
+                env._json.retired.append(Environment.JSON.RetiredImage(
                     force=force,
-                    timeout=deadline - time.time(),
-                    missing_ok=True
-                )
+                    image=image,
+                ))
 
 
 async def podman_ls(

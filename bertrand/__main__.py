@@ -27,6 +27,7 @@ from .env.pipeline import (
 from .env.container import (
     TIMEOUT,
     Environment,
+    _recover_spec,
     podman_build,
     podman_log,
     podman_ls,
@@ -110,15 +111,6 @@ def _dedupe(values: list[str]) -> list[str]:
         seen.add(value)
         out.append(value)
     return out
-
-
-def _recover_spec(worktree: Path, workload: str | None, tag: str | None) -> str:
-    spec = str(worktree)
-    if workload:
-        spec += f"@{workload}"
-    if tag:
-        spec += f":{tag}"
-    return spec
 
 
 class External:
@@ -330,6 +322,16 @@ class External:
                     "containers matching that scope will be started.  If no path is "
                     "given, then all Bertrand containers on the host system will be "
                     "started, after prompting the user to confirm.",
+            )
+            command.add_argument(
+                "cmd",
+                nargs=argparse.REMAINDER,
+                help=
+                    "The command to run inside the container context after it starts.  "
+                    "If omitted, the default command declared in the project's build "
+                    "matrix will be used instead.  The resulting container will run "
+                    "this command at PID 1, and will exit when the command finishes.",
+                metavar="CMD...",
             )
             command.set_defaults(handler=External.start)
 
@@ -875,10 +877,6 @@ class External:
             yes=args.yes,
         )
 
-    # TODO: --quiet should probably be removed from both build and start.  You can
-    # always just pipe to /dev/null if you don't want output, and this leaves me
-    # margin to add more options later.
-
     @staticmethod
     def build(args: argparse.Namespace) -> None:
         """Execute the `bertrand build` CLI command.
@@ -911,7 +909,7 @@ class External:
                 cmd = ["bertrand", "build", _recover_spec(worktree, workload, tag)]
                 raise TimeoutExpired(
                     cmd=cmd,
-                    timeout=args.timeout,
+                    timeout=0.0,  # indefinite
                     output=None,
                     stderr=f"started: {start}\nstopped: {datetime.now()}\n"
                 ) from err
@@ -951,9 +949,6 @@ class External:
             manifest=args.manifest,
         )
 
-    # TODO: probably rename start to run and then allow arbitrary argv instead of
-    # quiet.
-
     @staticmethod
     def start(args: argparse.Namespace) -> None:
         """Execute the `bertrand start` CLI command.
@@ -979,14 +974,14 @@ class External:
                     worktree,
                     workload,
                     tag,
-                    quiet=False,
+                    cmd=args.cmd or None,  # empty list -> None
                 ))
             except (TimeoutError, TimeoutExpired) as err:
                 start = datetime.fromtimestamp(now)
                 cmd = ["bertrand", "start", _recover_spec(worktree, workload, tag)]
                 raise TimeoutExpired(
                     cmd=cmd,
-                    timeout=args.timeout,
+                    timeout=0.0,  # indefinite
                     output=None,
                     stderr=f"started: {start}\nstopped: {datetime.now()}\n"
                 ) from err
@@ -1159,7 +1154,7 @@ class External:
                 cmd = ["bertrand", "restart", _recover_spec(worktree, workload, tag)]
                 raise TimeoutExpired(
                     cmd=cmd,
-                    timeout=args.timeout,
+                    timeout=0.0,  # indefinite
                     output=None,
                     stderr=f"started: {start}\nstopped: {datetime.now()}\n"
                 ) from err
