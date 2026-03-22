@@ -45,6 +45,7 @@ from .config import (
     DEFAULT_TAG,
     ENV_ID_ENV,
     HOST_SOCKET,
+    IMAGE_ID_ENV,
     IMAGE_TAG_ENV,
     METADATA_DIR,
     METADATA_FILE,
@@ -74,7 +75,6 @@ from .pipeline import (
     on_init,
     on_enter,
     on_code,
-    on_restart,
     on_publish,
 )
 from .run import (
@@ -870,6 +870,8 @@ class Registry(BaseModel):
                     env.id = uuid.uuid4().hex
                 env_changed = True
 
+            # TODO: is this right with new retiring model?
+
             # otherwise, the new environment constitutes a move, and we can
             # transfer ownership by deleting the old containers (but not
             # images), to avoid coupling with the previous path
@@ -1263,7 +1265,7 @@ async def _podman_ids(
     labels: Mapping[str, str],
     *,
     status: Sequence[str] | None = None,
-    timeout: float = TIMEOUT
+    timeout: float = TIMEOUT,
 ) -> list[str]:
     deadline = time.time() + timeout
 
@@ -1564,14 +1566,11 @@ class Image(BaseModel):
             If any of the podman commands fail.
         """
         # remove descendant containers first to avoid dangling references
-        containers = list((await podman_cmd([
+        containers = await _podman_ids(
             "container",
-            "ls",
-            "-a",
-            "-q",
-            "--no-trunc",
-            "--filter", f"ancestor={self.id}",
-        ], capture_output=True)).stdout.splitlines())
+            labels={IMAGE_ID_ENV: self.id},
+            timeout=timeout
+        )
         if containers:
             await Container.remove(
                 containers,
@@ -1660,6 +1659,7 @@ class Image(BaseModel):
             # labels for podman-level lookup
             "--label", f"{BERTRAND_ENV}=1",
             "--label", f"{ENV_ID_ENV}={env.id}",
+            "--label", f"{IMAGE_ID_ENV}={self.id}",
             "--label", f"{IMAGE_TAG_ENV}={self.tag}",
 
             # mount mutable worktree
@@ -1723,6 +1723,7 @@ class Environment:
         host: UUIDStr
         id: UUIDStr
         images: dict[SanitizedName, Image]
+        retired: list[Image]
 
     worktree: Path
     _json: JSON
@@ -1778,6 +1779,19 @@ class Environment:
             raise RuntimeError("environment context manager was not entered")
 
         try:
+            # attempt to empty the retired images list
+            retired: list[Image] = []
+            for image in self._json.retired:
+                # TODO: remove(force=False) should return a bool indicating whether
+                # the image was removed, so that this works
+                if not await image.remove(
+                    force=False,
+                    timeout=self.timeout,
+                    missing_ok=True
+                ):
+                    retired.append(image)
+            self._json.retired = retired
+
             # write metadata back to disk
             env_dir = self.worktree / METADATA_DIR
             if self._entered == 1 and env_dir.exists():
@@ -1963,6 +1977,20 @@ class Environment:
         return self._json.images
 
     @property
+    def retired(self) -> list[Image]:
+        """
+        Returns
+        -------
+        list[Image]
+            A list of retired images that have become outdated and scheduled for
+            removal.  Each command will attempt to empty this list by checking whether
+            the images are still referenced by any active containers, and removing them
+            if not, allowing the containers to run to completion normally, unless
+            stopped by another command.
+        """
+        return self._json.retired
+
+    @property
     async def containers(self) -> list[Container]:
         """
         Returns
@@ -2036,21 +2064,6 @@ class Environment:
             shutil.rmtree(self.worktree / METADATA_DIR, ignore_errors=True)
         except:
             pass
-
-
-async def _all_environments() -> list[Path]:
-    try:
-        async with Registry.lock(timeout=TIMEOUT):
-            registry = await Registry.load()
-            await registry.purge()
-            await registry.dump()
-        return list(registry.environments.values())
-    except OSError as err:
-        print(
-            f"bertrand: failed to load global environment registry: {err}",
-            file=sys.stderr
-        )
-        return []
 
 
 def _check_boolean(value: Any) -> bool:
@@ -2558,182 +2571,6 @@ class Code(_Command):
         raise OSError("must specify a container to run 'code' in")
 
 
-@dataclass
-class Restart(_Command):
-    """Restart running or paused Bertrand containers within an environment, scoping to
-    specific images and containers if desired.  If an image or container is out of
-    date, then it will be rebuilt before restarting.
-    """
-
-    @staticmethod
-    def _validate_timeout(x: JSONValue) -> int:
-        if x is None:
-            return TIMEOUT
-        if not isinstance(x, int):
-            raise TypeError("timeout must be an integer")
-        if x < -1:
-            raise ValueError("timeout must be non-negative or -1 for no timeout")
-        return x
-
-    timeout: Validator = field(default=_validate_timeout)
-
-    @staticmethod
-    def container(
-        ctx: Pipeline.InProgress,
-        *,
-        env: Environment,
-        image_tag: str,
-        container_tag: str,
-        timeout: float,
-        **kwargs: Any
-    ) -> None:
-        image = env.tags.get(image_tag)
-        if image is None:
-            raise KeyError(f"no image found for tag: '{image_tag}'")
-        container = image.containers.get(container_tag)
-        if container is None:
-            raise KeyError(f"no container found for tag: '{container_tag}'")
-
-        # detect whether the container is currently running
-        inspect = container.inspect()
-        if inspect is None:
-            running = False
-        else:
-            state = inspect.get("State")
-            if not isinstance(state, dict):
-                raise OSError(f"invalid container state for container '{container_tag}'")
-            running = bool(
-                state.get("Running") or
-                state.get("Restarting") or
-                state.get("Paused")
-            )
-
-        # possibly rebuild the parent image and all downstream containers
-        Build.image(ctx, env=env, image_tag=image_tag, publish=None, repo="", **kwargs)
-        # TODO: env[image] is no longer valid.  Now you have to reference a commit
-        # first
-        image = env[image_tag]
-        if image is None:
-            raise OSError(f"unable to build image '{image_tag}'")
-
-        # if the container was previously running, restart it
-        container = image.containers.get(container_tag)  # may have drifted
-        if container is None:
-            raise KeyError(f"no container found for tag: '{container_tag}' after rebuild")
-        inspect = container.inspect()
-        if inspect is None:
-            image.containers.pop(container_tag, None)
-        elif running:
-            state = inspect.get("State")
-            if not isinstance(state, dict):
-                raise OSError(f"invalid container state for container '{container_tag}'")
-            if state.get("Status") == "created":  # newly-rebuilt
-                Container.start(inspect)
-            elif state.get("Running") or state.get("Paused"):
-                id = inspect.get("Id")
-                if not isinstance(id, str):
-                    raise OSError(f"invalid container ID for container '{container_tag}'")
-                podman_cmd([
-                    "container",
-                    "restart",
-                    id,
-                    "-t", "-1" if not timeout else str(int(math.ceil(timeout)))
-                ])
-
-    @staticmethod
-    def image(
-        ctx: Pipeline.InProgress,
-        *,
-        env: Environment,
-        image_tag: str,
-        timeout: float,
-        **kwargs: Any
-    ) -> None:
-        image = env.tags.get(image_tag)
-        if image is None:
-            raise KeyError(f"no image found for tag: '{image_tag}'")
-
-        # detect whether any containers are currently running
-        running: set[str] = set()
-        for container_tag, c in image.containers.items():
-            inspect = c.inspect()
-            if inspect is not None:
-                state = inspect.get("State")
-                if not isinstance(state, dict):
-                    raise OSError(
-                        f"invalid container state for container '{container_tag}' in image "
-                        f"'{image_tag}'"
-                    )
-                if state.get("Running") or state.get("Restarting") or state.get("Paused"):
-                    running.add(container_tag)
-
-        # possibly rebuild the image and all downstream containers
-        Build.image(ctx, env=env, image_tag=image_tag, publish=None, repo="", **kwargs)
-        # TODO: env[image] is no longer valid.  Now you have to reference a commit
-        # first
-        image = env[image_tag]
-        if image is None:
-            raise OSError(f"unable to build image '{image_tag}'")
-
-        # restart any previously-running containers
-        for container_tag in running:
-            container = image.containers.get(container_tag)  # may have drifted
-            if container is None:
-                continue  # container was removed during rebuild, skip it
-            inspect = container.inspect()
-            if inspect is None:
-                continue  # container was removed during rebuild, skip it
-
-            state = inspect.get("State")
-            if not isinstance(state, dict):
-                raise OSError(
-                    f"invalid container state for container '{container_tag}' in image "
-                    f"'{image_tag}'"
-                )
-            if state.get("Status") == "created":  # newly-rebuilt
-                Container.start(inspect)
-            elif state.get("Running") or state.get("Paused"):
-                id = inspect.get("Id")
-                if not isinstance(id, str):
-                    raise OSError(f"invalid container ID for container '{container_tag}'")
-                podman_cmd([
-                    "container",
-                    "restart",
-                    id,
-                    "-t", "-1" if not timeout else str(int(math.ceil(timeout)))
-                ])
-
-    @staticmethod
-    def environment(
-        ctx: Pipeline.InProgress,
-        *,
-        env: Environment,
-        timeout: float,
-        **kwargs: Any
-    ) -> None:
-        for image_tag in env.tags:
-            Restart.image(ctx, env=env, image_tag=image_tag, timeout=timeout, **kwargs)
-
-    @staticmethod
-    def all(
-        ctx: Pipeline.InProgress,
-        *,
-        timeout: float,
-        **kwargs: Any
-    ) -> None:
-        if confirm(
-            "This will restart all running Bertrand containers on this system.  This may "
-            "take a long time depending on the number and complexity of the environments.\n"
-            "Are you sure you want to continue? [y/N] "
-        ):
-            for env_path in _all_environments():
-                try:
-                    with Environment(env_path) as env:
-                        Restart.environment(ctx, env=env, timeout=timeout, **kwargs)
-                except Exception as err:
-                    print(err, file=sys.stderr)
-
-
 async def _cli_containers(
     env: Environment,
     tag: str | None,
@@ -2897,16 +2734,11 @@ async def podman_build(
                 )
             raise
 
-        # replace existing image with new candidate and clean up the old image if it
-        # differs
+        # retire existing image in favor of new candidate if they differ
         if changed:
             env.images[tag] = candidate
             if existing is not None:
-                await existing.remove(
-                    force=True,
-                    timeout=env.timeout,
-                    missing_ok=True
-                )
+                env.retired.append(existing)
             return candidate
         assert existing is not None
         return existing
@@ -3096,9 +2928,87 @@ async def podman_resume(
             await podman_cmd(["container", "unpause", *ids], timeout=deadline - time.time())
 
 
-@on_restart(ephemeral=True)
-async def podman_restart(ctx: Pipeline.InProgress) -> None:
-    Restart()(ctx)
+async def podman_restart(
+    worktree: Path,
+    workload: str | None,
+    tag: str | None,
+) -> None:
+    """Restart running or paused Bertrand containers within an environment.  If an
+    image or container is out of date, then it will be rebuilt before restarting.
+
+    Parameters
+    ----------
+    worktree : Path
+        A valid environment worktree path.
+    workload : str | None
+        The kubernetes workload to target, if applicable.  If None (the default), then
+        the command will target tags in the environment's build matrix.  Otherwise, it
+        will start the workload and target tags within it.
+    tag : str | None
+        The member to target, if any.  All containers matching the tag will be included
+        in the output, according to the workload.
+    """
+    if workload is not None:
+        raise NotImplementedError("kubernetes workloads are not yet supported")
+
+    async with Environment(worktree, timeout=TIMEOUT) as env:
+        tags: list[str]
+        if tag is None:
+            tags = list(env.images)
+        else:
+            tags = [tag]
+        for tag in tags:
+            # get all running containers matching the specified tag
+            ids = await _cli_containers(
+                env,
+                tag,
+                status=("running", "restarting", "paused"),
+                timeout=env.timeout
+            )
+            if not ids:
+                continue  # nothing to restart
+
+            # update image
+            updated = await podman_build(
+                worktree,
+                workload,
+                tag,
+                quiet=True  # TODO: delete this?
+            )
+
+            # stop outdated containers and restart those that were not affected
+            to_restart = set(await _podman_ids(
+                "container",
+                labels={
+                    ENV_ID_ENV: env.id,
+                    IMAGE_ID_ENV: updated.id,
+                    IMAGE_TAG_ENV: tag,
+                },
+                timeout=env.timeout
+            ))
+            defer: list[list[str]] = []
+            for id in ids:
+                if id in to_restart:
+                    await podman_cmd(
+                        ["container", "restart", "-t", str(int(math.ceil(env.timeout))), id],
+                        timeout=env.timeout
+                    )
+                else:
+                    await podman_cmd(
+                        ["container", "stop", "-t", str(int(math.ceil(env.timeout))), id],
+                        timeout=env.timeout
+                    )
+                    # TODO: record the command used to start the original container
+                    defer.append([])
+
+            # if we have to restart outdated containers, rebuild them from the newest
+            # image and start them with the same arguments as before
+            for cmd in defer:
+                await updated.container(
+                    env,
+                    cmd,
+                    quiet=True  # TODO: delete this and pass a command instead
+                )
 
 
 async def podman_rm(

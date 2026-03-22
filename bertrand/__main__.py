@@ -23,7 +23,6 @@ from .env.pipeline import (
     on_publish,
     on_enter,
     on_code,
-    on_restart,
 )
 from .env.container import (
     TIMEOUT,
@@ -33,6 +32,7 @@ from .env.container import (
     podman_ls,
     podman_monitor,
     podman_pause,
+    podman_restart,
     podman_resume,
     podman_rm,
     podman_start,
@@ -897,7 +897,6 @@ class External:
             surfaced from an internal error.
         """
         now = time.time()
-        deadline = now + args.timeout
         with asyncio.Runner() as runner:
             worktree, workload, tag = runner.run(Environment.parse(args.path))
             try:
@@ -909,13 +908,12 @@ class External:
                 ))
             except (TimeoutError, TimeoutExpired) as err:
                 start = datetime.fromtimestamp(now)
-                stop = datetime.fromtimestamp(deadline)
                 cmd = ["bertrand", "build", _recover_spec(worktree, workload, tag)]
                 raise TimeoutExpired(
                     cmd=cmd,
                     timeout=args.timeout,
                     output=None,
-                    stderr=f"started: {start}\nstopped: {stop}\n"
+                    stderr=f"started: {start}\nstopped: {datetime.now()}\n"
                 ) from err
 
     @staticmethod
@@ -974,7 +972,6 @@ class External:
             surfaced from an internal error.
         """
         now = time.time()
-        deadline = now + args.timeout
         with asyncio.Runner() as runner:
             worktree, workload, tag = runner.run(Environment.parse(args.path))
             try:
@@ -986,13 +983,12 @@ class External:
                 ))
             except (TimeoutError, TimeoutExpired) as err:
                 start = datetime.fromtimestamp(now)
-                stop = datetime.fromtimestamp(deadline)
                 cmd = ["bertrand", "start", _recover_spec(worktree, workload, tag)]
                 raise TimeoutExpired(
                     cmd=cmd,
                     timeout=args.timeout,
                     output=None,
-                    stderr=f"started: {start}\nstopped: {stop}\n"
+                    stderr=f"started: {start}\nstopped: {datetime.now()}\n"
                 ) from err
 
     @staticmethod
@@ -1143,14 +1139,30 @@ class External:
         ----------
         args : argparse.Namespace
             The parsed command-line arguments.
+
+        Raises
+        ------
+        TimeoutExpired
+            If the command does not complete within the specified timeout.
         """
-        env, image_tag, container_tag = _parse(args.path)
-        on_restart.do(
-            env=env,
-            image_tag=image_tag,
-            container_tag=container_tag,
-            timeout=args.timeout,
-        )
+        now = time.time()
+        with asyncio.Runner() as runner:
+            worktree, workload, tag = runner.run(Environment.parse(args.path))
+            try:
+                runner.run(podman_restart(
+                    worktree,
+                    workload,
+                    tag,
+                ))
+            except (TimeoutError, TimeoutExpired) as err:
+                start = datetime.fromtimestamp(now)
+                cmd = ["bertrand", "restart", _recover_spec(worktree, workload, tag)]
+                raise TimeoutExpired(
+                    cmd=cmd,
+                    timeout=args.timeout,
+                    output=None,
+                    stderr=f"started: {start}\nstopped: {datetime.now()}\n"
+                ) from err
 
     @staticmethod
     def rm(args: argparse.Namespace) -> None:
@@ -1358,7 +1370,6 @@ class External:
     # undone during cleanup, which must be done in a safe ordering to avoid leaving
     # the system in an inconsistent state.
     pipelines: dict[str, Pipeline] = {
-        "restart": on_restart,
         "code": on_code,
         "enter": on_enter,
         "publish": on_publish,

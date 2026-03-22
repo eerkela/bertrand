@@ -11,7 +11,6 @@ from .core import (
     on_publish,
     on_enter,
     on_code,
-    on_restart,
 )
 from .filesystem import (
     Chmod,
