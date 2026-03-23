@@ -54,41 +54,41 @@ import jinja2
 import yaml
 
 from .pipeline import on_init
-from .run import LOCK_TIMEOUT, Lock, User, atomic_write_text, run, sanitize_name
+from .run import LOCK_TIMEOUT, Lock, atomic_write_text, run, sanitize_name
 from .version import __version__, VERSION
 
 # pylint: disable=bare-except
 
 
 # Canonical path definitions for worktree control
-ARTIFACT_ROOT: PosixPath = PosixPath("/tmp/bertrand/artifacts")
-CONAN_HOME: PosixPath = PosixPath("/opt/conan")
-CONTAINER_SOCKET: PosixPath = PosixPath("/tmp/bertrand/artifacts/host.sock")
-HOST_SOCKET: Path = (
-    User().home / ".local" / "share" / "bertrand" / "daemon" / "listener.sock"
-)
+HOST_RUNTIME_DIR: Path = on_init.state_dir / "runtime"
+RPC_SOCKET_NAME: str = "rpc.sock"
+RPC_LEASE_NAME: str = "lease"
+CONTAINER_RUNTIME_DIR: PosixPath = PosixPath("/tmp/bertrand")
+CONTAINER_ARTIFACT_DIR: PosixPath = CONTAINER_RUNTIME_DIR / "container"
+CONTAINER_HOST_DIR: PosixPath = CONTAINER_RUNTIME_DIR / "host"
+CONTAINER_SOCKET: PosixPath = CONTAINER_HOST_DIR / RPC_SOCKET_NAME
+CONTAINER_LEASE: PosixPath = CONTAINER_HOST_DIR / RPC_LEASE_NAME
 METADATA_DIR: PosixPath = PosixPath(".bertrand")
-METADATA_BRANCHES: PosixPath = METADATA_DIR / "branches"
-METADATA_COMMITS: PosixPath = METADATA_DIR / "commits"
 METADATA_LOCK: PosixPath = METADATA_DIR / ".lock"
 METADATA_FILE: PosixPath = METADATA_DIR / "env.json"
 METADATA_TMP: PosixPath = METADATA_DIR / "tmp"
-VSCODE_WORKSPACE_FILE: PosixPath = ARTIFACT_ROOT / "vscode.code-workspace"
+VSCODE_WORKSPACE_FILE: PosixPath = CONTAINER_ARTIFACT_DIR / "vscode.code-workspace"
+CONAN_HOME: PosixPath = PosixPath("/opt/conan")
 WORKTREE_MOUNT: PosixPath = PosixPath("/env")
 
 
 # In-container environment variables for relevant configuration, which are set either
 # at build time or upon starting the container context, and used to control the
 # behavior of the bertrand CLI both inside and outside the container.
-BERTRAND_ENV: str = "BERTRAND"
-CONTAINER_BIN_ENV: str = "BERTRAND_CONTAINER_BIN"
-CONTAINER_ID_ENV: str = "BERTRAND_CONTAINER_ID"
-EDITOR_BIN_ENV: str = "BERTRAND_EDITOR_BIN"
-ENV_ID_ENV: str = "BERTRAND_ENV_ID"
-IMAGE_ID_ENV: str = "BERTRAND_IMAGE_ID"
-IMAGE_TAG_ENV: str = "BERTRAND_IMAGE_TAG"
-SOCKET_ENV: str = "BERTRAND_SOCKET"
-WORKTREE_ENV: str = "BERTRAND_WORKTREE"
+BERTRAND_ENV: str = "BERTRAND"                  # "1" to mark as a Bertrand context
+CONTAINER_ID_ENV: str = "BERTRAND_CONTAINER_ID" # unique OCI container ID
+ENV_ID_ENV: str = "BERTRAND_ENV_ID"             # unique Bertrand UUID
+IMAGE_ID_ENV: str = "BERTRAND_IMAGE_ID"         # unique OCI image ID
+IMAGE_TAG_ENV: str = "BERTRAND_IMAGE_TAG"       # original tag in build matrix
+RPC_SOCKET_ENV: str = "BERTRAND_RPC_SOCKET"     # absolute path to container-side RPC socket
+RPC_SIDECAR_ENV: str = "BERTRAND_RPC_SIDECAR"   # absolute path to lease file for RPC process
+WORKTREE_ENV: str = "BERTRAND_WORKTREE"         # host path to mounted worktree
 
 
 def inside_image() -> bool:
@@ -158,40 +158,25 @@ DEFAULT_SHELL: str = "bash"
 if DEFAULT_SHELL not in SHELLS:
     raise RuntimeError(f"default shell is unsupported: {DEFAULT_SHELL}")
 EDITORS: dict[str, list[str]] = {
-    # TODO: only include commands that support the remote containers extensions in
-    # rpc.py
     "vscode": [
-        # PATH-resolved command names (Linux/macOS/Windows/WSL)
+        # PATH-resolved command names
         "code",
         "code-insiders",
-        "code-oss",
-        "codium",
-        "com.visualstudio.code",
-        "com.visualstudio.code-insiders",
         "code.cmd",
         "code-insiders.cmd",
         "code.exe",
         "code-insiders.exe",
 
-        # Linux common absolute install/export paths
+        # Linux common absolute install paths
         "/usr/bin/code",
         "/usr/local/bin/code",
         "/snap/bin/code",
-        "/var/lib/flatpak/exports/bin/com.visualstudio.code",
-        "/var/lib/flatpak/exports/bin/com.visualstudio.code-insiders",
-        "~/.local/share/flatpak/exports/bin/com.visualstudio.code",
-        "~/.local/share/flatpak/exports/bin/com.visualstudio.code-insiders",
-        "/opt/visual-studio-code/bin/code",
         "/usr/share/code/bin/code",
         "/usr/share/code-insiders/bin/code-insiders",
-        "/usr/bin/code-oss",
-        "/usr/bin/codium",
 
         # macOS app bundle shims
         "/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code",
         "/Applications/Visual Studio Code - Insiders.app/Contents/Resources/app/bin/code-insiders",
-        "~/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code",
-        "~/Applications/Visual Studio Code - Insiders.app/Contents/Resources/app/bin/code-insiders",
 
         # WSL/Windows common locations
         "/mnt/c/Program Files/Microsoft VS Code/bin/code.cmd",
@@ -3728,20 +3713,20 @@ CAPABILITIES: dict[str, dict[str, dict[str, PosixPath]]] = {
     },
     "cpp": {
         "flat": {
-            CONANFILE_RESOURCE: ARTIFACT_ROOT / "conanfile.py",
+            CONANFILE_RESOURCE: CONTAINER_ARTIFACT_DIR / "conanfile.py",
             CONANREMOTES_RESOURCE: CONAN_HOME / "remotes.json",
             CONANPROFILE_RESOURCE: CONAN_HOME / "profiles" / "default",
-            CLANGD_RESOURCE: ARTIFACT_ROOT / ".clangd",
-            CLANG_TIDY_RESOURCE: ARTIFACT_ROOT / ".clang-tidy",
-            CLANG_FORMAT_RESOURCE: ARTIFACT_ROOT / ".clang-format",
+            CLANGD_RESOURCE: CONTAINER_ARTIFACT_DIR / ".clangd",
+            CLANG_TIDY_RESOURCE: CONTAINER_ARTIFACT_DIR / ".clang-tidy",
+            CLANG_FORMAT_RESOURCE: CONTAINER_ARTIFACT_DIR / ".clang-format",
         },
         "src": {
-            CONANFILE_RESOURCE: ARTIFACT_ROOT / "conanfile.py",
+            CONANFILE_RESOURCE: CONTAINER_ARTIFACT_DIR / "conanfile.py",
             CONANREMOTES_RESOURCE: CONAN_HOME / "remotes.json",
             CONANPROFILE_RESOURCE: CONAN_HOME / "profiles" / "default",
-            CLANGD_RESOURCE: ARTIFACT_ROOT / ".clangd",
-            CLANG_TIDY_RESOURCE: ARTIFACT_ROOT / ".clang-tidy",
-            CLANG_FORMAT_RESOURCE: ARTIFACT_ROOT / ".clang-format",
+            CLANGD_RESOURCE: CONTAINER_ARTIFACT_DIR / ".clangd",
+            CLANG_TIDY_RESOURCE: CONTAINER_ARTIFACT_DIR / ".clang-tidy",
+            CLANG_FORMAT_RESOURCE: CONTAINER_ARTIFACT_DIR / ".clang-format",
         },
     },
     "vscode": {

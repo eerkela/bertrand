@@ -2763,6 +2763,10 @@ async def podman_code(ctx: Pipeline.InProgress) -> None:
 # general.  It's also more secure, since the editor paths are never exposed to the
 # container environment at all.
 
+# -> See Codex for a decision-complete plan for the sidecar process design, which
+# we will need to implement in stages, starting with @rpc.py and then moving to
+# @container.py and finishing with @__main__.py
+
 
 async def podman_enter(
     worktree: Path,

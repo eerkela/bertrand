@@ -1,24 +1,22 @@
-"""Text editor integrations for Bertrand's containerized development environments.
-
-This module currently provides a minimal host-side RPC listener skeleton that can be
-used by future in-container `bertrand code` clients.
+"""A host sidecar process that runs alongside a container and processes JSON-RPC
+requests from it over an asynchronous unix socket.  The RPC service is used to remotely
+invoke host utilities (such as text editors), which would otherwise be difficult to
+launch from inside the container context.
 """
 from __future__ import annotations
 
+import argparse
 import asyncio
 import json
 import os
-import shlex
 import shutil
 import stat
 import subprocess
-import sys
 import time
 import urllib.parse
 import uuid
 
 from dataclasses import dataclass, field
-from datetime import datetime
 from pathlib import Path
 from typing import (
     Annotated,
@@ -28,7 +26,8 @@ from typing import (
     Mapping,
     NoReturn,
     Protocol,
-    Self
+    Self,
+    Sequence,
 )
 from warnings import warn
 
@@ -42,16 +41,14 @@ from pydantic import (
 )
 
 from .config import (
-    CONTAINER_BIN_ENV,
-    CONTAINER_ID_ENV,
-    CONTAINER_SOCKET,
-    EDITOR_BIN_ENV,
-    HOST_SOCKET,
+    EDITORS,
     IMAGE_TAG_ENV,
-    SOCKET_ENV,
+    RPC_SIDECAR_ENV,
+    RPC_SOCKET_ENV,
     VSCODE_WORKSPACE_FILE,
     WORKTREE_ENV,
     WORKTREE_MOUNT,
+    AbsolutePath,
     Config,
     Editor,
     inside_image,
@@ -60,10 +57,9 @@ from .pipeline import JSONValue
 from .run import (
     CommandError,
     TimeoutExpired,
-    User,
     atomic_write_text,
     mkdir_private,
-    run
+    run,
 )
 
 # pylint: disable=bare-except, broad-exception-caught
@@ -77,8 +73,6 @@ JSON_RPC_METHOD_NOT_FOUND: int = -32601         # The method does not exist / is
 JSON_RPC_INVALID_REQUEST: int = -32600          # The JSON sent is not a valid Request object
 JSON_RPC_TIMEOUT_ERROR: int = -32000            # Custom error code for timeouts
 MAX_REQUEST_BYTES: int = 1024 * 1024            # 1 MiB, to prevent malicious payloads
-RPC_SERVICE_NAME: str = "bertrand-rpc"
-RPC_SERVICE_FILE: Path = User().home / ".config" / "systemd" / "user" / RPC_SERVICE_NAME
 RPC_TIMEOUT: float = 30.0
 
 
@@ -103,9 +97,7 @@ def _check_request_id(request_id: str) -> str:
     return request_id
 
 
-def _check_worktree(worktree: Path) -> Path:
-    if not worktree.is_absolute():
-        raise ValueError(f"worktree must be an absolute path: {worktree}")
+def _check_worktree(worktree: AbsolutePath) -> AbsolutePath:
     if not worktree.exists():
         raise ValueError(f"worktree does not exist: {worktree}")
     if not worktree.is_dir():
@@ -115,19 +107,19 @@ def _check_worktree(worktree: Path) -> Path:
 
 type ContainerID = Annotated[  # pylint: disable=invalid-name
     str,
-    AfterValidator(_check_container_id)
+    AfterValidator(_check_container_id),
 ]
 type JSONRPCVersion = Literal["2.0"]
 type MethodName = Annotated[str, AfterValidator(_check_method_name)]
 type RequestID = Annotated[  # pylint: disable=invalid-name
     str,
-    AfterValidator(_check_request_id)
+    AfterValidator(_check_request_id),
 ]
-type Worktree = Annotated[Path, AfterValidator(_check_worktree)]
+type Worktree = Annotated[AbsolutePath, AfterValidator(_check_worktree)]
 
 
 class RPCRequest(BaseModel):
-    """A validated JSON-RPC 2.0 request to Bertrand's host daemon service."""
+    """A validated JSON-RPC 2.0 request to Bertrand's host sidecar."""
     model_config = ConfigDict(extra="forbid")
     jsonrpc: JSONRPCVersion
     id: RequestID
@@ -136,10 +128,10 @@ class RPCRequest(BaseModel):
     class CodeOpenRequest(BaseModel):
         """Typed params payload for `code.open` JSON-RPC requests."""
         model_config = ConfigDict(extra="forbid")
-        container_id: ContainerID
         worktree: Worktree
         editor: Editor
         deadline: PositiveFloat
+        block: bool
 
     type Params = CodeOpenRequest
     params: Params
@@ -195,7 +187,7 @@ class RPCMethod(Protocol):
         parameters, which will be serialized and sent to the host listener when the
         method is invoked.  The class instance can be used as a closure capturing any
         context needed to form the request.
-    response(request: RPCRequest) -> RPCResponse
+    response(listener: Listener, request: RPCRequest) -> RPCResponse
         A static method that handles an incoming `RPCRequest` produced by this class's
         `request()` method, and returns the appropriate `RPCResponse` to send back to
         the client.  This method will be registered as the handler for the RPC request
@@ -204,15 +196,13 @@ class RPCMethod(Protocol):
     # pylint: disable=missing-function-docstring
     async def request(self) -> RPCRequest: ...
     @staticmethod
-    async def response(request: RPCRequest) -> RPCResponse: ...
+    async def response(listener: Listener, request: RPCRequest) -> RPCResponse: ...
 
 
-METHODS: dict[str, Callable[[RPCRequest], Awaitable[RPCResponse]]] = {}
+METHODS: dict[str, Callable[[Listener, RPCRequest], Awaitable[RPCResponse]]] = {}
 
 
-def rpc_method[RPCMethodT: RPCMethod](
-    name: MethodName
-) -> Callable[[type[RPCMethodT]], type[RPCMethodT]]:
+def rpc_method[T: RPCMethod](name: MethodName) -> Callable[[type[T]], type[T]]:
     """Register an RPC method with the given name.
 
     Parameters
@@ -223,7 +213,7 @@ def rpc_method[RPCMethodT: RPCMethod](
 
     Returns
     -------
-    Callable[[type[RPCMethodT]], type[RPCMethodT]]
+    Callable[[type[T]], type[T]]
         A class decorator that registers the decorated class as an RPC method handler,
         using the class's `response()` static method as the handler function.
 
@@ -231,13 +221,11 @@ def rpc_method[RPCMethodT: RPCMethod](
     ------
     ValueError
         If a method is already registered with the given name.
-    TypeError
-        If the method's `request()` or `response()` handlers are not async.
     """
     if name in METHODS:
         raise ValueError(f"RPC method already registered with name: {name}")
 
-    def _decorator(cls: type[RPCMethodT]) -> type[RPCMethodT]:
+    def _decorator(cls: type[T]) -> type[T]:
         METHODS[name] = cls.response
         return cls
 
@@ -291,7 +279,7 @@ def _catch_parse_error(err: Exception) -> RPCResponse.Error:
         return RPCResponse.Error(
             code=JSON_RPC_PARSE_ERROR,
             message=str(err),
-            data=RPCResponse.Error.ParseError(doc=err.doc, pos=err.pos)
+            data=RPCResponse.Error.ParseError(doc=err.doc, pos=err.pos),
         )
     return RPCResponse.Error(code=JSON_RPC_PARSE_ERROR, message=str(err))
 
@@ -323,12 +311,18 @@ JSON_RPC_CATCH_ERR: Mapping[type[Exception], Callable[[Exception], RPCResponse.E
 }
 
 
-def _rpc_catch(err: Exception, *, request: RequestID | None) -> RPCResponse:
+def _rpc_catch(err: Exception, *, request: str | None) -> RPCResponse:
+    request_id: str | None = None
+    if request is not None:
+        try:
+            request_id = _check_request_id(request)
+        except Exception:
+            request_id = None
     handler = next(
         (handler for cls, handler in JSON_RPC_CATCH_ERR.items() if isinstance(err, cls)),
-        _catch_internal_error
+        _catch_internal_error,
     )
-    return RPCResponse(jsonrpc=JSON_RPC_VERSION, id=request, error=handler(err))
+    return RPCResponse(jsonrpc=JSON_RPC_VERSION, id=request_id, error=handler(err))
 
 
 def _rpc_throw(err: RPCResponse.Error) -> NoReturn:
@@ -338,8 +332,9 @@ def _rpc_throw(err: RPCResponse.Error) -> NoReturn:
 
 @dataclass
 class Listener:
-    """A minimal, host-side listener that handles JSON-RPC requests from in-container
-    CLI commands over a Unix socket, which is mounted as part of container creation.
+    """A minimal, host-side listener sidecar process that handles JSON-RPC requests
+    from in-container CLI commands over a Unix socket, which is mounted as part of
+    container creation.
 
     Currently, the only supported request is `code.open`, which is used to launch a
     host text editor pointed at the container's `WORKTREE_MOUNT`.  Future requests may
@@ -348,27 +343,84 @@ class Listener:
 
     Attributes
     ----------
-    path : Path
+    container_id : ContainerID
+        The unique OCI container ID of the attached container, used to verify liveness
+        of the container before processing any requests.
+    container_bin : AbsolutePath
+        The absolute path to the host container runtime executable, used in combination
+        with the container ID to interact with the container while processing requests.
+    socket_path : AbsolutePath
         The path to the host's Unix socket file.  This path must be absolute, and the
         code server will only instantiate a socket at this location when its `listen()`
         method is called.
+    lease_path : AbsolutePath | None, optional
+        An optional absolute path to a lease file that the listener will periodically
+        update with the current timestamp as a heartbeat signal, which can be used by
+        in-container processes to detect if the listener is still alive and responsive.
+        If not provided, no lease file will be used.
+    lease_interval : PositiveFloat | None, optional
+        The interval in seconds at which to update the lease file specified by
+        `lease_path`.  Must be provided if `lease_path` is provided, and must not be
+        provided otherwise.
     """
-    path: Path
+    container_id: ContainerID
+    container_bin: AbsolutePath
+    socket_path: AbsolutePath
+    lease_path: AbsolutePath | None = None
+    lease_interval: PositiveFloat | None = None
     _server: asyncio.AbstractServer | None = field(default=None, repr=False)
+    _lease_task: asyncio.Task[None] | None = field(default=None, repr=False)
+    _active_blocking_requests: int = field(default=0, repr=False)
+    _blocking_idle: asyncio.Event = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
-        if not self.path.is_absolute():
-            raise RuntimeError(f"socket path must be absolute: {self.path}")
+        self.container_id = _check_container_id(self.container_id)
 
-    def _ensure_socket(self) -> None:
-        # make private directory and clear existing socket file if needed
-        self.path = self.path.expanduser().resolve()
-        mkdir_private(self.path.parent)
-        if self.path.exists():
-            mode = self.path.lstat().st_mode
-            if not stat.S_ISSOCK(mode):
-                raise OSError(f"socket path occupied: {self.path}")
-            self.path.unlink(missing_ok=True)
+        # validate paths
+        if not self.container_bin.is_absolute():
+            raise RuntimeError(
+                f"container binary path must be absolute: {self.container_bin}"
+            )
+        if not self.socket_path.is_absolute():
+            raise RuntimeError(f"socket path must be absolute: {self.socket_path}")
+        self.container_bin = self.container_bin.expanduser().resolve()
+        self.socket_path = self.socket_path.expanduser().resolve()
+        if (self.lease_path is not None) != (self.lease_interval is not None):
+            raise RuntimeError("--lease and --lease-interval must be provided together")
+        if self.lease_path is not None:
+            if not self.lease_path.is_absolute():
+                raise RuntimeError(f"lease path must be absolute: {self.lease_path}")
+            self.lease_path = self.lease_path.expanduser().resolve()
+            if self.lease_interval is None or self.lease_interval <= 0:
+                raise RuntimeError(
+                    f"lease interval must be positive: {self.lease_interval}"
+                )
+
+        # set up blocking request tracking, which is used to delay sidecar shutdown
+        # until all blocking requests have completed
+        self._blocking_idle = asyncio.Event()
+        self._blocking_idle.set()
+
+    async def _lease_heartbeat(self) -> None:
+        if self.lease_path is None or self.lease_interval is None:
+            return
+        while True:
+            try:
+                atomic_write_text(
+                    self.lease_path,
+                    f"{time.time():.6f}\n",
+                    encoding="utf-8"
+                )
+            except OSError as err:
+                warn(
+                    f"failed to update sidecar lease file at {self.lease_path}: {err}",
+                    category=UserWarning,
+                )
+            await asyncio.sleep(self.lease_interval)
+
+    async def _wait_for_blocking_requests(self) -> None:
+        while self._active_blocking_requests > 0:
+            await self._blocking_idle.wait()
 
     def _parse_request(self, line: str) -> JSONValue:
         if not line:
@@ -383,8 +435,6 @@ class Listener:
         return json.loads(text)
 
     async def _check_running_container(self, request: RPCRequest) -> None:
-        container_id = request.params.container_id
-        container_bin = self.container_bin()
         remaining = request.params.deadline - time.time()
         if remaining <= 0:
             raise TimeoutError(
@@ -392,39 +442,38 @@ class Listener:
                 "container is still running."
             )
 
-        # inspect container using service's container runtime executable
+        # inspect container status and contextualize errors (if any)
         try:
             result = await run(
                 [
-                    str(container_bin),
-                    "container", "inspect",
-                    "--format", "{{.State.Status}}",
-                    container_id
+                    str(self.container_bin),
+                    "container",
+                    "inspect",
+                    "--format",
+                    "{{.State.Status}}",
+                    self.container_id,
                 ],
                 capture_output=True,
                 timeout=remaining,
             )
         except TimeoutExpired as err:
             raise TimeoutError(
-                f"timed out while checking status of container '{container_id}'"
+                f"timed out while checking status of container '{self.container_id}'"
             ) from err
         except CommandError as err:
             raise RuntimeError(
-                f"container '{container_id}' is not available: {err}"
+                f"container '{self.container_id}' is not available: {err}"
             ) from err
 
-        # ensure running
-        stdout = result.stdout.strip()
-        stderr = result.stderr.strip()
-        if result.returncode != 0:
-            detail = stderr or stdout
-            suffix = f": {detail}" if detail else ""
-            raise RuntimeError(f"container '{container_id}' is not available{suffix}")
-        if not stdout:
-            raise RuntimeError(f"container '{container_id}' did not report a state")
-        if stdout not in ("running", "restarting"):
+        # confirm running
+        result.stdout = result.stdout.strip()
+        if not result.stdout:
             raise RuntimeError(
-                f"container '{container_id}' is '{stdout}' (expected running)"
+                f"container '{self.container_id}' did not report a state"
+            )
+        if result.stdout not in ("running", "restarting"):
+            raise RuntimeError(
+                f"container '{self.container_id}' is '{result.stdout}' (expected running)"
             )
 
     async def _handle_client(
@@ -433,30 +482,52 @@ class Listener:
         writer: asyncio.StreamWriter,
     ) -> None:
         request_id: str | None = None
+        blocked = False
         try:
             try:
+                # read line and eagerly extract ID for diagnostic purposes, if possible
                 line = await asyncio.wait_for(reader.readline(), timeout=RPC_TIMEOUT)
                 data = self._parse_request(line.decode("utf-8"))
                 if isinstance(data, Mapping):
                     _request_id = data.get("id")
                     if isinstance(_request_id, str):
                         request_id = _request_id
+
+                # validate rest of the request and ensure attached container is running
                 request = RPCRequest.model_validate(data)
                 await self._check_running_container(request)
-                response = await METHODS[request.method](request)
+
+                # record blocking requests
+                blocked = request.params.block
+                if blocked:
+                    self._active_blocking_requests += 1
+                    self._blocking_idle.clear()
+
+                # dispatch to handler
+                response = await METHODS[request.method](self, request)
             except Exception as err:
                 response = _rpc_catch(err, request=request_id)
+            finally:
+                if blocked:
+                    self._active_blocking_requests = max(
+                        0,
+                        self._active_blocking_requests - 1,
+                    )
+                    if self._active_blocking_requests == 0:
+                        self._blocking_idle.set()
 
-            # send response back to client (may be an error code)
+            # send response (may be an error)
             try:
                 payload = json.dumps(
                     response.model_dump(mode="json", exclude_none=True),
-                    separators=(",", ":")
+                    separators=(",", ":"),
                 ) + "\n"
                 writer.write(payload.encode("utf-8"))
                 await writer.drain()
             except OSError:
                 pass
+
+        # close stream connections
         finally:
             writer.close()
             try:
@@ -464,291 +535,126 @@ class Listener:
             except OSError:
                 pass
 
-    @staticmethod
-    async def listen() -> None:
+    async def listen(self) -> None:
         """Begin serving requests over the RPC socket.  This is meant to be called from
-        the main entry point of the RPC service, which is invoked from the systemd unit
-        file generated by `Listener.start()`.  This method will block indefinitely
-        while the service is running, and will return when the service is stopped or
-        interrupted.  The socket file will be created when the service starts, and
-        removed when it stops.
+        the main entry point of the RPC service, which is invoked as a sidecar
+        whenever a container that may require RPC communication is started.  This
+        method will block indefinitely while the service is running, and will return
+        when the service is stopped or interrupted.  The socket and heartbeat files
+        will be created when the service starts, and removed when it stops.
+
+        Raises
+        ------
+        OSError
+            If there was an error creating or cleaning up the socket or heartbeat
+            files.
         """
-        # pylint: disable=protected-access
-        self = Listener(path=HOST_SOCKET)
         try:
-            self._ensure_socket()
+            # create socket and heartbeat file if needed
+            mkdir_private(self.socket_path.parent)
+            if self.socket_path.exists():
+                mode = self.socket_path.lstat().st_mode
+                if not stat.S_ISSOCK(mode):
+                    raise OSError(f"socket path occupied: {self.socket_path}")
+                self.socket_path.unlink(missing_ok=True)
+            if self.lease_path is not None:
+                mkdir_private(self.lease_path.parent)
+                atomic_write_text(
+                    self.lease_path,
+                    f"{time.time():.6f}\n",
+                    encoding="utf-8"
+                )
+                self._lease_task = asyncio.create_task(self._lease_heartbeat())
+
+            # start async server to handle concurrent requests
             self._server = await asyncio.start_unix_server(
                 self._handle_client,
-                path=str(self.path),
+                path=str(self.socket_path),
                 limit=MAX_REQUEST_BYTES + 1,
             )
-            self.path.chmod(0o600)
+            self.socket_path.chmod(0o600)
             await self._server.serve_forever()
+
         finally:
+            # shut down server to stop accepting new requests
             if self._server is not None:
                 self._server.close()
                 await self._server.wait_closed()
                 self._server = None
+
+            # wait until all blocking requests have completed
+            await asyncio.shield(self._wait_for_blocking_requests())
+
+            # clean up socket and heartbeat file
+            if self._lease_task is not None:
+                self._lease_task.cancel()
+                try:
+                    await self._lease_task
+                except asyncio.CancelledError:
+                    pass
+                self._lease_task = None
+            if self.lease_path is not None:
+                try:
+                    self.lease_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
             try:
-                if self.path.exists() and stat.S_ISSOCK(self.path.lstat().st_mode):
-                    self.path.unlink(missing_ok=True)
+                if (
+                    self.socket_path.exists()
+                    and stat.S_ISSOCK(self.socket_path.lstat().st_mode)
+                ):
+                    self.socket_path.unlink(missing_ok=True)
             except OSError:
                 pass
 
-    @staticmethod
-    def _render_service(env_vars: dict[str, str]) -> str:
-        rpc_bin = shutil.which("bertrand-rpc")
-        if rpc_bin is None:
-            raise RuntimeError(
-                "'bertrand-rpc' executable not found on PATH.  Ensure that Bertrand's "
-                "console scripts are installed and discoverable via PATH before "
-                "interacting with the RPC server."
-            )
 
-        # render unit file with updated environment variables
-        return f"""[Unit]
-Description=Bertrand RPC Listener
+def main(argv: Sequence[str] | None = None) -> None:
+    """Entry point for the RPC service, which starts the sidecar and begins listening
+    for RPC requests from the attached container.
 
-[Service]
-Type=simple
-ExecStart={shlex.quote(str(rpc_bin))}
-Restart=on-failure
-RestartSec=1
-{'\n'.join(f'Environment=\"{k}={v}\"' for k, v in env_vars.items())}
-
-[Install]
-WantedBy=default.target
-"""
-
-    @staticmethod
-    async def _service_reachable(*, deadline: float, interval: float) -> bool:
-        if deadline <= 0.0:
-            raise ValueError(
-                "timed out before the RPC service became reachable: "
-                f"{datetime.fromtimestamp(deadline)}"
-            )
-        if interval <= 0.0:
-            raise ValueError(f"interval must be positive: {interval}")
-
-        # spin while trying to connect to socket until timeout expires
-        path = str(HOST_SOCKET)
-        while True:
-            remaining = deadline - time.time()
-            if remaining <= 0:
-                return False
-            try:
-                _, writer = await asyncio.wait_for(
-                    asyncio.open_unix_connection(path),
-                    timeout=max(0.001, remaining)
-                )
-                writer.close()
-                await writer.wait_closed()
-                return True
-            except (asyncio.TimeoutError, OSError):
-                if time.time() >= deadline:
-                    return False
-                await asyncio.sleep(max(0.0, min(interval, deadline - time.time())))
-
-    @staticmethod
-    async def start(
-        *,
-        timeout: float,
-        strict: bool,
-        container_bin: Path,
-        editor_bin: Path,
-    ) -> bool:
-        """Start the RPC systemd service if it is not already enabled.
-
-        Parameters
-        ----------
-        timeout: float
-            The maximum time in seconds to wait for the service to become reachable.
-        strict : bool
-            If true, raise a hard OSError if the service fails to start or become
-            reachable.  Otherwise, print a warning to stderr and return False.
-        container_bin: Path
-            The path to the container runtime executable (e.g. `docker` or `podman`),
-            to be passed to the service environment.
-        editor_bin: Path
-            The path to the host text editor executable (e.g. `code`), to be passed to
-            the service environment.
-
-        Returns
-        -------
-        bool
-            True if the service was started and became reachable, otherwise False.
-
-        Raises
-        ------
-        RuntimeError
-            If `strict` is true and we fail to render or write the unit file, reload
-            the systemd daemon, start the service, or probe the socket for reachability.
-        Exception
-            If any other error occurs during this process and `strict` is true.
-
-        Notes
-        -----
-        This function must be called on the host process before every (external)
-        command that may touch the RPC service.  It should never be called inside
-        the container context, since it passes host executable paths to the generated
-        systemd service.
-        """
-        if inside_image():
-            raise RuntimeError(
-                "RPC service cannot be started from inside a container.  This should "
-                "never occur; if you see this message, try re-entering the environment "
-                "to regenerate the systemd unit file, or report an issue if the "
-                "problem persists."
-            )
-
-        deadline = time.time() + timeout
-        try:
-            # render up-to-date systemd unit file
-            text = Listener._render_service({
-                CONTAINER_BIN_ENV: str(container_bin.expanduser().resolve()),
-                EDITOR_BIN_ENV: str(editor_bin.expanduser().resolve()),
-            })
-            if (
-                not RPC_SERVICE_FILE.exists() or
-                RPC_SERVICE_FILE.read_text(encoding="utf-8") != text
-            ):
-                try:
-                    atomic_write_text(RPC_SERVICE_FILE, text, encoding="utf-8")
-                except Exception as err:
-                    raise RuntimeError(
-                        f"failed to write systemd unit file at {RPC_SERVICE_FILE}\n{str(err)}"
-                    ) from err
-                try:
-                    await run(
-                        ["systemctl", "--user", "daemon-reload"],
-                        timeout=deadline - time.time()
-                    )
-                except Exception as err:
-                    raise RuntimeError(
-                        "failed to reload systemd user daemon after writing unit file "
-                        f"at {RPC_SERVICE_FILE}\n{str(err)}"
-                    ) from err
-
-            # start systemd service if it is not already running
-            if (await run(
-                [
-                    "systemctl",
-                    "--user",
-                    "is-active",
-                    "--quiet",
-                    RPC_SERVICE_NAME
-                ],
-                check=False,
-                timeout=deadline - time.time()
-            )).returncode != 0:
-                try:
-                    await run(
-                        ["systemctl", "--user", "start", RPC_SERVICE_NAME],
-                        timeout=deadline - time.time()
-                    )
-                except Exception as err:
-                    raise RuntimeError(
-                        f"failed to start systemd user service '{RPC_SERVICE_NAME}'.  "
-                        f"Check `systemctl --user status {RPC_SERVICE_NAME}` for "
-                        f"details.\n{str(err)}"
-                    ) from err
-
-            # wait until service is reachable
-            try:
-                if await Listener._service_reachable(deadline=deadline, interval=0.1):
-                    return True
-            except Exception as err:
-                raise RuntimeError(
-                    f"failed to probe code RPC socket at {HOST_SOCKET} after starting "
-                    f"service '{RPC_SERVICE_NAME}'.  Check `systemctl --user status "
-                    f"{RPC_SERVICE_NAME}` for details.\n{str(err)}"
-                ) from err
-
-            # timed out
-            raise RuntimeError(
-                f"'{RPC_SERVICE_NAME}' socket at {HOST_SOCKET} did not become "
-                "reachable within the allotted deadline.  Check "
-                f"`systemctl --user status {RPC_SERVICE_NAME}` for details."
-            )
-        except Exception as err:
-            if strict:
-                raise
-            print(
-                f"warning: failed to reach the code RPC service\n"
-                f"{str(err)}\n\n"
-                "In-container RPC commands will fail until you exit and re-enter the "
-                "environment.",
-                file=sys.stderr
-            )
-            return False
-
-    @staticmethod
-    def container_bin() -> Path:
-        """Get the path to the host container runtime executable being used by the RPC
-        service environment, which is passed in upon creating the systemd unit file.
-
-        Returns
-        -------
-        Path
-            The absolute host path to the container runtime executable.
-
-        Raises
-        ------
-        RuntimeError
-             If the environment variable is missing or malformed, which should never
-             happen if the systemd unit file is rendered correctly.
-        """
-        value = os.environ.get(CONTAINER_BIN_ENV)
-        if value is None:
-            raise RuntimeError(
-                "systemd service could not locate the container executable (usually "
-                f"indicates a corrupted {RPC_SERVICE_NAME} unit).  This should never "
-                "occur; if you see this message, try re-entering the environment to "
-                "regenerate the unit, or report an issue at if the problem persists."
-            )
-        candidate = Path(value)
-        if not candidate.is_absolute():
-            raise RuntimeError(f"{CONTAINER_BIN_ENV} must be an absolute path: {value}")
-        return candidate.expanduser().resolve()
-
-    @staticmethod
-    def editor_bin() -> Path:
-        """Get the path to the host text editor executable being used by the RPC
-        service environment, which is passed in upon creating the systemd unit file.
-
-        Returns
-        -------
-        Path
-            The absolute host path to the text editor executable.
-
-        Raises
-        ------
-        RuntimeError
-             If the environment variable is missing or malformed, which should never
-             happen if the systemd unit file is rendered correctly.
-        """
-        value = os.environ.get(EDITOR_BIN_ENV)
-        if value is None:
-            raise RuntimeError(
-                "systemd service could not locate the editor executable (usually "
-                f"indicates a corrupted {RPC_SERVICE_NAME} unit).  This should never "
-                "occur; if you see this message, try re-entering the environment to "
-                "regenerate the unit, or report an issue if the problem persists."
-            )
-        candidate = Path(value)
-        if not candidate.is_absolute():
-            raise RuntimeError(f"{EDITOR_BIN_ENV} must be an absolute path: {value}")
-        return candidate.expanduser().resolve()
-
-
-def main() -> None:
-    """Entry point for the RPC service, which starts the server and begins listening
-    for RPC requests.  This is exported as a script in `pyproject.toml` and invoked by
-    the systemd unit file rendered in `Listener.start()`, which should be called on the
-    host before any in-container commands can touch the RPC service.
+    Parameters
+    ----------
+    argv : Sequence[str], optional
+        Command-line arguments to start the listener.  If not provided, defaults to
+        `sys.argv`.
     """
+    # define argv parser
+    parser = argparse.ArgumentParser(
+        prog="bertrand-rpc",
+        description="Bertrand host-side RPC sidecar listener",
+    )
+    parser.add_argument("--socket", required=True, help="absolute host RPC socket path")
+    parser.add_argument("--container-id", required=True, help="target running container id")
+    parser.add_argument(
+        "--container-bin",
+        required=True,
+        help="absolute path to host container runtime executable",
+    )
+    parser.add_argument("--lease", help="absolute lease/heartbeat file path")
+    parser.add_argument(
+        "--lease-interval",
+        type=float,
+        help="lease heartbeat interval in seconds (must pair with --lease)",
+    )
+
+    # parse arguments
+    args = parser.parse_args(argv)
+    if (args.lease is None) != (args.lease_interval is None):
+        parser.error("--lease and --lease-interval must be provided together")
+    if args.lease_interval is not None and args.lease_interval <= 0:
+        parser.error("--lease-interval must be positive")
+
+    # construct listener, and start serving requests until interrupted
+    lease_path = Path(args.lease) if args.lease is not None else None
+    listener = Listener(
+        socket_path=Path(args.socket),
+        container_id=args.container_id,
+        container_bin=Path(args.container_bin),
+        lease_path=lease_path,
+        lease_interval=args.lease_interval,
+    )
     try:
-        asyncio.run(Listener.listen())
+        asyncio.run(listener.listen())
     except KeyboardInterrupt:
         return
 
@@ -787,16 +693,42 @@ async def rpc(method: Callable[[], Awaitable[RPCRequest]]) -> RPCResponse.Result
         raise RuntimeError(
             "RPC client cannot be used from the host environment.  This should never "
             "occur; if you see this message, try re-entering the environment to "
-            "regenerate the systemd unit file, or report an issue if the problem "
+            "regenerate the sidecar service, or report an issue if the problem "
             "persists."
         )
-    if os.environ.get(SOCKET_ENV, "") != "1":
+
+    # locate container-side socket path from environment
+    socket_env = os.environ.get(RPC_SOCKET_ENV, "").strip()
+    if not socket_env:
         raise RuntimeError(
-            "Code server not available.  Please exit the environment and re-enter "
-            "to restart the RPC service."
+            f"{RPC_SOCKET_ENV} is missing or empty.  Re-enter the environment to refresh "
+            "sidecar socket metadata."
+        )
+    socket_path = Path(socket_env)
+    if not socket_path.is_absolute():
+        raise RuntimeError(f"{RPC_SOCKET_ENV} must be an absolute path: {socket_env}")
+    socket_path = socket_path.expanduser().resolve()
+    if not socket_path.exists():
+        raise RuntimeError(f"RPC socket does not exist: {socket_path}")
+    if not stat.S_ISSOCK(socket_path.lstat().st_mode):
+        raise RuntimeError(
+            f"RPC socket path does not point to a valid socket: {socket_path}"
         )
 
-    # form and serialize JSON-RPC request
+    # locate optional heartbeat file from environment
+    lease_env = os.environ.get(RPC_SIDECAR_ENV)
+    if lease_env is not None and lease_env.strip():
+        lease_path = Path(lease_env.strip())
+        if not lease_path.is_absolute():
+            raise RuntimeError(f"{RPC_SIDECAR_ENV} must be an absolute path: {lease_env}")
+        if not lease_path.exists():
+            raise RuntimeError(f"RPC lease file does not exist: {lease_path}")
+        if not lease_path.is_file():
+            raise RuntimeError(
+                f"RPC lease path does not point to a valid file: {lease_path}"
+            )
+
+    # form request, then serialize to newline-delimited JSON
     request = await method()
     serial = json.dumps(request.model_dump(mode="json"), separators=(",", ":")) + "\n"
     remaining = request.params.deadline - time.time()
@@ -804,27 +736,18 @@ async def rpc(method: Callable[[], Awaitable[RPCRequest]]) -> RPCResponse.Result
         raise TimeoutError(
             f"deadline exhausted before '{request.method}' RPC request could be sent"
         )
-
-    # open concurrent socket connection
-    path = CONTAINER_SOCKET.expanduser()
-    if not path.is_absolute():
-        raise RuntimeError(f"RPC socket path must be absolute: {path}")
-    if not path.exists():
-        raise RuntimeError(f"RPC socket does not exist: {path}")
-    if not path.is_socket():
-        raise RuntimeError(f"RPC socket path is not a socket: {path}")
     try:
+        # asynchronously connect to socket
         reader, writer = await asyncio.wait_for(
-            asyncio.open_unix_connection(str(path), limit=MAX_REQUEST_BYTES + 1),
-            timeout=max(0.001, remaining)
+            asyncio.open_unix_connection(str(socket_path), limit=MAX_REQUEST_BYTES + 1),
+            timeout=max(0.001, remaining),
         )
     except asyncio.TimeoutError as err:
         raise TimeoutError(
             f"deadline exhausted before '{request.method}' RPC request could connect"
         ) from err
-
-    # write request and read response line
     try:
+        # send request over socket
         remaining = request.params.deadline - time.time()
         if remaining <= 0:
             raise TimeoutError(
@@ -832,17 +755,23 @@ async def rpc(method: Callable[[], Awaitable[RPCRequest]]) -> RPCResponse.Result
             )
         writer.write(serial.encode("utf-8"))
         await asyncio.wait_for(writer.drain(), timeout=max(0.001, remaining))
+
+        # read response line from socket
         remaining = request.params.deadline - time.time()
         if remaining <= 0:
             raise TimeoutError(
                 f"deadline exhausted before '{request.method}' RPC response could be read"
             )
-        line_bytes = await asyncio.wait_for(reader.readline(), timeout=max(0.001, remaining))
+        line_bytes = await asyncio.wait_for(
+            reader.readline(),
+            timeout=max(0.001, remaining),
+        )
     except asyncio.TimeoutError as err:
         raise TimeoutError(
             f"deadline exhausted while processing '{request.method}' RPC request"
         ) from err
     finally:
+        # close socket connection
         writer.close()
         try:
             await writer.wait_closed()
@@ -879,35 +808,36 @@ async def rpc(method: Callable[[], Awaitable[RPCRequest]]) -> RPCResponse.Result
 ####################
 
 
-# TODO: vscode recommended extensions are currently hardcoded in the generated
-# workspace file, but `config.py` should have a more general mechanism for recommending
-# editor extensions based on which tools are actually present in the container.
-# -> This would be a good thing to tackle during the MCP refactor, and I should
-# generally make sure that the editor integration is solid by the time I complete that.
-# Just like the container runtime, it may require future edits to `config.py` to
-# support everything.
-
-
 CODE_OPEN_TIMEOUT: float = 30.0
 CODE_OPEN_METHOD: MethodName = "code.open"
 VSCODE_REMOTE_EXTENSION = "ms-vscode-remote.remote-containers"
 
 
-async def _vscode_open_prereqs(method: CodeOpen, config: Config) -> None:
-    _ = config
+def _resolve_editor_bin(editor: Editor) -> Path:
+    candidates = EDITORS.get(editor, [])
+    for candidate in candidates:
+        resolved = shutil.which(candidate)
+        if resolved:
+            path = Path(resolved).expanduser().resolve()
+            if path.is_file():
+                return path
+    raise RuntimeError(
+        f"failed to resolve host editor alias '{editor}' from configured candidates: "
+        f"{candidates}"
+    )
 
-    # check for managed workspace file
+
+async def _vscode_open_request_prereqs(method: CodeOpen, config: Config) -> None:
+    _ = config
     if not VSCODE_WORKSPACE_FILE.exists() or not VSCODE_WORKSPACE_FILE.is_file():
         raise RuntimeError(
             "VSCode workspace file not found at expected container path: "
             f"{VSCODE_WORKSPACE_FILE}\nThis file should be automatically created as a "
             "configuration artifact.  If you see this message, try re-running the "
-            "`$ bertrand code` command to regenerate the workspace file, or report an "
-            "issue if the problem persists."
+            "`$ bertrand code` command to regenerate the workspace file."
         )
 
     # check for mounted tools and warn if any are missing
-    expired = False
     for tool, hint in (
         ("clangd", "C/C++ language features may be degraded in this editor session."),
         ("ruff", "Python linting/formatting features may be degraded in this editor session."),
@@ -922,82 +852,103 @@ async def _vscode_open_prereqs(method: CodeOpen, config: Config) -> None:
         ("bertrand-mcp", "MCP server integration may be unavailable in this editor session."),
     ):
         remaining = method.deadline - time.time()
-        try:
-            if remaining <= 0:
-                expired = True
-            else:
-                await run(["which", tool], capture_output=True, timeout=remaining)
-        except CommandError as err:
-            warn(f"{str(err)}\n\t{hint}", category=UserWarning)
-        except TimeoutExpired:
-            expired = True
-        if expired:
+        if remaining <= 0:
             raise TimeoutError(
                 "deadline exhausted before the RPC service could confirm the presence "
                 f"of '{tool}' inside the container context"
             )
+        try:
+            if shutil.which(tool) is None:
+                warn(
+                    f"could not locate tool '{tool}' inside container context\n\t{hint}",
+                    category=UserWarning
+                )
+        except OSError as err:
+            warn(f"{str(err)}\n\t{hint}", category=UserWarning)
 
 
-async def _vscode_open(params: RPCRequest.CodeOpenRequest) -> RPCResponse.CodeOpenResult:
-    editor_bin = Listener.editor_bin()
+async def _vscode_open_response(
+    listener: Listener,
+    params: RPCRequest.CodeOpenRequest,
+) -> RPCResponse.CodeOpenResult:
+    editor_bin = _resolve_editor_bin(params.editor)
     remaining = params.deadline - time.time()
     expired = False
 
     # check for required remote containers extension on host vscode
+    if remaining <= 0:
+        expired = True
     try:
-        if remaining <= 0:
-            expired = True
-        else:
-            result = await run(
-                [str(editor_bin), "--list-extensions"],
-                capture_output=True,
-                timeout=remaining
+        result = await run(
+            [str(editor_bin), "--list-extensions"],
+            capture_output=True,
+            timeout=remaining,
+        )
+        found = False
+        search = VSCODE_REMOTE_EXTENSION.lower()
+        for ext in result.stdout.splitlines():
+            if ext.strip().lower() == search:
+                found = True
+                break
+        if not found:
+            raise RuntimeError(
+                f"required VSCode extension is missing: '{VSCODE_REMOTE_EXTENSION}'"
             )
-            found = False
-            search = VSCODE_REMOTE_EXTENSION.lower()
-            for ext in result.stdout.splitlines():
-                if ext.strip().lower() == search:
-                    found = True
-                    break
-            if not found:
-                raise RuntimeError(
-                    f"required VSCode extension is missing: '{VSCODE_REMOTE_EXTENSION}'"
-                )
     except TimeoutExpired:
         expired = True
     if expired:
         raise TimeoutError(
-            "deadline exhausted before the RPC service could confirm the presence of "
+            "deadline exhausted before the RPC service could confirm the presense of "
             "required VSCode extensions"
         )
 
-    # open editor in detached (non-blocking) process
+    # form vscode remote containers attach URI
+    uri = (
+        "vscode-remote://attached-container+"
+        f"{urllib.parse.quote(listener.container_id, safe='')}"
+        f"{urllib.parse.quote(str(VSCODE_WORKSPACE_FILE), safe='/')}"
+    )
     remaining = params.deadline - time.time()
-    try:
-        if remaining <= 0:
-            expired = True
+    if remaining <= 0:
+        expired = True
+    else:
+        # if directed, block as long as the editor is open, but do not preventing
+        # concurrent requests in the meantime.  Otherwise, open in a non-blocking child
+        # process
+        if params.block:
+            try:
+                proc = await asyncio.wait_for(
+                    asyncio.create_subprocess_exec(
+                        str(editor_bin),
+                        "--file-uri",
+                        uri,
+                        stdin=subprocess.DEVNULL,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                    ),
+                    timeout=max(0.001, remaining),
+                )
+                returncode = await proc.wait()
+                if returncode != 0:
+                    raise RuntimeError(
+                        f"VSCode process exited with status {returncode} while "
+                        "handling block=True request"
+                    )
+            except asyncio.TimeoutError:
+                expired = True
         else:
-            # NOTE: this URI allows the VSCode Remote Containers extension to attach to
-            # a running container by ID, but is not technically part of the public API.
-            # It is well-documented in various issues and discussions, but may be
-            # subject to change without notice.  If this breaks, it should have been
-            # replaced by something more stable that we can use instead.
-            uri = (
-                "vscode-remote://attached-container+"
-                f"{urllib.parse.quote(params.container_id, safe='')}"
-                f"{urllib.parse.quote(str(VSCODE_WORKSPACE_FILE), safe='/')}"
-            )
-            subprocess.Popen(
-                [str(editor_bin), "--file-uri", uri],
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                start_new_session=True,
-            )
-    except OSError as err:
-        raise RuntimeError(
-            f"failed to launch VS Code container attach session: {err}",
-        ) from err
+            try:
+                subprocess.Popen(
+                    [str(editor_bin), "--file-uri", uri],
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    start_new_session=True,
+                )
+            except OSError as err:
+                raise RuntimeError(
+                    f"failed to launch VSCode container attach session: {err}",
+                ) from err
     if expired:
         raise TimeoutError(
             "deadline exhausted before the RPC service could launch the VSCode editor"
@@ -1007,23 +958,22 @@ async def _vscode_open(params: RPCRequest.CodeOpenRequest) -> RPCResponse.CodeOp
 
 
 CODE_OPEN_PREREQS: dict[str, Callable[[CodeOpen, Config], Awaitable[None]]] = {
-    "vscode": _vscode_open_prereqs,
+    "vscode": _vscode_open_request_prereqs,
 }
 CODE_OPEN: dict[
     str,
-    Callable[[RPCRequest.CodeOpenRequest], Awaitable[RPCResponse.CodeOpenResult]]
+    Callable[[Listener, RPCRequest.CodeOpenRequest], Awaitable[RPCResponse.CodeOpenResult]],
 ] = {
-    "vscode": _vscode_open,
+    "vscode": _vscode_open_response,
 }
 
 
 @rpc_method(CODE_OPEN_METHOD)
 @dataclass(frozen=True)
 class CodeOpen:
-    """A request object for the `code.open` RPC method, which opens a text editor on
-    the host system, pointed at a given container workspace.
-    """
+    """Request object for the `code.open` RPC method."""
     deadline: float = field(default_factory=lambda: time.time() + CODE_OPEN_TIMEOUT)
+    block: bool = False
 
     async def request(self) -> RPCRequest:
         """Form a `code.open` RPC request on the client side.
@@ -1053,17 +1003,6 @@ class CodeOpen:
             raise RuntimeError(f"worktree path must be absolute: {worktree}")
         worktree = worktree.expanduser().resolve()
 
-        # load current container id from environment
-        container_id = os.environ.get(CONTAINER_ID_ENV)
-        if container_id is None:
-            raise RuntimeError(
-                "container ID environment variable is missing.  This should never "
-                "occur; if you see this message, try re-entering the environment to "
-                "regenerate its environment variables, or report an issue if the "
-                "problem persists."
-            )
-        container_id = container_id.strip()
-
         # load current image tag from environment
         image_tag = os.environ.get(IMAGE_TAG_ENV)
         if image_tag is None:
@@ -1086,7 +1025,7 @@ class CodeOpen:
                 )
             editor = config.bertrand.editor
 
-            # run editor-specific prechecks inside container context
+            # run editor-specific prechecks while inside container context
             await CODE_OPEN_PREREQS[editor](self, config)
 
         return RPCRequest(
@@ -1095,18 +1034,22 @@ class CodeOpen:
             method=CODE_OPEN_METHOD,
             params=RPCRequest.CodeOpenRequest(
                 worktree=worktree,
-                container_id=container_id,
                 editor=editor,
                 deadline=self.deadline,
-            )
+                block=self.block,
+            ),
         )
 
     @staticmethod
-    async def response(request: RPCRequest) -> RPCResponse:
+    async def response(listener: Listener, request: RPCRequest) -> RPCResponse:
         """Handle the `code.open` RPC request on the host side.
 
         Parameters
         ----------
+        listener : Listener
+            The host-side RPC listener instance that is handling this request, which
+            can be used to access shared metadata and utilities needed to process the
+            request.
         request : RPCRequest
             A request produced by this class's `__call__` operator.
 
@@ -1118,5 +1061,5 @@ class CodeOpen:
         return RPCResponse(
             jsonrpc=JSON_RPC_VERSION,
             id=request.id,
-            result=await CODE_OPEN[request.params.editor](request.params),
+            result=await CODE_OPEN[request.params.editor](listener, request.params),
         )
