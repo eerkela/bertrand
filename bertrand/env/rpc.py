@@ -43,7 +43,6 @@ from pydantic import (
 from .config import (
     EDITORS,
     IMAGE_TAG_ENV,
-    RPC_SIDECAR_ENV,
     RPC_SOCKET_ENV,
     VSCODE_WORKSPACE_FILE,
     WORKTREE_ENV,
@@ -54,7 +53,7 @@ from .config import (
     inside_image,
 )
 from .pipeline import JSONValue
-from .run import  TimeoutExpired, atomic_write_text, run
+from .run import  TimeoutExpired, run
 
 # pylint: disable=bare-except, broad-exception-caught
 
@@ -68,7 +67,6 @@ JSON_RPC_INVALID_REQUEST: int = -32600          # The JSON sent is not a valid R
 JSON_RPC_TIMEOUT_ERROR: int = -32000            # Custom error code for timeouts
 MAX_REQUEST_BYTES: int = 1024 * 1024            # 1 MiB, to prevent malicious payloads
 RPC_TIMEOUT: float = 30.0
-RPC_HEARTBEAT_INTERVAL: float = 10.0
 RPC_WATCHDOG_INTERVAL: float = 10.0
 
 
@@ -349,18 +347,11 @@ class Listener:
         The path to the host's Unix socket file.  This path must be absolute, and the
         code server will only instantiate a socket at this location when its `listen()`
         method is called.
-    lease_path : AbsolutePath
-        An absolute path to a lease file that the listener will periodically update
-        with the current timestamp as a heartbeat signal, which can be used by
-        in-container processes to detect if the listener is still alive and
-        responsive.
     """
     container_id: ContainerID
     container_bin: AbsolutePath
     socket_path: AbsolutePath
-    lease_path: AbsolutePath
     _server: asyncio.AbstractServer | None = field(default=None, repr=False)
-    _lease_task: asyncio.Task[None] | None = field(default=None, repr=False)
     _watchdog_task: asyncio.Task[None] | None = field(default=None, repr=False)
     _active_blocking_requests: int = field(default=0, repr=False)
     _blocking_idle: asyncio.Event = field(init=False, repr=False)
@@ -377,30 +368,11 @@ class Listener:
             raise RuntimeError(f"socket path must be absolute: {self.socket_path}")
         self.container_bin = self.container_bin.expanduser().resolve()
         self.socket_path = self.socket_path.expanduser().resolve()
-        if not self.lease_path.is_absolute():
-            raise RuntimeError(f"lease path must be absolute: {self.lease_path}")
-        self.lease_path = self.lease_path.expanduser().resolve()
 
         # set up blocking request tracking, which is used to delay sidecar shutdown
         # until all blocking requests have completed
         self._blocking_idle = asyncio.Event()
         self._blocking_idle.set()
-
-    async def _lease_heartbeat(self) -> None:
-        while True:
-            try:
-                atomic_write_text(
-                    self.lease_path,
-                    f"{time.time():.6f}\n",
-                    encoding="utf-8"
-                )
-            except OSError as err:
-                print(
-                    "bertrand: failed to update sidecar lease file at "
-                    f"{self.lease_path}: {err}",
-                    file=sys.stderr,
-                )
-            await asyncio.sleep(RPC_HEARTBEAT_INTERVAL)
 
     async def _wait_for_blocking_requests(self) -> None:
         while self._active_blocking_requests > 0:
@@ -529,30 +501,22 @@ class Listener:
         the main entry point of the RPC service, which is invoked as a sidecar
         whenever a container that may require RPC communication is started.  This
         method will block indefinitely while the service is running, and will return
-        when the service is stopped or interrupted.  The socket and heartbeat files
-        will be created when the service starts, and removed when it stops.
+        when the service is stopped or interrupted.  The socket file will be created
+        when the service starts and removed when it stops.
 
         Raises
         ------
         OSError
-            If there was an error creating or cleaning up the socket or heartbeat
-            files.
+            If there was an error creating or cleaning up the socket file.
         """
         try:
-            # create socket and heartbeat file
+            # create socket
             self.socket_path.parent.mkdir(parents=True, exist_ok=True)
             if self.socket_path.exists():
                 mode = self.socket_path.lstat().st_mode
                 if not stat.S_ISSOCK(mode):
                     raise OSError(f"socket path occupied: {self.socket_path}")
                 self.socket_path.unlink(missing_ok=True)
-            self.lease_path.parent.mkdir(parents=True, exist_ok=True)
-            atomic_write_text(
-                self.lease_path,
-                f"{time.time():.6f}\n",
-                encoding="utf-8"
-            )
-            self._lease_task = asyncio.create_task(self._lease_heartbeat())
 
             # start async server to handle concurrent requests
             self._server = await asyncio.start_unix_server(
@@ -586,18 +550,7 @@ class Listener:
             # wait until all blocking requests have completed
             await asyncio.shield(self._wait_for_blocking_requests())
 
-            # clean up socket and heartbeat file
-            if self._lease_task is not None:
-                self._lease_task.cancel()
-                try:
-                    await self._lease_task
-                except asyncio.CancelledError:
-                    pass
-                self._lease_task = None
-            try:
-                self.lease_path.unlink(missing_ok=True)
-            except OSError:
-                pass
+            # clean up socket
             try:
                 if (
                     self.socket_path.exists()
@@ -630,11 +583,6 @@ def main(argv: Sequence[str] | None = None) -> None:
         required=True,
         help="absolute path to host container runtime executable",
     )
-    parser.add_argument(
-        "--lease",
-        required=True,
-        help="absolute lease/heartbeat file path",
-    )
 
     # parse arguments
     args = parser.parse_args(argv)
@@ -644,7 +592,6 @@ def main(argv: Sequence[str] | None = None) -> None:
         socket_path=Path(args.socket),
         container_id=args.container_id,
         container_bin=Path(args.container_bin),
-        lease_path=Path(args.lease),
     )
     try:
         asyncio.run(listener.listen())
@@ -652,15 +599,16 @@ def main(argv: Sequence[str] | None = None) -> None:
         return
 
 
-async def rpc(method: Callable[[], Awaitable[RPCRequest]]) -> RPCResponse.Result:
+async def rpc(method: RPCMethod) -> RPCResponse.Result:
     """Send a request to the host RPC listener and return the result, or raise an
     appropriate Python exception if the request fails or the listener is unavailable.
 
     Parameters
     ----------
-    method : Method
-        The method to invoke, which is a closure that takes no arguments and returns an
-        `RPCRequest`, which will be serialized and sent over the wire.
+    method : RPCMethod
+        The method to invoke, which is a protocol dataclass with a `request()` method
+        that takes no arguments and returns an `RPCRequest`, which will be serialized
+        and sent over the wire.
 
     Returns
     -------
@@ -708,23 +656,8 @@ async def rpc(method: Callable[[], Awaitable[RPCRequest]]) -> RPCResponse.Result
             f"RPC socket path does not point to a valid socket: {socket_path}"
         )
 
-    # locate sidecar heartbeat file from environment
-    lease_env = os.environ.get(RPC_SIDECAR_ENV, "").strip()
-    if not lease_env:
-        raise RuntimeError(
-            f"{RPC_SIDECAR_ENV} is missing or empty.  Re-enter the environment to refresh "
-            "sidecar lease metadata."
-        )
-    lease_path = Path(lease_env)
-    if not lease_path.is_absolute():
-        raise RuntimeError(f"{RPC_SIDECAR_ENV} must be an absolute path: {lease_env}")
-    if not lease_path.exists():
-        raise RuntimeError(f"RPC lease file does not exist: {lease_path}")
-    if not lease_path.is_file():
-        raise RuntimeError(f"RPC lease path does not point to a valid file: {lease_path}")
-
     # form request, then serialize to newline-delimited JSON
-    request = await method()
+    request = await method.request()
     serial = json.dumps(request.model_dump(mode="json"), separators=(",", ":")) + "\n"
     remaining = request.params.deadline - time.time()
     if remaining <= 0:
@@ -959,6 +892,7 @@ class CodeOpen:
     """Request object for the `code.open` RPC method."""
     deadline: float = field(default_factory=lambda: time.time() + CODE_OPEN_TIMEOUT)
     block: bool = False
+    editor: Editor | None = None
 
     async def request(self) -> RPCRequest:
         """Form a `code.open` RPC request on the client side.
@@ -973,6 +907,9 @@ class CodeOpen:
         RuntimeError
             If the project configuration cannot be loaded or is missing required
             fields.
+        ValueError
+            If the editor specified in the configuration is not supported, or if any
+            required parameters are invalid.
         """
         # load host worktree path from environment
         _worktree = os.environ.get(WORKTREE_ENV)
@@ -1008,10 +945,13 @@ class CodeOpen:
                     "try re-running `bertrand init` to regenerate your project "
                     "configuration, or report an issue if the problem persists."
                 )
-            editor = config.bertrand.editor
 
             # run editor-specific prechecks while inside container context
-            await CODE_OPEN_PREREQS[editor](self, config)
+            editor = self.editor or config.bertrand.editor
+            prereqs = CODE_OPEN_PREREQS.get(editor)
+            if prereqs is None or editor not in CODE_OPEN:
+                raise ValueError(f"unsupported editor for code.open RPC method: {editor}")
+            await prereqs(self, config)
 
         return RPCRequest(
             jsonrpc=JSON_RPC_VERSION,

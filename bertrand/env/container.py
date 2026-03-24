@@ -42,14 +42,10 @@ from pydantic import (
     NonNegativeInt,
 )
 
-from .rpc import (
-    Listener,
-    RPC_TIMEOUT,
-)
+from .rpc import RPC_TIMEOUT
 from .config import (
     BERTRAND_ENV,
     CONTAINER_ID_ENV,
-    CONTAINER_LEASE,
     CONTAINER_RUNTIME_DIR,
     CONTAINER_SOCKET,
     DEFAULT_TAG,
@@ -61,9 +57,7 @@ from .config import (
     METADATA_TMP,
     PROJECT_ENV,
     PROJECT_MOUNT,
-    RPC_LEASE_NAME,
     RPC_SOCKET_ENV,
-    RPC_SIDECAR_ENV,
     RPC_SOCKET_NAME,
     RUNTIME_ENV,
     SHELLS,
@@ -89,7 +83,6 @@ from .pipeline import (
     atomic,
     detect_package_manager,
     on_init,
-    on_code,
     on_publish,
 )
 from .run import (
@@ -128,7 +121,6 @@ PACKAGE_MANAGER = "package_manager"
 DISTRO_ID = "distro_id"
 DISTRO_VERSION = "distro_version"
 DISTRO_CODENAME = "distro_codename"
-CODE_SERVER_AVAILABLE = "code_server_available"
 
 
 # CI publish workflow requires an architecture matrix
@@ -1258,30 +1250,6 @@ async def podman_cmd(
     )
 
 
-def podman_exec(args: list[str], *, env: Mapping[str, str] | None = None) -> None:
-    """Run a podman command by replacing the current process.  This is intended for
-    interactive use cases like `bertrand enter` where we want to drop the user into a
-    shell inside the container.
-
-    Parameters
-    ----------
-    args : list[str]
-        The podman command arguments (excluding the 'podman' executable).
-    env : Mapping[str, str] | None, optional
-        An optional mapping of environment variables to set for the command.  If None
-        (the default), then the current environment will be used.
-
-    Raises
-    ------
-    OSError
-        If execution fails.
-    """
-    if env is None:
-        os.execvp("podman", ["podman", *args])
-    else:
-        os.execvpe("podman", ["podman", *args], env)
-
-
 async def _podman_ids(
     mode: Literal["container", "image", "volume"],
     labels: Mapping[str, str],
@@ -2384,22 +2352,6 @@ def _check_boolean(value: Any) -> bool:
     return value
 
 
-def _validate_args(x: JSONValue) -> list[str]:
-    if x is None:
-        return []
-    if isinstance(x, tuple) and all(isinstance(i, str) for i in x):
-        return list(cast(tuple[str, ...], x))
-    raise TypeError("args must be a sequence of strings")
-
-
-def _validate_code_server_available(x: JSONValue) -> bool:
-    if x is None:
-        return False
-    if isinstance(x, bool):
-        return x
-    raise TypeError(f"invalid '{CODE_SERVER_AVAILABLE}' fact type: {type(x).__name__}")
-
-
 # pylint: disable=missing-function-docstring, missing-param-doc
 # pylint: disable=missing-return-doc, unused-argument, protected-access
 
@@ -2649,101 +2601,6 @@ class Publish(_Command):
         raise OSError("cannot publish all environments")
 
 
-@dataclass
-class Code(_Command):
-    """Launch a host-side editor by invoking the internal `bertrand code` command
-    within a running container context.  This command requires the host RPC service
-    to be reachable before it proceeds.
-    """
-    code_server_available: Validator = field(default=_validate_code_server_available)
-
-    @staticmethod
-    def container(
-        ctx: Pipeline.InProgress,
-        *,
-        env: Environment,
-        image_tag: str,
-        container_tag: str,
-        code_server_available: bool,
-        **kwargs: Any
-    ) -> None:
-        # start/refresh systemd code service
-        ctx[CODE_SERVER_AVAILABLE] = Listener.start(ctx, env_root=env.root, strict=True)
-
-        # start container
-        Start.container(
-            ctx,
-            env=env,
-            image_tag=image_tag,
-            container_tag=container_tag,
-            **kwargs
-        )
-        # TODO: env[image] is no longer valid.  Now you have to reference a commit
-        # first
-        container = env[image_tag, container_tag]
-        if container is None:
-            raise OSError(
-                f"unable to start container '{container_tag}' in image '{image_tag}'"
-            )
-
-        # delegate to in-container implementation, which will forward to the host RPC
-        # service
-        podman_cmd([
-            "exec",
-            "-i",
-            "-w", str(WORKTREE_MOUNT),
-            "-e", f"{WORKTREE_ENV}={str(env.root)}",
-            "-e", f"{CONTAINER_ID_ENV}={container.id}",
-            "-e", f"{RPC_SOCKET_ENV}={'1' if code_server_available else '0'}",
-            container.id,
-            "bertrand", "code",
-        ])
-
-    @staticmethod
-    def image(
-        ctx: Pipeline.InProgress,
-        *,
-        env: Environment,
-        image_tag: str,
-        code_server_available: bool,
-        **kwargs: Any
-    ) -> None:
-        Code.container(
-            ctx,
-            env=env,
-            image_tag=image_tag,
-            container_tag=DEFAULT_TAG,
-            code_server_available=code_server_available,
-            **kwargs
-        )
-
-    @staticmethod
-    def environment(
-        ctx: Pipeline.InProgress,
-        *,
-        env: Environment,
-        code_server_available: bool,
-        **kwargs: Any
-    ) -> None:
-        Code.container(
-            ctx,
-            env=env,
-            image_tag=DEFAULT_TAG,
-            container_tag=DEFAULT_TAG,
-            code_server_available=code_server_available,
-            **kwargs
-        )
-
-    @staticmethod
-    def all(
-        ctx: Pipeline.InProgress,
-        *,
-        code_server_available: bool,
-        **kwargs: Any
-    ) -> None:
-        raise OSError("must specify a container to run 'code' in")
-
-
 async def _cli_containers(
     env: Environment,
     tag: str | None,
@@ -2780,6 +2637,76 @@ def _recover_spec(worktree: Path, workload: str | None, tag: str | None) -> str:
     if tag:
         spec += f":{tag}"
     return spec
+
+
+async def _start_rpc_sidecar(
+    *,
+    container: Container,
+    container_bin: Path,
+    deadline: float,
+    strict: bool,
+    warn_context: str | None = None,
+) -> asyncio.subprocess.Process | None:
+    runtime = container.runtime
+    if runtime is None:
+        err = OSError(
+            "created container is missing runtime label metadata needed for RPC "
+            f"sidecar flow: {container.Id}"
+        )
+        if strict:
+            raise err
+        text = warn_context or "bertrand: failed to start RPC sidecar"
+        print(f"{text}\n{err}", file=sys.stderr)
+        return None
+    host_socket = runtime / RPC_SOCKET_NAME
+
+    sidecar: asyncio.subprocess.Process | None = None
+    try:
+        sidecar = await asyncio.create_subprocess_exec(
+            "bertrand-rpc",
+            "--socket", str(host_socket),
+            "--container-id", container.Id,
+            "--container-bin", str(container_bin),
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        while True:
+            socket_ready = (
+                host_socket.exists() and
+                stat.S_ISSOCK(host_socket.lstat().st_mode)
+            )
+            if socket_ready:
+                return sidecar
+            if sidecar.returncode is not None:
+                raise OSError(f"bertrand-rpc exited early with code {sidecar.returncode}")
+            if time.monotonic() >= deadline:
+                raise TimeoutError(
+                    "timed out waiting for bertrand-rpc sidecar readiness "
+                    f"(socket={host_socket})"
+                )
+            await asyncio.sleep(0.1)
+    except Exception as err:
+        await _stop_rpc_sidecar(sidecar)
+        if strict:
+            raise
+        text = warn_context or "bertrand: failed to start RPC sidecar"
+        print(f"{text}\n{err}", file=sys.stderr)
+        return None
+
+
+async def _stop_rpc_sidecar(sidecar: asyncio.subprocess.Process | None) -> None:
+    if sidecar is None or sidecar.returncode is not None:
+        return
+    sidecar.terminate()
+    try:
+        await asyncio.wait_for(sidecar.wait(), timeout=RPC_TIMEOUT)
+    except Exception:
+        sidecar.kill()
+        try:
+            await sidecar.wait()
+        except Exception:
+            pass
 
 
 def _parse_output_format(value: str, *, allow_id: bool) -> tuple[str, str | None]:
@@ -2902,9 +2829,100 @@ async def podman_start(
         )
 
 
-@on_code(ephemeral=True)
-async def podman_code(ctx: Pipeline.InProgress) -> None:
-    Code()(ctx)
+async def podman_code(
+    worktree: Path,
+    workload: str | None,
+    tag: str | None,
+    *,
+    editor: str | None,
+) -> None:
+    """Launch a host-side editor by running a blocking in-container `bertrand code`
+    command in an ephemeral container, with a socket-coupled RPC sidecar.
+
+    Parameters
+    ----------
+    worktree : Path
+        A valid environment worktree path.
+    workload : str | None
+        The kubernetes workload to target, if applicable.  If None, then the command
+        will target tags in the environment's build matrix.  Otherwise, it will start
+        the workload and target tags within it.
+    tag : str | None
+        The member to target, if any.  All containers matching the tag will be included
+        in the output, according to the workload.
+    editor : str | None
+        Optional editor override alias.  If provided, this is forwarded to the
+        in-container `bertrand code` command and validated there.
+    """
+    if workload is not None:
+        raise NotImplementedError("kubernetes workloads are not yet supported")
+    if tag is None:
+        tag = DEFAULT_TAG
+    if editor is not None:
+        editor = editor.strip()
+        if not editor:
+            raise ValueError("editor override must not be empty")
+
+    async with Environment(worktree, timeout=TIMEOUT) as env:
+        # find container runtime executable
+        container_bin_str = shutil.which("podman")
+        if container_bin_str is None:
+            raise OSError("could not find a podman executable on PATH")
+        container_bin = Path(container_bin_str).expanduser().resolve()
+
+        # build/update image first, then create code container with RPC metadata
+        image = await env.build(tag, quiet=False)
+        cmd = ["bertrand", "code", "--block"]
+        if editor is not None:
+            cmd.extend(["--editor", editor])
+        container = await image.create(
+            env,
+            cmd,
+            env_vars={
+                RPC_SOCKET_ENV: str(CONTAINER_SOCKET),
+            },
+            quiet=False,
+        )
+        deadline = time.monotonic() + min(env.timeout, RPC_TIMEOUT)
+
+        # strict sidecar startup for code flow
+        sidecar: asyncio.subprocess.Process | None = None
+        try:
+            sidecar = await _start_rpc_sidecar(
+                container=container,
+                container_bin=container_bin,
+                deadline=deadline,
+                strict=True,
+            )
+
+            # start code container command and block until it exits
+            await container.start(
+                quiet=False,
+                timeout=deadline - time.monotonic(),
+                attach=False,
+                interactive=False,
+            )
+            wait = await podman_cmd(
+                ["container", "wait", container.Id],
+                capture_output=True,
+                timeout=env.timeout,
+            )
+            exit_code = wait.stdout.strip()
+            if exit_code and exit_code != "0":
+                raise OSError(
+                    f"container exited with non-zero status while running "
+                    f"'bertrand code': {exit_code}"
+                )
+        finally:
+            await _stop_rpc_sidecar(sidecar)
+
+            # best-effort container cleanup fallback (container should usually be
+            # removed automatically via --rm on command exit).
+            await podman_cmd(
+                ["container", "rm", "-f", "-i", "-v", "--depend", container.Id],
+                check=False,
+                capture_output=True,
+            )
 
 
 async def podman_enter(
@@ -2950,9 +2968,10 @@ async def podman_enter(
 
     async with Environment(worktree, timeout=TIMEOUT) as env:
         # find container binary and configured shell command
-        container_bin = shutil.which("podman")
-        if container_bin is None:
+        container_bin_str = shutil.which("podman")
+        if container_bin_str is None:
             raise OSError("could not find a podman executable on PATH")
+        container_bin = Path(container_bin_str).expanduser().resolve()
         bertrand = env.config.bertrand
         if not bertrand:
             raise OSError(
@@ -2978,70 +2997,22 @@ async def podman_enter(
             list(shell_cmd),
             env_vars={
                 RPC_SOCKET_ENV: str(CONTAINER_SOCKET),
-                RPC_SIDECAR_ENV: str(CONTAINER_LEASE),
             },
             quiet=False,
         )
-        runtime = container.runtime
-        if runtime is None:
-            raise OSError(
-                "created container is missing runtime label metadata needed for enter "
-                f"flow: {container.Id}"
-            )
-        host_socket = runtime / RPC_SOCKET_NAME
-        host_lease = runtime / RPC_LEASE_NAME
         deadline = time.monotonic() + min(env.timeout, RPC_TIMEOUT)
 
         # best-effort sidecar startup for development RPC features
-        sidecar: asyncio.subprocess.Process | None = None
-        try:
-            sidecar = await asyncio.create_subprocess_exec(
-                "bertrand-rpc",
-                "--socket", str(host_socket),
-                "--container-id", container.Id,
-                "--container-bin", str(Path(container_bin).expanduser().resolve()),
-                "--lease", str(host_lease),
-                stdin=asyncio.subprocess.DEVNULL,
-                stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.DEVNULL,
-            )
-
-            # bounded readiness probe for sidecar socket + lease metadata
-            while True:
-                socket_ready = (
-                    host_socket.exists() and
-                    stat.S_ISSOCK(host_socket.lstat().st_mode)
-                )
-                lease_ready = host_lease.exists() and host_lease.is_file()
-                if socket_ready and lease_ready:
-                    break
-                if sidecar.returncode is not None:
-                    raise OSError(
-                        f"bertrand-rpc exited early with code {sidecar.returncode}"
-                    )
-                if time.monotonic() >= deadline:
-                    raise TimeoutError(
-                        "timed out waiting for bertrand-rpc sidecar readiness "
-                        f"(socket={host_socket}, lease={host_lease})"
-                    )
-                await asyncio.sleep(0.1)
-        except Exception as err:
-            print(
+        sidecar = await _start_rpc_sidecar(
+            container=container,
+            container_bin=container_bin,
+            deadline=deadline,
+            strict=False,
+            warn_context=(
                 "bertrand: failed to start RPC sidecar; continuing without access to "
-                f"host RPC features\n{err}",
-                file=sys.stderr,
-            )
-            if sidecar is not None and sidecar.returncode is None:
-                sidecar.terminate()
-                try:
-                    await asyncio.wait_for(sidecar.wait(), timeout=RPC_TIMEOUT)
-                except Exception:
-                    sidecar.kill()
-                    try:
-                        await sidecar.wait()
-                    except Exception:
-                        pass
-                sidecar = None
+                "host RPC features"
+            ),
+        )
 
         try:
             # interactive attach to PID1 shell; detach keys disabled to keep `exit`
@@ -3053,17 +3024,7 @@ async def podman_enter(
                 interactive=True,
             )
         finally:
-            # best-effort sidecar cleanup guard
-            if sidecar is not None and sidecar.returncode is None:
-                sidecar.terminate()
-                try:
-                    await asyncio.wait_for(sidecar.wait(), timeout=RPC_TIMEOUT)
-                except Exception:
-                    sidecar.kill()
-                    try:
-                        await sidecar.wait()
-                    except Exception:
-                        pass
+            await _stop_rpc_sidecar(sidecar)
 
             # best-effort container cleanup fallback (container should usually be
             # removed automatically via --rm on shell exit).

@@ -69,11 +69,9 @@ from .version import __version__, VERSION
 
 # Canonical path definitions for worktree control
 RPC_SOCKET_NAME: str = "rpc.sock"
-RPC_LEASE_NAME: str = "lease"
 CONTAINER_ARTIFACT_DIR: PosixPath = PosixPath("/tmp/bertrand")
 CONTAINER_RUNTIME_DIR: PosixPath = PosixPath("/run/bertrand")
 CONTAINER_SOCKET: PosixPath = CONTAINER_RUNTIME_DIR / RPC_SOCKET_NAME
-CONTAINER_LEASE: PosixPath = CONTAINER_RUNTIME_DIR / RPC_LEASE_NAME
 METADATA_DIR: PosixPath = PosixPath(".bertrand")
 METADATA_LOCK: PosixPath = METADATA_DIR / ".lock"
 METADATA_FILE: PosixPath = METADATA_DIR / "env.json"
@@ -93,7 +91,6 @@ ENV_ID_ENV: str = "BERTRAND_ENV_ID"             # unique Bertrand UUID
 IMAGE_ID_ENV: str = "BERTRAND_IMAGE_ID"         # unique OCI image ID
 IMAGE_TAG_ENV: str = "BERTRAND_IMAGE_TAG"       # original tag in build matrix
 RPC_SOCKET_ENV: str = "BERTRAND_RPC_SOCKET"     # absolute path to container-side RPC socket
-RPC_SIDECAR_ENV: str = "BERTRAND_RPC_SIDECAR"   # absolute path to lease file for RPC process
 PROJECT_ENV: str = "BERTRAND_PROJECT"           # host path to mounted project root
 WORKTREE_ENV: str = "BERTRAND_WORKTREE"         # relative path to mounted worktree
 RUNTIME_ENV: str = "BERTRAND_RUNTIME"           # relative path to worktree's artifact directory

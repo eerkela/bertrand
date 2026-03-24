@@ -13,20 +13,20 @@ import time
 from datetime import datetime
 from typing import cast
 
-from .env.rpc import CodeError, open_editor
+from .env.rpc import CodeOpen, rpc
 from .env.config import inside_image, inside_container
 from .env.pipeline import (
     JSONValue,
     Pipeline,
     on_init,
     on_publish,
-    on_code,
 )
 from .env.container import (
     TIMEOUT,
     Environment,
     _recover_spec,
     podman_build,
+    podman_code,
     podman_enter,
     podman_log,
     podman_ls,
@@ -76,20 +76,6 @@ def _parse(path: str | None) -> tuple[str | None, str, str]:
         return (None, "", "")
     else:
         return Environment.parse(path)
-
-
-def _resolve_default_target(
-    env: str | None,
-    image_tag: str,
-    container_tag: str
-) -> tuple[str | None, str, str]:
-    if env is None:
-        return env, image_tag, container_tag
-    if not image_tag:
-        return env, DEFAULT_TAG, DEFAULT_TAG
-    if not container_tag:
-        return env, image_tag, DEFAULT_TAG
-    return env, image_tag, container_tag
 
 
 def _require_active_image_tag() -> str:
@@ -364,15 +350,8 @@ class External:
                 help=
                     "Launch a text editor rooted at a Bertrand environment directory "
                     "and mount its local toolchain using remote development "
-                    "extensions.  Note that the editor is launched on the host system "
-                    "rather than within the container, and no editor is actually "
-                    "bundled inside the container.  This necessitates an RPC service "
-                    "to communicate between the container and host contexts, which is "
-                    "managed via systemd.  Bertrand performs a strict startup/probe "
-                    "before launching, and fails fast if the RPC service is "
-                    "unreachable.  Currently only supports vscode and its Remote "
-                    "Containers extension, but other editors may be added in the "
-                    "future.",
+                    "extensions.  The editor runs on the host system and is selected "
+                    "from project configuration unless overridden.",
             )
             command.add_argument(
                 "path",
@@ -388,6 +367,14 @@ class External:
                     "environment or image will be used.  Otherwise, the container tag "
                     "must be declared in the project metadata according to the "
                     "'--lang' options chosen during 'bertrand init'.",
+            )
+            command.add_argument(
+                "--editor",
+                default=None,
+                metavar="EDITOR",
+                help=
+                    "Override the configured host editor alias for this command.  "
+                    "Validation is performed at runtime by RPC/config resolution.",
             )
             command.set_defaults(handler=External.code)
 
@@ -1038,13 +1025,36 @@ class External:
         ----------
         args : argparse.Namespace
             The parsed command-line arguments.
+
+        Raises
+        ------
+        TimeoutExpired
+            If a nested command times out while launching the editor.  This should
+            never occur under normal circumstances, and the 'code' command
+            intentionally does not accept a timeout argument, so this can only be
+            surfaced from an internal error.
         """
-        env, image_tag, container_tag = _resolve_default_target(*_parse(args.path))
-        on_code.do(
-            env=env,
-            image_tag=image_tag,
-            container_tag=container_tag,
-        )
+        now = time.time()
+        with asyncio.Runner() as runner:
+            worktree, workload, tag = runner.run(Environment.parse(args.path))
+            try:
+                runner.run(podman_code(
+                    worktree,
+                    workload,
+                    tag,
+                    editor=args.editor or None,
+                ))
+            except (TimeoutError, TimeoutExpired) as err:
+                start = datetime.fromtimestamp(now)
+                cmd = ["bertrand", "code", _recover_spec(worktree, workload, tag)]
+                if args.editor:
+                    cmd.extend(["--editor", args.editor])
+                raise TimeoutExpired(
+                    cmd=cmd,
+                    timeout=0.0,  # indefinite
+                    output=None,
+                    stderr=f"started: {start}\nstopped: {datetime.now()}\n"
+                ) from err
 
     @staticmethod
     def stop(args: argparse.Namespace) -> None:
@@ -1392,11 +1402,7 @@ class External:
     # NOTE: order is important here, as it defines the order in which pipelines are
     # undone during cleanup, which must be done in a safe ordering to avoid leaving
     # the system in an inconsistent state.
-    pipelines: dict[str, Pipeline] = {
-        "code": on_code,
-        "publish": on_publish,
-        "init": on_init,
-    }
+    pipelines: dict[str, Pipeline] = {"publish": on_publish, "init": on_init}
 
     @staticmethod
     def clean(args: argparse.Namespace) -> None:
@@ -1485,12 +1491,22 @@ class Internal:
                 help=
                     "Launch a text editor rooted at this container's environment "
                     "directory and mount its internal toolchain using remote "
-                    "development extensions.  Note that the editor choice is "
-                    "determined by the environment configuration, and the editor "
-                    "process is owned by the host system, not this container.  An RPC "
-                    "service managed by systemd enables this communication.  Currently "
-                    "only supports vscode and its Remote Containers extension, but "
-                    "other editors may be added in the future.",
+                    "development extensions over the host RPC sidecar.",
+            )
+            command.add_argument(
+                "--editor",
+                default=None,
+                metavar="EDITOR",
+                help=
+                    "Override the configured host editor alias for this request.  "
+                    "Validation is performed at runtime by RPC/config resolution.",
+            )
+            command.add_argument(
+                "--block",
+                action="store_true",
+                help=
+                    "Block until the launched host editor exits.  If omitted, this "
+                    "command returns after the editor launch request is submitted.",
             )
             command.set_defaults(handler=Internal.code)
 
@@ -1566,19 +1582,19 @@ class Internal:
 
         Raises
         ------
-        CodeError
-            If there is an error with the RPC communication or the editor
-            configuration.
+        RuntimeError
+            If not invoked from within a containerized environment.
         """
         if not inside_container():
-            raise CodeError(
-                "invalid_service_environment",
+            raise RuntimeError(
                 "`bertrand code` requires a live container context.  Run "
                 "`bertrand enter` first."
             )
-        warnings = open_editor()
-        for warning in warnings:
-            print(f"bertrand: warning: {warning}", file=sys.stderr)
+        with asyncio.Runner() as runner:
+            runner.run(rpc(CodeOpen(
+                editor=args.editor or None,
+                block=args.block,
+            )))
 
     @staticmethod
     def build(args: argparse.Namespace) -> None:
