@@ -192,6 +192,7 @@ add-host = {}           # -> --add-host (hostname = ip|"host-gateway", stored in
 tag = "default"         # tag name (required)
 containerfile = "Containerfile"  # -> --file, relative (posix) path from worktree root
 build-args = {}         # -> --build-arg (key = value), passed into containerfile
+entry-point = []        # -> --entrypoint (invoked when starting the container)
 env-file = []           # -> --env-file, relative (posix) path from worktree root
 ports = [               # -> --publish
     # e.g. { container = 8000, host = 8000, host-ip = "127.0.0.1", protocol = "tcp" },

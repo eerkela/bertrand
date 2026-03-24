@@ -17,7 +17,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, asdict, field
 from datetime import datetime, timezone
 from importlib import resources as importlib_resources
-from pathlib import Path
+from pathlib import Path, PosixPath
 from types import TracebackType
 from typing import (
     Annotated,
@@ -57,6 +57,7 @@ from .config import (
     WORKTREE_ENV,
     WORKTREE_MOUNT,
     AbsolutePath,
+    AbsolutePosixPath,
     Config,
     Trimmed,
     NonEmpty,
@@ -96,7 +97,7 @@ from .run import (
 
 
 # environment metadata info
-CACHES: str = "/tmp/.cache"
+CACHES: AbsolutePosixPath = PosixPath("/tmp/.cache")
 DEFAULT_MAX_COMMITS: int = 10
 REFERENCE_TRANSACTION_HOOK: str = "hooks/reference-transaction"
 REFERENCE_TRANSACTION_MARKER: str = "# bertrand-managed: reference-transaction"
@@ -924,6 +925,12 @@ class Registry(BaseModel):
             self.purge_cursor = None
 
 
+# TODO: I can eliminate the ephemeral init steps past this point, and roll them all
+# into a single `init_environment` helper that is decoupled from the on_init pipeline.
+# Pipelines could then strip away ephemeral step support entirely, and be purely
+# persistent, which simplifies the design a bit.
+
+
 @on_init(requires=[assert_container_cli_ready], ephemeral=True)
 async def init_environment(ctx: Pipeline.InProgress) -> None:
     """Initialize an environment directory using discovered/requested resources and
@@ -1611,10 +1618,12 @@ class Image(BaseModel):
             pass
         return name
 
-    # TODO: container builds should possibly just run the `create` portion of the
-    # process, so that it starts in a paused state.
+    # TODO: `run` builds should possibly just run the `create` portion of the
+    # process, so that it starts in a paused state.  This may make the ephemeral
+    # model harder to support though.  I'll have to check, because it would simplify
+    # the kubernetes design quite a bit, when I get to that point.
 
-    async def container(
+    async def run(
         self,
         env: Environment,
         cmd: list[str] | None,
@@ -1666,29 +1675,66 @@ class Image(BaseModel):
 
             # labels for podman-level lookup
             "--label", f"{BERTRAND_ENV}=1",
+            # TODO: include a project root path and branch name
             "--label", f"{ENV_ID_ENV}={env.id}",
             "--label", f"{IMAGE_ID_ENV}={self.id}",
             "--label", f"{IMAGE_TAG_ENV}={self.tag}",
 
-            # mount mutable worktree
+            # TODO: it's best if we don't even mount the RPC socket if the sidecar
+            # process wasn't started, which is the case for the ordinary `start`
+            # command, since the sidecar is pure overhead that's only necessary for
+            # `code` and `enter`, which describe development workflows where the small
+            # overhead is acceptable.  Not even mounting the socket directory means
+            # that an attacker can't put a malicious RPC socket there from the host
+            # system and then invoke a remote command that gives them a backdoor.
+            # Those commands would just fail, and it's impossible to generate an
+            # untrusted RPC socket in the first place, which is only accessible inside
+            # a development shell.  Otherwise, it's up to you to expose sockets (or
+            # not) from the worktree itself, which is the only place you have shared
+            # access to under normal circumstances.  In fact, maybe I should just
+            # place the socket and lease file under a private directory in the
+            # worktree, rather than generating unique runtime directories under
+            # on_init.state_dir.
+            # -> That's cleaner anyways, and it avoids an extra bind mount here
+            # entirely.  It also allows me to go back to the container ID as a unique
+            # identifier, since the socket can happily be created after the fact, and
+            # in-container commands can always find it at a common path under the
+            # worktree's `.bertrand` directory.
+            # -> I probably still need separate UUIDs in order to avoid a chicken
+            # and egg problem that prevents me from setting the container ID as an
+            # in-container environment variable.
+            # -> The temporary CID/IID file could also be stored in the same place, and
+            # that could be how you access the container/image ID inside the container
+            # context, rather than environment variables.  They can stay there as long
+            # as the container is alive, just like the RPC socket and heartbeat file.
+
+            # TODO: Also, I need to more specifically bind mount the project root
+            # directory so that the full git repository remains in scope, which allows
+            # in-container git to behave identically to the external git, which is
+            # very important.  In order to get the standardized `/env/` directory to
+            # point to the proper worktree, I'll just symlink it to `/.env/{branch}/`,
+            # so you don't notice in practice.  I'm not totally sure how to do that
+            # symlink though.
+
+            # mount mutable worktree + RPC socket directory if directed
             "-v", f"{str(env.worktree)}:{str(WORKTREE_MOUNT)}",
-            "--mount",
-            (
-                "type=bind,"
-                f"src={str(HOST_SOCKET.parent)},"
-                f"dst={str(CONTAINER_SOCKET.parent)},"
-                "ro=true"
-            ),
+            "--mount", f"type=bind,src={str(HOST_SOCKET.parent)},dst={str(CONTAINER_SOCKET.parent)}",
+
+            # TODO: figure out whether these mount volumes are still correct given the
+            # in-container toolchain.  I'm not entirely sure how they work, or how they
+            # are meant to speed up the in-container `bertrand build` command.
 
             # persistent caches for incremental builds
-            "--mount", f"type=volume,src={uv_cache},dst={CACHES}/uv",
-            "--mount", f"type=volume,src={bertrand_cache},dst={CACHES}/bertrand",
-            "--mount", f"type=volume,src={ccache_cache},dst={CACHES}/ccache",
+            "--mount", f"type=volume,src={uv_cache},dst={CACHES / 'uv'}",
+            "--mount", f"type=volume,src={bertrand_cache},dst={CACHES / 'bertrand'}",
+            "--mount", f"type=volume,src={ccache_cache},dst={CACHES / 'ccache'}",
             "--mount", f"type=volume,src={conan_cache},dst=/opt/conan",
 
             # environment variables for Bertrand runtime
             "-e", f"{BERTRAND_ENV}=1",
             "-e", f"{ENV_ID_ENV}={env.id}",
+            # TODO: include a project root path and branch name?
+            "-e", f"{IMAGE_ID_ENV}={self.id}",
             "-e", f"{IMAGE_TAG_ENV}={self.tag}",
         ]
         argv.extend(self.container_args)
@@ -2015,6 +2061,111 @@ class Environment:
             status=["created", "paused", "restarting", "running"]
         )
         return await Container.inspect(ids)
+
+    async def build(self, tag: str, *, quiet: bool) -> Image:
+        """Incrementally build an image from this environment, updating it and
+        gracefully retiring any outdated alternatives.
+
+        Parameters
+        ----------
+        tag : str
+            The image tag to build, which must be defined in the environment's build
+            matrix.
+        quiet : bool
+            Whether to suppress output for the image build.  This is generally meant
+            to enable CI workflows to make parsing stdout easier to automate.
+
+        Returns
+        -------
+        Image
+            The updated image metadata for the requested tag, which may be the same
+            as a previous build if the worktree state hasn't drifted since the last
+            build.
+
+        Raises
+        ------
+        OSError
+            If this method is called outside an active context, or the image build
+            fails.
+        TypeError
+            If the project is incorrectly configured.
+        ValueError
+            If the tag is not recognized.
+        """
+        config = self._config
+        if self._entered < 1 or config is None:
+            raise OSError(
+                "environment must be acquired as a context manager before accessing "
+                "configuration"
+            )
+
+        # get arguments from configured build matrix
+        image_args = config.image_args(tag)
+        container_args = config.container_args(tag)
+        if config.pyproject is not None:
+            project_name = config.pyproject.project.name
+        else:
+            raise TypeError("could not determine project name")
+
+        # build candidate image
+        candidate = Image.model_construct(
+            version=VERSION,
+            tag=tag,
+            id="",  # corrected from iid file after build
+            created=datetime.now(timezone.utc),
+            image_args=image_args,
+            container_args=container_args,
+        )
+        run_id = uuid.uuid4().hex
+        # TODO: using the environment's branch name would be a lot more descriptive
+        # than its uuid.  The correct convention should be `project_name.branch.tag.uuid`
+        # -> To do that properly, I may need to add a `branch` accessor to `Environment`,
+        # which identifies its branch name by scanning upwards from the worktree to the
+        # nearest git repository, and then reconstructing the branch name from it.
+        # Or I could just ask git what branch is checked out at this worktree, which
+        # is the better option.
+        image_name = f"{project_name}.{tag}.{self.id[:7]}.{run_id[:7]}"
+        iid_file = self.worktree / METADATA_TMP / f"{image_name}.iid"
+        iid_file.parent.mkdir(parents=True, exist_ok=True)
+        await podman_cmd([
+            "build",
+            "-t", image_name,
+            "--iidfile", str(iid_file),
+            "--label", f"{BERTRAND_ENV}=1",
+            "--label", f"{ENV_ID_ENV}={self.id}",
+            "--label", f"{IMAGE_TAG_ENV}={tag}",
+            *image_args,
+            str(self.worktree)
+        ], cwd=self.worktree, capture_output=quiet)
+        candidate.id = iid_file.read_text(encoding="utf-8").strip()
+        iid_file.unlink(missing_ok=True)
+        existing = self.images.get(tag)
+        changed = existing is None or existing.id != candidate.id
+        try:
+            if await candidate.inspect() is None:
+                raise OSError(
+                    f"failed to build image '{tag}' for environment at {self.worktree}"
+                )
+        except:
+            if changed:
+                await podman_cmd(
+                    ["image", "rm", "-f", candidate.id],
+                    check=False,
+                    capture_output=quiet
+                )
+            raise
+
+        # retire existing image in favor of new candidate if they differ
+        if changed:
+            self.images[tag] = candidate
+            if existing is not None:  # retire the previous image
+                self._json.retired.append(Environment.JSON.RetiredImage(
+                    force=False,
+                    image=existing
+                ))
+            return candidate
+        assert existing is not None
+        return existing
 
 
 def _check_boolean(value: Any) -> bool:
@@ -2590,7 +2741,7 @@ async def podman_build(
     tag: str | None,
     *,
     quiet: bool,
-) -> Image:
+) -> None:
     """Incrementally build Bertrand images within an environment.
 
     Parameters
@@ -2608,20 +2759,6 @@ async def podman_build(
         Whether to suppress build output from podman.  If true, then nothing will be
         printed to stdout or stderr unless an error occurs.
 
-    Returns
-    -------
-    Image
-        The most recently built image for the specified tag, which may be the same as
-        the previously cached image if no changes were detected.
-
-    Raises
-    ------
-    TypeError
-        If the commit's project configuration is missing or malformed.
-    OSError
-        If the environment hasn't been acquired as a context manager or the image
-        fails to build.
-
     Notes
     -----
     This command does not materialize or start any containers; it only builds images,
@@ -2635,71 +2772,7 @@ async def podman_build(
         tag = DEFAULT_TAG
 
     async with Environment(worktree, timeout=TIMEOUT) as env:
-        config = env._config  # pylint: disable=protected-access
-        if config is None:
-            raise OSError(f"could not load environment at {worktree}")
-
-        # get config for the commit we are about to build, which may differ from
-        # that of the enclosing environment
-        image_args = config.image_args(tag)
-        container_args = config.container_args(tag)
-        if config.pyproject is not None:
-            project_name = config.pyproject.project.name
-        else:
-            raise TypeError("could not determine project name")
-
-        # build candidate image
-        candidate = Image.model_construct(
-            version=VERSION,
-            tag=tag,
-            id="",  # corrected from iid file after build
-            created=datetime.now(timezone.utc),
-            image_args=image_args,
-            container_args=container_args,
-        )
-        image_name = f"{project_name}.{tag}.{env.id[:7]}"
-        iid_file = env.worktree / METADATA_TMP / f"{image_name}.iid"
-        iid_file.parent.mkdir(parents=True, exist_ok=True)
-        await podman_cmd([
-            "build",
-            "-t", image_name,
-            "-f", str(config.path(CONTAINERFILE_RESOURCE)),
-            "--iidfile", str(iid_file),
-            "--label", f"{BERTRAND_ENV}=1",
-            "--label", f"{ENV_ID_ENV}={env.id}",
-            "--label", f"{IMAGE_TAG_ENV}={tag}",
-            *image_args,
-            str(env.worktree)
-        ], cwd=env.worktree, capture_output=quiet)
-        candidate.id = iid_file.read_text(encoding="utf-8").strip()
-        iid_file.unlink(missing_ok=True)
-        existing = env.images.get(tag)
-        changed = existing is None or existing.id != candidate.id
-        try:
-            if await candidate.inspect() is None:
-                raise OSError(
-                    f"failed to build image '{tag}' for environment at {env.worktree}"
-                )
-        except:
-            if changed:
-                await podman_cmd(
-                    ["image", "rm", "-f", candidate.id],
-                    check=False,
-                    capture_output=quiet
-                )
-            raise
-
-        # retire existing image in favor of new candidate if they differ
-        if changed:
-            env.images[tag] = candidate
-            if existing is not None:  # retire the previous image
-                env._json.retired.append(Environment.JSON.RetiredImage(
-                    force=False,
-                    image=existing
-                ))
-            return candidate
-        assert existing is not None
-        return existing
+        await env.build(tag, quiet=quiet)
 
 
 @on_publish(ephemeral=True)
@@ -2743,8 +2816,8 @@ async def podman_start(
             raise OSError(f"could not load environment at {worktree}")
 
         # build/update image first, then materialize container from it
-        image = await podman_build(worktree, workload, tag, quiet=False)
-        await image.container(env, cmd, quiet=False)
+        image = await env.build(tag, quiet=False)
+        await image.run(env, cmd, quiet=False)
 
 
 @on_code(ephemeral=True)
@@ -2762,10 +2835,6 @@ async def podman_code(ctx: Pipeline.InProgress) -> None:
 # and completely eliminates any reliance on systemd and long-lived host daemons in
 # general.  It's also more secure, since the editor paths are never exposed to the
 # container environment at all.
-
-# -> See Codex for a decision-complete plan for the sidecar process design, which
-# we will need to implement in stages, starting with @rpc.py and then moving to
-# @container.py and finishing with @__main__.py
 
 
 async def podman_enter(
@@ -2823,28 +2892,35 @@ async def podman_enter(
                 "configuration, or report an issue if the problem persists."
             )
 
-        # TODO: load editor choice from env.config and locate it on the host system.
-        # -> What may be better is to have the service do that internally, and just
-        # have each request just tell the service which editor to choose.
-
-        # start/refresh the RPC service before entering the container
-        # Listener.start(
-        #     timeout=env.timeout,
-        #     strict=False,  # warn if the service fails to start
-        # )
-
         # load shell command from environment config
-        shell = SHELLS.get(bertrand.shell)
-        if shell is None:
+        shell_cmd = SHELLS.get(bertrand.shell)
+        if shell_cmd is None:
             raise ValueError(f"unrecognized shell: {bertrand.shell}")
 
-        # TODO: the run model in this case is a little bit complicated because of
-        # ephemeral containers, so this is going to require a bit of thought.
-        # What I should probably do is use `podman_start` to materialize a container
-        # with a sleep infinity entry point and then `exec` a shell as a subprocess,
-        # but that's kind of inelegant, and violates the ephemeral container concept.
-        # What would be better is if I could tie the container lifetime to the shell
-        # itself.  Codex should have a better idea of how to do this.
+        # TODO: use `podman run --rm` to launch the shell inside the container and
+        # wait.
+
+        # TODO: start RPC sidecar process by calling `bertrand-rpc` in a detached
+        # process, passing the container ID in as an environment variable to that
+        # process, and tying its lifetime to the container instance.  An additional
+        # bind mount will be needed at /tmp/bertrand/host/, which mounts to
+        # .bertrand/tmp/{uuid}/ within the host worktree.  That stores the cid file
+        # that allows the container to know its own podman ID, as well as the RPC
+        # socket and heartbeat, if any.  The same directory may be bind-mounted as
+        # the container's artifact root (as a simple symlink), which would allow the
+        # rendered artifacts to be inspected from the host system.  The symlink
+        # approach is essentially identical to what we do to access the worktree within
+        # the full project repository, by symlinking the in-container `/env/` to the
+        # correct branch worktree, so that in-container `git` commands can work with
+        # the full repository in context.  This is basically the same principle, but
+        # in this case `/tmp/bertrand/` would symlink to the worktree's
+        # `.bertrand/tmp/{uuid}` directory.  This means we only ever have 1 bind mount
+        # to worry about, plus some symlinks that my toolchain is going to need to
+        # establish somehow.  Maybe if I generate them in my base toolchain
+        # `Containerfile` so that all downstream containers inherit them?  Idk how else
+        # it would work.
+
+        # TODO: use `podman attach` to access the container's command line.
 
 
 async def podman_stop(
@@ -3011,12 +3087,7 @@ async def podman_restart(
                 continue  # nothing to restart
 
             # incrementally rebuild image
-            image = await podman_build(
-                worktree,
-                workload,
-                tag,
-                quiet=False
-            )
+            image = await env.build(tag, quiet=False)
 
             # stop outdated containers and restart those that were not affected
             defer: list[list[str]] = []
@@ -3062,7 +3133,7 @@ async def podman_restart(
             # if we have to restart outdated containers, rebuild them from the newest
             # image and start them with the same arguments as before
             for cmd in defer:
-                await image.container(env, cmd, quiet=False)
+                await image.run(env, cmd, quiet=False)
 
 
 async def podman_rm(

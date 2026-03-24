@@ -1,14 +1,23 @@
-"""Layout schema and init-time orchestration for Bertrand environments.
+"""Layout schema and init-time rendering for Bertrand environments.
 
-This module is intentionally scoped to a minimal, ctx-driven backend for
-`bertrand init` and runtime environment loading:
+Config resources can implement any combination of the following 3 orchestration hooks:
 
-1. Build deterministic resource placement maps during init.
-2. Discover runtime resources from mapped candidate paths.
-3. Render and write templated bootstrap resources in deterministic phases.
+    1.  `parse()`, which locates the resource by its ID, reads it from disk, and loads
+        the results into a context fragment.  Each resource's fragment will be merged
+        before continuing.  Resources that implement this hook are treated as input
+        artifacts.
+    2.  `validate()`, which validates the merged fragment for this resource via a
+        pydantic model.  The result of this method will be stored on the `Config`
+        object as an attribute with the same name as the resource ID.
+    3.  `render()`, which returns a string to write to the resource when invoking
+        `Config.sync()`.  Resources that implement this hook are treated as output
+        artifacts.
 
-Canonical templates are packaged with Bertrand and lazily hydrated into
-`on_init` pipeline state under `templates/...` before rendering.
+Init-time rendering is done via `PROFILES` and `CAPABILITIES`, which determine the
+file structure and config artifacts to use for the worktree and container context,
+respectively.  Relative resource paths indicate in-worktree resources, while absolute
+paths can refer to out-of-tree artifacts that should be stored in the container's
+isolated filesystem.
 """
 from __future__ import annotations
 
@@ -16,7 +25,6 @@ import json
 import ipaddress
 import os
 import re
-import shutil
 import string
 import tomllib
 
@@ -53,7 +61,6 @@ from pydantic import (
 import jinja2
 import yaml
 
-from .pipeline import on_init
 from .run import LOCK_TIMEOUT, Lock, atomic_write_text, run, sanitize_name
 from .version import __version__, VERSION
 
@@ -61,7 +68,6 @@ from .version import __version__, VERSION
 
 
 # Canonical path definitions for worktree control
-HOST_RUNTIME_DIR: Path = on_init.state_dir / "runtime"
 RPC_SOCKET_NAME: str = "rpc.sock"
 RPC_LEASE_NAME: str = "lease"
 CONTAINER_RUNTIME_DIR: PosixPath = PosixPath("/tmp/bertrand")
@@ -152,12 +158,17 @@ CATALOG: dict[str,  Resource] = {}
 # Configuration options that affect CLI behavior
 DEFAULT_TAG: str = "default"
 SHELLS: dict[str, tuple[str, ...]] = {
+    # NOTE: values are raw commands that override a container's normal entry point.
     "bash": ("bash", "-l"),
 }
 DEFAULT_SHELL: str = "bash"
 if DEFAULT_SHELL not in SHELLS:
     raise RuntimeError(f"default shell is unsupported: {DEFAULT_SHELL}")
 EDITORS: dict[str, list[str]] = {
+    # NOTE: values are ordered lists of host commands/paths where the editor may be
+    # found when servicing RPC requests.  The first entry that passes a `which` check
+    # will be invoked together with the proper arguments to attach to the requested
+    # container and mount its internal tools.
     "vscode": [
         # PATH-resolved command names
         "code",
@@ -188,10 +199,10 @@ if DEFAULT_EDITOR not in EDITORS:
     raise RuntimeError(f"default editor is unsupported: {DEFAULT_EDITOR}")
 INSTRUMENTS: dict[str, Callable[[dict[str, Any]], Callable[[list[str]], list[str]]]] = {
     # NOTE: instruments are identified by a unique name, which limits what can appear
-    # in a tag's `instruments` field as part of a configured build matrix.  They map
-    # to functions which accept the instrument's configuration as a parsed mapping,
-    # validate it, and return another function that transforms the container's normal
-    # entry point command (list of strings) before execution.
+    # in a tag's `instruments` field as part of a configured build matrix.  The values
+    # are functions that accept the instrument's configuration as a parsed mapping,
+    # validate it, and then return another function that transforms the container's
+    # entry point command (as a list of strings) before execution.
 }
 
 
@@ -976,32 +987,30 @@ class Template(BaseModel):
         ------
         FileNotFoundError
             If the template file does not exist.
+
+        Notes
+        -----
+        Template files are always distributed with Bertrand itself, as part of its
+        wheel metadata.  The returned path is implementation-defined, and may point
+        to a Python interpreter's `site-packages` directory.
         """
-        path = on_init.state_dir / "templates" / self.namespace / f"{self.name}.j2"
-
-        # if the template doesn't already exist, attempt to copy it from the core
-        # templates included with Bertrand itself
-        if not path.exists():
-            core_templates = importlib_resources.files("bertrand.env").joinpath("templates")
-            with importlib_resources.as_file(
-                core_templates.joinpath(self.namespace, f"{self.name}.j2")
-            ) as source:
-                if not source.exists():
-                    raise FileNotFoundError(
-                        "missing Bertrand template for layout resource "
-                        f"'{resource_id}' reference {self.namespace}/"
-                        f"{self.name}: {source}"
-                    )
-                if not source.is_file():
-                    raise FileNotFoundError(
-                        "missing Bertrand template for layout resource "
-                        f"'{resource_id}' reference {self.namespace}/"
-                        f"{self.name}: {source}"
-                    )
-                path.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy(source, path)
-
-        return path
+        templates = importlib_resources.files("bertrand.env").joinpath("templates")
+        with importlib_resources.as_file(
+            templates.joinpath(self.namespace, f"{self.name}.j2")
+        ) as source:
+            if not source.exists():
+                raise FileNotFoundError(
+                    "missing Bertrand template for layout resource "
+                    f"'{resource_id}' reference {self.namespace}/"
+                    f"{self.name}: {source}"
+                )
+            if not source.is_file():
+                raise FileNotFoundError(
+                    "missing Bertrand template for layout resource "
+                    f"'{resource_id}' reference {self.namespace}/"
+                    f"{self.name}: {source}"
+                )
+            return source
 
 
 def resource[ResourceT: Resource](
@@ -1202,6 +1211,11 @@ class Resource:
         `sync()`, even if their original source files are missing.
         """
         return None
+
+    # TODO: probably better to have render always return void and expect it to do the
+    # writing itself.  That better mirrors the parse() hook, and nothing needs to be
+    # returned because there's no future step.  It also doesn't hard-couple the
+    # rendered path to the resource's ID, so you get some freedom there.
 
     async def render(self, config: Config, tag: str) -> str | None:
         """A render function that produces text content for this resource that will be

@@ -12,6 +12,7 @@ import os
 import shutil
 import stat
 import subprocess
+import sys
 import time
 import urllib.parse
 import uuid
@@ -29,7 +30,6 @@ from typing import (
     Self,
     Sequence,
 )
-from warnings import warn
 
 from pydantic import (
     AfterValidator,
@@ -74,6 +74,7 @@ JSON_RPC_INVALID_REQUEST: int = -32600          # The JSON sent is not a valid R
 JSON_RPC_TIMEOUT_ERROR: int = -32000            # Custom error code for timeouts
 MAX_REQUEST_BYTES: int = 1024 * 1024            # 1 MiB, to prevent malicious payloads
 RPC_TIMEOUT: float = 30.0
+RPC_HEARTBEAT_INTERVAL: float = 10.0
 
 
 def _check_container_id(container_id: str) -> str:
@@ -412,9 +413,10 @@ class Listener:
                     encoding="utf-8"
                 )
             except OSError as err:
-                warn(
-                    f"failed to update sidecar lease file at {self.lease_path}: {err}",
-                    category=UserWarning,
+                print(
+                    "bertrand: failed to update sidecar lease file at "
+                    f"{self.lease_path}: {err}",
+                    file=sys.stderr,
                 )
             await asyncio.sleep(self.lease_interval)
 
@@ -435,15 +437,8 @@ class Listener:
         return json.loads(text)
 
     async def _check_running_container(self, request: RPCRequest) -> None:
-        remaining = request.params.deadline - time.time()
-        if remaining <= 0:
-            raise TimeoutError(
-                "launch deadline exhausted before the RPC service could confirm the "
-                "container is still running."
-            )
-
-        # inspect container status and contextualize errors (if any)
         try:
+            # inspect container status and contextualize errors (if any)
             result = await run(
                 [
                     str(self.container_bin),
@@ -454,12 +449,8 @@ class Listener:
                     self.container_id,
                 ],
                 capture_output=True,
-                timeout=remaining,
+                timeout=request.params.deadline - time.time(),
             )
-        except TimeoutExpired as err:
-            raise TimeoutError(
-                f"timed out while checking status of container '{self.container_id}'"
-            ) from err
         except CommandError as err:
             raise RuntimeError(
                 f"container '{self.container_id}' is not available: {err}"
@@ -851,20 +842,21 @@ async def _vscode_open_request_prereqs(method: CodeOpen, config: Config) -> None
         )),
         ("bertrand-mcp", "MCP server integration may be unavailable in this editor session."),
     ):
-        remaining = method.deadline - time.time()
-        if remaining <= 0:
-            raise TimeoutError(
-                "deadline exhausted before the RPC service could confirm the presence "
-                f"of '{tool}' inside the container context"
-            )
         try:
-            if shutil.which(tool) is None:
-                warn(
-                    f"could not locate tool '{tool}' inside container context\n\t{hint}",
-                    category=UserWarning
+            if method.deadline - time.time() <= 0:
+                print(
+                    f"bertrand: deadline exhausted before the RPC service could locate "
+                    f"'{tool}' inside the container context\n\t{hint}",
+                    file=sys.stderr
                 )
-        except OSError as err:
-            warn(f"{str(err)}\n\t{hint}", category=UserWarning)
+            elif shutil.which(tool) is None:
+                print(
+                    f"bertrand: could not locate tool '{tool}' inside container "
+                    f"context\n\t{hint}",
+                    file=sys.stderr
+                )
+        except Exception as err:
+            print(f"{str(err)}\n\t{hint}", file=sys.stderr)
 
 
 async def _vscode_open_response(
@@ -872,34 +864,22 @@ async def _vscode_open_response(
     params: RPCRequest.CodeOpenRequest,
 ) -> RPCResponse.CodeOpenResult:
     editor_bin = _resolve_editor_bin(params.editor)
-    remaining = params.deadline - time.time()
-    expired = False
 
     # check for required remote containers extension on host vscode
-    if remaining <= 0:
-        expired = True
-    try:
-        result = await run(
-            [str(editor_bin), "--list-extensions"],
-            capture_output=True,
-            timeout=remaining,
-        )
-        found = False
-        search = VSCODE_REMOTE_EXTENSION.lower()
-        for ext in result.stdout.splitlines():
-            if ext.strip().lower() == search:
-                found = True
-                break
-        if not found:
-            raise RuntimeError(
-                f"required VSCode extension is missing: '{VSCODE_REMOTE_EXTENSION}'"
-            )
-    except TimeoutExpired:
-        expired = True
-    if expired:
-        raise TimeoutError(
-            "deadline exhausted before the RPC service could confirm the presense of "
-            "required VSCode extensions"
+    result = await run(
+        [str(editor_bin), "--list-extensions"],
+        capture_output=True,
+        timeout=params.deadline - time.time(),
+    )
+    found = False
+    search = VSCODE_REMOTE_EXTENSION.lower()
+    for ext in result.stdout.splitlines():
+        if ext.strip().lower() == search:
+            found = True
+            break
+    if not found:
+        raise RuntimeError(
+            f"required VSCode extension is missing: '{VSCODE_REMOTE_EXTENSION}'"
         )
 
     # form vscode remote containers attach URI
@@ -908,6 +888,7 @@ async def _vscode_open_response(
         f"{urllib.parse.quote(listener.container_id, safe='')}"
         f"{urllib.parse.quote(str(VSCODE_WORKSPACE_FILE), safe='/')}"
     )
+    expired = False
     remaining = params.deadline - time.time()
     if remaining <= 0:
         expired = True

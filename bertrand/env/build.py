@@ -4,6 +4,7 @@ to back cross-language imports.
 """
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from typing import Mapping, Sequence
 
@@ -24,8 +25,8 @@ type SetuptoolsConfigValue = str | list[str] | None
 type SetuptoolsConfigSettings = dict[str, SetuptoolsConfigValue] | None
 
 
-def _conan_lock(*, quiet: bool) -> None:
-    run([
+async def _conan_lock(*, quiet: bool) -> None:
+    await run([
         "conan",
         "lock",
         "create",
@@ -39,8 +40,8 @@ def _conan_lock(*, quiet: bool) -> None:
     ], capture_output=quiet)
 
 
-def _conan_install_lock(*, quiet: bool) -> None:
-    run([
+async def _conan_install_lock(*, quiet: bool) -> None:
+    await run([
         "conan",
         "install",
         str(CONANFILE),
@@ -182,8 +183,9 @@ def build_wheel(
     """
     settings = _setuptools_config_settings(config_settings)
     if CONANFILE.exists() and CONANFILE.is_file():
-        _conan_lock(quiet=False)
-        _conan_install_lock(quiet=False)
+        with asyncio.Runner() as runner:
+            runner.run(_conan_lock(quiet=False))
+            runner.run(_conan_install_lock(quiet=False))
     return setuptools.build_meta.build_wheel(
         wheel_directory,
         settings,
@@ -341,8 +343,9 @@ def build_editable(
     """
     settings = _setuptools_config_settings(config_settings)
     if CONANFILE.exists() and CONANFILE.is_file():
-        _conan_lock(quiet=False)
-        _conan_install_lock(quiet=False)
+        with asyncio.Runner() as runner:
+            runner.run(_conan_lock(quiet=False))
+            runner.run(_conan_install_lock(quiet=False))
     return setuptools.build_meta.build_editable(
         wheel_directory,
         settings,
