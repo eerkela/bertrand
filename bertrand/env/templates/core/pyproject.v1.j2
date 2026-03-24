@@ -193,6 +193,9 @@ tag = "default"         # tag name (required)
 containerfile = "Containerfile"  # -> --file, relative (posix) path from worktree root
 build-args = {}         # -> --build-arg (key = value), passed into containerfile
 entry-point = []        # -> --entrypoint (invoked when starting the container)
+                        # if empty, then an explicit override will be required when
+                        # invoking `bertrand start`.  Otherwise, this command will
+                        # serve as a default if no override is given.
 env-file = []           # -> --env-file, relative (posix) path from worktree root
 ports = [               # -> --publish
     # e.g. { container = 8000, host = 8000, host-ip = "127.0.0.1", protocol = "tcp" },

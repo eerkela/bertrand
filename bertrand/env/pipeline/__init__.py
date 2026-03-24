@@ -9,7 +9,6 @@ from .core import (
     atomic,
     on_init,
     on_publish,
-    on_enter,
     on_code,
 )
 from .filesystem import (

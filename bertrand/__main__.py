@@ -20,7 +20,6 @@ from .env.pipeline import (
     Pipeline,
     on_init,
     on_publish,
-    on_enter,
     on_code,
 )
 from .env.container import (
@@ -28,6 +27,7 @@ from .env.container import (
     Environment,
     _recover_spec,
     podman_build,
+    podman_enter,
     podman_log,
     podman_ls,
     podman_monitor,
@@ -40,7 +40,7 @@ from .env.container import (
     podman_top,
 )
 from .env.config import (
-    ARTIFACT_ROOT,
+    CONTAINER_ARTIFACT_DIR,
     DEFAULT_TAG,
     IMAGE_TAG_ENV,
     WORKTREE_MOUNT,
@@ -345,6 +345,15 @@ class External:
                     "environment or image will be used.  Otherwise, the container tag "
                     "must be declared in the project metadata according to the "
                     "'--lang' options chosen during 'bertrand init'.",
+            )
+            command.add_argument(
+                "--shell",
+                default=None,
+                metavar="SHELL",
+                help=
+                    "Override the default shell for this enter session.  Validation "
+                    "is performed at runtime by `podman_enter` against the configured "
+                    "shell map.",
             )
             command.set_defaults(handler=External.enter)
 
@@ -990,13 +999,36 @@ class External:
         ----------
         args : argparse.Namespace
             The parsed command-line arguments.
+
+        Raises
+        ------
+        TimeoutExpired
+            If a nested command times out while entering the container.  This should
+            never occur under normal circumstances, and the 'enter' command
+            intentionally does not accept a timeout argument, so this can only be
+            surfaced from an internal error.
         """
-        env, image_tag, container_tag = _resolve_default_target(*_parse(args.path))
-        on_enter.do(
-            env=env,
-            image_tag=image_tag,
-            container_tag=container_tag,
-        )
+        now = time.time()
+        with asyncio.Runner() as runner:
+            worktree, workload, tag = runner.run(Environment.parse(args.path))
+            try:
+                runner.run(podman_enter(
+                    worktree,
+                    workload,
+                    tag,
+                    shell=args.shell or None,
+                ))
+            except (TimeoutError, TimeoutExpired) as err:
+                start = datetime.fromtimestamp(now)
+                cmd = ["bertrand", "enter", _recover_spec(worktree, workload, tag)]
+                if args.shell:
+                    cmd.extend(["--shell", args.shell])
+                raise TimeoutExpired(
+                    cmd=cmd,
+                    timeout=0.0,  # indefinite
+                    output=None,
+                    stderr=f"started: {start}\nstopped: {datetime.now()}\n"
+                ) from err
 
     @staticmethod
     def code(args: argparse.Namespace) -> None:
@@ -1362,7 +1394,6 @@ class External:
     # the system in an inconsistent state.
     pipelines: dict[str, Pipeline] = {
         "code": on_code,
-        "enter": on_enter,
         "publish": on_publish,
         "init": on_init,
     }
@@ -1595,8 +1626,8 @@ class Internal:
         with Config.load(WORKTREE_MOUNT) as config:
             config.sync(tag)
             files = config.sources()
-        artifact_root = str(ARTIFACT_ROOT)
-        clang_tidy_config = ARTIFACT_ROOT / ".clang-tidy"
+        artifact_root = str(CONTAINER_ARTIFACT_DIR)
+        clang_tidy_config = CONTAINER_ARTIFACT_DIR / ".clang-tidy"
 
         # Python static checks
         for cmd in (["ruff", "check", "."], ["ty", "check", "."]):
@@ -1640,7 +1671,7 @@ class Internal:
         with Config.load(WORKTREE_MOUNT) as config:
             config.sync(tag)
             files = config.sources()
-        clang_format_config = ARTIFACT_ROOT / ".clang-format"
+        clang_format_config = CONTAINER_ARTIFACT_DIR / ".clang-format"
 
         # Python formatting
         result = subprocess.run(["ruff", "format", "."], check=False, cwd=WORKTREE_MOUNT)

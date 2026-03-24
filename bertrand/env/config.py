@@ -70,18 +70,18 @@ from .version import __version__, VERSION
 # Canonical path definitions for worktree control
 RPC_SOCKET_NAME: str = "rpc.sock"
 RPC_LEASE_NAME: str = "lease"
-CONTAINER_RUNTIME_DIR: PosixPath = PosixPath("/tmp/bertrand")
-CONTAINER_ARTIFACT_DIR: PosixPath = CONTAINER_RUNTIME_DIR / "container"
-CONTAINER_HOST_DIR: PosixPath = CONTAINER_RUNTIME_DIR / "host"
-CONTAINER_SOCKET: PosixPath = CONTAINER_HOST_DIR / RPC_SOCKET_NAME
-CONTAINER_LEASE: PosixPath = CONTAINER_HOST_DIR / RPC_LEASE_NAME
+CONTAINER_ARTIFACT_DIR: PosixPath = PosixPath("/tmp/bertrand")
+CONTAINER_RUNTIME_DIR: PosixPath = PosixPath("/run/bertrand")
+CONTAINER_SOCKET: PosixPath = CONTAINER_RUNTIME_DIR / RPC_SOCKET_NAME
+CONTAINER_LEASE: PosixPath = CONTAINER_RUNTIME_DIR / RPC_LEASE_NAME
 METADATA_DIR: PosixPath = PosixPath(".bertrand")
 METADATA_LOCK: PosixPath = METADATA_DIR / ".lock"
 METADATA_FILE: PosixPath = METADATA_DIR / "env.json"
 METADATA_TMP: PosixPath = METADATA_DIR / "tmp"
 VSCODE_WORKSPACE_FILE: PosixPath = CONTAINER_ARTIFACT_DIR / "vscode.code-workspace"
 CONAN_HOME: PosixPath = PosixPath("/opt/conan")
-WORKTREE_MOUNT: PosixPath = PosixPath("/env")
+PROJECT_MOUNT: PosixPath = PosixPath("/.bertrand")
+WORKTREE_MOUNT: PosixPath = PosixPath("/bertrand")
 
 
 # In-container environment variables for relevant configuration, which are set either
@@ -94,7 +94,9 @@ IMAGE_ID_ENV: str = "BERTRAND_IMAGE_ID"         # unique OCI image ID
 IMAGE_TAG_ENV: str = "BERTRAND_IMAGE_TAG"       # original tag in build matrix
 RPC_SOCKET_ENV: str = "BERTRAND_RPC_SOCKET"     # absolute path to container-side RPC socket
 RPC_SIDECAR_ENV: str = "BERTRAND_RPC_SIDECAR"   # absolute path to lease file for RPC process
-WORKTREE_ENV: str = "BERTRAND_WORKTREE"         # host path to mounted worktree
+PROJECT_ENV: str = "BERTRAND_PROJECT"           # host path to mounted project root
+WORKTREE_ENV: str = "BERTRAND_WORKTREE"         # relative path to mounted worktree
+RUNTIME_ENV: str = "BERTRAND_RUNTIME"           # relative path to worktree's artifact directory
 
 
 def inside_image() -> bool:
@@ -1962,6 +1964,10 @@ class Bertrand(Resource):
             env_file: Annotated[
                 list[RelativePosixPath],
                 Field(default_factory=list, alias="env-file")
+            ]
+            entry_point: Annotated[
+                list[NonEmpty[Trimmed]],
+                Field(default_factory=list, alias="entry-point")
             ]
 
             class Port(BaseModel):
@@ -4383,12 +4389,16 @@ class Config:
             raise OSError(f"resource '{resource_id}' has no filesystem path")
         return self._resolve_path(path, self.worktree)
 
-    def image_args(self, tag: str) -> list[str]:
+    def image_args(self, worktree: Path, tag: str) -> list[str]:
         """Retrieve a set of `podman build` arguments to apply during image builds for
         the given tag.
 
         Parameters
         ----------
+        worktree : Path
+            Absolute path to the host worktree whose configuration is being used.  This
+            is used to resolve tag-relative artifact paths into concrete host
+            filesystem locations for podman to consume.
         tag : str
             The active image tag for the configured environment, which is used to
             search the `bertrand.tags` list for tag-specific overrides when generating
@@ -4400,6 +4410,14 @@ class Config:
         list[str]
             A list of arguments to append to the `podman build` command when building
             the specified image.
+
+        Raises
+        ------
+        TypeError
+            If the `bertrand` config is not present in this environment, or if the
+            `cmd` override is not a list of strings.
+        ValueError
+            If the specified tag is not present in the `bertrand` config.
         """
         if self.bertrand is None:
             raise TypeError(
@@ -4410,30 +4428,70 @@ class Config:
             raise ValueError(
                 f"unknown image tag '{tag}' for environment at {self.worktree}"
             )
+        worktree = worktree.expanduser().resolve()
+        containerfile = worktree / cfg.containerfile
+        _check_text_file(containerfile, tag=tag)
 
-        result: list[str] = []
+        # TODO: expand the set of arguments to cover the entire build configuration
+        # for this tag.  This will be more complicated than it sounds because we need
+        # to cover the podman surface area.
+        return [
+            "--file", str(containerfile),
+        ]
 
-        # TODO: gather all the relevant arguments
-
-        return result
-
-    def container_args(self, tag: str) -> list[str]:
+    async def container_args(
+        self,
+        worktree: Path,
+        env_id: str,
+        tag: str,
+        image_id: str,
+        cmd: list[NonEmpty[Trimmed]] | None,
+        bootstrap: PosixPath,
+    ) -> list[str]:
         """Retrieve a set of `podman run` arguments to apply during container runs for
         the given tag.
 
         Parameters
         ----------
+        worktree : Path
+            Absolute path to the host worktree whose configuration is being used.  This
+            is used to resolve tag-relative artifact paths into concrete host
+            filesystem locations for podman to consume.
+        env_id : str
+            The Bertrand environment UUID used for stable volume naming and labeling.
         tag : str
             The active image tag for the configured environment, which is used to
             search the `bertrand.tags` list for tag-specific overrides when generating
             run arguments.  Usually, this is supplied by either the build system or an
             in-container environment variable, but we make no assumptions here.
-            
+        image_id : str
+            The OCI image ID to run, used as the image operand in the final podman
+            argv tail.
+        cmd : list[str] | None
+            Optional command override supplied by the CLI.  If not provided, the
+            configured `entry-point` for the selected tag is used.
+        bootstrap : PosixPath
+            Absolute in-container path to the runtime bootstrap script that should be
+            used as the podman entrypoint.  This runs immediately before the normal
+            entry point and completes startup by creating various symlinks and
+            environment variables within the container context.
+
         Returns
         -------
         list[str]
-            A list of arguments to append to the `podman run` command when running the
-            specified image.
+            A list of arguments to append to the `podman run` command when running a
+            container for the specified image tag, based on that tag's configuration
+            in the build matrix.
+
+        Raises
+        ------
+        TypeError
+            If the `bertrand` config is not present in this environment, or if the
+            `cmd` override is not a list of strings.
+        ValueError
+            If the specified tag is not present in the `bertrand` config, if the
+            effective entry point is empty after accounting for overrides, or if any
+            entry point argument is an empty or whitespace-only string.
         """
         if self.bertrand is None:
             raise TypeError(
@@ -4444,12 +4502,70 @@ class Config:
             raise ValueError(
                 f"unknown image tag '{tag}' for environment at {self.worktree}"
             )
+        worktree = worktree.expanduser().resolve()
+        if not worktree.exists() or not worktree.is_dir():
+            raise ValueError(f"worktree must be an existing directory: {worktree}")
+        env_id = env_id.strip()
+        if not env_id:
+            raise ValueError("environment ID cannot be empty when forming container args")
+        image_id = image_id.strip()
+        if not image_id:
+            raise ValueError("image ID cannot be empty when forming container args")
+        if not bootstrap.is_absolute():
+            raise ValueError(f"path to bootstrap script must be absolute: {bootstrap}")
 
-        result: list[str] = []
+        # determine effective entry point, accounting for override
+        if cmd is None:
+            entry_point = cfg.entry_point
+        else:
+            if not isinstance(cmd, list):
+                raise TypeError("command override must be a list of strings")
+            if not all(isinstance(part, str) for part in cmd):
+                raise TypeError("command override must be a list of strings")
+            entry_point = cmd
+        if not entry_point:
+            raise ValueError(
+                f"tag '{tag}' has no effective entry point: provide a command override "
+                "or configure [tool.bertrand.tags.entry-point] for this tag"
+            )
+        if any(not part.strip() for part in entry_point):
+            raise ValueError("entry point arguments must be non-empty strings")
 
-        # TODO: gather all the relevant arguments
+        # create/ensure named cache volumes and emit corresponding mount args
+        mounts: list[str] = []
+        for kind, destination in (
+            ("uv", "/tmp/.cache/uv"),
+            ("bertrand", "/tmp/.cache/bertrand"),
+            ("ccache", "/tmp/.cache/ccache"),
+            ("conan", "/opt/conan"),
+        ):
+            name = f"bertrand-{env_id[:13]}-{kind}"
+            try:
+                await run([
+                    "podman",
+                    "volume",
+                    "create",
+                    "--label", f"{BERTRAND_ENV}=1",
+                    "--label", f"{ENV_ID_ENV}={env_id}",
+                    "--label", f"{IMAGE_TAG_ENV}={tag}",
+                    name,
+                ], check=False, capture_output=True)
+            except:
+                pass
+            mounts.extend([
+                "--mount",
+                f"type=volume,src={name},dst={destination}",
+            ])
 
-        return result
+        # TODO: expand the set of arguments to cover the entire run configuration for
+        # this tag.  This will be more complicated than it sounds because we need to
+        # cover the podman surface area.
+        return [
+            *mounts,
+            "--entrypoint", str(bootstrap),
+            image_id,
+            *entry_point
+        ]
 
     async def sync(self, tag: str) -> None:
         """Render and write derived artifact resources from active context snapshot.

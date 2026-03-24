@@ -3,12 +3,15 @@ CLI.
 """
 from __future__ import annotations
 
+import asyncio
 import json as json_parser
 import math
 import os
 import pathlib
 import re
+import shlex
 import shutil
+import stat
 import sys
 import time
 import uuid
@@ -39,21 +42,31 @@ from pydantic import (
     NonNegativeInt,
 )
 
-from .rpc import CONTAINER_SOCKET, Listener
+from .rpc import (
+    Listener,
+    RPC_TIMEOUT,
+)
 from .config import (
     BERTRAND_ENV,
     CONTAINER_ID_ENV,
-    CONTAINERFILE_RESOURCE,
+    CONTAINER_LEASE,
+    CONTAINER_RUNTIME_DIR,
+    CONTAINER_SOCKET,
     DEFAULT_TAG,
     ENV_ID_ENV,
-    HOST_SOCKET,
     IMAGE_ID_ENV,
     IMAGE_TAG_ENV,
     METADATA_DIR,
     METADATA_FILE,
     METADATA_TMP,
+    PROJECT_ENV,
+    PROJECT_MOUNT,
+    RPC_LEASE_NAME,
+    RPC_SOCKET_ENV,
+    RPC_SIDECAR_ENV,
+    RPC_SOCKET_NAME,
+    RUNTIME_ENV,
     SHELLS,
-    SOCKET_ENV,
     WORKTREE_ENV,
     WORKTREE_MOUNT,
     AbsolutePath,
@@ -76,7 +89,6 @@ from .pipeline import (
     atomic,
     detect_package_manager,
     on_init,
-    on_enter,
     on_code,
     on_publish,
 )
@@ -88,7 +100,6 @@ from .run import (
     User,
     atomic_write_text,
     confirm,
-    mkdir_private,
     run,
     sanitize_name,
 )
@@ -680,7 +691,7 @@ class Registry(BaseModel):
         if not container_ids:
             return []
 
-        # inspect all containers and retrieve unique bind mounts
+        # inspect all containers and retrieve unique worktree roots
         containers = await Container.inspect(container_ids)
         seen: set[Path] = set()
         result: list[Path] = []
@@ -697,7 +708,7 @@ class Registry(BaseModel):
     async def load(cls) -> Self:
         """Load the environment registry from disk, or create a new one if it doesn't
         exist.  If the registry is invalid or corrupted, then a best-effort attempt is
-        made to rebuild it by inspecting active container mounts and their metadata.
+        made to rebuild it by inspecting active Bertrand containers and their metadata.
         Any missing environments will be re-registered the next time they are accessed.
 
         Returns
@@ -1368,9 +1379,16 @@ class Container(BaseModel):
         OOMKilled: bool
 
     State: _State
+
+    class _Config(BaseModel, total=False):
+        """Type hint for container configuration details."""
+        model_config = ConfigDict(extra="allow")
+        Labels: Annotated[dict[str, str], Field(default_factory=dict)]
+
+    Config: _Config
     Image: ImageId
-    Path: Trimmed | None = None
-    Args: list[str] = Field(default_factory=list)
+    Path: Annotated[Trimmed | None, Field(default=None)]
+    Args: Annotated[list[str], Field(default_factory=list)]
 
     class _Mounts(BaseModel, total=False):
         """Type hint for container mount information."""
@@ -1384,22 +1402,84 @@ class Container(BaseModel):
     Mounts: list[_Mounts]
 
     @property
-    def worktree(self) -> pathlib.Path | None:
-        """Extract the root path of the worktree directory mounted to a container from
-        its inspection data.
+    def project_root(self) -> pathlib.Path | None:
+        """Extract the host project root path for this container from Bertrand labels.
 
         Returns
         -------
         Path | None
-            The root path of the worktree directory mounted to the container, or None
-            if no such mount exists.
+            The resolved host project root path for this container, or None if required
+            labels are missing or invalid.
         """
-        for m in self.Mounts:
-            if m.Type == "bind" and m.Destination == str(WORKTREE_MOUNT):
-                src = m.Source
-                if src:
-                    return Path(src).expanduser().resolve()
-        return None
+        labels = self.Config.Labels
+        value = labels.get(PROJECT_ENV)
+        if not value:
+            return None
+        try:
+            path = Path(value).expanduser()
+            if not path.is_absolute():
+                return None
+            return path.resolve()
+        except OSError:
+            return None
+
+    @property
+    def worktree(self) -> pathlib.Path | None:
+        """Extract the host worktree path for this container from Bertrand labels.
+
+        Returns
+        -------
+        Path | None
+            The resolved host worktree path for this container, or None if required
+            labels are missing or invalid.
+        """
+        root = self.project_root
+        if root is None:
+            return None
+        labels = self.Config.Labels
+        value = labels.get(WORKTREE_ENV)
+        if not value:
+            return None
+        path = Path(value)
+        if (
+            path.is_absolute() or
+            not path.parts or
+            any(part in (".", "..") for part in path.parts)
+        ):
+            return None
+        try:
+            return (root / path).resolve()
+        except OSError:
+            return None
+
+    @property
+    def runtime(self) -> pathlib.Path | None:
+        """Extract the host runtime directory for this container from Bertrand labels.
+
+        Returns
+        -------
+        Path | None
+            The resolved host runtime directory for this container, or None if required
+            labels are missing or invalid.
+        """
+        worktree = self.worktree
+        if worktree is None:
+            return None
+        labels = self.Config.Labels
+        value = labels.get(RUNTIME_ENV)
+        if not value:
+            return None
+        path = Path(value)
+        if (
+            path.is_absolute() or
+            not path.parts or
+            any(part in (".", "..") for part in path.parts)
+        ):
+            return None
+        try:
+            return (worktree / path).resolve()
+        except OSError:
+            return None
 
     @classmethod
     async def inspect(cls, ids: list[ContainerId]) -> list[Self]:
@@ -1481,6 +1561,40 @@ class Container(BaseModel):
             cmd.extend(volumes)
             await podman_cmd(cmd)
 
+    async def start(
+        self,
+        *,
+        quiet: bool,
+        timeout: float | None,
+        attach: bool,
+        interactive: bool,
+    ) -> None:
+        """Start this container.
+
+        Parameters
+        ----------
+        quiet : bool
+            If True, suppress output from the start operation.
+        timeout : float | None
+            Optional timeout in seconds for the start operation.
+        attach : bool
+            If True, attach stdout/stderr to the console.
+        interactive : bool
+            If True, attach stdin for interactive input.
+        """
+        cmd = ["container", "start"]
+        if attach:
+            cmd.append("-a")
+        if interactive:
+            cmd.append("-i")
+            cmd.append("--detach-keys=")
+        cmd.append(self.Id)
+        await podman_cmd(
+            cmd,
+            timeout=timeout,
+            capture_output=quiet,
+        )
+
 
 class Image(BaseModel):
     """Persistent metadata representing a local Bertrand image, which acts as a
@@ -1504,8 +1618,6 @@ class Image(BaseModel):
         The ISO timestamp when the image was created.
     image_args : list[str]
         The original `podman build` args used to build the image.
-    container_args : list[str]
-        The `podman create` args used to build containers from this image.
     """
     class Inspect(BaseModel):
         """Type hint for `podman image inspect` output.
@@ -1522,7 +1634,6 @@ class Image(BaseModel):
     id: ImageId
     created: CreatedAt
     image_args: ArgsList
-    container_args: ArgsList
 
     async def inspect(self) -> Image.Inspect | None:
         """Invoke podman to inspect this image.
@@ -1603,35 +1714,15 @@ class Image(BaseModel):
         await podman_cmd(cmd, timeout=deadline - time.monotonic())
         return True
 
-    async def _volume(self, env: Environment, kind: str) -> str:
-        name = f"bertrand-{env.id[:13]}-{kind}"
-        try:
-            await podman_cmd([
-                "volume",
-                "create",
-                "--label", f"{BERTRAND_ENV}=1",
-                "--label", f"{ENV_ID_ENV}={env.id}",
-                "--label", f"{IMAGE_TAG_ENV}={self.tag}",
-                name,
-            ], check=False)
-        except:
-            pass
-        return name
-
-    # TODO: `run` builds should possibly just run the `create` portion of the
-    # process, so that it starts in a paused state.  This may make the ephemeral
-    # model harder to support though.  I'll have to check, because it would simplify
-    # the kubernetes design quite a bit, when I get to that point.
-
-    async def run(
+    async def create(
         self,
         env: Environment,
         cmd: list[str] | None,
         *,
+        env_vars: Mapping[str, str] | None = None,
         quiet: bool
-    ) -> None:
-        """Build and run an ephemeral container from this image if it does not already
-        exist.
+    ) -> Container:
+        """Create a container from this image in `created` state.
 
         Parameters
         ----------
@@ -1640,109 +1731,161 @@ class Image(BaseModel):
             directory that will be mounted into the container.
         cmd : list[str] | None
             An optional command to override the container's default entry point.  If
-            None, then the container will run the default startup behavior from its
-            originating image.  In both cases, the container will be destroyed once
-            the command completes.
+            None, then the container will use the configured tag entry point.  The
+            command must still be non-empty after resolving overrides; otherwise the
+            create will fail.
         quiet : bool
-            If True, suppress output from the podman commands.
+            If True, suppress output from podman commands.
+        env_vars : Mapping[str, str] | None, optional
+            Optional additional environment variables to inject into the container
+            process at create time.
+
+        Returns
+        -------
+        Container
+            The created container metadata, validated from an immediate inspect call.
 
         Raises
         ------
         OSError
-            If the container fails to build or cannot be found after building.
+            If the container fails to create, cannot be identified via cidfile, or
+            is not in `created` state after creation.
         TypeError
             If the image configuration for the commit is invalid.
         """
         if cmd is not None:
             if not isinstance(cmd, list):
                 raise TypeError("cmd must be a list of strings when provided")
-            if not cmd:
-                raise OSError("cmd override must be non-empty when provided")
             if not all(isinstance(part, str) for part in cmd):
                 raise TypeError("cmd override must be a list of strings")
 
-        # build candidate container
-        mkdir_private(HOST_SOCKET.parent)
-        uv_cache = self._volume(env, "uv")
-        bertrand_cache = self._volume(env, "bertrand")
-        ccache_cache = self._volume(env, "ccache")
-        conan_cache = self._volume(env, "conan")
+        # identify project root so that the full git repository remains in scope
+        # inside the container
+        project_root = await env.project_root
+        worktree = env.worktree.relative_to(project_root)
+
+        # create private runtime context inside the worktree's metadata directory to
+        # hold temporary artifacts for each container.  Storing these artifacts in the
+        # worktree trivializes bind mounts, and allows the host to inspect them
+        # if needed.  The directory is pre-seeded with a CID file storing the container
+        # identity, the RPC socket and heartbeat file, and a bootstrap script that
+        # completes the runtime setup by symlinking the worktree and runtime
+        # directories into standard locations inside the container, and reading the
+        # CID file.
+        run_id = uuid.uuid4().hex
+        runtime = METADATA_TMP / f"{self.tag}.{run_id}"
+        (project_root / worktree / runtime).mkdir(parents=True, exist_ok=True)
+        host_cid = project_root / worktree / runtime / "cid"
+        host_bootstrap = project_root / worktree / runtime / "entrypoint.sh"
+        container_cid = PROJECT_MOUNT / worktree / runtime / "cid"
+        container_bootstrap = PROJECT_MOUNT / worktree / runtime / "entrypoint.sh"
+        atomic_write_text(host_bootstrap, "\n".join([
+            "#!/bin/sh",
+            "set -eu",
+            f"CID_FILE={shlex.quote(str(container_cid))}",
+            f"rm -rf {shlex.quote(str(WORKTREE_MOUNT))}",  # delete old worktree mount
+            (
+                "ln -s "  # symlink worktree dir
+                f"\"${shlex.quote(str(PROJECT_MOUNT / worktree))}\" "
+                f"{shlex.quote(str(WORKTREE_MOUNT))}"
+            ),
+            f"rm -rf {shlex.quote(str(CONTAINER_RUNTIME_DIR))}",  # delete old runtime dir
+            (
+                "ln -s "  # symlink runtime dir
+                f"\"${shlex.quote(str(PROJECT_MOUNT / worktree / runtime))}\" "
+                f"{shlex.quote(str(CONTAINER_RUNTIME_DIR))}"
+            ),
+            "if [ -f \"$CID_FILE\" ]; then",
+            "    CID=\"$(cat \"$CID_FILE\" 2>/dev/null || true)\"",  # read CID file
+            "    if [ -n \"$CID\" ]; then",
+            f"        export {CONTAINER_ID_ENV}=\"$CID\"",  # export as env var
+            "    fi",
+            "fi",
+            "exec \"$@\"",  # execute original entry point
+            "",
+        ]), encoding="utf-8")
+        host_bootstrap.chmod(0o755)  # make executable
+
+        # create container with configured args and labels, including the bootstrap
+        # entry point, configured for ephemeral use.
         argv = [
-            "run",
-            "--detach",
-            "--rm",
+            "create",
             "--init",
+            "--rm",
+            "--cidfile", str(host_cid),
 
             # labels for podman-level lookup
             "--label", f"{BERTRAND_ENV}=1",
-            # TODO: include a project root path and branch name
+            "--label", f"{PROJECT_ENV}={project_root}",
+            "--label", f"{WORKTREE_ENV}={worktree}",
+            "--label", f"{RUNTIME_ENV}={runtime}",
             "--label", f"{ENV_ID_ENV}={env.id}",
             "--label", f"{IMAGE_ID_ENV}={self.id}",
             "--label", f"{IMAGE_TAG_ENV}={self.tag}",
 
-            # TODO: it's best if we don't even mount the RPC socket if the sidecar
-            # process wasn't started, which is the case for the ordinary `start`
-            # command, since the sidecar is pure overhead that's only necessary for
-            # `code` and `enter`, which describe development workflows where the small
-            # overhead is acceptable.  Not even mounting the socket directory means
-            # that an attacker can't put a malicious RPC socket there from the host
-            # system and then invoke a remote command that gives them a backdoor.
-            # Those commands would just fail, and it's impossible to generate an
-            # untrusted RPC socket in the first place, which is only accessible inside
-            # a development shell.  Otherwise, it's up to you to expose sockets (or
-            # not) from the worktree itself, which is the only place you have shared
-            # access to under normal circumstances.  In fact, maybe I should just
-            # place the socket and lease file under a private directory in the
-            # worktree, rather than generating unique runtime directories under
-            # on_init.state_dir.
-            # -> That's cleaner anyways, and it avoids an extra bind mount here
-            # entirely.  It also allows me to go back to the container ID as a unique
-            # identifier, since the socket can happily be created after the fact, and
-            # in-container commands can always find it at a common path under the
-            # worktree's `.bertrand` directory.
-            # -> I probably still need separate UUIDs in order to avoid a chicken
-            # and egg problem that prevents me from setting the container ID as an
-            # in-container environment variable.
-            # -> The temporary CID/IID file could also be stored in the same place, and
-            # that could be how you access the container/image ID inside the container
-            # context, rather than environment variables.  They can stay there as long
-            # as the container is alive, just like the RPC socket and heartbeat file.
-
-            # TODO: Also, I need to more specifically bind mount the project root
-            # directory so that the full git repository remains in scope, which allows
-            # in-container git to behave identically to the external git, which is
-            # very important.  In order to get the standardized `/env/` directory to
-            # point to the proper worktree, I'll just symlink it to `/.env/{branch}/`,
-            # so you don't notice in practice.  I'm not totally sure how to do that
-            # symlink though.
-
-            # mount mutable worktree + RPC socket directory if directed
-            "-v", f"{str(env.worktree)}:{str(WORKTREE_MOUNT)}",
-            "--mount", f"type=bind,src={str(HOST_SOCKET.parent)},dst={str(CONTAINER_SOCKET.parent)}",
-
-            # TODO: figure out whether these mount volumes are still correct given the
-            # in-container toolchain.  I'm not entirely sure how they work, or how they
-            # are meant to speed up the in-container `bertrand build` command.
-
-            # persistent caches for incremental builds
-            "--mount", f"type=volume,src={uv_cache},dst={CACHES / 'uv'}",
-            "--mount", f"type=volume,src={bertrand_cache},dst={CACHES / 'bertrand'}",
-            "--mount", f"type=volume,src={ccache_cache},dst={CACHES / 'ccache'}",
-            "--mount", f"type=volume,src={conan_cache},dst=/opt/conan",
+            # mount full project root, with runtime wrapper linking canonical paths
+            "-v", f"{project_root}:{PROJECT_MOUNT}",
 
             # environment variables for Bertrand runtime
             "-e", f"{BERTRAND_ENV}=1",
+            "-e", f"{PROJECT_ENV}={project_root}",
+            "-e", f"{WORKTREE_ENV}={worktree}",
+            "-e", f"{RUNTIME_ENV}={runtime}",
             "-e", f"{ENV_ID_ENV}={env.id}",
-            # TODO: include a project root path and branch name?
             "-e", f"{IMAGE_ID_ENV}={self.id}",
             "-e", f"{IMAGE_TAG_ENV}={self.tag}",
         ]
-        argv.extend(self.container_args)
-        if cmd is None:  # preserve image defaults (ENTRYPOINT/CMD)
-            argv.append(self.id)
-        else:  # override entrypoint and pass additional args, if any
-            argv.extend(["--entrypoint", cmd[0], self.id, *cmd[1:]])
-        await podman_cmd(argv, capture_output=quiet)
+        if env_vars:
+            for key, value in sorted(env_vars.items()):
+                argv.extend(["-e", f"{key}={value}"])
+        argv.extend(await env.config.container_args(
+            worktree=env.worktree,
+            env_id=env.id,
+            tag=self.tag,
+            image_id=self.id,
+            cmd=cmd,
+            bootstrap=container_bootstrap,
+        ))
+        await podman_cmd(
+            argv,
+            capture_output=True if quiet else None
+        )
+
+        # read created container ID and inspect to confirm creation + expected state
+        container_id: str | None = None
+        try:
+            if not host_cid.exists() or not host_cid.is_file():
+                raise OSError(f"podman create did not produce a cid file at {host_cid}")
+            container_id = host_cid.read_text(encoding="utf-8").strip()
+            if not container_id:
+                raise OSError(f"podman create produced an empty cid file at {host_cid}")
+            inspected = await Container.inspect([container_id])
+            if len(inspected) != 1:
+                raise OSError(
+                    "podman create did not resolve to exactly one inspect result for "
+                    f"container '{container_id}'"
+                )
+            container = inspected[0]
+            if container.Id != container_id:
+                raise OSError(
+                    "container inspect ID mismatch after create: "
+                    f"cidfile={container_id}, inspect={container.Id}"
+                )
+            status = container.State.Status if container.State else None
+            if status != "created":
+                raise OSError(
+                    f"container '{container_id}' is not in created state after create "
+                    f"(status={status!r})"
+                )
+            return container
+        except:  # pylint: disable=bare-except
+            if container_id:
+                await podman_cmd(
+                    ["container", "rm", "-f", "-i", "-v", "--depend", container_id],
+                    check=False,
+                    capture_output=True,
+                )
+            raise
 
 
 class Environment:
@@ -1789,6 +1932,7 @@ class Environment:
         retired: list[RetiredImage]
 
     worktree: Path
+    _project_root: Path | None
     _json: JSON
     _config: Config | None
     _lock: Lock
@@ -1796,6 +1940,7 @@ class Environment:
 
     def __init__(self, worktree: Path, timeout: float = TIMEOUT) -> None:
         self.worktree = worktree.expanduser().resolve()
+        self._project_root = None
         self._json = self.JSON.model_construct(version=0, host="", id="", images={})
         self._config = None
         self._lock = lock_worktree(self.worktree, timeout=timeout)
@@ -2062,6 +2207,74 @@ class Environment:
         )
         return await Container.inspect(ids)
 
+    @property
+    async def project_root(self) -> Path:
+        """
+        Returns
+        -------
+        Path
+            The root path of the parent project repository for this linked worktree.
+            This is resolved strictly by validating that the worktree is attached to a
+            bare common-dir repository.
+
+        Raises
+        ------
+        FileNotFoundError
+            If the worktree is not attached to a valid linked-worktree repository
+            rooted at an ancestor bare project.
+        """
+        if self._project_root is not None:
+            return self._project_root
+
+        # ensure worktree is a recognized git worktree
+        inside = await run(
+            ["git", "-C", str(self.worktree), "rev-parse", "--is-inside-work-tree"],
+            capture_output=True,
+        )
+        if inside.stdout.strip().lower() != "true":
+            raise FileNotFoundError(
+                f"path is not a valid git worktree: {self.worktree}\n"
+                f"{(inside.stderr or inside.stdout).strip()}"
+            )
+
+        # get parent repository and assert bare
+        common = await run(
+            [
+                "git",
+                "-C", str(self.worktree),
+                "rev-parse",
+                "--path-format=absolute",
+                "--git-common-dir",
+            ],
+            capture_output=True,
+        )
+        common_dir = Path(common.stdout.strip()).expanduser().resolve()
+        if not common_dir.exists() or not common_dir.is_dir():
+            raise FileNotFoundError(
+                f"resolved git common directory does not exist or is not a directory: "
+                f"{common_dir}"
+            )
+        is_bare = await run(
+            ["git", f"--git-dir={str(common_dir)}", "rev-parse", "--is-bare-repository"],
+            capture_output=True,
+        )
+        if is_bare.stdout.strip().lower() != "true":
+            raise FileNotFoundError(
+                "resolved git common directory is not a bare repository: "
+                f"{common_dir}\n{(is_bare.stderr or is_bare.stdout).strip()}"
+            )
+
+        # ensure worktree is a descendant of the repository's parent directory
+        project_root = common_dir.parent.resolve()
+        if not self.worktree.is_relative_to(project_root):
+            raise FileNotFoundError(
+                f"worktree '{self.worktree}' is not contained in project root "
+                f"'{project_root}'"
+            )
+
+        self._project_root = project_root
+        return project_root
+
     async def build(self, tag: str, *, quiet: bool) -> Image:
         """Incrementally build an image from this environment, updating it and
         gracefully retiring any outdated alternatives.
@@ -2100,8 +2313,10 @@ class Environment:
             )
 
         # get arguments from configured build matrix
-        image_args = config.image_args(tag)
-        container_args = config.container_args(tag)
+        image_args = config.image_args(
+            worktree=self.worktree,
+            tag=tag
+        )
         if config.pyproject is not None:
             project_name = config.pyproject.project.name
         else:
@@ -2114,17 +2329,12 @@ class Environment:
             id="",  # corrected from iid file after build
             created=datetime.now(timezone.utc),
             image_args=image_args,
-            container_args=container_args,
         )
         run_id = uuid.uuid4().hex
-        # TODO: using the environment's branch name would be a lot more descriptive
-        # than its uuid.  The correct convention should be `project_name.branch.tag.uuid`
-        # -> To do that properly, I may need to add a `branch` accessor to `Environment`,
-        # which identifies its branch name by scanning upwards from the worktree to the
-        # nearest git repository, and then reconstructing the branch name from it.
-        # Or I could just ask git what branch is checked out at this worktree, which
-        # is the better option.
-        image_name = f"{project_name}.{tag}.{self.id[:7]}.{run_id[:7]}"
+        branch_name = sanitize_name(
+            self.worktree.relative_to(await self.project_root).as_posix()
+        )
+        image_name = f"{project_name}.{branch_name}.{tag}.{run_id[:7]}"
         iid_file = self.worktree / METADATA_TMP / f"{image_name}.iid"
         iid_file.parent.mkdir(parents=True, exist_ok=True)
         await podman_cmd([
@@ -2440,140 +2650,6 @@ class Publish(_Command):
 
 
 @dataclass
-class Enter(_Command):
-    """Replace the current process with an interactive shell inside the specified
-    container, starting or rebuilding it as necessary.  This is equivalent to `Start`
-    followed by a `podman container exec {shell}` command on a single container,
-    where `{shell}` is set by the parent environment.
-
-    Code RPC startup is best-effort for this command.  Shell entry always continues,
-    and `BERTRAND_CODE_SERVER=0|1` is injected to describe whether in-container
-    `bertrand code` is expected to work.
-    """
-    args: Validator = field(default=_validate_args)
-    code_server_available: Validator = field(default=_validate_code_server_available)
-
-    @staticmethod
-    def container(
-        ctx: Pipeline.InProgress,
-        *,
-        env: Environment,
-        image_tag: str,
-        container_tag: str,
-        args: list[str],
-        code_server_available: bool,
-        **kwargs: Any
-    ) -> None:
-        if not sys.stdin.isatty() or not sys.stdout.isatty():
-            raise CommandError(
-                returncode=1,
-                cmd=[
-                    "bertrand",
-                    "enter",
-                    f"{env.root}:{image_tag}:{container_tag}",
-                    *args
-                ],
-                stdout="",
-                stderr="'bertrand enter' requires both stdin and stdout to be a TTY."
-            )
-
-        # start/refresh systemd code service, but do not fail if it is unavailable
-        ctx[CODE_SERVER_AVAILABLE] = Listener.start(ctx, env_root=env.root, strict=False)
-
-        # start container if necessary
-        Start.container(
-            ctx,
-            env=env,
-            image_tag=image_tag,
-            container_tag=container_tag,
-            **kwargs
-        )
-        # TODO: env[image] is no longer valid.  Now you have to reference a commit
-        # first
-        container = env[image_tag, container_tag]
-        if container is None:
-            raise OSError(
-                f"unable to start container '{container_tag}' in image '{image_tag}'"
-            )
-
-        # load shell command from normalized config snapshot
-        with Config.load(env.root) as config:
-            shell_name = config["shell"]
-        if not isinstance(shell_name, str):
-            raise OSError("'shell' in config snapshot must be a string")
-        shell_name = shell_name.strip()
-        if not shell_name:
-            raise OSError("'shell' in config snapshot cannot be empty")
-        shell = SHELLS.get(shell_name)
-        if shell is None:
-            raise OSError(
-                f"unsupported shell in config snapshot: '{shell_name}'\n"
-                f"must be one of: {', '.join(SHELLS.keys())}"
-            )
-
-        # exec into container with appropriate shell and `code`-related environment variables
-        podman_exec([
-            "exec",
-            "-it",
-            "-w", str(WORKTREE_MOUNT),
-            "-e", f"{WORKTREE_ENV}={str(env.root)}",
-            "-e", f"{CONTAINER_ID_ENV}={container.id}",
-            "-e", f"{SOCKET_ENV}={'1' if code_server_available else '0'}",
-            container.id,
-            *shell,
-        ])
-
-    @staticmethod
-    def image(
-        ctx: Pipeline.InProgress,
-        *,
-        env: Environment,
-        image_tag: str,
-        args: list[str],
-        code_server_available: bool,
-        **kwargs: Any
-    ) -> None:
-        Enter.container(
-            ctx,
-            env=env,
-            image_tag=image_tag,
-            container_tag=DEFAULT_TAG,
-            args=args,
-            code_server_available=code_server_available,
-            **kwargs
-        )
-
-    @staticmethod
-    def environment(
-        ctx: Pipeline.InProgress,
-        *,
-        env: Environment,
-        args: list[str],
-        code_server_available: bool,
-        **kwargs: Any
-    ) -> None:
-        Enter.container(
-            ctx,
-            env=env,
-            image_tag=DEFAULT_TAG,
-            container_tag=DEFAULT_TAG,
-            args=args,
-            code_server_available=code_server_available,
-            **kwargs
-        )
-
-    @staticmethod
-    def all(
-        ctx: Pipeline.InProgress,
-        *,
-        args: list[str],
-        code_server_available: bool,
-        **kwargs: Any
-    ) -> None:
-        raise OSError("must specify a container to enter")
-
-
-@dataclass
 class Code(_Command):
     """Launch a host-side editor by invoking the internal `bertrand code` command
     within a running container context.  This command requires the host RPC service
@@ -2618,7 +2694,7 @@ class Code(_Command):
             "-w", str(WORKTREE_MOUNT),
             "-e", f"{WORKTREE_ENV}={str(env.root)}",
             "-e", f"{CONTAINER_ID_ENV}={container.id}",
-            "-e", f"{SOCKET_ENV}={'1' if code_server_available else '0'}",
+            "-e", f"{RPC_SOCKET_ENV}={'1' if code_server_available else '0'}",
             container.id,
             "bertrand", "code",
         ])
@@ -2815,26 +2891,20 @@ async def podman_start(
         if config is None:
             raise OSError(f"could not load environment at {worktree}")
 
-        # build/update image first, then materialize container from it
+        # build/update image first, then materialize and start container from it
         image = await env.build(tag, quiet=False)
-        await image.run(env, cmd, quiet=False)
+        container = await image.create(env, cmd, quiet=False)
+        await container.start(
+            quiet=False,
+            timeout=env.timeout,
+            attach=False,
+            interactive=False,
+        )
 
 
 @on_code(ephemeral=True)
 async def podman_code(ctx: Pipeline.InProgress) -> None:
     Code()(ctx)
-
-
-
-# TODO: the best way to design `enter` is to launch a detached container with the shell
-# as the entry point and --rm set normally.  Then, we will launch a sidecar process
-# with a private RPC socket and resolved paths to the requested editors on the host
-# system, and then `podman attach` to the container's TTY, which blocks the
-# `podman_enter` command until the shell exits.  A `finally` block will then kill the
-# sidecar process and clean up the socket, which ensures proper ephemeral lifetime
-# and completely eliminates any reliance on systemd and long-lived host daemons in
-# general.  It's also more secure, since the editor paths are never exposed to the
-# container environment at all.
 
 
 async def podman_enter(
@@ -2879,7 +2949,7 @@ async def podman_enter(
         )
 
     async with Environment(worktree, timeout=TIMEOUT) as env:
-        # find container and text editor binaries on host filesystem
+        # find container binary and configured shell command
         container_bin = shutil.which("podman")
         if container_bin is None:
             raise OSError("could not find a podman executable on PATH")
@@ -2896,31 +2966,112 @@ async def podman_enter(
         shell_cmd = SHELLS.get(bertrand.shell)
         if shell_cmd is None:
             raise ValueError(f"unrecognized shell: {bertrand.shell}")
+        if shell is not None:
+            shell_cmd = SHELLS.get(shell)
+            if shell_cmd is None:
+                raise ValueError(f"unrecognized shell override: {shell}")
 
-        # TODO: use `podman run --rm` to launch the shell inside the container and
-        # wait.
+        # build/update image first, then create a shell container with RPC metadata
+        image = await env.build(tag or DEFAULT_TAG, quiet=False)
+        container = await image.create(
+            env,
+            list(shell_cmd),
+            env_vars={
+                RPC_SOCKET_ENV: str(CONTAINER_SOCKET),
+                RPC_SIDECAR_ENV: str(CONTAINER_LEASE),
+            },
+            quiet=False,
+        )
+        runtime = container.runtime
+        if runtime is None:
+            raise OSError(
+                "created container is missing runtime label metadata needed for enter "
+                f"flow: {container.Id}"
+            )
+        host_socket = runtime / RPC_SOCKET_NAME
+        host_lease = runtime / RPC_LEASE_NAME
+        deadline = time.monotonic() + min(env.timeout, RPC_TIMEOUT)
 
-        # TODO: start RPC sidecar process by calling `bertrand-rpc` in a detached
-        # process, passing the container ID in as an environment variable to that
-        # process, and tying its lifetime to the container instance.  An additional
-        # bind mount will be needed at /tmp/bertrand/host/, which mounts to
-        # .bertrand/tmp/{uuid}/ within the host worktree.  That stores the cid file
-        # that allows the container to know its own podman ID, as well as the RPC
-        # socket and heartbeat, if any.  The same directory may be bind-mounted as
-        # the container's artifact root (as a simple symlink), which would allow the
-        # rendered artifacts to be inspected from the host system.  The symlink
-        # approach is essentially identical to what we do to access the worktree within
-        # the full project repository, by symlinking the in-container `/env/` to the
-        # correct branch worktree, so that in-container `git` commands can work with
-        # the full repository in context.  This is basically the same principle, but
-        # in this case `/tmp/bertrand/` would symlink to the worktree's
-        # `.bertrand/tmp/{uuid}` directory.  This means we only ever have 1 bind mount
-        # to worry about, plus some symlinks that my toolchain is going to need to
-        # establish somehow.  Maybe if I generate them in my base toolchain
-        # `Containerfile` so that all downstream containers inherit them?  Idk how else
-        # it would work.
+        # best-effort sidecar startup for development RPC features
+        sidecar: asyncio.subprocess.Process | None = None
+        try:
+            sidecar = await asyncio.create_subprocess_exec(
+                "bertrand-rpc",
+                "--socket", str(host_socket),
+                "--container-id", container.Id,
+                "--container-bin", str(Path(container_bin).expanduser().resolve()),
+                "--lease", str(host_lease),
+                stdin=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
 
-        # TODO: use `podman attach` to access the container's command line.
+            # bounded readiness probe for sidecar socket + lease metadata
+            while True:
+                socket_ready = (
+                    host_socket.exists() and
+                    stat.S_ISSOCK(host_socket.lstat().st_mode)
+                )
+                lease_ready = host_lease.exists() and host_lease.is_file()
+                if socket_ready and lease_ready:
+                    break
+                if sidecar.returncode is not None:
+                    raise OSError(
+                        f"bertrand-rpc exited early with code {sidecar.returncode}"
+                    )
+                if time.monotonic() >= deadline:
+                    raise TimeoutError(
+                        "timed out waiting for bertrand-rpc sidecar readiness "
+                        f"(socket={host_socket}, lease={host_lease})"
+                    )
+                await asyncio.sleep(0.1)
+        except Exception as err:
+            print(
+                "bertrand: failed to start RPC sidecar; continuing without access to "
+                f"host RPC features\n{err}",
+                file=sys.stderr,
+            )
+            if sidecar is not None and sidecar.returncode is None:
+                sidecar.terminate()
+                try:
+                    await asyncio.wait_for(sidecar.wait(), timeout=RPC_TIMEOUT)
+                except Exception:
+                    sidecar.kill()
+                    try:
+                        await sidecar.wait()
+                    except Exception:
+                        pass
+                sidecar = None
+
+        try:
+            # interactive attach to PID1 shell; detach keys disabled to keep `exit`
+            # as the canonical lifetime boundary
+            await container.start(
+                quiet=False,
+                timeout=deadline - time.monotonic(),
+                attach=True,
+                interactive=True,
+            )
+        finally:
+            # best-effort sidecar cleanup guard
+            if sidecar is not None and sidecar.returncode is None:
+                sidecar.terminate()
+                try:
+                    await asyncio.wait_for(sidecar.wait(), timeout=RPC_TIMEOUT)
+                except Exception:
+                    sidecar.kill()
+                    try:
+                        await sidecar.wait()
+                    except Exception:
+                        pass
+
+            # best-effort container cleanup fallback (container should usually be
+            # removed automatically via --rm on shell exit).
+            await podman_cmd(
+                ["container", "rm", "-f", "-i", "-v", "--depend", container.Id],
+                check=False,
+                capture_output=True,
+            )
 
 
 async def podman_stop(
@@ -3133,7 +3284,13 @@ async def podman_restart(
             # if we have to restart outdated containers, rebuild them from the newest
             # image and start them with the same arguments as before
             for cmd in defer:
-                await image.run(env, cmd, quiet=False)
+                container = await image.create(env, cmd, quiet=False)
+                await container.start(
+                    quiet=False,
+                    timeout=env.timeout,
+                    attach=False,
+                    interactive=False,
+                )
 
 
 async def podman_rm(

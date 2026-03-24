@@ -54,13 +54,7 @@ from .config import (
     inside_image,
 )
 from .pipeline import JSONValue
-from .run import (
-    CommandError,
-    TimeoutExpired,
-    atomic_write_text,
-    mkdir_private,
-    run,
-)
+from .run import  TimeoutExpired, atomic_write_text, run
 
 # pylint: disable=bare-except, broad-exception-caught
 
@@ -75,6 +69,7 @@ JSON_RPC_TIMEOUT_ERROR: int = -32000            # Custom error code for timeouts
 MAX_REQUEST_BYTES: int = 1024 * 1024            # 1 MiB, to prevent malicious payloads
 RPC_TIMEOUT: float = 30.0
 RPC_HEARTBEAT_INTERVAL: float = 10.0
+RPC_WATCHDOG_INTERVAL: float = 10.0
 
 
 def _check_container_id(container_id: str) -> str:
@@ -354,23 +349,19 @@ class Listener:
         The path to the host's Unix socket file.  This path must be absolute, and the
         code server will only instantiate a socket at this location when its `listen()`
         method is called.
-    lease_path : AbsolutePath | None, optional
-        An optional absolute path to a lease file that the listener will periodically
-        update with the current timestamp as a heartbeat signal, which can be used by
-        in-container processes to detect if the listener is still alive and responsive.
-        If not provided, no lease file will be used.
-    lease_interval : PositiveFloat | None, optional
-        The interval in seconds at which to update the lease file specified by
-        `lease_path`.  Must be provided if `lease_path` is provided, and must not be
-        provided otherwise.
+    lease_path : AbsolutePath
+        An absolute path to a lease file that the listener will periodically update
+        with the current timestamp as a heartbeat signal, which can be used by
+        in-container processes to detect if the listener is still alive and
+        responsive.
     """
     container_id: ContainerID
     container_bin: AbsolutePath
     socket_path: AbsolutePath
-    lease_path: AbsolutePath | None = None
-    lease_interval: PositiveFloat | None = None
+    lease_path: AbsolutePath
     _server: asyncio.AbstractServer | None = field(default=None, repr=False)
     _lease_task: asyncio.Task[None] | None = field(default=None, repr=False)
+    _watchdog_task: asyncio.Task[None] | None = field(default=None, repr=False)
     _active_blocking_requests: int = field(default=0, repr=False)
     _blocking_idle: asyncio.Event = field(init=False, repr=False)
 
@@ -386,16 +377,9 @@ class Listener:
             raise RuntimeError(f"socket path must be absolute: {self.socket_path}")
         self.container_bin = self.container_bin.expanduser().resolve()
         self.socket_path = self.socket_path.expanduser().resolve()
-        if (self.lease_path is not None) != (self.lease_interval is not None):
-            raise RuntimeError("--lease and --lease-interval must be provided together")
-        if self.lease_path is not None:
-            if not self.lease_path.is_absolute():
-                raise RuntimeError(f"lease path must be absolute: {self.lease_path}")
-            self.lease_path = self.lease_path.expanduser().resolve()
-            if self.lease_interval is None or self.lease_interval <= 0:
-                raise RuntimeError(
-                    f"lease interval must be positive: {self.lease_interval}"
-                )
+        if not self.lease_path.is_absolute():
+            raise RuntimeError(f"lease path must be absolute: {self.lease_path}")
+        self.lease_path = self.lease_path.expanduser().resolve()
 
         # set up blocking request tracking, which is used to delay sidecar shutdown
         # until all blocking requests have completed
@@ -403,8 +387,6 @@ class Listener:
         self._blocking_idle.set()
 
     async def _lease_heartbeat(self) -> None:
-        if self.lease_path is None or self.lease_interval is None:
-            return
         while True:
             try:
                 atomic_write_text(
@@ -418,11 +400,46 @@ class Listener:
                     f"{self.lease_path}: {err}",
                     file=sys.stderr,
                 )
-            await asyncio.sleep(self.lease_interval)
+            await asyncio.sleep(RPC_HEARTBEAT_INTERVAL)
 
     async def _wait_for_blocking_requests(self) -> None:
         while self._active_blocking_requests > 0:
             await self._blocking_idle.wait()
+
+    async def _container_state(self, *, timeout: float | None = None) -> str | None:
+        result = await run(
+            [
+                str(self.container_bin),
+                "container",
+                "inspect",
+                "--format",
+                "{{.State.Status}}",
+                self.container_id,
+            ],
+            check=False,
+            capture_output=True,
+            timeout=timeout,
+        )
+        if result.returncode != 0:
+            return None
+        state = result.stdout.strip()
+        if not state:
+            return None
+        return state
+
+    async def _container_watchdog(self) -> None:
+        while True:
+            alive = False
+            try:
+                state = await self._container_state(timeout=RPC_TIMEOUT)
+                alive = state in ("running", "restarting")
+            except Exception:
+                alive = False
+            if not alive:
+                if self._server is not None:
+                    self._server.close()
+                return
+            await asyncio.sleep(RPC_WATCHDOG_INTERVAL)
 
     def _parse_request(self, line: str) -> JSONValue:
         if not line:
@@ -437,34 +454,15 @@ class Listener:
         return json.loads(text)
 
     async def _check_running_container(self, request: RPCRequest) -> None:
-        try:
-            # inspect container status and contextualize errors (if any)
-            result = await run(
-                [
-                    str(self.container_bin),
-                    "container",
-                    "inspect",
-                    "--format",
-                    "{{.State.Status}}",
-                    self.container_id,
-                ],
-                capture_output=True,
-                timeout=request.params.deadline - time.time(),
+        timeout = request.params.deadline - time.time()
+        state = await self._container_state(timeout=timeout)
+        if state is None:
+            raise RuntimeError(
+                f"container '{self.container_id}' is not available"
             )
-        except CommandError as err:
+        if state not in ("running", "restarting"):
             raise RuntimeError(
-                f"container '{self.container_id}' is not available: {err}"
-            ) from err
-
-        # confirm running
-        result.stdout = result.stdout.strip()
-        if not result.stdout:
-            raise RuntimeError(
-                f"container '{self.container_id}' did not report a state"
-            )
-        if result.stdout not in ("running", "restarting"):
-            raise RuntimeError(
-                f"container '{self.container_id}' is '{result.stdout}' (expected running)"
+                f"container '{self.container_id}' is '{state}' (expected running)"
             )
 
     async def _handle_client(
@@ -541,21 +539,20 @@ class Listener:
             files.
         """
         try:
-            # create socket and heartbeat file if needed
-            mkdir_private(self.socket_path.parent)
+            # create socket and heartbeat file
+            self.socket_path.parent.mkdir(parents=True, exist_ok=True)
             if self.socket_path.exists():
                 mode = self.socket_path.lstat().st_mode
                 if not stat.S_ISSOCK(mode):
                     raise OSError(f"socket path occupied: {self.socket_path}")
                 self.socket_path.unlink(missing_ok=True)
-            if self.lease_path is not None:
-                mkdir_private(self.lease_path.parent)
-                atomic_write_text(
-                    self.lease_path,
-                    f"{time.time():.6f}\n",
-                    encoding="utf-8"
-                )
-                self._lease_task = asyncio.create_task(self._lease_heartbeat())
+            self.lease_path.parent.mkdir(parents=True, exist_ok=True)
+            atomic_write_text(
+                self.lease_path,
+                f"{time.time():.6f}\n",
+                encoding="utf-8"
+            )
+            self._lease_task = asyncio.create_task(self._lease_heartbeat())
 
             # start async server to handle concurrent requests
             self._server = await asyncio.start_unix_server(
@@ -564,7 +561,11 @@ class Listener:
                 limit=MAX_REQUEST_BYTES + 1,
             )
             self.socket_path.chmod(0o600)
-            await self._server.serve_forever()
+            self._watchdog_task = asyncio.create_task(self._container_watchdog())
+            try:
+                await self._server.serve_forever()
+            except asyncio.CancelledError:
+                pass
 
         finally:
             # shut down server to stop accepting new requests
@@ -572,6 +573,15 @@ class Listener:
                 self._server.close()
                 await self._server.wait_closed()
                 self._server = None
+
+            # cancel container liveness watchdog
+            if self._watchdog_task is not None:
+                self._watchdog_task.cancel()
+                try:
+                    await self._watchdog_task
+                except asyncio.CancelledError:
+                    pass
+                self._watchdog_task = None
 
             # wait until all blocking requests have completed
             await asyncio.shield(self._wait_for_blocking_requests())
@@ -584,11 +594,10 @@ class Listener:
                 except asyncio.CancelledError:
                     pass
                 self._lease_task = None
-            if self.lease_path is not None:
-                try:
-                    self.lease_path.unlink(missing_ok=True)
-                except OSError:
-                    pass
+            try:
+                self.lease_path.unlink(missing_ok=True)
+            except OSError:
+                pass
             try:
                 if (
                     self.socket_path.exists()
@@ -621,28 +630,21 @@ def main(argv: Sequence[str] | None = None) -> None:
         required=True,
         help="absolute path to host container runtime executable",
     )
-    parser.add_argument("--lease", help="absolute lease/heartbeat file path")
     parser.add_argument(
-        "--lease-interval",
-        type=float,
-        help="lease heartbeat interval in seconds (must pair with --lease)",
+        "--lease",
+        required=True,
+        help="absolute lease/heartbeat file path",
     )
 
     # parse arguments
     args = parser.parse_args(argv)
-    if (args.lease is None) != (args.lease_interval is None):
-        parser.error("--lease and --lease-interval must be provided together")
-    if args.lease_interval is not None and args.lease_interval <= 0:
-        parser.error("--lease-interval must be positive")
 
     # construct listener, and start serving requests until interrupted
-    lease_path = Path(args.lease) if args.lease is not None else None
     listener = Listener(
         socket_path=Path(args.socket),
         container_id=args.container_id,
         container_bin=Path(args.container_bin),
-        lease_path=lease_path,
-        lease_interval=args.lease_interval,
+        lease_path=Path(args.lease),
     )
     try:
         asyncio.run(listener.listen())
@@ -706,18 +708,20 @@ async def rpc(method: Callable[[], Awaitable[RPCRequest]]) -> RPCResponse.Result
             f"RPC socket path does not point to a valid socket: {socket_path}"
         )
 
-    # locate optional heartbeat file from environment
-    lease_env = os.environ.get(RPC_SIDECAR_ENV)
-    if lease_env is not None and lease_env.strip():
-        lease_path = Path(lease_env.strip())
-        if not lease_path.is_absolute():
-            raise RuntimeError(f"{RPC_SIDECAR_ENV} must be an absolute path: {lease_env}")
-        if not lease_path.exists():
-            raise RuntimeError(f"RPC lease file does not exist: {lease_path}")
-        if not lease_path.is_file():
-            raise RuntimeError(
-                f"RPC lease path does not point to a valid file: {lease_path}"
-            )
+    # locate sidecar heartbeat file from environment
+    lease_env = os.environ.get(RPC_SIDECAR_ENV, "").strip()
+    if not lease_env:
+        raise RuntimeError(
+            f"{RPC_SIDECAR_ENV} is missing or empty.  Re-enter the environment to refresh "
+            "sidecar lease metadata."
+        )
+    lease_path = Path(lease_env)
+    if not lease_path.is_absolute():
+        raise RuntimeError(f"{RPC_SIDECAR_ENV} must be an absolute path: {lease_env}")
+    if not lease_path.exists():
+        raise RuntimeError(f"RPC lease file does not exist: {lease_path}")
+    if not lease_path.is_file():
+        raise RuntimeError(f"RPC lease path does not point to a valid file: {lease_path}")
 
     # form request, then serialize to newline-delimited JSON
     request = await method()

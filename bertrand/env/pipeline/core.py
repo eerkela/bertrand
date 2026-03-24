@@ -1404,5 +1404,4 @@ JournalAdapter = TypeAdapter(list[Pipeline.StepRecord])
 
 on_init = Pipeline(state_dir=STATE_DIR / "init", keep=5)
 on_publish = Pipeline(state_dir=STATE_DIR / "publish", keep=5)
-on_enter = Pipeline(state_dir=STATE_DIR / "enter", keep=5)
 on_code = Pipeline(state_dir=STATE_DIR / "code", keep=5)
