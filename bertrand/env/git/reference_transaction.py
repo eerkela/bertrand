@@ -177,6 +177,7 @@ class Project:
     """Resolved repository context for hook operations."""
     git_dir: Path
     project_root: Path
+    is_bare: bool
     branches: set[str]
 
     class Worktree:
@@ -194,13 +195,27 @@ class Project:
         self,
         git_dir: Path,
         project_root: Path,
+        is_bare: bool,
         branches: set[str],
         worktrees: list[Worktree],
     ) -> None:
         self.git_dir = git_dir
         self.project_root = project_root
+        self.is_bare = is_bare
         self.branches = branches
         self.worktrees = worktrees
+
+    @staticmethod
+    def _supports_relative_paths() -> bool:
+        result = git(["worktree", "add", "-h"])
+        text = f"{result.stdout}\n{result.stderr}".lower()
+        return "--relative-paths" in text
+
+    @staticmethod
+    def _supports_relative_move_paths() -> bool:
+        result = git(["worktree", "move", "-h"])
+        text = f"{result.stdout}\n{result.stderr}".lower()
+        return "--relative-paths" in text
 
     @classmethod
     def load(cls) -> Project:
@@ -219,11 +234,11 @@ class Project:
         OSError
             If git commands fail to list branches or worktrees.
         """
-        # resolve absolute path to the repository's .git/ directory
-        result = git(["rev-parse", "--absolute-git-dir"])
+        # resolve absolute path to the repository common git directory
+        result = git(["rev-parse", "--path-format=absolute", "--git-common-dir"])
         if result.returncode != 0:
             raise FileNotFoundError(
-                "failed to resolve absolute git dir:\n"
+                "failed to resolve absolute git common dir:\n"
                 f"{(result.stderr or result.stdout).strip()}"
             )
         git_dir = Path(result.stdout.strip()).expanduser().resolve()
@@ -232,16 +247,21 @@ class Project:
                 f"resolved git dir does not exist or is not a directory: {git_dir}"
             )
 
-        # scan upward from the git dir to find the project root, which is assumed to be
-        # the parent of the nearest ancestor directory that ends with ".git"
-        project_root: Path | None = None
-        for ancestor in (git_dir, *git_dir.parents):
-            if ancestor.name.endswith(".git"):
-                project_root = ancestor.parent
-                break
-        if project_root is None:
-            raise FileNotFoundError(f"could not derive project root from git dir: {git_dir}")
-        project_root = project_root.expanduser().resolve()
+        # determine repository mode and derive project root from common-dir parent
+        bare = git([f"--git-dir={str(git_dir)}", "rev-parse", "--is-bare-repository"])
+        if bare.returncode != 0:
+            raise OSError(
+                f"failed to determine bare repository mode:\n"
+                f"{(bare.stderr or bare.stdout).strip()}"
+            )
+        is_bare = bare.stdout.strip().lower() == "true"
+        project_root = git_dir.parent.expanduser().resolve()
+        if is_bare and not cls._supports_relative_paths():
+            raise OSError(
+                "git worktree relative path support is required for bare repository "
+                "mode, but this git version does not support '--relative-paths' for "
+                "worktree creation."
+            )
 
         # list tracked branches from the repository
         result = git([
@@ -285,6 +305,7 @@ class Project:
         return cls(
             git_dir=git_dir,
             project_root=project_root,
+            is_bare=is_bare,
             branches=branches,
             worktrees=worktrees,
         )
@@ -387,13 +408,11 @@ class Project:
             )
             return False
         target.parent.mkdir(parents=True, exist_ok=True)
-        result = git([
-            f"--git-dir={str(self.git_dir)}",
-            "worktree",
-            "move",
-            str(source),
-            str(target),
-        ])
+        cmd = [f"--git-dir={str(self.git_dir)}", "worktree", "move",]
+        if self._supports_relative_move_paths():
+            cmd.append("--relative-paths")
+        cmd.extend([str(source), str(target)])
+        result = git(cmd)
         if result.returncode != 0:
             print(
                 f"bertrand: failed to move worktree for branch '{branch}' from "
@@ -490,6 +509,7 @@ class Project:
             f"--git-dir={str(self.git_dir)}",
             "worktree",
             "add",
+            "--relative-paths",
             str(target),
             branch,
         ])
@@ -514,6 +534,11 @@ class Project:
             implicit hints for branch renames where creation and destruction are paired
             on the same object.
         """
+        # non-bare repositories are treated as single-worktree mode; no branch-path
+        # reconciliation is performed in this mode.
+        if not self.is_bare:
+            return
+
         # derive current and desired branch-to-path mappings
         current = self._current_branches()
         desired = {branch: (self.project_root / branch) for branch in self.branches}

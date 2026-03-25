@@ -1398,15 +1398,19 @@ class Container(BaseModel):
         value = labels.get(WORKTREE_ENV)
         if not value:
             return None
+        value = value.strip()
+        if not value:
+            return None
+        if value == ".":
+            return root
         path = Path(value)
-        if (
-            path.is_absolute() or
-            not path.parts or
-            any(part in (".", "..") for part in path.parts)
-        ):
+        if path.is_absolute() or any(part in (".", "..") for part in path.parts):
             return None
         try:
-            return (root / path).resolve()
+            candidate = (root / path).resolve()
+            if not candidate.is_relative_to(root):
+                return None
+            return candidate
         except OSError:
             return None
 
@@ -1427,6 +1431,9 @@ class Container(BaseModel):
         value = labels.get(RUNTIME_ENV)
         if not value:
             return None
+        value = value.strip()
+        if not value:
+            return None
         path = Path(value)
         if (
             path.is_absolute() or
@@ -1435,7 +1442,10 @@ class Container(BaseModel):
         ):
             return None
         try:
-            return (worktree / path).resolve()
+            candidate = (worktree / path).resolve()
+            if not candidate.is_relative_to(worktree):
+                return None
+            return candidate
         except OSError:
             return None
 
@@ -1721,12 +1731,13 @@ class Image(BaseModel):
         # inside the container
         project_root = await env.project_root
         worktree = env.worktree.relative_to(project_root)
+        worktree_env = "." if worktree == Path(".") else worktree.as_posix()
 
         # create private runtime context inside the worktree's metadata directory to
         # hold temporary artifacts for each container.  Storing these artifacts in the
         # worktree trivializes bind mounts, and allows the host to inspect them
         # if needed.  The directory is pre-seeded with a CID file storing the container
-        # identity, the RPC socket and heartbeat file, and a bootstrap script that
+        # identity, RPC socket metadata, and a bootstrap script that
         # completes the runtime setup by symlinking the worktree and runtime
         # directories into standard locations inside the container, and reading the
         # CID file.
@@ -1741,18 +1752,30 @@ class Image(BaseModel):
             "#!/bin/sh",
             "set -eu",
             f"CID_FILE={shlex.quote(str(container_cid))}",
+            f"TARGET_WORKTREE={shlex.quote(str(PROJECT_MOUNT / worktree))}",
+            f"TARGET_RUNTIME={shlex.quote(str(PROJECT_MOUNT / worktree / runtime))}",
             f"rm -rf {shlex.quote(str(WORKTREE_MOUNT))}",  # delete old worktree mount
             (
                 "ln -s "  # symlink worktree dir
-                f"\"${shlex.quote(str(PROJECT_MOUNT / worktree))}\" "
+                "\"$TARGET_WORKTREE\" "
                 f"{shlex.quote(str(WORKTREE_MOUNT))}"
             ),
             f"rm -rf {shlex.quote(str(CONTAINER_RUNTIME_DIR))}",  # delete old runtime dir
             (
                 "ln -s "  # symlink runtime dir
-                f"\"${shlex.quote(str(PROJECT_MOUNT / worktree / runtime))}\" "
+                "\"$TARGET_RUNTIME\" "
                 f"{shlex.quote(str(CONTAINER_RUNTIME_DIR))}"
             ),
+            "if command -v git >/dev/null 2>&1; then",
+            (
+                "    git config --global --add safe.directory "
+                f"{shlex.quote(str(WORKTREE_MOUNT))} >/dev/null 2>&1 || true"
+            ),
+            (
+                "    git config --global --add safe.directory "
+                "\"$TARGET_WORKTREE\" >/dev/null 2>&1 || true"
+            ),
+            "fi",
             "if [ -f \"$CID_FILE\" ]; then",
             "    CID=\"$(cat \"$CID_FILE\" 2>/dev/null || true)\"",  # read CID file
             "    if [ -n \"$CID\" ]; then",
@@ -1775,7 +1798,7 @@ class Image(BaseModel):
             # labels for podman-level lookup
             "--label", f"{BERTRAND_ENV}=1",
             "--label", f"{PROJECT_ENV}={project_root}",
-            "--label", f"{WORKTREE_ENV}={worktree}",
+            "--label", f"{WORKTREE_ENV}={worktree_env}",
             "--label", f"{RUNTIME_ENV}={runtime}",
             "--label", f"{ENV_ID_ENV}={env.id}",
             "--label", f"{IMAGE_ID_ENV}={self.id}",
@@ -1787,7 +1810,7 @@ class Image(BaseModel):
             # environment variables for Bertrand runtime
             "-e", f"{BERTRAND_ENV}=1",
             "-e", f"{PROJECT_ENV}={project_root}",
-            "-e", f"{WORKTREE_ENV}={worktree}",
+            "-e", f"{WORKTREE_ENV}={worktree_env}",
             "-e", f"{RUNTIME_ENV}={runtime}",
             "-e", f"{ENV_ID_ENV}={env.id}",
             "-e", f"{IMAGE_ID_ENV}={self.id}",
@@ -2064,22 +2087,6 @@ class Environment:
         root = await _resolve_head_worktree(root)
         return root, workload, tag
 
-    @staticmethod
-    def current() -> Environment | None:
-        """Detect whether the current process is running inside a Bertrand container.
-
-        Returns
-        -------
-        Environment | None
-            An `Environment` metadata object with the proper mount path if invoked
-            within a Bertrand container, or None otherwise.  Note that the result is
-            disengaged, and must be acquired as a context manager before it can be
-            used to access or modify the environment.
-        """
-        if not inside_image():
-            return None
-        return Environment(worktree=WORKTREE_MOUNT)
-
     @property
     def config(self) -> Config:
         """
@@ -2195,7 +2202,7 @@ class Environment:
                 f"{(inside.stderr or inside.stdout).strip()}"
             )
 
-        # get parent repository and assert bare
+        # resolve repository common dir and detect bare/non-bare mode
         common = await run(
             [
                 "git",
@@ -2216,19 +2223,29 @@ class Environment:
             ["git", f"--git-dir={str(common_dir)}", "rev-parse", "--is-bare-repository"],
             capture_output=True,
         )
-        if is_bare.stdout.strip().lower() != "true":
+        bare = is_bare.stdout.strip().lower()
+        if bare not in {"true", "false"}:
             raise FileNotFoundError(
-                "resolved git common directory is not a bare repository: "
+                "could not determine repository mode from git common dir: "
                 f"{common_dir}\n{(is_bare.stderr or is_bare.stdout).strip()}"
             )
 
-        # ensure worktree is a descendant of the repository's parent directory
+        # derive project root from common-dir parent
         project_root = common_dir.parent.resolve()
-        if not self.worktree.is_relative_to(project_root):
-            raise FileNotFoundError(
-                f"worktree '{self.worktree}' is not contained in project root "
-                f"'{project_root}'"
-            )
+        if bare == "true":
+            # bare parent-repo mode: worktree must be a descendant of project root
+            if not self.worktree.is_relative_to(project_root):
+                raise FileNotFoundError(
+                    f"worktree '{self.worktree}' is not contained in project root "
+                    f"'{project_root}'"
+                )
+        else:
+            # non-bare single-worktree mode: worktree must be the project root itself
+            if self.worktree != project_root:
+                raise FileNotFoundError(
+                    "non-bare repositories are supported only in single-worktree mode; "
+                    f"expected worktree '{project_root}', got '{self.worktree}'"
+                )
 
         self._project_root = project_root
         return project_root

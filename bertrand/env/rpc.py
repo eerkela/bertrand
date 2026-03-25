@@ -43,6 +43,7 @@ from pydantic import (
 from .config import (
     EDITORS,
     IMAGE_TAG_ENV,
+    PROJECT_ENV,
     RPC_SOCKET_ENV,
     VSCODE_WORKSPACE_FILE,
     WORKTREE_ENV,
@@ -911,7 +912,23 @@ class CodeOpen:
             If the editor specified in the configuration is not supported, or if any
             required parameters are invalid.
         """
-        # load host worktree path from environment
+        # load host project path from environment
+        _project = os.environ.get(PROJECT_ENV)
+        if _project is None:
+            raise RuntimeError(
+                "project environment variable is missing.  This should never "
+                "occur; if you see this message, try re-entering the environment to "
+                "regenerate its environment variables, or report an issue if the "
+                "problem persists."
+            )
+        project = Path(_project.strip())
+        if not project.is_absolute():
+            raise RuntimeError(f"project path must be absolute: {project}")
+        project = project.expanduser().resolve()
+        if not project.exists() or not project.is_dir():
+            raise RuntimeError(f"project path does not exist or is not a directory: {project}")
+
+        # extend project path with relative worktree path from environment
         _worktree = os.environ.get(WORKTREE_ENV)
         if _worktree is None:
             raise RuntimeError(
@@ -920,10 +937,23 @@ class CodeOpen:
                 "regenerate its environment variables, or report an issue if the "
                 "problem persists."
             )
-        worktree = Path(_worktree.strip())
-        if not worktree.is_absolute():
-            raise RuntimeError(f"worktree path must be absolute: {worktree}")
-        worktree = worktree.expanduser().resolve()
+        raw_worktree = _worktree.strip()
+        if not raw_worktree:
+            raise RuntimeError("worktree path must not be empty")
+        rel_worktree = Path(raw_worktree)
+        if rel_worktree.is_absolute():
+            raise RuntimeError(f"worktree path must be relative to project root: {raw_worktree}")
+        if any(part == ".." for part in rel_worktree.parts):
+            raise RuntimeError(f"worktree path cannot traverse parents: {raw_worktree}")
+        if raw_worktree != "." and any(part == "." for part in rel_worktree.parts):
+            raise RuntimeError(f"worktree path cannot contain '.' segments: {raw_worktree}")
+        worktree = (project / rel_worktree).resolve()
+        if not worktree.is_relative_to(project):
+            raise RuntimeError(
+                f"resolved worktree escapes project root: {worktree} (project={project})"
+            )
+        if not worktree.exists() or not worktree.is_dir():
+            raise RuntimeError(f"resolved worktree does not exist: {worktree}")
 
         # load current image tag from environment
         image_tag = os.environ.get(IMAGE_TAG_ENV)
