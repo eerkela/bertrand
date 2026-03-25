@@ -256,11 +256,14 @@ class Project:
             )
         is_bare = bare.stdout.strip().lower() == "true"
         project_root = git_dir.parent.expanduser().resolve()
-        if is_bare and not cls._supports_relative_paths():
+        if is_bare and (
+            not cls._supports_relative_paths() or
+            not cls._supports_relative_move_paths()
+        ):
             raise OSError(
                 "git worktree relative path support is required for bare repository "
                 "mode, but this git version does not support '--relative-paths' for "
-                "worktree creation."
+                "worktree creation and move operations."
             )
 
         # list tracked branches from the repository
@@ -408,9 +411,7 @@ class Project:
             )
             return False
         target.parent.mkdir(parents=True, exist_ok=True)
-        cmd = [f"--git-dir={str(self.git_dir)}", "worktree", "move",]
-        if self._supports_relative_move_paths():
-            cmd.append("--relative-paths")
+        cmd = [f"--git-dir={str(self.git_dir)}", "worktree", "move", "--relative-paths"]
         cmd.extend([str(source), str(target)])
         result = git(cmd)
         if result.returncode != 0:

@@ -62,7 +62,6 @@ from .config import (
     NonEmpty,
     NoWhiteSpace,
     SanitizedName,
-    inside_image,
     lock_worktree,
 )
 from .pipeline import (
@@ -1082,7 +1081,10 @@ async def _resolve_head_worktree(root: Path) -> Path:
     candidate = (root / branch).resolve()
     if candidate.exists() and candidate.is_dir():
         return candidate
-    return root
+    raise FileNotFoundError(
+        f"bare repository at '{root}' resolved HEAD branch '{branch}', but expected "
+        f"worktree directory is missing: {candidate}"
+    )
 
 
 @on_init(requires=[init_repository], ephemeral=True)
@@ -1318,6 +1320,33 @@ async def _podman_ids(
     except:
         pass
     return out
+
+
+async def _podman_retry(
+    args: list[str],
+    *,
+    context: str,
+    attempts: int = 3,
+    delay: float = 0.5,
+) -> CompletedProcess:
+    if attempts < 1:
+        raise ValueError("attempts must be >= 1")
+    if delay <= 0:
+        raise ValueError("delay must be > 0")
+
+    last: CommandError | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            return await podman_cmd(args, capture_output=True)
+        except CommandError as err:
+            last = err
+            if attempt >= attempts:
+                break
+            await asyncio.sleep(delay * (2 ** (attempt - 1)))
+
+    assert last is not None
+    cmd = " ".join(shlex.quote(arg) for arg in ["podman", *args])
+    raise OSError(f"{context} after {attempts} attempts ({cmd}):\n{last}") from last
 
 
 class Container(BaseModel):
@@ -1731,7 +1760,7 @@ class Image(BaseModel):
         # inside the container
         project_root = await env.project_root
         worktree = env.worktree.relative_to(project_root)
-        worktree_env = "." if worktree == Path(".") else worktree.as_posix()
+        worktree_env = worktree.as_posix()
 
         # create private runtime context inside the worktree's metadata directory to
         # hold temporary artifacts for each container.  Storing these artifacts in the
@@ -2306,10 +2335,30 @@ class Environment:
             image_args=image_args,
         )
         run_id = uuid.uuid4().hex
-        branch_name = sanitize_name(
-            self.worktree.relative_to(await self.project_root).as_posix()
-        )
-        image_name = f"{project_name}.{branch_name}.{tag}.{run_id[:7]}"
+        project_root = await self.project_root
+        if self.worktree != project_root:  # bare parent-repository mode
+            scope_name = sanitize_name(self.worktree.relative_to(project_root).as_posix())
+        else:  # non-bare single-worktree mode
+            head = await run(
+                ["git", "-C", str(self.worktree), "symbolic-ref", "--quiet", "--short", "HEAD"],
+                check=False,
+                capture_output=True,
+            )
+            head_branch = head.stdout.strip()
+            if head.returncode == 0 and head_branch:
+                scope_name = sanitize_name(head_branch)
+            else:  # detached HEAD fallback
+                sha = await run(
+                    ["git", "-C", str(self.worktree), "rev-parse", "--short", "HEAD"],
+                    check=False,
+                    capture_output=True,
+                )
+                short_sha = sha.stdout.strip()
+                if sha.returncode == 0 and short_sha:
+                    scope_name = sanitize_name(f"detached-{short_sha}")
+                else:
+                    scope_name = "detached"
+        image_name = f"{project_name}.{scope_name}.{tag}.{run_id[:7]}"
         iid_file = self.worktree / METADATA_TMP / f"{image_name}.iid"
         iid_file.parent.mkdir(parents=True, exist_ok=True)
         await podman_cmd([
@@ -2424,15 +2473,6 @@ async def _cli_images(
     return await _podman_ids("image", labels=labels, timeout=timeout)
 
 
-def _recover_spec(worktree: Path, workload: str | None, tag: str | None) -> str:
-    spec = str(worktree)
-    if workload:
-        spec += f"@{workload}"
-    if tag:
-        spec += f":{tag}"
-    return spec
-
-
 async def _start_rpc_sidecar(
     *,
     container: Container,
@@ -2503,31 +2543,13 @@ async def _stop_rpc_sidecar(sidecar: asyncio.subprocess.Process | None) -> None:
             pass
 
 
-async def _podman_remote_retry(
-    args: list[str],
-    *,
-    context: str,
-    attempts: int = 3,
-    delay: float = 0.5,
-) -> CompletedProcess:
-    if attempts < 1:
-        raise ValueError("attempts must be >= 1")
-    if delay <= 0:
-        raise ValueError("delay must be > 0")
-
-    cmd = " ".join(shlex.quote(arg) for arg in ["podman", *args])
-    last: CommandError | None = None
-    for attempt in range(1, attempts + 1):
-        try:
-            return await podman_cmd(args, capture_output=True)
-        except CommandError as err:
-            last = err
-            if attempt >= attempts:
-                break
-            await asyncio.sleep(delay * (2 ** (attempt - 1)))
-
-    assert last is not None
-    raise OSError(f"{context} after {attempts} attempts ({cmd}):\n{last}") from last
+def _recover_spec(worktree: Path, workload: str | None, tag: str | None) -> str:
+    spec = str(worktree)
+    if workload:
+        spec += f"@{workload}"
+    if tag:
+        spec += f":{tag}"
+    return spec
 
 
 def _parse_output_format(value: str, *, allow_id: bool) -> tuple[str, str | None]:
@@ -2691,7 +2713,7 @@ async def podman_publish(
                 image = built[tag]
                 ref = f"{repo}:{publish_version}{suffix}-{arch}"
                 await podman_cmd(["tag", image.id, ref], capture_output=True)
-                await _podman_remote_retry(
+                await _podman_retry(
                     ["push", ref],
                     context=f"failed to push arch image ref '{ref}'",
                 )
@@ -2705,7 +2727,7 @@ async def podman_publish(
             source_refs = [f"{manifest_ref}-{arch}" for arch in arches]
             for ref in source_refs:
                 try:
-                    await _podman_remote_retry(
+                    await _podman_retry(
                         ["manifest", "inspect", f"docker://{ref}"],
                         context=f"failed to verify manifest source ref '{ref}'",
                     )
@@ -2721,14 +2743,14 @@ async def podman_publish(
                 )
                 await podman_cmd(["manifest", "create", manifest_ref], capture_output=True)
                 for ref in source_refs:
-                    await _podman_remote_retry(
+                    await _podman_retry(
                         ["manifest", "add", manifest_ref, f"docker://{ref}"],
                         context=(
                             "failed to add source image to manifest "
                             f"'{manifest_ref}' from '{ref}'"
                         ),
                     )
-                await _podman_remote_retry(
+                await _podman_retry(
                     ["manifest", "push", "--all", manifest_ref, f"docker://{manifest_ref}"],
                     context=f"failed to push manifest '{manifest_ref}'",
                 )
@@ -3251,6 +3273,7 @@ async def podman_rm(
     if workload is not None:
         raise NotImplementedError("kubernetes workloads are not yet supported")
 
+    # pylint: disable=protected-access
     async with Environment(worktree, timeout=deadline - time.time()) as env:
         if tag is None:
             while env.images:

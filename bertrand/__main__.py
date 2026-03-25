@@ -42,7 +42,6 @@ from .env.container import (
 )
 from .env.config import (
     CONTAINER_ARTIFACT_DIR,
-    DEFAULT_TAG,
     IMAGE_TAG_ENV,
     WORKTREE_MOUNT,
     Config,
