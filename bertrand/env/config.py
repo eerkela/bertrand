@@ -2490,7 +2490,8 @@ class GitIgnore(Resource):
     async def render(self, config: Config, tag: str) -> str | None:
         if config.bertrand is None:
             return None
-        patterns = config.bertrand.ignore.copy()
+        patterns = [str(METADATA_DIR / "*")]  # always ignore Bertrand's metadata directory
+        patterns.extend(config.bertrand.ignore)
         patterns.extend(config.bertrand.git_ignore)
         return _dump_ignore_list(patterns)
 
@@ -2506,7 +2507,8 @@ class ContainerIgnore(Resource):
     async def render(self, config: Config, tag: str) -> str | None:
         if config.bertrand is None:
             return None
-        patterns = config.bertrand.ignore.copy()
+        patterns = [str(METADATA_DIR / "*")]  # always ignore Bertrand's metadata directory
+        patterns.extend(config.bertrand.ignore)
         patterns.extend(config.bertrand.container_ignore)
         return _dump_ignore_list(patterns)
 

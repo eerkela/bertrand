@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: "Release tag to re-publish (must match project version, e.g. 1.2.3)"
+        description: "Release tag to re-publish (must match project version, e.g. 1.2.3 or v1.2.3)"
         required: true
         type: string
 
@@ -83,7 +83,14 @@ jobs:
         run: |
           set -euo pipefail
           repo="$(printf '%s' "${OCI_REPO}" | tr '[:upper:]' '[:lower:]')"
-          bertrand publish --repo "${repo}" --version "${RELEASE_TAG}" .
+          bertrand publish --repo "${repo}" --version "${RELEASE_TAG}" --arch-out ".bertrand-publish/arch.txt" .
+
+      - name: Upload architecture artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: publish-arch-${{ matrix.arch }}
+          path: .bertrand-publish/arch.txt
+          if-no-files-found: error
 
   manifest:
     name: Publish multi-arch manifests
@@ -131,12 +138,30 @@ jobs:
           set -euo pipefail
           echo "${GHCR_TOKEN}" | podman login ghcr.io --username "${GITHUB_ACTOR}" --password-stdin
 
+      - name: Download architecture artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: .bertrand-publish
+          pattern: publish-arch-*
+          merge-multiple: true
+
       - name: Assemble and push manifests
         shell: bash
         env:
           OCI_REPO: ghcr.io/${{ github.repository }}
         run: |
           set -euo pipefail
+          shopt -s nullglob
+          files=(.bertrand-publish/*.txt)
+          if [[ ${#files[@]} -eq 0 ]]; then
+            echo "no architecture artifacts were produced by build jobs" >&2
+            exit 1
+          fi
+          arches="$(cat "${files[@]}" | awk 'NF' | tr '[:upper:]' '[:lower:]' | sort -u | paste -sd, -)"
+          if [[ -z "${arches}" ]]; then
+            echo "failed to derive manifest architecture list from artifacts" >&2
+            exit 1
+          fi
           repo="$(printf '%s' "${OCI_REPO}" | tr '[:upper:]' '[:lower:]')"
-          bertrand publish --manifest --repo "${repo}" --version "${RELEASE_TAG}" .
+          bertrand publish --manifest --repo "${repo}" --version "${RELEASE_TAG}" --manifest-arches "${arches}" .
 {% endraw %}

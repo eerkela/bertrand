@@ -17,20 +17,12 @@ import time
 import uuid
 
 from collections.abc import Mapping
-from dataclasses import dataclass, asdict, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from importlib import resources as importlib_resources
 from pathlib import Path, PosixPath
 from types import TracebackType
-from typing import (
-    Annotated,
-    Any,
-    Callable,
-    Literal,
-    Sequence,
-    Self,
-    cast,
-)
+from typing import Annotated, Any, Literal, Sequence, Self
 
 from pydantic import (
     AfterValidator,
@@ -83,7 +75,6 @@ from .pipeline import (
     atomic,
     detect_package_manager,
     on_init,
-    on_publish,
 )
 from .run import (
     CommandError,
@@ -159,7 +150,6 @@ type ContainerState = Literal[
 ]
 type CreatedAt = Annotated[AwareDatetime, AfterValidator(_to_utc)]
 type ArgsList = list[NonEmpty[Trimmed]]
-type Validator = Callable[[JSONValue], Any]
 
 
 def _init_assume_yes(ctx: Pipeline.InProgress) -> bool:
@@ -2346,259 +2336,46 @@ class Environment:
         return existing
 
 
-def _check_boolean(value: Any) -> bool:
-    if not isinstance(value, bool):
-        raise ValueError(f"expected a boolean value, got: {value}")
-    return value
+def _normalize_version(value: str) -> str:
+    out = value.strip()
+    if not out:
+        raise ValueError("version cannot be empty")
+    if out.startswith("v") and len(out) > 1:
+        out = out[1:]
+    if not out:
+        raise ValueError("version cannot be empty")
+    return out
 
 
-# pylint: disable=missing-function-docstring, missing-param-doc
-# pylint: disable=missing-return-doc, unused-argument, protected-access
+def _normalize_arch(value: str) -> str:
+    arch = value.strip().lower()
+    if not arch:
+        raise ValueError("architecture cannot be empty")
+    return NORMALIZE_ARCH.get(
+        arch,
+        re.sub(r"[^a-z0-9._-]+", "-", arch).strip("-")
+    )
 
 
-@dataclass
-class _Command:
-
-    @staticmethod
-    def _validate_env(x: JSONValue) -> Path | None:
-        if x is None:
-            return None
-        if not isinstance(x, str):
-            raise TypeError("environment path must be a string")
-        x = x.strip()
-        if not x:
-            return None
-        return Path(x).expanduser().resolve()
-
-    @staticmethod
-    def _validate_image(x: JSONValue) -> str:
-        if x is None:
-            return ""
-        if not isinstance(x, str):
-            raise TypeError("image tag must be a string")
-        x = x.strip()
-        sanitized = sanitize_name(x)
-        if x != sanitized:
-            raise ValueError(
-                f"invalid image tag: '{x}' (must contain only alphanumerics, '_', or '.')"
-            )
-        return x
-
-    @staticmethod
-    def _validate_container(x: JSONValue) -> str:
-        if x is None:
-            return ""
-        if not isinstance(x, str):
-            raise TypeError("container tag must be a string")
-        x = x.strip()
-        sanitized = sanitize_name(x)
-        if x != sanitized:
-            raise ValueError(
-                f"invalid container tag: '{x}' (must contain only alphanumerics, '_', or '.')"
-            )
-        return x
-
-    env: Validator = field(default=_validate_env)
-    image_tag: Validator = field(default=_validate_image)
-    container_tag: Validator = field(default=_validate_container)
-
-    def _call(self, ctx: Pipeline.InProgress) -> None:
-        # pylint: disable=no-member
-        # extract and validate all arguments from the context
-        kwargs = {k: v(ctx.get(k)) for k, v in asdict(self).items()}
-
-        # if no environment is given, call the subclass's `all()` method
-        env_root = kwargs.pop("env")
-        if not env_root:
-            if kwargs["image_tag"] or kwargs["container_tag"]:
-                raise TypeError("cannot specify image or container tag without environment")
-            kwargs["env"] = None
-            self.all(ctx, **kwargs)  # type: ignore[attr-defined]
-            return
-
-        # load environment metadata
-        with Environment(env_root, timeout=TIMEOUT) as env:
-            kwargs["env"] = env
-
-            # if no image tag is given, call the subclass's `environment()` method
-            if not kwargs["image_tag"]:
-                if kwargs["container_tag"]:
-                    raise TypeError("cannot specify a container when image tag is None")
-                self.environment(ctx, **kwargs)  # type: ignore[attr-defined]
-                return
-
-            # if no container tag is given, call the subclass's `image()`
-            if not kwargs["container_tag"]:
-                self.image(ctx, **kwargs)  # type: ignore[attr-defined]
-                return
-
-            # otherwise, call the subclass's `container()` method
-            self.container(ctx, **kwargs)  # type: ignore[attr-defined]
-
-    def __call__(self, ctx: Pipeline.InProgress) -> None:
-        if Environment.current() is not None:
-            raise OSError("cannot invoke podman from within a Bertrand container")
-        self._call(ctx)
-
-
-@dataclass
-class Publish(_Command):
-    """Build and publish Bertrand images to a remote OCI registry.  This command is
-    meant to be used in CI workflows triggered by git tags, and usually does not need
-    to be invoked by the user directly.
-    """
-    @staticmethod
-    def _validate_version(x: JSONValue) -> str | None:
-        if x is None:
-            return None
-        if not isinstance(x, str):
-            raise TypeError("version must be a string")
-        x = x.strip()
-        return x or None
-
-    @staticmethod
-    def _validate_repo(x: JSONValue) -> str:
-        if not isinstance(x, str):
-            raise TypeError("OCI repository must be a string")
-        x = x.strip()
-        if not x:
-            raise ValueError("OCI repository must be non-empty when provided")
-        return x
-
-    version: Validator = field(default=_validate_version)
-    repo: Validator = field(default=_validate_repo)
-    manifest: Validator = field(default=_check_boolean)
-
-    @staticmethod
-    def container(
-        ctx: Pipeline.InProgress,
-        *,
-        env: Environment,
-        image_tag: str,
-        container_tag: str,
-        version: str | None,
-        repo: str,
-        manifest: bool,
-        **kwargs: Any
-    ) -> None:
-        raise OSError(
-            "cannot publish a singular container.  Specify an environment scope only."
-        )
-
-    @staticmethod
-    def image(
-        ctx: Pipeline.InProgress,
-        *,
-        env: Environment,
-        image_tag: str,
-        version: str | None,
-        repo: str,
-        manifest: bool,
-        **kwargs: Any
-    ) -> None:
-        raise OSError(
-            "cannot publish a singular image.  Specify an environment scope only."
-        )
-
-    @staticmethod
-    def environment(
-        ctx: Pipeline.InProgress,
-        *,
-        env: Environment,
-        version: str | None,
-        repo: str,
-        manifest: bool,
-        **kwargs: Any
-    ) -> None:
-        # get version number from project configuration, and confirm it matches the
-        # tagged version if provided
-        project_version = env.config.get("version")
-        if not isinstance(project_version, str):
-            raise OSError(f"missing or invalid project version: {project_version}")
-        project_version = project_version.strip()
-        if not project_version:
-            raise OSError(f"project version must be non-empty: '{project_version}'")
-        if version is not None and version != project_version:
-            raise OSError(
-                f"publish version '{version}' does not match project version "
-                f"'{project_version}'"
-            )
-
-        # detect host architecture
-        arch = podman_cmd(
-            ["info", "--format", "{{.Host.Arch}}"],
-            capture_output=True
-        ).stdout.strip().lower()
+def _parse_manifest_arches(value: str | None) -> list[str]:
+    if value is None:
+        raise ValueError("--manifest requires --manifest-arches")
+    raw = value.strip()
+    if not raw:
+        raise ValueError("--manifest-arches cannot be empty")
+    out: list[str] = []
+    seen: set[str] = set()
+    for token in raw.split(","):
+        arch = _normalize_arch(token)
         if not arch:
-            arch = "unknown"
-        else:
-            arch = NORMALIZE_ARCH.get(
-                arch,
-                re.sub(r"[^a-z0-9._-]+", "-", arch).strip("-") or "unknown"
-            )
-
-        # phase 1: build, tag, and push all images for this architecture
-        if not manifest:
-            for image_tag in env.config["images"]:
-                image, _ = Build._image(ctx, env=env, image_tag=image_tag, publish=True)
-                suffix = f"-{image_tag}" if image_tag else ""
-                ref = f"{repo}:{project_version}{suffix}-{arch}"
-                podman_cmd(["tag", image.id, ref], capture_output=True)
-                podman_cmd(["push", ref], capture_output=True)
-            return
-
-        # phase 2: assemble manifest and push to GHCR
-        for image_tag in env.config["images"]:
-            suffix = f"-{image_tag}" if image_tag else ""
-            manifest_ref = f"{repo}:{project_version}{suffix}"
-            amd_ref = f"{manifest_ref}-amd64"
-            arm_ref = f"{manifest_ref}-arm64"
-
-            # TODO: what are all of these podman commands doing, actually?
-            for ref in (amd_ref, arm_ref):
-                try:
-                    podman_cmd(
-                        ["manifest", "inspect", f"docker://{ref}"],
-                        capture_output=True,
-                    )
-                except Exception as err:
-                    raise OSError(f"missing source image for manifest: {ref}\n{err}") from err
-            try:
-                podman_cmd(
-                    ["manifest", "rm", manifest_ref],
-                    check=False,
-                    capture_output=True,
-                )
-                podman_cmd(["manifest", "create", manifest_ref], capture_output=True)
-                podman_cmd(
-                    ["manifest", "add", manifest_ref, f"docker://{amd_ref}"],
-                    capture_output=True,
-                )
-                podman_cmd(
-                    ["manifest", "add", manifest_ref, f"docker://{arm_ref}"],
-                    capture_output=True,
-                )
-                podman_cmd(
-                    ["manifest", "push", "--all", manifest_ref, f"docker://{manifest_ref}"],
-                    capture_output=True,
-                )
-            finally:
-                podman_cmd(
-                    ["manifest", "rm", manifest_ref],
-                    check=False,
-                    capture_output=True,
-                )
-
-    @staticmethod
-    def all(
-        ctx: Pipeline.InProgress,
-        *,
-        version: str | None,
-        repo: str,
-        manifest: bool,
-        **kwargs: Any
-    ) -> None:
-        raise OSError("cannot publish all environments")
+            raise ValueError(f"invalid architecture in --manifest-arches: {token!r}")
+        if arch in seen:
+            continue
+        seen.add(arch)
+        out.append(arch)
+    if not out:
+        raise ValueError("--manifest-arches must include at least one architecture")
+    return out
 
 
 async def _cli_containers(
@@ -2709,6 +2486,33 @@ async def _stop_rpc_sidecar(sidecar: asyncio.subprocess.Process | None) -> None:
             pass
 
 
+async def _podman_remote_retry(
+    args: list[str],
+    *,
+    context: str,
+    attempts: int = 3,
+    delay: float = 0.5,
+) -> CompletedProcess:
+    if attempts < 1:
+        raise ValueError("attempts must be >= 1")
+    if delay <= 0:
+        raise ValueError("delay must be > 0")
+
+    cmd = " ".join(shlex.quote(arg) for arg in ["podman", *args])
+    last: CommandError | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            return await podman_cmd(args, capture_output=True)
+        except CommandError as err:
+            last = err
+            if attempt >= attempts:
+                break
+            await asyncio.sleep(delay * (2 ** (attempt - 1)))
+
+    assert last is not None
+    raise OSError(f"{context} after {attempts} attempts ({cmd}):\n{last}") from last
+
+
 def _parse_output_format(value: str, *, allow_id: bool) -> tuple[str, str | None]:
     raw = value.strip()
     if not raw:
@@ -2778,9 +2582,146 @@ async def podman_build(
         await env.build(tag, quiet=quiet)
 
 
-@on_publish(ephemeral=True)
-async def podman_publish(ctx: Pipeline.InProgress) -> None:
-    Publish()(ctx)
+async def podman_publish(
+    worktree: Path,
+    *,
+    repo: str,
+    version: str | None,
+    manifest: bool,
+    manifest_arches: str | None,
+) -> str | None:
+    """Build and publish Bertrand images for all declared tags in an environment.
+
+    Parameters
+    ----------
+    worktree : Path
+        A valid environment worktree path.
+    repo : str
+        Remote OCI repository where tags/manifests should be published.
+    version : str | None
+        Optional release version to enforce.  Accepts `X.Y.Z` or `vX.Y.Z`.
+    manifest : bool
+        If True, assemble and push multi-arch manifests only.
+    manifest_arches : str | None
+        Comma-separated architectures for manifest assembly.  Required when
+        `manifest=True`.
+
+    Returns
+    -------
+    str | None
+        The normalized host architecture in build mode (`manifest=False`), otherwise
+        None.
+
+    Raises
+    ------
+    OSError
+        If the environment is invalid, the project version cannot be determined, the
+        configured tags are invalid, or the podman CLI encounters an error during build
+        or publish.
+    ValueError
+        If the repository name is empty, the version string is invalid, or the manifest
+        architectures are invalid.
+    """
+    repo = repo.strip().lower()
+    if not repo:
+        raise ValueError("OCI repository must be non-empty when provided")
+
+    async with Environment(worktree, timeout=TIMEOUT) as env:
+        config = env.config
+        if config.pyproject is None:
+            raise OSError("could not determine project version for publish")
+        if config.bertrand is None:
+            raise OSError("could not determine configured tags for publish")
+        tags = [entry.tag for entry in config.bertrand.tags]
+        if not tags:
+            raise OSError("publish requires at least one configured tag")
+
+        # normalize release version and ensure it matches project version
+        project_version = _normalize_version(config.pyproject.project.version)
+        publish_version = project_version
+        if version is not None:
+            publish_version = _normalize_version(version)
+            if publish_version != project_version:
+                raise OSError(
+                    f"publish version '{version}' does not match project version "
+                    f"'{project_version}'"
+                )
+
+        # phase 1: build + publish arch-specific refs for the current runner
+        if not manifest:
+            arch = _normalize_arch((await podman_cmd(
+                ["info", "--format", "{{.Host.Arch}}"],
+                capture_output=True,
+            )).stdout)
+            if not arch:
+                raise OSError(
+                    "could not determine host architecture from podman info output"
+                )
+
+            # build all declared tags first
+            built: dict[str, Image] = {}
+            for tag in tags:
+                try:
+                    built[tag] = await env.build(tag, quiet=False)
+                except Exception as err:
+                    raise OSError(
+                        f"failed to build tag '{tag}' for publish"
+                    ) from err
+
+            # push only after full build success
+            for tag in tags:
+                suffix = "" if tag == DEFAULT_TAG else f"-{tag}"
+                image = built[tag]
+                ref = f"{repo}:{publish_version}{suffix}-{arch}"
+                await podman_cmd(["tag", image.id, ref], capture_output=True)
+                await _podman_remote_retry(
+                    ["push", ref],
+                    context=f"failed to push arch image ref '{ref}'",
+                )
+            return arch
+
+        # phase 2: assemble and publish multi-arch manifests
+        arches = _parse_manifest_arches(manifest_arches)
+        for tag in tags:
+            suffix = "" if tag == DEFAULT_TAG else f"-{tag}"
+            manifest_ref = f"{repo}:{publish_version}{suffix}"
+            source_refs = [f"{manifest_ref}-{arch}" for arch in arches]
+            for ref in source_refs:
+                try:
+                    await _podman_remote_retry(
+                        ["manifest", "inspect", f"docker://{ref}"],
+                        context=f"failed to verify manifest source ref '{ref}'",
+                    )
+                except OSError as err:
+                    raise OSError(
+                        f"failed to verify source image for manifest after retries: {ref}"
+                    ) from err
+            try:
+                await podman_cmd(
+                    ["manifest", "rm", manifest_ref],
+                    check=False,
+                    capture_output=True,
+                )
+                await podman_cmd(["manifest", "create", manifest_ref], capture_output=True)
+                for ref in source_refs:
+                    await _podman_remote_retry(
+                        ["manifest", "add", manifest_ref, f"docker://{ref}"],
+                        context=(
+                            "failed to add source image to manifest "
+                            f"'{manifest_ref}' from '{ref}'"
+                        ),
+                    )
+                await _podman_remote_retry(
+                    ["manifest", "push", "--all", manifest_ref, f"docker://{manifest_ref}"],
+                    context=f"failed to push manifest '{manifest_ref}'",
+                )
+            finally:
+                await podman_cmd(
+                    ["manifest", "rm", manifest_ref],
+                    check=False,
+                    capture_output=True,
+                )
+        return None
 
 
 async def podman_start(

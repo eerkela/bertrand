@@ -8,7 +8,6 @@ from .core import (
     Pipeline,
     atomic,
     on_init,
-    on_publish,
 )
 from .filesystem import (
     Chmod,

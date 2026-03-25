@@ -11,6 +11,7 @@ import sys
 import time
 
 from datetime import datetime
+from pathlib import Path
 from typing import cast
 
 from .env.rpc import CodeOpen, rpc
@@ -19,7 +20,6 @@ from .env.pipeline import (
     JSONValue,
     Pipeline,
     on_init,
-    on_publish,
 )
 from .env.container import (
     TIMEOUT,
@@ -32,6 +32,7 @@ from .env.container import (
     podman_ls,
     podman_monitor,
     podman_pause,
+    podman_publish,
     podman_restart,
     podman_resume,
     podman_rm,
@@ -46,7 +47,7 @@ from .env.config import (
     WORKTREE_MOUNT,
     Config,
 )
-from .env.run import TimeoutExpired, confirm
+from .env.run import TimeoutExpired, atomic_write_text, confirm
 from . import __version__
 
 # pylint: disable=unused-argument
@@ -239,11 +240,12 @@ class External:
             )
             command.add_argument(
                 "path",
-                metavar="ENV[:IMAGE[:CONTAINER]]",
+                metavar="ENV",
                 help=
                     "A path to the specified environment directory.  This may be an "
                     "absolute or relative path, and must point to an environment "
-                    "directory produced by 'bertrand init'."
+                    "directory produced by 'bertrand init'.  Publish always targets "
+                    "the entire environment and all declared tags."
             )
             command.add_argument(
                 "--repo",
@@ -258,8 +260,9 @@ class External:
                 metavar="VERSION",
                 default=None,
                 help=
-                    "Optional release version to enforce.  If provided, it must match "
-                    "the current project version from its configuration files exactly.",
+                    "Optional release version to enforce.  Accepts both 'X.Y.Z' and "
+                    "'vX.Y.Z', and must match the current project version after "
+                    "normalization.",
             )
             command.add_argument(
                 "--manifest",
@@ -270,6 +273,23 @@ class External:
                     "be used as a second stage in CI workflows after a successful "
                     "build-and-publish stage with the same version and repo "
                     "parameters.",
+            )
+            command.add_argument(
+                "--manifest-arches",
+                metavar="CSV",
+                default=None,
+                help=
+                    "Comma-separated architecture list for --manifest mode (for "
+                    "example: 'amd64,arm64').  Required when --manifest is set.",
+            )
+            command.add_argument(
+                "--arch-out",
+                metavar="PATH",
+                default=None,
+                help=
+                    "Optional output path to write the normalized host architecture "
+                    "detected during build mode.  This is intended for CI artifact "
+                    "handoff and is invalid with --manifest.",
             )
             command.set_defaults(handler=External.publish)
 
@@ -918,28 +938,69 @@ class External:
         Raises
         ------
         OSError
-            If the specified path includes an image or container tag, or if no
-            repository is provided.
+            If the path includes workload/tag targeting, or if no repository is
+            provided.
+        TimeoutExpired
+            If a nested command times out while publishing.  This should never occur
+            under normal circumstances, and the 'publish' command intentionally does
+            not accept a timeout argument, so this can only be surfaced from an
+            internal error.
         """
-        env, image_tag, container_tag = _parse(args.path)
-        if env is None:
-            raise OSError("must specify an environment to publish")
-        if image_tag or container_tag:
-            raise OSError(
-                "publish currently supports environment scope only.  Specify ENV "
-                "without image/container tags."
-            )
+        now = time.time()
         repo = args.repo
         if repo is None or not repo.strip():
             raise OSError("must specify --repo when publishing")
-        on_publish.do(
-            env=env,
-            image_tag=image_tag,
-            container_tag=container_tag,
-            version=args.version,
-            repo=repo,
-            manifest=args.manifest,
-        )
+        arch_out = args.arch_out
+        if arch_out is not None:
+            arch_out = arch_out.strip()
+            if not arch_out:
+                raise OSError("--arch-out must not be empty")
+            if args.manifest:
+                raise OSError("--arch-out is only valid in build mode (without --manifest)")
+
+        with asyncio.Runner() as runner:
+            worktree, workload, tag = runner.run(Environment.parse(args.path))
+            if workload is not None or tag is not None:
+                raise OSError(
+                    "publish supports ENV scope only.  Omit workload (@...) and tag "
+                    "(:...) selectors."
+                )
+            try:
+                arch = runner.run(podman_publish(
+                    worktree,
+                    repo=repo,
+                    version=args.version,
+                    manifest=args.manifest,
+                    manifest_arches=args.manifest_arches,
+                ))
+                if arch_out is not None:
+                    if arch is None:
+                        raise OSError(
+                            "internal publish error: architecture output requested "
+                            "but publish ran in manifest mode"
+                        )
+                    atomic_write_text(
+                        Path(arch_out).expanduser().resolve(),
+                        f"{arch}\n",
+                        encoding="utf-8",
+                    )
+            except (TimeoutError, TimeoutExpired) as err:
+                start = datetime.fromtimestamp(now)
+                cmd = ["bertrand", "publish", str(worktree), "--repo", repo]
+                if args.version:
+                    cmd.extend(["--version", args.version])
+                if args.manifest:
+                    cmd.append("--manifest")
+                if args.manifest_arches:
+                    cmd.extend(["--manifest-arches", args.manifest_arches])
+                if arch_out:
+                    cmd.extend(["--arch-out", arch_out])
+                raise TimeoutExpired(
+                    cmd=cmd,
+                    timeout=0.0,  # indefinite
+                    output=None,
+                    stderr=f"started: {start}\nstopped: {datetime.now()}\n"
+                ) from err
 
     @staticmethod
     def start(args: argparse.Namespace) -> None:
@@ -1402,7 +1463,7 @@ class External:
     # NOTE: order is important here, as it defines the order in which pipelines are
     # undone during cleanup, which must be done in a safe ordering to avoid leaving
     # the system in an inconsistent state.
-    pipelines: dict[str, Pipeline] = {"publish": on_publish, "init": on_init}
+    pipelines: dict[str, Pipeline] = {"init": on_init}
 
     @staticmethod
     def clean(args: argparse.Namespace) -> None:
