@@ -5,21 +5,19 @@ from __future__ import annotations
 import argparse
 import asyncio
 import os
-import shutil
 import subprocess
-import sys
 import time
 
 from datetime import datetime
 from pathlib import Path
-from typing import cast
 
-from .env.rpc import CodeOpen, rpc
-from .env.config import inside_image, inside_container
-from .env.pipeline import (
-    JSONValue,
-    Pipeline,
-    on_init,
+from .env.config import (
+    CONTAINER_ARTIFACT_DIR,
+    IMAGE_TAG_ENV,
+    WORKTREE_MOUNT,
+    Config,
+    inside_image,
+    inside_container
 )
 from .env.container import (
     TIMEOUT,
@@ -40,12 +38,8 @@ from .env.container import (
     podman_stop,
     podman_top,
 )
-from .env.config import (
-    CONTAINER_ARTIFACT_DIR,
-    IMAGE_TAG_ENV,
-    WORKTREE_MOUNT,
-    Config,
-)
+from .env.init import bertrand_init, bertrand_clean
+from .env.rpc import CodeOpen, rpc
 from .env.run import TimeoutExpired, atomic_write_text, confirm
 from . import __version__
 
@@ -69,13 +63,6 @@ from . import __version__
 #         print("Cleaning up swap file...")
 #         run([*sudo, "swapoff", str(swapfile)], check=False)
 #         swapfile.unlink(missing_ok=True)
-
-
-def _parse(path: str | None) -> tuple[str | None, str, str]:
-    if path is None:
-        return (None, "", "")
-    else:
-        return Environment.parse(path)
 
 
 def _require_active_image_tag() -> str:
@@ -148,21 +135,20 @@ class External:
                 "init",
                 help=
                     "Install Bertrand's container engine if it is not already present, "
-                    "and optionally initialize a new project at the specified path "
-                    "(relative or absolute).  If an environment path is provided, this "
-                    "will create a directory at that path with a template Containerfile, "
-                    ".containerignore, and pyproject.toml.  If omitted, this command "
-                    "only bootstraps host prerequisites for containerized workflows.",
+                    "and optionally initialize a project at the specified root path "
+                    "(relative or absolute).  If a path is provided, this command "
+                    "treats it as a project root and initializes repository/hook "
+                    "infrastructure there.  If omitted, only host bootstrap steps "
+                    "are performed for CI/container prerequisites.",
             )
             command.add_argument(
                 "path",
-                metavar="ENV",
+                metavar="PROJECT",
                 nargs="?",
                 help=
-                    "A path to the specified environment directory.  This may be an "
-                    "absolute or relative path, and must not point to an existing "
-                    "file.  The last component will be used as the project name.  If "
-                    "omitted, only host bootstrap steps are performed.",
+                    "Project root path.  This may be absolute or relative and must "
+                    "not be a file.  If omitted, only host bootstrap steps are "
+                    "performed.",
             )
             command.add_argument(
                 "-y", "--yes",
@@ -178,7 +164,7 @@ class External:
                 default=None,
                 help=
                     "Layout profile to apply for environment structure and resource "
-                    "placement.  Requires ENV.  Defaults to src when ENV is provided.",
+                    "placement.  Requires PROJECT.",
             )
             command.add_argument(
                 "--lang",
@@ -186,8 +172,8 @@ class External:
                 choices=("python", "cpp"),
                 default=None,
                 help=
-                    "Language capability to include (repeatable).  Requires ENV.  If "
-                    "omitted, defaults to python and cpp when ENV is provided.",
+                    "Language capability to include (repeatable).  Requires PROJECT.  If "
+                    "omitted and PROJECT is new, defaults to python and cpp.",
             )
             command.add_argument(
                 "--code",
@@ -195,8 +181,8 @@ class External:
                 default=None,
                 help=
                     "Editor integration capability to include.  Use 'none' to disable "
-                    "editor capability entirely.  Requires ENV.  Defaults to vscode "
-                    "when ENV is provided.",
+                    "editor capability entirely.  Requires PROJECT.  If omitted and "
+                    "PROJECT is new, defaults to vscode.",
             )
             command.set_defaults(handler=External.init)
 
@@ -781,23 +767,17 @@ class External:
             command = self.commands.add_parser(
                 "clean",
                 help=
-                    "Completely remove all traces of Bertrand from the host system, "
-                    "including all images and containers it is managing, but leaving "
-                    "environment directories intact.  This command will also attempt "
-                    "to uninstall Bertrand's container engine (if it was installed by "
-                    "'bertrand init') and replace any configurations it overwrote, "
-                    "making a best-effort attempt to restore the system to its "
-                    "previous state.  The container engine and configuration changes "
-                    "will be reinstalled by a future 'bertrand init' command if "
-                    "needed.",
+                    "Remove Bertrand-managed runtime artifacts from the host system, "
+                    "including managed containers, images, volumes, and local state "
+                    "files, while leaving environment directories and host container "
+                    "engine installation intact.",
             )
             command.add_argument(
                 "-y", "--yes",
                 action="store_true",
                 help=
-                    "Bypass confirmation prompts and proceed with cleaning all "
-                    "Bertrand images, containers, and the container engine itself.  "
-                    "Use with caution.",
+                    "Bypass confirmation prompts and proceed with Bertrand runtime "
+                    "artifact cleanup.  Use with caution.",
             )
             command.set_defaults(handler=External.clean)
 
@@ -834,59 +814,52 @@ class External:
         Raises
         ------
         OSError
-            If the specified path includes an image or container tag, which is not
-            allowed when initializing an environment directory, or if requested
-            layout options differ from an existing manifest.  In host-only mode (no
-            path), layout options are rejected.
+            If layout options are requested in host-only mode (no path).
         """
-        env, image_tag, container_tag = _parse(args.path)
-        if env is None:
-            if args.profile is not None or args.lang is not None or args.code is not None:
-                raise OSError(
-                    "init layout options (--profile/--lang/--code) require an "
-                    "environment path"
-                )
-            on_init.do(
-                env=None,
-                image_tag=image_tag,
-                container_tag=container_tag,
-                profile=None,
-                capabilities=None,
+        with asyncio.Runner() as runner:
+            project_root: Path | None = None
+            if args.path is not None:
+                project_root = Path(args.path).expanduser().resolve()
+
+            # host-only init path.
+            if project_root is None:
+                if args.profile is not None or args.lang is not None or args.code is not None:
+                    raise OSError(
+                        "init layout options (--profile/--lang/--code) require an "
+                        "project root path"
+                    )
+                runner.run(bertrand_init(
+                    None,
+                    profile=None,
+                    capabilities=None,
+                    yes=args.yes,
+                ))
+                return
+
+            # resolve requested profile/capabilities; defaults for new repositories are
+            # applied in bertrand_init().  Existing repository expansion is deferred.
+            profile = args.profile
+            requested = args.lang is not None or args.code is not None
+            deduped: set[str] | None = None
+            if requested:
+                caps = list(args.lang) if args.lang is not None else ["python", "cpp"]
+                caps.append(args.code if args.code is not None else "vscode")
+                seen: set[str] = set()
+                deduped = set()
+                for cap in caps:
+                    if cap in seen:
+                        continue
+                    seen.add(cap)
+                    deduped.add(cap)
+                if not deduped:
+                    raise OSError("init capabilities must not be empty")
+
+            runner.run(bertrand_init(
+                project_root,
+                profile=profile,
+                capabilities=deduped,
                 yes=args.yes,
-            )
-            return
-        if image_tag or container_tag:
-            raise OSError(
-                "cannot specify image or container tag when initializing an environment "
-                "directory"
-            )
-
-        # resolve profile + capabilities
-        profile = args.profile if args.profile is not None else "src"
-        capabilities = list(args.lang) if args.lang is not None else ["python", "cpp"]
-        if args.code is not None:
-            capabilities.append(args.code)
-        else:
-            capabilities.append("vscode")
-        seen: set[str] = set()
-        deduped: list[str] = []
-        for cap in capabilities:
-            if cap in seen:
-                continue
-            seen.add(cap)
-            deduped.append(cap)
-        capabilities = deduped
-        if not capabilities:
-            raise OSError("init capabilities must not be empty")
-
-        on_init.do(
-            env=env,
-            image_tag=image_tag,
-            container_tag=container_tag,
-            profile=profile,
-            capabilities=cast(JSONValue, capabilities),
-            yes=args.yes,
-        )
+            ))
 
     @staticmethod
     def build(args: argparse.Namespace) -> None:
@@ -1459,11 +1432,6 @@ class External:
                     stderr=f"started: {start}\nstopped: {stop}\n"
                 ) from err
 
-    # NOTE: order is important here, as it defines the order in which pipelines are
-    # undone during cleanup, which must be done in a safe ordering to avoid leaving
-    # the system in an inconsistent state.
-    pipelines: dict[str, Pipeline] = {"init": on_init}
-
     @staticmethod
     def clean(args: argparse.Namespace) -> None:
         """Execute the `bertrand clean` CLI command.
@@ -1479,20 +1447,15 @@ class External:
             If the user declines the prompt.
         """
         if not confirm(
-            "This will permanently delete all Bertrand images, containers, and the "
-            "container engine itself from the host system.\nAre you sure you want to "
-            "proceed? [y/N] ",
+            "This will permanently delete Bertrand-managed containers, images, "
+            "volumes, and runtime state from the host system.\nAre you sure you want "
+            "to proceed? [y/N] ",
             assume_yes=args.yes,
         ):
             raise OSError("clean declined by user.")
 
         with asyncio.Runner() as runner:
-            for pipe in External.pipelines.values():
-                try:
-                    runner.run(pipe.undo(force=True))
-                    shutil.rmtree(pipe.state_dir, ignore_errors=True)
-                except Exception as e:  # pylint: disable=broad-exception-caught
-                    print(f"bertrand: error during cleanup: {e}", file=sys.stderr)
+            runner.run(bertrand_clean())
 
     def __call__(self) -> None:
         parser = External.Parser()

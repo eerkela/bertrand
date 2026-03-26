@@ -51,9 +51,9 @@ from .config import (
     AbsolutePath,
     Config,
     Editor,
+    JSONValue,
     inside_image,
 )
-from .pipeline import JSONValue
 from .run import  TimeoutExpired, run
 
 # pylint: disable=bare-except, broad-exception-caught

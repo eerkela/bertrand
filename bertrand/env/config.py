@@ -29,11 +29,10 @@ import string
 import tomllib
 
 from dataclasses import dataclass, field
-from collections.abc import Sequence
 from importlib import resources as importlib_resources
 from pathlib import Path, PosixPath
 from types import TracebackType
-from typing import Annotated, Any, Callable, Literal, Self
+from typing import Annotated, Any, Callable, Literal, Mapping, Self, Sequence
 
 from conan.api.model.list import ListPattern, VersionRange
 from conan.api.model.refs import RecipeReference
@@ -773,6 +772,7 @@ def _check_health_log_destination(value: str) -> str:
 
 type NonEmpty[SequenceT: Sequence[Any]] = Annotated[SequenceT, Field(min_length=1)]
 type Scalar = str | bool | int | float
+type JSONValue = None | Scalar | Sequence["JSONValue"] | Mapping[str, "JSONValue"]
 type ResourceKind = Literal["file", "dir"] | None
 type ConanConfValue = Scalar | list[ConanConfValue] | dict[str, ConanConfValue]
 type Trimmed = Annotated[str, StringConstraints(strip_whitespace=True)]

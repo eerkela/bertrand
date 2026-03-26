@@ -17,9 +17,7 @@ import time
 import uuid
 
 from collections.abc import Mapping
-from dataclasses import dataclass
 from datetime import datetime, timezone
-from importlib import resources as importlib_resources
 from pathlib import Path, PosixPath
 from types import TracebackType
 from typing import Annotated, Any, Literal, Sequence, Self
@@ -64,17 +62,6 @@ from .config import (
     SanitizedName,
     lock_worktree,
 )
-from .pipeline import (
-    DelegateUserControllers,
-    EnsureSubIDs,
-    EnsureUserNamespaces,
-    InstallPackage,
-    JSONValue,
-    Pipeline,
-    atomic,
-    detect_package_manager,
-    on_init,
-)
 from .run import (
     CommandError,
     CompletedProcess,
@@ -82,7 +69,6 @@ from .run import (
     TimeoutExpired,
     User,
     atomic_write_text,
-    confirm,
     run,
     sanitize_name,
 )
@@ -92,26 +78,13 @@ from .run import (
 
 # environment metadata info
 CACHES: AbsolutePosixPath = PosixPath("/tmp/.cache")
-DEFAULT_MAX_COMMITS: int = 10
-REFERENCE_TRANSACTION_HOOK: str = "hooks/reference-transaction"
-REFERENCE_TRANSACTION_MARKER: str = "# bertrand-managed: reference-transaction"
-REGISTRY_FILE = on_init.state_dir / "registry.json"
-REGISTRY_LOCK = on_init.state_dir / "registry.lock"
+STATE_DIR = User().home / ".local" / "share" / "bertrand"
+REGISTRY_FILE = STATE_DIR / "registry.json"
+REGISTRY_LOCK = STATE_DIR / "registry.lock"
 REGISTRY_PURGE_BATCH: int = 16
 REGISTRY_PURGE_EVERY: int = 64
 TIMEOUT: int = 30
 VERSION: int = 1
-
-
-# shared fact names during init/enter pipelines
-USER = "user"
-UID = "uid"
-GID = "gid"
-PACKAGE_MANAGER = "package_manager"
-DISTRO_ID = "distro_id"
-DISTRO_VERSION = "distro_version"
-DISTRO_CODENAME = "distro_codename"
-
 
 # CI publish workflow requires an architecture matrix
 NORMALIZE_ARCH = {
@@ -135,7 +108,7 @@ def _to_utc(value: datetime) -> datetime:
     return value.astimezone(timezone.utc)
 
 
-type UUIDStr = Annotated[NonEmpty[NoWhiteSpace], AfterValidator(_check_uuid)]
+type UUID4Hex = Annotated[NonEmpty[NoWhiteSpace], AfterValidator(_check_uuid)]
 type ImageId = NonEmpty[NoWhiteSpace]
 type ContainerId = NonEmpty[NoWhiteSpace]
 type ContainerState = Literal[
@@ -149,415 +122,6 @@ type ContainerState = Literal[
 ]
 type CreatedAt = Annotated[AwareDatetime, AfterValidator(_to_utc)]
 type ArgsList = list[NonEmpty[Trimmed]]
-
-
-def _init_assume_yes(ctx: Pipeline.InProgress) -> bool:
-    raw = ctx.get("yes")
-    if raw is None:
-        return False
-    if isinstance(raw, bool):
-        return raw
-    raise TypeError(f"invalid 'yes' fact type: {type(raw).__name__}")
-
-
-async def _podman_ready() -> bool:
-    """Return True when podman is installed and usable for the current user."""
-    if not shutil.which("podman"):
-        return False
-    result = await run(
-        ["podman", "info", "--format", "json"],
-        check=False,
-        capture_output=True
-    )
-    return result.returncode == 0
-
-
-@atomic
-@dataclass(frozen=True)
-class PurgeBertrandArtifacts:
-    """Clean up Bertrand containers, images, and volumes before uninstalling podman
-    itself.
-    """
-    # pylint: disable=missing-function-docstring, broad-exception-caught, unused-argument
-
-    async def do(self, ctx: Pipeline.InProgress, payload: dict[str, JSONValue]) -> None:
-        return  # no-op; cleanup is handled in undo
-
-    @staticmethod
-    async def undo(
-        ctx: Pipeline.InProgress,
-        payload: dict[str, JSONValue],
-        force: bool
-    ) -> None:
-        if not shutil.which("podman"):
-            return
-
-        # do the same as rm -f to remove all environments as well as their internal
-        # artifacts
-        Rm._all(force=force, timeout=TIMEOUT)  # pylint: disable=protected-access
-
-        # clean up any dangling images/containers/volumes that weren't removed by
-        # rm -f, which can occur if the environment registry is incomplete and the
-        # environment has no containers, preventing us from discovering its mount point
-        try:
-            containers = await _podman_ids("container", {})
-            if containers:
-                await Container.remove(containers, force=True, timeout=TIMEOUT)
-            images = await _podman_ids("image", {})
-            if images:
-                await podman_cmd(["image", "rm", "-f", "-i", *images], check=False)
-            volumes = await _podman_ids("volume", {})
-            if volumes:
-                await podman_cmd(["volume", "rm", "-f", "-i", *volumes], check=False)
-        except:
-            pass
-
-
-@atomic
-@dataclass(frozen=True)
-class InstallPodman(InstallPackage):
-    """Install podman and its dependencies via the detected package manager.  The undo
-    step will first check host podman storage for any containers/images/volumes that
-    aren't managed by Bertrand.  If host queries fail or any such objects are found,
-    uninstallation is skipped to avoid accidentally removing user data.
-    """
-    # pylint: disable=missing-function-docstring, broad-exception-caught, unused-argument
-
-    @staticmethod
-    async def undo(
-        ctx: Pipeline.InProgress,
-        payload: dict[str, JSONValue],
-        force: bool
-    ) -> None:
-        # Conservative: if host state is unknown or in use, skip uninstall to avoid
-        # clobbering user-managed podman resources.
-        try:
-            containers = await _podman_ids("container", {})
-            if containers:
-                return
-            images = await _podman_ids("image", {})
-            if images:
-                return
-            volumes = await _podman_ids("volume", {})
-            if volumes:
-                return
-            await InstallPackage.undo(ctx, payload, force)
-        except:
-            return
-
-
-@on_init(requires=[], version=1)
-async def detect_platform(ctx: Pipeline.InProgress) -> None:
-    """Detect the host platform and package manager to use when installing the
-    container backend.  These are persisted as facts in the pipeline context.
-
-    Parameters
-    ----------
-    ctx : Pipeline.InProgress
-        The in-flight pipeline context.
-    """
-    user = User()
-    ctx[USER] = user.name
-    ctx[UID] = user.uid
-    ctx[GID] = user.gid
-
-    detect = detect_package_manager()
-    ctx[PACKAGE_MANAGER] = detect.manager
-    ctx[DISTRO_ID] = detect.distro_id
-    ctx[DISTRO_VERSION] = detect.version_id
-    ctx[DISTRO_CODENAME] = detect.codename
-
-
-@on_init(requires=[detect_platform], version=1)
-async def install_container_cli(ctx: Pipeline.InProgress) -> None:
-    """Install the base packages required for the container backend via the detected
-    package manager.  This may prompt for confirmation unless init is running with
-    `--yes`.
-
-    Parameters
-    ----------
-    ctx : Pipeline.InProgress
-        The in-flight pipeline context.
-
-    Raises
-    ------
-    OSError
-        If `podman` is not found and installation is declined by the user.
-    """
-    assume_yes = _init_assume_yes(ctx)
-
-    # check if podman CLI is already present
-    cli = shutil.which("podman")
-    if cli:
-        # remember to delete all Bertrand-owned images/containers/artifacts, but do
-        # not remove podman itself, since it was pre-installed.
-        await ctx.do(PurgeBertrandArtifacts())
-        return
-
-    # prompt to install dependencies
-    package_manager = ctx.get(PACKAGE_MANAGER)
-    if not isinstance(package_manager, str):
-        raise OSError(f"Invalid package manager: {package_manager}")
-    if not confirm(
-        "Bertrand requires 'podman' to manage rootless containers.  Would you like to "
-        f"install it now using {package_manager} (requires sudo).\n"
-        "[y/N] ",
-        assume_yes=assume_yes,
-    ):
-        raise OSError("Installation declined by user.")
-
-    # install podman and rootless helpers for the detected distro
-    packages = [
-        "podman",
-        "slirp4netns",
-        "passt",
-        "fuse-overlayfs",
-    ]
-    if package_manager == "apt":
-        packages.append("uidmap")
-    elif package_manager == "dnf":
-        packages.append("shadow-utils")
-    await ctx.do(InstallPodman(
-        manager=package_manager,
-        packages=packages,
-        assume_yes=assume_yes,
-        refresh=True,
-    ))
-
-    # verify installation and record facts for later steps
-    cli = shutil.which("podman")
-    if not cli:
-        raise OSError(
-            "Installation completed, but 'podman' is still not found.  Please "
-            "investigate the issue and ensure the required packages are installed."
-        )
-
-    # remember to delete all images/containers/artifacts on `clean`
-    await ctx.do(PurgeBertrandArtifacts())
-
-
-@on_init(requires=[install_container_cli], version=1)
-async def enable_user_namespaces(ctx: Pipeline.InProgress) -> None:
-    """Ensure unprivileged user namespaces are enabled on the host system, which are
-    required for the rootless container cli.  Prompts are auto-accepted when init is
-    run with `--yes`; permission failures still raise.
-
-    Parameters
-    ----------
-    ctx : Pipeline.InProgress
-        The in-flight pipeline context.
-    """
-    assume_yes = _init_assume_yes(ctx)
-    if await _podman_ready():
-        return
-
-    await ctx.do(EnsureUserNamespaces(
-        needed=15000,
-        prompt=(
-            "Rootless containers require unprivileged user namespaces to be enabled on "
-            "the host system.  This may require sudo privileges.\n"
-            "Do you want to proceed? [y/N] "
-        ),
-        assume_yes=assume_yes,
-    ))
-
-
-@on_init(requires=[install_container_cli], version=1)
-async def provision_subids(ctx: Pipeline.InProgress) -> None:
-    """Ensure subordinate UID/GID ranges are allocated for the host user in
-    /etc/subuid and /etc/subgid, which are required for rootless Podman operation.
-    Prompts are auto-accepted when init is run with `--yes`; permission failures still
-    raise.
-
-    Parameters
-    ----------
-    ctx : Pipeline.InProgress
-        The in-flight pipeline context.
-
-    Raises
-    ------
-    OSError
-        If the USER fact is not a valid string.  This should have been set by the
-        `detect_platform` step.
-    """
-    assume_yes = _init_assume_yes(ctx)
-    if await _podman_ready():
-        return
-
-    user = ctx.get(USER)
-    if not isinstance(user, str):
-        raise OSError(f"Invalid user: {user}")
-    await ctx.do(EnsureSubIDs(
-        user=user,
-        needed=65536,
-        prompt=(
-            "Rootless containers require subordinate UID/GID ranges (>= 65536) in "
-            "/etc/subuid and /etc/subgid.  Bertrand can configure this, but may "
-            "require sudo privileges to do so.\n"
-            "Do you want to proceed? [y/N] "
-        ),
-        assume_yes=assume_yes,
-    ))
-
-
-def _cgroup_v2_controllers() -> set[str] | None:
-    path = Path("/sys/fs/cgroup/cgroup.controllers")
-    try:
-        text = path.read_text(encoding="utf-8").strip()
-    except OSError:
-        return None
-    return set(text.split()) if text else set()
-
-
-def _user_cgroup_controllers(uid: int) -> set[str] | None:
-    path = Path(
-        f"/sys/fs/cgroup/user.slice/user-{uid}.slice/"
-        f"user@{uid}.service/cgroup.controllers"
-    )
-    try:
-        text = path.read_text(encoding="utf-8").strip()
-    except OSError:
-        return None
-    return set(text.split()) if text else set()
-
-
-async def _systemd_version() -> int | None:
-    cp = await run(["systemctl", "--version"], check=False, capture_output=True)
-    if cp.returncode != 0:
-        return None
-    line = ""
-    if cp.stdout:
-        line = cp.stdout.splitlines()[0].strip()
-    match = re.search(r"systemd\s+(\d+)", line)
-    if not match:
-        return None
-    return int(match.group(1))
-
-
-def _dropin_delegate_controllers(path: Path) -> set[str] | None:
-    try:
-        text = path.read_text(encoding="utf-8")
-    except OSError:
-        return None
-    for raw in text.splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#"):
-            continue
-        if line.startswith("Delegate="):
-            value = line.split("=", 1)[1].strip()
-            return set(value.split()) if value else set()
-    return set()
-
-
-@on_init(requires=[provision_subids, enable_user_namespaces], version=1)
-async def delegate_controllers(ctx: Pipeline.InProgress) -> None:
-    """Configure systemd controller delegation for the rootless container CLI, if not
-    already configured.  This allows the container CLI to manage resource limits on
-    cgroup v2 hosts.  Prompts are auto-accepted when init is run with `--yes`;
-    permission failures still raise.
-
-    Parameters
-    ----------
-    ctx : Pipeline.InProgress
-        The in-flight pipeline context.
-
-    Raises
-    ------
-    OSError
-        If systemd is not found, or if elevation is required but not available.
-    """
-    assume_yes = _init_assume_yes(ctx)
-    if await _podman_ready():
-        return
-
-    uid = ctx.get(UID)
-    if not isinstance(uid, int):
-        raise OSError(f"Invalid UID: {uid}")
-
-    # controller delegation for cgroup v2 to enable rootless resource limits
-    root_controllers = _cgroup_v2_controllers()
-    if root_controllers is not None:
-        required = {"cpu", "io", "memory", "pids"}
-
-        # systemd 244+ is required for cpuset delegation
-        systemd_version = await _systemd_version()
-        if "cpuset" in root_controllers:
-            if systemd_version is not None and systemd_version >= 244:
-                required.add("cpuset")
-            else:
-                print(
-                    "bertrand: cpuset controller detected, but systemd < 244; "
-                    "skipping cpuset delegation.",
-                    file=sys.stderr
-                )
-
-        # check if delegation is already configured for the requested controllers
-        delegated = _user_cgroup_controllers(uid) or set()
-        if not required.issubset(delegated):
-            dropin_path = Path("/etc/systemd/system/user@.service.d/delegate.conf")
-            dropin_controllers = _dropin_delegate_controllers(dropin_path) or set()
-            if dropin_controllers and required.issubset(dropin_controllers):
-                print(
-                    "bertrand: controller delegation is configured but may require "
-                    "logging out and back in to take effect.",
-                    file=sys.stderr
-                )
-
-            # prompt and update delegation if needed
-            else:
-                await ctx.do(DelegateUserControllers(
-                    controllers=sorted(required),
-                    prompt=(
-                        "Enforcing resource limits for rootless containers requires "
-                        "cgroup controllers to be delegated to user sessions.  Bertrand "
-                        "can configure this, but may require sudo privileges to do so.\n"
-                        "Do you want to proceed? [y/N] "
-                    ),
-                    assume_yes=assume_yes,
-                ))
-                dropin_controllers = _dropin_delegate_controllers(dropin_path) or set()
-                if dropin_controllers and required.issubset(dropin_controllers):
-                    print(
-                        "bertrand: controller delegation updated. You may need to "
-                        "log out and back in for changes to take effect.",
-                        file=sys.stderr
-                    )
-                else:
-                    print(
-                        "bertrand: controller delegation could not be configured; some "
-                        "resource limits may be unavailable.",
-                        file=sys.stderr
-                    )
-
-
-@on_init(requires=[delegate_controllers], version=1)
-async def assert_container_cli_ready(ctx: Pipeline.InProgress) -> None:
-    """Assert that the rootless container backend is usable after host bootstrap.
-
-    Parameters
-    ----------
-    ctx : Pipeline.InProgress
-        The in-flight pipeline context.
-
-    Raises
-    ------
-    OSError
-        If `podman` is still not usable after host bootstrap.  This likely indicates a
-        misconfiguration of host prerequisites (user namespaces, subuid/subgid, or
-        controller delegation), and should be investigated by checking `podman info`
-        and verifying the host meets all prerequisites.
-    """
-    if await _podman_ready():
-        return
-
-    assume_yes = _init_assume_yes(ctx)
-    cmd = "bertrand init --yes" if assume_yes else "bertrand init"
-    raise OSError(
-        "podman is installed but not usable for rootless operation after init "
-        "bootstrap. Verify host prerequisites (user namespaces, subuid/subgid, and "
-        "controller delegation) and retry.  Run `podman info` for diagnostics. "
-        f"(last command: `{cmd}`)"
-    )
 
 
 def _read_metadata(worktree: Path, *, missing_ok: bool = False) -> Environment.JSON | None:
@@ -594,20 +158,20 @@ def _write_metadata(worktree: Path, metadata: Environment.JSON) -> None:
 class Registry(BaseModel):
     """Serialized registry of environments that have been built on this system.
 
-    A global registry of this form is stored in the `init` pipeline's state directory,
-    and allows Bertrand to target all environments on the system for various CLI
-    commands, as well as detect relocation of environments, possibly across different
-    hosts.
+    A global registry of this form is stored in Bertrand's host runtime state
+    directory, and allows Bertrand to target all environments on the system for
+    various CLI commands, as well as detect relocation of environments, possibly
+    across different hosts.
 
     Attributes
     ----------
-    host : UUIDStr
+    host : UUID4Hex
         A UUID tied to the lifetime of the registry.  Every environment's metadata
         will store the host UUID of the registry it was initialized from.  If we
         attempt to insert the environment into another registry with a different
         UUID, then it signifies the environment was sent from another host, and we
         should force a rebuild of all downstream images and containers.
-    environments : dict[UUIDStr, Path]
+    environments : dict[UUID4Hex, Path]
         A mapping of environment UUIDs to their corresponding root directories on this
         system.  If we attempt to insert an environment with a pre-existing UUID, then
         we can check to see if the previous path is still valid and matches that UUID,
@@ -618,14 +182,15 @@ class Registry(BaseModel):
         ownership to the new path.
     ops_since_purge : int
         Counts successful `add()` operations since the last incremental purge trigger.
-    purge_cursor : UUIDStr | None
+    purge_cursor : UUID4Hex | None
         Cursor used to scan environment IDs in deterministic batches when purging stale
         entries.
     """
-    host: UUIDStr
-    environments: dict[UUIDStr, AbsolutePath]
+    model_config = ConfigDict(extra="forbid")
+    host: UUID4Hex
+    environments: dict[UUID4Hex, AbsolutePath]
     ops_since_purge: NonNegativeInt
-    purge_cursor: UUIDStr | None = None
+    purge_cursor: UUID4Hex | None = None
 
     @staticmethod
     def lock(*, timeout: float) -> Lock:
@@ -642,6 +207,7 @@ class Registry(BaseModel):
             An async context manager that must be entered to acquire the lock, and
             releases it on exit.
         """
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
         return Lock(REGISTRY_LOCK, timeout=timeout)
 
     # NOTE: we have to strictly obey registry > environment locking order to avoid
@@ -652,7 +218,7 @@ class Registry(BaseModel):
     # methods assume the locks have already been handled by the caller.
 
     @staticmethod
-    async def _check_env(root: Path, env_id: UUIDStr | None = None) -> Environment.JSON | None:
+    async def _check_env(root: Path, env_id: UUID4Hex | None = None) -> Environment.JSON | None:
         try:
             root = root.expanduser().resolve()
             env_file = root / METADATA_FILE
@@ -668,7 +234,7 @@ class Registry(BaseModel):
 
     @staticmethod
     async def _discover_environment_mounts() -> list[Path]:
-        container_ids = await _podman_ids("container", {})
+        container_ids = await podman_ids("container", {})
         if not container_ids:
             return []
 
@@ -703,6 +269,8 @@ class Registry(BaseModel):
             If the registry JSON is invalid, or if any environment metadata is invalid
             or doesn't match the expected format.
         """
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+
         # touch a new registry if none exists
         changed = False
         if not REGISTRY_FILE.exists():
@@ -749,6 +317,7 @@ class Registry(BaseModel):
         releasing the registry lock, in order to persist any changes made by the
         `load()` and/or `add()` methods.
         """
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
         atomic_write_text(
             REGISTRY_FILE,
             json_parser.dumps({
@@ -764,7 +333,7 @@ class Registry(BaseModel):
             private=True
         )
 
-    def _purge_candidates(self, *, batch_size: int) -> list[UUIDStr]:
+    def _purge_candidates(self, *, batch_size: int) -> list[UUID4Hex]:
         env_ids = sorted(self.environments)
         if not env_ids:
             self.purge_cursor = None
@@ -867,7 +436,7 @@ class Registry(BaseModel):
             while env.images:
                 tag, image = env.images.popitem()
                 try:
-                    ids = await _podman_ids(
+                    ids = await podman_ids(
                         "container",
                         labels={
                             ENV_ID_ENV: env.id,
@@ -903,7 +472,7 @@ class Registry(BaseModel):
         which is necessary before any command that targets all environments on the
         system, disregarding stale ones.
         """
-        normalized: dict[UUIDStr, AbsolutePath] = {}
+        normalized: dict[UUID4Hex, AbsolutePath] = {}
         for env_id, root in self.environments.items():
             with lock_worktree(root, timeout=TIMEOUT):
                 env = await self._check_env(root, env_id=env_id)
@@ -915,142 +484,6 @@ class Registry(BaseModel):
         self.ops_since_purge = 0
         if self.purge_cursor not in self.environments:
             self.purge_cursor = None
-
-
-# TODO: I can eliminate the ephemeral init steps past this point, and roll them all
-# into a single `init_environment` helper that is decoupled from the on_init pipeline.
-# Pipelines could then strip away ephemeral step support entirely, and be purely
-# persistent, which simplifies the design a bit.
-
-
-@on_init(requires=[assert_container_cli_ready], ephemeral=True)
-async def init_environment(ctx: Pipeline.InProgress) -> None:
-    """Initialize an environment directory using discovered/requested resources and
-    templates.
-
-    Parameters
-    ----------
-    ctx : Pipeline.InProgress
-        The in-flight pipeline context.
-
-    Raises
-    ------
-    OSError
-        If required init facts are missing and no existing resource config can be
-        discovered for fallback, or if requested resources conflict with existing
-        resources.
-    TypeError
-        If init facts are present with invalid types.
-    """
-    env = ctx.get("env")
-    if env is None:
-        return
-    if not isinstance(env, str):
-        raise TypeError("environment path must be a string")
-    worktree = Path(env).expanduser().resolve()
-    if ctx["image_tag"] or ctx["container_tag"]:
-        raise OSError(
-            "cannot specify image or container tag when initializing an environment "
-            "directory."
-        )
-
-    # parse requested profile
-    profile = ctx.get("profile")
-    if profile is not None and not isinstance(profile, str):
-        raise TypeError("profile must be a string")
-
-    # parse requested capabilities
-    capabilities: set[str] = set()
-    raw_capabilities = ctx.get("capabilities")
-    if raw_capabilities is not None:
-        if not isinstance(raw_capabilities, (list, tuple)):
-            raise TypeError("capabilities must be a list or tuple of strings")
-        for cap in raw_capabilities:
-            if not isinstance(cap, str):
-                raise TypeError(f"capability must be a string: {cap}")
-            capabilities.add(cap)
-
-    # TODO: pass in `bertrand init` CLI args as kwarg facts to `init`.
-
-    # apply effective resource config and render templates in environment directory
-    await Config.init(worktree, profile, capabilities)
-
-
-@on_init(requires=[init_environment], ephemeral=True)
-async def init_repository(ctx: Pipeline.InProgress) -> None:
-    """Initialize a git repository in the environment directory.
-
-    Parameters
-    ----------
-    ctx : Pipeline.InProgress
-        The in-flight pipeline context.
-
-    Raises
-    ------
-    TypeError
-        If the "env" fact is missing or not a string.
-    """
-    env = ctx.get("env")
-    if env is None:
-        return
-    if not isinstance(env, str):
-        raise TypeError("environment path must be a string")
-    root = Path(env).expanduser().resolve()
-
-    # check if git is available
-    if not shutil.which("git"):
-        return
-
-    # check if repo is already initialized
-    git_dir = root / ".git"
-    if git_dir.exists():
-        return
-
-    # initialize repo and make an initial commit with the rendered environment
-    stage = "initialize git repository"
-    try:
-        await run(["git", "init", "--quiet"], cwd=root, capture_output=True)
-        stage = "stage files for initial commit"
-        await run(["git", "add", "-A"], cwd=root, capture_output=True)
-        stage = "create initial commit"
-        await run(
-            ["git", "commit", "--quiet", "-m", "Initial commit"],
-            cwd=root,
-            capture_output=True
-        )
-    except Exception as err:
-        print(f"bertrand: failed to {stage} in {root}\n{err}", file=sys.stderr)
-
-
-def _load_reference_transaction_hook() -> str:
-    source = importlib_resources.files("bertrand.env").joinpath(
-        "git",
-        "reference_transaction.py",
-    ).read_text(encoding="utf-8")
-    lines = source.splitlines()
-    if not lines:
-        raise ValueError("packaged reference_transaction.py is empty")
-    if lines[0].strip() != "#!/usr/bin/env python3":
-        raise ValueError(
-            "packaged reference_transaction.py must start with '#!/usr/bin/env python3'"
-        )
-    return "\n".join([
-        lines[0],
-        REFERENCE_TRANSACTION_MARKER,
-        *lines[1:]
-    ]).rstrip("\n") + "\n"
-
-
-async def _resolve_git_path(root: Path, git_path: str) -> Path:
-    result = await run(
-        ["git", "rev-parse", "--git-path", git_path],
-        cwd=root,
-        capture_output=True,
-    )
-    resolved = Path(result.stdout.strip())
-    if not resolved.is_absolute():
-        resolved = root / resolved
-    return resolved.resolve()
 
 
 async def _resolve_head_worktree(root: Path) -> Path:
@@ -1085,105 +518,6 @@ async def _resolve_head_worktree(root: Path) -> Path:
         f"bare repository at '{root}' resolved HEAD branch '{branch}', but expected "
         f"worktree directory is missing: {candidate}"
     )
-
-
-@on_init(requires=[init_repository], ephemeral=True)
-async def install_git_hooks(  # pylint: disable=missing-raises-doc
-    ctx: Pipeline.InProgress
-) -> None:
-    """Install git hooks in the environment repository to enable automatic lifecycle
-    management for branch worktrees.
-
-    Parameters
-    ----------
-    ctx : Pipeline.InProgress
-        The in-flight pipeline context.
-
-    Raises
-    ------
-    TypeError
-        If the "env" fact is missing or not a string.
-    """
-    env = ctx.get("env")
-    if env is None:
-        return
-    if not isinstance(env, str):
-        raise TypeError("environment path must be a string")
-    root = Path(env).expanduser().resolve()
-
-    # check if git is available
-    if not shutil.which("git"):
-        return
-
-    # check if repo is not initialized
-    git_dir = root / ".git"
-    if not git_dir.exists():
-        return
-
-    # load git hooks from packaged resources
-    stage = "load packaged reference-transaction hook"
-    try:
-        hook_text = _load_reference_transaction_hook()
-        stage = f"resolve git hook path for '{REFERENCE_TRANSACTION_HOOK}'"
-        hook_path = await _resolve_git_path(root, REFERENCE_TRANSACTION_HOOK)
-
-        # check for conflicts
-        install_hook = True
-        if hook_path.exists():  # do not clobber non-Bertrand hooks
-            if not hook_path.is_file():
-                raise OSError(f"git hook path is not a file: {hook_path}")
-            existing = hook_path.read_text(encoding="utf-8")
-            if existing == hook_text:
-                install_hook = False  # already installed and up-to-date
-            elif REFERENCE_TRANSACTION_MARKER not in existing:
-                print(
-                    f"existing git hook at {hook_path} is not managed by Bertrand; "
-                    f"skipping to avoid clobbering user-managed hook.",
-                    file=sys.stderr
-                )
-                install_hook = False
-
-        # install hook into git directory
-        if install_hook:
-            stage = f"write git hook to {hook_path}"
-            atomic_write_text(hook_path, hook_text, encoding="utf-8")
-            stage = f"set executable permissions on git hook {hook_path}"
-            try:
-                hook_path.chmod(0o755)
-            except OSError:
-                pass
-    except Exception as err:
-        print(f"bertrand: failed to {stage} in {root}\n{err}", file=sys.stderr)
-
-
-@on_init(requires=[install_git_hooks], ephemeral=True)
-async def register_environment(ctx: Pipeline.InProgress) -> None:
-    """Register the environment in the global registry to enable management by CLI
-    commands.
-
-    Parameters
-    ----------
-    ctx : Pipeline.InProgress
-        The in-flight pipeline context.
-
-    Raises
-    ------
-    TypeError
-        If the "env" fact is missing or not a string.
-    """
-    env = ctx.get("env")
-    if env is None:
-        return
-    if not isinstance(env, str):
-        raise TypeError("environment path must be a string")
-    worktree = Path(env).expanduser().resolve()
-
-    # add to global environment registry, respecting registry > environment lock order
-    async with Registry.lock(timeout=TIMEOUT):
-        async with lock_worktree(worktree, timeout=TIMEOUT):
-            registry = await Registry.load()
-            await registry.add(worktree)
-            await registry.dump()
 
 
 async def podman_cmd(
@@ -1242,13 +576,50 @@ async def podman_cmd(
     )
 
 
-async def _podman_ids(
+async def podman_ids(
     mode: Literal["container", "image", "volume"],
     labels: Mapping[str, str],
     *,
-    status: Sequence[str] | None = None,
+    status: Sequence[ContainerState] | None = None,
     timeout: float = TIMEOUT,
 ) -> list[str]:
+    """Retrieve a list of podman container/image/volume IDs that match the given labels
+    and status filters, if applicable.
+
+    Parameters
+    ----------
+    mode : Literal["container", "image", "volume"]
+        The type of podman objects to query for.
+    labels : Mapping[str, str]
+        A mapping of label keys and values to filter the results by.  Only objects that
+        have all of the specified labels with matching values will be included in the
+        results.
+    status : Sequence[ContainerState] | None, optional
+        An optional sequence of container statuses to filter by when `mode` is
+        "container".  If None (the default), then containers of all statuses will be
+        included in the results.
+    timeout : float, optional
+        The maximum time in seconds to wait for the podman command to complete before
+        raising a `TimeoutExpired` exception.
+
+    Returns
+    -------
+    list[str]
+        A list of podman container/image/volume IDs that match the specified filters.
+
+    Raises
+    ------
+    TimeoutError
+        If the podman command does not complete within the specified timeout.
+    TimeoutExpired
+        If the podman command does not complete within the specified timeout.
+    CommandError
+        If the podman command fails for any reason other than a timeout.
+    KeyboardInterrupt
+        If the operation is interrupted by the user.
+    SystemExit
+        If some other fatal error is encountered.
+    """
     deadline = time.time() + timeout
 
     # form basic command based on mode
@@ -1680,14 +1051,14 @@ class Image(BaseModel):
         deadline = time.monotonic() + timeout
 
         # identify descendant containers to remove, and filter running containers
-        ids = await _podman_ids(
+        ids = await podman_ids(
             "container",
             labels={IMAGE_ID_ENV: self.id},
             timeout=timeout
         )
         retire = False
         if not force:
-            running = set(await _podman_ids(
+            running = set(await podman_ids(
                 "container",
                 labels={IMAGE_ID_ENV: self.id},
                 status=("paused", "restarting", "running"),
@@ -1927,8 +1298,8 @@ class Environment:
         """Pydantic model representing JSON metadata for a Bertrand environment."""
         model_config = ConfigDict(extra="forbid")
         version: PositiveInt
-        host: UUIDStr
-        id: UUIDStr
+        host: UUID4Hex
+        id: UUID4Hex
         images: dict[SanitizedName, Image]
 
         class RetiredImage(BaseModel):
@@ -2194,7 +1565,7 @@ class Environment:
             container that was just created and has not yet been started, or is
             currently paused, restarting, or running normally.
         """
-        ids = await _podman_ids(
+        ids = await podman_ids(
             "container",
             {ENV_ID_ENV: self.id},
             status=["created", "paused", "restarting", "running"]
@@ -2448,7 +1819,7 @@ async def _cli_containers(
     env: Environment,
     tag: str | None,
     *,
-    status: tuple[str, ...] = ("created", "paused", "restarting", "running"),
+    status: tuple[ContainerState, ...] = ("created", "paused", "restarting", "running"),
     timeout: float,
 ) -> list[ContainerId]:
     if tag is None:
@@ -2457,7 +1828,7 @@ async def _cli_containers(
         raise KeyError(f"no image found for tag: '{tag}'")
     else:
         labels = {ENV_ID_ENV: env.id, IMAGE_TAG_ENV: tag}
-    return await _podman_ids("container", labels=labels, status=status, timeout=timeout)
+    return await podman_ids("container", labels=labels, status=status, timeout=timeout)
 
 
 async def _cli_images(
@@ -2470,7 +1841,7 @@ async def _cli_images(
         labels = {ENV_ID_ENV: env.id}
     else:
         labels = {ENV_ID_ENV: env.id, IMAGE_TAG_ENV: tag}
-    return await _podman_ids("image", labels=labels, timeout=timeout)
+    return await podman_ids("image", labels=labels, timeout=timeout)
 
 
 async def _start_rpc_sidecar(
