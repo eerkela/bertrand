@@ -9,21 +9,18 @@ environment.
 from .bertrand_git import (
     CompletedProcess,
     CommandError,
+    GitRefUpdate,
+    GitRepository,
     TimeoutExpired,
     User,
     atomic_write_bytes,
     atomic_write_text,
     can_escalate,
     confirm,
-    git,
     mkdir_private,
-    list_branches,
-    list_worktrees,
-    parse_git_bool,
     run,
     sanitize_name,
     sudo,
-    supports_relative_worktree_paths,
 )
 from .lock import (
     LOCK_TIMEOUT,

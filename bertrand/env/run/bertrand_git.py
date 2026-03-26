@@ -26,9 +26,9 @@ import sys
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Mapping, TextIO
+from typing import Literal, Mapping, Sequence, TextIO
 
-# pylint: disable=redefined-builtin
+# pylint: disable=redefined-builtin, broad-exception-caught
 
 
 #######################
@@ -531,12 +531,15 @@ def sudo(argv: list[str], *, non_interactive: bool = False) -> list[str]:
 # downstream hooks.
 
 
-HEADS_PREFIX = "refs/heads/"
-STATES = {"prepared", "committed", "aborted"}
+type GitRefState = Literal["prepared", "committed", "aborted"]
+
+
+GIT_REF_HEADS_PREFIX = "refs/heads/"
+GIT_REF_STATES: frozenset[GitRefState] = frozenset({"prepared", "committed", "aborted"})
 
 
 @dataclass(frozen=True)
-class RefUpdate:
+class GitRefUpdate:
     """A single reference update received from git on stdin."""
     old: str
     new: str
@@ -550,7 +553,7 @@ class RefUpdate:
         bool
             True if this update targets `refs/heads/*`.
         """
-        return self.ref.startswith(HEADS_PREFIX)
+        return self.ref.startswith(GIT_REF_HEADS_PREFIX)
 
     @property
     def branch(self) -> str:
@@ -560,7 +563,7 @@ class RefUpdate:
         str
             The short branch name for `refs/heads/*` updates.
         """
-        return self.ref[len(HEADS_PREFIX):]
+        return self.ref[len(GIT_REF_HEADS_PREFIX):]
 
     @property
     def created(self) -> bool:
@@ -583,7 +586,7 @@ class RefUpdate:
         return any((c != "0" for c in self.old)) and all((c == "0" for c in self.new))
 
     @classmethod
-    def parse(cls, stdin: str) -> list[RefUpdate]:
+    def parse(cls, stdin: str) -> list[GitRefUpdate]:
         """Parse and validate transaction update lines from stdin.
 
         Parameters
@@ -594,7 +597,7 @@ class RefUpdate:
 
         Returns
         -------
-        list[RefUpdate]
+        list[GitRefUpdate]
             A list of parsed reference updates.
 
         Raises
@@ -602,7 +605,7 @@ class RefUpdate:
         ValueError
             If any line is malformed.
         """
-        updates: list[RefUpdate] = []
+        updates: list[GitRefUpdate] = []
         for index, raw in enumerate(stdin.splitlines(), start=1):
             line = raw.strip()
             if not line:
@@ -623,235 +626,697 @@ class RefUpdate:
 
 
 @dataclass(frozen=True)
-class Worktree:
-    """A parsed entry from `git worktree list --porcelain`.
+class GitRepository:
+    """An object-oriented wrapper around a git repository, which simplifies access to
+    its branches, worktrees, and other properties.
 
     Attributes
     ----------
-    path : Path
-        The absolute path to the worktree checkout.
-    branch : str | None
-        The short branch name if this worktree is attached to `refs/heads/*`,
-        otherwise None.
+    git_dir : Path, optional
+        The path to the repository's .git directory.  If omitted, the repository will
+        be by running `git rev-parse --git-common-dir` in the current working
+        directory.
     """
-    path: Path
-    branch: str | None = None
+    @dataclass(frozen=True)
+    class Worktree:
+        """A parsed entry from `git worktree list --porcelain`.
 
+        Attributes
+        ----------
+        path : Path
+            The absolute path to the worktree checkout.
+        branch : str | None
+            The short branch name if this worktree is attached to `refs/heads/*`,
+            otherwise None.
+        """
+        path: Path
+        branch: str | None = None
 
-async def git(
-    argv: list[str],
-    *,
-    check: bool = True,
-    capture_output: bool | None = False,
-    input: str | None = None,
-    timeout: float | None = None,
-    cwd: Path | None = None,
-    env: Mapping[str, str] | None = None,
-) -> CompletedProcess:
-    """Run a git command as an asynchronous subprocess wrapper.
+        def __post_init__(self) -> None:
+            object.__setattr__(self, "path", self.path.expanduser().resolve())
+            if not self.path.exists():
+                raise FileNotFoundError(f"worktree path does not exist: {self.path}")
+            if not self.path.is_dir():
+                raise NotADirectoryError(f"invalid worktree path: {self.path}")
 
-    Parameters
-    ----------
-    argv : list[str]
-        The command and its arguments to run, excluding the initial "git".
-    check : bool, optional
-        Whether to raise a `CommandError` if the command fails (default is True).  If
-        false, then any errors will be ignored.
-    capture_output : bool | None, optional
-        If true, then all output will be redirected to the returned `CompletedProcess`
-        or `CommandError`, and excluded from the inherited stdout/stderr streams.  If
-        false (the default), then the opposite is the case, and the returned
-        `CompletedProcess` or `CommandError` will not include any captured output.  If
-        None, then output will be "tee'd" to both the console and the returned objects
-        simultaneously.  Note that teeing output in this way may break TTY behavior for
-        some commands, and is not recommended for interactive use.
-    input : str | None, optional
-        Input to send to the command's stdin (default is None).
-    timeout : float | None, optional
-        An optional timeout in seconds to wait for the command to complete before
-        raising a `TimeoutExpired` exception.  Default is None, which means to wait
-        indefinitely.
-    cwd : Path | None, optional
-        An optional working directory to run the command in.  If None (the default),
-        then the current working directory will be used.
-    env : Mapping[str, str] | None, optional
-        An optional environment dictionary to use for the command.  If None (the
-        default), then the current process's environment will be used.
+    git_dir: Path
 
-    Returns
-    -------
-    CompletedProcess
-        The completed process result.
+    @classmethod
+    async def discover(cls) -> GitRepository:
+        """Discover the Git repository for the current working directory.
 
-    Raises
-    ------
-    CommandError
-        If the command fails and `check` is True.
-    TimeoutExpired
-        If the command does not complete within the specified timeout.
-    OSError
-        If we failed to open the subprocess or its output streams.
-    """
-    return await run(
-        ["git", *argv],
-        check=check,
-        capture_output=capture_output,
-        input=input,
-        timeout=timeout,
-        cwd=cwd,
-        env=env,
-    )
+        Returns
+        -------
+        GitRepository
+            The discovered Git repository.
 
+        Raises
+        ------
+        CommandError
+            If the git command fails, which may indicate that the current directory is
+            not within a Git repository.
+        """
+        result = await run(
+            ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+            capture_output=True
+        )
+        return cls(git_dir=Path(result.stdout.strip()))
 
-async def git_strip_env(env: dict[str, str] | None = None) -> dict[str, str]:
-    """Remove repo-local git environment variables from the given environment mapping.
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "git_dir", self.git_dir.expanduser().resolve())
+        if not self.git_dir.exists():
+            raise FileNotFoundError(f"git directory does not exist: {self.git_dir}")
+        if not self.git_dir.is_dir():
+            raise NotADirectoryError(f"invalid git directory: {self.git_dir}")
 
-    Parameters
-    ----------
-    env : dict[str, str] | None, optional
-        The environment mapping to strip git variables from.  If None, the current
-        process environment will be used.  Defaults to None.
+    # TODO: this `__bool__()` operator seems unnecessarily complicated.  It's just
+    # supposed to probe whether `self.git_dir` points to a valid git repository.
 
-    Returns
-    -------
-    dict[str, str]
-        The filtered environment variables with repo-local keys removed.
-    """
-    env = dict(os.environ if env is None else env)
-    local = await git(["rev-parse", "--local-env-vars"], check=False, capture_output=True, env=env)
-    if local.returncode == 0:
-        keys = [key.strip() for key in local.stdout.splitlines() if key.strip()]
-    else:
-        keys = ["GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR"]  # best-effort fallback
-    for key in keys:
-        env.pop(key, None)
-    return env
+    def __bool__(self) -> bool:
+        try:
+            result = subprocess.run(
+                [
+                    "git",
+                    "--git-dir",
+                    str(self.git_dir),
+                    "rev-parse",
+                    "--path-format=absolute",
+                    "--git-common-dir",
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+        except OSError:
+            return False
+        if result.returncode != 0:
+            return False
+        path = result.stdout.strip()
+        if not path:
+            return False
+        common_dir = Path(path).expanduser()
+        if not common_dir.is_absolute():
+            common_dir = (self.git_dir / common_dir).resolve()
+        else:
+            common_dir = common_dir.resolve()
+        return common_dir.exists() and common_dir.is_dir()
 
+    async def init(self, *, bare: bool = True) -> None:
+        """Initialize a new Git repository at the given path.
 
-# TODO: the obvious surface area for this is a `Repository` class that takes the
-# git-dir as an initializer, and exposes `branches()`, `worktrees()`, etc.
+        Parameters
+        ----------
+        bare : bool, optional
+            Whether to create a bare repository (default is True).  If false, then a
+            standard repository with a working tree will be created instead.
 
+        Raises
+        ------
+        CommandError
+            If the git command fails.
+        """
+        self.git_dir.mkdir(parents=True, exist_ok=True)
+        cmd = ["git", "init", "--quiet"]
+        if bare:
+            cmd.append("--bare")
+        cmd.append(str(self.git_dir))
+        await run(cmd)
 
-async def list_branches(git_dir: Path) -> list[str]:
-    """List all branches in the given Git directory.
+    async def run(
+        self,
+        argv: list[str],
+        *,
+        check: bool = True,
+        capture_output: bool | None = False,
+        input: str | None = None,
+        timeout: float | None = None,
+        cwd: Path | None = None,
+        env: Mapping[str, str] | None = None,
+    ) -> CompletedProcess:
+        """Run a git command as an asynchronous subprocess wrapper.
 
-    Parameters
-    ----------
-    git_dir : Path
-        The path to the Git directory.
+        Parameters
+        ----------
+        argv : list[str]
+            The command and its arguments to run, excluding the initial "git".
+        check : bool, optional
+            Whether to raise a `CommandError` if the command fails (default is True).  If
+            false, then any errors will be ignored.
+        capture_output : bool | None, optional
+            If true, then all output will be redirected to the returned `CompletedProcess`
+            or `CommandError`, and excluded from the inherited stdout/stderr streams.  If
+            false (the default), then the opposite is the case, and the returned
+            `CompletedProcess` or `CommandError` will not include any captured output.  If
+            None, then output will be "tee'd" to both the console and the returned objects
+            simultaneously.  Note that teeing output in this way may break TTY behavior for
+            some commands, and is not recommended for interactive use.
+        input : str | None, optional
+            Input to send to the command's stdin (default is None).
+        timeout : float | None, optional
+            An optional timeout in seconds to wait for the command to complete before
+            raising a `TimeoutExpired` exception.  Default is None, which means to wait
+            indefinitely.
+        cwd : Path | None, optional
+            An optional working directory to run the command in.  If None (the default),
+            then the current working directory will be used.
+        env : Mapping[str, str] | None, optional
+            An optional environment dictionary to use for the command.  If None (the
+            default), then the current process's environment will be used.
 
-    Returns
-    -------
-    list[str]
-        A list of short branch names.  Note that this only includes branches under
-        `refs/heads/`, and not other refs like tags or remotes.
-    """
-    result = await git(
-        [
-            "--git-dir", str(git_dir),
-            "for-each-ref",
-            "--format=%(refname:short)",
-            "refs/heads",
-        ],
-        capture_output=True,
-    )
-    return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+        Returns
+        -------
+        CompletedProcess
+            The completed process result.
 
+        Raises
+        ------
+        CommandError
+            If the command fails and `check` is True.
+        TimeoutExpired
+            If the command does not complete within the specified timeout.
+        OSError
+            If we failed to open the subprocess or its output streams.
+        """
+        return await run(
+            ["git", "--git-dir", str(self.git_dir), *argv],
+            check=check,
+            capture_output=capture_output,
+            input=input,
+            timeout=timeout,
+            cwd=cwd,
+            env=env,
+        )
 
-async def list_worktrees(git_dir: Path) -> list[Worktree]:
-    """List all local worktrees for the given Git directory, keyed by their attached
-    branch name.
+    async def git_path(self, path: str, *, cwd: Path | None = None) -> Path:
+        """Resolve a git-path using `git rev-parse --git-path`.
 
-    Parameters
-    ----------
-    git_dir : Path
-        The path to the Git directory.
+        Parameters
+        ----------
+        path : str
+            The git-path expression to resolve (e.g. `hooks/pre-commit`).
+        cwd : Path | None, optional
+            Optional working directory for relative path resolution semantics.
 
-    Returns
-    -------
-    list[Worktree]
-        A list of worktree entries.  Only includes worktrees that are attached to
-        `refs/heads/*` branches, and excludes any detached HEAD worktrees.
-    """
-    out: list[Worktree] = []
-    path: Path | None = None
-    branch: str | None = None
-    result = await git(
-        ["--git-dir", str(git_dir), "worktree", "list", "--porcelain"],
-        capture_output=True,
-    )
-    for raw in result.stdout.splitlines():
-        line = raw.strip()
-        if not line:
-            if path is not None:
-                out.append(Worktree(path=path, branch=branch))
-            path = None
-            branch = None
-            continue
-        if line.startswith("worktree "):
-            path = Path(line[len("worktree "):]).expanduser().resolve()
-            continue
-        if line.startswith(f"branch {HEADS_PREFIX}"):
-            branch = line[len("branch ") + len(HEADS_PREFIX):]
-    if path is not None:
-        out.append(Worktree(path=path, branch=branch))
-    return out
+        Returns
+        -------
+        Path
+            The resolved absolute filesystem path.
 
+        Raises
+        ------
+        ValueError
+            If git returned an empty path.
+        CommandError
+            If the git command fails.
+        """
+        result = await self.run(
+            ["rev-parse", "--path-format=absolute", "--git-path", path],
+            capture_output=True,
+            cwd=cwd,
+        )
+        text = result.stdout.strip()
+        if not text:
+            raise ValueError(f"empty --git-path output for {path!r}")
+        resolved = Path(text).expanduser()
+        if not resolved.is_absolute():
+            base = cwd if cwd is not None else self.git_dir.parent
+            resolved = (base / resolved).resolve()
+        else:
+            resolved = resolved.resolve()
+        return resolved
 
-async def supports_relative_worktree_paths(*, cwd: Path | None = None) -> bool:
-    """Probe `git worktree add/move` support for `--relative-paths`.
+    def _parse_bool(self, stdout: str) -> bool:
+        value = stdout.strip().lower()
+        if value == "true":
+            return True
+        if value == "false":
+            return False
+        raise ValueError(f"invalid git boolean output: {stdout!r}")
 
-    Parameters
-    ----------
-    cwd : Path | None, optional
-        Optional working directory for probe commands.
+    async def is_bare(self) -> bool:
+        """
+        Returns
+        -------
+        bool
+            True if this repository is a bare repository, false otherwise.
 
-    Returns
-    -------
-    bool
-        True if both `git worktree add` and `git worktree move` support
-        `--relative-paths` according to their help output, false otherwise.
-    """
-    add_help = await git(
-        ["worktree", "add", "-h"],
-        check=False,
-        capture_output=True,
-        cwd=cwd,
-    )
-    if add_help.returncode != 0 or "--relative-paths" not in add_help.stdout.lower():
-        return False
-    move_help = await git(
-        ["worktree", "move", "-h"],
-        check=False,
-        capture_output=True,
-        cwd=cwd,
-    )
-    return move_help.returncode == 0 and "--relative-paths" in move_help.stdout.lower()
+        Raises
+        ------
+        CommandError
+            If the git command fails.
+        ValueError
+            If we failed to parse the output.
+        """
+        result = await self.run(
+            ["rev-parse", "--is-bare-repository"],
+            capture_output=True,
+        )
+        value = result.stdout.strip().lower()
+        if value == "true":
+            return True
+        if value == "false":
+            return False
+        raise ValueError(f"invalid --is-bare-repository output: {result.stdout!r}")
 
+    async def supports_relative_paths(self) -> bool:
+        """
+        Returns
+        -------
+        bool
+            True if both `git worktree add` and `git worktree move` support
+            `--relative-paths` according to their help output, false otherwise.
+        """
+        add_help = await self.run(
+            ["worktree", "add", "-h"],
+            check=False,
+            capture_output=True,
+        )
+        if add_help.returncode != 0 or "--relative-paths" not in add_help.stdout.lower():
+            return False
+        move_help = await self.run(
+            ["worktree", "move", "-h"],
+            check=False,
+            capture_output=True,
+        )
+        return move_help.returncode == 0 and "--relative-paths" in move_help.stdout.lower()
 
+    async def branches(self) -> frozenset[str]:
+        """
+        Returns
+        -------
+        frozenset[str]
+            A set of all (short) branch names in the repository.  Note that this only
+            includes branches under `refs/heads/`, and not other refs like tags or
+            remotes.
 
+        Raises
+        ------
+        CommandError
+            If the git command fails.
+        """
+        result = await self.run(
+            ["for-each-ref", "--format=%(refname:short)", "refs/heads"],
+            capture_output=True,
+        )
+        out = {line.strip() for line in result.stdout.splitlines()}
+        out.discard("")  # remove empty lines if any
+        return frozenset(out)
 
-def parse_git_bool(stdout: str) -> bool:
-    """Parse git boolean output (`true`/`false`) into a Python bool.
+    async def worktrees(self) -> tuple[GitRepository.Worktree, ...]:
+        """List all local worktrees for the given Git directory.
 
-    Parameters
-    ----------
-    stdout : str
-        Output text returned by git.
+        Returns
+        -------
+        tuple[GitRepository.Worktree, ...]
+            A tuple of worktree entries.  Includes both attached (with branch) and
+            detached (without branch) worktrees, which may be filtered by the caller as
+            needed.
+        """
+        out: list[GitRepository.Worktree] = []
+        path: Path | None = None
+        branch: str | None = None
+        result = await self.run(
+            ["worktree", "list", "--porcelain"],
+            capture_output=True,
+        )
+        for raw in result.stdout.splitlines():
+            line = raw.strip()
+            if not line:
+                if path is not None:
+                    out.append(self.Worktree(path=path, branch=branch))
+                path = None
+                branch = None
+                continue
+            if line.startswith("worktree "):
+                path = Path(line[len("worktree "):]).expanduser().resolve()
+                continue
+            if line.startswith(f"branch {GIT_REF_HEADS_PREFIX}"):
+                branch = line[len("branch ") + len(GIT_REF_HEADS_PREFIX):]
+        if path is not None:
+            out.append(self.Worktree(path=path, branch=branch))
+        return tuple(out)
 
-    Returns
-    -------
-    bool
-        The parsed boolean value.
+    async def _current_worktree_state(self) -> dict[str, Path]:
+        current: dict[str, Path] = {}
+        for wt in await self.worktrees():
+            if wt.branch is None:
+                continue
+            existing = current.setdefault(wt.branch, wt.path)
+            if existing != wt.path:
+                raise FileExistsError(
+                    f"multiple worktrees mapped to branch '{wt.branch}': "
+                    f"{existing} and {wt.path}"
+                )
+        return current
 
-    Raises
-    ------
-    ValueError
-        If the output is not one of `true` or `false`.
-    """
-    value = stdout.strip().lower()
-    if value == "true":
+    def _intended_worktree_changes(
+        self,
+        updates: Sequence[GitRefUpdate]
+    ) -> tuple[list[str], list[str], list[tuple[str, str]]]:
+        # get creation/destruction intent from transaction updates
+        _created: dict[str, list[str]] = {}
+        _destroyed: dict[str, list[str]] = {}
+        created: list[str] = []
+        destroyed: list[str] = []
+        for update in updates:
+            if update.created:
+                created.append(update.branch)
+                _created.setdefault(update.new, []).append(update.branch)
+            elif update.destroyed:
+                destroyed.append(update.branch)
+                _destroyed.setdefault(update.old, []).append(update.branch)
+
+        # infer rename hints from unambiguous create + destroy pairs on the same object
+        renamed: list[tuple[str, str]] = []
+        for oid in sorted(set(_created) & set(_destroyed)):
+            c = _created[oid]
+            d = _destroyed[oid]
+            if len(c) == 1 and len(d) == 1:
+                old_branch = d[0]
+                new_branch = c[0]
+                renamed.append((old_branch, new_branch))
+                destroyed.remove(old_branch)
+                created.remove(new_branch)
+
+        return created, destroyed, renamed
+
+    def _filter_worktree_conflicts(
+        self,
+        desired: dict[str, Path],
+        current: dict[str, Path],
+        created: list[str],
+    ) -> dict[str, Path]:
+        # sort branches by conflict priority, then filter out any whose slash-separated
+        # paths would create a nested worktree conflicts
+        winners: list[str] = []
+        for branch in sorted(desired, key=lambda b: (
+            0 if b in current else 1,  # prioritize existing
+            0 if b not in created else 1,  # ... then prioritize non-created branches
+            b,  # ... then break ties lexically
+        )):
+            conflict: str | None = None
+            for winner in winners:
+                if branch == winner:
+                    continue
+                left_parts = branch.split("/")
+                right_parts = winner.split("/")
+                min_len = min(len(left_parts), len(right_parts))
+                if left_parts[:min_len] == right_parts[:min_len]:
+                    conflict = winner
+                    break
+            if conflict is None:
+                winners.append(branch)
+                continue
+            print(
+                f"bertrand: skipping branch '{branch}' due nested path conflict with "
+                f"'{conflict}'",
+                file=sys.stderr
+            )
+
+        return {branch: desired[branch] for branch in winners}
+
+    def _clean_worktree_parents(self, path: Path) -> None:
+        # clean up now-empty parent directories up to project root to account for
+        # branch names that contain path separators
+        cursor = path.parent
+        while cursor != self.git_dir.parent:
+            try:
+                if any(cursor.iterdir()):
+                    break
+                cursor.rmdir()
+            except OSError:
+                break
+            cursor = cursor.parent
+
+    async def _worktree_belongs_to_repo(self, path: Path, env: dict[str, str]) -> bool:
+        result = await run(
+            ["git", "-C", str(path), "rev-parse", "--git-common-dir"],
+            check=False,
+            capture_output=True,
+            env=env,
+        )
+        if result.returncode != 0:
+            return False
+        owner = Path(result.stdout.strip()).expanduser()
+        if not owner.is_absolute():
+            owner = path / owner
+        return self.git_dir == owner.expanduser().resolve()
+
+    async def _strip_env(self, env: dict[str, str] | None = None) -> dict[str, str]:
+        """Remove repo-local git environment variables from the given environment mapping.
+
+        Parameters
+        ----------
+        env : dict[str, str] | None, optional
+            The environment mapping to strip git variables from.  If None, the current
+            process environment will be used.  Defaults to None.
+
+        Returns
+        -------
+        dict[str, str]
+            The filtered environment variables with repo-local keys removed.
+        """
+        env = dict(os.environ if env is None else env)
+        local = await self.run(
+            ["rev-parse", "--local-env-vars"],
+            check=False,
+            capture_output=True,
+            env=env
+        )
+        if local.returncode == 0:
+            keys = [key.strip() for key in local.stdout.splitlines() if key.strip()]
+        else:
+            keys = ["GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR"]  # best-effort fallback
+        for key in keys:
+            env.pop(key, None)
+        return env
+
+    async def _move_worktree(self, branch: str, source: Path, target: Path) -> bool:
+        if not source.exists() or not source.is_dir():
+            print(
+                f"bertrand: could not move worktree for branch '{branch}': missing "
+                f"source path ({source})",
+                file=sys.stderr
+            )
+            return False
+        if target.exists():
+            print(
+                f"bertrand: could not move worktree for branch '{branch}': destination "
+                f"already exists ({target})",
+                file=sys.stderr
+            )
+            return False
+        target.parent.mkdir(parents=True, exist_ok=True)
+        result = await self.run(
+            ["worktree", "move", "--relative-paths", str(source), str(target)],
+            check=False,
+            capture_output=True
+        )
+        if result.returncode != 0:
+            print(
+                f"bertrand: failed to move worktree for branch '{branch}' from "
+                f"{source} to {target}:\n{(result.stderr or result.stdout).strip()}",
+                file=sys.stderr
+            )
+            return False
+        self._clean_worktree_parents(source)
         return True
-    if value == "false":
-        return False
-    raise ValueError(f"invalid git boolean output: {stdout!r}")
+
+    async def _destroy_worktree(self, branch: str, path: Path) -> bool:
+        if not path.exists():
+            print(
+                f"bertrand: could not remove worktree for branch '{branch}': missing "
+                f"path ({path})",
+                file=sys.stderr
+            )
+            return False
+        if not path.is_dir():
+            print(
+                f"bertrand: could not remove worktree for branch '{branch}': path is "
+                f"not a directory ({path})",
+                file=sys.stderr
+            )
+            return False
+
+        # verify that the worktree is clean and objectively belongs to this repository
+        # before attempting deletion
+        env = await self._strip_env()
+        if not await self._worktree_belongs_to_repo(path, env):
+            print(
+                f"bertrand: could not remove worktree for branch '{branch}': worktree "
+                f"does not belong to this repository ({path})",
+                file=sys.stderr
+            )
+            return False
+        clean = await run(
+            ["git", "-C", str(path), "status", "--porcelain"],
+            check=False,
+            capture_output=True,
+            env=env,
+        )
+        if clean.returncode != 0:
+            print(
+                f"bertrand: could not remove worktree for branch '{branch}': failed to "
+                f"check worktree status at {path}",
+                file=sys.stderr
+            )
+            return False
+        if clean.stdout.strip():
+            print(
+                f"bertrand: could not remove worktree for branch '{branch}': worktree "
+                f"is dirty ({path})",
+                file=sys.stderr
+            )
+            return False
+
+        # remove the worktree using git, which will also properly clean up the
+        # associated gitdir and any linked metadata
+        result = await self.run(
+            ["worktree", "remove", str(path)],
+            check=False,
+            capture_output=True,
+        )
+        if result.returncode != 0:
+            print(
+                f"bertrand: failed to remove worktree for branch '{branch}' at "
+                f"{path}:\n{(result.stderr or result.stdout).strip()}",
+                file=sys.stderr
+            )
+            return False
+        self._clean_worktree_parents(path)
+        return True
+
+    async def create_worktree(
+        self,
+        branch: str,
+        *,
+        target: Path | None = None,
+        create_branch: bool = True,
+        quiet: bool = False,
+    ) -> None:
+        """Create a new worktree for the given branch at the specified target path.
+
+        Parameters
+        ----------
+        branch : str
+            The short branch name to create a worktree for.
+        target : Path | None, optional
+            The target path to create the worktree at.  Must not already exist.
+        create_branch : bool, optional
+            If True (the default), then the branch will be created if it does not
+            already exist.  If False, then the branch must already exist in the
+            repository.
+        quiet : bool, optional
+            If True, then suppress any non-error output from the git command.  Default
+            is False.
+
+        Raises
+        ------
+        FileExistsError
+            If the target path already exists.
+        CommandError
+            If the git command fails.
+        """
+        if target is None:
+            target = self.git_dir.parent / branch
+        if target.exists():
+            raise FileExistsError("path already exists")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        cmd = ["worktree", "add", "--relative-paths"]
+        if create_branch:
+            if branch not in await self.branches():
+                cmd.extend(["-b", branch, str(target)])
+            else:
+                cmd.extend([str(target), branch])
+        else:
+            cmd.extend([str(target), branch])
+        await self.run(cmd, capture_output=quiet)
+
+    async def sync_worktrees(self, updates: Sequence[GitRefUpdate] = ()) -> None:
+        """Converge worktrees to the authoritative branch set using a hybrid
+        intent-first delta pass.
+
+        Parameters
+        ----------
+        updates : Sequence[GitRefUpdate], optional
+            The parsed reference updates received from git on stdin, which will be used
+            to derive explicit intent for branch creations and destructions, as well as
+            implicit hints for branch renames where creation and destruction are paired
+            on the same object.  If omitted, then convergence will transform directly
+            from the current state to the desired state without any intent-based
+            guidance.
+        """
+        # non-bare repositories are treated as single-worktree mode
+        if not await self.is_bare():
+            return
+
+        # derive current and desired branch-to-path mappings
+        current = await self._current_worktree_state()
+        desired = {branch: (self.git_dir.parent / branch) for branch in await self.branches()}
+
+        # derive explicit intent from transaction updates, preserving order
+        created, destroyed, renamed = self._intended_worktree_changes(updates)
+        desired = self._filter_worktree_conflicts(desired, current, created)
+
+        # apply rename hints first (when they map cleanly to current state)
+        for old_branch, new_branch in renamed:
+            source = current.get(old_branch)
+            if source is None:
+                continue
+            target = desired.get(new_branch)
+            if target is None or new_branch in current:
+                continue
+            if source == target or await self._move_worktree(new_branch, source, target):
+                current.pop(old_branch, None)
+                current[new_branch] = target
+
+        # apply explicit destroys for branches still present in current state
+        for branch in destroyed:
+            path = current.get(branch)
+            if path is None or branch in desired:
+                continue
+            if await self._destroy_worktree(branch, path):
+                current.pop(branch, None)
+
+        # apply explicit creates for branches that are still missing
+        for branch in created:
+            if branch in current or branch not in desired:
+                continue
+            target = desired[branch]
+            try:
+                await self.create_worktree(branch, target=target, create_branch=True)
+                current[branch] = target
+            except Exception as err:
+                print(
+                    f"bertrand: failed to create worktree for branch '{branch}' at "
+                    f"{target}:\n{err}"
+                )
+
+        # remove branches no longer present in the repository
+        stale = set(current) - set(desired)
+        for branch in sorted(stale):
+            if await self._destroy_worktree(branch, current[branch]):
+                current.pop(branch, None)
+
+        # move branches that are present but located at non-canonical paths
+        shared = set(current) & set(desired)
+        for branch in sorted(shared):
+            source = current[branch]
+            target = desired[branch]
+            if source == target:
+                continue
+            if await self._move_worktree(branch, source, target):
+                current[branch] = target
+
+        # create worktrees for branches that don't yet have one
+        missing = set(desired) - set(current)
+        for branch in sorted(missing):
+            target = desired[branch]
+            try:
+                await self.create_worktree(branch, target=target, create_branch=False)
+                current[branch] = target
+            except Exception as err:
+                print(
+                    f"bertrand: failed to create worktree for branch '{branch}' at "
+                    f"{target}:\n{err}"
+                )
