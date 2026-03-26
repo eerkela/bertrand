@@ -17,26 +17,20 @@ from typing import Awaitable, Callable, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, PositiveInt
 
-from .config import (
-    Config,
-    NonEmpty,
-    Trimmed,
-)
-from .container import (
-    STATE_DIR,
-    TIMEOUT,
-    Container,
-    podman_cmd,
-    podman_ids,
-)
+from .config import Config, NonEmpty, Trimmed
+from .container import STATE_DIR, TIMEOUT, Container, podman_cmd, podman_ids
 from .run import (
     Lock,
     User,
     atomic_write_text,
     can_escalate,
     confirm,
+    list_branches,
+    list_worktrees,
+    parse_git_bool,
     run,
     sudo,
+    supports_relative_worktree_paths,
 )
 
 
@@ -670,7 +664,9 @@ INIT_STAGES: tuple[tuple[InitStage, Callable[[InitState, bool], Awaitable[None]]
 
 
 REFERENCE_TRANSACTION_HOOK: str = "hooks/reference-transaction"
+BERTRAND_GIT_HOOK: str = "hooks/bertrand_git.py"
 REFERENCE_TRANSACTION_MARKER: str = "# bertrand-managed: reference-transaction"
+BERTRAND_GIT_MARKER: str = "# bertrand-managed: bertrand_git.py"
 
 
 type RepoMode = Literal["new", "existing_non_bare", "existing_bare"]
@@ -679,36 +675,18 @@ type RepoMode = Literal["new", "existing_non_bare", "existing_bare"]
 async def _git_is_bare(root: Path) -> bool:
     result = await run(
         ["git", "--git-dir", str(root / ".git"), "rev-parse", "--is-bare-repository"],
-        check=False,
         capture_output=True,
     )
-    if result.returncode != 0:
-        raise OSError(
-            f"failed to determine repository mode in {root}:\n"
-            f"{(result.stderr or result.stdout).strip()}"
-        )
-    bare = result.stdout.strip().lower()
-    if bare not in {"true", "false"}:
+    try:
+        return parse_git_bool(result.stdout)
+    except ValueError as err:
         raise OSError(
             f"invalid --is-bare-repository output in {root}: {result.stdout!r}"
-        )
-    return bare == "true"
+        ) from err
 
 
 async def _require_relative_worktree_support(root: Path) -> None:
-    add_help = await run(
-        ["git", "-C", str(root), "worktree", "add", "-h"],
-        check=False,
-        capture_output=True,
-    )
-    move_help = await run(
-        ["git", "-C", str(root), "worktree", "move", "-h"],
-        check=False,
-        capture_output=True,
-    )
-    add_text = f"{add_help.stdout}\n{add_help.stderr}".lower()
-    move_text = f"{move_help.stdout}\n{move_help.stderr}".lower()
-    if "--relative-paths" not in add_text or "--relative-paths" not in move_text:
+    if not await supports_relative_worktree_paths(cwd=root):
         raise OSError(
             "git worktree relative path support is required for bare repository mode, "
             "but this git version does not support '--relative-paths' for worktree "
@@ -716,105 +694,10 @@ async def _require_relative_worktree_support(root: Path) -> None:
         )
 
 
-async def _classify_project_root(root: Path) -> RepoMode:
-    root = root.expanduser().resolve()
-    if root.exists() and root.is_file():
-        raise FileExistsError(f"init target is a file: {root}")
-    if not root.exists():
-        root.mkdir(parents=True, exist_ok=True)
-        return "new"
-    if not root.is_dir():
-        raise NotADirectoryError(f"init target is not a directory: {root}")
-
-    git_dir = root / ".git"
-    if git_dir.is_file():
-        raise OSError(
-            f"init target must be a project root, not a linked worktree root: {root}"
-        )
-    if git_dir.is_dir():
-        if await _git_is_bare(root):
-            return "existing_bare"
-        top = await run(
-            ["git", "-C", str(root), "rev-parse", "--show-toplevel"],
-            check=False,
-            capture_output=True,
-        )
-        if top.returncode != 0:
-            raise OSError(
-                f"failed to resolve git toplevel for existing repository at {root}:\n"
-                f"{(top.stderr or top.stdout).strip()}"
-            )
-        toplevel = Path(top.stdout.strip()).expanduser().resolve()
-        if toplevel != root:
-            raise OSError(
-                f"init target must be repository root; expected '{toplevel}', got "
-                f"'{root}'"
-            )
-        return "existing_non_bare"
-
-    inside = await run(
-        ["git", "-C", str(root), "rev-parse", "--is-inside-work-tree"],
-        check=False,
-        capture_output=True,
-    )
-    if inside.returncode == 0 and inside.stdout.strip().lower() == "true":
-        raise OSError(
-            f"init target is inside an existing repository and is not a project root: "
-            f"{root}"
-        )
-    if any(root.iterdir()):
-        raise OSError(
-            f"init target exists and is not an empty directory: {root}"
-        )
-    return "new"
-
-
-async def _list_branches(root: Path) -> list[str]:
-    result = await run(
-        [
-            "git",
-            "--git-dir", str(root / ".git"),
-            "for-each-ref",
-            "--format=%(refname:short)",
-            "refs/heads",
-        ],
-        capture_output=True,
-    )
-    return [line.strip() for line in result.stdout.splitlines() if line.strip()]
-
-
-async def _list_branch_worktrees(root: Path) -> dict[str, Path]:
-    result = await run(
-        ["git", "--git-dir", str(root / ".git"), "worktree", "list", "--porcelain"],
-        capture_output=True,
-    )
-    out: dict[str, Path] = {}
-    curr_path: Path | None = None
-    curr_branch: str | None = None
-    for raw in result.stdout.splitlines():
-        line = raw.strip()
-        if not line:
-            if curr_path is not None and curr_branch is not None:
-                out[curr_branch] = curr_path
-            curr_path = None
-            curr_branch = None
-            continue
-        if line.startswith("worktree "):
-            curr_path = Path(line[len("worktree "):]).expanduser().resolve()
-            continue
-        if line.startswith("branch refs/heads/"):
-            curr_branch = line[len("branch refs/heads/"):]
-    if curr_path is not None and curr_branch is not None:
-        out[curr_branch] = curr_path
-    return out
-
-
-async def _create_main_worktree(root: Path) -> Path:
-    main = (root / "main").resolve()
+async def _create_main_worktree(root: Path, *, name: str) -> Path:
+    main = (root / name).resolve()
     if main.exists():
-        raise FileExistsError(
-            f"cannot create main worktree; path already exists: {main}"
-        )
+        raise FileExistsError(f"cannot create main worktree; path already exists: {main}")
     main.parent.mkdir(parents=True, exist_ok=True)
     await run(
         [
@@ -823,7 +706,7 @@ async def _create_main_worktree(root: Path) -> Path:
             "worktree",
             "add",
             "--relative-paths",
-            "-b", "main",
+            "-b", name,
             str(main),
         ],
         capture_output=True,
@@ -833,15 +716,23 @@ async def _create_main_worktree(root: Path) -> Path:
 
 async def _converge_bare_worktrees(root: Path) -> None:
     await _require_relative_worktree_support(root)
-    branches = sorted(set(await _list_branches(root)))
+    branches = sorted(set(await list_branches(root / ".git")))
+
+    # if there are no branches, create one
     if not branches:
-        await _create_main_worktree(root)
+        await _create_main_worktree(root, name="main")
         return
-    current = await _list_branch_worktrees(root)
+
+    # define current and desired worktree paths for each branch
+    current = {
+        worktree.branch: worktree.path
+        for worktree in await list_worktrees(root / ".git")
+        if worktree.branch is not None
+    }
     desired = {branch: (root / branch).resolve() for branch in branches}
 
     # move non-canonical worktree paths where safe.
-    for branch in sorted(set(current) & set(desired)):
+    for branch in sorted(current.keys() & set(desired)):
         source = current[branch]
         target = desired[branch]
         if source == target:
@@ -873,7 +764,11 @@ async def _converge_bare_worktrees(root: Path) -> None:
                 f"{source} to {target}:\n{(result.stderr or result.stdout).strip()}",
                 file=sys.stderr,
             )
-    current = await _list_branch_worktrees(root)
+    current = {
+        worktree.branch: worktree.path
+        for worktree in await list_worktrees(root / ".git")
+        if worktree.branch is not None
+    }
 
     # create worktrees for any branches that are still missing.
     for branch in branches:
@@ -919,7 +814,7 @@ async def _seed_new_repository(
         capture_output=True,
     )
     await _require_relative_worktree_support(root)
-    worktree = await _create_main_worktree(root)
+    worktree = await _create_main_worktree(root, name="main")
 
     effective_profile = profile if profile is not None else "src"
     effective_capabilities = (
@@ -943,23 +838,91 @@ async def _seed_new_repository(
         print(f"bertrand: failed to {stage} in {worktree}\n{err}", file=sys.stderr)
 
 
-def _load_reference_transaction_hook() -> str:
+async def _classify_project_root(root: Path) -> RepoMode:
+    root = root.expanduser().resolve()
+    if root.exists() and root.is_file():
+        raise FileExistsError(f"init target is a file: {root}")
+    if not root.exists():
+        root.mkdir(parents=True, exist_ok=True)
+        return "new"
+    if not root.is_dir():
+        raise NotADirectoryError(f"init target is not a directory: {root}")
+
+    git_dir = root / ".git"
+    if git_dir.is_file():
+        raise OSError(
+            f"init target must be a project root, not a linked worktree root: {root}"
+        )
+    if git_dir.is_dir():
+        if await _git_is_bare(root):
+            return "existing_bare"
+        toplevel = Path((await run(
+            ["git", "-C", str(root), "rev-parse", "--show-toplevel"],
+            capture_output=True,
+        )).stdout.strip()).expanduser().resolve()
+        if toplevel != root:
+            raise OSError(
+                f"init target must be repository root; expected '{toplevel}', got "
+                f"'{root}'"
+            )
+        return "existing_non_bare"
+
+    inside = await run(
+        ["git", "-C", str(root), "rev-parse", "--is-inside-work-tree"],
+        check=False,
+        capture_output=True,
+    )
+    if inside.returncode == 0 and inside.stdout.strip().lower() == "true":
+        raise OSError(
+            f"init target is inside an existing repository and is not a project root: "
+            f"{root}"
+        )
+    if any(root.iterdir()):
+        raise OSError(
+            f"init target exists and is not an empty directory: {root}"
+        )
+    return "new"
+
+
+def _load_managed_hook(
+    *,
+    filename: str,
+    marker: str,
+    require_shebang: bool,
+) -> str:
     source = importlib_resources.files("bertrand.env").joinpath(
-        "git",
-        "reference_transaction.py",
+        "run",
+        filename,
     ).read_text(encoding="utf-8")
     lines = source.splitlines()
     if not lines:
-        raise ValueError("packaged reference_transaction.py is empty")
-    if lines[0].strip() != "#!/usr/bin/env python3":
+        raise ValueError(f"packaged {filename} is empty")
+    if require_shebang and lines[0].strip() != "#!/usr/bin/env python3":
         raise ValueError(
-            "packaged reference_transaction.py must start with '#!/usr/bin/env python3'"
+            f"packaged {filename} must start with '#!/usr/bin/env python3'"
         )
-    return "\n".join([
-        lines[0],
-        REFERENCE_TRANSACTION_MARKER,
-        *lines[1:]
-    ]).rstrip("\n") + "\n"
+    text = source.rstrip("\n") + "\n"
+    if marker in text:
+        return text
+    if require_shebang:
+        return "\n".join([lines[0], marker, *lines[1:]]).rstrip("\n") + "\n"
+    return "\n".join([marker, *lines]).rstrip("\n") + "\n"
+
+
+def _load_reference_transaction_hook() -> str:
+    return _load_managed_hook(
+        filename="reference_transaction.py",
+        marker=REFERENCE_TRANSACTION_MARKER,
+        require_shebang=True,
+    )
+
+
+def _load_bertrand_git_hook() -> str:
+    return _load_managed_hook(
+        filename="bertrand_git.py",
+        marker=BERTRAND_GIT_MARKER,
+        require_shebang=False,
+    )
 
 
 async def _resolve_git_path(root: Path, git_path: str) -> Path:
@@ -992,40 +955,54 @@ async def _install_git_hooks(root: Path) -> None:
     if not git_dir.exists():
         return
 
-    # load git hooks from packaged resources
-    stage = "load packaged reference-transaction hook"
-    try:
-        hook_text = _load_reference_transaction_hook()
-        stage = f"resolve git hook path for '{REFERENCE_TRANSACTION_HOOK}'"
-        hook_path = await _resolve_git_path(root, REFERENCE_TRANSACTION_HOOK)
+    # load and install managed hooks
+    hooks = [
+        (
+            REFERENCE_TRANSACTION_HOOK,
+            REFERENCE_TRANSACTION_MARKER,
+            _load_reference_transaction_hook(),
+            True,
+        ),
+        (
+            BERTRAND_GIT_HOOK,
+            BERTRAND_GIT_MARKER,
+            _load_bertrand_git_hook(),
+            False,
+        ),
+    ]
+    for hook_name, marker, hook_text, executable in hooks:
+        stage = f"resolve git hook path for '{hook_name}'"
+        try:
+            hook_path = await _resolve_git_path(root, hook_name)
 
-        # check for conflicts
-        install_hook = True
-        if hook_path.exists():  # do not clobber non-Bertrand hooks
-            if not hook_path.is_file():
-                raise OSError(f"git hook path is not a file: {hook_path}")
-            existing = hook_path.read_text(encoding="utf-8")
-            if existing == hook_text:
-                install_hook = False  # already installed and up-to-date
-            elif REFERENCE_TRANSACTION_MARKER not in existing:
-                print(
-                    f"existing git hook at {hook_path} is not managed by Bertrand; "
-                    f"skipping to avoid clobbering user-managed hook.",
-                    file=sys.stderr
-                )
-                install_hook = False
+            # check for conflicts
+            install_hook = True
+            if hook_path.exists():  # do not clobber non-Bertrand hooks
+                if not hook_path.is_file():
+                    raise OSError(f"git hook path is not a file: {hook_path}")
+                existing = hook_path.read_text(encoding="utf-8")
+                if existing == hook_text:
+                    install_hook = False  # already installed and up-to-date
+                elif marker not in existing:
+                    print(
+                        f"existing git hook at {hook_path} is not managed by Bertrand; "
+                        f"skipping to avoid clobbering user-managed hook.",
+                        file=sys.stderr
+                    )
+                    install_hook = False
 
-        # install hook into git directory
-        if install_hook:
-            stage = f"write git hook to {hook_path}"
-            atomic_write_text(hook_path, hook_text, encoding="utf-8")
-            stage = f"set executable permissions on git hook {hook_path}"
-            try:
-                hook_path.chmod(0o755)
-            except OSError:
-                pass
-    except Exception as err:
-        print(f"bertrand: failed to {stage} in {root}\n{err}", file=sys.stderr)
+            # install hook into git directory
+            if install_hook:
+                stage = f"write git hook to {hook_path}"
+                atomic_write_text(hook_path, hook_text, encoding="utf-8")
+                if executable:
+                    stage = f"set executable permissions on git hook {hook_path}"
+                    try:
+                        hook_path.chmod(0o755)
+                    except OSError:
+                        pass
+        except Exception as err:
+            print(f"bertrand: failed to {stage} in {root}\n{err}", file=sys.stderr)
 
 
 ###################
