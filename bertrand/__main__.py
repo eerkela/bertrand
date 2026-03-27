@@ -802,6 +802,17 @@ class External:
         """
         print(__version__)
 
+    # TODO: add in-place profile/capability expansion for existing repositories.
+    # TODO: add optional non-bare -> bare conversion support (and vice versa) in a
+    # future pass.
+
+    # TODO: add forward compatility image retirement on registry/environment version
+    # changes, and figure out how to reliably provide jinja template values to the
+    # `Config.init()` method.  It should also be possible for `bertrand init` to target
+    # existing repositories and/or worktrees, in order to support adding capabilities,
+    # and possibly also converting from non-bare to bare repositories, or flat to src
+    # layouts, etc.
+
     @staticmethod
     def init(args: argparse.Namespace) -> None:
         """Execute the `bertrand init` CLI command.
@@ -1455,7 +1466,7 @@ class External:
             raise OSError("clean declined by user.")
 
         with asyncio.Runner() as runner:
-            runner.run(bertrand_clean())
+            runner.run(bertrand_clean(assume_yes=args.yes))
 
     def __call__(self) -> None:
         parser = External.Parser()

@@ -18,7 +18,7 @@ from typing import Awaitable, Callable, Literal, Self
 from pydantic import BaseModel, ConfigDict, PositiveInt
 
 from .config import Config, NonEmpty, Trimmed
-from .container import STATE_DIR, TIMEOUT, Container, podman_cmd, podman_ids
+from .container import STATE_DIR, TIMEOUT, podman_cmd, podman_ids
 from .run import (
     GitRepository,
     Lock,
@@ -32,7 +32,7 @@ from .run import (
 
 
 # pylint: disable=unused-argument, missing-function-docstring, missing-return-doc
-# pylint: disable=bare-except, broad-except
+# pylint: disable=bare-except, broad-exception-caught
 
 
 type InitStage = Literal[
@@ -660,181 +660,21 @@ INIT_STAGES: tuple[tuple[InitStage, Callable[[InitState, bool], Awaitable[None]]
 #########################
 
 
-# TODO: these feel like they can still be simplified a lot further.  That should be
-# tomorrow's job, in addition to wiring the new init logic into the CLI, adding
-# forward compatility image retirement on registry/environment version changes, and
-# figuring out how to reliably provide jinja template values to the `Config.init()`
-# method.  It should also be possible for `bertrand init` to target existing
-# repositories and/or worktrees, in order to support adding capabilities, and possibly
-# also converting from non-bare to bare repositories, or flat to src layouts, etc.
-
-
-REFERENCE_TRANSACTION_HOOK: str = "hooks/reference-transaction"
-BERTRAND_GIT_HOOK: str = "hooks/bertrand_git.py"
-REFERENCE_TRANSACTION_MARKER: str = "# bertrand-managed: reference-transaction"
-BERTRAND_GIT_MARKER: str = "# bertrand-managed: bertrand_git.py"
-
-
-type RepoMode = Literal["new", "existing_non_bare", "existing_bare"]
-
-
-async def _require_relative_worktree_support(repo: GitRepository, root: Path) -> None:
-    if not await repo.supports_relative_paths():
-        raise OSError(
-            "git worktree relative path support is required for bare repository mode, "
-            "but this git version does not support '--relative-paths' for worktree "
-            "creation and move operations."
-        )
-
-
-async def _converge_bare_worktrees(root: Path) -> None:
-    repo = GitRepository((root / ".git").resolve())
-    if not repo:
-        raise OSError(f"invalid git directory at {repo.git_dir}")
-    await _require_relative_worktree_support(repo, root)
-    await repo.sync_worktrees()
-
-
-async def _seed_new_repository(
-    root: Path,
-    profile: str | None,
-    capabilities: set[str] | None,
-) -> None:
-    git_dir = (root / ".git").resolve()
-    git_dir.mkdir(parents=True, exist_ok=True)
-    repo = GitRepository(git_dir)
-    await repo.init(bare=True)
-    await repo.run(
-        ["symbolic-ref", "HEAD", "refs/heads/main"],
-        capture_output=True,
-    )
-    if not repo:
-        raise OSError(f"failed to initialize git repository at {git_dir}")
-    await _require_relative_worktree_support(repo, root)
-    worktree = (root / "main").expanduser().resolve()
-    await repo.create_worktree("main", target=worktree, create_branch=True, quiet=True)
-
-    effective_profile = profile if profile is not None else "src"
-    effective_capabilities = (
-        set(capabilities) if capabilities is not None else {"python", "cpp", "vscode"}
-    )
-    if not effective_capabilities:
-        raise OSError("init capabilities must not be empty")
-
-    await Config.init(worktree, effective_profile, effective_capabilities)
-
-    stage = "stage files for initial commit"
-    try:
-        await run(["git", "add", "-A"], cwd=worktree, capture_output=True)
-        stage = "create initial commit"
-        await run(
-            ["git", "commit", "--quiet", "-m", "Initial commit"],
-            cwd=worktree,
-            capture_output=True,
-        )
-    except Exception as err:
-        print(f"bertrand: failed to {stage} in {worktree}\n{err}", file=sys.stderr)
-
-
-async def _classify_project_root(root: Path) -> RepoMode:
-    root = root.expanduser().resolve()
-    if root.exists() and root.is_file():
-        raise FileExistsError(f"init target is a file: {root}")
-    if not root.exists():
-        root.mkdir(parents=True, exist_ok=True)
-        return "new"
-    if not root.is_dir():
-        raise NotADirectoryError(f"init target is not a directory: {root}")
-
-    git_dir = root / ".git"
-    if git_dir.is_file():
-        raise OSError(
-            f"init target must be a project root, not a linked worktree root: {root}"
-        )
-    if git_dir.is_dir():
-        repo = GitRepository(git_dir)
-        if not repo:
-            raise OSError(f"invalid git directory at {git_dir}")
-        if await repo.is_bare():
-            return "existing_bare"
-        toplevel = Path((await run(
-            ["git", "-C", str(root), "rev-parse", "--show-toplevel"],
-            capture_output=True,
-        )).stdout.strip()).expanduser().resolve()
-        if toplevel != root:
-            raise OSError(
-                f"init target must be repository root; expected '{toplevel}', got "
-                f"'{root}'"
-            )
-        return "existing_non_bare"
-
-    inside = await run(
-        ["git", "-C", str(root), "rev-parse", "--is-inside-work-tree"],
-        check=False,
-        capture_output=True,
-    )
-    if inside.returncode == 0 and inside.stdout.strip().lower() == "true":
-        raise OSError(
-            f"init target is inside an existing repository and is not a project root: "
-            f"{root}"
-        )
-    if any(root.iterdir()):
-        raise OSError(
-            f"init target exists and is not an empty directory: {root}"
-        )
-    return "new"
-
-
-def _load_managed_hook(
-    *,
-    filename: str,
-    marker: str,
-    require_shebang: bool,
-) -> str:
-    source = importlib_resources.files("bertrand.env").joinpath(
-        "run",
-        filename,
-    ).read_text(encoding="utf-8")
-    lines = source.splitlines()
-    if not lines:
-        raise ValueError(f"packaged {filename} is empty")
-    if require_shebang and lines[0].strip() != "#!/usr/bin/env python3":
-        raise ValueError(
-            f"packaged {filename} must start with '#!/usr/bin/env python3'"
-        )
-    text = source.rstrip("\n") + "\n"
-    if marker in text:
-        return text
-    if require_shebang:
-        return "\n".join([lines[0], marker, *lines[1:]]).rstrip("\n") + "\n"
-    return "\n".join([marker, *lines]).rstrip("\n") + "\n"
-
-
-def _load_reference_transaction_hook() -> str:
-    return _load_managed_hook(
-        filename="reference_transaction.py",
-        marker=REFERENCE_TRANSACTION_MARKER,
-        require_shebang=True,
-    )
-
-
-def _load_bertrand_git_hook() -> str:
-    return _load_managed_hook(
-        filename="bertrand_git.py",
-        marker=BERTRAND_GIT_MARKER,
-        require_shebang=False,
-    )
+MANAGED_HOOKS: tuple[tuple[str, str, bool], ...] = (
+    (
+        "reference_transaction.py",         # source path relative to `bertrand.env.run`
+        "hooks/reference-transaction",      # target git path
+        True,                               # executable
+    ),
+    (
+        "bertrand_git.py",
+        "hooks/bertrand_git.py",
+        False,
+    ),
+)
 
 
 async def _install_git_hooks(root: Path) -> None:
-    """Install git hooks in the environment repository to enable automatic lifecycle
-    management for branch worktrees.
-
-    Parameters
-    ----------
-    root : Path
-        The environment root to install hooks into.
-    """
     # check if git is available
     if not shutil.which("git"):
         return
@@ -848,52 +688,52 @@ async def _install_git_hooks(root: Path) -> None:
         print(f"bertrand: invalid git directory at {repo.git_dir}", file=sys.stderr)
         return
 
-    # load and install managed hooks
-    hooks = [
-        (
-            REFERENCE_TRANSACTION_HOOK,
-            REFERENCE_TRANSACTION_MARKER,
-            _load_reference_transaction_hook(),
-            True,
-        ),
-        (
-            BERTRAND_GIT_HOOK,
-            BERTRAND_GIT_MARKER,
-            _load_bertrand_git_hook(),
-            False,
-        ),
-    ]
-    for hook_name, marker, hook_text, executable in hooks:
-        stage = f"resolve git hook path for '{hook_name}'"
+    # load managed hook payloads before install; this preserves fail-fast behavior if
+    # packaged hook definitions are malformed.
+    for source, destination, executable in MANAGED_HOOKS:
+        stage = f"resolve managed hook for '{destination}'"
+        marker = f"# bertrand-managed: {source}"
         try:
-            hook_path = await repo.git_path(hook_name, cwd=root)
+            # load hook from Bertrand package resources and verify shebang/marker
+            expected: list[str] = []
+            if executable:
+                expected.append("#!/usr/bin/env python3")
+            expected.append(marker)
+            hook_text = importlib_resources.files("bertrand.env").joinpath(
+                "run",
+                source,
+            ).read_text(encoding="utf-8")
+            if hook_text.splitlines()[:len(expected)] != expected:
+                raise ValueError(
+                    f"packaged {source} must start with:\n{'\n'.join(expected)}"
+                )
 
-            # check for conflicts
-            install_hook = True
-            if hook_path.exists():  # do not clobber non-Bertrand hooks
-                if not hook_path.is_file():
-                    raise OSError(f"git hook path is not a file: {hook_path}")
-                existing = hook_path.read_text(encoding="utf-8")
+            # do not clobber non-managed hooks
+            stage = f"resolve existing git hook at '{destination}'"
+            target = await repo.git_path(destination, cwd=root)
+            if target.exists():
+                if not target.is_file():
+                    raise OSError(f"git hook path is not a file: {target}")
+                existing = target.read_text(encoding="utf-8")
                 if existing == hook_text:
-                    install_hook = False  # already installed and up-to-date
-                elif marker not in existing:
+                    continue
+                if existing.splitlines()[:len(expected)] != expected:
                     print(
-                        f"existing git hook at {hook_path} is not managed by Bertrand; "
+                        f"existing git hook at {target} is not managed by Bertrand; "
                         f"skipping to avoid clobbering user-managed hook.",
                         file=sys.stderr
                     )
-                    install_hook = False
+                    continue
 
             # install hook into git directory
-            if install_hook:
-                stage = f"write git hook to {hook_path}"
-                atomic_write_text(hook_path, hook_text, encoding="utf-8")
-                if executable:
-                    stage = f"set executable permissions on git hook {hook_path}"
-                    try:
-                        hook_path.chmod(0o755)
-                    except OSError:
-                        pass
+            stage = f"write git hook to {target}"
+            atomic_write_text(target, hook_text, encoding="utf-8")
+            if executable:
+                stage = f"set executable permissions on git hook {target}"
+                try:
+                    target.chmod(0o755)
+                except OSError:
+                    pass
         except Exception as err:
             print(f"bertrand: failed to {stage} in {root}\n{err}", file=sys.stderr)
 
@@ -922,6 +762,11 @@ async def bertrand_init(
         Optional capability set for `Config.init`.
     yes : bool
         Whether to auto-accept prompts during host bootstrap stages.
+
+    Raises
+    ------
+    OSError
+        If Git is not found, or the project root repository is invalid.
     """
     # install container runtime if needed
     STATE_DIR.mkdir(parents=True, exist_ok=True)
@@ -946,59 +791,97 @@ async def bertrand_init(
     if project_root is None:
         return
 
-    # path-scoped init requires git for repository initialization and hook management.
+    # determine whether the directory at the given root is already a valid git
+    # repository
     if not shutil.which("git"):
         raise OSError("git is required for path-scoped initialization")
+    repo = GitRepository(project_root / ".git")
 
-    root = project_root.expanduser().resolve()
-    mode = await _classify_project_root(root)
+    # if the repository did not previously exist or is invalid, initialize it
+    if not repo:
+        await repo.init(bare=True)
+        worktree = repo.git_dir.parent / "main"
+        await repo.create_worktree("main", target=worktree, create_branch=True)
+        await Config.init(worktree, profile, capabilities)
+        try:
+            await run(["git", "add", "-A"], cwd=worktree, capture_output=True)
+            await run(
+                ["git", "commit", "--quiet", "-m", "Initial commit"],
+                cwd=worktree,
+                capture_output=True,
+            )
+        except Exception as err:
+            print(
+                f"bertrand: failed to create initial commit in {worktree}\n{err}",
+                file=sys.stderr
+            )
 
-    # Existing repositories are infra-only in this phase.  In-place capability/profile
-    # expansion is intentionally deferred to a follow-up implementation.
-    if mode != "new" and (profile is not None or capabilities is not None):
-        raise NotImplementedError(
-            "in-place profile/capability expansion for existing repositories is not "
-            "implemented yet"
-        )
+    # if the repository is bare, then we should try to converge its worktrees to match
+    # the current branches
+    if await repo.is_bare():
+        if not await repo.supports_relative_paths():
+            raise OSError(
+                "git worktree relative path support is required for bare repository "
+                "mode, but this git version does not support '--relative-paths' for "
+                "worktree creation and move operations."
+            )
+        await repo.sync_worktrees()
 
-    if mode == "new":
-        await _seed_new_repository(root, profile, capabilities)
-        await _install_git_hooks(root)
-        return
-
-    if mode == "existing_bare":
-        await _converge_bare_worktrees(root)
-        await _install_git_hooks(root)
-        return
-
-    # existing non-bare repository
-    await _install_git_hooks(root)
+    # install/update git hooks for the repository
+    await _install_git_hooks(repo.git_dir.parent)
 
 
-async def bertrand_clean(*, timeout: float = TIMEOUT) -> None:
+async def bertrand_clean(*, assume_yes: bool) -> None:
     """Best-effort cleanup of Bertrand-managed runtime artifacts on the host.
 
-    This removes Bertrand-managed containers, images, volumes, and global local state.
-    It intentionally does not uninstall podman or revert host system settings.
+    Parameters
+    ----------
+    assume_yes : bool
+        Whether to auto-accept prompts during cleanup.
+
+    Raises
+    ------
+    OSError
+        If cleanup is declined by the user.
     """
+    if not confirm(
+        "This will attempt to remove all containers, images, and volumes created by "
+        f"Bertrand, and delete all local state stored in {STATE_DIR}.  It will not "
+        "uninstall podman or revert any host system settings.  Do you want to proceed? "
+        "[y/N] ",
+        assume_yes=assume_yes,
+    ):
+        raise OSError("Cleanup declined by user.")
+
     if shutil.which("podman"):
         try:
-            containers = await podman_ids("container", {}, timeout=timeout)
+            containers = await podman_ids("container", {})
             if containers:
-                await Container.remove(containers, force=True, timeout=timeout)
-        except Exception as err:  # pylint: disable=broad-exception-caught
+                await podman_cmd(
+                    ["container", "rm", "-f", "-i", *containers],
+                    check=False
+                )
+        except Exception as err:
             print(f"bertrand: failed to clean containers:\n{err}", file=sys.stderr)
+
         try:
-            images = await podman_ids("image", {}, timeout=timeout)
+            images = await podman_ids("image", {})
             if images:
-                await podman_cmd(["image", "rm", "-f", "-i", *images], check=False)
-        except Exception as err:  # pylint: disable=broad-exception-caught
+                await podman_cmd(
+                    ["image", "rm", "-f", "-i", *images],
+                    check=False
+                )
+        except Exception as err:
             print(f"bertrand: failed to clean images:\n{err}", file=sys.stderr)
+
         try:
-            volumes = await podman_ids("volume", {}, timeout=timeout)
+            volumes = await podman_ids("volume", {})
             if volumes:
-                await podman_cmd(["volume", "rm", "-f", "-i", *volumes], check=False)
-        except Exception as err:  # pylint: disable=broad-exception-caught
+                await podman_cmd(
+                    ["volume", "rm", "-f", "-i", *volumes],
+                    check=False
+                )
+        except Exception as err:
             print(f"bertrand: failed to clean volumes:\n{err}", file=sys.stderr)
 
     # delete the entire state directory

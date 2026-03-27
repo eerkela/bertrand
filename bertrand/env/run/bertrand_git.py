@@ -684,42 +684,18 @@ class GitRepository:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "git_dir", self.git_dir.expanduser().resolve())
-        if not self.git_dir.exists():
-            raise FileNotFoundError(f"git directory does not exist: {self.git_dir}")
-        if not self.git_dir.is_dir():
-            raise NotADirectoryError(f"invalid git directory: {self.git_dir}")
-
-    # TODO: this `__bool__()` operator seems unnecessarily complicated.  It's just
-    # supposed to probe whether `self.git_dir` points to a valid git repository.
 
     def __bool__(self) -> bool:
-        try:
-            result = subprocess.run(
-                [
-                    "git",
-                    "--git-dir",
-                    str(self.git_dir),
-                    "rev-parse",
-                    "--path-format=absolute",
-                    "--git-common-dir",
-                ],
+        return (
+            self.git_dir.exists() and
+            self.git_dir.is_dir() and
+            subprocess.run(
+                ["git", "--git-dir", str(self.git_dir), "rev-parse", "--git-dir"],
                 check=False,
-                capture_output=True,
-                text=True,
-            )
-        except OSError:
-            return False
-        if result.returncode != 0:
-            return False
-        path = result.stdout.strip()
-        if not path:
-            return False
-        common_dir = Path(path).expanduser()
-        if not common_dir.is_absolute():
-            common_dir = (self.git_dir / common_dir).resolve()
-        else:
-            common_dir = common_dir.resolve()
-        return common_dir.exists() and common_dir.is_dir()
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            ).returncode == 0
+        )
 
     async def init(self, *, bare: bool = True) -> None:
         """Initialize a new Git repository at the given path.

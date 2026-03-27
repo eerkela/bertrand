@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# bertrand-managed: reference-transaction
+# bertrand-managed: reference_transaction.py
 """A git reference-transaction hook that tracks changes to branches and mirrors them
 in the project directory, so that Bertrand can avoid any manual branch management and
 treat git as the sole source of truth for its isolated worktree model.
