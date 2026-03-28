@@ -13,6 +13,8 @@ from typing import Any, Self
 
 import psutil
 
+from .bertrand_git import METADATA_LOCK
+
 
 # TODO: Lock should probably implement a `try_lock()` method that attempts to acquire
 # the lock and returns immediately with a boolean success value, instead of blocking.
@@ -327,3 +329,27 @@ class Lock:
 
     def __repr__(self) -> str:
         return f"Lock(path={repr(self.path)}, timeout={self.timeout})"
+
+
+def lock_worktree(worktree: Path, timeout: float = LOCK_TIMEOUT) -> Lock:
+    """Lock a Bertrand worktree for exclusive access, hiding the lock inside the
+    worktree's metadata directory.
+
+    Parameters
+    ----------
+    worktree : Path
+        The root path of the worktree to lock.
+    timeout : float, optional
+        The maximum number of seconds to wait for the lock to be acquired before
+        raising a `TimeoutError`.  See `Lock()` for the default value.
+
+    Returns
+    -------
+    Lock
+         A lock instance representing the acquired lock on the worktree directory.
+    """
+    # NOTE: pre-touching the lock's parent ensures that lock acquisition is always
+    # atomic
+    path = worktree.expanduser().resolve() / METADATA_LOCK
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return Lock(path, timeout=timeout)

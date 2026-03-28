@@ -42,19 +42,22 @@ from pydantic import (
 
 from .config import (
     EDITORS,
-    IMAGE_TAG_ENV,
-    PROJECT_ENV,
-    RPC_SOCKET_ENV,
     VSCODE_WORKSPACE_FILE,
-    WORKTREE_ENV,
-    WORKTREE_MOUNT,
     AbsolutePath,
     Config,
     Editor,
-    JSONValue,
-    inside_image,
 )
-from .run import  TimeoutExpired, run
+from .run import (
+    CONTAINER_SOCKET,
+    IMAGE_TAG_ENV,
+    PROJECT_ENV,
+    WORKTREE_ENV,
+    WORKTREE_MOUNT,
+    JSONValue,
+    TimeoutExpired,
+    inside_image,
+    run,
+)
 
 # pylint: disable=bare-except, broad-exception-caught
 
@@ -639,22 +642,12 @@ async def rpc(method: RPCMethod) -> RPCResponse.Result:
             "persists."
         )
 
-    # locate container-side socket path from environment
-    socket_env = os.environ.get(RPC_SOCKET_ENV, "").strip()
-    if not socket_env:
+    # validate container-side rpc socket from bootstrapped runtime dir
+    if not CONTAINER_SOCKET.exists():
+        raise RuntimeError(f"RPC socket does not exist: {CONTAINER_SOCKET}")
+    if not stat.S_ISSOCK(CONTAINER_SOCKET.lstat().st_mode):
         raise RuntimeError(
-            f"{RPC_SOCKET_ENV} is missing or empty.  Re-enter the environment to refresh "
-            "sidecar socket metadata."
-        )
-    socket_path = Path(socket_env)
-    if not socket_path.is_absolute():
-        raise RuntimeError(f"{RPC_SOCKET_ENV} must be an absolute path: {socket_env}")
-    socket_path = socket_path.expanduser().resolve()
-    if not socket_path.exists():
-        raise RuntimeError(f"RPC socket does not exist: {socket_path}")
-    if not stat.S_ISSOCK(socket_path.lstat().st_mode):
-        raise RuntimeError(
-            f"RPC socket path does not point to a valid socket: {socket_path}"
+            f"RPC socket path does not point to a valid socket: {CONTAINER_SOCKET}"
         )
 
     # form request, then serialize to newline-delimited JSON
@@ -668,7 +661,7 @@ async def rpc(method: RPCMethod) -> RPCResponse.Result:
     try:
         # asynchronously connect to socket
         reader, writer = await asyncio.wait_for(
-            asyncio.open_unix_connection(str(socket_path), limit=MAX_REQUEST_BYTES + 1),
+            asyncio.open_unix_connection(str(CONTAINER_SOCKET), limit=MAX_REQUEST_BYTES + 1),
             timeout=max(0.001, remaining),
         )
     except asyncio.TimeoutError as err:
@@ -968,7 +961,7 @@ class CodeOpen:
         # load editor selection from worktree config
         async with await Config.load(WORKTREE_MOUNT) as config:
             await config.sync(image_tag)
-            if not config.bertrand:
+            if not config.tool.bertrand:
                 raise RuntimeError(
                     f"Bertrand configuration is missing from the worktree config at "
                     f"{worktree}.  This should never occur; if you see this message, "
@@ -977,7 +970,7 @@ class CodeOpen:
                 )
 
             # run editor-specific prechecks while inside container context
-            editor = self.editor or config.bertrand.editor
+            editor = self.editor or config.tool.bertrand.editor
             prereqs = CODE_OPEN_PREREQS.get(editor)
             if prereqs is None or editor not in CODE_OPEN:
                 raise ValueError(f"unsupported editor for code.open RPC method: {editor}")

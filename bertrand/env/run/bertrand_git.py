@@ -25,8 +25,8 @@ import subprocess
 import sys
 import uuid
 from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Literal, Mapping, Sequence, TextIO
+from pathlib import Path, PosixPath
+from typing import Literal, Mapping, Sequence, TextIO, TypeAlias
 
 # pylint: disable=redefined-builtin, broad-exception-caught
 
@@ -40,6 +40,69 @@ from typing import Literal, Mapping, Sequence, TextIO
 # because they don't have any dependencies, and can be reused by Git hooks to improve
 # functionality without breaking isolation.  The same utilities are exported to the
 # main CLI, so there's no risk of duplication.
+
+
+# In-container path definitions for metadata and runtime control.
+METADATA_DIR: PosixPath = PosixPath(".bertrand")
+METADATA_LOCK: PosixPath = METADATA_DIR / ".lock"
+METADATA_FILE: PosixPath = METADATA_DIR / "env.json"
+METADATA_TMP: PosixPath = METADATA_DIR / "tmp"
+WORKTREE_MOUNT: PosixPath = PosixPath("/bertrand")
+PROJECT_MOUNT: PosixPath = PosixPath("/.bertrand")
+CONTAINER_RUNTIME_MOUNT: PosixPath = PosixPath("/run/bertrand")
+CONTAINER_SOCKET: PosixPath = CONTAINER_RUNTIME_MOUNT / "rpc.sock"
+CONTAINER_TMP_MOUNT: PosixPath = PosixPath("/tmp/bertrand")
+
+
+# In-container environment variables for relevant configuration, which are set either
+# at build time or upon starting the container context, and used to control the
+# behavior of the bertrand CLI both inside and outside the container.
+BERTRAND_ENV: str = "BERTRAND"                  # "1" to mark as a Bertrand context
+ENV_ID_ENV: str = "BERTRAND_ENV_ID"             # unique Bertrand environment UUID
+IMAGE_ID_ENV: str = "BERTRAND_IMAGE_ID"         # unique OCI image ID
+CONTAINER_ID_ENV: str = "BERTRAND_CONTAINER_ID" # unique OCI container ID
+IMAGE_TAG_ENV: str = "BERTRAND_IMAGE_TAG"       # original tag in build matrix
+RPC_SOCKET_ENV: str = "BERTRAND_RPC_SOCKET"     # absolute path to container-side RPC socket
+PROJECT_ENV: str = "BERTRAND_PROJECT"           # host path to mounted project root
+WORKTREE_ENV: str = "BERTRAND_WORKTREE"         # relative path to mounted worktree
+CONTAINER_RUNTIME_ENV: str = "BERTRAND_RUNTIME" # relative path to worktree's artifact directory
+
+
+# common type aliases for serialization
+Scalar: TypeAlias = str | bool | int | float
+JSONValue: TypeAlias = None | Scalar | Sequence["JSONValue"] | Mapping[str, "JSONValue"]
+
+
+def inside_image() -> bool:
+    """Check if we're currently running inside a Bertrand image build context
+    (Containerfile or Bertrand container instance).
+
+    Returns
+    -------
+    bool
+        True if we're either building an image or running inside a container process.
+        False otherwise.
+
+    Notes
+    -----
+    If this is true and `inside_container()` is false, then it means the CLI was
+    invoked from a Containerfile during an image build, which corresponds to
+    ahead-of-time (AoT) compilation for statically-typed languages.  The `build`
+    command takes advantage of this to differentiate between normal (in-image) and
+    editable (in-container) installs, for example.
+    """
+    return os.environ.get(BERTRAND_ENV, "") == "1"
+
+
+def inside_container() -> bool:
+    """Check if we're currently running inside a Bertrand container instance.
+
+    Returns
+    -------
+    bool
+        True if we're running inside a container process, False otherwise.
+    """
+    return all(key in os.environ for key in (CONTAINER_ID_ENV, IMAGE_ID_ENV, ENV_ID_ENV))
 
 
 class CompletedProcess(subprocess.CompletedProcess[str]):

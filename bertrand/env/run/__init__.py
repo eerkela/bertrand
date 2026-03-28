@@ -7,16 +7,37 @@ to prevent Git from breaking when `bertrand` is not installed in the current
 environment.
 """
 from .bertrand_git import (
+    BERTRAND_ENV,
+    CONTAINER_ID_ENV,
+    CONTAINER_RUNTIME_MOUNT,
+    CONTAINER_RUNTIME_ENV,
+    CONTAINER_SOCKET,
+    CONTAINER_TMP_MOUNT,
+    ENV_ID_ENV,
+    IMAGE_ID_ENV,
+    IMAGE_TAG_ENV,
+    METADATA_DIR,
+    METADATA_LOCK,
+    METADATA_FILE,
+    METADATA_TMP,
+    PROJECT_ENV,
+    PROJECT_MOUNT,
+    WORKTREE_ENV,
+    WORKTREE_MOUNT,
     CompletedProcess,
     CommandError,
     GitRefUpdate,
     GitRepository,
+    JSONValue,
+    Scalar,
     TimeoutExpired,
     User,
     atomic_write_bytes,
     atomic_write_text,
     can_escalate,
     confirm,
+    inside_container,
+    inside_image,
     mkdir_private,
     run,
     sanitize_name,
@@ -24,5 +45,6 @@ from .bertrand_git import (
 )
 from .lock import (
     LOCK_TIMEOUT,
-    Lock
+    Lock,
+    lock_worktree,
 )

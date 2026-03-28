@@ -34,25 +34,8 @@ from pydantic import (
 
 from .rpc import RPC_TIMEOUT
 from .config import (
-    BERTRAND_ENV,
-    CONTAINER_ID_ENV,
-    CONTAINER_RUNTIME_DIR,
-    CONTAINER_SOCKET,
     DEFAULT_TAG,
-    ENV_ID_ENV,
-    IMAGE_ID_ENV,
-    IMAGE_TAG_ENV,
-    METADATA_DIR,
-    METADATA_FILE,
-    METADATA_TMP,
-    PROJECT_ENV,
-    PROJECT_MOUNT,
-    RPC_SOCKET_ENV,
-    RPC_SOCKET_NAME,
-    RUNTIME_ENV,
     SHELLS,
-    WORKTREE_ENV,
-    WORKTREE_MOUNT,
     AbsolutePath,
     AbsolutePosixPath,
     Config,
@@ -63,6 +46,21 @@ from .config import (
     lock_worktree,
 )
 from .run import (
+    BERTRAND_ENV,
+    CONTAINER_ID_ENV,
+    CONTAINER_RUNTIME_ENV,
+    CONTAINER_RUNTIME_MOUNT,
+    CONTAINER_SOCKET,
+    ENV_ID_ENV,
+    IMAGE_ID_ENV,
+    IMAGE_TAG_ENV,
+    METADATA_DIR,
+    METADATA_FILE,
+    METADATA_TMP,
+    PROJECT_ENV,
+    PROJECT_MOUNT,
+    WORKTREE_ENV,
+    WORKTREE_MOUNT,
     CommandError,
     CompletedProcess,
     Lock,
@@ -828,7 +826,7 @@ class Container(BaseModel):
         if worktree is None:
             return None
         labels = self.Config.Labels
-        value = labels.get(RUNTIME_ENV)
+        value = labels.get(CONTAINER_RUNTIME_ENV)
         if not value:
             return None
         value = value.strip()
@@ -1160,11 +1158,11 @@ class Image(BaseModel):
                 "\"$TARGET_WORKTREE\" "
                 f"{shlex.quote(str(WORKTREE_MOUNT))}"
             ),
-            f"rm -rf {shlex.quote(str(CONTAINER_RUNTIME_DIR))}",  # delete old runtime dir
+            f"rm -rf {shlex.quote(str(CONTAINER_RUNTIME_MOUNT))}",  # delete old runtime dir
             (
                 "ln -s "  # symlink runtime dir
                 "\"$TARGET_RUNTIME\" "
-                f"{shlex.quote(str(CONTAINER_RUNTIME_DIR))}"
+                f"{shlex.quote(str(CONTAINER_RUNTIME_MOUNT))}"
             ),
             "if command -v git >/dev/null 2>&1; then",
             (
@@ -1199,7 +1197,7 @@ class Image(BaseModel):
             "--label", f"{BERTRAND_ENV}=1",
             "--label", f"{PROJECT_ENV}={project_root}",
             "--label", f"{WORKTREE_ENV}={worktree_env}",
-            "--label", f"{RUNTIME_ENV}={runtime}",
+            "--label", f"{CONTAINER_RUNTIME_ENV}={runtime}",
             "--label", f"{ENV_ID_ENV}={env.id}",
             "--label", f"{IMAGE_ID_ENV}={self.id}",
             "--label", f"{IMAGE_TAG_ENV}={self.tag}",
@@ -1211,7 +1209,7 @@ class Image(BaseModel):
             "-e", f"{BERTRAND_ENV}=1",
             "-e", f"{PROJECT_ENV}={project_root}",
             "-e", f"{WORKTREE_ENV}={worktree_env}",
-            "-e", f"{RUNTIME_ENV}={runtime}",
+            "-e", f"{CONTAINER_RUNTIME_ENV}={runtime}",
             "-e", f"{ENV_ID_ENV}={env.id}",
             "-e", f"{IMAGE_ID_ENV}={self.id}",
             "-e", f"{IMAGE_TAG_ENV}={self.tag}",
@@ -1863,7 +1861,7 @@ async def _start_rpc_sidecar(
         text = warn_context or "bertrand: failed to start RPC sidecar"
         print(f"{text}\n{err}", file=sys.stderr)
         return None
-    host_socket = runtime / RPC_SOCKET_NAME
+    host_socket = runtime / CONTAINER_SOCKET.name
 
     sidecar: asyncio.subprocess.Process | None = None
     try:
@@ -2229,9 +2227,6 @@ async def podman_code(
         container = await image.create(
             env,
             cmd,
-            env_vars={
-                RPC_SOCKET_ENV: str(CONTAINER_SOCKET),
-            },
             quiet=False,
         )
         deadline = time.monotonic() + min(env.timeout, RPC_TIMEOUT)
@@ -2346,9 +2341,6 @@ async def podman_enter(
         container = await image.create(
             env,
             list(shell_cmd),
-            env_vars={
-                RPC_SOCKET_ENV: str(CONTAINER_SOCKET),
-            },
             quiet=False,
         )
         deadline = time.monotonic() + min(env.timeout, RPC_TIMEOUT)

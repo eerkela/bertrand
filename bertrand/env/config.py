@@ -62,76 +62,40 @@ from pydantic import (
 import jinja2
 import yaml
 
-from .run import LOCK_TIMEOUT, Lock, atomic_write_text, run, sanitize_name
+from .run import (
+    BERTRAND_ENV,
+    CONTAINER_TMP_MOUNT,
+    ENV_ID_ENV,
+    IMAGE_TAG_ENV,
+    LOCK_TIMEOUT,
+    METADATA_DIR,
+    PROJECT_MOUNT,
+    Scalar,
+    atomic_write_text,
+    inside_container,
+    inside_image,
+    lock_worktree,
+    run,
+    sanitize_name,
+)
 from .version import __version__, VERSION
 
 # pylint: disable=bare-except
 
 
+# TODO: maybe cache paths should be provided by each resource, so that they can also
+# be folded into the resource contract, along with rendering sections in
+# `pyproject.toml` depending on the environment's capabilities?
+
+
 # Canonical path definitions for worktree control
-RPC_SOCKET_NAME: str = "rpc.sock"
-CONTAINER_ARTIFACT_DIR: PosixPath = PosixPath("/tmp/bertrand")
-CONTAINER_RUNTIME_DIR: PosixPath = PosixPath("/run/bertrand")
-CONTAINER_SOCKET: PosixPath = CONTAINER_RUNTIME_DIR / RPC_SOCKET_NAME
-METADATA_DIR: PosixPath = PosixPath(".bertrand")
-METADATA_LOCK: PosixPath = METADATA_DIR / ".lock"
-METADATA_FILE: PosixPath = METADATA_DIR / "env.json"
-METADATA_TMP: PosixPath = METADATA_DIR / "tmp"
-VSCODE_WORKSPACE_FILE: PosixPath = CONTAINER_ARTIFACT_DIR / "vscode.code-workspace"
-CONAN_HOME: PosixPath = PosixPath("/opt/conan")
-PROJECT_MOUNT: PosixPath = PosixPath("/.bertrand")
-WORKTREE_MOUNT: PosixPath = PosixPath("/bertrand")
+VSCODE_WORKSPACE_FILE: PosixPath = PosixPath(".vscode/vscode.code-workspace")
 CACHE_MOUNT: PosixPath = PosixPath("/tmp/.cache")
 CCACHE_CACHE: PosixPath = CACHE_MOUNT / "ccache"
 BERTRAND_CACHE: PosixPath = CACHE_MOUNT / "bertrand"
 UV_CACHE: PosixPath = CACHE_MOUNT / "uv"
 CONAN_CACHE: PosixPath = PosixPath("/opt/conan")
-
-
-# In-container environment variables for relevant configuration, which are set either
-# at build time or upon starting the container context, and used to control the
-# behavior of the bertrand CLI both inside and outside the container.
-BERTRAND_ENV: str = "BERTRAND"                  # "1" to mark as a Bertrand context
-CONTAINER_ID_ENV: str = "BERTRAND_CONTAINER_ID" # unique OCI container ID
-ENV_ID_ENV: str = "BERTRAND_ENV_ID"             # unique Bertrand UUID
-IMAGE_ID_ENV: str = "BERTRAND_IMAGE_ID"         # unique OCI image ID
-IMAGE_TAG_ENV: str = "BERTRAND_IMAGE_TAG"       # original tag in build matrix
-RPC_SOCKET_ENV: str = "BERTRAND_RPC_SOCKET"     # absolute path to container-side RPC socket
-PROJECT_ENV: str = "BERTRAND_PROJECT"           # host path to mounted project root
-WORKTREE_ENV: str = "BERTRAND_WORKTREE"         # relative path to mounted worktree
-RUNTIME_ENV: str = "BERTRAND_RUNTIME"           # relative path to worktree's artifact directory
-
-
-def inside_image() -> bool:
-    """Check if we're currently running inside a Bertrand image build context
-    (Containerfile or Bertrand container instance).
-
-    Returns
-    -------
-    bool
-        True if we're either building an image or running inside a container process.
-        False otherwise.
-
-    Notes
-    -----
-    If this is true and `inside_container()` is false, then it means the CLI was
-    invoked from a Containerfile during an image build, which corresponds to
-    ahead-of-time (AoT) compilation for statically-typed languages.  The `build`
-    command takes advantage of this to differentiate between normal (in-image) and
-    editable (in-container) installs, for example.
-    """
-    return os.environ.get(BERTRAND_ENV, "") == "1"
-
-
-def inside_container() -> bool:
-    """Check if we're currently running inside a Bertrand container instance.
-
-    Returns
-    -------
-    bool
-        True if we're running inside a container process, False otherwise.
-    """
-    return all(key in os.environ for key in (CONTAINER_ID_ENV, IMAGE_ID_ENV, ENV_ID_ENV))
+CONAN_HOME: PosixPath = PosixPath("/opt/conan")
 
 
 # Configuration options that affect CLI behavior
@@ -187,6 +151,7 @@ INSTRUMENTS: dict[str, Callable[[dict[str, Any]], Callable[[list[str]], list[str
 
 # Validation primitives for config fields
 RESOURCE_NAME_RE = re.compile(r"^[a-z]([a-z0-9_]*[a-z0-9])?$")
+ALIAS_NAME_RE = re.compile(r"^[a-z]([a-z0-9_.-]*[a-z0-9])?$")
 KUBE_MAX_LENGTH = 63
 GLOB_RE = re.compile(r"^[A-Za-z0-9._/\-\*\?\[\]!]+$")
 HTTP_URL = TypeAdapter(AnyHttpUrl)
@@ -753,12 +718,15 @@ def _check_health_log_destination(value: str) -> str:
 
 
 type NonEmpty[SequenceT: Sequence[Any]] = Annotated[SequenceT, Field(min_length=1)]
-type Scalar = str | bool | int | float
-type JSONValue = None | Scalar | Sequence["JSONValue"] | Mapping[str, "JSONValue"]
 type ResourceName = Annotated[str, StringConstraints(
     strip_whitespace=True,
     min_length=1,
     pattern=RESOURCE_NAME_RE.pattern
+)]
+type AliasName = Annotated[str, StringConstraints(
+    strip_whitespace=True,
+    min_length=1,
+    pattern=ALIAS_NAME_RE.pattern
 )]
 type ConanConfValue = Scalar | list[ConanConfValue] | dict[str, ConanConfValue]
 type Trimmed = Annotated[str, StringConstraints(strip_whitespace=True)]
@@ -995,7 +963,7 @@ class Resource:
         worktree.  If not empty, then `Config.load()` will attempt to discover this
         resource by searching for the given paths within the worktree, and will add
         the resource to its context if ALL paths are found.
-    aliases : frozenset[SanitizedName]
+    aliases : frozenset[AliasName]
         A set of alternate spellings for this resource, which are not as restricted as
         the base `name` field, and allow this resource to match names that would
         otherwise not be valid when parsing CLI input or TOML table names, for example.
@@ -1003,7 +971,7 @@ class Resource:
     # pylint: disable=unused-argument, redundant-returns-doc
     name: ResourceName
     paths: frozenset[RelativePath]
-    aliases: frozenset[SanitizedName]
+    aliases: frozenset[AliasName]
 
     def __hash__(self) -> int:
         return hash(self.name)
@@ -1093,7 +1061,7 @@ class Resource:
         root: AbsolutePath
         worktree: RelativePath
         resources: frozenset[Resource]
-        jinja: jinja2.Environment = field(default=jinja2.Environment(
+        jinja: jinja2.Environment = field(default_factory=lambda: jinja2.Environment(
             autoescape=False,
             undefined=jinja2.StrictUndefined,
             keep_trailing_newline=True,
@@ -1210,7 +1178,7 @@ class Resource:
 
 
 RESOURCES: set[Resource] = set()
-RESOURCE_NAMES: dict[SanitizedName, Resource] = {}
+RESOURCE_NAMES: dict[AliasName, Resource] = {}
 RESOURCE_PATHS: dict[RelativePath, Resource] = {}
 
 
@@ -1218,7 +1186,7 @@ def resource[ResourceT: Resource](
     name: ResourceName,
     *,
     paths: set[RelativePath] | frozenset[RelativePath] = frozenset(),
-    aliases: set[SanitizedName] | frozenset[SanitizedName] = frozenset(),
+    aliases: set[AliasName] | frozenset[AliasName] = frozenset(),
 ) -> Callable[[type[ResourceT]], type[ResourceT]]:
     """A class decorator for defining layout resources.  See `Resource` for more
     details on the parameters and intended semantics of layout resources.
@@ -1235,7 +1203,7 @@ def resource[ResourceT: Resource](
         The relative paths that this resource manages, which allows it to be discovered
         by `Config.load()`, assuming all paths are found.  The paths are relative to
         the worktree root, and must not contain `..` segments.
-    aliases : set[SanitizedName] | frozenset[SanitizedName], optional
+    aliases : set[AliasName] | frozenset[AliasName], optional
         Additional (relaxed) spellings that can refer to this resource, which may have
         uppercase letters, `.`, and `-` characters that are not allowed in primary
         resource names.  For example, this allows `[tool.clang-tidy]` TOML tables to
@@ -1265,11 +1233,10 @@ def resource[ResourceT: Resource](
             raise TypeError(f"duplicate resource name: {name!r}")
 
         for alias in aliases:
-            san = sanitize_name(alias)
-            if alias != san:
+            if not ALIAS_NAME_RE.fullmatch(alias):
                 raise TypeError(
-                    f"invalid alias {alias!r} for resource {name!r} (sanitizes to "
-                    f"{san!r})"
+                    f"invalid alias {alias!r} for resource {name!r} (must match regex "
+                    f"{ALIAS_NAME_RE.pattern})"
                 )
             if RESOURCE_NAMES.setdefault(alias, self) is not self:
                 raise TypeError(
@@ -1293,30 +1260,6 @@ def resource[ResourceT: Resource](
         return cls
 
     return _decorator
-
-
-def lock_worktree(worktree: Path, timeout: float = LOCK_TIMEOUT) -> Lock:
-    """Lock a worktree for exclusive access, hiding the lock inside the worktree's
-    metadata directory.
-
-    Parameters
-    ----------
-    worktree : Path
-        The root path of the worktree to lock.
-    timeout : float, optional
-        The maximum number of seconds to wait for the lock to be acquired before
-        raising a `TimeoutError`.  See `Lock()` for the default value.
-
-    Returns
-    -------
-    Lock
-         A lock instance representing the acquired lock on the worktree directory.
-    """
-    # NOTE: pre-touching the lock's parent ensures that lock acquisition is always
-    # atomic
-    path = worktree.expanduser().resolve() / METADATA_LOCK
-    path.parent.mkdir(parents=True, exist_ok=True)
-    return Lock(path, timeout=timeout)
 
 
 def _dump_ignore_list(patterns: list[str]) -> str:
@@ -1493,7 +1436,7 @@ class PyProject(Resource):
 
     async def init(self, ctx: Resource.Init) -> None:
         template = ctx.jinja.from_string(
-            locate_template("core", "pyproject.toml").read_text(encoding="utf-8")
+            locate_template("core", "pyproject.v1").read_text(encoding="utf-8")
         )
         target = ctx.root / ctx.worktree / "pyproject.toml"
         target.write_text(template.render(
@@ -1763,7 +1706,7 @@ class ConanConfig(Resource):
         lines.append("")
 
         atomic_write_text(
-            CONTAINER_ARTIFACT_DIR / "conanfile.py",
+            CONTAINER_TMP_MOUNT / "conanfile.py",
             "\n".join(lines),
             encoding="utf-8"
         )
@@ -1943,7 +1886,7 @@ class Bertrand(Resource):
 
         # initialize Containerfile
         containerfile_template = ctx.jinja.from_string(
-            locate_template("core", "containerfile").read_text(encoding="utf-8")
+            locate_template("core", "containerfile.v1").read_text(encoding="utf-8")
         )
         containerfile_target = ctx.root / ctx.worktree / "Containerfile"
         containerfile_target.parent.mkdir(parents=True, exist_ok=True)
@@ -1965,7 +1908,7 @@ class Bertrand(Resource):
 
         # initialize CI publish action
         publish_template = ctx.jinja.from_string(
-            locate_template("core", "containerfile").read_text(encoding="utf-8")
+            locate_template("core", "publish.v1").read_text(encoding="utf-8")
         )
         publish_target = ctx.root / ctx.worktree / ".github" / "workflows" / "publish.yml"
         publish_target.parent.mkdir(parents=True, exist_ok=True)
@@ -2893,7 +2836,7 @@ class Clangd(Resource):
             content += "---\n" + _dump_yaml(fragment, resource_id=self.name)
 
         atomic_write_text(
-            CONTAINER_ARTIFACT_DIR / ".clangd",
+            CONTAINER_TMP_MOUNT / ".clangd",
             content,
             encoding="utf-8"
         )
@@ -3009,7 +2952,7 @@ class ClangTidy(Resource):
             content["CheckOptions"] = check_options
 
         atomic_write_text(
-            CONTAINER_ARTIFACT_DIR / ".clang-tidy",
+            CONTAINER_TMP_MOUNT / ".clang-tidy",
             _dump_yaml(content, resource_id=self.name),
             encoding="utf-8"
         )
@@ -3788,13 +3731,13 @@ class ClangFormat(Resource):
             "WrapNamespaceBodyWithEmptyLines": model.WrapNamespaceBodyWithEmptyLines,
         }
         atomic_write_text(
-            CONTAINER_ARTIFACT_DIR / ".clang-format",
+            CONTAINER_TMP_MOUNT / ".clang-format",
             _dump_yaml(content, resource_id=self.name),
             encoding="utf-8",
         )
 
 
-@resource("vscode", paths={Path(".vscode") / "vscode.code-workspace"})
+@resource("vscode", paths={VSCODE_WORKSPACE_FILE})
 class VSCodeWorkspace(Resource):
     """A resource representing a VSCode managed workspace JSON file, which allows
     VSCode to attach to a running container context via the remote-containers
@@ -3805,7 +3748,7 @@ class VSCodeWorkspace(Resource):
         template = ctx.jinja.from_string(
             locate_template("core", "vscode-workspace.v1").read_text(encoding="utf-8")
         )
-        target = ctx.root / ctx.worktree / ".vscode" / "vscode.code-workspace"
+        target = ctx.root / ctx.worktree / VSCODE_WORKSPACE_FILE
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(template.render(
             mount_path=(PROJECT_MOUNT / ctx.worktree).as_posix(),
@@ -3893,20 +3836,16 @@ class Config:
         key_owner: dict[tuple[str, ...], str],
         path_prefix: tuple[str, ...] = (),
     ) -> None:
-        for raw_key, value in fragment.items():
-            if not isinstance(raw_key, str):
+        for key, value in fragment.items():
+            if not isinstance(key, str):
                 if path_prefix:
                     parent = ".".join(path_prefix)
                 else:
                     parent = "<root>"
                 raise OSError(
                     f"parse hook for resource '{resource_id}' returned non-string key "
-                    f"under '{parent}': '{raw_key}'"
+                    f"under '{parent}': '{key}'"
                 )
-
-            # normalize aliases for known resources
-            r = RESOURCE_NAMES.get(raw_key)
-            key = r.name if r is not None else raw_key
             key_path = path_prefix + (key,)
             existing = merged.get(key)
 
@@ -3965,28 +3904,35 @@ class Config:
         old_resources = self.resources.copy()
         try:
             async with lock_worktree(self.worktree):
-                snapshot: dict[ResourceName, Any] = {}
+                merged: dict[ResourceName, Any] = {}
                 key_owner: dict[tuple[str, ...], ResourceName] = {}
 
                 # invoke parse hooks for all resources in deterministic order
                 for r in sorted(self.resources):
-                    # extract config fragment
+                    # extract config snapshot
                     try:
-                        fragment = await r.parse(self)
+                        snapshot = await r.parse(self)
                     except Exception as err:
                         raise OSError(f"failed to parse resource {r.name!r}: {err}") from err
-                    if not isinstance(fragment, dict):
+                    if not isinstance(snapshot, dict):
                         raise OSError(
                             f"parse hook for resource {r.name!r} must return a string "
-                            f"mapping: {fragment}"
+                            f"mapping: {snapshot}"
                         )
 
-                    # merge fragment into snapshot, checking for key collisions
-                    if fragment:
-                        self._merge_fragment(r.name, fragment, snapshot, key_owner=key_owner)
+                    # normalize aliases and merge snapshot, checking for key collisions
+                    for raw_key, fragment in snapshot.items():
+                        lookup = RESOURCE_NAMES.get(raw_key)
+                        key = lookup.name if lookup is not None else raw_key
+                        self._merge_fragment(
+                            key,
+                            fragment,
+                            merged,
+                            key_owner=key_owner, path_prefix=(key,)
+                        )
 
                 # validate each parsed fragment against its corresponding resource
-                for key, fragment in snapshot.items():
+                for key, fragment in merged.items():
                     lookup = RESOURCE_NAMES.get(key)
                     if lookup is None:
                         continue  # skip unrecognized tables
@@ -3999,7 +3945,7 @@ class Config:
                         setattr(self.tool, lookup.name, table)
                     self.resources.add(lookup)
 
-                self._snapshot = snapshot
+                self._snapshot = merged
                 self._key_owner = key_owner
                 self._entered += 1
                 return self
