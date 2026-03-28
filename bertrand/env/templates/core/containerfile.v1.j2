@@ -5,7 +5,7 @@
 # forwarded to this Containerfile.  Otherwise, the default values will be used.
 
 # toolchain version to install (defaults to host Bertrand version)
-ARG BERTRAND={{ bertrand_version }}
+ARG BERTRAND={{ bertrand_major }}.{{ bertrand_minor }}.{{ bertrand_patch }}
 
 # enable stack traces + debug assertions to prevent undefined behavior
 ARG DEBUG=true
@@ -13,29 +13,30 @@ ARG DEBUG=true
 # include developer tools (language servers, sanitizers, debuggers, AI assistants) in base image
 ARG DEV=true
 
-# number of hardware threads for concurrent runtime (>= 1, defaults to host CPU count)
+# number of hardware threads for concurrent runtime (>= 0, where 0 uses all available cpus)
 ARG CPUS={{ cpus }}
 
 # pull base Bertrand image with the specified configuration
 FROM bertrand:${BERTRAND}.${DEBUG}.${DEV}.${CPUS}.{{ page_size_kib }}
 
 # set cwd to the mounted environment directory
-WORKDIR {{ mount_path }}
+WORKDIR {{ env_mount }}
 
 # set up incremental builds
-ENV UV_CACHE_DIR={{ cache_dir }}/uv
-ENV BERTRAND_CACHE={{ cache_dir }}/bertrand
-ENV CCACHE_DIR={{ cache_dir }}/ccache
+ENV UV_CACHE_DIR={{ uv_cache }}
+ENV BERTRAND_CACHE={{ bertrand_cache }}
+ENV CCACHE_DIR={{ ccache_cache }}
+ENV CONAN_CACHE={{ conan_cache }}
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1
-COPY . {{ mount_path }}
+COPY . {{ env_mount }}
 
 # you can extend this file in order to create a reproducible image that others can pull
 # from in their own Dockerfiles.  For example:
 
-RUN --mount=type=cache,target={{ cache_dir }}/uv,sharing=locked \
-    --mount=type=cache,target={{ cache_dir }}/bertrand,sharing=locked \
-    --mount=type=cache,target={{ cache_dir }}/ccache,sharing=locked \
-    --mount=type=cache,target=/opt/conan,sharing=locked \
+RUN --mount=type=cache,target={{ uv_cache }},sharing=locked \
+    --mount=type=cache,target={{ bertrand_cache }},sharing=locked \
+    --mount=type=cache,target={{ ccache_cache }},sharing=locked \
+    --mount=type=cache,target={{ conan_cache }},sharing=locked \
     bertrand build
 
 # A `bertrand build` command of that form will incrementally compile the contents of

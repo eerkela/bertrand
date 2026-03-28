@@ -832,7 +832,7 @@ class External:
             if args.path is not None:
                 project_root = Path(args.path).expanduser().resolve()
 
-            # host-only init path.
+            # host-only init path
             if project_root is None:
                 if args.profile is not None or args.lang is not None or args.code is not None:
                     raise OSError(

@@ -50,7 +50,7 @@ jobs:
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "{% endraw %}{{ python_version }}{% raw %}"
+          python-version: "{% endraw %}{{ python_major }}.{{ python_minor }}{% raw %}"
 
       - name: Install Bertrand CLI
         shell: bash
@@ -59,7 +59,7 @@ jobs:
           python -m venv .venv
           . .venv/bin/activate
           python -m pip install --upgrade pip
-          python -m pip install "bertrand=={% endraw %}{{ bertrand_version }}{% raw %}"
+          python -m pip install "bertrand=={% endraw %}{{ bertrand_major }}.{{ bertrand_minor }}.{{ bertrand_patch }}{% raw %}"
           echo "${PWD}/.venv/bin" >> "${GITHUB_PATH}"
 
       - name: Bootstrap toolchain
@@ -112,7 +112,7 @@ jobs:
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "{% endraw %}{{ python_version }}{% raw %}"
+          python-version: "{% endraw %}{{ python_major }}.{{ python_minor }}{% raw %}"
 
       - name: Install Bertrand CLI
         shell: bash
@@ -121,7 +121,7 @@ jobs:
           python -m venv .venv
           . .venv/bin/activate
           python -m pip install --upgrade pip
-          python -m pip install "bertrand=={% endraw %}{{ bertrand_version }}{% raw %}"
+          python -m pip install "bertrand=={% endraw %}{{ bertrand_major }}.{{ bertrand_minor }}.{{ bertrand_patch }}{% raw %}"
           echo "${PWD}/.venv/bin" >> "${GITHUB_PATH}"
 
       - name: Bootstrap toolchain

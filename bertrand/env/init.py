@@ -30,7 +30,6 @@ from .run import (
     sudo,
 )
 
-
 # pylint: disable=unused-argument, missing-function-docstring, missing-return-doc
 # pylint: disable=bare-except, broad-exception-caught
 
@@ -674,16 +673,49 @@ MANAGED_HOOKS: tuple[tuple[str, str, bool], ...] = (
 )
 
 
-async def _install_git_hooks(root: Path) -> None:
-    # check if git is available
-    if not shutil.which("git"):
-        return
+async def _init_repository(
+    repo: GitRepository,
+    *,
+    profile: str | None,
+    capabilities: set[str] | None,
+) -> None:
+    # if the repository did not previously exist or is invalid, initialize it
+    if not repo:
+        await repo.init(bare=True)
+        worktree = repo.git_dir.parent / "main"
+        await repo.create_worktree("main", target=worktree, create_branch=True)
 
+        # TODO: fix the Config.init() signature and pass the various facts needed to
+        # render Jinja templates.
+
+        await Config.init(worktree, profile, capabilities)
+        try:
+            await run(["git", "add", "-A"], cwd=worktree, capture_output=True)
+            await run(
+                ["git", "commit", "--quiet", "-m", "Initial commit"],
+                cwd=worktree,
+                capture_output=True,
+            )
+        except Exception as err:
+            print(
+                f"bertrand: failed to create initial commit in {worktree}\n{err}",
+                file=sys.stderr
+            )
+
+    # if the repository is bare, then we should try to converge its worktrees to match
+    # the current branches
+    if await repo.is_bare():
+        if not await repo.supports_relative_paths():
+            raise OSError(
+                "git worktree relative path support is required for bare repository "
+                "mode, but this git version does not support '--relative-paths' for "
+                "worktree creation and move operations."
+            )
+        await repo.sync_worktrees()
+
+
+async def _install_git_hooks(repo: GitRepository) -> None:
     # check if repo is not initialized
-    git_dir = root / ".git"
-    if not git_dir.exists():
-        return
-    repo = GitRepository(git_dir)
     if not repo:
         print(f"bertrand: invalid git directory at {repo.git_dir}", file=sys.stderr)
         return
@@ -710,7 +742,7 @@ async def _install_git_hooks(root: Path) -> None:
 
             # do not clobber non-managed hooks
             stage = f"resolve existing git hook at '{destination}'"
-            target = await repo.git_path(destination, cwd=root)
+            target = await repo.git_path(destination, cwd=repo.git_dir.parent)
             if target.exists():
                 if not target.is_file():
                     raise OSError(f"git hook path is not a file: {target}")
@@ -735,7 +767,10 @@ async def _install_git_hooks(root: Path) -> None:
                 except OSError:
                     pass
         except Exception as err:
-            print(f"bertrand: failed to {stage} in {root}\n{err}", file=sys.stderr)
+            print(
+                f"bertrand: failed to {stage} in {repo.git_dir.parent}\n{err}",
+                file=sys.stderr
+            )
 
 
 ###################
@@ -797,38 +832,9 @@ async def bertrand_init(
         raise OSError("git is required for path-scoped initialization")
     repo = GitRepository(project_root / ".git")
 
-    # if the repository did not previously exist or is invalid, initialize it
-    if not repo:
-        await repo.init(bare=True)
-        worktree = repo.git_dir.parent / "main"
-        await repo.create_worktree("main", target=worktree, create_branch=True)
-        await Config.init(worktree, profile, capabilities)
-        try:
-            await run(["git", "add", "-A"], cwd=worktree, capture_output=True)
-            await run(
-                ["git", "commit", "--quiet", "-m", "Initial commit"],
-                cwd=worktree,
-                capture_output=True,
-            )
-        except Exception as err:
-            print(
-                f"bertrand: failed to create initial commit in {worktree}\n{err}",
-                file=sys.stderr
-            )
-
-    # if the repository is bare, then we should try to converge its worktrees to match
-    # the current branches
-    if await repo.is_bare():
-        if not await repo.supports_relative_paths():
-            raise OSError(
-                "git worktree relative path support is required for bare repository "
-                "mode, but this git version does not support '--relative-paths' for "
-                "worktree creation and move operations."
-            )
-        await repo.sync_worktrees()
-
-    # install/update git hooks for the repository
-    await _install_git_hooks(repo.git_dir.parent)
+    # initialize git repository, then install/update git hooks within it
+    await _init_repository(repo, profile=profile, capabilities=capabilities)
+    await _install_git_hooks(repo)
 
 
 async def bertrand_clean(*, assume_yes: bool) -> None:
