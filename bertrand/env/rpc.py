@@ -113,7 +113,7 @@ type RequestID = Annotated[  # pylint: disable=invalid-name
     str,
     AfterValidator(_check_request_id),
 ]
-type Worktree = Annotated[AbsolutePath, AfterValidator(_check_worktree)]
+type WorktreePath = Annotated[AbsolutePath, AfterValidator(_check_worktree)]
 
 
 class RPCRequest(BaseModel):
@@ -126,7 +126,7 @@ class RPCRequest(BaseModel):
     class CodeOpenRequest(BaseModel):
         """Typed params payload for `code.open` JSON-RPC requests."""
         model_config = ConfigDict(extra="forbid")
-        worktree: Worktree
+        worktree: WorktreePath
         editor: Editor
         deadline: PositiveFloat
         block: bool

@@ -1690,8 +1690,8 @@ class Environment:
             worktree=self.worktree,
             tag=tag
         )
-        if config.pyproject is not None:
-            project_name = config.pyproject.project.name
+        if config.tool.python is not None:
+            project_name = config.tool.python.project.name
         else:
             raise TypeError("could not determine project name")
 
@@ -2036,16 +2036,16 @@ async def podman_publish(
 
     async with Environment(worktree, timeout=TIMEOUT) as env:
         config = env.config
-        if config.pyproject is None:
+        if config.tool.python is None:
             raise OSError("could not determine project version for publish")
-        if config.bertrand is None:
+        if config.tool.bertrand is None:
             raise OSError("could not determine configured tags for publish")
-        tags = [entry.tag for entry in config.bertrand.tags]
+        tags = [entry.tag for entry in config.tool.bertrand.tags]
         if not tags:
             raise OSError("publish requires at least one configured tag")
 
         # normalize release version and ensure it matches project version
-        project_version = _normalize_version(config.pyproject.project.version)
+        project_version = _normalize_version(config.tool.python.project.version)
         publish_version = project_version
         if version is not None:
             publish_version = _normalize_version(version)
@@ -2318,7 +2318,7 @@ async def podman_enter(
         if container_bin_str is None:
             raise OSError("could not find a podman executable on PATH")
         container_bin = Path(container_bin_str).expanduser().resolve()
-        bertrand = env.config.bertrand
+        bertrand = env.config.tool.bertrand
         if not bertrand:
             raise OSError(
                 f"Bertrand configuration is missing from the worktree config at "

@@ -17,7 +17,7 @@ from typing import Awaitable, Callable, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, PositiveInt
 
-from .config import Config, NonEmpty, Trimmed
+from .config import RESOURCE_NAMES, NonEmpty, RelativePath, Resource, Trimmed
 from .container import STATE_DIR, TIMEOUT, podman_cmd, podman_ids
 from .run import (
     GitRepository,
@@ -43,6 +43,17 @@ type InitStage = Literal[
     "delegate_controllers",
     "ready",
 ]
+
+type RepoMode = Literal["new", "bare", "non_bare"]
+
+
+@dataclass(frozen=True)
+class _ResolvedRepositoryTarget:
+    """A normalized repository/worktree target for `bertrand init` execution."""
+    repo: GitRepository
+    repo_root: Path
+    worktree: RelativePath
+    mode: RepoMode
 
 
 INIT_LOCK = STATE_DIR / "init.lock"
@@ -674,44 +685,53 @@ MANAGED_HOOKS: tuple[tuple[str, str, bool], ...] = (
 
 
 async def _init_repository(
-    repo: GitRepository,
+    path: Path,
     *,
-    profile: str | None,
-    capabilities: set[str] | None,
-) -> None:
-    # if the repository did not previously exist or is invalid, initialize it
-    if not repo:
-        await repo.init(bare=True)
-        worktree = repo.git_dir.parent / "main"
-        await repo.create_worktree("main", target=worktree, create_branch=True)
+    resources: set[Resource]
+) -> tuple[GitRepository, Path]:
+    # resolve repository and worktree target
+    repo, worktree = await GitRepository.resolve(path)
+    path = repo.git_dir.parent / worktree
+    new = not repo
+    if new:
+        initial_branch = worktree.as_posix()
+        await repo.init(branch=initial_branch, bare=True)
+        await repo.create_worktree(
+            initial_branch,
+            target=repo.git_dir.parent / worktree,
+            create_branch=True
+        )
 
-        # TODO: fix the Config.init() signature and pass the various facts needed to
-        # render Jinja templates.
-
-        await Config.init(worktree, profile, capabilities)
+    # generate CLI context to drive resource `init()` hooks
+    ctx = Resource.Init(
+        repo=repo,
+        worktree=worktree,
+        resources=frozenset(resources),
+    )
+    for resource in sorted(resources):
         try:
-            await run(["git", "add", "-A"], cwd=worktree, capture_output=True)
+            await resource.init(ctx)
+        except Exception as err:
+            raise OSError(
+                f"failed to initialize resource '{resource.name}' in worktree {path}\n"
+                f"{err}"
+            ) from err
+
+    # make an initial commit if this is a new repository
+    if new:
+        try:
+            await run(["git", "add", "-A"], cwd=path, capture_output=True)
             await run(
                 ["git", "commit", "--quiet", "-m", "Initial commit"],
-                cwd=worktree,
+                cwd=path,
                 capture_output=True,
             )
         except Exception as err:
             print(
-                f"bertrand: failed to create initial commit in {worktree}\n{err}",
+                f"bertrand: failed to create initial commit in {path}\n{err}",
                 file=sys.stderr
             )
-
-    # if the repository is bare, then we should try to converge its worktrees to match
-    # the current branches
-    if await repo.is_bare():
-        if not await repo.supports_relative_paths():
-            raise OSError(
-                "git worktree relative path support is required for bare repository "
-                "mode, but this git version does not support '--relative-paths' for "
-                "worktree creation and move operations."
-            )
-        await repo.sync_worktrees()
+    return repo, worktree
 
 
 async def _install_git_hooks(repo: GitRepository) -> None:
@@ -779,22 +799,26 @@ async def _install_git_hooks(repo: GitRepository) -> None:
 
 
 async def bertrand_init(
-    project_root: Path | None,
+    path: Path | None,
     *,
-    profile: str | None,
-    capabilities: set[str] | None,
+    enable: list[str],
     yes: bool,
 ) -> None:
     """Initialize host prerequisites and optionally bootstrap an environment root.
 
     Parameters
     ----------
-    project_root : Path | None
-        Optional project root path.  If None, only host bootstrap stages are run.
-    profile : str | None
-        Optional environment layout profile for `Config.init`.
-    capabilities : set[str] | None
-        Optional capability set for `Config.init`.
+    path : Path | None
+        Optional project/environment root path.  If None, only host bootstrap stages
+        are run.  Otherwise, the specified path is resolved, normalizing symlinks and
+        ensuring an absolute path, and then its ancestors are traversed to find a valid
+        Git repository.  If no repository is found, then a new bare repository will be
+        initialized at the indicated path, and an isolated worktree will be created to
+        hold its default branch.
+    enable : list[str]
+        List of resources to enable at the resolved worktree.  Each component is a
+        comma-separated list of resource names or aliases, which are resolved to their
+        corresponding, unique `Resource` implementations.
     yes : bool
         Whether to auto-accept prompts during host bootstrap stages.
 
@@ -802,7 +826,15 @@ async def bertrand_init(
     ------
     OSError
         If Git is not found, or the project root repository is invalid.
+    ValueError
+        If any resource names in `enable` are invalid.
     """
+    if path is None and enable:
+        raise OSError(
+            "Cannot enable resources without a worktree.  Please specify a path to "
+            "initialize the project repository and enable resources within it."
+        )
+
     # install container runtime if needed
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     async with Lock(INIT_LOCK, timeout=TIMEOUT):
@@ -823,17 +855,29 @@ async def bertrand_init(
             state.dump()
 
     # if no project root is provided, then we're done
-    if project_root is None:
+    if path is None:
         return
-
-    # determine whether the directory at the given root is already a valid git
-    # repository
     if not shutil.which("git"):
-        raise OSError("git is required for path-scoped initialization")
-    repo = GitRepository(project_root / ".git")
+        raise OSError(
+            "Bertrand requires 'git' to initialize a project repository, but it was "
+            "not found in PATH."
+        )
+    path = path.expanduser().resolve()
 
-    # initialize git repository, then install/update git hooks within it
-    await _init_repository(repo, profile=profile, capabilities=capabilities)
+    # identify the resources to enable at the worktree path
+    resources: set[Resource] = {RESOURCE_NAMES["bertrand"]}
+    for spec in enable:
+        for component in spec.split(","):
+            r = RESOURCE_NAMES.get(component.strip())
+            if r is None:
+                raise ValueError(
+                    f"unknown resource '{component}' - Options are:\n"
+                    f"{'\n'.join(f'    {name}' for name in sorted(RESOURCE_NAMES))}"
+                )
+            resources.add(r)
+
+    # initialize git repository if needed, then install/update git hooks within it
+    repo, _ = await _init_repository(path, resources=resources)
     await _install_git_hooks(repo)
 
 

@@ -33,7 +33,7 @@ from dataclasses import dataclass, field
 from importlib import resources as importlib_resources
 from pathlib import Path, PosixPath
 from types import TracebackType
-from typing import Annotated, Any, Callable, Literal, Mapping, Self, Sequence
+from typing import Annotated, Any, Callable, Literal, Self, Sequence
 
 from conan.api.model.list import ListPattern, VersionRange
 from conan.api.model.refs import RecipeReference
@@ -70,6 +70,7 @@ from .run import (
     LOCK_TIMEOUT,
     METADATA_DIR,
     PROJECT_MOUNT,
+    GitRepository,
     Scalar,
     atomic_write_text,
     inside_container,
@@ -1058,7 +1059,7 @@ class Resource:
             The version of `uv` that is running this `init()` function, which can be
             used to conditionally render different content based on UV version.
         """
-        root: AbsolutePath
+        repo: GitRepository
         worktree: RelativePath
         resources: frozenset[Resource]
         jinja: jinja2.Environment = field(default_factory=lambda: jinja2.Environment(
@@ -1438,9 +1439,16 @@ class PyProject(Resource):
         template = ctx.jinja.from_string(
             locate_template("core", "pyproject.v1").read_text(encoding="utf-8")
         )
-        target = ctx.root / ctx.worktree / "pyproject.toml"
+        target = ctx.repo.git_dir.parent / ctx.worktree / "pyproject.toml"
         target.write_text(template.render(
-            project_name=ctx.root.name,
+            # TODO: this project name is wrong, and the only way to get it right is to
+            # replace `init()` with `render()`, and have `init()` just return an initial
+            # fragment to write to the snapshot, so that validate() can proceed like
+            # normal, and `render()` can generate all files.  That way, you could load
+            # the worktree config using `init()` fragments as the base and placing
+            # the results of parse() over it, then validate that combination, and then
+            # render() it normally.
+            project_name=ctx.repo.git_dir.parent.name,
             python_major=ctx.python_version.major,
             python_minor=ctx.python_version.minor,
             python_patch=ctx.python_version.micro,
@@ -1880,15 +1888,16 @@ class Bertrand(Resource):
     # pylint: disable=missing-function-docstring, unused-argument, missing-return-doc
 
     async def init(self, ctx: Resource.Init) -> None:
-        (ctx.root / ctx.worktree / "src").mkdir(parents=True, exist_ok=True)
-        (ctx.root / ctx.worktree / "tests").mkdir(parents=True, exist_ok=True)
-        (ctx.root / ctx.worktree / "docs").mkdir(parents=True, exist_ok=True)
+        worktree = ctx.repo.git_dir.parent / ctx.worktree
+        (worktree / "src").mkdir(parents=True, exist_ok=True)
+        (worktree / "tests").mkdir(parents=True, exist_ok=True)
+        (worktree / "docs").mkdir(parents=True, exist_ok=True)
 
         # initialize Containerfile
         containerfile_template = ctx.jinja.from_string(
             locate_template("core", "containerfile.v1").read_text(encoding="utf-8")
         )
-        containerfile_target = ctx.root / ctx.worktree / "Containerfile"
+        containerfile_target = worktree / "Containerfile"
         containerfile_target.parent.mkdir(parents=True, exist_ok=True)
         containerfile_target.write_text(containerfile_template.render(
             python_major=ctx.python_version.major,
@@ -1910,7 +1919,7 @@ class Bertrand(Resource):
         publish_template = ctx.jinja.from_string(
             locate_template("core", "publish.v1").read_text(encoding="utf-8")
         )
-        publish_target = ctx.root / ctx.worktree / ".github" / "workflows" / "publish.yml"
+        publish_target = worktree / ".github" / "workflows" / "publish.yml"
         publish_target.parent.mkdir(parents=True, exist_ok=True)
         publish_target.write_text(publish_template.render(
             python_major=ctx.python_version.major,
@@ -3748,7 +3757,8 @@ class VSCodeWorkspace(Resource):
         template = ctx.jinja.from_string(
             locate_template("core", "vscode-workspace.v1").read_text(encoding="utf-8")
         )
-        target = ctx.root / ctx.worktree / VSCODE_WORKSPACE_FILE
+        worktree = ctx.repo.git_dir.parent / ctx.worktree
+        target = worktree / VSCODE_WORKSPACE_FILE
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(template.render(
             mount_path=(PROJECT_MOUNT / ctx.worktree).as_posix(),

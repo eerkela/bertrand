@@ -48,7 +48,8 @@ async def main() -> None:
     head_updates = [u for u in updates if u.is_head]
     if head_updates:
         repo = await GitRepository.discover()
-        await repo.sync_worktrees(head_updates)
+        if repo is not None:
+            await repo.sync_worktrees(head_updates)
 
 
 if __name__ == "__main__":

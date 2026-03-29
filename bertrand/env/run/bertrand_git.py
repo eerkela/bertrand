@@ -599,6 +599,12 @@ type GitRefState = Literal["prepared", "committed", "aborted"]
 
 GIT_REF_HEADS_PREFIX = "refs/heads/"
 GIT_REF_STATES: frozenset[GitRefState] = frozenset({"prepared", "committed", "aborted"})
+GIT_REQUIRE_RELATIVE_PATHS = (
+    "git worktree relative path support is required for bare repository mode, but "
+    "this git version does not support '--relative-paths' for worktree creation and "
+    "move operations.  Please upgrade git to a version that supports this feature "
+    "(git 2.52+)."
+)
 
 
 @dataclass(frozen=True)
@@ -724,14 +730,23 @@ class GitRepository:
 
     git_dir: Path
 
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "git_dir", self.git_dir.expanduser().resolve())
+
     @classmethod
-    async def discover(cls) -> GitRepository:
+    async def discover(cls, path: Path | None = None) -> GitRepository | None:
         """Discover the Git repository for the current working directory.
+
+        Parameters
+        ----------
+        path : Path | None, optional
+            An optional path to use as the starting point for discovery.  If None (the
+            default), then the current working directory will be used.
 
         Returns
         -------
-        GitRepository
-            The discovered Git repository.
+        GitRepository | None
+            The discovered Git repository, assuming a `path` is inside a Git repository
 
         Raises
         ------
@@ -741,12 +756,97 @@ class GitRepository:
         """
         result = await run(
             ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+            cwd=path,
+            check=False,
             capture_output=True
         )
-        return cls(git_dir=Path(result.stdout.strip()))
+        if result.returncode == 0:
+            return cls(git_dir=Path(result.stdout.strip()))
+        return None
 
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "git_dir", self.git_dir.expanduser().resolve())
+    @classmethod
+    async def resolve(cls, path: Path) -> tuple[GitRepository, Path]:
+        """Given a path, resolve an ancestor git repository and compute the
+        corresponding worktree path within it.
+
+        Parameters
+        ----------
+        path : Path
+            The input path to resolve a repository and worktree for.  The ancestors
+            will be scanned to find the nearest git repository, and the remaining path
+            components will be treated as a relative worktree path within the
+            repository.  If no repository is found, then the input path will be
+            treated as an uninitialized repository, and the worktree will reflect the
+            Git installation's default branch (e.g. "master" or "main").  If the
+            path leads to a bare repository, then the worktree will resolve to its
+            attached HEAD worktree, if it has one.
+
+        Returns
+        -------
+        tuple[GitRepository, Path]
+            A tuple containing the resolved Git repository and the relative worktree
+            path within it, accounting for HEAD extensions and nested bare/non-bare
+            worktree layouts.  Note that the `GitRepository` may be uninitialized if
+            no existing repository was found during resolution.
+
+        Raises
+        ------
+        OSError
+            If the resolved repository is bare and does not support relative paths,
+            the resolved worktree is not contained within the repository, or if the
+            path leads to a bare repository with a detached HEAD.
+        """
+        repo = await cls.discover(path)
+
+        # new bare repository
+        if repo is None:
+            if not await cls.supports_relative_paths():
+                raise OSError(GIT_REQUIRE_RELATIVE_PATHS)
+            repo = cls(path / ".git")
+            return repo, Path(await cls.default_branch())
+
+        # existing bare repository
+        if await repo.is_bare():
+            if not await cls.supports_relative_paths():
+                raise OSError(GIT_REQUIRE_RELATIVE_PATHS)
+            worktree = path.relative_to(repo.git_dir.parent)
+            if not worktree.parts:  # extend to HEAD worktree
+                head = await repo.head_branch()
+                if head is None:
+                    raise OSError(
+                        f"cannot target a bare repository with a detached HEAD: {path}"
+                    )
+                await repo.sync_worktrees()
+                candidate = next(
+                    (wt.path for wt in await repo.worktrees() if wt.branch == head),
+                    None
+                )
+                if candidate is None:
+                    raise OSError(
+                        f"HEAD branch '{head}' is not checked out in any worktree of "
+                        f"repository: {path}"
+                    )
+                if not candidate.is_relative_to(path):
+                    raise OSError(
+                        f"resolved worktree path '{candidate}' is not contained within "
+                        f"repository: {path}"
+                    )
+                worktree = candidate.relative_to(path)
+            elif not any(wt.path == path for wt in await repo.worktrees()):
+                raise OSError(
+                    f"worktree at {worktree} is not registered as a git worktree of "
+                    f"bare repository: {repo.git_dir.parent}"
+                )
+            return repo, worktree
+
+        # existing non-bare repository
+        worktree = path.relative_to(repo.git_dir.parent)
+        if worktree.parts and not any(wt.path == path for wt in await repo.worktrees()):
+            raise OSError(
+                f"nested worktree at {worktree} is not registered as a git worktree "
+                f"of non-bare repository: {repo.git_dir.parent}"
+            )
+        return repo, worktree
 
     def __bool__(self) -> bool:
         return (
@@ -760,11 +860,15 @@ class GitRepository:
             ).returncode == 0
         )
 
-    async def init(self, *, bare: bool = True) -> None:
+    async def init(self, *, branch: str | None = None, bare: bool = True) -> None:
         """Initialize a new Git repository at the given path.
 
         Parameters
         ----------
+        branch : str | None, optional
+            An optional initial branch name to use for the repository.  If None (the
+            default), then the Git installation's default branch will be used (e.g.
+            "master" or "main").
         bare : bool, optional
             Whether to create a bare repository (default is True).  If false, then a
             standard repository with a working tree will be created instead.
@@ -776,6 +880,8 @@ class GitRepository:
         """
         self.git_dir.mkdir(parents=True, exist_ok=True)
         cmd = ["git", "init", "--quiet"]
+        if branch is not None:
+            cmd.extend(["--initial-branch", branch])
         if bare:
             cmd.append("--bare")
         cmd.append(str(self.git_dir))
@@ -892,6 +998,83 @@ class GitRepository:
             return False
         raise ValueError(f"invalid git boolean output: {stdout!r}")
 
+    @staticmethod
+    async def supports_relative_paths() -> bool:
+        """
+        Returns
+        -------
+        bool
+            True if both `git worktree add` and `git worktree move` support
+            `--relative-paths` according to their help output, false otherwise.
+        """
+        add_help = await run(
+            ["git", "worktree", "add", "-h"],
+            check=False,
+            capture_output=True,
+        )
+        add_text = f"{add_help.stdout}\n{add_help.stderr}".lower()
+        if add_help.returncode != 0 or "--relative-paths" not in add_text:
+            return False
+        move_help = await run(
+            ["git", "worktree", "move", "-h"],
+            check=False,
+            capture_output=True,
+        )
+        move_text = f"{move_help.stdout}\n{move_help.stderr}".lower()
+        return move_help.returncode == 0 and "--relative-paths" in move_text
+
+    @staticmethod
+    async def default_branch() -> str:
+        """
+        Returns
+        -------
+        str
+            The default branch name configured for this git installation.
+
+        Raises
+        ------
+        CommandError
+            If git commands fail while probing default branch behavior.
+        ValueError
+            If the default branch could not be determined from git output.
+        """
+        branch = await run(["git", "var", "GIT_DEFAULT_BRANCH"], capture_output=True)
+        result = branch.stdout.strip()
+        if not result:
+            raise ValueError("default Git branch name could not be determined")
+        return result
+
+    async def head_branch(self) -> str | None:
+        """
+        Returns
+        -------
+        str | None
+            The short branch name of the current HEAD, or None if HEAD is detached.
+
+        Raises
+        ------
+        CommandError
+            If the git command fails with an error.
+        ValueError
+            If we failed to parse the output or got an empty branch name.
+        """
+        # attached HEAD: try to read symbolic ref directly
+        result = await self.run(
+            ["symbolic-ref", "--quiet", "--short", "HEAD"],
+            check=False,
+            capture_output=True,
+        )
+        if result.returncode == 0:
+            text = result.stdout.strip()
+            if not text:
+                raise ValueError("empty symbolic-ref output for HEAD")
+            return text
+        if result.returncode != 1:
+            raise CommandError(result.returncode, result.args, result.stdout, result.stderr)
+
+        # detached HEAD: let caller decide what to do
+        return None
+
     async def is_bare(self) -> bool:
         """
         Returns
@@ -916,28 +1099,6 @@ class GitRepository:
         if value == "false":
             return False
         raise ValueError(f"invalid --is-bare-repository output: {result.stdout!r}")
-
-    async def supports_relative_paths(self) -> bool:
-        """
-        Returns
-        -------
-        bool
-            True if both `git worktree add` and `git worktree move` support
-            `--relative-paths` according to their help output, false otherwise.
-        """
-        add_help = await self.run(
-            ["worktree", "add", "-h"],
-            check=False,
-            capture_output=True,
-        )
-        if add_help.returncode != 0 or "--relative-paths" not in add_help.stdout.lower():
-            return False
-        move_help = await self.run(
-            ["worktree", "move", "-h"],
-            check=False,
-            capture_output=True,
-        )
-        return move_help.returncode == 0 and "--relative-paths" in move_help.stdout.lower()
 
     async def branches(self) -> frozenset[str]:
         """
@@ -1130,101 +1291,6 @@ class GitRepository:
             env.pop(key, None)
         return env
 
-    async def _move_worktree(self, branch: str, source: Path, target: Path) -> bool:
-        if not source.exists() or not source.is_dir():
-            print(
-                f"bertrand: could not move worktree for branch '{branch}': missing "
-                f"source path ({source})",
-                file=sys.stderr
-            )
-            return False
-        if target.exists():
-            print(
-                f"bertrand: could not move worktree for branch '{branch}': destination "
-                f"already exists ({target})",
-                file=sys.stderr
-            )
-            return False
-        target.parent.mkdir(parents=True, exist_ok=True)
-        result = await self.run(
-            ["worktree", "move", "--relative-paths", str(source), str(target)],
-            check=False,
-            capture_output=True
-        )
-        if result.returncode != 0:
-            print(
-                f"bertrand: failed to move worktree for branch '{branch}' from "
-                f"{source} to {target}:\n{(result.stderr or result.stdout).strip()}",
-                file=sys.stderr
-            )
-            return False
-        self._clean_worktree_parents(source)
-        return True
-
-    async def _destroy_worktree(self, branch: str, path: Path) -> bool:
-        if not path.exists():
-            print(
-                f"bertrand: could not remove worktree for branch '{branch}': missing "
-                f"path ({path})",
-                file=sys.stderr
-            )
-            return False
-        if not path.is_dir():
-            print(
-                f"bertrand: could not remove worktree for branch '{branch}': path is "
-                f"not a directory ({path})",
-                file=sys.stderr
-            )
-            return False
-
-        # verify that the worktree is clean and objectively belongs to this repository
-        # before attempting deletion
-        env = await self._strip_env()
-        if not await self._worktree_belongs_to_repo(path, env):
-            print(
-                f"bertrand: could not remove worktree for branch '{branch}': worktree "
-                f"does not belong to this repository ({path})",
-                file=sys.stderr
-            )
-            return False
-        clean = await run(
-            ["git", "-C", str(path), "status", "--porcelain"],
-            check=False,
-            capture_output=True,
-            env=env,
-        )
-        if clean.returncode != 0:
-            print(
-                f"bertrand: could not remove worktree for branch '{branch}': failed to "
-                f"check worktree status at {path}",
-                file=sys.stderr
-            )
-            return False
-        if clean.stdout.strip():
-            print(
-                f"bertrand: could not remove worktree for branch '{branch}': worktree "
-                f"is dirty ({path})",
-                file=sys.stderr
-            )
-            return False
-
-        # remove the worktree using git, which will also properly clean up the
-        # associated gitdir and any linked metadata
-        result = await self.run(
-            ["worktree", "remove", str(path)],
-            check=False,
-            capture_output=True,
-        )
-        if result.returncode != 0:
-            print(
-                f"bertrand: failed to remove worktree for branch '{branch}' at "
-                f"{path}:\n{(result.stderr or result.stdout).strip()}",
-                file=sys.stderr
-            )
-            return False
-        self._clean_worktree_parents(path)
-        return True
-
     async def create_worktree(
         self,
         branch: str,
@@ -1271,6 +1337,130 @@ class GitRepository:
             cmd.extend([str(target), branch])
         await self.run(cmd, capture_output=quiet)
 
+    async def move_worktree(
+        self,
+        branch: str,
+        *,
+        source: Path | None = None,
+        target: Path | None = None,
+    ) -> None:
+        """Move the worktree for the given branch from the source path to the target
+        path.
+
+        Parameters
+        ----------
+        branch : str
+            The short branch name to move the worktree for.
+        source : Path | None, optional
+            The current path of the worktree to move.  If None, the path will be derived
+            from the current worktree state for the given branch.  Defaults to None.
+        target : Path | None, optional
+            The destination path for the worktree.  If None, the worktree will be moved
+            to its default location based on the branch name, if it is not already
+            there.  Defaults to None.
+
+        Raises
+        ------
+        FileNotFoundError
+            If the source path does not exist or could not be derived from the current
+            worktree state.
+        NotADirectoryError
+            If the source path or target path exists but is not a directory.
+        FileExistsError
+            If the target path already exists, and is not the same as the source path.
+        """
+        if source is None:
+            for wt in await self.worktrees():
+                if wt.branch == branch:
+                    source = wt.path
+                    break
+            if source is None:
+                raise FileNotFoundError(f"no worktree found for branch '{branch}'")
+        if not source.exists():
+            raise FileNotFoundError(f"worktree path does not exist: {source}")
+        if not source.is_dir():
+            raise NotADirectoryError(f"worktree is not a directory: {source}")
+
+        if target is None:
+            target = self.git_dir.parent / branch
+        if target == source:
+            return
+        if target.exists():
+            raise FileExistsError(f"target path already exists: {target}")
+
+        target.parent.mkdir(parents=True, exist_ok=True)
+        await self.run(
+            ["worktree", "move", "--relative-paths", str(source), str(target)],
+            capture_output=True
+        )
+        self._clean_worktree_parents(source)
+
+    async def destroy_worktree(
+        self,
+        branch: str,
+        *,
+        target: Path | None = None,
+    ) -> bool:
+        """Destroy the worktree for the given branch, if it exists and is clean.
+
+        Parameters
+        ----------
+        branch : str
+            The short branch name to destroy the worktree for.
+        target : Path | None, optional
+            An optional path to the worktree to destroy.  If None (the default), then
+            the path will be derived from the current worktree state for the given
+            branch.
+
+        Returns
+        -------
+        bool
+            True if the worktree was successfully destroyed or did not exist, false if
+            the worktree exists but could not be destroyed due to dirty state.
+
+        Raises
+        ------
+        FileNotFoundError
+            If the target path does not exist or could not be derived from the current
+            worktree state.
+        NotADirectoryError
+            If the target path exists but is not a directory.
+        RuntimeError
+            If the target path does not belong to this repository.
+        """
+        if target is None:
+            for wt in await self.worktrees():
+                if wt.branch == branch:
+                    target = wt.path
+                    break
+            if target is None:
+                raise FileNotFoundError(f"no worktree found for branch '{branch}'")
+        if not target.exists():
+            raise FileNotFoundError(f"worktree path does not exist: {target}")
+        if not target.is_dir():
+            raise NotADirectoryError(f"worktree is not a directory: {target}")
+
+        # verify that the worktree is clean and objectively belongs to this repository
+        # before attempting deletion
+        env = await self._strip_env()
+        if not await self._worktree_belongs_to_repo(target, env):
+            raise RuntimeError(
+                f"worktree path does not belong to this repository: {target}"
+            )
+        clean = await run(
+            ["git", "-C", str(target), "status", "--porcelain"],
+            capture_output=True,
+            env=env,
+        )
+        if clean.stdout.strip():
+            return False
+
+        # remove the worktree using git, which will also properly clean up the
+        # associated gitdir and any linked metadata
+        await self.run(["worktree", "remove", str(target)], capture_output=True)
+        self._clean_worktree_parents(target)
+        return True
+
     async def sync_worktrees(self, updates: Sequence[GitRefUpdate] = ()) -> None:
         """Converge worktrees to the authoritative branch set using a hybrid
         intent-first delta pass.
@@ -1305,17 +1495,29 @@ class GitRepository:
             target = desired.get(new_branch)
             if target is None or new_branch in current:
                 continue
-            if source == target or await self._move_worktree(new_branch, source, target):
+            try:
+                await self.move_worktree(new_branch, source=source, target=target)
                 current.pop(old_branch, None)
                 current[new_branch] = target
+            except Exception as err:
+                print(
+                    f"bertrand: failed to move worktree for branch '{new_branch}' from "
+                    f"{source} to {target}:\n{err}"
+                )
 
         # apply explicit destroys for branches still present in current state
         for branch in destroyed:
             path = current.get(branch)
             if path is None or branch in desired:
                 continue
-            if await self._destroy_worktree(branch, path):
-                current.pop(branch, None)
+            try:
+                if await self.destroy_worktree(branch, target=path):
+                    current.pop(branch, None)
+            except Exception as err:
+                print(
+                    f"bertrand: failed to destroy worktree for branch '{branch}' at "
+                    f"{path}:\n{err}"
+                )
 
         # apply explicit creates for branches that are still missing
         for branch in created:
@@ -1334,8 +1536,15 @@ class GitRepository:
         # remove branches no longer present in the repository
         stale = set(current) - set(desired)
         for branch in sorted(stale):
-            if await self._destroy_worktree(branch, current[branch]):
-                current.pop(branch, None)
+            path = current[branch]
+            try:
+                if await self.destroy_worktree(branch, target=path):
+                    current.pop(branch, None)
+            except Exception as err:
+                print(
+                    f"bertrand: failed to destroy worktree for branch '{branch}' at "
+                    f"{path}:\n{err}"
+                )
 
         # move branches that are present but located at non-canonical paths
         shared = set(current) & set(desired)
@@ -1344,8 +1553,14 @@ class GitRepository:
             target = desired[branch]
             if source == target:
                 continue
-            if await self._move_worktree(branch, source, target):
+            try:
+                await self.move_worktree(branch, source=source, target=target)
                 current[branch] = target
+            except Exception as err:
+                print(
+                    f"bertrand: failed to move worktree for branch '{branch}' from "
+                    f"{source} to {target}:\n{err}"
+                )
 
         # create worktrees for branches that don't yet have one
         missing = set(desired) - set(current)
