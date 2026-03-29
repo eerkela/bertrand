@@ -17,9 +17,10 @@ from typing import Awaitable, Callable, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, PositiveInt
 
-from .config import RESOURCE_NAMES, NonEmpty, RelativePath, Resource, Trimmed
+from .config import RESOURCE_NAMES, Config, NonEmpty, RelativePath, Resource, Trimmed
 from .container import STATE_DIR, TIMEOUT, podman_cmd, podman_ids
 from .run import (
+    LOCK_TIMEOUT,
     GitRepository,
     Lock,
     User,
@@ -687,7 +688,8 @@ MANAGED_HOOKS: tuple[tuple[str, str, bool], ...] = (
 async def _init_repository(
     path: Path,
     *,
-    resources: set[Resource]
+    resources: set[Resource],
+    timeout: float,
 ) -> tuple[GitRepository, Path]:
     # resolve repository and worktree target
     repo, worktree = await GitRepository.resolve(path)
@@ -702,36 +704,35 @@ async def _init_repository(
             create_branch=True
         )
 
-    # generate CLI context to drive resource `init()` hooks
-    ctx = Resource.Init(
+    # TODO: honestly, maybe `Config.load()` should accept the repo and relative
+    # worktree path to avoid confusion, and have this abstraction replicated
+    # consistently across the CLI.
+
+    # reconcile with existing configuration (if any)
+    config = await Config.load(path, timeout=timeout)  # locate existing in-tree resources
+    config.resources.update(resources)  # merge any new resources from CLI
+    config.init = Config.Init(
         repo=repo,
         worktree=worktree,
-        resources=frozenset(resources),
     )
-    for resource in sorted(resources):
-        try:
-            await resource.init(ctx)
-        except Exception as err:
-            raise OSError(
-                f"failed to initialize resource '{resource.name}' in worktree {path}\n"
-                f"{err}"
-            ) from err
+    async with config:  # init default values, load overrides, and validate all resources
+        await config.sync(tag=None)  # render in-tree resources with validated config
 
-    # make an initial commit if this is a new repository
-    if new:
-        try:
-            await run(["git", "add", "-A"], cwd=path, capture_output=True)
-            await run(
-                ["git", "commit", "--quiet", "-m", "Initial commit"],
-                cwd=path,
-                capture_output=True,
-            )
-        except Exception as err:
-            print(
-                f"bertrand: failed to create initial commit in {path}\n{err}",
-                file=sys.stderr
-            )
-    return repo, worktree
+        # make an initial commit if this is a new repository
+        if new:
+            try:
+                await run(["git", "add", "-A"], cwd=path, capture_output=True)
+                await run(
+                    ["git", "commit", "--quiet", "-m", "Initial commit"],
+                    cwd=path,
+                    capture_output=True,
+                )
+            except Exception as err:
+                print(
+                    f"bertrand: failed to create initial commit in {path}\n{err}",
+                    file=sys.stderr
+                )
+        return repo, worktree
 
 
 async def _install_git_hooks(repo: GitRepository) -> None:
@@ -803,6 +804,7 @@ async def bertrand_init(
     *,
     enable: list[str],
     yes: bool,
+    timeout: float = LOCK_TIMEOUT,
 ) -> None:
     """Initialize host prerequisites and optionally bootstrap an environment root.
 
@@ -821,6 +823,11 @@ async def bertrand_init(
         corresponding, unique `Resource` implementations.
     yes : bool
         Whether to auto-accept prompts during host bootstrap stages.
+    timeout : float
+        Timeout in seconds to wait when acquiring locks for the initialization target.
+        This applies to both the init lock for the host bootstrap stages and the
+        environment lock for rendering worktree resources.  It does not restrict the
+        runtime of either of these stages, only the time spent waiting to start them.
 
     Raises
     ------
@@ -837,7 +844,7 @@ async def bertrand_init(
 
     # install container runtime if needed
     STATE_DIR.mkdir(parents=True, exist_ok=True)
-    async with Lock(INIT_LOCK, timeout=TIMEOUT):
+    async with Lock(INIT_LOCK, timeout=timeout):
         state = InitState.load()
         index = next(
             (i for i, (stage, _) in enumerate(INIT_STAGES) if stage == state.stage),
@@ -877,7 +884,7 @@ async def bertrand_init(
             resources.add(r)
 
     # initialize git repository if needed, then install/update git hooks within it
-    repo, _ = await _init_repository(path, resources=resources)
+    repo, _ = await _init_repository(path, resources=resources, timeout=timeout)
     await _install_git_hooks(repo)
 
 

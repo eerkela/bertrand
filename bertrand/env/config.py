@@ -2,18 +2,17 @@
 
 Config resources can implement any combination of the following 4 orchestration hooks:
 
-    1.  `init(ctx)`, which renders the initial state of the resource (usually from a
-        jinja template) during `bertrand init` from normalized CLI input.
-    2.  `parse(config)`, which requires at least one path, reads match(es) from disk,
-        and loads the results into a shared context snapshot during
-        `Config.__aenter__()`.  Each resource's snapshot will be merged before
-        continuing.
+    1.  `init(ctx)`, which renders the initial state of the resource as a snapshot
+        fragment from normalized `bertrand init` CLI input.
+    2.  `parse(config)`, which requires at least one path, reads file(es) from disk,
+        and loads the results into a shared snapshot during `Config.__aenter__()`,
+        merging with results from the previous step.
     3.  `validate(config, fragment)`, which is invoked for every resource whose name
-        appears as a primary key in the merged context snapshot.  The result of this
-        method must be a pydantic model that will be stored under `config.tool` as a
-        validated attribute with the same name as the resource.
-    4.  `render(config, tag)`, which writes the validated output from the previous
-        step back to disk during `bertrand build`.
+        appears as a primary key in the merged snapshot.  The result of this method
+        must be a pydantic model that will be stored under `config.tool` as a validated
+        attribute with the same name as the resource.
+    4.  `render(config, tag)`, which writes the validated config state back to disk
+        during `bertrand build`.
 
 Resources are free to define any combination of these hooks with whatever logic they
 require, as long as they do not conflict with each other.  The only special resource
@@ -69,7 +68,7 @@ from .run import (
     IMAGE_TAG_ENV,
     LOCK_TIMEOUT,
     METADATA_DIR,
-    PROJECT_MOUNT,
+    WORKTREE_MOUNT,
     GitRepository,
     Scalar,
     atomic_write_text,
@@ -1019,77 +1018,38 @@ class Resource:
             return self.name > other
         return NotImplemented
 
-    @dataclass(frozen=True)
-    class Init:
-        """A context object representing normalized input to the `bertrand init`
-        command, which is passed to each resource's `init()` hook to drive template
-        rendering during initialization.  The same context object is passed to all
-        resources during initialization, allowing them to coordinate with each other
-        and pass information between them.
-
-        Attributes
-        ----------
-        root : AbsolutePath
-            The absolute host path to the root of the project being initialized.  This
-            will always have a valid `.git/` repository as a child.
-        worktree : RelativePath
-            The relative path from the project root to the current git worktree, which
-            is the actual target for resource rendering during initialization.  This
-            may be `.` if the worktree is the same as the project root, which is the
-            case for single-worktree repositories.  For multi-worktree repositories,
-            it will usually be a branch-named subdirectory of the project root,
-            except in cases where the branch contains path separators (creating nested
-            directories) or is detached from any branch (in which case it will be an
-            arbitrary path).  The relative path will never contain `..` segments.
-        resources : frozenset[Resource]
-            The set of all resources that are being initialized in this worktree.  This
-            is derived from the `-c`/`--cap` arguments passed to `bertrand init`,
-            after deduplication and name resolution against the global catalog.
-        jinja : jinja2.Environment
-            A Jinja2 environment that can be used to render templates during
-            initialization, instead of requiring each `init()` hook to define its own.
-        bertrand_version : packaging.version.Version
-            The version of Bertrand that is running this `init()` function, which can
-            be used to conditionally render different content based on Bertrand
-            version.
-        python_version : packaging.version.Version
-            The version of Python that is running this `init()` function, which can be
-            used to conditionally render different content based on Python version.
-        uv_version : packaging.version.Version
-            The version of `uv` that is running this `init()` function, which can be
-            used to conditionally render different content based on UV version.
-        """
-        repo: GitRepository
-        worktree: RelativePath
-        resources: frozenset[Resource]
-        jinja: jinja2.Environment = field(default_factory=lambda: jinja2.Environment(
-            autoescape=False,
-            undefined=jinja2.StrictUndefined,
-            keep_trailing_newline=True,
-            trim_blocks=False,
-            lstrip_blocks=False,
-        ))
-        bertrand_version: packaging.version.Version = field(
-            default=packaging.version.parse(VERSION.bertrand)
-        )
-        python_version: packaging.version.Version = field(
-            default=packaging.version.parse(VERSION.python)
-        )
-        uv_version: packaging.version.Version = field(
-            default=packaging.version.parse(VERSION.uv)
-        )
-
-    async def init(self, ctx: Resource.Init) -> None:
+    async def init(self, config: Config, cli: Config.Init) -> dict[str, Any]:
         """Render this resource's initial contents during `bertrand init`.
 
         Parameters
         ----------
-        ctx : Resource.Init
-            A context object containing normalized CLI input to the `bertrand init`
-            command.
-        """
+        config : Config
+            The active configuration context, which provides access to the
+            resource's path and other shared state.
+        cli : Config.Init
+            Normalized CLI input to the `bertrand init` command, which can be used to
+            customize the default values for this resource based on user input.
 
-    async def parse(self, config: Config) -> dict[str, Any]:
+        Returns
+        -------
+        dict[str, Any]
+            Normalized config data describing the default values for all of this
+            resource's relevant configuration options.  For resources with pydantic
+            models, this can often be obtained by simply dumping a default-constructed
+            instance of the model. The result must pass a later `validate()` call,
+            which is invoked after all `Resource.parse()` hooks have been merged
+            against the outputs from this hook.
+
+        Notes
+        -----
+        Resources that do not implement this function will be treated as stateless.  If
+        such a resource also implements a `validate()` hook, then it means that it
+        always expects to find valid config data from other resources via their
+        `parse()` hooks.
+        """
+        return {}
+
+    async def parse(self, config: Config) -> dict[str, dict[str, Any]]:
         """A parse function that can extract normalized config data from this
         resource when entering the `Config` context.
 
@@ -1101,11 +1061,12 @@ class Resource:
 
         Returns
         -------
-        dict[str, Any]
-            Normalized config data extracted from this resource, or None if no parsing
-            was performed.  The dictionary's top-level keys must describe the resource
-            IDs that were detected during parsing, whose `validate()` hooks will be
-            called in the `validate()` phase.
+        dict[str, dict[str, Any]]
+            Normalized config data extracted from this resource, if any.  The
+            dictionary's top-level keys must describe the resource names that were
+            detected during parsing, which will be merged into the results of the
+            `init()` phase, and whose `validate()` hooks will be called to normalize
+            the output.
 
         Notes
         -----
@@ -1156,7 +1117,7 @@ class Resource:
         """
         return None
 
-    async def render(self, config: Config, tag: str) -> None:
+    async def render(self, config: Config, tag: str | None) -> None:
         """A render function that writes content for this resource during
         `Config.sync()`.
 
@@ -1165,11 +1126,12 @@ class Resource:
         config : Config
             The active configuration context, which provides access to the valid
             outputs from the `validate()` phase.
-        tag : str
+        tag : str | None
             The active image tag for the configured environment, which is used to
             search the `config.tool.bertrand.tags` list for tag-specific overrides
-            during rendering.  Usually, this is supplied by either the build system or
-            an in-container environment variable, but we make no assumptions here.
+            during image builds.  If None, then it means this hook was invoked during
+            a `bertrand init` command, and should therefore not attempt to render any
+            out-of-tree artifacts that would require access to a container filesystem.
 
         Notes
         -----
@@ -1329,6 +1291,16 @@ class PyProject(Resource):
     """
     # pylint: disable=missing-function-docstring, unused-argument, missing-return-doc
 
+    # TODO: I would actually need to encode the default values in the model in order
+    # to properly implement the `init` method.
+    # -> Actually, the default values may not be best expressed in the model itself,
+    # since that would cause missing fields to be auto-filled during parsing, which
+    # is less type-safe?  Not totally sure what the best approach is here, but maybe
+    # default values really are a better fit?  By not providing them, I'm requiring all
+    # fields to be explicitly set in the configuration file.  Providing the defaults
+    # trivializes the `init` hook, and allows users to omit fields, which will be
+    # regenerated on every `sync()` with their corresponding defaults.
+
     class Model(BaseModel):
         """Validate the core `pyproject.toml` fields, as defined by PEP 518/621."""
         model_config = ConfigDict(extra="forbid")
@@ -1352,14 +1324,25 @@ class PyProject(Resource):
                     )
                 return value
 
-            requires: Annotated[list[str], AfterValidator(_check_requires)]
+            requires: Annotated[
+                list[str],
+                AfterValidator(_check_requires),
+                Field(default_factory=lambda: ["bertrand"])
+            ]
             build_backend: Annotated[
                 str,
                 AfterValidator(_check_backend),
                 Field(alias="build-backend")
             ]
 
-        build_system: Annotated[BuildSystem, Field(default=None, alias="build-system")]
+        build_system: Annotated[
+            BuildSystem,
+            Field(default_factory=BuildSystem.model_construct, alias="build-system")
+        ]
+
+        # TODO: make `Project` default-constructible, to support init() hook.  The
+        # project name could be derived from the cli repo name, or config.repo if
+        # I fold that into Config directly, for example.
 
         class Project(BaseModel):
             """Validate the `[project]` table."""
@@ -1435,36 +1418,14 @@ class PyProject(Resource):
 
         project: Annotated[Project, Field(default=None)]
 
-    async def init(self, ctx: Resource.Init) -> None:
-        template = ctx.jinja.from_string(
-            locate_template("core", "pyproject.v1").read_text(encoding="utf-8")
-        )
-        target = ctx.repo.git_dir.parent / ctx.worktree / "pyproject.toml"
-        target.write_text(template.render(
-            # TODO: this project name is wrong, and the only way to get it right is to
-            # replace `init()` with `render()`, and have `init()` just return an initial
-            # fragment to write to the snapshot, so that validate() can proceed like
-            # normal, and `render()` can generate all files.  That way, you could load
-            # the worktree config using `init()` fragments as the base and placing
-            # the results of parse() over it, then validate that combination, and then
-            # render() it normally.
-            project_name=ctx.repo.git_dir.parent.name,
-            python_major=ctx.python_version.major,
-            python_minor=ctx.python_version.minor,
-            python_patch=ctx.python_version.micro,
-            bertrand_major=ctx.bertrand_version.major,
-            bertrand_minor=ctx.bertrand_version.minor,
-            bertrand_patch=ctx.bertrand_version.micro,
-            uv_major=ctx.uv_version.major,
-            uv_minor=ctx.uv_version.minor,
-            uv_patch=ctx.uv_version.micro,
-            shell=os.environ.get("SHELL", "sh"),
-            editor=os.environ.get("EDITOR", "vi"),
-        ), encoding="utf-8")
+    async def init(self, config: Config, cli: Config.Init) -> dict[str, Any]:
+        return self.Model.model_validate({}).model_dump(by_alias=True)
 
-    async def parse(self, config: Config) -> dict[str, Any]:
+    async def parse(self, config: Config) -> dict[str, dict[str, Any]]:
         # get content of the current worktree's `pyproject.toml`
         path = config.worktree / "pyproject.toml"
+        if not path.exists():
+            return {}
         try:
             text = path.read_text(encoding="utf-8")
         except OSError as err:
@@ -1513,6 +1474,38 @@ class PyProject(Resource):
         _validate_dependency_groups(pyproject=result, bertrand=config.tool.bertrand)
         return result
 
+    async def render(self, config: Config, tag: str | None) -> None:
+        # TODO: this would have to be reworked to render `pyproject.toml` on top of
+        # user edits, skipping any unmanaged fields, and adding any missing fields
+        # with default values.  Formatting will probably be the main challenge here.
+
+        # template = ctx.jinja.from_string(
+        #     locate_template("core", "pyproject.v1").read_text(encoding="utf-8")
+        # )
+        # target = ctx.repo.git_dir.parent / ctx.worktree / "pyproject.toml"
+        # target.write_text(template.render(
+        #     # TODO: this project name is wrong, and the only way to get it right is to
+        #     # replace `init()` with `render()`, and have `init()` just return an initial
+        #     # fragment to write to the snapshot, so that validate() can proceed like
+        #     # normal, and `render()` can generate all files.  That way, you could load
+        #     # the worktree config using `init()` fragments as the base and placing
+        #     # the results of parse() over it, then validate that combination, and then
+        #     # render() it normally.
+        #     project_name=ctx.repo.git_dir.parent.name,
+        #     python_major=ctx.python_version.major,
+        #     python_minor=ctx.python_version.minor,
+        #     python_patch=ctx.python_version.micro,
+        #     bertrand_major=ctx.bertrand_version.major,
+        #     bertrand_minor=ctx.bertrand_version.minor,
+        #     bertrand_patch=ctx.bertrand_version.micro,
+        #     uv_major=ctx.uv_version.major,
+        #     uv_minor=ctx.uv_version.minor,
+        #     uv_patch=ctx.uv_version.micro,
+        #     shell=os.environ.get("SHELL", "sh"),
+        #     editor=os.environ.get("EDITOR", "vi"),
+        # ), encoding="utf-8")
+        return
+
 
 @resource("conan")
 class ConanConfig(Resource):
@@ -1521,6 +1514,20 @@ class ConanConfig(Resource):
     `remotes.json`, and default profile artifacts.
     """
     # pylint: disable=missing-function-docstring, unused-argument, missing-return-doc
+
+    GENERATORS: tuple[str, ...] = (
+        "CMakeDeps",
+        "CMakeToolchain",
+        "VirtualBuildEnv",
+        "VirtualRunEnv",
+    )
+
+    ARCH_MAP: dict[str, str] = {
+        "x86_64": "x86_64",
+        "amd64": "x86_64",
+        "aarch64": "armv8",
+        "arm64": "armv8",
+    }
 
     class Model(BaseModel):
         """Validate the global `[tool.conan]` table."""
@@ -1604,15 +1611,11 @@ class ConanConfig(Resource):
             Field(default_factory=list)
         ]
 
+    async def init(self, config: Config, cli: Config.Init) -> dict[str, Any]:
+        return self.Model.model_validate({}).model_dump(by_alias=True)
+
     async def validate(self, config: Config, fragment: Any) -> Model | None:
         return self.Model.model_validate(fragment)
-
-    GENERATORS: tuple[str, ...] = (
-        "CMakeDeps",
-        "CMakeToolchain",
-        "VirtualBuildEnv",
-        "VirtualRunEnv",
-    )
 
     @staticmethod
     def _merge_options(out: dict[str, Scalar], options: ConanOptions) -> None:
@@ -1718,13 +1721,6 @@ class ConanConfig(Resource):
             "\n".join(lines),
             encoding="utf-8"
         )
-
-    ARCH_MAP: dict[str, str] = {
-        "x86_64": "x86_64",
-        "amd64": "x86_64",
-        "aarch64": "armv8",
-        "arm64": "armv8",
-    }
 
     @staticmethod
     def _merge_conf(
@@ -1861,8 +1857,8 @@ class ConanConfig(Resource):
             encoding="utf-8"
         )
 
-    async def render(self, config: Config, tag: str) -> None:
-        if config.tool.conan is None:
+    async def render(self, config: Config, tag: str | None) -> None:
+        if tag is None or config.tool.conan is None:
             return
         await self._render_conanfile(config, tag)
         await self._render_conanprofile(config, tag)
@@ -1886,49 +1882,6 @@ class Bertrand(Resource):
             kubernetes orchestration.
     """
     # pylint: disable=missing-function-docstring, unused-argument, missing-return-doc
-
-    async def init(self, ctx: Resource.Init) -> None:
-        worktree = ctx.repo.git_dir.parent / ctx.worktree
-        (worktree / "src").mkdir(parents=True, exist_ok=True)
-        (worktree / "tests").mkdir(parents=True, exist_ok=True)
-        (worktree / "docs").mkdir(parents=True, exist_ok=True)
-
-        # initialize Containerfile
-        containerfile_template = ctx.jinja.from_string(
-            locate_template("core", "containerfile.v1").read_text(encoding="utf-8")
-        )
-        containerfile_target = worktree / "Containerfile"
-        containerfile_target.parent.mkdir(parents=True, exist_ok=True)
-        containerfile_target.write_text(containerfile_template.render(
-            python_major=ctx.python_version.major,
-            python_minor=ctx.python_version.minor,
-            python_patch=ctx.python_version.micro,
-            bertrand_major=ctx.bertrand_version.major,
-            bertrand_minor=ctx.bertrand_version.minor,
-            bertrand_patch=ctx.bertrand_version.micro,
-            cpus=0,
-            page_size_kib=os.sysconf("SC_PAGE_SIZE") // 1024,
-            env_mount=str(PROJECT_MOUNT / ctx.worktree),
-            uv_cache=str(UV_CACHE),
-            bertrand_cache=str(BERTRAND_CACHE),
-            ccache_cache=str(CCACHE_CACHE),
-            conan_cache=str(CONAN_CACHE),
-        ), encoding="utf-8")
-
-        # initialize CI publish action
-        publish_template = ctx.jinja.from_string(
-            locate_template("core", "publish.v1").read_text(encoding="utf-8")
-        )
-        publish_target = worktree / ".github" / "workflows" / "publish.yml"
-        publish_target.parent.mkdir(parents=True, exist_ok=True)
-        publish_target.write_text(publish_template.render(
-            python_major=ctx.python_version.major,
-            python_minor=ctx.python_version.minor,
-            python_patch=ctx.python_version.micro,
-            bertrand_major=ctx.bertrand_version.major,
-            bertrand_minor=ctx.bertrand_version.minor,
-            bertrand_patch=ctx.bertrand_version.micro,
-        ), encoding="utf-8")
 
     class Model(BaseModel):
         """Validate the `[bertrand]` table."""
@@ -2522,6 +2475,9 @@ class Bertrand(Resource):
                         )
             return self
 
+    async def init(self, config: Config, cli: Config.Init) -> dict[str, Any]:
+        return self.Model.model_validate({}).model_dump(by_alias=True)
+
     async def validate(self, config: Config, fragment: Any) -> Model | None:
         result = self.Model.model_validate(fragment)
         _validate_dependency_groups(pyproject=config.tool.python, bertrand=result)
@@ -2530,9 +2486,24 @@ class Bertrand(Resource):
             tag.resolve_env_files(config.worktree)
         return result
 
-    async def render(self, config: Config, tag: str) -> None:
+    async def render(self, config: Config, tag: str | None) -> None:
         if config.tool.bertrand is None:
             return
+        jinja = jinja2.Environment(
+            autoescape=False,
+            undefined=jinja2.StrictUndefined,
+            keep_trailing_newline=True,
+            trim_blocks=False,
+            lstrip_blocks=False,
+        )
+        bertrand_version = packaging.version.parse(VERSION.bertrand)
+        python_version = packaging.version.parse(VERSION.python)
+        uv_version = packaging.version.parse(VERSION.uv)
+
+        # render worktree directories
+        (config.worktree / "src").mkdir(parents=True, exist_ok=True)
+        (config.worktree / "tests").mkdir(parents=True, exist_ok=True)
+        (config.worktree / "docs").mkdir(parents=True, exist_ok=True)
 
         # render ignore files
         ignore = [str(METADATA_DIR / "*")]  # always ignore Bertrand's metadata directory
@@ -2556,6 +2527,47 @@ class Bertrand(Resource):
         # Containerfile based on config changes, including volume mounts and OCI
         # dependencies.  The user can extend the Containerfile as long as they don't
         # modify the preamble, which is delimited by comments.
+
+        # initialize Containerfile
+        containerfile_template = jinja.from_string(
+            locate_template("core", "containerfile.v1").read_text(encoding="utf-8")
+        )
+        containerfile_target = config.worktree / "Containerfile"
+        containerfile_target.parent.mkdir(parents=True, exist_ok=True)
+        containerfile_target.write_text(containerfile_template.render(
+            python_major=python_version.major,
+            python_minor=python_version.minor,
+            python_patch=python_version.micro,
+            bertrand_major=bertrand_version.major,
+            bertrand_minor=bertrand_version.minor,
+            bertrand_patch=bertrand_version.micro,
+            cpus=0,
+            page_size_kib=os.sysconf("SC_PAGE_SIZE") // 1024,
+            # TODO: pretty sure this is wrong, since the symlinks haven't been set up
+            # yet, but we also just need to rethink Containerfile rendering in general
+            # to better interact with the build system, since I now have the context
+            # necessary to do so with the init staging refactor.
+            env_mount=str(WORKTREE_MOUNT),
+            uv_cache=str(UV_CACHE),
+            bertrand_cache=str(BERTRAND_CACHE),
+            ccache_cache=str(CCACHE_CACHE),
+            conan_cache=str(CONAN_CACHE),
+        ), encoding="utf-8")
+
+        # initialize CI publish action
+        publish_template = jinja.from_string(
+            locate_template("core", "publish.v1").read_text(encoding="utf-8")
+        )
+        publish_target = config.worktree / ".github" / "workflows" / "publish.yml"
+        publish_target.parent.mkdir(parents=True, exist_ok=True)
+        publish_target.write_text(publish_template.render(
+            python_major=python_version.major,
+            python_minor=python_version.minor,
+            python_patch=python_version.micro,
+            bertrand_major=bertrand_version.major,
+            bertrand_minor=bertrand_version.minor,
+            bertrand_patch=bertrand_version.micro,
+        ), encoding="utf-8")
 
 
 @resource("clangd")
@@ -2756,8 +2768,8 @@ class Clangd(Resource):
     async def validate(self, config: Config, fragment: Any) -> Model | None:
         return self.Model.model_validate(fragment)
 
-    async def render(self, config: Config, tag: str) -> None:
-        if config.tool.clangd is None:
+    async def render(self, config: Config, tag: str | None) -> None:
+        if tag is None or config.tool.clangd is None:
             return
         model = config.tool.clangd
 
@@ -2916,8 +2928,8 @@ class ClangTidy(Resource):
     async def validate(self, config: Config, fragment: Any) -> Model | None:
         return self.Model.model_validate(fragment)
 
-    async def render(self, config: Config, tag: str) -> None:
-        if config.tool.clang_tidy is None:
+    async def render(self, config: Config, tag: str | None) -> None:
+        if tag is None or config.tool.clang_tidy is None:
             return
         model = config.tool.clang_tidy
 
@@ -3508,8 +3520,8 @@ class ClangFormat(Resource):
     async def validate(self, config: Config, fragment: Any) -> Model | None:
         return self.Model.model_validate(fragment)
 
-    async def render(self, config: Config, tag: str) -> None:
-        if config.tool.clang_format is None:
+    async def render(self, config: Config, tag: str | None) -> None:
+        if tag is None or config.tool.clang_format is None:
             return
         model = config.tool.clang_format
 
@@ -3753,15 +3765,21 @@ class VSCodeWorkspace(Resource):
     extension, and mount its internal toolchain.
     """
 
-    async def init(self, ctx: Resource.Init) -> None:
-        template = ctx.jinja.from_string(
+    async def render(self, config: Config, tag: str | None) -> None:
+        jinja = jinja2.Environment(
+            autoescape=False,
+            undefined=jinja2.StrictUndefined,
+            keep_trailing_newline=True,
+            trim_blocks=False,
+            lstrip_blocks=False,
+        )
+        template = jinja.from_string(
             locate_template("core", "vscode-workspace.v1").read_text(encoding="utf-8")
         )
-        worktree = ctx.repo.git_dir.parent / ctx.worktree
-        target = worktree / VSCODE_WORKSPACE_FILE
+        target = config.worktree / VSCODE_WORKSPACE_FILE
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(template.render(
-            mount_path=(PROJECT_MOUNT / ctx.worktree).as_posix(),
+            mount_path=WORKTREE_MOUNT.as_posix(),
         ), encoding="utf-8")
 
 
@@ -3771,6 +3789,29 @@ class Config:
     normalized config data parsed from those resources, without coupling to any
     particular schema.
     """
+    @dataclass(frozen=True)
+    class Init:
+        """A context object representing normalized CLI input to the `bertrand init`
+        command, which is passed to each resource's `init()` hook to drive their
+        initial values.
+
+        Attributes
+        ----------
+        repo : GitRepository
+            The parent git repository containing the worktree being initialized.
+        worktree : RelativePath
+            The relative path from the repository root to the current git worktree,
+            which is the actual target for resource rendering.  This may be `.` if the
+            worktree is the same as the project root, which is the case for
+            single-worktree repositories.  For multi-worktree repositories, it will
+            usually be a branch-named subdirectory of the project root, except in cases
+            where the branch contains path separators (creating nested directories) or
+            is detached from any branch (in which case it will be an arbitrary path).
+            The relative path will never contain `..` segments.
+        """
+        repo: GitRepository
+        worktree: RelativePath
+
     @dataclass
     class Tool:
         """A nested namespace storing validated config data for each supported
@@ -3792,9 +3833,8 @@ class Config:
     timeout: float
     resources: set[Resource] = field(default_factory=lambda: {RESOURCE_NAMES["bertrand"]})
     tool: Tool = field(default_factory=Tool, repr=False)
+    init: Init | None = field(default=None, repr=False)
     _entered: int = field(default=0, repr=False)
-    _snapshot: dict[str, Any] = field(default_factory=dict, repr=False)
-    _key_owner: dict[tuple[str, ...], str] = field(default_factory=dict, repr=False)
 
     @classmethod
     async def load(cls, worktree: Path, *, timeout: float = LOCK_TIMEOUT) -> Self:
@@ -3839,62 +3879,47 @@ class Config:
 
     def _merge_fragment(
         self,
-        resource_id: str,
+        r: Resource,
         fragment: dict[Any, Any],
-        merged: dict[str, Any],
+        snapshot: dict[str, Any],
         *,
         key_owner: dict[tuple[str, ...], str],
-        path_prefix: tuple[str, ...] = (),
+        path_prefix: tuple[str, ...],
     ) -> None:
         for key, value in fragment.items():
             if not isinstance(key, str):
-                if path_prefix:
-                    parent = ".".join(path_prefix)
-                else:
-                    parent = "<root>"
+                parent = ".".join(path_prefix)
                 raise OSError(
-                    f"parse hook for resource '{resource_id}' returned non-string key "
+                    f"parse hook for resource '{r.name}' returned non-string key "
                     f"under '{parent}': '{key}'"
                 )
+            value_is_map = isinstance(value, dict)
+
+            # reserve ownership to prevent collisions with other parsed resources.
+            # Note that the default values provided by `init()` hooks are not
+            # considered, and will therefore be overwritten
             key_path = path_prefix + (key,)
-            existing = merged.get(key)
+            owner = key_owner.setdefault(key_path, r.name)
 
-            # insert value if key is new, and recurse if value is a nested dict
-            if existing is None:
-                if isinstance(value, dict):
-                    child: dict[str, Any] = {}
-                    merged[key] = child
-                    key_owner[key_path] = resource_id
-                    self._merge_fragment(
-                        resource_id,
-                        value,
-                        child,
-                        key_owner=key_owner,
-                        path_prefix=key_path,
-                    )
-                else:
-                    merged[key] = value
-                    key_owner[key_path] = resource_id
-                continue
-
-            # if an existing key is present, and both the key and value are nested
-            # dicts, then merge recursively
-            if isinstance(existing, dict) and isinstance(value, dict):
+            # if the key is already present, then do a deep merge if both values are
+            # mappings, or directly replace the value if not
+            existing = snapshot.setdefault(key, value)
+            existing_is_map = isinstance(existing, dict)
+            if existing_is_map and value_is_map:
                 self._merge_fragment(
-                    resource_id,
+                    r,
                     value,
                     existing,
                     key_owner=key_owner,
                     path_prefix=key_path,
                 )
-                continue
-
-            # otherwise, this is a collision
-            owner = key_owner.get(key_path, "<unknown>")
-            raise OSError(
-                f"config parse key collision at '{'.'.join(key_path)}' between "
-                f"resources '{owner}' and '{resource_id}'"
-            )
+            elif owner != r.name or existing_is_map or value_is_map:
+                raise OSError(
+                    f"config parse key collision at '{'.'.join(key_path)}' between "
+                    f"resources '{owner}' and '{r.name}'"
+                )
+            else:
+                snapshot[key] = value
 
     async def __aenter__(self) -> Self:
         """Parse and validate config data from resources in the environment, which
@@ -3914,56 +3939,66 @@ class Config:
         old_resources = self.resources.copy()
         try:
             async with lock_worktree(self.worktree):
-                merged: dict[ResourceName, Any] = {}
-                key_owner: dict[tuple[str, ...], ResourceName] = {}
+                # invoke `init()` hooks for all resources to get baseline snapshot
+                snapshot = {} if self.init is None else {
+                    r.name: await r.init(self, self.init)
+                    for r in sorted(self.resources)
+                }
 
                 # invoke parse hooks for all resources in deterministic order
+                key_owner: dict[tuple[str, ...], ResourceName] = {}
                 for r in sorted(self.resources):
-                    # extract config snapshot
                     try:
-                        snapshot = await r.parse(self)
+                        fragment = await r.parse(self)
                     except Exception as err:
                         raise OSError(f"failed to parse resource {r.name!r}: {err}") from err
-                    if not isinstance(snapshot, dict):
+                    if not isinstance(fragment, dict):
                         raise OSError(
                             f"parse hook for resource {r.name!r} must return a string "
-                            f"mapping: {snapshot}"
+                            f"mapping: {fragment}"
                         )
 
-                    # normalize aliases and merge snapshot, checking for key collisions
-                    for raw_key, fragment in snapshot.items():
+                    # normalize aliases and merge fragment, checking for key collisions
+                    for raw_key, table in fragment.items():
+                        if not isinstance(raw_key, str):
+                            raise OSError(
+                                f"parse hook for resource {r.name!r} returned "
+                                f"non-string key: {raw_key}"
+                            )
+                        if not isinstance(table, dict):
+                            raise OSError(
+                                f"parse hook for resource {r.name!r} returned "
+                                f"non-mapping value for key '{raw_key}': {table}"
+                            )
                         lookup = RESOURCE_NAMES.get(raw_key)
-                        key = lookup.name if lookup is not None else raw_key
-                        self._merge_fragment(
-                            key,
-                            fragment,
-                            merged,
-                            key_owner=key_owner, path_prefix=(key,)
-                        )
+                        if lookup is not None:
+                            self._merge_fragment(
+                                r,
+                                table,
+                                snapshot.setdefault(lookup.name, {}),
+                                key_owner=key_owner,
+                                path_prefix=(lookup.name,)
+                            )
 
                 # validate each parsed fragment against its corresponding resource
-                for key, fragment in merged.items():
+                for key, table in snapshot.items():
                     lookup = RESOURCE_NAMES.get(key)
                     if lookup is None:
                         continue  # skip unrecognized tables
 
-                    # record validated output for future type-checked access
-                    table = await lookup.validate(self, fragment)
-                    if table is not None:
+                    # record validated output for future, type-safe access
+                    model = await lookup.validate(self, table)
+                    if model is not None:
                         if getattr(self.tool, lookup.name, None) is not None:
                             raise AttributeError(f"Config.Tool.{lookup.name} already exists")
-                        setattr(self.tool, lookup.name, table)
+                        setattr(self.tool, lookup.name, model)
                     self.resources.add(lookup)
 
-                self._snapshot = merged
-                self._key_owner = key_owner
                 self._entered += 1
                 return self
         except:
             self.resources = old_resources
             self._entered = 0
-            self._snapshot = {}
-            self._key_owner = {}
             self.tool = self.Tool()
             raise
 
@@ -3978,8 +4013,6 @@ class Config:
             raise RuntimeError("layout context is not active")
         self._entered -= 1
         if self._entered == 0:
-            self._snapshot = {}
-            self._key_owner = {}
             self.tool = self.Tool()
 
     def __bool__(self) -> bool:
@@ -4205,18 +4238,21 @@ class Config:
             *entry_point
         ]
 
-    async def sync(self, tag: str) -> None:
+    async def sync(self, tag: str | None) -> None:
         """Render and write derived artifact resources from active context snapshot.
 
         This requires an active config context (`async with config:`).
 
         Parameters
         ----------
-        tag : str
+        tag : str | None
             The active image tag for the configured environment, which is used to
             search the `bertrand.tags` list for tag-specific overrides during
-            rendering.  Usually, this is supplied by either the build system or an
-            in-container environment variable, but we make no assumptions here.
+            rendering.  If None, then this method was called as part of a
+            `bertrand init` command, and only the global configuration worktree
+            resources will be rendered.  Otherwise, it was called from a
+            `bertrand build` command, and out-of-tree resources may also be rendered
+            to the container filesystem for the active tag.
 
         Raises
         ------
@@ -4225,8 +4261,6 @@ class Config:
         OSError
             If any render hooks fail.
         """
-        if not inside_image():
-            raise RuntimeError("sync() artifacts require access to a container filesystem")
         if not self:
             raise RuntimeError("sync() artifact rendering requires an active config context")
 
