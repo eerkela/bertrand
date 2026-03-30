@@ -3318,22 +3318,71 @@ class ClangTidy(Resource):
     class Model(BaseModel):
         """Validate the `[clang-tidy]` table."""
         model_config = ConfigDict(extra="forbid")
-        DisableFormat: Annotated[bool, Field(default=False)]
-        HeaderFilterRegex: Annotated[RegexPattern, Field(default="^.*$")]
-        ExcludeHeaderFilterRegex: Annotated[RegexPattern, Field(default="^$")]
-        SystemHeaders: Annotated[bool, Field(default=False)]
-        UseColor: Annotated[bool, Field(default=True)]
+        DisableFormat: Annotated[bool, Field(
+            default=False,
+            description="Enable clang-format fixes for clang-tidy diagnostics.",
+        )]
+        HeaderFilterRegex: Annotated[RegexPattern, Field(
+            default="^.*$",
+            description=
+                "A regex pattern to filter which headers are included in clang-tidy "
+                "diagnostics.  Only diagnostics from headers that match this pattern "
+                "will be included.  This can be used to focus diagnostics on project "
+                "headers and exclude external dependencies, which often have noisy "
+                "diagnostics that the user cannot fix."
+        )]
+        ExcludeHeaderFilterRegex: Annotated[RegexPattern, Field(
+            default="^$",
+            description=
+                "A regex pattern to filter which headers are excluded from "
+                "clang-tidy diagnostics.  Only diagnostics from headers that do not "
+                "match this pattern will be included, regardless of whether they "
+                "match 'HeaderFilterRegex'."
+        )]
+        SystemHeaders: Annotated[bool, Field(
+            default=False,
+            description=
+                "Control whether diagnostics from system headers are included.  This "
+                "overrides 'HeaderFilterRegex' and 'ExcludeHeaderFilterRegex' for "
+                "system headers."
+        )]
+        UseColor: Annotated[bool, Field(
+            default=True,
+            description="Use color output where possible, if the terminal supports it.",
+        )]
 
         class Check(BaseModel):
             """Validate entries in the `[[tool.clang-tidy.Checks]]` AoT."""
             model_config = ConfigDict(extra="forbid")
-            Enable: Annotated[ClangTidyCheckPattern | None, Field(default=None)]
-            Disable: Annotated[ClangTidyCheckPattern | None, Field(default=None)]
-            Action: Annotated[Literal["disable", "warn", "error"], Field(default="warn")]
-            Options: Annotated[
-                dict[ClangTidyOptionName, Scalar],
-                Field(default_factory=dict)
-            ]
+            Enable: Annotated[ClangTidyCheckPattern | None, Field(
+                default=None,
+                examples=["modernize-use-auto", "performance-*"],
+                description=
+                    "A clang-tidy check pattern to enable.  Must be unique across "
+                    "both 'Enable' and 'Disable' entries.",
+            )]
+            Disable: Annotated[ClangTidyCheckPattern | None, Field(
+                default=None,
+                examples=["modernize-use-auto", "performance-*"],
+                description=
+                    "A clang-tidy check pattern to explicitly disable.  This may be a "
+                    "subset of the 'Enabled' checks.",
+            )]
+            Action: Annotated[Literal["disable", "warn", "error"], Field(
+                default="warn",
+                examples=["disable", "warn", "error"],
+                description=
+                    "The action to take for this check pattern.  'disable' turns off "
+                    "the check, 'warn' enables the check and reports diagnostics as "
+                    "warnings, and 'error' promotes the check to an error.",
+            )]
+            Options: Annotated[dict[ClangTidyOptionName, Scalar], Field(
+                default_factory=dict,
+                description=
+                    "A mapping of custom options for this check.  See the clang-tidy "
+                    "documentation for which options are supported by each check, and "
+                    "how to format their values."
+            )]
 
             @model_validator(mode="after")
             def _validate_enable_or_disable(self) -> Self:
@@ -3362,11 +3411,13 @@ class ClangTidy(Resource):
                     seen.add(entry.Disable)
             return value
 
-        Checks: Annotated[
-            list[Check],
-            AfterValidator(_check_duplicate_checks),
-            Field(default_factory=list)
-        ]
+        Checks: Annotated[list[Check], AfterValidator(_check_duplicate_checks), Field(
+            default_factory=list,
+            description=
+                "List of clang-tidy checks to enable or disable.  Checks will be "
+                "processed in order, so later entries can override earlier ones.  See "
+                "the clang-tidy documentation for available checks and their options."
+        )]
 
     async def init(self, config: Config, cli: Config.Init) -> dict[str, Any]:
         return self.Model.model_construct().model_dump(by_alias=True)
@@ -3436,64 +3487,425 @@ class ClangFormat(Resource):
     class Model(BaseModel):
         """Validate the `[clang-format]` table."""
         model_config = ConfigDict(extra="forbid")
-        DisableFormat: Annotated[bool, Field(default=False)]
-        BasedOnStyle: Annotated[
-            Literal["LLVM", "Google", "Chromium", "Mozilla", "WebKit", "Microsoft", "GNU"],
-            Field(default="Mozilla")
-        ]
-        AccessModifierOffset: Annotated[NonNegativeInt, Field(default=0)]
-        AlwaysBreakBeforeMultilineStrings: Annotated[bool, Field(default=True)]
-        AttributeMacros: Annotated[list[NoWhiteSpace], Field(default_factory=list)]
-        BinPackArguments: Annotated[bool, Field(default=False)]
-        BinPackLongBracedList: Annotated[bool, Field(default=True)]
+        Enable: Annotated[bool, Field(
+            default=False,
+            description="Whether to enable clang-format auto formatting.",
+        )]
+        AccessModifierOffset: Annotated[NonNegativeInt, Field(
+            default=0,
+            description=
+                "Indentation offset for access modifiers (e.g. `public`, `private`, "
+                "`protected`).  This is added to the normal indentation level of the "
+                "line.  For example, an offset of 1 would indent access modifiers one "
+                "additional level compared to other code, while an offset of -1 would "
+                "outdent them by one level.",
+        )]
+        AlwaysBreakBeforeMultilineStrings: Annotated[bool, Field(
+            default=True,
+            description=
+                "Whether to always break before multiline string literals.\n"
+                "   `true`:\n"
+                "       aaaa =\n"
+                "           \"bbbb\"\n"
+                "           \"cccc\";\n"
+                "   `false`:\n"
+                "       aaaa = \"bbbb\"\n"
+                "              \"cccc\";",
+        )]
+        AttributeMacros: Annotated[list[NoWhiteSpace], Field(
+            default_factory=list,
+            examples=["[\"__declspec\"]"],
+            description=
+                "List of names to treat as custom language attributes, similar to "
+                "`[[nodiscard]]`, etc.",
+        )]
+        BinPackArguments: Annotated[bool, Field(
+            default=False,
+            description=
+                "Control whether to bin-pack function call arguments.\n"
+                "   `true`:\n"
+                "       void f() {\n"
+                "           f(aaaaaaaaaaaaaaaaaaaa, aaaaaaaaaaaaaaaaaaaa,\n"
+                "             aaaaaaaaaaaaaaaaaaaa);\n"
+                "       }\n"
+                "   `false`:\n"
+                "       void f() {\n"
+                "           f(aaaaaaaaaaaaaaaaaaaa,\n"
+                "             aaaaaaaaaaaaaaaaaaaa,\n"
+                "             aaaaaaaaaaaaaaaaaaaa);\n"
+                "       }",
+        )]
+        BinPackLongBracedList: Annotated[bool, Field(
+            default=True,
+            description=
+                "Override 'BinPackArguments=false' for excessively long braced lists, "
+                "which can help compress array definitions, for example.",
+        )]
         BinPackParameters: Annotated[
             Literal["BinPack", "OnePerLine", "AlwaysOnePerLine"],
-            Field(default="OnePerLine")
+            Field(
+                default="OnePerLine",
+                examples=["BinPack", "OnePerLine", "AlwaysOnePerLine"],
+                description=
+                    "Control how to format function parameters.\n"
+                    "   `BinPack`:\n"
+                    "       void f(int a, int bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb,\n"
+                    "              int ccccccccccccccccccccccccccccccccccccccccccc);\n"
+                    "   `OnePerLine`:\n"
+                    "       if all parameters fit on one line:\n"
+                    "           void f(int a, int b, int c);\n"
+                    "       else:\n"
+                    "           void f(int a,\n"
+                    "                  int b,\n"
+                    "                  int ccccccccccccccccccccccccccccccccccccc);\n"
+                    "   `AlwaysOnePerLine`:\n"
+                    "       void f(int a,\n"
+                    "              int b,\n"
+                    "              int c);",
+            )
         ]
         BitFieldColonSpacing: Annotated[
             Literal["None", "Before", "After", "Both"],
-            Field(default="Both")
+            Field(
+                default="Both",
+                examples=["None", "Before", "After", "Both"],
+                description=
+                    "Control the spacing around the colon in C++ bitfield declarations.\n"
+                    "   `None`:\n"
+                    "       unsigned bf:2;\n"
+                    "   `Before`:\n"
+                    "       unsigned bf :2;\n"
+                    "   `After`:\n"
+                    "       unsigned bf: 2;\n"
+                    "   `Both`:\n"
+                    "       unsigned bf : 2;",
+            )
         ]
-        ColumnLimit: Annotated[NonNegativeInt, Field(default=88)]
-        CompactNamespaces: Annotated[bool, Field(default=False)]
-        Cpp11BracedListStyle: Annotated[
-            Literal["Block", "FunctionCall", "AlignFirstComment"],
-            Field(default="FunctionCall")
-        ]
+        ColumnLimit: Annotated[NonNegativeInt, Field(
+            default=88,
+            description=
+                "The column beyond which clang-format will try to wrap lines.  This "
+                "is not a hard limit, and clang-format may exceed it if necessary to "
+                "avoid breaking the code in undesirable ways, but it serves as a "
+                "guideline for how aggressively to break lines.",
+        )]
+        CompactNamespaces: Annotated[bool, Field(
+            default=False,
+            description=
+                "If true, consecutive namespace declarations will be on the same "
+                "line.  If false, each namespace is declared on a new line.\n"
+                "   `true`:\n"
+                "       namespace Foo { namespace Bar {\n"
+                "       }}\n"
+                "   `false`:\n"
+                "       namespace Foo {\n"
+                "       namespace Bar {\n"
+                "       }\n"
+                "       }",
+        )]
         EmptyLineAfterAccessModifier: Annotated[
             Literal["Never", "Leave", "Always"],
-            Field(default="Leave")
+            Field(
+                default="Leave",
+                examples=["Never", "Leave", "Always"],
+                description=
+                    "Control whether to insert an empty line after access modifiers "
+                    "(e.g. `public`, `private`, `protected`):\n"
+                    "   `Never`: remove all empty lines after access modifiers\n"
+                    "       struct foo {\n"
+                    "       private:\n"
+                    "           int i;\n"
+                    "       protected:\n"
+                    "           int j;\n"
+                    "           /* comment */\n"
+                    "       public:\n"
+                    "           foo() {}\n"
+                    "       private:\n"
+                    "       protected:\n"
+                    "       };\n"
+                    "   `Leave`: preserve user formatting\n"
+                    "   `Always`: always add empty line after access modifiers if "
+                    "there are none\n"
+                    "       struct foo {\n"
+                    "       private:\n"
+                    "\n"
+                    "           int i;\n"
+                    "       protected:\n"
+                    "\n"
+                    "           int j;\n"
+                    "           /* comment */\n"
+                    "       public:\n"
+                    "\n"
+                    "           foo() {}\n"
+                    "       private:\n"
+                    "\n"
+                    "       protected:\n"
+                    "\n"
+                    "       };",
+            )
         ]
         EmptyLineBeforeAccessModifier: Annotated[
             Literal["Never", "Leave", "LogicalBlock", "Always"],
-            Field(default="Leave")
+            Field(
+                default="Leave",
+                examples=["Never", "Leave", "LogicalBlock", "Always"],
+                description=
+                    "Control whether to insert an empty line before access modifiers "
+                    "(e.g. `public`, `private`, `protected`):\n"
+                    "   `Never`: remove all empty lines before access modifiers\n"
+                    "       struct foo {\n"
+                    "       private:\n"
+                    "           int i;\n"
+                    "       protected:\n"
+                    "           int j;\n"
+                    "           /* comment */\n"
+                    "       public:\n"
+                    "           foo() {}\n"
+                    "       private:\n"
+                    "       protected:\n"
+                    "       };\n"
+                    "   `Leave`: preserve user formatting\n"
+                    "   `LogicalBlock`: add empty line only when access modifier "
+                    "starts a new logical block.\n"
+                    "       struct foo {\n"
+                    "       private:\n"
+                    "           int i;\n"
+                    "\n"
+                    "       protected:\n"
+                    "           int j;\n"
+                    "           /* comment */\n"
+                    "       public:\n"
+                    "           foo() {}\n"
+                    "\n"
+                    "       private:\n"
+                    "       protected:\n"
+                    "       };\n"
+                    "   `Always`:\n"
+                    "       struct foo {\n"
+                    "       private:\n"
+                    "           int i;\n"
+                    "\n"
+                    "       protected:\n"
+                    "           int j;\n"
+                    "           /* comment */\n"
+                    "\n"
+                    "       public:\n"
+                    "           foo() {}\n"
+                    "\n"
+                    "       private:\n"
+                    "\n"
+                    "       protected:\n"
+                    "       };",
+            )
         ]
-        FixNamespaceComments: Annotated[bool, Field(default=True)]
-        ForEachMacros: Annotated[list[NoWhiteSpace], Field(default_factory=list)]
-        IfMacros: Annotated[list[NoWhiteSpace], Field(default_factory=list)]
+        FixNamespaceComments: Annotated[bool, Field(
+            default=True,
+            description=
+                "Add namespace end comments for long namespaces, and fix them if they "
+                "are wrong.\n"
+                "   `true`:\n"
+                "       namespace longNamespace {\n"
+                "           void foo();\n"
+                "           void bar();\n"
+                "       } // namespace longNamespace\n"
+                "       namespace shortNamespace { void baz(); }\n"
+                "   `false`:\n"
+                "       namespace longNamespace {\n"
+                "           void foo();\n"
+                "           void bar();\n"
+                "       }\n"
+                "       namespace shortNamespace { void baz(); }",
+        )]
+        ForEachMacros: Annotated[list[NoWhiteSpace], Field(
+            default_factory=list,
+            examples=["[\"BOOST_FOREACH\"]"],
+            description=
+                "List of macros to treat as foreach loops, which affects how their "
+                "bodies are formatted.",
+        )]
+        IfMacros: Annotated[list[NoWhiteSpace], Field(
+            default_factory=list,
+            examples=["[\"Q_IF\"]"],
+            description=
+                "List of macros to treat as if statements, which affects how their "
+                "bodies are formatted.",
+        )]
         IncludeBlocks: Annotated[
-            Literal["Preserve", "Merge", "Regroup"],
-            Field(default="Preserve")
+            Literal["Preserve", "Merge"],
+            Field(
+                default="Preserve",
+                examples=["Preserve", "Merge"],
+                description=
+                    "Control how to format blocks of consecutive #include directives.\n"
+                    "   `Preserve`: sort each #include block individually\n"
+                    "       #include \"b.h\"\n          ->      #include \"b.h\"\n"
+                    "\n"
+                    "       #include <lib/main.h>               #include \"a.h\"\n"
+                    "       #include \"a.h\"                    #include <lib/main.h>\n"
+                    "   `Merge`: merge consecutive #include blocks and sort as one\n"
+                    "       #include \"a.h\"\n          ->      #include \"a.h\"\n"
+                    "                                           #include \"b.h\"\n"
+                    "       #include <lib/main.h>               #include <lib/main.h>\n"
+                    "       #include \"b.h\"\n",
+            )
         ]
-        InsertBraces: Annotated[bool, Field(default=True)]
-        InsertNewlineAtEOF: Annotated[bool, Field(default=True)]
+        InsertBraces: Annotated[bool, Field(
+            default=True,
+            description=
+                "Controls whether to insert braces after control statements:\n"
+                "   `true`:\n"
+                "       if (isa<FunctionDecl>(D)) {\n"
+                "           handleFunctionDecl(D);\n"
+                "       } else if (isa<VarDecl>(D)) {\n"
+                "           handleVarDecl(D);\n"
+                "       } else {\n"
+                "           return;\n"
+                "       }\n"
+                "\n"
+                "       while (i--) {\n"
+                "           for (auto *A : D.attrs()) {\n"
+                "               handleAttr(A);\n"
+                "           }\n"
+                "       }\n"
+                "\n"
+                "       do {\n"
+                "           --i;\n"
+                "       } while (i);\n"
+                "   `false`:\n"
+                "       if (isa<FunctionDecl>(D))\n"
+                "           handleFunctionDecl(D);\n"
+                "       else if (isa<VarDecl>(D))\n"
+                "           handleVarDecl(D);\n"
+                "       else\n"
+                "           return;\n"
+                "\n"
+                "       while (i--)\n"
+                "           for (auto *A : D.attrs())\n"
+                "               handleAttr(A);\n"
+                "\n"
+                "       do\n"
+                "           --i;\n"
+                "       while (i);",
+        )]
+        InsertNewlineAtEOF: Annotated[bool, Field(
+            default=True,
+            description=
+                "Whether to insert a newline at the end of the file if it is missing.",
+        )]
         LineEnding: Annotated[
             Literal["LF", "CRLF", "DeriveLF", "DeriveCRLF"],
-            Field(default="DeriveLF")
+            Field(
+                default="DeriveLF",
+                description=
+                    "Line ending style (\\n or \\r\\n) to use:\n"
+                    "   `LF`: use Unix-style line endings (\\n)\n"
+                    "   `CRLF`: use Windows-style line endings (\\r\\n)\n"
+                    "   `DeriveLF`: Use \\n unless the input has more lines ending in "
+                    "\\r\\n.\n"
+                    "   `DeriveCRLF`: Use \\r\\n unless the input has more lines "
+                    "ending in \\n.",
+            )
         ]
         NamespaceIndentation: Annotated[
             Literal["None", "Inner", "All"],
-            Field(default="None")
+            Field(
+                default="None",
+                description=
+                    "The indentation used for namespaces:\n"
+                    "   `None`: don't indent in namespaces\n"
+                    "       namespace out {\n"
+                    "       int i;\n"
+                    "       namespace in {\n"
+                    "       int i;\n"
+                    "       }\n"
+                    "       }\n"
+                    "   `Inner`: indent only in inner namespaces (nested in other namespaces)\n"
+                    "       namespace out {\n"
+                    "       int i;\n"
+                    "       namespace in {\n"
+                    "           int i;\n"
+                    "       }\n"
+                    "       }\n"
+                    "   `All`: indent in all namespaces\n"
+                    "       namespace out {\n"
+                    "           int i;\n"
+                    "           namespace in {\n"
+                    "               int i;\n"
+                    "           }\n"
+                    "       }",
+            )
         ]
-        NamespaceMacros: Annotated[list[NoWhiteSpace], Field(default_factory=list)]
-        OneLineFormatOffRegex: Annotated[RegexPattern, Field(default="NOFORMAT")]
+        NamespaceMacros: Annotated[list[NoWhiteSpace], Field(
+            default_factory=list,
+            examples=["[\"__LIBCPP_BEGIN_NAMESPACE_STD\"]"],
+            description=
+                "List of macros to treat as namespace declarations, which affects how "
+                "their bodies are formatted.",
+        )]
+        OneLineFormatOffRegex: Annotated[RegexPattern, Field(
+            default="NOFORMAT",
+            description=
+                "A regex pattern to match in a // line comment to disable clang-format "
+                "for that line.",
+        )]
         PackConstructorInitializers: Annotated[
             Literal["Never", "BinPack", "CurrentLine", "NextLine", "NextLineOnly"],
-            Field(default="CurrentLine")
+            Field(
+                default="CurrentLine",
+                examples=["Never", "BinPack", "CurrentLine", "NextLine", "NextLineOnly"],
+                description=
+                    "Control how to format constructor initializers:\n"
+                    "   `Never`: always put each constructor initializer on its own line\n"
+                    "       Constructor()\n"
+                    "           : a(),\n"
+                    "             b()\n"
+                    "   `BinPack`: bin-pack constructor initializers\n"
+                    "       Constructor()\n"
+                    "           : aaaaaaaaaaaaaaaaaaaa(), bbbbbbbbbbbbbbbbbbbb(),\n"
+                    "             cccccccccccccccccccc()\n"
+                    "   `CurrentLine`: Put all constructor initializers on the current "
+                    "line if they fit. Otherwise, put each one on its own line.\n"
+                    "       Constructor() : a(), b(), c()\n"
+                    "       Constructor()\n"
+                    "           : aaaaaaaaaaaaaaaaaaaa(),\n"
+                    "             bbbbbbbbbbbbbbbbbbbb()\n"
+                    "             cccccccccccccccccccc()\n"
+                    "   `NextLine`: Same as `CurrentLine., except that if all "
+                    "constructor initializers do not fit on the current line, try to "
+                    "fit them on the next line.\n"
+                    "       Constructor() : a(), b(), c()\n"
+                    "       Constructor()\n"
+                    "           : a(), bbbbbbbbbbbbbbbbbbbb(), cccccccccccccccccccc()"
+                    "       Constructor()\n"
+                    "           : aaaaaaaaaaaaaaaaaaaa(),\n"
+                    "             bbbbbbbbbbbbbbbbbbbb()\n"
+                    "             cccccccccccccccccccc()\n"
+                    "   `NextLineOnly`: Put all constructor initializers on the next "
+                    "line if they fit. Otherwise, put each one on its own line.\n"
+                    "       Constructor()\n"
+                    "           : a(), b(), c()\n"
+                    "       Constructor()\n"
+                    "           : a(), bbbbbbbbbbbbbbbbbbbb(), cccccccccccccccccccc()"
+                    "       Constructor()\n"
+                    "           : aaaaaaaaaaaaaaaaaaaa(),\n"
+                    "             bbbbbbbbbbbbbbbbbbbb()\n"
+                    "             cccccccccccccccccccc()",
+            )
         ]
         PointerAlignment: Annotated[
             Literal["Left", "Right", "Middle"],
-            Field(default="Left")
+            Field(
+                default="Left",
+                examples=["Left", "Right", "Middle"],
+                description=
+                    "Pointer and reference alignment style:\n"
+                    "   `Left`: Align pointers and references to the left.\n"
+                    "       int* a;\n"
+                    "   `Right`: Align pointers and references to the right.\n"
+                    "       int *a;\n"
+                    "   `Middle`: Align pointers and references in the middle.\n"
+                    "       int * a;",
+            )
         ]
 
         @staticmethod
@@ -3975,8 +4387,8 @@ class ClangFormat(Resource):
         model = config.tool.clang_format
 
         content: dict[str, Any] = {
-            "DisableFormat": model.DisableFormat,
-            "BasedOnStyle": model.BasedOnStyle,
+            "DisableFormat": not model.Enable,
+            "BasedOnStyle": "Mozilla",
             "AccessModifierOffset": model.AccessModifierOffset,
             "AlignAfterOpenBracket": model.Align.AfterOpenBracket,
             "AlignArrayOfStructures": model.Align.ArrayOfStructures,
@@ -4087,7 +4499,7 @@ class ClangFormat(Resource):
             },
             "ColumnLimit": model.ColumnLimit,
             "CompactNamespaces": model.CompactNamespaces,
-            "Cpp11BracedListStyle": model.Cpp11BracedListStyle,
+            "Cpp11BracedListStyle": "FunctionCall",
             "EmptyLineAfterAccessModifier": model.EmptyLineAfterAccessModifier,
             "EmptyLineBeforeAccessModifier": model.EmptyLineBeforeAccessModifier,
             "FixNamespaceComments": model.FixNamespaceComments,
