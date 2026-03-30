@@ -26,9 +26,7 @@ import ipaddress
 import os
 import re
 import string
-import tomllib
-
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields as dataclass_fields
 from importlib import resources as importlib_resources
 from pathlib import Path, PosixPath
 from types import TracebackType
@@ -59,6 +57,8 @@ from pydantic import (
     model_validator
 )
 import jinja2
+import tomlkit
+from tomlkit.exceptions import TOMLKitError
 import yaml
 
 from .run import (
@@ -194,7 +194,7 @@ def _load_linux_capabilities() -> frozenset[str] | None:
 LINUX_CAPABILITIES: frozenset[str] | None = _load_linux_capabilities()
 
 
-def _check_semver(version: str) -> str:
+def _check_pep440_specifier(version: str) -> str:
     try:
         Specifier(version)
     except InvalidSpecifier as err:
@@ -740,7 +740,10 @@ type NoWhiteSpace = Annotated[
 ]
 type RegexPattern = Annotated[NonEmpty[NoCRLF], AfterValidator(_check_regex_pattern)]
 type Glob = Annotated[NonEmpty[NoWhiteSpace], AfterValidator(_check_glob)]
-type SemVer = Annotated[NonEmpty[Trimmed], AfterValidator(_check_semver)]
+type PEP440Requirement = Annotated[
+    NonEmpty[Trimmed],
+    AfterValidator(_check_pep440_specifier)
+]
 type License = Annotated[NonEmpty[Trimmed], AfterValidator(_check_license)]
 type Email = Annotated[NonEmpty[Trimmed], AfterValidator(_check_email)]
 type EmailName = Annotated[str, StringConstraints(
@@ -1305,52 +1308,74 @@ class PyProject(Resource):
                     raise ValueError("build-system.requires must be set to ['bertrand']")
                 return value
 
-            @staticmethod
-            def _check_backend(value: str) -> str:
-                if value != "bertrand.env.build":
-                    raise ValueError(
-                        "build-system.build-backend must be set to 'bertrand.env.build'"
-                    )
-                return value
-
             requires: Annotated[
                 list[PEP508Requirement],
                 AfterValidator(_check_requires),
                 Field(default_factory=lambda: ["bertrand"])
             ]
             build_backend: Annotated[
-                str,
-                AfterValidator(_check_backend),
+                Literal["bertrand.env.build"],
                 Field(default="bertrand.env.build", alias="build-backend")
             ]
 
-        build_system: Annotated[
-            BuildSystem,
-            Field(default_factory=BuildSystem.model_construct, alias="build-system")
-        ]
+        build_system: Annotated[BuildSystem, Field(
+            default_factory=BuildSystem.model_construct,
+            alias="build-system"
+        )]
 
         class Project(BaseModel):
             """Validate the `[project]` table."""
             model_config = ConfigDict(extra="allow")
-            name: PEP508Name
-            version: str
-            description: Annotated[str | None, Field(default=None)]
-            readme: Annotated[PosixPath | None, Field(default=None)]
-            requires_python: Annotated[
-                SemVer | None,
-                Field(default=VERSION.python, alias="requires-python")
-            ]
-            license: Annotated[License | None, Field(default=None)]
-            license_files: Annotated[
-                list[Glob] | None,
-                Field(default=None, alias="license-files")
-            ]
+            name: Annotated[PEP508Name, Field(
+                description=
+                    "Canonical project name, which is initially seeded from the "
+                    "worktree root directory name, but can be overridden by the user.",
+            )]
+            version: Annotated[str, Field(
+                description=
+                    "Project version string, which should ideally follow semantic "
+                    "versioning (MAJOR.MINOR.MICRO), but is not required to.",
+            )]
+            requires_python: Annotated[PEP440Requirement, Field(
+                default=f">={VERSION.python}",
+                alias="requires-python",
+                description="Container toolchain's Python version.",
+            )]
+            description: Annotated[str | None, Field(
+                default=None,
+                description="A short, one-line summary of the project.",
+            )]
+            readme: Annotated[PosixPath | None, Field(
+                default=None,
+                description=
+                    "Relative (POSIX) path to the project's README file, starting from "
+                    "the worktree root.",
+            )]
+            license: Annotated[License | None, Field(
+                default=None,
+                description="SPDX license identifier (e.g. MIT, Apache-2.0, etc.).",
+            )]
+            license_files: Annotated[list[Glob] | None, Field(
+                default=None,
+                alias="license-files",
+                description=
+                    "list of relative (POSIX) paths from worktree root to license "
+                    "files, supporting glob patterns.",
+            )]
 
             class Author(BaseModel):
                 """Validate entries in the `authors` and `maintainers` lists."""
                 model_config = ConfigDict(extra="forbid")
-                name: Annotated[EmailName | None, Field(default=None)]
-                email: Annotated[Email | None, Field(default=None)]
+                name: Annotated[EmailName | None, Field(
+                    default=None,
+                    description=
+                        "Author name, which can be an email local-part but must not "
+                        "contain commas or newlines (to avoid ambiguity when parsing)"
+                )]
+                email: Annotated[Email | None, Field(
+                    default=None,
+                    description="Contact email address"
+                )]
 
                 @model_validator(mode="after")
                 def _require_name_or_email(self) -> Self:
@@ -1358,21 +1383,65 @@ class PyProject(Resource):
                         raise ValueError("at least one of 'name' or 'email' must be provided")
                     return self
 
-            authors: Annotated[list[Author], Field(default_factory=list)]
-            maintainers: Annotated[list[Author], Field(default_factory=list)]
-            keywords: Annotated[list[str], Field(default_factory=list)]
-            classifiers: Annotated[list[str], Field(default_factory=list)]
-            dependencies: Annotated[list[PEP508Requirement], Field(default_factory=list)]
+            authors: Annotated[list[Author], Field(
+                default_factory=list,
+                description="List of project authors."
+            )]
+            maintainers: Annotated[list[Author], Field(
+                default_factory=list,
+                description="List of project maintainers."
+            )]
+            keywords: Annotated[list[str], Field(
+                default_factory=list,
+                description=
+                    "Arbitrary list of keywords describing the project, for search "
+                    "optimization.",
+            )]
+            classifiers: Annotated[list[str], Field(
+                default_factory=list,
+                description="List of PyPI classifiers (https://pypi.org/classifiers/)."
+            )]
+            urls: Annotated[dict[URLLabel, URL], Field(
+                default_factory=dict,
+                description=
+                    "Mapping of URL labels to project URLs (e.g. documentation, "
+                    "source code repository, etc.).  PEP753 defines a standard set of "
+                    "labels that third-party tools may recognize."
+            )]
+            dependencies: Annotated[list[PEP508Requirement], Field(
+                default_factory=list,
+                description=
+                    "Python-level dependencies as PEP508 requirement specifiers.",
+            )]
             optional_dependencies: Annotated[dict[TagName, list[PEP508Requirement]], Field(
                 default_factory=dict,
-                alias="optional-dependencies"
+                alias="optional-dependencies",
+                description=
+                    "Mapping of optional dependency groups, which should exactly match "
+                    "the declared tags in [tool.bertrand.tags], to further Python-level "
+                    "dependencies.  Using dependency groups allows package managers to "
+                    "select tags via normal 'extras' syntax (e.g. "
+                    "`pip install myproject[dev]`).",
             )]
-            scripts: Annotated[dict[EntrypointName, Entrypoint], Field(default_factory=dict)]
+            scripts: Annotated[dict[EntrypointName, Entrypoint], Field(
+                default_factory=dict,
+                description=
+                    "Mapping of console script entry points, where keys are the "
+                    "exposed command names and values are the corresponding "
+                    "importable entry points in 'module:object' format.  ':object' "
+                    "typically points to a 'main' function, which may be implemented "
+                    "in C++.",
+            )]
             gui_scripts: Annotated[dict[EntrypointName, Entrypoint], Field(
                 default_factory=dict,
-                alias="gui-scripts"
+                alias="gui-scripts",
+                description=
+                    "Mapping of GUI script entry points, where keys are the "
+                    "exposed command names and values are the corresponding "
+                    "importable entry points in 'module:object' format.  These "
+                    "behave similarly to 'scripts', but additionally mount a "
+                    "Wayland socket to allow GUI access from within the container.",
             )]
-            urls: Annotated[dict[URLLabel, URL], Field(default_factory=dict)]
 
             @model_validator(mode="after")
             def _validate_script_collisions(self) -> Self:
@@ -1397,7 +1466,8 @@ class PyProject(Resource):
                                 path.read_text(encoding="utf-8")
                             except UnicodeDecodeError as err:
                                 raise OSError(
-                                    f"license file is not UTF-8 encoded '{relative}': {err}"
+                                    f"license file is not UTF-8 encoded '{relative}': "
+                                    f"{err}"
                                 ) from err
                             seen.add(relative)
 
@@ -1425,8 +1495,8 @@ class PyProject(Resource):
 
         # load toml mapping
         try:
-            parsed = tomllib.loads(text)
-        except tomllib.TOMLDecodeError as err:
+            parsed = tomlkit.parse(text).unwrap()
+        except TOMLKitError as err:
             raise OSError(
                 f"failed to parse pyproject TOML for resource '{self.name}' at {path}: {err}"
             ) from err
@@ -1465,36 +1535,81 @@ class PyProject(Resource):
         return result
 
     async def render(self, config: Config, tag: str | None) -> None:
-        # TODO: this would have to be reworked to render `pyproject.toml` on top of
-        # user edits, skipping any unmanaged fields, and adding any missing fields
-        # with default values.  Formatting will probably be the main challenge here.
+        if config.tool.python is None:
+            return
 
-        # template = ctx.jinja.from_string(
-        #     locate_template("core", "pyproject.v1").read_text(encoding="utf-8")
-        # )
-        # target = ctx.repo.git_dir.parent / ctx.worktree / "pyproject.toml"
-        # target.write_text(template.render(
-        #     # TODO: this project name is wrong, and the only way to get it right is to
-        #     # replace `init()` with `render()`, and have `init()` just return an initial
-        #     # fragment to write to the snapshot, so that validate() can proceed like
-        #     # normal, and `render()` can generate all files.  That way, you could load
-        #     # the worktree config using `init()` fragments as the base and placing
-        #     # the results of parse() over it, then validate that combination, and then
-        #     # render() it normally.
-        #     project_name=ctx.repo.git_dir.parent.name,
-        #     python_major=ctx.python_version.major,
-        #     python_minor=ctx.python_version.minor,
-        #     python_patch=ctx.python_version.micro,
-        #     bertrand_major=ctx.bertrand_version.major,
-        #     bertrand_minor=ctx.bertrand_version.minor,
-        #     bertrand_patch=ctx.bertrand_version.micro,
-        #     uv_major=ctx.uv_version.major,
-        #     uv_minor=ctx.uv_version.minor,
-        #     uv_patch=ctx.uv_version.micro,
-        #     shell=os.environ.get("SHELL", "sh"),
-        #     editor=os.environ.get("EDITOR", "vi"),
-        # ), encoding="utf-8")
-        return
+        # parse existing `pyproject.toml` or initialize an empty document
+        path = config.worktree / "pyproject.toml"
+        if path.exists():
+            try:
+                text = path.read_text(encoding="utf-8")
+            except OSError as err:
+                raise OSError(f"failed to read pyproject at {path}: {err}") from err
+            try:
+                doc = tomlkit.parse(text)
+            except TOMLKitError as err:
+                raise OSError(f"failed to parse pyproject TOML at {path}: {err}") from err
+        else:
+            doc = tomlkit.document()
+
+        # fully overwrite [build-system] table
+        doc["build-system"] = config.tool.python.build_system.model_dump(
+            by_alias=True,
+            exclude_none=True
+        )
+
+        # conservatively overwrite [project] while preserving unrelated user keys
+        project_table = doc.get("project")
+        if project_table is None:
+            project_table = tomlkit.table()
+            doc["project"] = project_table
+        elif not isinstance(project_table, dict):
+            raise OSError("invalid pyproject shape: '[project]' must be a table")
+        for key, value in config.tool.python.project.model_dump(
+            by_alias=True,
+            exclude_none=True
+        ).items():
+            project_table[key] = value
+
+        # Render all Config.Tool models (except python) to [tool.<resource>] using
+        # canonical resource names
+        tool_models: dict[Resource, BaseModel] = {}
+        for attr in dataclass_fields(config.tool):
+            resource_name = attr.name
+            if resource_name == "python":
+                continue
+            model = getattr(config.tool, resource_name)
+            if model is None or not isinstance(model, BaseModel):
+                continue
+            lookup = RESOURCE_NAMES.get(resource_name)
+            if lookup is None or lookup.name != resource_name:
+                continue
+            tool_models[lookup] = model
+        if tool_models:
+            tool_table = doc.get("tool")
+            if tool_table is None:
+                tool_table = tomlkit.table()
+                doc["tool"] = tool_table
+            elif not isinstance(tool_table, dict):
+                raise OSError("invalid pyproject shape: '[tool]' must be a table")
+            for resource, model in sorted(tool_models.items()):
+                # normalize [tool.<alias>] tables to canonical [tool.<resource_name>]
+                for alias in sorted(resource.aliases):
+                    if alias != resource.name and RESOURCE_NAMES.get(alias) is resource:
+                        tool_table.pop(alias, None)
+
+                # overwrite managed [tool.<resource_name>] content from validated model
+                tool_table[resource.name] = model.model_dump(
+                    by_alias=True,
+                    exclude_none=True
+                )
+
+        # write back if any changes were made
+        rendered = tomlkit.dumps(doc)
+        if not rendered.endswith("\n"):
+            rendered += "\n"
+        if rendered != text:
+            atomic_write_text(path, rendered, encoding="utf-8")
 
 
 @resource("conan")
@@ -1522,22 +1637,55 @@ class ConanConfig(Resource):
     class Model(BaseModel):
         """Validate the global `[tool.conan]` table."""
         model_config = ConfigDict(extra="forbid")
-        build_type: Annotated[
-            Literal["Release", "Debug"],
-            Field(default="Release", alias="build-type")
-        ]
-        conf: Annotated[ConanConf, Field(default_factory=dict)]
-        options: Annotated[ConanOptions, Field(default_factory=dict)]
+        build_type: Annotated[Literal["Release", "Debug"], Field(
+            default="Release",
+            alias="build-type",
+            examples=["Release", "Debug"],
+            description=
+                "Global default build type for Conan builds, which can be overridden "
+                "by individual tags.",
+        )]
+        conf: Annotated[ConanConf, Field(
+            default_factory=dict,
+            description=
+                "Global mapping of namespace tables to conf entries, which get "
+                "converted into '<namespace>:<name>=<value>' format in the generated "
+                "Conan profile.  Individual tags can specify additional entries that "
+                "merge with these global defaults.",
+        )]
+        options: Annotated[ConanOptions, Field(
+            default_factory=dict,
+            description=
+                "Global mapping of namespace tables to package options, which get "
+                "converted into '<package-pattern>:<option>=<value>' format in the "
+                "generated Conan profile.  Individual tags can specify additional "
+                "options that merge with these global defaults.",
+        )]
 
         class Require(BaseModel):
             """Validate entries in `[[tool.conan.requires]]`."""
             model_config = ConfigDict(extra="forbid")
-            package: ConanRequirement
-            kind: Annotated[Literal["host", "tool"], Field(default="host")]
-            options: Annotated[
-                dict[ConanOptionName, Scalar],
-                Field(default_factory=dict)
-            ]
+            package: Annotated[ConanRequirement, Field(
+                description="A Conan package specifier."
+            )]
+            kind: Annotated[Literal["host", "tool"], Field(
+                default="host",
+                examples=["host", "tool"],
+                description=
+                    "The kind of requirement, which controls how the requirement gets "
+                    "injected into the generated Conan profile.  'tool' requirements "
+                    "apply only to the build context, whereas 'host' requirements "
+                    "specify runtime dependencies."
+            )]
+            options: Annotated[dict[ConanOptionName, Scalar], Field(
+                default_factory=dict,
+                description=
+                    "Mapping of option names to their values for this requirement, "
+                    "which get converted into '<package>:<option>=<value>' format in "
+                    "the generated Conan profile.  These options merge with any global "
+                    "options specified in the `options` field, and take precedence "
+                    "over any conflicting values."
+            )]
 
         class Remote(BaseModel):
             """Validate entries in `[[tool.conan.remotes]]`."""
@@ -1555,15 +1703,46 @@ class ConanConfig(Resource):
                 return value
 
             model_config = ConfigDict(extra="forbid")
-            name: ConanRemoteName
-            url: URL
-            verify_ssl: Annotated[bool, Field(default=True, alias="verify-ssl")]
-            enabled: Annotated[bool, Field(default=True)]
-            recipes_only: Annotated[bool, Field(default=False, alias="recipes-only")]
+            name: Annotated[ConanRemoteName, Field(
+                description="Unique name for this Conan remote.",
+            )]
+            url: Annotated[URL, Field(
+                description="Public URL for this Conan remote.",
+            )]
+            verify_ssl: Annotated[bool, Field(
+                default=True,
+                alias="verify-ssl",
+                description=
+                    "Whether to verify SSL certificates when communicating with this "
+                    "remote.  Should generally be left enabled unless the remote is "
+                    "known to have an invalid certificate, or is only accessible over "
+                    "insecure HTTP.",
+            )]
+            enabled: Annotated[bool, Field(
+                default=True,
+                description=
+                    "Whether to include this remote in Conan operations.  This can be "
+                    "used to temporarily disable a remote without removing it from "
+                    "config.",
+            )]
+            recipes_only: Annotated[bool, Field(
+                default=False,
+                alias="recipes-only",
+                description=
+                    "If true, only recipes will be loaded from this remote, and no "
+                    "binaries will be downloaded.",
+            )]
             allowed_packages: Annotated[
                 list[ConanAllowedPattern],
                 AfterValidator(_check_allowed_packages),
-                Field(default_factory=list, alias="allowed-packages")
+                Field(
+                    default_factory=list,
+                    alias="allowed-packages",
+                    description=
+                        "List of recipes that are allowed to be downloaded from this "
+                        "remote. If the list is empty or not present, all packages "
+                        "are allowed. Uses fnmatch rules.",
+                )
             ]
 
         @staticmethod
@@ -1590,16 +1769,23 @@ class ConanConfig(Resource):
                 seen.add(remote.name)
             return value
 
-        requires: Annotated[
-            list[Require],
-            AfterValidator(_check_requires),
-            Field(default_factory=list)
-        ]
-        remotes: Annotated[
-            list[Remote],
-            AfterValidator(_check_remotes),
-            Field(default_factory=list)
-        ]
+        requires: Annotated[list[Require], AfterValidator(_check_requires), Field(
+            default_factory=list,
+            description=
+                "Global list of Conan dependencies to install for the project, which "
+                "can be extended for individual tags.",
+        )]
+        remotes: Annotated[list[Remote], AfterValidator(_check_remotes), Field(
+            default_factory=list,
+            description=
+                "List of Conan remotes to use when resolving Conan dependencies for "
+                "this project.  NOTE: Conan remotes are resolved in declaration "
+                "order.  Prefer private remotes first, then optional public fallback "
+                "remotes last.  Credentials are host-local and must never be stored "
+                "here; resolve through env/secret channels (e.g. "
+                "CONAN_LOGIN_USERNAME_<REMOTE>, CONAN_PASSWORD_<REMOTE>, with remote "
+                "names normalized to SCREAMING_SNAKE_CASE)",
+        )]
 
     async def init(self, config: Config, cli: Config.Init) -> dict[str, Any]:
         return self.Model.model_construct().model_dump(by_alias=True)
@@ -1855,6 +2041,12 @@ class ConanConfig(Resource):
         await self._render_conanremotes(config, tag)
 
 
+# TODO: continue adding descriptions and simplifying the structure of the Bertrand
+# model + checking default values.
+
+# TODO: add `examples` for any fields that have a constrained set of values.
+
+
 @resource("bertrand")
 class Bertrand(Resource):
     """A resource describing the configuration state needed by Bertrand itself, which
@@ -1876,53 +2068,100 @@ class Bertrand(Resource):
     class Model(BaseModel):
         """Validate the `[bertrand]` table."""
         model_config = ConfigDict(extra="forbid")
-        shell: Annotated[Shell, Field(default=DEFAULT_SHELL)]
-        editor: Annotated[Editor, Field(default=DEFAULT_EDITOR)]
-        ignore: Annotated[IgnoreList, Field(default_factory=list)]
-        git_ignore: Annotated[
-            IgnoreList,
-            Field(default_factory=list, alias="git-ignore")
-        ]
-        container_ignore: Annotated[
-            IgnoreList,
-            Field(default_factory=list, alias="container-ignore")
-        ]
-        services: Annotated[list[str], Field(default_factory=list)]
-        min_replicas: Annotated[PositiveInt, Field(default=1, alias="min-replicas")]
-        max_replicas: Annotated[PositiveInt, Field(default=1, alias="max-replicas")]
-
-        @model_validator(mode="after")
-        def _validate_replicas(self) -> Self:
-            if self.min_replicas > self.max_replicas:
-                raise ValueError(
-                    "tool.bertrand.min_replicas cannot be greater than "
-                    f"tool.bertrand.max_replicas ({self.min_replicas} > "
-                    f"{self.max_replicas})"
-                )
-            return self
+        shell: Annotated[Shell, Field(
+            default=DEFAULT_SHELL,
+            examples=list(SHELLS),
+            description=
+                "Default shell to use when entering a container via `bertrand enter` "
+                "within this project.  This is not a literal shell command, but "
+                "rather an identifier that maps to a backend command to prevent "
+                "remote code execution."
+        )]
+        editor: Annotated[Editor, Field(
+            default=DEFAULT_EDITOR,
+            examples=list(EDITORS),
+            description=
+                "Default text editor to use when invoking `bertrand code` within this "
+                "project.  This is not a literal shell command, but rather an "
+                "identifier that maps to a backend command to prevent remote code "
+                "execution."
+        )]
+        ignore: Annotated[IgnoreList, Field(
+            default_factory=list,
+            description=
+                "List of patterns to ignore within this project, which are shared "
+                "between both `.gitignore` and `.containerignore`.  Patterns are "
+                "interpreted using the same rules as those files."
+        )]
+        git_ignore: Annotated[IgnoreList, Field(
+            default_factory=list,
+            alias="git-ignore",
+            description=
+                "List of `.gitignore`-specific patterns, which are merged with the "
+                "global `ignore` patterns when generating `.gitignore`."
+        )]
+        container_ignore: Annotated[IgnoreList, Field(
+            default_factory=list,
+            alias="container-ignore",
+            description=
+                "List of `.containerignore`-specific patterns, which are merged with "
+                "the global `ignore` patterns when generating `.containerignore`."
+        )]
 
         class Network(BaseModel):
             """Validate the `[bertrand.network]` table."""
             model_config = ConfigDict(extra="forbid")
 
+            # TODO: add examples here
+
             class Table(BaseModel):
                 """Validate the `[bertrand.network.build/run]` tables."""
                 model_config = ConfigDict(extra="forbid")
-                mode: Annotated[NetworkMode, Field(default="pasta")]
-                options: Annotated[list[str], Field(default_factory=list)]
-                dns: Annotated[list[IPAddress], Field(default_factory=list)]
-                dns_search: Annotated[
-                    list[str],
-                    Field(default_factory=list, alias="dns-search")
-                ]
-                dns_options: Annotated[
-                    list[str],
-                    Field(default_factory=list, alias="dns-options")
-                ]
-                add_host: Annotated[
-                    dict[HostName, HostIP],
-                    Field(default_factory=dict, alias="add-host")
-                ]
+                mode: Annotated[NetworkMode, Field(
+                    default="pasta",
+                    description=
+                        "The networking driver to use within containers for this "
+                        "project.  'pasta' is the default for efficient rootless "
+                        "networking, but 'host' may be preferred for "
+                        "performance-sensitive applications where security is not a "
+                        "primary concern.  Equivalent to `podman create --network`.",
+                )]
+                options: Annotated[list[str], Field(
+                    default_factory=list,
+                    description=
+                        "Additional options to pass to the networking driver.  See "
+                        "the podman documentation for the relevant 'mode' for "
+                        "supported options.",
+                )]
+                dns: Annotated[list[IPAddress], Field(
+                    default_factory=list,
+                    description=
+                        "List of custom DNS server IP addresses to use within "
+                        "containers.  Equivalent to `podman create --dns`.",
+                )]
+                dns_search: Annotated[list[str], Field(
+                    default_factory=list,
+                    alias="dns-search",
+                    description=
+                        "List of custom DNS search domains to use within containers.  "
+                        "Equivalent to `podman create --dns-search`.",
+                )]
+                dns_options: Annotated[list[str], Field(
+                    default_factory=list,
+                    alias="dns-options",
+                    description=
+                        "List of custom DNS options to use within containers.  "
+                        "Equivalent to `podman create --dns-option`.",
+                )]
+                add_host: Annotated[dict[HostName, HostIP], Field(
+                    default_factory=dict,
+                    alias="add-host",
+                    description=
+                        "Mapping of additional host entries to add to container "
+                        "/etc/hosts, where keys are the hostnames and values are the "
+                        "corresponding IP addresses.  Equivalent to `podman create "
+                        "--add-host`.",
+                )]
 
                 @model_validator(mode="after")
                 def _validate_none_mode(self) -> Self:
@@ -1939,10 +2178,25 @@ class Bertrand(Resource):
                         )
                     return self
 
-            build: Annotated[Table, Field(default_factory=Table.model_construct)]
-            run: Annotated[Table, Field(default_factory=Table.model_construct)]
+            build: Annotated[Table, Field(
+                default_factory=Table.model_construct,
+                description=
+                    "Networking configuration to use during build-time "
+                    "`Containerfile` execution.",
+            )]
+            run: Annotated[Table, Field(
+                default_factory=Table.model_construct,
+                description=
+                    "Networking configuration to use during run-time container "
+                    "execution.",
+            )]
 
-        network: Annotated[Network, Field(default_factory=Network.model_construct)]
+        network: Annotated[Network, Field(
+            default_factory=Network.model_construct,
+            description="Networking configuration to use within this project.",
+        )]
+
+        # TODO: continue documenting and pruning the tag
 
         class Tag(BaseModel):
             """Validate entries in the `[[tool.bertrand.tags]]` table."""
@@ -2560,6 +2814,10 @@ class Bertrand(Resource):
         ), encoding="utf-8")
 
 
+# TODO: I need extra resources/models for `uv`, `ty`, `ruff`, and `pytest`, so that
+# they are rendered correctly as well for new projects.
+
+
 @resource("clangd")
 class Clangd(Resource):
     """A resource describing a `.clangd` file, which is used to configure clangd for
@@ -2575,166 +2833,354 @@ class Clangd(Resource):
         class _Diagnostics(BaseModel):
             """Validate the `[tool.clangd.diagnostics]` table."""
             model_config = ConfigDict(extra="forbid")
-            UnusedIncludes: Annotated[Literal["None", "Strict"], Field(default="Strict")]
-            MissingIncludes: Annotated[Literal["None", "Strict"], Field(default="Strict")]
-            Suppress: Annotated[list[NoCRLF], Field(default_factory=list)]
+            UnusedIncludes: Annotated[Literal["None", "Strict"], Field(
+                default="Strict",
+                examples=["None", "Strict"],
+                description="Warn on unused #include directives.",
+            )]
+            MissingIncludes: Annotated[Literal["None", "Strict"], Field(
+                default="Strict",
+                examples=["None", "Strict"],
+                description=
+                    "Warn on missing #include directives, including transitive ones "
+                    "that are inherited from earlier includes, but are not explicitly "
+                    "listed.",
+            )]
+            Suppress: Annotated[list[NoCRLF], Field(
+                default_factory=list,
+                description=
+                    "List of diagnostics to suppress by code/category.  Note that "
+                    "this also includes clang-tidy rules that will be excluded from "
+                    "syntax highlighting.  '*' can be used to turn off all "
+                    "diagnostics.",
+            )]
 
-        Diagnostics: Annotated[
-            _Diagnostics,
-            Field(default_factory=_Diagnostics.model_construct)
-        ]
+        Diagnostics: Annotated[_Diagnostics, Field(
+            default_factory=_Diagnostics.model_construct,
+            description="clangd diagnostics options.",
+        )]
 
         class _Index(BaseModel):
             """Validate the `[tool.clangd.index]` table."""
             model_config = ConfigDict(extra="forbid")
-            Background: Annotated[Literal["Build", "Skip"], Field(default="Build")]
-            StandardLibrary: Annotated[bool, Field(default=True)]
+            Background: Annotated[Literal["Build", "Skip"], Field(
+                default="Build",
+                examples=["Build", "Skip"],
+                description=
+                    "Control whether clangd should build a symbolic index in the "
+                    "background.  This is required for features like cross-file rename "
+                    "and efficient code navigation (including by AI agents), but can "
+                    "be disabled to reduce resource usage on large codebases with "
+                    "heavy churn.",
+            )]
+            StandardLibrary: Annotated[bool, Field(
+                default=True,
+                description=
+                    "Control whether clangd should eagerly index the standard "
+                    "library, which enables features like code completions in "
+                    "new/empty files, without needing to build an index first."
+            )]
 
-        Index: Annotated[
-            _Index,
-            Field(default_factory=_Index.model_construct)
-        ]
+        Index: Annotated[_Index, Field(
+            default_factory=_Index.model_construct,
+            description="clangd symbolic indexing options.",
+        )]
 
         class _Completion(BaseModel):
             """Validate the `[tool.clangd.completion]` table."""
             model_config = ConfigDict(extra="forbid")
-            AllScopes: Annotated[bool, Field(default=True)]
+            AllScopes: Annotated[bool, Field(
+                default=True,
+                description=
+                    "Whether code completion should include suggestions from scopes "
+                    "that are not directly visible.  The required scope prefix will "
+                    "be automatically inserted.",
+            )]
             ArgumentLists: Annotated[
                 Literal["None", "OpenDelimiter", "Delimiters", "FullPlaceholders"],
-                Field(default="FullPlaceholders")
+                Field(
+                    default="Delimiters",
+                    examples=["None", "OpenDelimiter", "Delimiters", "FullPlaceholders"],
+                    description=
+                        "Determines what is inserted in argument list position when "
+                        "completing a call to a function.  Some examples:\n"
+                        "   - `None`: `fo^` -> `foo^`\n"
+                        "   - `OpenDelimiter`: `fo^` -> `foo(^`\n"
+                        "   - `Delimiters`: `fo^` -> `foo(^)`\n"
+                        "   - `FullPlaceholders`: `fo^` -> `foo(int arg)`, with "
+                        "`int arg` selected\n"
+                )
             ]
-            HeaderInsertion: Annotated[Literal["Never", "IWYU"], Field(default="IWYU")]
-            CodePatterns: Annotated[Literal["None", "All"], Field(default="All")]
+            HeaderInsertion: Annotated[Literal["Never", "IWYU"], Field(
+                default="IWYU",
+                examples=["Never", "IWYU"],
+                description=
+                    "Control whether clangd should automatically insert missing "
+                    "#include directives when completing symbols.  If set to `IWYU` "
+                    "(Include What You Use), clangd will insert headers for symbols "
+                    "that are referenced in the current file, but are not already "
+                    "included.",
+            )]
+            CodePatterns: Annotated[Literal["None", "All"], Field(
+                default="All",
+                examples=["None", "All"],
+                description=
+                    "Control whether code completion should include snippets that "
+                    "insert multiple tokens or lines of code.  Setting this to `None` "
+                    "restricts completions to single identifiers or member accesses, "
+                    "while `All` allows clangd to suggest more complex code patterns.",
+            )]
 
-        Completion: Annotated[
-            _Completion,
-            Field(default_factory=_Completion.model_construct)
-        ]
+        Completion: Annotated[_Completion, Field(
+            default_factory=_Completion.model_construct,
+            description="clangd code completion options.",
+        )]
 
         class _InlayHints(BaseModel):
             """Validate the `[tool.clangd.inlay-hints]` table."""
             model_config = ConfigDict(extra="forbid")
-            Enabled: Annotated[bool, Field(default=True)]
-            ParameterNames: Annotated[bool, Field(default=True)]
-            DeducedTypes: Annotated[bool, Field(default=True)]
-            Designators: Annotated[bool, Field(default=True)]
-            BlockEnd: Annotated[bool, Field(default=False)]
-            DefaultArguments: Annotated[bool, Field(default=False)]
-            TypeNameLimit: Annotated[NonNegativeInt, Field(default=24)]
+            Enabled: Annotated[bool, Field(
+                default=True,
+                description=
+                    "Enable inlay hints, which are inline annotations shown in the "
+                    "editor for various code elements, such as parameter names.",
+            )]
+            ParameterNames: Annotated[bool, Field(
+                default=True,
+                description="Show parameter name hints for arguments in function calls.",
+            )]
+            DeducedTypes: Annotated[bool, Field(
+                default=True,
+                description="Show deduced type hints for variables declared with `auto`.",
+            )]
+            Designators: Annotated[bool, Field(
+                default=True,
+                description="Show name/index hints for elements of braced initializers.",
+            )]
+            BlockEnd: Annotated[bool, Field(
+                default=False,
+                description=
+                    "Show block end hints that indicate which code block a closing "
+                    "brace corresponds to.",
+            )]
+            DefaultArguments: Annotated[bool, Field(
+                default=False,
+                description="Show default value hints for implicit function parameters.",
+            )]
+            TypeNameLimit: Annotated[NonNegativeInt, Field(
+                default=24,
+                description="Limit the maximum length of type inlay hints.",
+            )]
 
-        InlayHints: Annotated[
-            _InlayHints,
-            Field(default_factory=_InlayHints.model_construct)
-        ]
+        InlayHints: Annotated[_InlayHints, Field(
+            default_factory=_InlayHints.model_construct,
+            description="clangd inlay hints options.",
+        )]
 
         class _Hover(BaseModel):
             """Validate the `[tool.clangd.hover]` table."""
             model_config = ConfigDict(extra="forbid")
-            ShowAKA: Annotated[bool, Field(default=True)]
-            MacroContentsLimit: Annotated[NonNegativeInt, Field(default=2048)]
+            ShowAKA: Annotated[bool, Field(
+                default=True,
+                description=
+                    "Resolve type aliases and show their desugared names in hover "
+                    "tooltips.",
+            )]
+            MacroContentsLimit: Annotated[NonNegativeInt, Field(
+                default=2048,
+                description=
+                    "Limit the maximum length of macro contents in hover tooltips.",
+            )]
 
-        Hover: Annotated[
-            _Hover,
-            Field(default_factory=_Hover.model_construct)
-        ]
+        Hover: Annotated[_Hover, Field(
+            default_factory=_Hover.model_construct,
+            description="clangd hover options.",
+        )]
 
         class _Documentation(BaseModel):
             """Validate the `[tool.clangd.documentation]` table."""
             model_config = ConfigDict(extra="forbid")
-            CommentFormat: Annotated[
-                Literal["PlainText", "Markdown", "Doxygen"],
-                Field(default="Doxygen")
-            ]
+            CommentFormat: Annotated[Literal["PlainText", "Markdown", "Doxygen"], Field(
+                default="Doxygen",
+                examples=["PlainText", "Markdown", "Doxygen"],
+                description=
+                    "Control the format of documentation comments in hover tooltips.  "
+                    "Doxygen format is a superset of the previous two, and supports "
+                    "rich formatting, but PlainText or Markdown can be used to "
+                    "disable formatting if it causes issues in some editors.",
+            )]
 
-        Documentation: Annotated[
-            _Documentation,
-            Field(default_factory=_Documentation.model_construct)
-        ]
+        Documentation: Annotated[_Documentation, Field(
+            default_factory=_Documentation.model_construct,
+            description="clangd documentation options.",
+        )]
 
         class _If(BaseModel):
             """Validate the `[[tool.clangd.if]]` AoT."""
             model_config = ConfigDict(extra="forbid")
-            PathMatch: NonEmpty[list[RegexPattern]]
-            PathExclude: Annotated[list[RegexPattern], Field(default_factory=list)]
+            PathMatch: Annotated[NonEmpty[list[RegexPattern]], Field(
+                description=
+                    "List of regex patterns to enable this configuration block.  If "
+                    "any pattern matches, the configuration will be applied.  If "
+                    "multiple `[[tool.clangd.if]]` entries match, their configurations "
+                    "will be merged, with later entries taking precedence.",
+            )]
+            PathExclude: Annotated[list[RegexPattern], Field(
+                default_factory=list,
+                description=
+                    "List of regex patterns to exclude from this configuration block.  "
+                    "If any pattern matches, the configuration will not be applied, "
+                    "even if `PathMatch` matches.  This allows for fine-grained "
+                    "control to apply configurations to specific subdirectories or "
+                    "files within a larger codebase."
+            )]
 
             class _Diagnostics(BaseModel):
                 """Validate the `[tool.clangd.diagnostics]` table."""
                 model_config = ConfigDict(extra="forbid")
-                UnusedIncludes: Annotated[
-                    Literal["None", "Strict"] | None,
-                    Field(default=None)
-                ]
-                MissingIncludes: Annotated[
-                    Literal["None", "Strict"] | None,
-                    Field(default=None)
-                ]
-                Suppress: Annotated[
-                    NonEmpty[list[NoCRLF]] | None,
-                    Field(default=None)
-                ]
+                UnusedIncludes: Annotated[Literal["None", "Strict"] | None, Field(
+                    default=None,
+                    examples=["None", "Strict"],
+                    description="See global 'Diagnostics.UnusedIncludes' option.",
+                )]
+                MissingIncludes: Annotated[Literal["None", "Strict"] | None, Field(
+                    default=None,
+                    examples=["None", "Strict"],
+                    description="See global 'Diagnostics.MissingIncludes' option.",
+                )]
+                Suppress: Annotated[NonEmpty[list[NoCRLF]] | None, Field(
+                    default=None,
+                    description=
+                        "See global 'Diagnostics.Suppress' option.  Note that this is "
+                        "additive to the global list, so it can only be used to "
+                        "suppress additional diagnostics, not to re-enable diagnostics "
+                        "that are turned off globally.",
+                )]
 
-            Diagnostics: Annotated[_Diagnostics | None, Field(default=None)]
+            Diagnostics: Annotated[_Diagnostics | None, Field(
+                default=None,
+                description="clangd diagnostics options for this conditional block.",
+            )]
 
             class _Index(BaseModel):
                 """Validate the `[tool.clangd.index]` table."""
                 model_config = ConfigDict(extra="forbid")
-                Background: Annotated[
-                    Literal["Build", "Skip"] | None,
-                    Field(default=None)
-                ]
-                StandardLibrary: Annotated[bool | None, Field(default=None)]
+                Background: Annotated[Literal["Build", "Skip"] | None, Field(
+                    default=None,
+                    examples=["Build", "Skip"],
+                    description="See global 'Index.Background' option.",
+                )]
+                StandardLibrary: Annotated[bool | None, Field(
+                    default=None,
+                    description="See global 'Index.StandardLibrary' option.",
+                )]
 
-            Index: Annotated[_Index | None, Field(default=None)]
+            Index: Annotated[_Index | None, Field(
+                default=None,
+                description="clangd index options for this conditional block.",
+            )]
 
             class _Completion(BaseModel):
                 """Validate the `[tool.clangd.completion]` table."""
                 model_config = ConfigDict(extra="forbid")
-                AllScopes: Annotated[bool | None, Field(default=None)]
+                AllScopes: Annotated[bool | None, Field(
+                    default=None,
+                    description="See global 'Completion.AllScopes' option.",
+                )]
                 ArgumentLists: Annotated[
                     Literal["None", "OpenDelimiter", "Delimiters", "FullPlaceholders"] | None,
-                    Field(default=None)
+                    Field(
+                        default=None,
+                        examples=["None", "OpenDelimiter", "Delimiters", "FullPlaceholders"],
+                        description="See global 'Completion.ArgumentLists' option.",
+                    )
                 ]
-                HeaderInsertion: Annotated[
-                    Literal["Never", "IWYU"] | None,
-                    Field(default=None)
-                ]
-                CodePatterns: Annotated[
-                    Literal["None", "All"] | None,
-                    Field(default=None)
-                ]
+                HeaderInsertion: Annotated[Literal["Never", "IWYU"] | None, Field(
+                    default=None,
+                    examples=["Never", "IWYU"],
+                    description="See global 'Completion.HeaderInsertion' option.",
+                )]
+                CodePatterns: Annotated[Literal["None", "All"] | None, Field(
+                    default=None,
+                    examples=["None", "All"],
+                    description="See global 'Completion.CodePatterns' option.",
+                )]
 
-            Completion: Annotated[_Completion | None, Field(default=None)]
+            Completion: Annotated[_Completion | None, Field(
+                default=None,
+                description="clangd code completion options for this conditional block.",
+            )]
 
             class _InlayHints(BaseModel):
                 """Validate the `[tool.clangd.inlay-hints]` table."""
                 model_config = ConfigDict(extra="forbid")
-                Enabled: Annotated[bool | None, Field(default=None)]
-                ParameterNames: Annotated[bool | None, Field(default=None)]
-                DeducedTypes: Annotated[bool | None, Field(default=None)]
-                Designators: Annotated[bool | None, Field(default=None)]
-                BlockEnd: Annotated[bool | None, Field(default=None)]
-                DefaultArguments: Annotated[bool | None, Field(default=None)]
-                TypeNameLimit: Annotated[NonNegativeInt | None, Field(default=None)]
+                Enabled: Annotated[bool | None, Field(
+                    default=None,
+                    description="See global 'InlayHints.Enabled' option.",
+                )]
+                ParameterNames: Annotated[bool | None, Field(
+                    default=None,
+                    description="See global 'InlayHints.ParameterNames' option.",
+                )]
+                DeducedTypes: Annotated[bool | None, Field(
+                    default=None,
+                    description="See global 'InlayHints.DeducedTypes' option.",
+                )]
+                Designators: Annotated[bool | None, Field(
+                    default=None,
+                    description="See global 'InlayHints.Designators' option.",
+                )]
+                BlockEnd: Annotated[bool | None, Field(
+                    default=None,
+                    description="See global 'InlayHints.BlockEnd' option.",
+                )]
+                DefaultArguments: Annotated[bool | None, Field(
+                    default=None,
+                    description="See global 'InlayHints.DefaultArguments' option.",
+                )]
+                TypeNameLimit: Annotated[NonNegativeInt | None, Field(
+                    default=None,
+                    description="See global 'InlayHints.TypeNameLimit' option.",
+                )]
 
-            InlayHints: Annotated[_InlayHints | None, Field(default=None)]
+            InlayHints: Annotated[_InlayHints | None, Field(
+                default=None,
+                description="clangd inlay hints options for this conditional block.",
+            )]
 
             class _Hover(BaseModel):
                 """Validate the `[tool.clangd.hover]` table."""
                 model_config = ConfigDict(extra="forbid")
-                ShowAKA: Annotated[bool | None, Field(default=None)]
-                MacroContentsLimit: Annotated[NonNegativeInt | None, Field(default=None)]
+                ShowAKA: Annotated[bool | None, Field(
+                    default=None,
+                    description="See global 'Hover.ShowAKA' option.",
+                )]
+                MacroContentsLimit: Annotated[NonNegativeInt | None, Field(
+                    default=None,
+                    description="See global 'Hover.MacroContentsLimit' option.",
+                )]
 
-            Hover: Annotated[_Hover | None, Field(default=None)]
+            Hover: Annotated[_Hover | None, Field(
+                default=None,
+                description="clangd hover options for this conditional block.",
+            )]
 
             class _Documentation(BaseModel):
                 """Validate the `[tool.clangd.documentation]` table."""
                 model_config = ConfigDict(extra="forbid")
                 CommentFormat: Annotated[
                     Literal["PlainText", "Markdown", "Doxygen"] | None,
-                    Field(default=None)
+                    Field(
+                        default=None,
+                        examples=["PlainText", "Markdown", "Doxygen"],
+                        description="See global 'Documentation.CommentFormat' option.",
+                    )
                 ]
 
-            Documentation: Annotated[_Documentation | None, Field(default=None)]
+            Documentation: Annotated[_Documentation | None, Field(
+                default=None,
+                description="clangd documentation options for this conditional block.",
+            )]
 
             @model_validator(mode="after")
             def _validate_nonempty(self) -> Self:
@@ -2753,7 +3199,11 @@ class Clangd(Resource):
                     )
                 return self
 
-        If: Annotated[list[_If], Field(default_factory=list)]
+        If: Annotated[list[_If], Field(
+            default_factory=list,
+            description=
+                "List of conditional blocks for file-specific clangd configuration.",
+        )]
 
     async def init(self, config: Config, cli: Config.Init) -> dict[str, Any]:
         return self.Model.model_construct().model_dump(by_alias=True)
