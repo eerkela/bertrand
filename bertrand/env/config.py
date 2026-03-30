@@ -1291,16 +1291,6 @@ class PyProject(Resource):
     """
     # pylint: disable=missing-function-docstring, unused-argument, missing-return-doc
 
-    # TODO: I would actually need to encode the default values in the model in order
-    # to properly implement the `init` method.
-    # -> Actually, the default values may not be best expressed in the model itself,
-    # since that would cause missing fields to be auto-filled during parsing, which
-    # is less type-safe?  Not totally sure what the best approach is here, but maybe
-    # default values really are a better fit?  By not providing them, I'm requiring all
-    # fields to be explicitly set in the configuration file.  Providing the defaults
-    # trivializes the `init` hook, and allows users to omit fields, which will be
-    # regenerated on every `sync()` with their corresponding defaults.
-
     class Model(BaseModel):
         """Validate the core `pyproject.toml` fields, as defined by PEP 518/621."""
         model_config = ConfigDict(extra="forbid")
@@ -1310,7 +1300,7 @@ class PyProject(Resource):
             model_config = ConfigDict(extra="forbid")
 
             @staticmethod
-            def _check_requires(value: list[str]) -> list[str]:
+            def _check_requires(value: list[PEP508Requirement]) -> list[PEP508Requirement]:
                 if value != ["bertrand"]:
                     raise ValueError("build-system.requires must be set to ['bertrand']")
                 return value
@@ -1319,30 +1309,25 @@ class PyProject(Resource):
             def _check_backend(value: str) -> str:
                 if value != "bertrand.env.build":
                     raise ValueError(
-                        "build-system.build-backend must be set to "
-                        "'bertrand.env.build'"
+                        "build-system.build-backend must be set to 'bertrand.env.build'"
                     )
                 return value
 
             requires: Annotated[
-                list[str],
+                list[PEP508Requirement],
                 AfterValidator(_check_requires),
                 Field(default_factory=lambda: ["bertrand"])
             ]
             build_backend: Annotated[
                 str,
                 AfterValidator(_check_backend),
-                Field(alias="build-backend")
+                Field(default="bertrand.env.build", alias="build-backend")
             ]
 
         build_system: Annotated[
             BuildSystem,
             Field(default_factory=BuildSystem.model_construct, alias="build-system")
         ]
-
-        # TODO: make `Project` default-constructible, to support init() hook.  The
-        # project name could be derived from the cli repo name, or config.repo if
-        # I fold that into Config directly, for example.
 
         class Project(BaseModel):
             """Validate the `[project]` table."""
@@ -1416,10 +1401,15 @@ class PyProject(Resource):
                                 ) from err
                             seen.add(relative)
 
-        project: Annotated[Project, Field(default=None)]
+        project: Project
 
     async def init(self, config: Config, cli: Config.Init) -> dict[str, Any]:
-        return self.Model.model_validate({}).model_dump(by_alias=True)
+        return self.Model.model_construct(
+            project=self.Model.Project.model_construct(
+                name=cli.repo.git_dir.parent.name,
+                version="0.1.0",
+            )
+        ).model_dump(by_alias=True)
 
     async def parse(self, config: Config) -> dict[str, dict[str, Any]]:
         # get content of the current worktree's `pyproject.toml`
@@ -1612,7 +1602,7 @@ class ConanConfig(Resource):
         ]
 
     async def init(self, config: Config, cli: Config.Init) -> dict[str, Any]:
-        return self.Model.model_validate({}).model_dump(by_alias=True)
+        return self.Model.model_construct().model_dump(by_alias=True)
 
     async def validate(self, config: Config, fragment: Any) -> Model | None:
         return self.Model.model_validate(fragment)
@@ -2476,7 +2466,7 @@ class Bertrand(Resource):
             return self
 
     async def init(self, config: Config, cli: Config.Init) -> dict[str, Any]:
-        return self.Model.model_validate({}).model_dump(by_alias=True)
+        return self.Model.model_construct().model_dump(by_alias=True)
 
     async def validate(self, config: Config, fragment: Any) -> Model | None:
         result = self.Model.model_validate(fragment)
@@ -2765,6 +2755,9 @@ class Clangd(Resource):
 
         If: Annotated[list[_If], Field(default_factory=list)]
 
+    async def init(self, config: Config, cli: Config.Init) -> dict[str, Any]:
+        return self.Model.model_construct().model_dump(by_alias=True)
+
     async def validate(self, config: Config, fragment: Any) -> Model | None:
         return self.Model.model_validate(fragment)
 
@@ -2924,6 +2917,9 @@ class ClangTidy(Resource):
             AfterValidator(_check_duplicate_checks),
             Field(default_factory=list)
         ]
+
+    async def init(self, config: Config, cli: Config.Init) -> dict[str, Any]:
+        return self.Model.model_construct().model_dump(by_alias=True)
 
     async def validate(self, config: Config, fragment: Any) -> Model | None:
         return self.Model.model_validate(fragment)
@@ -3516,6 +3512,9 @@ class ClangFormat(Resource):
             ]
 
         Space: Annotated[_Space, Field(default_factory=_Space.model_construct)]
+
+    async def init(self, config: Config, cli: Config.Init) -> dict[str, Any]:
+        return self.Model.model_construct().model_dump(by_alias=True)
 
     async def validate(self, config: Config, fragment: Any) -> Model | None:
         return self.Model.model_validate(fragment)
