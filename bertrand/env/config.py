@@ -9,8 +9,8 @@ Config resources can implement any combination of the following 4 orchestration 
         merging with results from the previous step.
     3.  `validate(config, fragment)`, which is invoked for every resource whose name
         appears as a primary key in the merged snapshot.  The result of this method
-        must be a pydantic model that will be stored under `config.tool` as a validated
-        attribute with the same name as the resource.
+        must be a pydantic model that will be made available via the `config.get(T)`
+        method, which preserves full type information.
     4.  `render(config, tag)`, which writes the validated config state back to disk
         during `bertrand build`.
 
@@ -30,7 +30,7 @@ from dataclasses import dataclass, field, fields as dataclass_fields
 from importlib import resources as importlib_resources
 from pathlib import Path, PosixPath
 from types import TracebackType
-from typing import Annotated, Any, Callable, Literal, Self, Sequence
+from typing import Annotated, Any, Callable, ClassVar, Literal, Protocol, Self, Sequence, TypeVar, cast
 
 from conan.api.model.list import ListPattern, VersionRange
 from conan.api.model.refs import RecipeReference
@@ -49,7 +49,6 @@ from pydantic import (
     ConfigDict,
     NonNegativeInt,
     NonNegativeFloat,
-    PositiveInt,
     StringConstraints,
     TypeAdapter,
     ValidationError,
@@ -948,7 +947,6 @@ def locate_template(namespace: str, name: str) -> Path:
         return source
 
 
-@dataclass(frozen=True)
 class Resource:
     """A base class describing a single configuration entity that can be parsed,
     validated, and/or rendered by Bertrand's layout system.
@@ -956,25 +954,18 @@ class Resource:
     Attributes
     ----------
     name : ResourceName
-        The globally unique name (lowercase alphanumeric with underscores, beginning
-        with a letter and not ending with an underscore) for this resource, which
-        serves as a stable CLI identifier, allows it to be validated from a `parse()`
-        snapshot during `Config.__aenter__()`, and forms the resource's `Config.tool`
-        attribute name.
+        The globally unique name (any valid TOML key) for this resource, which serves
+        as a stable CLI identifier, allows it to be validated from a `parse()` snapshot
+        during `Config.__aenter__()`.
     paths : frozenset[RelativePath]
         The set of relative paths that this resource manages within the project
         worktree.  If not empty, then `Config.load()` will attempt to discover this
         resource by searching for the given paths within the worktree, and will add
         the resource to its context if ALL paths are found.
-    aliases : frozenset[AliasName]
-        A set of alternate spellings for this resource, which are not as restricted as
-        the base `name` field, and allow this resource to match names that would
-        otherwise not be valid when parsing CLI input or TOML table names, for example.
     """
     # pylint: disable=unused-argument, redundant-returns-doc
-    name: ResourceName
-    paths: frozenset[RelativePath]
-    aliases: frozenset[AliasName]
+    name: ClassVar[ResourceName]
+    paths: ClassVar[frozenset[RelativePath]]
 
     def __hash__(self) -> int:
         return hash(self.name)
@@ -1131,7 +1122,7 @@ class Resource:
             outputs from the `validate()` phase.
         tag : str | None
             The active image tag for the configured environment, which is used to
-            search the `config.tool.bertrand.tags` list for tag-specific overrides
+            search the `config.get(Bertrand).tags` list for tag-specific overrides
             during image builds.  If None, then it means this hook was invoked during
             a `bertrand init` command, and should therefore not attempt to render any
             out-of-tree artifacts that would require access to a container filesystem.
@@ -1152,7 +1143,6 @@ def resource[ResourceT: Resource](
     name: ResourceName,
     *,
     paths: set[RelativePath] | frozenset[RelativePath] = frozenset(),
-    aliases: set[AliasName] | frozenset[AliasName] = frozenset(),
 ) -> Callable[[type[ResourceT]], type[ResourceT]]:
     """A class decorator for defining layout resources.  See `Resource` for more
     details on the parameters and intended semantics of layout resources.
@@ -1160,20 +1150,13 @@ def resource[ResourceT: Resource](
     Parameters
     ----------
     name : ResourceName
-        The globally unique name (lowercase alphanumeric with underscores, beginning
-        with a letter and not ending with an underscore) for this resource, which
-        serves as a stable CLI identifier, allows it to be validated from a `parse()`
-        snapshot during `Config.__aenter__()`, and forms the resource's `Config.tool`
-        attribute name.
+        The globally unique name (any valid TOML key) for this resource, which serves
+        as a stable CLI identifier, allows it to be validated from a `parse()` snapshot
+        during `Config.__aenter__()`.
     paths : set[RelativePath] | frozenset[RelativePath], optional
         The relative paths that this resource manages, which allows it to be discovered
         by `Config.load()`, assuming all paths are found.  The paths are relative to
         the worktree root, and must not contain `..` segments.
-    aliases : set[AliasName] | frozenset[AliasName], optional
-        Additional (relaxed) spellings that can refer to this resource, which may have
-        uppercase letters, `.`, and `-` characters that are not allowed in primary
-        resource names.  For example, this allows `[tool.clang-tidy]` TOML tables to
-        map to the `Config.clang_tidy` resource.
 
     Returns
     -------
@@ -1188,8 +1171,10 @@ def resource[ResourceT: Resource](
         `..` segments.
     """
     def _decorator(cls: type[ResourceT]) -> type[ResourceT]:
-        self = cls(name=name, paths=frozenset(paths), aliases=frozenset(aliases))
+        self = cls()
         RESOURCES.add(self)
+
+        # reserve name
         if not RESOURCE_NAME_RE.fullmatch(name):
             raise TypeError(
                 f"invalid resource name {name!r} (must match regex "
@@ -1198,18 +1183,7 @@ def resource[ResourceT: Resource](
         if RESOURCE_NAMES.setdefault(name, self) is not self:
             raise TypeError(f"duplicate resource name: {name!r}")
 
-        for alias in aliases:
-            if not ALIAS_NAME_RE.fullmatch(alias):
-                raise TypeError(
-                    f"invalid alias {alias!r} for resource {name!r} (must match regex "
-                    f"{ALIAS_NAME_RE.pattern})"
-                )
-            if RESOURCE_NAMES.setdefault(alias, self) is not self:
-                raise TypeError(
-                    f"invalid alias {alias!r} for resource {name!r}: conflicts with "
-                    "an existing resource"
-                )
-
+        # reserve paths
         for path in paths:
             if path.is_absolute():
                 raise TypeError(f"invalid resource path '{path}': must be relative")
@@ -1223,9 +1197,24 @@ def resource[ResourceT: Resource](
                     f"duplicate resource path maps to both {name!r} and "
                     f"{other.name!r}: {path}"
                 )
+
+        # stamp variables at class level to simplify `Config.get(T)`
+        cls.name = name
+        cls.paths = frozenset(paths)
         return cls
 
     return _decorator
+
+
+_ResourceModel_co = TypeVar("_ResourceModel_co", bound=BaseModel, covariant=True)
+
+
+class _ResourceLike(Protocol[_ResourceModel_co]):
+    """TODO"""
+    name: ClassVar[ResourceName]
+    async def validate(self, config: Config, fragment: Any) -> _ResourceModel_co | None: ...
+
+
 
 
 def _dump_ignore_list(patterns: list[str]) -> str:
@@ -1286,7 +1275,7 @@ def _validate_dependency_groups(*, pyproject: Any | None, bertrand: Any | None) 
         raise ValueError("; ".join(problems))
 
 
-@resource("python", paths={Path("pyproject.toml")}, aliases={"pyproject"})
+@resource("python", paths={Path("pyproject.toml")})
 class PyProject(Resource):
     """A resource describing a `pyproject.toml` file, which is the primary vehicle for
     configuring a top-level Python project, as well as Bertrand itself and its entire
@@ -1531,11 +1520,12 @@ class PyProject(Resource):
     async def validate(self, config: Config, fragment: Any) -> Model | None:
         result = self.Model.model_validate(fragment)
         result.project.resolve_licenses(config.worktree)
-        _validate_dependency_groups(pyproject=result, bertrand=config.tool.bertrand)
+        _validate_dependency_groups(pyproject=result, bertrand=config.get(Bertrand))
         return result
 
     async def render(self, config: Config, tag: str | None) -> None:
-        if config.tool.python is None:
+        python = config.get(PyProject)
+        if python is None:
             return
 
         # parse existing `pyproject.toml` or initialize an empty document
@@ -1553,7 +1543,7 @@ class PyProject(Resource):
             doc = tomlkit.document()
 
         # fully overwrite [build-system] table
-        doc["build-system"] = config.tool.python.build_system.model_dump(
+        doc["build-system"] = python.build_system.model_dump(
             by_alias=True,
             exclude_none=True
         )
@@ -1565,24 +1555,26 @@ class PyProject(Resource):
             doc["project"] = project_table
         elif not isinstance(project_table, dict):
             raise OSError("invalid pyproject shape: '[project]' must be a table")
-        for key, value in config.tool.python.project.model_dump(
+        for key, value in python.project.model_dump(
             by_alias=True,
             exclude_none=True
         ).items():
             project_table[key] = value
 
+        # TODO: the new `config.resources[ResourceName] -> Model | None` API should
+        # simplify this
+
         # Render all Config.Tool models (except python) to [tool.<resource>] using
         # canonical resource names
         tool_models: dict[Resource, BaseModel] = {}
-        for attr in dataclass_fields(config.tool):
-            resource_name = attr.name
-            if resource_name == "python":
+        for name in config.resources:
+            if name == "python":
                 continue
-            model = getattr(config.tool, resource_name)
-            if model is None or not isinstance(model, BaseModel):
+            model = config.resources.get(name)
+            if model is None:
                 continue
-            lookup = RESOURCE_NAMES.get(resource_name)
-            if lookup is None or lookup.name != resource_name:
+            lookup = RESOURCE_NAMES.get(name)
+            if lookup is None or lookup.name != name:
                 continue
             tool_models[lookup] = model
         if tool_models:
@@ -1593,12 +1585,6 @@ class PyProject(Resource):
             elif not isinstance(tool_table, dict):
                 raise OSError("invalid pyproject shape: '[tool]' must be a table")
             for resource, model in sorted(tool_models.items()):
-                # normalize [tool.<alias>] tables to canonical [tool.<resource_name>]
-                for alias in sorted(resource.aliases):
-                    if alias != resource.name and RESOURCE_NAMES.get(alias) is resource:
-                        tool_table.pop(alias, None)
-
-                # overwrite managed [tool.<resource_name>] content from validated model
                 tool_table[resource.name] = model.model_dump(
                     by_alias=True,
                     exclude_none=True
@@ -1800,14 +1786,17 @@ class ConanConfig(Resource):
                 out[f"{pattern}:{option}"] = value
 
     async def _render_conanfile(self, config: Config, tag: str) -> None:
-        assert config.tool.conan is not None
+        python = config.get(PyProject)
+        bertrand = config.get(Bertrand)
+        conan = config.get(ConanConfig)
+        assert conan is not None
 
         # start with global requirements, then merge tag-specific additions if
         # applicable
         active = None
-        requires = list(config.tool.conan.requires)
-        if config.tool.bertrand is not None:
-            active = next((t for t in config.tool.bertrand.tags if t.tag == tag), None)
+        requires = list(conan.requires)
+        if bertrand is not None:
+            active = next((t for t in bertrand.tags if t.tag == tag), None)
             if active is not None:
                 requires.extend(active.conan.requires)
 
@@ -1833,7 +1822,7 @@ class ConanConfig(Resource):
         # merge global + tag-level Conan options mapping for global/tag tables, then
         # merge any per-require options
         default_options: dict[str, Scalar] = {}
-        self._merge_options(default_options, config.tool.conan.options)
+        self._merge_options(default_options, conan.options)
         if active is not None:
             self._merge_options(default_options, active.conan.options)
         for req in requires + tool_requires:
@@ -1856,8 +1845,8 @@ class ConanConfig(Resource):
             "",
             "class BertrandConanFile(ConanFile):",
         ]
-        if config.tool.python is not None:
-            project = config.tool.python.project
+        if python is not None:
+            project = python.project
             lines.append(f"    name = {project.name!r}")
             lines.append(f"    version = {project.version!r}")
             if project.license is not None:
@@ -1942,10 +1931,12 @@ class ConanConfig(Resource):
         return value
 
     async def _render_conanprofile(self, config: Config, tag: str) -> None:
-        assert config.tool.conan is not None
+        bertrand = config.get(Bertrand)
+        conan = config.get(ConanConfig)
+        assert conan is not None
 
         # merge global and tag-specific build_type + conf settings
-        build_type = config.tool.conan.build_type
+        build_type = conan.build_type
         conf = self._merge_conf(
             {
                 "tools.cmake.cmaketoolchain": {"generator": "Ninja"},
@@ -1956,10 +1947,10 @@ class ConanConfig(Resource):
                     }
                 },
             },
-            config.tool.conan.conf,
+            conan.conf,
         )
-        if config.tool.bertrand is not None:
-            active = next((t for t in config.tool.bertrand.tags if t.tag == tag), None)
+        if bertrand is not None:
+            active = next((t for t in bertrand.tags if t.tag == tag), None)
             if active is not None:
                 if active.conan.build_type:
                     build_type = active.conan.build_type
@@ -2003,10 +1994,11 @@ class ConanConfig(Resource):
         )
 
     async def _render_conanremotes(self, config: Config, tag: str) -> None:
-        assert config.tool.conan is not None
+        conan = config.get(ConanConfig)
+        assert conan is not None
 
         payload: dict[str, list[dict[str, Any]]] = {"remotes": []}
-        for remote in config.tool.conan.remotes:
+        for remote in conan.remotes:
             entry: dict[str, Any] = {
                 "name": remote.name,
                 "url": str(remote.url),
@@ -2034,7 +2026,7 @@ class ConanConfig(Resource):
         )
 
     async def render(self, config: Config, tag: str | None) -> None:
-        if tag is None or config.tool.conan is None:
+        if tag is None or config.get(ConanConfig) is None:
             return
         await self._render_conanfile(config, tag)
         await self._render_conanprofile(config, tag)
@@ -2724,14 +2716,15 @@ class Bertrand(Resource):
 
     async def validate(self, config: Config, fragment: Any) -> Model | None:
         result = self.Model.model_validate(fragment)
-        _validate_dependency_groups(pyproject=config.tool.python, bertrand=result)
+        _validate_dependency_groups(pyproject=config.get(PyProject), bertrand=result)
         for tag in result.tags:
             tag.resolve_containerfile(config.worktree)
             tag.resolve_env_files(config.worktree)
         return result
 
     async def render(self, config: Config, tag: str | None) -> None:
-        if config.tool.bertrand is None:
+        bertrand = config.get(Bertrand)
+        if bertrand is None:
             return
         jinja = jinja2.Environment(
             autoescape=False,
@@ -2751,16 +2744,16 @@ class Bertrand(Resource):
 
         # render ignore files
         ignore = [str(METADATA_DIR / "*")]  # always ignore Bertrand's metadata directory
-        ignore.extend(config.tool.bertrand.ignore)
+        ignore.extend(bertrand.ignore)
         containerignore = ignore.copy()
-        containerignore.extend(config.tool.bertrand.container_ignore)
+        containerignore.extend(bertrand.container_ignore)
         atomic_write_text(
             config.worktree / ".containerignore",
             _dump_ignore_list(containerignore),
             encoding="utf-8"
         )
         gitignore = ignore.copy()
-        gitignore.extend(config.tool.bertrand.git_ignore)
+        gitignore.extend(bertrand.git_ignore)
         atomic_write_text(
             config.worktree / ".gitignore",
             _dump_ignore_list(gitignore),
@@ -3212,9 +3205,9 @@ class Clangd(Resource):
         return self.Model.model_validate(fragment)
 
     async def render(self, config: Config, tag: str | None) -> None:
-        if tag is None or config.tool.clangd is None:
+        model = config.get(Clangd)
+        if tag is None or model is None:
             return
-        model = config.tool.clangd
 
         # define top-level config
         top_level: dict[str, Any] = {
@@ -3306,7 +3299,7 @@ class Clangd(Resource):
         )
 
 
-@resource("clang_tidy", aliases={"clang-tidy"})
+@resource("clang-tidy")
 class ClangTidy(Resource):
     """A resource describing a `.clang-tidy` file, which is used to configure
     clang-tidy for C++ linting.  This expects native clang-tidy key names in TOML.
@@ -3426,9 +3419,9 @@ class ClangTidy(Resource):
         return self.Model.model_validate(fragment)
 
     async def render(self, config: Config, tag: str | None) -> None:
-        if tag is None or config.tool.clang_tidy is None:
+        model = config.get(ClangTidy)
+        if tag is None or model is None:
             return
-        model = config.tool.clang_tidy
 
         # define top-level config
         content: dict[str, Any] = {
@@ -3476,7 +3469,7 @@ class ClangTidy(Resource):
         )
 
 
-@resource("clang_format", aliases={"clang-format"})
+@resource("clang-format")
 class ClangFormat(Resource):
     """A resource describing a `.clang-format` file, which is used to configure
     clang-format for C++ code formatting.  The `[tool.clang-format]` table is
@@ -5132,6 +5125,8 @@ class ClangFormat(Resource):
             description="Options for horizontally aligning code",
         )]
 
+        # TODO: continue documenting these options
+
         class _Allow(BaseModel):
             """Validate the `[tool.clang-format.Allow]` table."""
             model_config = ConfigDict(extra="forbid")
@@ -5429,7 +5424,7 @@ class ClangFormat(Resource):
         return self.Model.model_validate(fragment)
 
     async def render(self, config: Config, tag: str | None) -> None:
-        model = config.tool.clang_format
+        model = config.get(ClangFormat)
         if tag is None or model is None:
             return
         content: dict[str, Any] = {
@@ -5720,27 +5715,11 @@ class Config:
         repo: GitRepository
         worktree: RelativePath
 
-    @dataclass
-    class Tool:
-        """A nested namespace storing validated config data for each supported
-        resource.  Attributes are populated by invoking `validate()` hooks for each
-        resource whose name or alias appears in the merged `parse()` snapshot loaded
-        during `__aenter__()`.  Type hints are provided for built-in resources, whose
-        names must exactly match their corresponding resource IDs.  Other resources
-        will be attached if present, but will not have full type hints unless manually
-        accessed and casted by the caller.
-        """
-        python: PyProject.Model | None = field(default=None, repr=False)
-        conan: ConanConfig.Model | None = field(default=None, repr=False)
-        bertrand: Bertrand.Model | None = field(default=None, repr=False)
-        clangd: Clangd.Model | None = field(default=None, repr=False)
-        clang_tidy: ClangTidy.Model | None = field(default=None, repr=False)
-        clang_format: ClangFormat.Model | None = field(default=None, repr=False)
-
     worktree: Path
     timeout: float
-    resources: set[Resource] = field(default_factory=lambda: {RESOURCE_NAMES["bertrand"]})
-    tool: Tool = field(default_factory=Tool, repr=False)
+    resources: dict[ResourceName, BaseModel | None] = field(
+        default_factory=lambda: {"bertrand": None}
+    )
     init: Init | None = field(default=None, repr=False)
     _entered: int = field(default=0, repr=False)
 
@@ -5780,7 +5759,8 @@ class Config:
         async with lock_worktree(worktree, timeout=timeout):
             self = cls(worktree=worktree, timeout=timeout)
             self.resources.update({
-                r for r in RESOURCES
+                r.name: None
+                for r in RESOURCES
                 if r.paths and all((worktree / p).exists() for p in r.paths)
             })
             return self
@@ -5849,13 +5829,14 @@ class Config:
             async with lock_worktree(self.worktree):
                 # invoke `init()` hooks for all resources to get baseline snapshot
                 snapshot = {} if self.init is None else {
-                    r.name: await r.init(self, self.init)
+                    r: await RESOURCE_NAMES[r].init(self, self.init)
                     for r in sorted(self.resources)
                 }
 
                 # invoke parse hooks for all resources in deterministic order
                 key_owner: dict[tuple[str, ...], ResourceName] = {}
-                for r in sorted(self.resources):
+                for name in sorted(self.resources):
+                    r = RESOURCE_NAMES[name]
                     try:
                         fragment = await r.parse(self)
                     except Exception as err:
@@ -5896,18 +5877,18 @@ class Config:
 
                     # record validated output for future, type-safe access
                     model = await lookup.validate(self, table)
-                    if model is not None:
-                        if getattr(self.tool, lookup.name, None) is not None:
-                            raise AttributeError(f"Config.Tool.{lookup.name} already exists")
-                        setattr(self.tool, lookup.name, model)
-                    self.resources.add(lookup)
+                    if self.resources.get(lookup.name) is not None:
+                        raise OSError(
+                            f"config validation collision for resource '{lookup.name}': "
+                            f"multiple resources writing to the same top-level table"
+                        )
+                    self.resources[lookup.name] = model
 
                 self._entered += 1
                 return self
         except:
             self.resources = old_resources
             self._entered = 0
-            self.tool = self.Tool()
             raise
 
     async def __aexit__(
@@ -5921,7 +5902,7 @@ class Config:
             raise RuntimeError("layout context is not active")
         self._entered -= 1
         if self._entered == 0:
-            self.tool = self.Tool()
+            self.resources = {r: None for r in self.resources}
 
     def __bool__(self) -> bool:
         return self._entered > 0
@@ -5942,31 +5923,24 @@ class Config:
         """
         return key in self.resources
 
-    def resource(self, resource_id: ResourceName) -> Resource:
-        """Retrieve the resource specification for the given resource ID.
+    def get(self, r: type[_ResourceLike[_ResourceModel_co]]) -> _ResourceModel_co | None:
+        """Retrieve the parsed config model for the given resource ID, assuming it is
+        present in the environment.
 
         Parameters
         ----------
-        resource_id : ResourceName
-            The stable identifier of the resource to retrieve, as defined in the
-            global catalog.
+        r : type[Resource]
+            A raw resource type (decorated with `@resource`) to get the model for.
 
         Returns
         -------
-        Resource
-            The resource specification associated with the given resource ID.
-
-        Raises
-        ------
-        KeyError
-            If the given resource ID is not detected in the environment.
+        BaseModel | None
+            The parsed config model for the given resource ID, or None if the resource
+            is not present in the environment.  The exact type of the model always
+            matches the return type of the resource's `validate()` method, in order to
+            safely propagate static type information.
         """
-        if resource_id not in self.resources:
-            raise KeyError(f"unknown resource ID: '{resource_id}'")
-        result = RESOURCE_NAMES.get(resource_id)
-        if result is None:
-            raise KeyError(f"resource ID '{resource_id}' is not defined in the catalog")
-        return result
+        return cast(_ResourceModel_co | None, self.resources.get(r.name))
 
     def image_args(self, worktree: Path, tag: str) -> list[str]:
         """Retrieve a set of `podman build` arguments to apply during image builds for
@@ -5998,11 +5972,12 @@ class Config:
         ValueError
             If the specified tag is not present in the `bertrand` config.
         """
-        if self.tool.bertrand is None:
+        bertrand = self.get(Bertrand)
+        if bertrand is None:
             raise TypeError(
                 f"missing 'bertrand' configuration for environment at {self.worktree}"
             )
-        cfg = next((t for t in self.tool.bertrand.tags if t.tag == tag), None)
+        cfg = next((t for t in bertrand.tags if t.tag == tag), None)
         if cfg is None:
             raise ValueError(
                 f"unknown image tag '{tag}' for environment at {self.worktree}"
@@ -6072,11 +6047,12 @@ class Config:
             effective entry point is empty after accounting for overrides, or if any
             entry point argument is an empty or whitespace-only string.
         """
-        if self.tool.bertrand is None:
+        bertrand = self.get(Bertrand)
+        if bertrand is None:
             raise TypeError(
                 f"missing 'bertrand' configuration for environment at {self.worktree}"
             )
-        cfg = next((t for t in self.tool.bertrand.tags if t.tag == tag), None)
+        cfg = next((t for t in bertrand.tags if t.tag == tag), None)
         if cfg is None:
             raise ValueError(
                 f"unknown image tag '{tag}' for environment at {self.worktree}"
@@ -6174,7 +6150,8 @@ class Config:
 
         # invoke render hooks for all resources in deterministic order
         async with lock_worktree(self.worktree):
-            for r in sorted(self.resources):
+            for name in sorted(self.resources):
+                r = RESOURCE_NAMES[name]
                 try:
                     await r.render(self, tag)
                 except Exception as err:
@@ -6206,17 +6183,19 @@ class Config:
             raise RuntimeError("build() requires access to a container filesystem")
         if not self:
             raise RuntimeError("build() requires an active config context")
-        if self.tool.python is None:
+        python = self.get(PyProject)
+        bertrand = self.get(Bertrand)
+        if python is None:
             raise OSError("build() requires parsed 'pyproject' configuration")
-        if self.tool.bertrand is None:
+        if bertrand is None:
             raise OSError("build() requires parsed 'bertrand' configuration")
-        tags = {entry.tag for entry in self.tool.bertrand.tags}
+        tags = {entry.tag for entry in bertrand.tags}
         if tag not in tags:
             raise OSError(
                 f"build() received unknown active tag '{tag}' (declared tags: "
                 f"{', '.join(sorted(repr(name) for name in tags))})"
             )
-        groups = self.tool.python.project.optional_dependencies
+        groups = python.project.optional_dependencies
         if tag not in groups:
             raise OSError(
                 "build() requires matching [project.optional-dependencies] group for "
@@ -6233,7 +6212,7 @@ class Config:
             "--no-default-groups",  # don't install any extras
             "--no-dev",  # don't install extra dependency groups
             "--extra", tag,  # only install the group matching the active tag
-            "--no-build-isolation-package", self.tool.python.project.name,  # no isolation
+            "--no-build-isolation-package", python.project.name,  # no isolation
         ]
         if not inside_container():
             sync_cmd.append("--no-editable")  # image build context -> non-editable
