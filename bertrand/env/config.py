@@ -3863,14 +3863,14 @@ class ClangFormat(Resource):
                     "       Constructor()\n"
                     "           : aaaaaaaaaaaaaaaaaaaa(), bbbbbbbbbbbbbbbbbbbb(),\n"
                     "             cccccccccccccccccccc()\n"
-                    "   `CurrentLine`: Put all constructor initializers on the current "
+                    "   `CurrentLine`: put all constructor initializers on the current "
                     "line if they fit. Otherwise, put each one on its own line.\n"
                     "       Constructor() : a(), b(), c()\n"
                     "       Constructor()\n"
                     "           : aaaaaaaaaaaaaaaaaaaa(),\n"
                     "             bbbbbbbbbbbbbbbbbbbb()\n"
                     "             cccccccccccccccccccc()\n"
-                    "   `NextLine`: Same as `CurrentLine., except that if all "
+                    "   `NextLine`: same as `CurrentLine., except that if all "
                     "constructor initializers do not fit on the current line, try to "
                     "fit them on the next line.\n"
                     "       Constructor() : a(), b(), c()\n"
@@ -3880,7 +3880,7 @@ class ClangFormat(Resource):
                     "           : aaaaaaaaaaaaaaaaaaaa(),\n"
                     "             bbbbbbbbbbbbbbbbbbbb()\n"
                     "             cccccccccccccccccccc()\n"
-                    "   `NextLineOnly`: Put all constructor initializers on the next "
+                    "   `NextLineOnly`: put all constructor initializers on the next "
                     "line if they fit. Otherwise, put each one on its own line.\n"
                     "       Constructor()\n"
                     "           : a(), b(), c()\n"
@@ -3898,12 +3898,12 @@ class ClangFormat(Resource):
                 default="Left",
                 examples=["Left", "Right", "Middle"],
                 description=
-                    "Pointer and reference alignment style:\n"
-                    "   `Left`: Align pointers and references to the left.\n"
+                    "Pointer alignment style:\n"
+                    "   `Left`: align pointers to the left.\n"
                     "       int* a;\n"
-                    "   `Right`: Align pointers and references to the right.\n"
+                    "   `Right`: align pointers to the right.\n"
                     "       int *a;\n"
-                    "   `Middle`: Align pointers and references in the middle.\n"
+                    "   `Middle`: align pointers in the middle.\n"
                     "       int * a;",
             )
         ]
@@ -3930,45 +3930,377 @@ class ClangFormat(Resource):
                 "restrict", "type"
             ]],
             AfterValidator(_check_qualifier_order),
-            Field(default_factory=lambda: [
-                "inline", "static", "constexpr", "friend", "const", "volatile",
-                "restrict", "type"
-            ])
+            Field(
+                default_factory=lambda: [
+                    "inline", "static", "constexpr", "friend", "const", "volatile",
+                    "restrict", "type"
+                ],
+                examples=[
+                    "inline", "static", "constexpr", "friend", "const", "volatile",
+                    "restrict", "type"
+                ],
+                description=
+                    "The canonical order in which to format qualifiers.  Must include "
+                    "each of the following qualifiers exactly once: `inline`, "
+                    "`static`, `constexpr`, `friend`, `const`, `volatile`, "
+                    "`restrict`, and `type` (for the type itself).  With the default"
+                    "order:\n"
+                    "   friend static inline const int* foo();\n"
+                    "would format to:\n"
+                    "   inline static friend const int* foo();",
+            )
         ]
         ReferenceAlignment: Annotated[
             Literal["Left", "Right", "Middle"],
-            Field(default="Left")
+            Field(
+                default="Left",
+                examples=["Left", "Right", "Middle"],
+                description=
+                    "Reference alignment style:\n"
+                    "   `Left`: align references to the left.\n"
+                    "       int& a = b;\n"
+                    "   `Right`: align references to the right.\n"
+                    "       int &a = b;\n"
+                    "   `Middle`: align references in the middle.\n"
+                    "       int & a = b;",
+            )
         ]
         ReflowComments: Annotated[
             Literal["Never", "IndentOnly", "Always"],
-            Field(default="Always")
+            Field(
+                default="Always",
+                examples=["Never", "IndentOnly", "Always"],
+                description=
+                    "Control automatic line wrapping for comments:\n"
+                    "   `Never`: never reflow comments\n"
+                    "       // veryVeryVeryVeryVeryVeryVeryVeryVeryVeryVeryLongComment "
+                    "with plenty of information\n"
+                    "       /* second veryVeryVeryVeryVeryVeryVeryVeryVeryVeryVeryLongComment "
+                    "with plenty of information */\n"
+                    "       /* third veryVeryVeryVeryVeryVeryVeryVeryVeryVeryVeryLongComment "
+                    "with plenty of information\n"
+                    "           * and a misaligned second line */\n"
+                    "   `IndentOnly`: only apply indentation rules, moving comments "
+                    "left or right, without changing formatting inside the comments\n"
+                    "       // veryVeryVeryVeryVeryVeryVeryVeryVeryVeryVeryLongComment "
+                    "with plenty of information\n"
+                    "       /* second veryVeryVeryVeryVeryVeryVeryVeryVeryVeryVeryLongComment "
+                    "with plenty of information */\n"
+                    "       /* third veryVeryVeryVeryVeryVeryVeryVeryVeryVeryVeryLongComment "
+                    "with plenty of information\n"
+                    "        * and a misaligned second line */\n"
+                    "   `Always`: apply indentation rules and reflow long comments into "
+                    "new lines, trying to obey the ColumnLimit.\n"
+                    "       // veryVeryVeryVeryVeryVeryVeryVeryVeryVeryVeryLongComment "
+                    "with plenty of\n"
+                    "       // information\n"
+                    "       /* second veryVeryVeryVeryVeryVeryVeryVeryVeryVeryVeryLongComment "
+                    "with plenty of\n"
+                    "        * information */\n"
+                    "       /* third veryVeryVeryVeryVeryVeryVeryVeryVeryVeryVeryLongComment "
+                    "with plenty of\n"
+                    "        * information and a misaligned second line */\n",
+            )
         ]
-        RemoveEmptyLinesInUnwrappedLines: Annotated[bool, Field(default=True)]
+        RemoveEmptyLinesInUnwrappedLines: Annotated[bool, Field(
+            default=True,
+            description=
+                "Controls whether to remove empty lines within unwrapped lines:\n"
+                "   `true`:\n"
+                "       int c = a + b;\n"
+                "\n"
+                "       enum : unsigned {\n"
+                "           AA = 0,\n"
+                "           BB\n"
+                "       } myEnum;\n"
+                "\n"
+                "       while (true) {\n"
+                "       }\n"
+                "   `false`:\n"
+                "       int c\n"
+                "\n"
+                "           = a + b;\n"
+                "\n"
+                "       enum : unsigned\n"
+                "\n"
+                "       {\n"
+                "           AA = 0,\n"
+                "           BB\n"
+                "       } myEnum;\n"
+                "\n"
+                "       while (\n"
+                "\n"
+                "           true) {\n"
+                "       }",
+        )]
         RequiresClausePosition: Annotated[
             Literal[
                 "OwnLine", "OwnLineWithBrace", "WithPreceding", "WithFollowing",
                 "SingleLine"
             ],
-            Field(default="WithPreceding")
+            Field(
+                default="WithPreceding",
+                examples=[
+                    "OwnLine", "OwnLineWithBrace", "WithPreceding", "WithFollowing",
+                    "SingleLine"
+                ],
+                description=
+                    "Controls the position of the `requires` clause in C++20 template "
+                    "constraints:\n"
+                    "   `OwnLine`: always put the requires clause on its own line "
+                    "(possibly followed by a semicolon).\n"
+                    "       template <typename T>\n"
+                    "           requires C<T>\n"
+                    "       struct Foo {...};\n"
+                    "\n"
+                    "       template <typename T>\n"
+                    "       void bar(T t)\n"
+                    "           requires C<T>;\n"
+                    "\n"
+                    "       template <typename T>\n"
+                    "           requires C<T>\n"
+                    "       void bar(T t) {...}\n"
+                    "\n"
+                    "       template <typename T>\n"
+                    "       void baz(T t)\n"
+                    "           requires C<T>\n"
+                    "       {...}\n"
+                    "   `OwnLineWithBrace`: as with 'OwnLine', except, unless "
+                    "otherwise prohibited, place a following open brace (of a "
+                    "function definition) to follow on the same line.\n"
+                    "       void bar(T t)\n"
+                    "           requires C<T> {\n"
+                    "           return;\n"
+                    "       }\n"
+                    "\n"
+                    "       void bar(T t)\n"
+                    "           requires C<T> {}\n"
+                    "\n"
+                    "       template <typename T>\n"
+                    "           requires C<T>\n"
+                    "       void baz(T t) {...}\n"
+                    "   `WithPreceding`: try to put the clause together with the "
+                    "preceding part of a declaration. For class templates: stick to "
+                    "the template declaration. For function templates: stick to the "
+                    "template declaration. For function declaration followed by a "
+                    "requires clause: stick to the parameter list.\n"
+                    "       template <typename T> requires C<T>\n"
+                    "       struct Foo {...};\n"
+                    "\n"
+                    "       template <typename T> requires C<T>\n"
+                    "       void bar(T t) {...}"
+                    "\n"
+                    "       template <typename T>\n"
+                    "       void baz(T t) requires C<T>\n"
+                    "       {...}\n"
+                    "   `WithFollowing`: try to put the requires clause together with "
+                    "the class or function declaration.\n"
+                    "       template <typename T>\n"
+                    "       requires C<T> struct Foo {...};\n"
+                    "\n"
+                    "       template <typename T>\n"
+                    "       requires C<T> void bar(T t) {...}\n"
+                    "\n"
+                    "       template <typename T>\n"
+                    "       void baz(T t)\n"
+                    "       requires C<T> {...}\n"
+                    "   `SingleLine`: try to put everything in the same line if "
+                    "possible.  Otherwise normal line breaking rules take over.\n"
+                    "       // Fitting:\n"
+                    "       template <typename T> requires C<T> struct Foo {...};\n"
+                    "       template <typename T> requires C<T> void bar(T t) {...}\n"
+                    "       template <typename T> void bar(T t) requires C<T> {...}\n"
+                    "\n"
+                    "       // Not fitting, one possible example:\n"
+                    "       template <typename LongName>\n"
+                    "       requires C<LongName>\n"
+                    "       struct Foo {...};\n"
+                    "\n"
+                    "       template <typename LongName>\n"
+                    "       requires C<LongName>\n"
+                    "       void bar(LongName ln) {...}\n"
+                    "\n"
+                    "       template <typename LongName>\n"
+                    "       void bar(LongName ln)\n"
+                    "           requires C<LongName> {...}",
+            )
         ]
         RequiresExpressionIndentation: Annotated[
             Literal["OuterScope", "Keyword"],
-            Field(default="OuterScope")
+            Field(
+                default="OuterScope",
+                examples=["OuterScope", "Keyword"],
+                description=
+                    "Controls the indentation used for requires expression bodies:\n"
+                    "   `OuterScope`: align requires expression body relative to the "
+                    "indentation level of the outer scope the requires expression "
+                    "resides in.\n"
+                    "       template <typename T>\n"
+                    "       concept C = requires(T t) {\n"
+                    "           ...\n"
+                    "       }\n"
+                    "   `Keyword`: align requires expression body relative to the "
+                    "requires keyword.\n"
+                    "       template <typename T>\n"
+                    "       concept C = requires(T t) {\n"
+                    "                       ...\n"
+                    "                   }",
+            )
         ]
         SeparateDefinitionBlocks: Annotated[
             Literal["Never", "Leave", "Always"],
-            Field(default="Leave")
+            Field(
+                default="Leave",
+                examples=["Never", "Leave", "Always"],
+                description=
+                    "Controls how empty lines are used to separate definition blocks, "
+                    "including classes, structs, enums, and functions:\n"
+                    "   `Never`:\n"
+                    "       #include <cstring>\n"
+                    "       struct Foo {\n"
+                    "           int a, b, c;\n"
+                    "       };\n"
+                    "       namespace Ns {\n"
+                    "       class Bar {\n"
+                    "       public:\n"
+                    "           struct Foobar {\n"
+                    "               int a;\n"
+                    "               int b;\n"
+                    "           };\n"
+                    "       private:\n"
+                    "           int t;\n"
+                    "           int method1() {\n"
+                    "               // ...\n"
+                    "           }\n"
+                    "           enum List {\n"
+                    "               ITEM1,\n"
+                    "               ITEM2\n"
+                    "           };\n"
+                    "           template<typename T>\n"
+                    "           int method2(T x) {\n"
+                    "               // ...\n"
+                    "           }\n"
+                    "           int i, j, k;\n"
+                    "           int method3(int par) {\n"
+                    "               // ...\n"
+                    "           }\n"
+                    "       };\n"
+                    "       class C {};\n"
+                    "       }\n"
+                    "   `Always`:\n"
+                    "       #include <cstring>\n"
+                    "\n"
+                    "       struct Foo {\n"
+                    "           int a, b, c;\n"
+                    "       };\n"
+                    "\n"
+                    "       namespace Ns {\n"
+                    "       class Bar {\n"
+                    "       public:\n"
+                    "           struct Foobar {\n"
+                    "               int a;\n"
+                    "               int b;\n"
+                    "           };\n"
+                    "\n"
+                    "       private:\n"
+                    "           int t;\n"
+                    "\n"
+                    "           int method1() {\n"
+                    "               // ...\n"
+                    "           }\n"
+                    "\n"
+                    "           enum List {\n"
+                    "               ITEM1,\n"
+                    "               ITEM2\n"
+                    "           };\n"
+                    "\n"
+                    "           template<typename T>\n"
+                    "           int method2(T x) {\n"
+                    "               // ...\n"
+                    "           }\n"
+                    "\n"
+                    "           int i, j, k;\n"
+                    "\n"
+                    "           int method3(int par) {\n"
+                    "               // ...\n"
+                    "           }\n"
+                    "       };\n"
+                    "\n"
+                    "       class C {};\n"
+                    "       }",
+            )
+        ]
+        ShortNamespaceLines: Annotated[
+            NonNegativeInt,
+            Field(
+                default=20,
+                description=
+                    "The maximum number of lines in a namespace definition for it to "
+                    "be considered a short namespace.  Short namespaces may be "
+                    "formatted more compactly, possibly without ending comments.",
+            )
         ]
         SortUsingDeclarations: Annotated[
             Literal["Never", "Lexicographic", "LexicographicNumeric"],
-            Field(default="Lexicographic")
+            Field(
+                default="Lexicographic",
+                examples=["Never", "Lexicographic", "LexicographicNumeric"],
+                description=
+                    "Controls whether and how to sort using declarations:\n"
+                    "   `Never`: don't sort using declarations\n"
+                    "       using std::chrono::duration_cast;\n"
+                    "       using std::move;\n"
+                    "       using boost::regex;\n"
+                    "       using boost::regex_constants::icase;\n"
+                    "       using std::string;\n"
+                    "   `Lexicographic`: Using declarations are sorted in the order "
+                    "defined as follows: Split the strings by :: and discard any "
+                    "initial empty strings. Sort the lists of names lexicographically, "
+                    "and within those groups, names are in case-insensitive "
+                    "lexicographic order.\n"
+                    "       using boost::regex;\n"
+                    "       using boost::regex_constants::icase;\n"
+                    "       using std::chrono::duration_cast;\n"
+                    "       using std::move;\n"
+                    "       using std::string;\n"
+                    "   `LexicographicNumeric`: using declarations are sorted in the "
+                    "order defined as follows: Split the strings by :: and discard any "
+                    "initial empty strings. The last element of each list is a "
+                    "non-namespace name; all others are namespace names. Sort the "
+                    "lists of names lexicographically, where the sort order of "
+                    "individual names is that all non-namespace names come before all "
+                    "namespace names, and within those groups, names are in "
+                    "case-insensitive lexicographic order.\n"
+                    "       using boost::regex;\n"
+                    "       using boost::regex_constants::icase;\n"
+                    "       using std::move;\n"
+                    "       using std::string;\n"
+                    "       using std::chrono::duration_cast;\n",
+            )
         ]
-        SpacesBeforeTrailingComments: Annotated[NonNegativeInt, Field(default=2)]
+        SpacesBeforeTrailingComments: Annotated[NonNegativeInt, Field(
+            default=2,
+            description=
+                "The minimum number of spaces before trailing line // comments on the "
+                "same line.",
+        )]
         SpacesInAngles: Annotated[
             Literal["Never", "Leave", "Always"],
-            Field(default="Never")
+            Field(
+                default="Never",
+                examples=["Never", "Leave", "Always"],
+                description=
+                    "Controls whether to add spaces between `<`/`>` brackets in "
+                    "template argument lists:\n"
+                    "   `Never`: remove spaces after < and before >.\n"
+                    "       static_cast<int>(arg);\n"
+                    "       std::function<void(int)> fct;\n"
+                    "   `Leave`: preserve user formatting\n"
+                    "   `Always`: always add spaces after < and before >.\n"
+                    "       static_cast< int >(arg);\n"
+                    "       std::function< void(int) > fct;",
+            )
         ]
-        SpacesInContainerLiterals: Annotated[bool, Field(default=False)]
 
         class _SpacesInLineCommentPrefix(BaseModel):
             """Validate the `[tool.clang-format.spaces-in-line-comment-prefix]` table."""
@@ -4499,7 +4831,7 @@ class ClangFormat(Resource):
             },
             "ColumnLimit": model.ColumnLimit,
             "CompactNamespaces": model.CompactNamespaces,
-            "Cpp11BracedListStyle": "FunctionCall",
+            "Cpp11BracedListStyle": "FunctionCall",  # always use C++11 braced style
             "EmptyLineAfterAccessModifier": model.EmptyLineAfterAccessModifier,
             "EmptyLineBeforeAccessModifier": model.EmptyLineBeforeAccessModifier,
             "FixNamespaceComments": model.FixNamespaceComments,
@@ -4538,6 +4870,7 @@ class ClangFormat(Resource):
             "OneLineFormatOffRegex": model.OneLineFormatOffRegex,
             "PackConstructorInitializers": model.PackConstructorInitializers,
             "PointerAlignment": model.PointerAlignment,
+            "QualifierAlignment": "Custom",  # defer to QualifierOrder
             "QualifierOrder": model.QualifierOrder,
             "ReferenceAlignment": model.ReferenceAlignment,
             "ReflowComments": model.ReflowComments,
@@ -4561,7 +4894,7 @@ class ClangFormat(Resource):
             "SpaceBeforeCtorInitializerColon": model.Space.BeforeCtorInitializerColon,
             "SpaceBeforeInheritanceColon": model.Space.BeforeInheritanceColon,
             "SpaceBeforeJsonColon": model.Space.BeforeJsonColon,
-            "SpaceBeforeParens": "Custom",  # always "Custom" to use Space.BeforeParensOptions
+            "SpaceBeforeParens": "Custom",  # defer to Space.BeforeParensOptions
             "SpaceBeforeParensOptions": {
                 "AfterControlStatements":
                     model.Space.BeforeParensOptions.AfterControlStatements,
@@ -4588,12 +4921,12 @@ class ClangFormat(Resource):
             "SpaceBeforeSquareBrackets": model.Space.BeforeSquareBrackets,
             "SpacesBeforeTrailingComments": model.SpacesBeforeTrailingComments,
             "SpacesInAngles": model.SpacesInAngles,
-            "SpacesInContainerLiterals": model.SpacesInContainerLiterals,
+            "SpacesInContainerLiterals": False,  # mostly applies to ObjC/JavaScript, etc.
             "SpacesInLineCommentPrefix": {
                 "Minimum": model.SpacesInLineCommentPrefix.Minimum,
                 "Maximum": model.SpacesInLineCommentPrefix.Maximum,
             },
-            "SpacesInParens": "Custom",  # always "Custom" to use Space.BeforeParensOptions
+            "SpacesInParens": "Custom",  # defer to Space.InParensOptions
             "SpacesInParensOptions": {
                 "ExceptDoubleParentheses":
                     model.Space.InParensOptions.ExceptDoubleParentheses,
@@ -4604,7 +4937,7 @@ class ClangFormat(Resource):
                 "Other": model.Space.InParensOptions.Other,
             },
             "SpacesInSquareBrackets": model.SpacesInSquareBrackets,
-            "Standard": "Auto",  # always "Auto" to detect C++ standard from source files
+            "Standard": "Auto",  # detect C++ standard from source files
             "TabWidth": model.TabWidth,
             "TemplateNames": model.TemplateNames,
             "TypeNames": model.TypeNames,
