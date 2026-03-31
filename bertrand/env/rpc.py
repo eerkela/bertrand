@@ -43,10 +43,11 @@ from pydantic import (
 from .config import (
     EDITORS,
     VSCODE_WORKSPACE_FILE,
-    AbsolutePath,
+    Bertrand,
     Config,
-    Editor,
 )
+from .config.bertrand import Editor
+from .config.core import AbsolutePath
 from .run import (
     CONTAINER_SOCKET,
     IMAGE_TAG_ENV,
@@ -961,7 +962,8 @@ class CodeOpen:
         # load editor selection from worktree config
         async with await Config.load(WORKTREE_MOUNT) as config:
             await config.sync(image_tag)
-            if not config.tool.bertrand:
+            bertrand = config.get(Bertrand)
+            if not bertrand:
                 raise RuntimeError(
                     f"Bertrand configuration is missing from the worktree config at "
                     f"{worktree}.  This should never occur; if you see this message, "
@@ -970,7 +972,7 @@ class CodeOpen:
                 )
 
             # run editor-specific prechecks while inside container context
-            editor = self.editor or config.tool.bertrand.editor
+            editor = self.editor or bertrand.editor
             prereqs = CODE_OPEN_PREREQS.get(editor)
             if prereqs is None or editor not in CODE_OPEN:
                 raise ValueError(f"unsupported editor for code.open RPC method: {editor}")

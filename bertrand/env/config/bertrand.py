@@ -1,7 +1,6 @@
 """TODO"""
 from __future__ import annotations
 
-import importlib.resources as importlib_resources
 import ipaddress
 import os
 import re
@@ -9,14 +8,13 @@ from pathlib import Path
 from typing import Any, Annotated, Callable, Literal, Self
 
 from .conan import (
+    CONAN_CACHE,
     ConanConf,
     ConanConfig,
     ConanOptions,
 )
 from .core import (
-    BERTRAND_CACHE,
-    CCACHE_CACHE,
-    CONAN_CACHE,
+    CACHE_MOUNT,
     UV_CACHE,
     AbsolutePosixPath,
     Config,
@@ -29,7 +27,8 @@ from .core import (
     Resource,
     TagName,
     Trimmed,
-    resource
+    locate_template,
+    resource,
 )
 from .python import PyProject, _validate_dependency_groups
 from ..run import (
@@ -60,6 +59,9 @@ from pydantic import (
 
 # TODO: add `examples` for any fields that have a constrained set of values.
 
+
+BERTRAND_CACHE: PosixPath = CACHE_MOUNT / "bertrand"
+CCACHE_CACHE: PosixPath = CACHE_MOUNT / "ccache"
 
 
 # Configuration options that affect CLI behavior
@@ -535,41 +537,6 @@ type HealthLogDestination = Annotated[
 type BuildContextPath = Annotated[PosixPath, AfterValidator(_check_build_context_path)]
 
 
-
-def locate_template(namespace: str, name: str) -> Path:
-    """Get a template reference for the given namespace and name.
-
-    Parameters
-    ----------
-    namespace : str
-        The parent directory of the template within `bertrand.env.templates`.
-    name : str
-        The file name for the template within the namespace directory, minus the
-        `.j2` extension.
-
-    Returns
-    -------
-    Path
-        The path to the template file.
-
-    Raises
-    ------
-    FileNotFoundError
-        If the template file does not exist or is not a file.
-    """
-    env = importlib_resources.files("bertrand.env")
-    with importlib_resources.as_file(env.joinpath(
-        "templates",
-        namespace,
-        f"{name}.j2"
-    )) as source:
-        if not source.exists() or not source.is_file():
-            raise FileNotFoundError(
-                f"missing Bertrand template {namespace}/{name}: {source}"
-            )
-        return source
-
-
 def _dump_ignore_list(patterns: list[str]) -> str:
     lines = [
         "# This file is managed by Bertrand.  Direct edits may be overwritten by",
@@ -582,6 +549,12 @@ def _dump_ignore_list(patterns: list[str]) -> str:
         seen.add(pattern)
         lines.append(pattern)
     return "\n".join(lines) + "\n"
+
+
+# TODO: continue adding descriptions and simplifying the structure of the Bertrand
+# model + checking default values.
+
+# TODO: add `examples` for any fields that have a constrained set of values.
 
 
 @resource("bertrand")

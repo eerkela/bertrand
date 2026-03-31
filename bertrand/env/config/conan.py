@@ -26,9 +26,9 @@ from conan.internal.model.conf import ConfDefinition
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, StringConstraints
 
 
-CONAN_REF_TOKEN_RE = re.compile(r"^[a-z0-9_][a-z0-9_+.-]{1,100}\Z")
 CONAN_CACHE: PosixPath = PosixPath("/opt/conan")
 CONAN_HOME: PosixPath = PosixPath("/opt/conan")
+CONAN_REF_TOKEN_RE = re.compile(r"^[a-z0-9_][a-z0-9_+.-]{1,100}\Z")
 
 
 def _check_conan_requirement(requirement: str) -> str:

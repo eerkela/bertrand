@@ -17,7 +17,8 @@ from typing import Awaitable, Callable, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, PositiveInt
 
-from .config import RESOURCE_NAMES, Config, NonEmpty, RelativePath, Resource, Trimmed
+from .config import RESOURCE_NAMES, Config, Resource
+from .config.core import NonEmpty, RelativePath, Trimmed
 from .container import STATE_DIR, TIMEOUT, podman_cmd, podman_ids
 from .run import (
     LOCK_TIMEOUT,

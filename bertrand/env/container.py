@@ -36,14 +36,15 @@ from .rpc import RPC_TIMEOUT
 from .config import (
     DEFAULT_TAG,
     SHELLS,
+    Config,
+)
+from .config.core import (
     AbsolutePath,
     AbsolutePosixPath,
-    Config,
     Trimmed,
     NonEmpty,
     NoWhiteSpace,
     SanitizedName,
-    lock_worktree,
 )
 from .run import (
     BERTRAND_ENV,
@@ -67,6 +68,7 @@ from .run import (
     TimeoutExpired,
     User,
     atomic_write_text,
+    lock_worktree,
     run,
     sanitize_name,
 )

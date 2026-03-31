@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Annotated, Callable, Literal, Self
+from typing import Any, Annotated, Literal, Self
 
 from .core import (
     RESOURCE_NAMES,

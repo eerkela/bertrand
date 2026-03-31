@@ -1,6 +1,7 @@
 """TODO"""
 from __future__ import annotations
 
+import importlib.resources as importlib_resources
 import re
 import string
 from dataclasses import dataclass, field
@@ -18,6 +19,7 @@ from typing import (
     cast
 )
 
+import yaml
 from pydantic import (
     AnyHttpUrl,
     AfterValidator,
@@ -41,21 +43,36 @@ from ..run import (
 )
 
 
+# TODO: maybe cache paths should be provided by each resource, so that they can also
+# be folded into the resource contract, along with rendering sections in
+# `pyproject.toml` depending on the environment's capabilities?
+
+
+# TODO: I need extra resources/models for `uv`, `ty`, `ruff`, and `pytest`, so that
+# they are rendered correctly as well for new projects.
+
+
 HTTP_URL = TypeAdapter(AnyHttpUrl)
 
 
 # Canonical path definitions for worktree control
 VSCODE_WORKSPACE_FILE: PosixPath = PosixPath(".vscode/vscode.code-workspace")
 CACHE_MOUNT: PosixPath = PosixPath("/tmp/.cache")
-CCACHE_CACHE: PosixPath = CACHE_MOUNT / "ccache"
-BERTRAND_CACHE: PosixPath = CACHE_MOUNT / "bertrand"
 UV_CACHE: PosixPath = CACHE_MOUNT / "uv"
-CONAN_CACHE: PosixPath = PosixPath("/opt/conan")
-CONAN_HOME: PosixPath = PosixPath("/opt/conan")
 
 
 GLOB_RE = re.compile(r"^[A-Za-z0-9._/\-\*\?\[\]!]+$")
 RESOURCE_NAME_RE = re.compile(r"^[a-z]([a-z0-9_.-]*[a-z0-9])?$")
+
+
+def _check_glob(pattern: str) -> str:
+    if not GLOB_RE.fullmatch(pattern):
+        raise ValueError(f"invalid glob pattern: '{pattern}'")
+    if pattern.startswith("/"):
+        raise ValueError(f"glob pattern cannot be absolute: '{pattern}'")
+    if any(part in ("..", ".") for part in pattern.split("/")):
+        raise ValueError(f"glob pattern cannot contain '.' or '..' segments: '{pattern}'")
+    return pattern
 
 
 def _check_absolute_path[PathT: Path](path: PathT) -> PathT:
@@ -80,14 +97,12 @@ def _check_relative_path(path: PosixPath) -> PosixPath:
     return path
 
 
-def _check_glob(pattern: str) -> str:
-    if not GLOB_RE.fullmatch(pattern):
-        raise ValueError(f"invalid glob pattern: '{pattern}'")
-    if pattern.startswith("/"):
-        raise ValueError(f"glob pattern cannot be absolute: '{pattern}'")
-    if any(part in ("..", ".") for part in pattern.split("/")):
-        raise ValueError(f"glob pattern cannot contain '.' or '..' segments: '{pattern}'")
-    return pattern
+def _check_regex_pattern(value: str) -> str:
+    try:
+        re.compile(value)
+    except re.error as err:
+        raise ValueError(f"invalid regex pattern '{value}': {err}") from err
+    return value
 
 
 def _check_url(url: str) -> str:
@@ -118,6 +133,7 @@ type AbsolutePath = Annotated[Path, AfterValidator(_check_absolute_path)]
 type AbsolutePosixPath = Annotated[PosixPath, AfterValidator(_check_absolute_path)]
 type RelativePath = Annotated[Path, AfterValidator(_check_relative_path)]
 type RelativePosixPath = Annotated[PosixPath, AfterValidator(_check_relative_path)]
+type RegexPattern = Annotated[NonEmpty[NoCRLF], AfterValidator(_check_regex_pattern)]
 type ResourceName = Annotated[str, StringConstraints(
     strip_whitespace=True,
     min_length=1,
@@ -133,6 +149,79 @@ type TagName = Annotated[str, StringConstraints(
     min_length=1,
     pattern=r"^[a-z0-9]+(?:-[a-z0-9]+)*$"
 )]
+
+
+def locate_template(namespace: str, name: str) -> Path:
+    """Get a template reference for the given namespace and name.
+
+    Parameters
+    ----------
+    namespace : str
+        The parent directory of the template within `bertrand.env.templates`.
+    name : str
+        The file name for the template within the namespace directory, minus the
+        `.j2` extension.
+
+    Returns
+    -------
+    Path
+        The path to the template file.
+
+    Raises
+    ------
+    FileNotFoundError
+        If the template file does not exist or is not a file.
+    """
+    env = importlib_resources.files("bertrand.env")
+    with importlib_resources.as_file(env.joinpath(
+        "templates",
+        namespace,
+        f"{name}.j2"
+    )) as source:
+        if not source.exists() or not source.is_file():
+            raise FileNotFoundError(
+                f"missing Bertrand template {namespace}/{name}: {source}"
+            )
+        return source
+
+
+def dump_yaml(payload: dict[str, Any], *, resource_name: str) -> str:
+    """A simple YAML serializer.
+
+    Parameters
+    ----------
+    payload : dict[str, Any]
+        The data to serialize as YAML.  This should be a simple mapping of strings to
+        basic data types (strings, numbers, lists, and nested mappings).
+    resource_name : str
+        The name of the resource being rendered, used for error reporting in case
+        serialization fails.
+
+    Returns
+    -------
+    str
+        The serialized YAML string.
+
+    Raises
+    ------
+    OSError
+        If the payload cannot be serialized as YAML, or if it contains unsupported
+        data types.
+    """
+    try:
+        text = yaml.safe_dump(
+            payload,
+            default_flow_style=False,
+            sort_keys=False,
+            allow_unicode=False,
+        )
+    except yaml.YAMLError as err:
+        raise OSError(
+            f"failed to serialize YAML payload for resource '{resource_name}': {err}"
+        ) from err
+    if not text.endswith("\n"):
+        text += "\n"
+    return text
 
 
 class Resource:
