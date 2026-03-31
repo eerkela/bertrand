@@ -3505,12 +3505,16 @@ class ClangFormat(Resource):
             description=
                 "Whether to always break before multiline string literals.\n"
                 "   `true`:\n"
+                "       ```cpp\n"
                 "       aaaa =\n"
                 "           \"bbbb\"\n"
                 "           \"cccc\";\n"
+                "       ```\n"
                 "   `false`:\n"
+                "       ```cpp\n"
                 "       aaaa = \"bbbb\"\n"
-                "              \"cccc\";",
+                "              \"cccc\";\n"
+                "       ```",
         )]
         AttributeMacros: Annotated[list[NoWhiteSpace], Field(
             default_factory=list,
@@ -3524,16 +3528,20 @@ class ClangFormat(Resource):
             description=
                 "Control whether to bin-pack function call arguments.\n"
                 "   `true`:\n"
+                "       ```cpp\n"
                 "       void f() {\n"
                 "           f(aaaaaaaaaaaaaaaaaaaa, aaaaaaaaaaaaaaaaaaaa,\n"
                 "             aaaaaaaaaaaaaaaaaaaa);\n"
                 "       }\n"
+                "       ```\n"
                 "   `false`:\n"
+                "       ```cpp\n"
                 "       void f() {\n"
                 "           f(aaaaaaaaaaaaaaaaaaaa,\n"
                 "             aaaaaaaaaaaaaaaaaaaa,\n"
                 "             aaaaaaaaaaaaaaaaaaaa);\n"
-                "       }",
+                "       }\n"
+                "       ```",
         )]
         BinPackLongBracedList: Annotated[bool, Field(
             default=True,
@@ -3547,19 +3555,25 @@ class ClangFormat(Resource):
             description=
                 "Control how to format function parameters.\n"
                 "   `BinPack`:\n"
+                "       ```cpp\n"
                 "       void f(int a, int bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb,\n"
                 "              int ccccccccccccccccccccccccccccccccccccccccccc);\n"
+                "       ```\n"
                 "   `OnePerLine`:\n"
+                "       ```cpp\n"
                 "       if all parameters fit on one line:\n"
                 "           void f(int a, int b, int c);\n"
                 "       else:\n"
                 "           void f(int a,\n"
                 "                  int b,\n"
                 "                  int ccccccccccccccccccccccccccccccccccccc);\n"
+                "       ```\n"
                 "   `AlwaysOnePerLine`:\n"
+                "       ```cpp\n"
                 "       void f(int a,\n"
                 "              int b,\n"
-                "              int c);",
+                "              int c);\n"
+                "       ```",
         )]
         BitFieldColonSpacing: Annotated[Literal["None", "Before", "After", "Both"], Field(
             default="Both",
@@ -3567,13 +3581,21 @@ class ClangFormat(Resource):
             description=
                 "Control the spacing around the colon in C++ bitfield declarations.\n"
                 "   `None`:\n"
+                "       ```cpp\n"
                 "       unsigned bf:2;\n"
+                "       ```\n"
                 "   `Before`:\n"
+                "       ```cpp\n"
                 "       unsigned bf :2;\n"
+                "       ```\n"
                 "   `After`:\n"
+                "       ```cpp\n"
                 "       unsigned bf: 2;\n"
+                "       ```\n"
                 "   `Both`:\n"
-                "       unsigned bf : 2;",
+                "       ```cpp\n"
+                "       unsigned bf : 2;\n"
+                "       ```",
         )]
         ColumnLimit: Annotated[NonNegativeInt, Field(
             default=88,
@@ -3589,13 +3611,17 @@ class ClangFormat(Resource):
                 "If true, consecutive namespace declarations will be on the same "
                 "line.  If false, each namespace is declared on a new line.\n"
                 "   `true`:\n"
+                "       ```cpp\n"
                 "       namespace Foo { namespace Bar {\n"
                 "       }}\n"
+                "       ```\n"
                 "   `false`:\n"
+                "       ```cpp\n"
                 "       namespace Foo {\n"
                 "       namespace Bar {\n"
                 "       }\n"
-                "       }",
+                "       }\n"
+                "       ```",
         )]
         EmptyLineAfterAccessModifier: Annotated[Literal["Never", "Leave", "Always"], Field(
             default="Leave",
@@ -3604,6 +3630,7 @@ class ClangFormat(Resource):
                 "Control whether to insert an empty line after access modifiers "
                 "(e.g. `public`, `private`, `protected`):\n"
                 "   `Never`: remove all empty lines after access modifiers\n"
+                "       ```cpp\n"
                 "       struct foo {\n"
                 "       private:\n"
                 "           int i;\n"
@@ -3615,9 +3642,11 @@ class ClangFormat(Resource):
                 "       private:\n"
                 "       protected:\n"
                 "       };\n"
+                "       ```\n"
                 "   `Leave`: preserve user formatting\n"
                 "   `Always`: always add empty line after access modifiers if there are "
                 "none\n"
+                "       ```cpp\n"
                 "       struct foo {\n"
                 "       private:\n"
                 "\n"
@@ -3633,7 +3662,8 @@ class ClangFormat(Resource):
                 "\n"
                 "       protected:\n"
                 "\n"
-                "       };",
+                "       };\n"
+                "       ```",
         )]
         EmptyLineBeforeAccessModifier: Annotated[
             Literal["Never", "Leave", "LogicalBlock", "Always"],
@@ -3644,6 +3674,7 @@ class ClangFormat(Resource):
                     "Control whether to insert an empty line before access modifiers "
                     "(e.g. `public`, `private`, `protected`):\n"
                     "   `Never`: remove all empty lines before access modifiers\n"
+                    "       ```cpp\n"
                     "       struct foo {\n"
                     "       private:\n"
                     "           int i;\n"
@@ -3655,9 +3686,11 @@ class ClangFormat(Resource):
                     "       private:\n"
                     "       protected:\n"
                     "       };\n"
+                    "       ```\n"
                     "   `Leave`: preserve user formatting\n"
-                    "   `LogicalBlock`: add empty line only when access modifier "
-                    "starts a new logical block.\n"
+                    "   `LogicalBlock`: add empty line only when access modifier starts "
+                    "a new logical block.\n"
+                    "       ```cpp\n"
                     "       struct foo {\n"
                     "       private:\n"
                     "           int i;\n"
@@ -3671,7 +3704,9 @@ class ClangFormat(Resource):
                     "       private:\n"
                     "       protected:\n"
                     "       };\n"
+                    "       ```\n"
                     "   `Always`:\n"
+                    "       ```cpp\n"
                     "       struct foo {\n"
                     "       private:\n"
                     "           int i;\n"
@@ -3686,7 +3721,8 @@ class ClangFormat(Resource):
                     "       private:\n"
                     "\n"
                     "       protected:\n"
-                    "       };",
+                    "       };\n"
+                    "       ```",
             )
         ]
         FixNamespaceComments: Annotated[bool, Field(
@@ -3695,17 +3731,21 @@ class ClangFormat(Resource):
                 "Add namespace end comments for long namespaces, and fix them if they "
                 "are wrong.\n"
                 "   `true`:\n"
+                "       ```cpp\n"
                 "       namespace longNamespace {\n"
                 "           void foo();\n"
                 "           void bar();\n"
                 "       } // namespace longNamespace\n"
                 "       namespace shortNamespace { void baz(); }\n"
+                "       ```\n"
                 "   `false`:\n"
+                "       ```cpp\n"
                 "       namespace longNamespace {\n"
                 "           void foo();\n"
                 "           void bar();\n"
                 "       }\n"
-                "       namespace shortNamespace { void baz(); }",
+                "       namespace shortNamespace { void baz(); }\n"
+                "       ```",
         )]
         ForEachMacros: Annotated[list[NoWhiteSpace], Field(
             default_factory=list,
@@ -3727,21 +3767,26 @@ class ClangFormat(Resource):
             description=
                 "Control how to format blocks of consecutive #include directives.\n"
                 "   `Preserve`: sort each #include block individually\n"
+                "       ```cpp\n"
                 "       #include \"b.h\"\n          ->      #include \"b.h\"\n"
                 "\n"
                 "       #include <lib/main.h>               #include \"a.h\"\n"
                 "       #include \"a.h\"                    #include <lib/main.h>\n"
+                "       ```\n"
                 "   `Merge`: merge consecutive #include blocks and sort as one\n"
+                "       ```cpp\n"
                 "       #include \"a.h\"\n          ->      #include \"a.h\"\n"
                 "                                           #include \"b.h\"\n"
                 "       #include <lib/main.h>               #include <lib/main.h>\n"
-                "       #include \"b.h\"\n",
+                "       #include \"b.h\"\n"
+                "       ```",
         )]
         InsertBraces: Annotated[bool, Field(
             default=True,
             description=
                 "Controls whether to insert braces after control statements:\n"
                 "   `true`:\n"
+                "       ```cpp\n"
                 "       if (isa<FunctionDecl>(D)) {\n"
                 "           handleFunctionDecl(D);\n"
                 "       } else if (isa<VarDecl>(D)) {\n"
@@ -3759,7 +3804,9 @@ class ClangFormat(Resource):
                 "       do {\n"
                 "           --i;\n"
                 "       } while (i);\n"
+                "       ```\n"
                 "   `false`:\n"
+                "       ```cpp\n"
                 "       if (isa<FunctionDecl>(D))\n"
                 "           handleFunctionDecl(D);\n"
                 "       else if (isa<VarDecl>(D))\n"
@@ -3773,7 +3820,8 @@ class ClangFormat(Resource):
                 "\n"
                 "       do\n"
                 "           --i;\n"
-                "       while (i);",
+                "       while (i);\n"
+                "       ```",
         )]
         InsertNewlineAtEOF: Annotated[bool, Field(
             default=True,
@@ -3795,26 +3843,32 @@ class ClangFormat(Resource):
             description=
                 "The indentation used for namespaces:\n"
                 "   `None`: don't indent in namespaces\n"
+                "       ````cpp\n"
                 "       namespace out {\n"
                 "       int i;\n"
                 "       namespace in {\n"
                 "       int i;\n"
                 "       }\n"
                 "       }\n"
+                "       ```\n"
                 "   `Inner`: indent only in inner namespaces (nested in other namespaces)\n"
+                "       ```cpp\n"
                 "       namespace out {\n"
                 "       int i;\n"
                 "       namespace in {\n"
                 "           int i;\n"
                 "       }\n"
                 "       }\n"
+                "       ```\n"
                 "   `All`: indent in all namespaces\n"
+                "       ```cpp\n"
                 "       namespace out {\n"
                 "           int i;\n"
                 "           namespace in {\n"
                 "               int i;\n"
                 "           }\n"
-                "       }",
+                "       }\n"
+                "       ```",
         )]
         NamespaceMacros: Annotated[list[NoWhiteSpace], Field(
             default_factory=list,
@@ -3837,23 +3891,30 @@ class ClangFormat(Resource):
                 description=
                     "Control how to format constructor initializers:\n"
                     "   `Never`: always put each constructor initializer on its own line\n"
+                    "       ```cpp\n"
                     "       Constructor()\n"
                     "           : a(),\n"
                     "             b()\n"
+                    "       ```\n"
                     "   `BinPack`: bin-pack constructor initializers\n"
+                    "       ```cpp\n"
                     "       Constructor()\n"
                     "           : aaaaaaaaaaaaaaaaaaaa(), bbbbbbbbbbbbbbbbbbbb(),\n"
                     "             cccccccccccccccccccc()\n"
+                    "       ```\n"
                     "   `CurrentLine`: put all constructor initializers on the current "
                     "line if they fit. Otherwise, put each one on its own line.\n"
+                    "       ```cpp\n"
                     "       Constructor() : a(), b(), c()\n"
                     "       Constructor()\n"
                     "           : aaaaaaaaaaaaaaaaaaaa(),\n"
                     "             bbbbbbbbbbbbbbbbbbbb()\n"
                     "             cccccccccccccccccccc()\n"
+                    "       ```\n"
                     "   `NextLine`: same as `CurrentLine., except that if all "
                     "constructor initializers do not fit on the current line, try to "
                     "fit them on the next line.\n"
+                    "       ```cpp\n"
                     "       Constructor() : a(), b(), c()\n"
                     "       Constructor()\n"
                     "           : a(), bbbbbbbbbbbbbbbbbbbb(), cccccccccccccccccccc()"
@@ -3861,8 +3922,10 @@ class ClangFormat(Resource):
                     "           : aaaaaaaaaaaaaaaaaaaa(),\n"
                     "             bbbbbbbbbbbbbbbbbbbb()\n"
                     "             cccccccccccccccccccc()\n"
+                    "       ```\n"
                     "   `NextLineOnly`: put all constructor initializers on the next "
                     "line if they fit. Otherwise, put each one on its own line.\n"
+                    "       ```cpp\n"
                     "       Constructor()\n"
                     "           : a(), b(), c()\n"
                     "       Constructor()\n"
@@ -3870,7 +3933,8 @@ class ClangFormat(Resource):
                     "       Constructor()\n"
                     "           : aaaaaaaaaaaaaaaaaaaa(),\n"
                     "             bbbbbbbbbbbbbbbbbbbb()\n"
-                    "             cccccccccccccccccccc()",
+                    "             cccccccccccccccccccc()\n"
+                    "       ```",
             )
         ]
         PointerAlignment: Annotated[Literal["Left", "Right", "Middle"], Field(
@@ -3879,11 +3943,17 @@ class ClangFormat(Resource):
             description=
                 "Pointer alignment style:\n"
                 "   `Left`: align pointers to the left.\n"
+                "       ```cpp\n"
                 "       int* a;\n"
+                "       ```\n"
                 "   `Right`: align pointers to the right.\n"
+                "       ```cpp\n"
                 "       int *a;\n"
+                "       ```\n"
                 "   `Middle`: align pointers in the middle.\n"
-                "       int * a;",
+                "       ```cpp\n"
+                "       int * a;\n"
+                "       ```",
         )]
 
         @staticmethod
@@ -3923,9 +3993,13 @@ class ClangFormat(Resource):
                     "`static`, `constexpr`, `friend`, `const`, `volatile`, "
                     "`restrict`, and `type` (for the type itself).  With the default"
                     "order:\n"
+                    "   ````cpp\n"
                     "   friend static inline const int* foo();\n"
+                    "   ```\n"
                     "would format to:\n"
-                    "   inline static friend const int* foo();",
+                    "   ```cpp\n"
+                    "   inline static friend const int* foo();\n"
+                    "   ```",
             )
         ]
         ReferenceAlignment: Annotated[Literal["Left", "Right", "Middle"], Field(
@@ -3934,11 +4008,17 @@ class ClangFormat(Resource):
             description=
                 "Reference alignment style:\n"
                 "   `Left`: align references to the left.\n"
+                "       ```cpp\n"
                 "       int& a = b;\n"
+                "       ```\n"
                 "   `Right`: align references to the right.\n"
+                "       ```cpp\n"
                 "       int &a = b;\n"
+                "       ```\n"
                 "   `Middle`: align references in the middle.\n"
-                "       int & a = b;",
+                "       ```cpp\n"
+                "       int & a = b;\n"
+                "       ```",
         )]
         ReflowComments: Annotated[Literal["Never", "IndentOnly", "Always"], Field(
             default="Always",
@@ -3946,6 +4026,7 @@ class ClangFormat(Resource):
             description=
                 "Control automatic line wrapping for comments:\n"
                 "   `Never`: never reflow comments\n"
+                "       ```cpp\n"
                 "       // veryVeryVeryVeryVeryVeryVeryVeryVeryVeryVeryLongComment "
                 "with plenty of information\n"
                 "       /* second veryVeryVeryVeryVeryVeryVeryVeryVeryVeryVeryLongComment "
@@ -3953,8 +4034,10 @@ class ClangFormat(Resource):
                 "       /* third veryVeryVeryVeryVeryVeryVeryVeryVeryVeryVeryLongComment "
                 "with plenty of information\n"
                 "           * and a misaligned second line */\n"
+                "       ```\n"
                 "   `IndentOnly`: only apply indentation rules, moving comments left or "
                 "right, without changing formatting inside the comments\n"
+                "       ```cpp\n"
                 "       // veryVeryVeryVeryVeryVeryVeryVeryVeryVeryVeryLongComment "
                 "with plenty of information\n"
                 "       /* second veryVeryVeryVeryVeryVeryVeryVeryVeryVeryVeryLongComment "
@@ -3962,8 +4045,10 @@ class ClangFormat(Resource):
                 "       /* third veryVeryVeryVeryVeryVeryVeryVeryVeryVeryVeryLongComment "
                 "with plenty of information\n"
                 "        * and a misaligned second line */\n"
+                "       ```\n"
                 "   `Always`: apply indentation rules and reflow long comments into new "
                 "lines, trying to obey the ColumnLimit.\n"
+                "       ```cpp\n"
                 "       // veryVeryVeryVeryVeryVeryVeryVeryVeryVeryVeryLongComment "
                 "with plenty of\n"
                 "       // information\n"
@@ -3972,13 +4057,15 @@ class ClangFormat(Resource):
                 "        * information */\n"
                 "       /* third veryVeryVeryVeryVeryVeryVeryVeryVeryVeryVeryLongComment "
                 "with plenty of\n"
-                "        * information and a misaligned second line */\n",
+                "        * information and a misaligned second line */\n"
+                "       ```",
         )]
         RemoveEmptyLinesInUnwrappedLines: Annotated[bool, Field(
             default=True,
             description=
                 "Controls whether to remove empty lines within unwrapped lines:\n"
                 "   `true`:\n"
+                "       ```cpp\n"
                 "       int c = a + b;\n"
                 "\n"
                 "       enum : unsigned {\n"
@@ -3988,7 +4075,9 @@ class ClangFormat(Resource):
                 "\n"
                 "       while (true) {\n"
                 "       }\n"
+                "       ```\n"
                 "   `false`:\n"
+                "       ```cpp\n"
                 "       int c\n"
                 "\n"
                 "           = a + b;\n"
@@ -4003,7 +4092,8 @@ class ClangFormat(Resource):
                 "       while (\n"
                 "\n"
                 "           true) {\n"
-                "       }",
+                "       }\n"
+                "       ```",
         )]
         RequiresClausePosition: Annotated[
             Literal[
@@ -4021,6 +4111,7 @@ class ClangFormat(Resource):
                     "constraints:\n"
                     "   `OwnLine`: always put the requires clause on its own line "
                     "(possibly followed by a semicolon).\n"
+                    "       ```cpp\n"
                     "       template <typename T>\n"
                     "           requires C<T>\n"
                     "       struct Foo {...};\n"
@@ -4037,9 +4128,11 @@ class ClangFormat(Resource):
                     "       void baz(T t)\n"
                     "           requires C<T>\n"
                     "       {...}\n"
+                    "       ```\n"
                     "   `OwnLineWithBrace`: as with 'OwnLine', except, unless "
                     "otherwise prohibited, place a following open brace (of a "
                     "function definition) to follow on the same line.\n"
+                    "       ```cpp\n"
                     "       void bar(T t)\n"
                     "           requires C<T> {\n"
                     "           return;\n"
@@ -4051,11 +4144,13 @@ class ClangFormat(Resource):
                     "       template <typename T>\n"
                     "           requires C<T>\n"
                     "       void baz(T t) {...}\n"
+                    "       ```\n"
                     "   `WithPreceding`: try to put the clause together with the "
                     "preceding part of a declaration. For class templates: stick to "
                     "the template declaration. For function templates: stick to the "
                     "template declaration. For function declaration followed by a "
                     "requires clause: stick to the parameter list.\n"
+                    "       ```cpp\n"
                     "       template <typename T> requires C<T>\n"
                     "       struct Foo {...};\n"
                     "\n"
@@ -4065,8 +4160,10 @@ class ClangFormat(Resource):
                     "       template <typename T>\n"
                     "       void baz(T t) requires C<T>\n"
                     "       {...}\n"
+                    "       ```\n"
                     "   `WithFollowing`: try to put the requires clause together with "
                     "the class or function declaration.\n"
+                    "       ```cpp\n"
                     "       template <typename T>\n"
                     "       requires C<T> struct Foo {...};\n"
                     "\n"
@@ -4076,8 +4173,10 @@ class ClangFormat(Resource):
                     "       template <typename T>\n"
                     "       void baz(T t)\n"
                     "       requires C<T> {...}\n"
+                    "       ```\n"
                     "   `SingleLine`: try to put everything in the same line if "
                     "possible.  Otherwise normal line breaking rules take over.\n"
+                    "       ```cpp\n"
                     "       // Fitting:\n"
                     "       template <typename T> requires C<T> struct Foo {...};\n"
                     "       template <typename T> requires C<T> void bar(T t) {...}\n"
@@ -4094,7 +4193,8 @@ class ClangFormat(Resource):
                     "\n"
                     "       template <typename LongName>\n"
                     "       void bar(LongName ln)\n"
-                    "           requires C<LongName> {...}",
+                    "           requires C<LongName> {...}\n"
+                    "       ```",
             )
         ]
         RequiresExpressionIndentation: Annotated[Literal["OuterScope", "Keyword"], Field(
@@ -4105,16 +4205,20 @@ class ClangFormat(Resource):
                 "   `OuterScope`: align requires expression body relative to the "
                 "indentation level of the outer scope the requires expression resides "
                 "in.\n"
+                "       ```cpp\n"
                 "       template <typename T>\n"
                 "       concept C = requires(T t) {\n"
                 "           ...\n"
                 "       }\n"
+                "       ```\n"
                 "   `Keyword`: align requires expression body relative to the requires "
                 "keyword.\n"
+                "       ```cpp\n"
                 "       template <typename T>\n"
                 "       concept C = requires(T t) {\n"
                 "                       ...\n"
-                "                   }",
+                "                   }\n"
+                "       ```",
         )]
         SeparateDefinitionBlocks: Annotated[Literal["Never", "Leave", "Always"], Field(
             default="Leave",
@@ -4123,6 +4227,7 @@ class ClangFormat(Resource):
                 "Controls how empty lines are used to separate definition blocks, "
                 "including classes, structs, enums, and functions:\n"
                 "   `Never`:\n"
+                "       ```cpp\n"
                 "       #include <cstring>\n"
                 "       struct Foo {\n"
                 "           int a, b, c;\n"
@@ -4154,7 +4259,9 @@ class ClangFormat(Resource):
                 "       };\n"
                 "       class C {};\n"
                 "       }\n"
+                "       ```\n"
                 "   `Always`:\n"
+                "       ```cpp\n"
                 "       #include <cstring>\n"
                 "\n"
                 "       struct Foo {\n"
@@ -4194,7 +4301,8 @@ class ClangFormat(Resource):
                 "       };\n"
                 "\n"
                 "       class C {};\n"
-                "       }",
+                "       }\n"
+                "       ```",
         )]
         ShortNamespaceLines: Annotated[NonNegativeInt, Field(
             default=20,
@@ -4211,21 +4319,25 @@ class ClangFormat(Resource):
                 description=
                     "Controls whether and how to sort using declarations:\n"
                     "   `Never`: don't sort using declarations\n"
+                    "       ```cpp\n"
                     "       using std::chrono::duration_cast;\n"
                     "       using std::move;\n"
                     "       using boost::regex;\n"
                     "       using boost::regex_constants::icase;\n"
                     "       using std::string;\n"
+                    "       ```\n"
                     "   `Lexicographic`: Using declarations are sorted in the order "
                     "defined as follows: Split the strings by :: and discard any "
                     "initial empty strings. Sort the lists of names lexicographically, "
                     "and within those groups, names are in case-insensitive "
                     "lexicographic order.\n"
+                    "       ```cpp\n"
                     "       using boost::regex;\n"
                     "       using boost::regex_constants::icase;\n"
                     "       using std::chrono::duration_cast;\n"
                     "       using std::move;\n"
                     "       using std::string;\n"
+                    "       ```\n"
                     "   `LexicographicNumeric`: using declarations are sorted in the "
                     "order defined as follows: Split the strings by :: and discard any "
                     "initial empty strings. The last element of each list is a "
@@ -4234,11 +4346,13 @@ class ClangFormat(Resource):
                     "individual names is that all non-namespace names come before all "
                     "namespace names, and within those groups, names are in "
                     "case-insensitive lexicographic order.\n"
+                    "       ```cpp\n"
                     "       using boost::regex;\n"
                     "       using boost::regex_constants::icase;\n"
                     "       using std::move;\n"
                     "       using std::string;\n"
-                    "       using std::chrono::duration_cast;\n",
+                    "       using std::chrono::duration_cast;\n"
+                    "       ```",
             )
         ]
         SpacesBeforeTrailingComments: Annotated[NonNegativeInt, Field(
@@ -4254,12 +4368,16 @@ class ClangFormat(Resource):
                 "Controls whether to add spaces between `<`/`>` brackets in "
                 "template argument lists:\n"
                 "   `Never`: remove spaces after < and before >.\n"
+                "       ```cpp\n"
                 "       static_cast<int>(arg);\n"
                 "       std::function<void(int)> fct;\n"
+                "       ```\n"
                 "   `Leave`: preserve user formatting\n"
                 "   `Always`: always add spaces after < and before >.\n"
+                "       ```cpp\n"
                 "       static_cast< int >(arg);\n"
-                "       std::function< void(int) > fct;",
+                "       std::function< void(int) > fct;\n"
+                "       ```",
         )]
 
         class _SpacesInLineCommentPrefix(BaseModel):
@@ -4280,9 +4398,13 @@ class ClangFormat(Resource):
             description=
                 "If true, spaces will be inserted after [ and before ]."
                 "   `true`:\n"
+                "       ```cpp\n"
                 "       int a[ 5 ];\n"
+                "       ```\n"
                 "   `false`:\n"
-                "       int a[5];",
+                "       ```cpp\n"
+                "       int a[5];\n"
+                "       ```",
         )]
         TabWidth: Annotated[NonNegativeInt, Field(
             default=4,
@@ -4312,7 +4434,9 @@ class ClangFormat(Resource):
                 "A list of macros that should be interpreted as type declarations "
                 "instead of as function calls.  These are expected to be macros of the "
                 "form:\n"
-                "   STACK_OF(...)",
+                "   ```cpp\n"
+                "   STACK_OF(...)\n"
+                "   ```",
         )]
         UseTab: Annotated[
             Literal[
@@ -4345,23 +4469,29 @@ class ClangFormat(Resource):
                 "Controls whether to wrap the body of a namespace with empty lines:\n"
                 "   `Never`: remove all empty lines at the beginning and the end of "
                 "namespace body.\n"
+                "       ```cpp\n"
                 "       namespace N1 {\n"
                 "       namespace N2 {\n"
                 "       function();\n"
                 "       }\n"
                 "       }\n"
+                "       ```\n"
                 "   `Leave`: preserve user formatting.\n"
                 "   `Always`: always have at least one empty line at the beginning and "
                 "the end of namespace body except that the number of empty lines "
                 "between consecutive nested namespace definitions is not increased.\n"
+                "       ```cpp\n"
                 "       namespace N1 {\n"
                 "       namespace N2 {\n"
                 "\n"
                 "       function();\n"
                 "\n"
                 "       }\n"
-                "       }",
+                "       }\n"
+                "       ```",
         )]
+
+        # TODO: continue writing descriptions for the rest of these options.
 
         class _Align(BaseModel):
             """Validate the `[tool.clang-format.Align]` table."""
