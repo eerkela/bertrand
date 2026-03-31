@@ -3485,7 +3485,13 @@ class ClangFormat(Resource):
     # pylint: disable=missing-function-docstring, unused-argument, missing-return-doc
 
     class Model(BaseModel):
-        """Validate the `[clang-format]` table."""
+        """Validate the `[clang-format]` table.
+
+        NOTE: These are opinionated defaults designed to make C++ code as recognizable
+        as possible to Python developers.  If your project has an existing style guide,
+        or you prefer a more traditional C++ style, feel free to disable automatic
+        formatting or modify these settings as needed.
+        """
         model_config = ConfigDict(extra="forbid")
         Enable: Annotated[bool, Field(
             default=False,
@@ -4491,51 +4497,214 @@ class ClangFormat(Resource):
                 "       ```",
         )]
 
-        # TODO: continue writing descriptions for the rest of these options.
-
         class _Align(BaseModel):
             """Validate the `[tool.clang-format.Align]` table."""
             model_config = ConfigDict(extra="forbid")
-            AfterOpenBracket: Annotated[bool, Field(default=False)]
+            AfterOpenBracket: Annotated[bool, Field(
+                default=False,
+                description=
+                    "Controls whether to align arguments after an open bracket:\n"
+                    "   `true`:\n"
+                    "       ```cpp\n"
+                    "       someLongFunction(argument1,\n"
+                    "                        argument2);\n"
+                    "       ```\n"
+                    "   `false`:\n"
+                    "       ```cpp\n"
+                    "       someLongFunction(argument1,\n"
+                    "           argument2);\n"
+                    "       ```"
+            )]
             ArrayOfStructures: Annotated[Literal["Left", "Right", "None"], Field(
                 default="None",
                 examples=["Left", "Right", "None"],
+                description=
+                    "Controls the alignment of array of structure initializers:\n"
+                    "   `Left`:\n"
+                    "       ```cpp\n"
+                    "       struct test demo[] =\n"
+                    "       {\n"
+                    "           {56, 23,    \"hello\"},\n"
+                    "           {-1, 93463, \"world\"},\n"
+                    "           {7,  5,     \"!!\"   }\n"
+                    "       };\n"
+                    "       ```\n"
+                    "   `Right`:\n"
+                    "       ```cpp\n"
+                    "       struct test demo[] =\n"
+                    "       {\n"
+                    "           {56,    23, \"hello\"},\n"
+                    "           {-1, 93463, \"world\"},\n"
+                    "           { 7,     5,    \"!!\"}\n"
+                    "       };\n"
+                    "       ```\n"
+                    "   `None`: preserve user formatting."
             )]
             EscapedNewlines: Annotated[
                 Literal["DontAlign", "Left", "LeftWithLastLine", "Right"],
                 Field(
                     default="Right",
                     examples=["DontAlign", "Left", "LeftWithLastLine", "Right"],
+                    description=
+                        "Controls the alignment of backslashes in escaped newlines:\n"
+                        "   `DontAlign`: don't align escaped newlines\n"
+                        "       ```cpp\n"
+                        "       #define A \\\n"
+                        "           int aaaa; \\\n"
+                        "           int b; \\\n"
+                        "           int dddddddddd;\n"
+                        "       ```"
+                        "   `Left`: align escaped newlines as far left as possible.\n"
+                        "       ```cpp\n"
+                        "       #define A     \\\n"
+                        "           int aaaa; \\\n"
+                        "           int b;    \\\n"
+                        "           int dddddddddd;\n"
+                        "       ```"
+                        "   `LeftWithLastLine`: align escaped newlines as far left as "
+                        "possible, using the last line of the preprocessor directive "
+                        "as the reference if it's the longest.\n"
+                        "       ```cpp\n"
+                        "       #define A           \\\n"
+                        "           int aaaa;       \\\n"
+                        "           int b;          \\\n"
+                        "           int dddddddddd;\n"
+                        "       ```"
+                        "   `Right`: align escaped newlines to the rightmost position.\n"
+                        "       ```cpp\n"
+                        "       #define A                                           \\\n"
+                        "           int aaaa;                                       \\\n"
+                        "           int b;                                          \\\n"
+                        "           int dddddddddd;\n"
+                        "       ```"
                 )
             ]
-            Operands: Annotated[
-                Literal[
-                    "DontAlign", "Align", "BreakBeforeBinaryOperators",
-                    "AlignAfterOperator",
-                ],
-                Field(
-                    default="Align",
-                    examples=[
-                        "DontAlign", "Align", "BreakBeforeBinaryOperators",
-                        "AlignAfterOperator"
-                    ],
-                )
-            ]
+            Operands: Annotated[Literal["DontAlign", "Align", "AlignAfterOperator"], Field(
+                default="Align",
+                examples=["DontAlign", "Align", "AlignAfterOperator"],
+                description=
+                    "Controls the alignment of binary and ternary operators:\n"
+                    "   `DontAlign`: don't align operands when wrapping lines.\n"
+                    "   `Align`: Horizontally align operands of binary and ternary "
+                    "expressions.\n"
+                    "       ```cpp\n"
+                    "       int aaa = bbbbbbbbbbbbbbb +\n"
+                    "                 ccccccccccccccc;\n"
+                    "       ```\n"
+                    "       If `Break.BeforeBinaryOperators` is set, then the wrapped "
+                    "operator is aligned with the operand on the first line.\n"
+                    "       ```cpp\n"
+                    "       int aaa = bbbbbbbbbbbbbbb\n"
+                    "                 + ccccccccccccccc;\n"
+                    "   `AlignAfterOperator`: Horizontally align operands of binary "
+                    "and ternary expressions.\n"
+                    "       ```cpp\n"
+                    "       int aaa = bbbbbbbbbbbbbbb\n"
+                    "               + ccccccccccccccc;\n"
+                    "       ```",
+            )]
 
             class _ConsecutiveAssignments(BaseModel):
                 """Validate the `[tool.clang-format.align.ConsecutiveAssignments]`
                 table.
                 """
                 model_config = ConfigDict(extra="forbid")
-                Enabled: Annotated[bool, Field(default=False)]
-                AcrossEmptyLines: Annotated[bool, Field(default=False)]
-                AcrossComments: Annotated[bool, Field(default=False)]
-                AlignCompound: Annotated[bool, Field(default=False)]
-                PadOperators: Annotated[bool, Field(default=False)]
+                Enabled: Annotated[bool, Field(
+                    default=False,
+                    description=
+                        "Controls whether to align consecutive assignments:\n"
+                        "    `true`:\n"
+                        "       ```cpp\n"
+                        "       int a            = 1;\n"
+                        "       int somelongname = 2;\n"
+                        "       double c         = 3;\n"
+                        "       ```\n"
+                        "    `false`: preserve user formatting.",
+                )]
+                AcrossEmptyLines: Annotated[bool, Field(
+                    default=False,
+                    description=
+                        "Controls whether to align across empty lines:\n"
+                        "   `true`:\n"
+                        "       ```cpp\n"
+                        "       int a            = 1;\n"
+                        "       int somelongname = 2;\n"
+                        "       double c         = 3;\n"
+                        "\n"
+                        "       int d            = 3;\n"
+                        "       ```\n"
+                        "   `false`:\n"
+                        "       ```cpp\n"
+                        "       int a            = 1;\n"
+                        "       int somelongname = 2;\n"
+                        "       double c         = 3;\n"
+                        "\n"
+                        "       int d = 3;\n"
+                        "       ```",
+                )]
+                AcrossComments: Annotated[bool, Field(
+                    default=False,
+                    description=
+                        "Controls whether to align across comments:\n"
+                        "   `true`:\n"
+                        "       ```cpp\n"
+                        "       int d    = 3;\n"
+                        "       /* A comment. */\n"
+                        "       double e = 4;\n"
+                        "       ```\n"
+                        "   `false`:\n"
+                        "       ```cpp\n"
+                        "       int d = 3;\n"
+                        "       /* A comment. */\n"
+                        "       double e = 4;\n"
+                        "       ```",
+                )]
+                AlignCompound: Annotated[bool, Field(
+                    default=False,
+                    description=
+                        "Controls whether compound assignments like `+=` are aligned "
+                        "along with `=`:\n"
+                        "   `true`:\n"
+                        "       ```cpp\n"
+                        "       a   &= 2;\n"
+                        "       bbb  = 2;\n"
+                        "       ```\n"
+                        "   `false`:\n"
+                        "       ```cpp\n"
+                        "       a &= 2;\n"
+                        "       bbb = 2;\n"
+                        "       ```",
+                )]
+                PadOperators: Annotated[bool, Field(
+                    default=False,
+                    description=
+                        "Controls whether short assignment operators are left-padded "
+                        "to the same length as long ones in order to put all "
+                        "assignment operators to the right of the left hand side.\n"
+                        "   `true`:\n"
+                        "       ```cpp\n"
+                        "       a   >>= 2;\n"
+                        "       bbb   = 2;\n"
+                        "\n"
+                        "       a     = 2;\n"
+                        "       bbb >>= 2;\n"
+                        "       ```\n"
+                        "   `false`:\n"
+                        "       ```cpp\n"
+                        "       a >>= 2;\n"
+                        "       bbb = 2;\n"
+                        "\n"
+                        "       a     = 2;\n"
+                        "       bbb >>= 2;\n"
+                        "       ```",
+                )]
 
             ConsecutiveAssignments: Annotated[_ConsecutiveAssignments, Field(
-                default_factory=_ConsecutiveAssignments.model_construct
+                default_factory=_ConsecutiveAssignments.model_construct,
+                description="Options for aligning consecutive assignments",
             )]
+
+            # TODO: continue writing descriptions for the rest of these options.
 
             class _ConsecutiveBitFields(BaseModel):
                 """Validate the `[tool.clang-format.align.ConsecutiveBitFields]`
