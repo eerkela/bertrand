@@ -3886,8 +3886,8 @@ class ClangFormat(Resource):
         OneLineFormatOffRegex: Annotated[RegexPattern, Field(
             default="NOFORMAT",
             description=
-                "A regex pattern to match in a // line comment to disable clang-format "
-                "for that line.",
+                "A regex pattern to match in a `//` line comment to disable "
+                "clang-format for that line.",
         )]
         PackConstructorInitializers: Annotated[
             Literal["Never", "BinPack", "CurrentLine", "NextLine", "NextLineOnly"],
@@ -4364,8 +4364,8 @@ class ClangFormat(Resource):
         SpacesBeforeTrailingComments: Annotated[NonNegativeInt, Field(
             default=2,
             description=
-                "The minimum number of spaces before trailing line // comments on the "
-                "same line.",
+                "The minimum number of spaces before trailing line `//` comments on "
+                "the same line.",
         )]
         SpacesInAngles: Annotated[Literal["Never", "Leave", "Always"], Field(
             default="Never",
@@ -4395,7 +4395,7 @@ class ClangFormat(Resource):
         SpacesInLineCommentPrefix: Annotated[_SpacesInLineCommentPrefix, Field(
             default_factory=_SpacesInLineCommentPrefix.model_construct,
             description=
-                "Controls how many spaces are allowed at the start of a // line "
+                "Controls how many spaces are allowed at the start of a `//` line "
                 "comment.  To disable the maximum, set it to -1.  This only applies "
                 "when 'ReflowComments' is true.",
         )]
@@ -4704,19 +4704,65 @@ class ClangFormat(Resource):
                 description="Options for aligning consecutive assignments",
             )]
 
-            # TODO: continue writing descriptions for the rest of these options.
-
             class _ConsecutiveBitFields(BaseModel):
                 """Validate the `[tool.clang-format.align.ConsecutiveBitFields]`
                 table.
                 """
                 model_config = ConfigDict(extra="forbid")
-                Enabled: Annotated[bool, Field(default=False)]
-                AcrossEmptyLines: Annotated[bool, Field(default=False)]
-                AcrossComments: Annotated[bool, Field(default=False)]
+                Enabled: Annotated[bool, Field(
+                    default=False,
+                    description=
+                        "Controls whether to align consecutive bit field declarations:\n"
+                        "    `true`:\n"
+                        "       ```cpp\n"
+                        "       int aaaa : 1;\n"
+                        "       int b    : 12;\n"
+                        "       int ccc  : 8;\n"
+                        "       ```\n"
+                        "    `false`: preserve user formatting.",
+                )]
+                AcrossEmptyLines: Annotated[bool, Field(
+                    default=False,
+                    description=
+                        "Controls whether to align across empty lines:\n"
+                        "   `true`:\n"
+                        "       ```cpp\n"
+                        "       int aaaa : 1;\n"
+                        "       int b    : 12;\n"
+                        "       int ccc  : 8;\n"
+                        "\n"
+                        "       int d    : 3;\n"
+                        "       ```\n"
+                        "   `false`:\n"
+                        "       ```cpp\n"
+                        "       int aaaa : 1;\n"
+                        "       int b    : 12;\n"
+                        "       int ccc  : 8;\n"
+                        "\n"
+                        "       int d : 3;\n"
+                        "       ```",
+                )]
+                AcrossComments: Annotated[bool, Field(
+                    default=False,
+                    description=
+                        "Controls whether to align across comments:\n"
+                        "   `true`:\n"
+                        "       ```cpp\n"
+                        "       int d    : 3;\n"
+                        "       /* A comment. */\n"
+                        "       int eeee : 4;\n"
+                        "       ```\n"
+                        "   `false`:\n"
+                        "       ```cpp\n"
+                        "       int d : 3;\n"
+                        "       /* A comment. */\n"
+                        "       int eeee : 4;\n"
+                        "       ```",
+                )]
 
             ConsecutiveBitFields: Annotated[_ConsecutiveBitFields, Field(
-                default_factory=_ConsecutiveBitFields.model_construct
+                default_factory=_ConsecutiveBitFields.model_construct,
+                description="Options for aligning consecutive bit field declarations",
             )]
 
             class _ConsecutiveDeclarations(BaseModel):
@@ -4724,14 +4770,99 @@ class ClangFormat(Resource):
                 table.
                 """
                 model_config = ConfigDict(extra="forbid")
-                Enabled: Annotated[bool, Field(default=False)]
-                AcrossEmptyLines: Annotated[bool, Field(default=False)]
-                AcrossComments: Annotated[bool, Field(default=False)]
-                AlignFunctionDeclarations: Annotated[bool, Field(default=False)]
-                AlignFunctionPointers: Annotated[bool, Field(default=False)]
+                Enabled: Annotated[bool, Field(
+                    default=False,
+                    description=
+                        "Controls whether to align consecutive declarations:\n"
+                        "    `true`:\n"
+                        "       ```cpp\n"
+                        "       int         aaaa = 12;\n"
+                        "       float       b = 23;\n"
+                        "       std::string ccc;\n"
+                        "       ```\n"
+                        "    `false`: preserve user formatting.",
+                )]
+                AcrossEmptyLines: Annotated[bool, Field(
+                    default=False,
+                    description=
+                        "Controls whether to align across empty lines:\n"
+                        "   `true`:\n"
+                        "       ```cpp\n"
+                        "       int         aaaa = 12;\n"
+                        "       float       b = 23;\n"
+                        "       std::string ccc;\n"
+                        "\n"
+                        "       double      d = 3.14;\n"
+                        "       ```\n"
+                        "   `false`:\n"
+                        "       ```cpp\n"
+                        "       int         aaaa = 12;\n"
+                        "       float       b = 23;\n"
+                        "       std::string ccc;\n"
+                        "\n"
+                        "       double d = 3.14;\n"
+                        "       ```",
+                )]
+                AcrossComments: Annotated[bool, Field(
+                    default=False,
+                    description=
+                        "Controls whether to align across comments:\n"
+                        "   `true`:\n"
+                        "       ```cpp\n"
+                        "       int    d = 3;\n"
+                        "       /* A comment. */\n"
+                        "       double eee;\n"
+                        "       ```\n"
+                        "   `false`:\n"
+                        "       ```cpp\n"
+                        "       int d = 3;\n"
+                        "       /* A comment. */\n"
+                        "       double eee;\n"
+                        "       ```",
+                )]
+                AlignFunctionDeclarations: Annotated[bool, Field(
+                    default=False,
+                    description=
+                        "Controls whether to horizontally align function declarations "
+                        "similar to variable declarations:\n"
+                        "   `true`:\n"
+                        "       ```cpp\n"
+                        "       unsigned int f1(void);\n"
+                        "       void         f2(void);\n"
+                        "       size_t       f3(void);\n"
+                        "       ```\n"
+                        "   `false`:\n"
+                        "       ```cpp\n"
+                        "       unsigned int f1(void);\n"
+                        "       void f2(void);\n"
+                        "       size_t f3(void);\n"
+                        "       ```",
+                )]
+                AlignFunctionPointers: Annotated[bool, Field(
+                    default=False,
+                    description=
+                        "Controls whether to horizontally align function pointer "
+                        "declarations similar to variable declarations:\n"
+                        "   `true`:\n"
+                        "       ```cpp\n"
+                        "       unsigned i;\n"
+                        "       int     &r;\n"
+                        "       int     *p;\n"
+                        "       int      (*f)();\n"
+                        "       ```\n"
+                        "   `false`:\n"
+                        "       ```cpp\n"
+                        "       unsigned i;\n"
+                        "       int     &r;\n"
+                        "       int     *p;\n"
+                        "       int (*f)();\n"
+                        "       ```",
+                )]
 
             ConsecutiveDeclarations: Annotated[_ConsecutiveDeclarations, Field(
-                default_factory=_ConsecutiveDeclarations.model_construct
+                default_factory=_ConsecutiveDeclarations.model_construct,
+                description=
+                    "Options for aligning consecutive function/variable declarations",
             )]
 
             class _ConsecutiveMacros(BaseModel):
@@ -4739,12 +4870,64 @@ class ClangFormat(Resource):
                 table.
                 """
                 model_config = ConfigDict(extra="forbid")
-                Enabled: Annotated[bool, Field(default=False)]
-                AcrossEmptyLines: Annotated[bool, Field(default=False)]
-                AcrossComments: Annotated[bool, Field(default=False)]
+                Enabled: Annotated[bool, Field(
+                    default=False,
+                    description=
+                        "Controls whether to align consecutive macro definitions:\n"
+                        "    `true`:\n"
+                        "       ```cpp\n"
+                        "       #define SHORT_NAME       42\n"
+                        "       #define LONGER_NAME      0x007\n"
+                        "       #define EVEN_LONGER_NAME (2)\n"
+                        "       #define foo(x)           (x * x)\n"
+                        "       #define bar(y, z)        (y + z)\n"
+                        "       ```\n"
+                        "    `false`: preserve user formatting.",
+                )]
+                AcrossEmptyLines: Annotated[bool, Field(
+                    default=False,
+                    description=
+                        "Controls whether to align across empty lines:\n"
+                        "   `true`:\n"
+                        "       ```cpp\n"
+                        "       #define SHORT_NAME       42\n"
+                        "       #define LONGER_NAME      0x007\n"
+                        "       #define EVEN_LONGER_NAME (2)\n"
+                        "\n"
+                        "       #define foo(x)           (x * x)\n"
+                        "       #define bar(y, z)        (y + z)\n"
+                        "       ```\n"
+                        "   `false`:\n"
+                        "       ```cpp\n"
+                        "       #define SHORT_NAME       42\n"
+                        "       #define LONGER_NAME      0x007\n"
+                        "       #define EVEN_LONGER_NAME (2)\n"
+                        "\n"
+                        "       #define foo(x) (x * x)\n"
+                        "       #define bar(y, z) (y + z)\n"
+                        "       ```",
+                )]
+                AcrossComments: Annotated[bool, Field(
+                    default=False,
+                    description=
+                        "Controls whether to align across comments:\n"
+                        "   `true`:\n"
+                        "       ```cpp\n"
+                        "       #define foo(x)           (x * x)\n"
+                        "       /* A comment. */\n"
+                        "       #define bar(y, z)        (y + z)\n"
+                        "       ```\n"
+                        "   `false`:\n"
+                        "       ```cpp\n"
+                        "       #define foo(x) (x * x)\n"
+                        "       /* A comment. */\n"
+                        "       #define bar(y, z) (y + z)\n"
+                        "       ```",
+                )]
 
             ConsecutiveMacros: Annotated[_ConsecutiveMacros, Field(
-                default_factory=_ConsecutiveMacros.model_construct
+                default_factory=_ConsecutiveMacros.model_construct,
+                description="Options for aligning consecutive macro definitions",
             )]
 
             class _ConsecutiveShortCaseStatements(BaseModel):
@@ -4752,14 +4935,114 @@ class ClangFormat(Resource):
                 table.
                 """
                 model_config = ConfigDict(extra="forbid")
-                Enabled: Annotated[bool, Field(default=False)]
-                AcrossEmptyLines: Annotated[bool, Field(default=False)]
-                AcrossComments: Annotated[bool, Field(default=False)]
-                AlignCaseArrows: Annotated[bool, Field(default=False)]
-                AlignCaseColons: Annotated[bool, Field(default=False)]
+                Enabled: Annotated[bool, Field(
+                    default=False,
+                    description=
+                        "Controls whether to align consecutive short case labels:\n"
+                        "   `true`:\n"
+                        "       ```cpp\n"
+                        "       switch (level) {\n"
+                        "       case log::info:    return \"info:\";\n"
+                        "       case log::warning: return \"warning:\";\n"
+                        "       default:           return \"\";\n"
+                        "       }\n"
+                        "       ```\n"
+                        "   `false`: preserve user formatting.",
+                )]
+                AcrossEmptyLines: Annotated[bool, Field(
+                    default=False,
+                    description=
+                        "Controls whether to align across empty lines:\n"
+                        "   `true`:\n"
+                        "       ```cpp\n"
+                        "       switch (level) {\n"
+                        "       case log::info:    return \"info:\";\n"
+                        "       case log::warning: return \"warning:\";\n"
+                        "\n"
+                        "       default:           return \"\";\n"
+                        "       }\n"
+                        "       ```\n"
+                        "   `false`:\n"
+                        "       ```cpp\n"
+                        "       switch (level) {\n"
+                        "       case log::info:    return \"info:\";\n"
+                        "       case log::warning: return \"warning:\";\n"
+                        "\n"
+                        "       default: return \"\";\n"
+                        "       }\n"
+                        "       ```",
+                )]
+                AcrossComments: Annotated[bool, Field(
+                    default=False,
+                    description=
+                        "Controls whether to align across comments:\n"
+                        "   `true`:\n"
+                        "       ```cpp\n"
+                        "       switch (level) {\n"
+                        "       case log::info:    return \"info:\";\n"
+                        "       /* A comment. */\n"
+                        "       case log::warning: return \"warning:\";\n"
+                        "       default:           return \"\";\n"
+                        "       }\n"
+                        "       ```\n"
+                        "   `false`:\n"
+                        "       ```cpp\n"
+                        "       switch (level) {\n"
+                        "       case log::info:    return \"info:\";\n"
+                        "       /* A comment. */\n"
+                        "       case log::warning: return \"warning:\";\n"
+                        "       default: return \"\";\n"
+                        "       }\n"
+                        "       ```",
+                )]
+                AlignCaseArrows: Annotated[bool, Field(
+                    default=False,
+                    description=
+                        "Controls whether to also align case arrows when aligning "
+                        "short case expressions.\n"
+                        "   `true`:\n"
+                        "       ```cpp\n"
+                        "       i = switch (day) {\n"
+                        "           case THURSDAY, SATURDAY -> 8;\n"
+                        "           case WEDNESDAY          -> 9;\n"
+                        "           default                 -> 0;\n"
+                        "       };\n"
+                        "       ```\n"
+                        "   `false`:\n"
+                        "       ```cpp\n"
+                        "       i = switch (day) {\n"
+                        "           case THURSDAY, SATURDAY -> 8;\n"
+                        "           case WEDNESDAY ->          9;\n"
+                        "           default ->                 0;\n"
+                        "       };\n"
+                        "       ```",
+                )]
+                AlignCaseColons: Annotated[bool, Field(
+                    default=False,
+                    description=
+                        "Controls whether to also align case colons when aligning "
+                        "short case labels.\n"
+                        "   `true`:\n"
+                        "       ```cpp\n"
+                        "       switch (level) {\n"
+                        "       case log::info   : return \"info:\";\n"
+                        "       case log::warning: return \"warning:\";\n"
+                        "       default          : return \"\";\n"
+                        "       }\n"
+                        "       ```\n"
+                        "   `false`:\n"
+                        "       ```cpp\n"
+                        "       switch (level) {\n"
+                        "       case log::info:    return \"info:\";\n"
+                        "       case log::warning: return \"warning:\";\n"
+                        "       default:           return \"\";\n"
+                        "       }\n"
+                        "       ```",
+                )]
 
             ConsecutiveShortCaseStatements: Annotated[_ConsecutiveShortCaseStatements, Field(
-                default_factory=_ConsecutiveShortCaseStatements.model_construct
+                default_factory=_ConsecutiveShortCaseStatements.model_construct,
+                description="Options for aligning consecutive short case labels",
             )]
 
             class _TrailingComments(BaseModel):
@@ -4768,16 +5051,85 @@ class ClangFormat(Resource):
                 Kind: Annotated[Literal["Never", "Leave", "Always"], Field(
                     default="Leave",
                     examples=["Never", "Leave", "Always"],
+                    description=
+                        "Controls the alignment of trailing comments before a line"
+                        "break or scope change:\n"
+                        "   `Never`: don't align trailing comments but other "
+                        "formatting still applies.\n"
+                        "       ```cpp\n"
+                        "       int a; // comment\n"
+                        "       int ab; // comment\n"
+                        "\n"
+                        "       int abc; // comment\n"
+                        "       int abcd; // comment\n"
+                        "       ```\n"
+                        "   `Leave`: preserve user formatting.\n"
+                        "       ```cpp\n"
+                        "       int a;      // comment\n"
+                        "       int ab;         // comment\n"
+                        "\n"
+                        "       int abc;    // comment\n"
+                        "       int abcd;       // comment\n"
+                        "       ```\n"
+                        "   `Always`: align trailing comments.\n"
+                        "       ```cpp\n"
+                        "       int a;  // comment\n"
+                        "       int ab; // comment\n"
+                        "\n"
+                        "       int abc;  // comment\n"
+                        "       int abcd; // comment\n"
+                        "       ```\n"
                 )]
-                OverEmptyLines: Annotated[bool, Field(default=False)]
-                AlignPPAndNotPP: Annotated[bool, Field(default=True)]
+                OverEmptyLines: Annotated[NonNegativeInt, Field(
+                    default=1,
+                    description=
+                        "Controls how many empty lines are needed to reset alignment.  "
+                        "When set to 2, it formats like below:\n"
+                        "   ```cpp\n"
+                        "   int a;      // all these\n"
+                        "\n"
+                        "   int ab;     // comments are\n"
+                        "\n"
+                        "\n"
+                        "   int abcdef; // aligned\n"
+                        "   ```\n"
+                        "If set to 1, it formats like:\n"
+                        "   ```cpp\n"
+                        "   int a;  // these are\n"
+                        "\n"
+                        "   int ab; // aligned\n"
+                        "\n"
+                        "\n"
+                        "   int abcdef; // but this isn't\n"
+                        "   ```\n"
+                )]
+                AlignPPAndNotPP: Annotated[bool, Field(
+                    default=True,
+                    description=
+                        "Controls whether comments following a preprocessor directive "
+                        "should be aligned with comments that don't.\n"
+                        "   `true`:\n"
+                        "       ```cpp\n"
+                        "       #define A  // Comment\n"
+                        "       #define AB // Aligned\n"
+                        "       int i;     // Aligned\n"
+                        "       ```\n"
+                        "   `false`:\n"
+                        "       ```cpp\n"
+                        "       #define A  // Comment\n"
+                        "       #define AB // Aligned\n"
+                        "       int i; // Not aligned\n"
+                        "       ```",
+                )]
 
             TrailingComments: Annotated[_TrailingComments, Field(
-                default_factory=_TrailingComments.model_construct
+                default_factory=_TrailingComments.model_construct,
+                description="Options for aligning trailing `//` comments",
             )]
 
         Align: Annotated[_Align, Field(
-            default_factory=_Align.model_construct
+            default_factory=_Align.model_construct,
+            description="Options for horizontally aligning code",
         )]
 
         class _Allow(BaseModel):
