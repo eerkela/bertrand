@@ -15,12 +15,11 @@ import stat
 import sys
 import time
 import uuid
-
-from collections.abc import Mapping
-from datetime import datetime, timezone
+from collections.abc import Mapping, Sequence
+from datetime import UTC, datetime
 from pathlib import Path, PosixPath
 from types import TracebackType
-from typing import Annotated, Any, Literal, Sequence, Self
+from typing import Annotated, Any, Literal, Self
 
 from pydantic import (
     AfterValidator,
@@ -28,24 +27,28 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
-    PositiveInt,
     NonNegativeInt,
+    PositiveInt,
 )
 
-from .rpc import RPC_TIMEOUT
 from .config import (
     DEFAULT_TAG,
     SHELLS,
+    Bertrand,
     Config,
+    PyProject,
+)
+from .config.bertrand import (
+    TagName,
 )
 from .config.core import (
     AbsolutePath,
     AbsolutePosixPath,
-    Trimmed,
     NonEmpty,
     NoWhiteSpace,
-    SanitizedName,
+    Trimmed,
 )
+from .rpc import RPC_TIMEOUT
 from .run import (
     BERTRAND_ENV,
     CONTAINER_ID_ENV,
@@ -105,7 +108,7 @@ def _check_uuid(value: str) -> str:
 def _to_utc(value: datetime) -> datetime:
     if value.tzinfo is None or value.tzinfo.utcoffset(value) is None:
         raise ValueError(f"'created' must be a valid ISO timestamp: {value}")
-    return value.astimezone(timezone.utc)
+    return value.astimezone(UTC)
 
 
 type UUID4Hex = Annotated[NonEmpty[NoWhiteSpace], AfterValidator(_check_uuid)]
@@ -228,7 +231,7 @@ class Registry(BaseModel):
                     await Config.load(root)
                     if env_id is None or metadata.id == env_id:
                         return metadata
-        except:
+        except Exception:
             pass
         return None
 
@@ -292,7 +295,7 @@ class Registry(BaseModel):
 
             # if the registry is corrupted or otherwise invalid, attempt to rebuild it
             # using active mounts as the source of truth (best-effort)
-            except:
+            except Exception:
                 self = cls(
                     host=uuid.uuid4().hex,
                     ops_since_purge=0,
@@ -688,7 +691,7 @@ async def podman_ids(
                 out.append(container_id)
     except (TimeoutError, TimeoutExpired, KeyboardInterrupt, SystemExit):
         raise
-    except:
+    except Exception:
         pass
     return out
 
@@ -998,7 +1001,7 @@ class Image(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
     version: PositiveInt
-    tag: SanitizedName
+    tag: TagName
     id: ImageId
     created: CreatedAt
     image_args: ArgsList
@@ -1300,7 +1303,7 @@ class Environment:
         version: PositiveInt
         host: UUID4Hex
         id: UUID4Hex
-        images: dict[SanitizedName, Image]
+        images: dict[TagName, Image]
 
         class RetiredImage(BaseModel):
             """An entry in the retired images list, which allows garbage collection
@@ -1384,7 +1387,7 @@ class Environment:
                 try:
                     if not await ret.image.remove(force=force, timeout=self.timeout):
                         retired.append(ret)  # propagate to next generation
-                except:
+                except Exception:
                     retired.append(ret)
             self._json.retired = retired
 
@@ -1542,11 +1545,11 @@ class Environment:
         return self._json.id
 
     @property
-    def images(self) -> dict[SanitizedName, Image]:
+    def images(self) -> dict[TagName, Image]:
         """
         Returns
         -------
-        dict[SanitizedName, Image]
+        dict[TagName, Image]
             A dictionary mapping sanitized image names to their corresponding image objects.
             across all commits in this environment, which may be useful for performing
             environment-level operations across all images.
@@ -1692,8 +1695,9 @@ class Environment:
             worktree=self.worktree,
             tag=tag
         )
-        if config.tool.python is not None:
-            project_name = config.tool.python.project.name
+        python = config.get(PyProject)
+        if python is not None:
+            project_name = python.project.name
         else:
             raise TypeError("could not determine project name")
 
@@ -1702,7 +1706,7 @@ class Environment:
             version=VERSION,
             tag=tag,
             id="",  # corrected from iid file after build
-            created=datetime.now(timezone.utc),
+            created=datetime.now(UTC),
             image_args=image_args,
         )
         run_id = uuid.uuid4().hex
@@ -2037,17 +2041,18 @@ async def podman_publish(
         raise ValueError("OCI repository must be non-empty when provided")
 
     async with Environment(worktree, timeout=TIMEOUT) as env:
-        config = env.config
-        if config.tool.python is None:
+        bertrand = env.config.get(Bertrand)
+        python = env.config.get(PyProject)
+        if python is None:
             raise OSError("could not determine project version for publish")
-        if config.tool.bertrand is None:
+        if bertrand is None:
             raise OSError("could not determine configured tags for publish")
-        tags = [entry.tag for entry in config.tool.bertrand.tags]
+        tags = [entry.tag for entry in bertrand.tags]
         if not tags:
             raise OSError("publish requires at least one configured tag")
 
         # normalize release version and ensure it matches project version
-        project_version = _normalize_version(config.tool.python.project.version)
+        project_version = _normalize_version(python.project.version)
         publish_version = project_version
         if version is not None:
             publish_version = _normalize_version(version)
@@ -2320,7 +2325,7 @@ async def podman_enter(
         if container_bin_str is None:
             raise OSError("could not find a podman executable on PATH")
         container_bin = Path(container_bin_str).expanduser().resolve()
-        bertrand = env.config.tool.bertrand
+        bertrand = env.config.get(Bertrand)
         if not bertrand:
             raise OSError(
                 f"Bertrand configuration is missing from the worktree config at "

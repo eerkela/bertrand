@@ -16,20 +16,10 @@ import sys
 import time
 import urllib.parse
 import uuid
-
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import (
-    Annotated,
-    Awaitable,
-    Callable,
-    Literal,
-    Mapping,
-    NoReturn,
-    Protocol,
-    Self,
-    Sequence,
-)
+from typing import Annotated, Literal, NoReturn, Protocol, Self, cast
 
 from pydantic import (
     AfterValidator,
@@ -455,7 +445,7 @@ class Listener:
                 line = await asyncio.wait_for(reader.readline(), timeout=RPC_TIMEOUT)
                 data = self._parse_request(line.decode("utf-8"))
                 if isinstance(data, Mapping):
-                    _request_id = data.get("id")
+                    _request_id = cast(Mapping[JSONValue, JSONValue], data).get("id")
                     if isinstance(_request_id, str):
                         request_id = _request_id
 
@@ -665,7 +655,7 @@ async def rpc(method: RPCMethod) -> RPCResponse.Result:
             asyncio.open_unix_connection(str(CONTAINER_SOCKET), limit=MAX_REQUEST_BYTES + 1),
             timeout=max(0.001, remaining),
         )
-    except asyncio.TimeoutError as err:
+    except TimeoutError as err:
         raise TimeoutError(
             f"deadline exhausted before '{request.method}' RPC request could connect"
         ) from err
@@ -689,7 +679,7 @@ async def rpc(method: RPCMethod) -> RPCResponse.Result:
             reader.readline(),
             timeout=max(0.001, remaining),
         )
-    except asyncio.TimeoutError as err:
+    except TimeoutError as err:
         raise TimeoutError(
             f"deadline exhausted while processing '{request.method}' RPC request"
         ) from err
@@ -847,7 +837,7 @@ async def _vscode_open_response(
                         f"VSCode process exited with status {returncode} while "
                         "handling block=True request"
                     )
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 expired = True
         else:
             try:

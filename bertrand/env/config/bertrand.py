@@ -636,19 +636,20 @@ class Bertrand(Resource):
                 model_config = ConfigDict(extra="forbid")
                 mode: Annotated[NetworkMode, Field(
                     default="pasta",
+                    examples=["none", "host", "private", "slirp4netns", "pasta", "ns:<path>"],
                     description=
                         "The networking driver to use within containers for this "
-                        "project.  'pasta' is the default for efficient rootless "
-                        "networking, but 'host' may be preferred for "
-                        "performance-sensitive applications where security is not a "
-                        "primary concern.  Equivalent to `podman create --network`.",
+                        "project.  'pasta' is the default for rootless networking, but "
+                        "'host' may be preferred for performance-sensitive applications "
+                        "where security is not a primary concern.  Equivalent to "
+                        "`podman create --network`.",
                 )]
                 options: Annotated[list[str], Field(
                     default_factory=list,
                     description=
-                        "Additional options to pass to the networking driver.  See "
-                        "the podman documentation for the relevant 'mode' for "
-                        "supported options.",
+                        "Additional options to pass to the networking driver.  See the "
+                        "podman documentation for the relevant 'mode' for supported "
+                        "options.",
                 )]
                 dns: Annotated[list[IPAddress], Field(
                     default_factory=list,

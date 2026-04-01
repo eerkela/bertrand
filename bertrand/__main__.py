@@ -7,17 +7,12 @@ import asyncio
 import os
 import subprocess
 import time
-
 from datetime import datetime
 from pathlib import Path
 
+from . import __version__
 from .env.config import (
-    CONTAINER_ARTIFACT_DIR,
-    IMAGE_TAG_ENV,
-    WORKTREE_MOUNT,
     Config,
-    inside_image,
-    inside_container
 )
 from .env.container import (
     TIMEOUT,
@@ -38,10 +33,18 @@ from .env.container import (
     podman_stop,
     podman_top,
 )
-from .env.init import bertrand_init, bertrand_clean
+from .env.init import bertrand_clean, bertrand_init
 from .env.rpc import CodeOpen, rpc
-from .env.run import TimeoutExpired, atomic_write_text, confirm
-from . import __version__
+from .env.run import (
+    CONTAINER_TMP_MOUNT,
+    IMAGE_TAG_ENV,
+    WORKTREE_MOUNT,
+    TimeoutExpired,
+    atomic_write_text,
+    confirm,
+    inside_container,
+    inside_image,
+)
 
 # pylint: disable=unused-argument
 
@@ -1676,8 +1679,8 @@ class Internal:
         with Config.load(WORKTREE_MOUNT) as config:
             config.sync(tag)
             files = config.sources()
-        artifact_root = str(CONTAINER_ARTIFACT_DIR)
-        clang_tidy_config = CONTAINER_ARTIFACT_DIR / ".clang-tidy"
+        artifact_root = str(CONTAINER_TMP_MOUNT)
+        clang_tidy_config = CONTAINER_TMP_MOUNT / ".clang-tidy"
 
         # Python static checks
         for cmd in (["ruff", "check", "."], ["ty", "check", "."]):
@@ -1721,7 +1724,7 @@ class Internal:
         with Config.load(WORKTREE_MOUNT) as config:
             config.sync(tag)
             files = config.sources()
-        clang_format_config = CONTAINER_ARTIFACT_DIR / ".clang-format"
+        clang_format_config = CONTAINER_TMP_MOUNT / ".clang-format"
 
         # Python formatting
         result = subprocess.run(["ruff", "format", "."], check=False, cwd=WORKTREE_MOUNT)

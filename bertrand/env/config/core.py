@@ -46,14 +46,9 @@ from ..run import (
 # `pyproject.toml` depending on the environment's capabilities?
 
 
-HTTP_URL = TypeAdapter(AnyHttpUrl)
-
-
-# Canonical path definitions for worktree control
 CACHE_MOUNT: PosixPath = PosixPath("/tmp/.cache")
 UV_CACHE: PosixPath = CACHE_MOUNT / "uv"
-
-
+HTTP_URL = TypeAdapter(AnyHttpUrl)
 GLOB_RE = re.compile(r"^[A-Za-z0-9._/\-\*\?\[\]!]+$")
 RESOURCE_NAME_RE = re.compile(r"^[a-z]([a-z0-9_.-]*[a-z0-9])?$")
 
@@ -726,29 +721,35 @@ class Config:
     def __bool__(self) -> bool:
         return self._entered > 0
 
-    def __contains__(self, key: ResourceName) -> bool:
+    def __contains__(self, key: ResourceName | Resource | type[Resource]) -> bool:
         """Check if a resource ID is present in the environment.
 
         Parameters
         ----------
-        key : ResourceName
+        key : ResourceName | Resource | type[Resource]
             The stable identifier of the resource to check for, as defined in the
             global catalog.
 
         Returns
         -------
         bool
-            True if the resource ID is present in the environment, False otherwise.
+            True if the referenced resource is present in the environment, False
+            otherwise.
         """
+        if isinstance(key, Resource) or (isinstance(key, type) and issubclass(key, Resource)):
+            key = key.name
         return key in self.resources
 
-    def get(self, r: type[_ResourceLike[_ResourceModel_co]]) -> _ResourceModel_co | None:
+    def get(
+        self,
+        r: _ResourceLike[_ResourceModel_co] | type[_ResourceLike[_ResourceModel_co]]
+    ) -> _ResourceModel_co | None:
         """Retrieve the parsed config model for the given resource ID, assuming it is
         present in the environment.
 
         Parameters
         ----------
-        r : type[Resource]
+        r : Resource | type[Resource]
             A raw resource type (decorated with `@resource`) to get the model for.
 
         Returns

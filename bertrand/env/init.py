@@ -2,7 +2,6 @@
 for rootless container operation and project initialization.
 """
 from __future__ import annotations
-from numpy.f2py.crackfortran import f
 
 import json
 import os
