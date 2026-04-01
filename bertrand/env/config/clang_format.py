@@ -1,7 +1,7 @@
 """TODO"""
 from __future__ import annotations
 
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, Self
 
 from pydantic import (
     AfterValidator,
@@ -9,6 +9,7 @@ from pydantic import (
     ConfigDict,
     Field,
     NonNegativeInt,
+    model_validator,
 )
 
 from .core import (
@@ -3308,38 +3309,115 @@ class ClangFormat(Resource):
         class _IntegerLiteralSeparator(BaseModel):
             """Validate the `[tool.clang-format.IntegerLiteralSeparator]` table."""
             model_config = ConfigDict(extra="forbid")
-            Binary: Annotated[int, Field(
-                default=8,
-                ge=-1
+
+            class _Base(BaseModel):
+                """Validate a `[tool.clang-format.IntegerLiteralSeparator.<base>]`
+                table.
+                """
+                model_config = ConfigDict(extra="forbid")
+                Every: Annotated[int, Field(
+                    default=0,
+                    ge=-1,
+                    description=
+                        "Controls how often separators are inserted for this base.  "
+                        "`-1` removes all separators, `0` preserves existing "
+                        "separators, and positive values insert separators from the "
+                        "rightmost digit.\n"
+                        "   ```cpp\n"
+                        "   /* -1: */ b = 0b100111101101;\n"
+                        "   /*  0: */ b = 0b10011'11'0110'1;\n"
+                        "   /*  3: */ b = 0b100'111'101'101;\n"
+                        "   /*  4: */ b = 0b1001'1110'1101;\n"
+                        "   ```",
+                )]
+                Min: Annotated[int, Field(
+                    default=-1,
+                    ge=-1,
+                    description=
+                        "Controls the minimum number of digits required before "
+                        "separators are inserted.  `-1` disables this threshold.\n"
+                        "   ```cpp\n"
+                        "   // Every: 3\n"
+                        "   // Min: 7\n"
+                        "   b1 = 0b101101;\n"
+                        "   b2 = 0b1'101'101;\n"
+                        "   ```",
+                )]
+                Max: Annotated[int, Field(
+                    default=-1,
+                    ge=-1,
+                    description=
+                        "Controls the maximum number of digits for which separators "
+                        "are removed.  `-1` disables this threshold.\n"
+                        "   ```cpp\n"
+                        "   // Every: 3\n"
+                        "   // Min: 7\n"
+                        "   // Max: 4\n"
+                        "   b0 = 0b1011; // Always removed.\n"
+                        "   b1 = 0b101101; // Not added.\n"
+                        "   b2 = 0b1'01'101; // Not removed, not corrected.\n"
+                        "   b3 = 0b1'101'101; // Always added.\n"
+                        "   b4 = 0b10'1101; // Corrected to 0b101'101.\n"
+                        "   ```",
+                )]
+
+                @model_validator(mode="after")
+                def _validate_min_max(self) -> Self:
+                    if self.Min != -1 and self.Max != -1 and self.Max <= self.Min:
+                        raise ValueError("Max must be greater than Min when both are set.")
+                    return self
+
+            Binary: Annotated[_Base, Field(
+                default_factory=_Base.model_construct,
+                description="Options for formatting separators in binary literals.",
             )]
-            Decimal: Annotated[int, Field(
-                default=-1,
-                ge=-1
+            Decimal: Annotated[_Base, Field(
+                default_factory=_Base.model_construct,
+                description="Options for formatting separators in decimal literals.",
             )]
-            Hex: Annotated[int, Field(
-                default=4,
-                ge=-1
+            Hex: Annotated[_Base, Field(
+                default_factory=_Base.model_construct,
+                description="Options for formatting separators in hexadecimal literals.",
             )]
 
         IntegerLiteralSeparator: Annotated[_IntegerLiteralSeparator, Field(
-            default_factory=_IntegerLiteralSeparator.model_construct
+            default_factory=_IntegerLiteralSeparator.model_construct,
+            description="Options for formatting integer literal separators.",
         )]
 
         class _KeepEmptyLines(BaseModel):
             """Validate the `[tool.clang-format.KeepEmptyLines]` table."""
             model_config = ConfigDict(extra="forbid")
             AtEndOfFile: Annotated[bool, Field(
-                default=False
+                default=False,
+                description="Controls whether to keep empty lines at end of file.",
             )]
             AtStartOfBlock: Annotated[bool, Field(
-                default=False
+                default=False,
+                description=
+                    "Controls whether to keep empty lines at start of a block.\n"
+                    "   `true`:\n"
+                    "       ```cpp\n"
+                    "       if (foo) {\n"
+                    "\n"
+                    "           bar();\n"
+                    "       }\n"
+                    "       ```\n"
+                    "   `false`:\n"
+                    "       ```cpp\n"
+                    "       if (foo) {\n"
+                    "           bar();\n"
+                    "       }\n"
+                    "       ```",
             )]
             AtStartOfFile: Annotated[bool, Field(
-                default=False
+                default=False,
+                description="Controls whether to keep empty lines at start of file.",
             )]
 
         KeepEmptyLines: Annotated[_KeepEmptyLines, Field(
-            default_factory=_KeepEmptyLines.model_construct
+            default_factory=_KeepEmptyLines.model_construct,
+            description="Options for explicitly keeping or removing empty lines.",
         )]
 
         class _NumericLiteralCase(BaseModel):
@@ -3348,39 +3426,135 @@ class ClangFormat(Resource):
             ExponentLetter: Annotated[Literal["Leave", "Upper", "Lower"], Field(
                 default="Lower",
                 examples=["Leave", "Upper", "Lower"],
+                description=
+                    "Controls floating point exponent separator letter case.\n"
+                    "   `Leave`: preserve user formatting.\n"
+                    "       ```cpp\n"
+                    "       float a = 6.02e23 + 1.0E10;\n"
+                    "       ```\n"
+                    "   `Upper`: format this component with uppercase characters.\n"
+                    "       ```cpp\n"
+                    "       float a = 6.02E23 + 1.0E10;\n"
+                    "       ```\n"
+                    "   `Lower`: format this component with lowercase characters.\n"
+                    "       ```cpp\n"
+                    "       float a = 6.02e23 + 1.0e10;\n"
+                    "       ```",
             )]
             HexDigit: Annotated[Literal["Leave", "Upper", "Lower"], Field(
                 default="Upper",
                 examples=["Leave", "Upper", "Lower"],
+                description=
+                    "Controls hexadecimal digit case.\n"
+                    "   `Leave`: preserve user formatting.\n"
+                    "       ```cpp\n"
+                    "       a = 0xaBcDeF;\n"
+                    "       ```\n"
+                    "   `Upper`: format this component with uppercase characters.\n"
+                    "       ```cpp\n"
+                    "       a = 0xABCDEF;\n"
+                    "       ```\n"
+                    "   `Lower`: format this component with lowercase characters.\n"
+                    "       ```cpp\n"
+                    "       a = 0xabcdef;\n"
+                    "       ```",
             )]
             Prefix: Annotated[Literal["Leave", "Upper", "Lower"], Field(
                 default="Lower",
                 examples=["Leave", "Upper", "Lower"],
+                description=
+                    "Controls integer prefix case.\n"
+                    "   `Leave`: preserve user formatting.\n"
+                    "       ```cpp\n"
+                    "       a = 0XF0 | 0b1;\n"
+                    "       ```\n"
+                    "   `Upper`: format this component with uppercase characters.\n"
+                    "       ```cpp\n"
+                    "       a = 0XF0 | 0B1;\n"
+                    "       ```\n"
+                    "   `Lower`: format this component with lowercase characters.\n"
+                    "       ```cpp\n"
+                    "       a = 0xF0 | 0b1;\n"
+                    "       ```",
             )]
             Suffix: Annotated[Literal["Leave", "Upper", "Lower"], Field(
                 default="Lower",
                 examples=["Leave", "Upper", "Lower"],
+                description=
+                    "Controls suffix case.  This excludes case-sensitive reserved "
+                    "suffixes, such as `min` in C++.\n"
+                    "   `Leave`: preserve user formatting.\n"
+                    "       ```cpp\n"
+                    "       a = 1uLL;\n"
+                    "       b = 1Ull;\n"
+                    "       ```\n"
+                    "   `Upper`: format this component with uppercase characters.\n"
+                    "       ```cpp\n"
+                    "       a = 1ULL;\n"
+                    "       b = 1ULL;\n"
+                    "       ```\n"
+                    "   `Lower`: format this component with lowercase characters.\n"
+                    "       ```cpp\n"
+                    "       a = 1ull;\n"
+                    "       b = 1ull;\n"
+                    "       ```",
             )]
 
         NumericLiteralCase: Annotated[_NumericLiteralCase, Field(
-            default_factory=_NumericLiteralCase.model_construct
+            default_factory=_NumericLiteralCase.model_construct,
+            description="Options for capitalization style of numeric literals.",
         )]
 
         class _SortIncludes(BaseModel):
             """Validate the `[tool.clang-format.SortIncludes]` table."""
             model_config = ConfigDict(extra="forbid")
             Enabled: Annotated[bool, Field(
-                default=True
+                default=True,
+                description="Controls whether include sorting is applied.",
             )]
             IgnoreCase: Annotated[bool, Field(
-                default=False
+                default=False,
+                description=
+                    "Controls whether includes are sorted case-insensitively.\n"
+                    "   `true`:\n"
+                    "       ```cpp\n"
+                    "       #include \"A/B.h\"\n"
+                    "       #include \"A/b.h\"\n"
+                    "       #include \"a/b.h\"\n"
+                    "       #include \"B/A.h\"\n"
+                    "       #include \"B/a.h\"\n"
+                    "       ```\n"
+                    "   `false`:\n"
+                    "       ```cpp\n"
+                    "       #include \"A/B.h\"\n"
+                    "       #include \"A/b.h\"\n"
+                    "       #include \"B/A.h\"\n"
+                    "       #include \"B/a.h\"\n"
+                    "       #include \"a/b.h\"\n"
+                    "       ```",
             )]
             IgnoreExtension: Annotated[bool, Field(
-                default=False
+                default=False,
+                description=
+                    "Controls whether file extensions are considered only when two "
+                    "includes compare equal otherwise.\n"
+                    "   `true`:\n"
+                    "       ```cpp\n"
+                    "       #include \"A.h\"\n"
+                    "       #include \"A.inc\"\n"
+                    "       #include \"A-util.h\"\n"
+                    "       ```\n"
+                    "   `false`:\n"
+                    "       ```cpp\n"
+                    "       #include \"A-util.h\"\n"
+                    "       #include \"A.h\"\n"
+                    "       #include \"A.inc\"\n"
+                    "       ```",
             )]
 
         SortIncludes: Annotated[_SortIncludes, Field(
-            default_factory=_SortIncludes.model_construct
+            default_factory=_SortIncludes.model_construct,
+            description="Options for if and how includes are sorted.",
         )]
 
         class _Space(BaseModel):
@@ -3504,6 +3678,15 @@ class ClangFormat(Resource):
 
     async def validate(self, config: Config, fragment: Any) -> Model | None:
         return self.Model.model_validate(fragment)
+
+    def _integer_literal_separator(self, name: str) -> dict[str, int]:
+        model = getattr(self.Model.IntegerLiteralSeparator, name)
+        result = {name: model.Every}
+        if model.Min != -1:
+            result[f"{name}MinDigitsInsert"] = model.Min
+        if model.Max != -1:
+            result[f"{name}MaxDigitsRemove"] = model.Max
+        return result
 
     async def render(self, config: Config, tag: str | None) -> None:
         model = config.get(ClangFormat)
@@ -3644,11 +3827,11 @@ class ClangFormat(Resource):
             "IndentWrappedFunctionNames": model.Indent.WrappedFunctionNames,
             "InsertBraces": model.InsertBraces,
             "InsertNewlineAtEOF": model.InsertNewlineAtEOF,
-            "IntegerLiteralSeparator": {
-                "Binary": model.IntegerLiteralSeparator.Binary,
-                "Decimal": model.IntegerLiteralSeparator.Decimal,
-                "Hex": model.IntegerLiteralSeparator.Hex,
-            },
+            "IntegerLiteralSeparator": (
+                self._integer_literal_separator("Binary") |
+                self._integer_literal_separator("Decimal") |
+                self._integer_literal_separator("Hex")
+            ),
             "KeepEmptyLines": {
                 "AtEndOfFile": model.KeepEmptyLines.AtEndOfFile,
                 "AtStartOfBlock": model.KeepEmptyLines.AtStartOfBlock,
