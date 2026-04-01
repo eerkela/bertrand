@@ -2096,8 +2096,7 @@ class ClangFormat(Resource):
                     "           return;\n"
                     "       }\n"
                     "       ```\n"
-                    "   `Leave`: Leave the line breaking after the last attribute of "
-                    "the group as is.\n"
+                    "   `Leave`: preserve user formatting.\n"
                     "       ```cpp\n"
                     "       [[maybe_unused]] const int i;\n"
                     "       [[gnu::const]] [[maybe_unused]]\n"
@@ -2754,93 +2753,556 @@ class ClangFormat(Resource):
             """Validate the `[tool.clang-format.BraceWrapping]` table."""
             model_config = ConfigDict(extra="forbid")
             AfterCaseLabel: Annotated[bool, Field(
-                default=False
+                default=False,
+                description=
+                    "Controls whether to wrap braces after case labels.\n"
+                    "   `true`:\n"
+                    "       ```cpp\n"
+                    "       switch (foo) {\n"
+                    "           case 1:\n"
+                    "           {\n"
+                    "               bar();\n"
+                    "               break;\n"
+                    "           }\n"
+                    "           default:\n"
+                    "           {\n"
+                    "               plop();\n"
+                    "           }\n"
+                    "       }\n"
+                    "       ```\n"
+                    "   `false`:\n"
+                    "       ```cpp\n"
+                    "       switch (foo) {\n"
+                    "           case 1: {\n"
+                    "               bar();\n"
+                    "               break;\n"
+                    "           }\n"
+                    "           default: {\n"
+                    "               plop();\n"
+                    "           }\n"
+                    "       }\n"
+                    "       ```",
             )]
             AfterClass: Annotated[bool, Field(
-                default=False
+                default=False,
+                description=
+                    "Controls whether to wrap braces after class definitions.\n"
+                    "   `true`:\n"
+                    "       ```cpp\n"
+                    "       class foo\n"
+                    "       {};\n"
+                    "       ```\n"
+                    "   `false`:\n"
+                    "       ```cpp\n"
+                    "       class foo {};\n"
+                    "       ```",
             )]
             AfterControlStatement: Annotated[Literal["Never", "Multiline", "Always"], Field(
                 default="Never",
                 examples=["Never", "Multiline", "Always"],
+                description=
+                    "Controls whether to wrap braces after control statements "
+                    "(`if`/`for`/`while`/`switch`/...).\n"
+                    "   `Never`: never wrap braces after a control statement.\n"
+                    "       ```cpp\n"
+                    "       if (foo()) {\n"
+                    "       } else {\n"
+                    "       }\n"
+                    "       for (int i = 0; i < 10; ++i) {\n"
+                    "       }\n"
+                    "       ```\n"
+                    "   `Multiline`: only wrap braces after a multi-line control statement.\n"
+                    "       ```cpp\n"
+                    "       if (foo && bar &&\n"
+                    "           baz)\n"
+                    "       {\n"
+                    "           quux();\n"
+                    "       }\n"
+                    "       while (foo || bar) {\n"
+                    "       }\n"
+                    "       ```\n"
+                    "   `Always`: always wrap braces after a control statement.\n"
+                    "       ```cpp\n"
+                    "       if (foo())\n"
+                    "       {\n"
+                    "       } else\n"
+                    "       {}\n"
+                    "       for (int i = 0; i < 10; ++i)\n"
+                    "       {}\n"
+                    "       ```",
             )]
             AfterEnum: Annotated[bool, Field(
-                default=False
+                default=False,
+                description=
+                    "Controls whether to wrap braces after enum definitions.\n"
+                    "   `true`:\n"
+                    "       ```cpp\n"
+                    "       enum X : int\n"
+                    "       {\n"
+                    "           B\n"
+                    "       };\n"
+                    "       ```\n"
+                    "   `false`:\n"
+                    "       ```cpp\n"
+                    "       enum X : int { B };\n"
+                    "       ```",
             )]
             AfterFunction: Annotated[bool, Field(
-                default=False
+                default=False,
+                description=
+                    "Controls whether to wrap braces after function definitions.\n"
+                    "   `true`:\n"
+                    "       ```cpp\n"
+                    "       void foo()\n"
+                    "       {\n"
+                    "           bar();\n"
+                    "           bar2();\n"
+                    "       }\n"
+                    "       ```\n"
+                    "   `false`:\n"
+                    "       ```cpp\n"
+                    "       void foo() {\n"
+                    "           bar();\n"
+                    "           bar2();\n"
+                    "       }\n"
+                    "       ```",
             )]
             AfterNamespace: Annotated[bool, Field(
-                default=False
+                default=False,
+                description=
+                    "Controls whether to wrap braces after namespace definitions.\n"
+                    "   `true`:\n"
+                    "       ```cpp\n"
+                    "       namespace\n"
+                    "       {\n"
+                    "       int foo();\n"
+                    "       int bar();\n"
+                    "       }\n"
+                    "       ```\n"
+                    "   `false`:\n"
+                    "       ```cpp\n"
+                    "       namespace {\n"
+                    "       int foo();\n"
+                    "       int bar();\n"
+                    "       }\n"
+                    "       ```",
             )]
             AfterStruct: Annotated[bool, Field(
-                default=False
+                default=False,
+                description=
+                    "Controls whether to wrap braces after struct definitions.\n"
+                    "   `true`:\n"
+                    "       ```cpp\n"
+                    "       struct foo\n"
+                    "       {\n"
+                    "           int x;\n"
+                    "       };\n"
+                    "       ```\n"
+                    "   `false`:\n"
+                    "       ```cpp\n"
+                    "       struct foo {\n"
+                    "           int x;\n"
+                    "       };\n"
+                    "       ```",
             )]
             AfterUnion: Annotated[bool, Field(
-                default=False
+                default=False,
+                description=
+                    "Controls whether to wrap braces after union definitions.\n"
+                    "   `true`:\n"
+                    "       ```cpp\n"
+                    "       union foo\n"
+                    "       {\n"
+                    "           int x;\n"
+                    "       }\n"
+                    "       ```\n"
+                    "   `false`:\n"
+                    "       ```cpp\n"
+                    "       union foo {\n"
+                    "           int x;\n"
+                    "       }\n"
+                    "       ```",
             )]
             AfterExternBlock: Annotated[bool, Field(
-                default=False
+                default=False,
+                description=
+                    "Controls whether to wrap braces after extern blocks.\n"
+                    "   `true`:\n"
+                    "       ```cpp\n"
+                    "       extern \"C\"\n"
+                    "       {\n"
+                    "           int foo();\n"
+                    "       }\n"
+                    "       ```\n"
+                    "   `false`:\n"
+                    "       ```cpp\n"
+                    "       extern \"C\" {\n"
+                    "       int foo();\n"
+                    "       }\n"
+                    "       ```",
             )]
             BeforeCatch: Annotated[bool, Field(
-                default=False
+                default=False,
+                description=
+                    "Controls whether to wrap before `catch`.\n"
+                    "   `true`:\n"
+                    "       ```cpp\n"
+                    "       try {\n"
+                    "           foo();\n"
+                    "       }\n"
+                    "       catch () {\n"
+                    "       }\n"
+                    "       ```\n"
+                    "   `false`:\n"
+                    "       ```cpp\n"
+                    "       try {\n"
+                    "           foo();\n"
+                    "       } catch () {\n"
+                    "       }\n"
+                    "       ```",
             )]
             BeforeElse: Annotated[bool, Field(
-                default=False
+                default=False,
+                description=
+                    "Controls whether to wrap before `else`.\n"
+                    "   `true`:\n"
+                    "       ```cpp\n"
+                    "       if (foo()) {\n"
+                    "       }\n"
+                    "       else {\n"
+                    "       }\n"
+                    "       ```\n"
+                    "   `false`:\n"
+                    "       ```cpp\n"
+                    "       if (foo()) {\n"
+                    "       } else {\n"
+                    "       }\n"
+                    "       ```",
             )]
             BeforeLambdaBody: Annotated[bool, Field(
-                default=False
+                default=False,
+                description=
+                    "Controls whether to wrap braces in lambda bodies.\n"
+                    "   `true`:\n"
+                    "       ```cpp\n"
+                    "       connect(\n"
+                    "           []()\n"
+                    "           {\n"
+                    "               foo();\n"
+                    "               bar();\n"
+                    "           });\n"
+                    "       ```\n"
+                    "   `false`:\n"
+                    "       ```cpp\n"
+                    "       connect([]() {\n"
+                    "           foo();\n"
+                    "           bar();\n"
+                    "       });\n"
+                    "       ```",
             )]
             BeforeWhile: Annotated[bool, Field(
-                default=False
+                default=False,
+                description=
+                    "Controls whether to wrap before `while`.\n"
+                    "   `true`:\n"
+                    "       ```cpp\n"
+                    "       do {\n"
+                    "           foo();\n"
+                    "       }\n"
+                    "       while (1);\n"
+                    "       ```\n"
+                    "   `false`:\n"
+                    "       ```cpp\n"
+                    "       do {\n"
+                    "           foo();\n"
+                    "       } while (1);\n"
+                    "       ```",
             )]
             IndentBraces: Annotated[bool, Field(
-                default=False
+                default=False,
+                description="Controls whether wrapped braces are indented.",
             )]
             SplitEmptyFunction: Annotated[bool, Field(
-                default=False
+                default=False,
+                description=
+                    "Controls whether empty function bodies can be put on a single "
+                    "line.  This option is used only if the opening brace of the function "
+                    "has already been wrapped (i.e. `AfterFunction` is enabled), and "
+                    "other rules indicate the function could/should not be put on a "
+                    "single line.\n"
+                    "   `true`:\n"
+                    "       ```cpp\n"
+                    "       int f()\n"
+                    "       {\n"
+                    "       }\n"
+                    "       ```\n"
+                    "   `false`:\n"
+                    "       ```cpp\n"
+                    "       int f()\n"
+                    "       {}\n"
+                    "       ```",
             )]
             SplitEmptyRecord: Annotated[bool, Field(
-                default=False
+                default=False,
+                description=
+                    "Controls whether empty records (e.g. class, struct, or union) can "
+                    "be put on a single line.  This option is used only if the opening "
+                    "brace of the record has already been wrapped (i.e. `AfterClass` "
+                    "for classes is enabled).\n"
+                    "   `true`:\n"
+                    "       ```cpp\n"
+                    "       class Foo\n"
+                    "       {\n"
+                    "       }\n"
+                    "       ```\n"
+                    "   `false`:\n"
+                    "       ```cpp\n"
+                    "       class Foo\n"
+                    "       {}\n"
+                    "       ```",
             )]
             SplitEmptyNamespace: Annotated[bool, Field(
-                default=False
+                default=False,
+                description=
+                    "Controls whether empty namespace bodies can be put on a single "
+                    "line.  This option is used only if the opening brace of the "
+                    "namespace has already been wrapped (i.e. `AfterNamespace` is "
+                    "enabled).\n"
+                    "   `true`:\n"
+                    "       ```cpp\n"
+                    "       namespace Foo\n"
+                    "       {\n"
+                    "       }\n"
+                    "       ```\n"
+                    "   `false`:\n"
+                    "       ```cpp\n"
+                    "       namespace Foo\n"
+                    "       {}\n"
+                    "       ```",
             )]
 
         BraceWrapping: Annotated[_BraceWrapping, Field(
-            default_factory=_BraceWrapping.model_construct
+            default_factory=_BraceWrapping.model_construct,
+            description="Options for fine-grained brace wrapping.",
         )]
 
         class _Indent(BaseModel):
             """Validate the `[tool.clang-format.Indent]` table."""
             model_config = ConfigDict(extra="forbid")
             CaseLabels: Annotated[bool, Field(
-                default=True
+                default=True,
+                description=
+                    "Controls whether to indent case labels one level from the switch "
+                    "statement.\n"
+                    "   `true`:\n"
+                    "       ```cpp\n"
+                    "       switch (fool) {\n"
+                    "       case 1:\n"
+                    "           bar();\n"
+                    "           break;\n"
+                    "       default:\n"
+                    "           plop();\n"
+                    "       }\n"
+                    "       ```\n"
+                    "   `false`:\n"
+                    "       ```cpp\n"
+                    "       switch (fool) {\n"
+                    "       case 1:\n"
+                    "           bar();\n"
+                    "           break;\n"
+                    "       default:\n"
+                    "           plop();\n"
+                    "       }\n"
+                    "       ```",
             )]
             ExportBlock: Annotated[bool, Field(
-                default=True
+                default=True,
+                description=
+                    "Controls whether to indent the body of an `export { ... }` block.\n"
+                    "   `true`:\n"
+                    "       ```cpp\n"
+                    "       export {\n"
+                    "           void foo();\n"
+                    "           void bar();\n"
+                    "       }\n"
+                    "       ```\n"
+                    "   `false`:\n"
+                    "       ```cpp\n"
+                    "       export {\n"
+                    "       void foo();\n"
+                    "       void bar();\n"
+                    "       }\n"
+                    "       ```",
             )]
             ExternBlock: Annotated[bool, Field(
-                default=True
+                default=True,
+                description=
+                    "Controls whether to indent extern blocks.\n"
+                    "   `true`:\n"
+                    "       ```cpp\n"
+                    "       extern \"C\" {\n"
+                    "           void foo();\n"
+                    "       }\n"
+                    "       ```\n"
+                    "   `false`:\n"
+                    "       ```cpp\n"
+                    "       extern \"C\" {\n"
+                    "       void foo();\n"
+                    "       }\n"
+                    "       ```",
             )]
-            GotoLabels: Annotated[bool, Field(
-                default=True
-            )]
-            PPDirectives: Annotated[Literal["None", "BeforeHash", "AfterHash", "Both"], Field(
-                default="BeforeHash",
-                examples=["None", "BeforeHash", "AfterHash", "Both"],
-            )]
+            GotoLabels: Annotated[
+                Literal["NoIndent", "OuterIndent", "InnerIndent", "HalfIndent"],
+                Field(
+                    default="InnerIndent",
+                    examples=["NoIndent", "OuterIndent", "InnerIndent", "HalfIndent"],
+                    description=
+                        "Controls how goto labels are indented.\n"
+                        "   `NoIndent`: do not indent goto labels.\n"
+                        "       ```cpp\n"
+                        "       int f() {\n"
+                        "           if (foo()) {\n"
+                        "           label1:\n"
+                        "               bar();\n"
+                        "           }\n"
+                        "       label2:\n"
+                        "           return 1;\n"
+                        "       }\n"
+                        "       ```\n"
+                        "   `OuterIndent`: indent goto labels one level from the "
+                        "surrounding block.\n"
+                        "       ```cpp\n"
+                        "       int f() {\n"
+                        "           if (foo()) {\n"
+                        "               label1:\n"
+                        "               bar();\n"
+                        "           }\n"
+                        "           label2:\n"
+                        "           return 1;\n"
+                        "       }\n"
+                        "       ```\n"
+                        "   `InnerIndent`: indent goto labels one level and "
+                        "statements under labels one additional level.\n"
+                        "       ```cpp\n"
+                        "       int f() {\n"
+                        "           if (foo()) {\n"
+                        "               label1:\n"
+                        "                   bar();\n"
+                        "           }\n"
+                        "           label2:\n"
+                        "               return 1;\n"
+                        "       }\n"
+                        "       ```\n"
+                        "   `HalfIndent`: indent goto labels by half an indent "
+                        "width.\n"
+                        "       ```cpp\n"
+                        "       int f() {\n"
+                        "           if (foo()) {\n"
+                        "             label1:\n"
+                        "               bar();\n"
+                        "           }\n"
+                        "         label2:\n"
+                        "           return 1;\n"
+                        "       }\n"
+                        "       ```",
+                )
+            ]
+            PPDirectives: Annotated[
+                Literal["None", "AfterHash", "BeforeHash", "Leave"],
+                Field(
+                    default="BeforeHash",
+                    examples=["None", "AfterHash", "BeforeHash", "Leave"],
+                    description=
+                        "Controls preprocessor directive indentation style.\n"
+                        "   `None`: do not indent any directives.\n"
+                        "       ```cpp\n"
+                        "       #if FOO\n"
+                        "       #if BAR\n"
+                        "       #include <foo>\n"
+                        "       #endif\n"
+                        "       #endif\n"
+                        "       ```\n"
+                        "   `AfterHash`: indent directives after the hash.\n"
+                        "       ```cpp\n"
+                        "       #if FOO\n"
+                        "       #   if BAR\n"
+                        "       #       include <foo>\n"
+                        "       #   endif\n"
+                        "       #endif\n"
+                        "       ```\n"
+                        "   `BeforeHash`: indent directives before the hash.\n"
+                        "       ```cpp\n"
+                        "       #if FOO\n"
+                        "           #if BAR\n"
+                        "               #include <foo>\n"
+                        "           #endif\n"
+                        "       #endif\n"
+                        "       ```\n"
+                        "   `Leave`: preserve user formatting.\n"
+                        "       ```cpp\n"
+                        "       #if FOO\n"
+                        "           #if BAR\n"
+                        "       #include <foo>\n"
+                        "           #endif\n"
+                        "       #endif\n"
+                        "       ```",
+                )
+            ]
             RequiresClause: Annotated[bool, Field(
-                default=True
+                default=True,
+                description=
+                    "Controls whether to indent the requires clause in a template.\n"
+                    "   `true`:\n"
+                    "       ```cpp\n"
+                    "       template <typename It>\n"
+                    "           requires Iterator<It>\n"
+                    "       void sort(It begin, It end) {\n"
+                    "           //....\n"
+                    "       }\n"
+                    "       ```\n"
+                    "   `false`:\n"
+                    "       ```cpp\n"
+                    "       template <typename It>\n"
+                    "       requires Iterator<It>\n"
+                    "       void sort(It begin, It end) {\n"
+                    "           //....\n"
+                    "       }\n"
+                    "       ```",
             )]
             Width: Annotated[NonNegativeInt, Field(
-                default=4
+                default=4,
+                description=
+                    "Controls the number of columns to use for indentation.  For example, "
+                    "if set to 3:\n"
+                    "   ```cpp\n"
+                    "   void f() {\n"
+                    "      someFunction();\n"
+                    "      if (true, false) {\n"
+                    "         f();\n"
+                    "      }\n"
+                    "   }\n"
+                    "   ```",
             )]
             WrappedFunctionNames: Annotated[bool, Field(
-                default=False
+                default=False,
+                description=
+                    "Controls whether to indent function names when a declaration or "
+                    "definition wraps after the return type.\n"
+                    "   `true`:\n"
+                    "       ```cpp\n"
+                    "       LoooooooooooooooooooooooooooooooooooooooongReturnType\n"
+                    "           LoooooooooooooooooooooooooooooooongFunctionDeclaration();\n"
+                    "       ```\n"
+                    "   `false`:\n"
+                    "       ```cpp\n"
+                    "       LoooooooooooooooooooooooooooooooooooooooongReturnType\n"
+                    "       LoooooooooooooooooooooooooooooooongFunctionDeclaration();\n"
+                    "       ```",
             )]
 
         Indent: Annotated[_Indent, Field(
-            default_factory=_Indent.model_construct
+            default_factory=_Indent.model_construct,
+            description="Options for controlling indentation.",
         )]
 
         class _IntegerLiteralSeparator(BaseModel):
@@ -3128,6 +3590,7 @@ class ClangFormat(Resource):
             "BreakAfterOpenBracketSwitch": model.Break.AfterOpenBracketSwitch,
             "BreakAfterReturnType": model.Break.AfterReturnType,
             "BreakBeforeBinaryOperators": model.Break.BeforeBinaryOperators,
+            "BreakBeforeBraces": "Custom",  # defer to BraceWrapping
             "BreakBeforeCloseBracketBracedList": model.Break.BeforeCloseBracketBracedList,
             "BreakBeforeCloseBracketFunction": model.Break.BeforeCloseBracketFunction,
             "BreakBeforeCloseBracketIf": model.Break.BeforeCloseBracketIf,
@@ -3173,7 +3636,7 @@ class ClangFormat(Resource):
             "IncludeBlocks": model.IncludeBlocks,
             "IndentCaseLabels": model.Indent.CaseLabels,
             "IndentExportBlock": model.Indent.ExportBlock,
-            "IndentExternBlock": model.Indent.ExternBlock,
+            "IndentExternBlock": "Indent" if model.Indent.ExternBlock else "NoIndent",
             "IndentGotoLabels": model.Indent.GotoLabels,
             "IndentPPDirectives": model.Indent.PPDirectives,
             "IndentRequiresClause": model.Indent.RequiresClause,
