@@ -405,6 +405,7 @@ class PyProject(Resource):
             except TOMLKitError as err:
                 raise OSError(f"failed to parse pyproject TOML at {path}: {err}") from err
         else:
+            text = ""
             doc = tomlkit.document()
 
         # fully overwrite [build-system] table
@@ -426,22 +427,13 @@ class PyProject(Resource):
         ).items():
             project_table[key] = value
 
-        # TODO: the new `config.resources[ResourceName] -> Model | None` API should
-        # simplify this
-
-        # Render all Config.Tool models (except python) to [tool.<resource>] using
-        # canonical resource names
-        tool_models: dict[Resource, BaseModel] = {}
-        for name in config.resources:
-            if name == "python":
-                continue
-            model = config.resources.get(name)
-            if model is None:
-                continue
-            lookup = RESOURCE_NAMES.get(name)
-            if lookup is None or lookup.name != name:
-                continue
-            tool_models[lookup] = model
+        # Render all validated resources (except python) to [tool.<resource>] using
+        # canonical names
+        tool_models: dict[str, BaseModel] = {
+            name: model
+            for name, model in config.resources.items()
+            if model is not None and name != "python"
+        }
         if tool_models:
             tool_table = doc.get("tool")
             if tool_table is None:
@@ -449,8 +441,8 @@ class PyProject(Resource):
                 doc["tool"] = tool_table
             elif not isinstance(tool_table, dict):
                 raise OSError("invalid pyproject shape: '[tool]' must be a table")
-            for resource, model in sorted(tool_models.items()):
-                tool_table[resource.name] = model.model_dump(
+            for name, model in sorted(tool_models.items()):
+                tool_table[name] = model.model_dump(
                     by_alias=True,
                     exclude_none=True
                 )

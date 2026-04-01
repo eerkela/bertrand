@@ -212,11 +212,3 @@ accept-no-yields-doc = false         # force generator yields to be documented
 output-format = "colorized"
 suggestion-mode = true
 jobs = 0
-
-[tool.pytest.ini_options]
-minversion = "6.0"
-testpaths = [
-    "test",         # Python tests
-    "test/build",   # C++ tests
-]
-# cpp_harness = valgrind --tool=memcheck

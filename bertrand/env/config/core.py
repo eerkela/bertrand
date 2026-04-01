@@ -46,15 +46,10 @@ from ..run import (
 # `pyproject.toml` depending on the environment's capabilities?
 
 
-# TODO: I need extra resources/models for `uv`, `ty`, `ruff`, and `pytest`, so that
-# they are rendered correctly as well for new projects.
-
-
 HTTP_URL = TypeAdapter(AnyHttpUrl)
 
 
 # Canonical path definitions for worktree control
-VSCODE_WORKSPACE_FILE: PosixPath = PosixPath(".vscode/vscode.code-workspace")
 CACHE_MOUNT: PosixPath = PosixPath("/tmp/.cache")
 UV_CACHE: PosixPath = CACHE_MOUNT / "uv"
 
@@ -464,7 +459,6 @@ def resource[ResourceT: Resource](
     """
     def _decorator(cls: type[ResourceT]) -> type[ResourceT]:
         self = cls()
-        RESOURCES.add(self)
 
         # reserve name
         if not RESOURCE_NAME_RE.fullmatch(name):
@@ -493,6 +487,7 @@ def resource[ResourceT: Resource](
         # stamp variables at class level to simplify `Config.get(T)`
         cls.name = name
         cls.paths = frozenset(paths)
+        RESOURCES.add(self)
         return cls
 
     return _decorator

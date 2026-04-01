@@ -2,6 +2,7 @@
 for rootless container operation and project initialization.
 """
 from __future__ import annotations
+from numpy.f2py.crackfortran import f
 
 import json
 import os
@@ -10,16 +11,17 @@ import re
 import shlex
 import shutil
 import sys
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from importlib import resources as importlib_resources
 from pathlib import Path
-from typing import Awaitable, Callable, Literal, Self
+from typing import Literal, Self
 
 from pydantic import BaseModel, ConfigDict, PositiveInt
 
 from .config import RESOURCE_NAMES, Config, Resource
 from .config.core import NonEmpty, RelativePath, Trimmed
-from .container import STATE_DIR, TIMEOUT, podman_cmd, podman_ids
+from .container import STATE_DIR, podman_cmd, podman_ids
 from .run import (
     LOCK_TIMEOUT,
     GitRepository,
@@ -711,7 +713,7 @@ async def _init_repository(
 
     # reconcile with existing configuration (if any)
     config = await Config.load(path, timeout=timeout)  # locate existing in-tree resources
-    config.resources.update(resources)  # merge any new resources from CLI
+    config.resources.update({r.name: None for r in resources})  # merge any new resources from CLI
     config.init = Config.Init(
         repo=repo,
         worktree=worktree,

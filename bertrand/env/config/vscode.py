@@ -7,11 +7,12 @@ exhaustively listed in a self-documenting fashion, and may be customized accordi
 """
 from __future__ import annotations
 
+from pathlib import PosixPath
+
 import jinja2
 
 from ..run import WORKTREE_MOUNT
 from .core import (
-    VSCODE_WORKSPACE_FILE,
     Config,
     Resource,
     locate_template,
@@ -20,6 +21,9 @@ from .core import (
 
 # TODO: add more configuration for VSCode, such as recommended extensions and
 # settings.
+
+
+VSCODE_WORKSPACE_FILE: PosixPath = PosixPath(".vscode/vscode.code-workspace")
 
 
 @resource("vscode", paths={VSCODE_WORKSPACE_FILE})
