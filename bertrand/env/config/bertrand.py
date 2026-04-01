@@ -1,12 +1,41 @@
-"""TODO"""
+"""A configuration resource for Bertrand itself, which defines the build matrix and
+other podman-related settings that affect how Bertrand images and containers are built.
+
+The metadata for this resource is expected to be found under the `[bertrand]` key in
+project configuration, which is usually provided by `pyproject.toml`.  It is
+responsible for rendering the basic directory structure and container/repository
+artifacts needed by Bertrand's core functionality.
+"""
 from __future__ import annotations
 
 import ipaddress
 import os
 import re
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Annotated, Callable, Literal, Self
+from typing import Annotated, Any, Literal, Self
 
+import jinja2
+import packaging.version
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    ConfigDict,
+    Field,
+    NonNegativeFloat,
+    NonNegativeInt,
+    StringConstraints,
+    model_validator,
+)
+
+from ..run import (
+    METADATA_DIR,
+    WORKTREE_MOUNT,
+    Scalar,
+    atomic_write_text,
+    sanitize_name,
+)
+from ..version import VERSION
 from .conan import (
     CONAN_CACHE,
     ConanConf,
@@ -31,28 +60,6 @@ from .core import (
     resource,
 )
 from .python import PyProject, _validate_dependency_groups
-from ..run import (
-    METADATA_DIR,
-    WORKTREE_MOUNT,
-    Scalar,
-    atomic_write_text,
-    sanitize_name
-)
-from ..version import VERSION
-
-import jinja2
-import packaging.version
-from pydantic import (
-    AfterValidator,
-    BaseModel,
-    ConfigDict,
-    Field,
-    NonNegativeFloat,
-    NonNegativeInt,
-    StringConstraints,
-    model_validator
-)
-
 
 # TODO: continue adding descriptions and simplifying the structure of the Bertrand
 # model + checking default values.
@@ -424,7 +431,7 @@ def _check_device_permission(permission: str) -> str:
     if permission not in DEVICE_PERMISSIONS:
         raise ValueError(
             f"invalid device permissions '{permission}' (expected one of: "
-            f"{'|'.join(sorted(DEVICE_PERMISSIONS, key=len))})"
+            f"{'|'.join(sorted(DEVICE_PERMISSIONS, key=lambda x: len(x)))}"
         )
     return permission
 

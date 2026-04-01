@@ -1,4 +1,12 @@
-"""TODO"""
+"""A configuration resource for clang-format, which allows automatic formatting of C++
+code according to a specified style.
+
+This resource generates a `.clang-format` artifact from a standardized `[clang-format]`
+schema stored in project configuration.  The default settings represent an opinionated
+style designed to make C++ code more recognizable and readable to Python developers,
+but can be customized as needed, and are exhaustively listed in a self-documenting
+fashion.
+"""
 from __future__ import annotations
 
 from typing import Annotated, Any, Literal, Self
@@ -12,6 +20,7 @@ from pydantic import (
     model_validator,
 )
 
+from ..run import CONTAINER_TMP_MOUNT, atomic_write_text
 from .core import (
     Config,
     NoWhiteSpace,
@@ -20,8 +29,6 @@ from .core import (
     dump_yaml,
     resource,
 )
-from ..run import CONTAINER_TMP_MOUNT, atomic_write_text
-
 
 # TODO: I should maybe also write a `.clang-format-ignore` file as part of this.
 # There are actually many integrations described in
@@ -916,57 +923,6 @@ class ClangFormat(Resource):
                     "       ```",
             )
         ]
-        SpacesBeforeTrailingComments: Annotated[NonNegativeInt, Field(
-            default=2,
-            description=
-                "The minimum number of spaces before trailing line `//` comments on "
-                "the same line.",
-        )]
-        SpacesInAngles: Annotated[Literal["Never", "Leave", "Always"], Field(
-            default="Never",
-            examples=["Never", "Leave", "Always"],
-            description=
-                "Controls whether to add spaces between `<`/`>` brackets in "
-                "template argument lists:\n"
-                "   `Never`: remove spaces after < and before >.\n"
-                "       ```cpp\n"
-                "       static_cast<int>(arg);\n"
-                "       std::function<void(int)> fct;\n"
-                "       ```\n"
-                "   `Leave`: preserve user formatting\n"
-                "   `Always`: always add spaces after < and before >.\n"
-                "       ```cpp\n"
-                "       static_cast< int >(arg);\n"
-                "       std::function< void(int) > fct;\n"
-                "       ```",
-        )]
-
-        class _SpacesInLineCommentPrefix(BaseModel):
-            """Validate the `[tool.clang-format.spaces-in-line-comment-prefix]` table."""
-            model_config = ConfigDict(extra="forbid")
-            Minimum: Annotated[NonNegativeInt, Field(default=1)]
-            Maximum: Annotated[int, Field(default=-1, ge=-1)]
-
-        SpacesInLineCommentPrefix: Annotated[_SpacesInLineCommentPrefix, Field(
-            default_factory=_SpacesInLineCommentPrefix.model_construct,
-            description=
-                "Controls how many spaces are allowed at the start of a `//` line "
-                "comment.  To disable the maximum, set it to -1.  This only applies "
-                "when 'ReflowComments' is true.",
-        )]
-        SpacesInSquareBrackets: Annotated[bool, Field(
-            default=False,
-            description=
-                "If true, spaces will be inserted after [ and before ]."
-                "   `true`:\n"
-                "       ```cpp\n"
-                "       int a[ 5 ];\n"
-                "       ```\n"
-                "   `false`:\n"
-                "       ```cpp\n"
-                "       int a[5];\n"
-                "       ```",
-        )]
         TabWidth: Annotated[NonNegativeInt, Field(
             default=4,
             description="The number of columns used for tab stops.",
@@ -3561,44 +3517,188 @@ class ClangFormat(Resource):
             """Validate the `[tool.clang-format.Space]` table."""
             model_config = ConfigDict(extra="forbid")
             AfterCStyleCast: Annotated[bool, Field(
-                default=False
+                default=False,
+                description=
+                    "Controls whether to add a space after a C-style cast.\n"
+                    "   `true`:\n"
+                    "       ```cpp\n"
+                    "       int x = (int) y;\n"
+                    "       ```\n"
+                    "   `false`:\n"
+                    "       ```cpp\n"
+                    "       int x = (int)y;\n"
+                    "       ```",
             )]
             AfterLogicalNot: Annotated[bool, Field(
-                default=False
+                default=False,
+                description=
+                    "Controls whether to add a space after logical not (`!`).\n"
+                    "   `true`:\n"
+                    "       ```cpp\n"
+                    "       bool value = ! some_condition;\n"
+                    "       ```\n"
+                    "   `false`:\n"
+                    "       ```cpp\n"
+                    "       bool value = !some_condition;\n"
+                    "       ```",
             )]
             AfterOperatorKeyword: Annotated[bool, Field(
-                default=False
+                default=False,
+                description="Controls whether to add a space after the `operator` keyword.",
             )]
             AfterTemplateKeyword: Annotated[bool, Field(
-                default=False
+                default=False,
+                description="Controls whether to add a space after the `template` keyword.",
             )]
             BeforeAssignmentOperators: Annotated[bool, Field(
-                default=True
+                default=True,
+                description=
+                    "Controls whether to add a space before assignment operators.\n"
+                    "   `true`:\n"
+                    "       ```cpp\n"
+                    "       int a = 5;\n"
+                    "       a += 2;\n"
+                    "       ```\n"
+                    "   `false`:\n"
+                    "       ```cpp\n"
+                    "       int a= 5;\n"
+                    "       a+= 2;\n"
+                    "       ```",
             )]
             BeforeCaseColon: Annotated[bool, Field(
-                default=False
+                default=False,
+                description=
+                    "Controls whether to add a space before case label colons.\n"
+                    "   `true`:\n"
+                    "       ```cpp\n"
+                    "       case 1 : break;\n"
+                    "       ```\n"
+                    "   `false`:\n"
+                    "       ```cpp\n"
+                    "       case 1: break;\n"
+                    "       ```",
             )]
             BeforeCpp11BracedList: Annotated[bool, Field(
-                default=False
+                default=False,
+                description=
+                    "Controls whether to add a space before a C++11 braced list.\n"
+                    "   `true`:\n"
+                    "       ```cpp\n"
+                    "       Foo foo {1, 2, 3};\n"
+                    "       ```\n"
+                    "   `false`:\n"
+                    "       ```cpp\n"
+                    "       Foo foo{1, 2, 3};\n"
+                    "       ```",
             )]
             BeforeCtorInitializerColon: Annotated[bool, Field(
-                default=True
+                default=True,
+                description=
+                    "Controls whether to add a space before a constructor "
+                    "initializer colon.\n"
+                    "   `true`:\n"
+                    "       ```cpp\n"
+                    "       Foo::Foo() : a(1), b(2) {}\n"
+                    "       ```\n"
+                    "   `false`:\n"
+                    "       ```cpp\n"
+                    "       Foo::Foo(): a(1), b(2) {}\n"
+                    "       ```",
             )]
             BeforeInheritanceColon: Annotated[bool, Field(
-                default=True
+                default=True,
+                description=
+                    "Controls whether to add a space before an inheritance colon.\n"
+                    "   `true`:\n"
+                    "       ```cpp\n"
+                    "       class Foo : public Bar {};\n"
+                    "       ```\n"
+                    "   `false`:\n"
+                    "       ```cpp\n"
+                    "       class Foo: public Bar {};\n"
+                    "       ```",
             )]
             BeforeJsonColon: Annotated[bool, Field(
-                default=False
+                default=False,
+                description=
+                    "Controls whether to add a space before a JSON colon.\n"
+                    "   `true`: add a space before colons in JSON.\n"
+                    "   `false`: keep no space before JSON colons.",
             )]
             BeforeRangeBasedForLoopColon: Annotated[bool, Field(
-                default=True
+                default=True,
+                description=
+                    "Controls whether to add a space before a range-based for loop "
+                    "colon.\n"
+                    "   `true`:\n"
+                    "       ```cpp\n"
+                    "       for (auto v : values) {\n"
+                    "       }\n"
+                    "       ```\n"
+                    "   `false`:\n"
+                    "       ```cpp\n"
+                    "       for (auto v: values) {\n"
+                    "       }\n"
+                    "       ```",
             )]
             BeforeSquareBrackets: Annotated[bool, Field(
-                default=False
+                default=False,
+                description=
+                    "Controls whether to add a space before an opening square "
+                    "bracket.\n"
+                    "   `true`:\n"
+                    "       ```cpp\n"
+                    "       int a [5];\n"
+                    "       ```\n"
+                    "   `false`:\n"
+                    "       ```cpp\n"
+                    "       int a[5];\n"
+                    "       ```",
+            )]
+            BeforeTrailingComments: Annotated[NonNegativeInt, Field(
+                default=2,
+                description=
+                    "Controls the minimum number of spaces before trailing line `//` "
+                    "comments on the same line.",
+            )]
+            InAngles: Annotated[Literal["Never", "Leave", "Always"], Field(
+                default="Never",
+                examples=["Never", "Leave", "Always"],
+                description=
+                    "Controls whether to add spaces between `<`/`>` brackets in "
+                    "template argument lists:\n"
+                    "   `Never`: remove spaces after < and before >.\n"
+                    "       ```cpp\n"
+                    "       static_cast<int>(arg);\n"
+                    "       std::function<void(int)> fct;\n"
+                    "       ```\n"
+                    "   `Leave`: preserve user formatting.\n"
+                    "   `Always`: always add spaces after < and before >.\n"
+                    "       ```cpp\n"
+                    "       static_cast< int >(arg);\n"
+                    "       std::function< void(int) > fct;\n"
+                    "       ```",
             )]
             InEmptyBraces: Annotated[Literal["Never", "Block", "Always"], Field(
                 default="Never",
                 examples=["Never", "Block", "Always"],
+                description=
+                    "Controls whether to add spaces inside empty braces.\n"
+                    "   `Never`: never add spaces inside empty braces.\n"
+                    "       ```cpp\n"
+                    "       int f() {}\n"
+                    "       std::array<int, 0> a{};\n"
+                    "       ```\n"
+                    "   `Block`: add spaces in empty block braces.\n"
+                    "       ```cpp\n"
+                    "       int f() { }\n"
+                    "       std::array<int, 0> a{};\n"
+                    "       ```\n"
+                    "   `Always`: add spaces in all empty braces.\n"
+                    "       ```cpp\n"
+                    "       int f() { }\n"
+                    "       std::array<int, 0> a{ };\n"
+                    "       ```",
             )]
 
             class _BeforeParensOptions(BaseModel):
@@ -3607,41 +3707,100 @@ class ClangFormat(Resource):
                 """
                 model_config = ConfigDict(extra="forbid")
                 AfterControlStatements: Annotated[bool, Field(
-                    default=True
+                    default=True,
+                    description=
+                        "Controls whether to add a space before parentheses in control "
+                        "statements.",
                 )]
                 AfterForeachMacros: Annotated[bool, Field(
-                    default=True
+                    default=True,
+                    description=
+                        "Controls whether to add a space before parentheses in foreach "
+                        "macros.",
                 )]
                 AfterFunctionDeclarationName: Annotated[bool, Field(
-                    default=False
+                    default=False,
+                    description=
+                        "Controls whether to add a space before parentheses in function "
+                        "declarations.",
                 )]
                 AfterFunctionDefinitionName: Annotated[bool, Field(
-                    default=False
+                    default=False,
+                    description=
+                        "Controls whether to add a space before parentheses in function "
+                        "definitions.",
                 )]
                 AfterIfMacros: Annotated[bool, Field(
-                    default=True
+                    default=True,
+                    description=
+                        "Controls whether to add a space before parentheses in if-like "
+                        "macros.",
                 )]
                 AfterNot: Annotated[bool, Field(
-                    default=True
+                    default=True,
+                    description=
+                        "Controls whether to add a space after the `not` operator.",
                 )]
                 AfterOverloadedOperator: Annotated[bool, Field(
-                    default=False
+                    default=False,
+                    description=
+                        "Controls whether to add a space after overloaded operator "
+                        "names.",
                 )]
                 AfterPlacementOperator: Annotated[bool, Field(
-                    default=True
+                    default=True,
+                    description=
+                        "Controls whether to add a space after placement operator "
+                        "names.",
                 )]
                 AfterRequiresInClause: Annotated[bool, Field(
-                    default=False
+                    default=False,
+                    description=
+                        "Controls whether to add a space after `requires` in requires "
+                        "clauses.",
                 )]
                 AfterRequiresInExpression: Annotated[bool, Field(
-                    default=False
+                    default=False,
+                    description=
+                        "Controls whether to add a space after `requires` in requires "
+                        "expressions.",
                 )]
                 BeforeNonEmptyParentheses: Annotated[bool, Field(
-                    default=False
+                    default=False,
+                    description=
+                        "Controls whether to add a space before non-empty parentheses.",
                 )]
 
             BeforeParensOptions: Annotated[_BeforeParensOptions, Field(
-                default_factory=_BeforeParensOptions.model_construct
+                default_factory=_BeforeParensOptions.model_construct,
+                description=
+                    "Options for spacing before parentheses in specific contexts.",
+            )]
+
+            class _InLineCommentPrefix(BaseModel):
+                """Validate the `[tool.clang-format.Space.InLineCommentPrefix]`
+                table.
+                """
+                model_config = ConfigDict(extra="forbid")
+                Minimum: Annotated[NonNegativeInt, Field(
+                    default=1,
+                    description=
+                        "Controls the minimum number of spaces after `//` at the "
+                        "start of a line comment.",
+                )]
+                Maximum: Annotated[int, Field(
+                    default=-1,
+                    ge=-1,
+                    description=
+                        "Controls the maximum number of spaces after `//` at the "
+                        "start of a line comment.  Set to `-1` to disable.",
+                )]
+
+            InLineCommentPrefix: Annotated[_InLineCommentPrefix, Field(
+                default_factory=_InLineCommentPrefix.model_construct,
+                description=
+                    "Options for spacing at the start of `//` line comments.  These "
+                    "settings only apply when `ReflowComments` is enabled.",
             )]
 
             class _InParensOptions(BaseModel):
@@ -3650,27 +3809,56 @@ class ClangFormat(Resource):
                 """
                 model_config = ConfigDict(extra="forbid")
                 ExceptDoubleParentheses: Annotated[bool, Field(
-                    default=False
+                    default=False,
+                    description=
+                        "Controls whether spaces in parentheses are suppressed for "
+                        "double parentheses.",
                 )]
                 InConditionalStatements: Annotated[bool, Field(
-                    default=False
+                    default=False,
+                    description=
+                        "Controls whether to add spaces inside parentheses in "
+                        "conditional statements.",
                 )]
                 InCStyleCasts: Annotated[bool, Field(
-                    default=False
+                    default=False,
+                    description=
+                        "Controls whether to add spaces inside parentheses in C-style "
+                        "casts.",
                 )]
                 InEmptyParentheses: Annotated[bool, Field(
-                    default=False
+                    default=False,
+                    description=
+                        "Controls whether to add spaces inside empty parentheses.",
                 )]
                 Other: Annotated[bool, Field(
-                    default=False
+                    default=False,
+                    description=
+                        "Controls whether to add spaces inside parentheses in other "
+                        "contexts.",
                 )]
 
             InParensOptions: Annotated[_InParensOptions, Field(
-                default_factory=_InParensOptions.model_construct
+                default_factory=_InParensOptions.model_construct,
+                description="Options for spacing inside parentheses.",
+            )]
+            InSquareBrackets: Annotated[bool, Field(
+                default=False,
+                description=
+                    "Controls whether to add spaces inside square brackets.\n"
+                    "   `true`:\n"
+                    "       ```cpp\n"
+                    "       int a[ 5 ];\n"
+                    "       ```\n"
+                    "   `false`:\n"
+                    "       ```cpp\n"
+                    "       int a[5];\n"
+                    "       ```",
             )]
 
         Space: Annotated[_Space, Field(
-            default_factory=_Space.model_construct
+            default_factory=_Space.model_construct,
+            description="Options for spacing around language tokens and delimiters.",
         )]
 
     async def init(self, config: Config, cli: Config.Init) -> dict[str, Any]:
@@ -3898,12 +4086,12 @@ class ClangFormat(Resource):
             },
             "SpaceBeforeRangeBasedForLoopColon": model.Space.BeforeRangeBasedForLoopColon,
             "SpaceBeforeSquareBrackets": model.Space.BeforeSquareBrackets,
-            "SpacesBeforeTrailingComments": model.SpacesBeforeTrailingComments,
-            "SpacesInAngles": model.SpacesInAngles,
+            "SpacesBeforeTrailingComments": model.Space.BeforeTrailingComments,
+            "SpacesInAngles": model.Space.InAngles,
             "SpacesInContainerLiterals": False,  # mostly applies to ObjC/JavaScript, etc.
             "SpacesInLineCommentPrefix": {
-                "Minimum": model.SpacesInLineCommentPrefix.Minimum,
-                "Maximum": model.SpacesInLineCommentPrefix.Maximum,
+                "Minimum": model.Space.InLineCommentPrefix.Minimum,
+                "Maximum": model.Space.InLineCommentPrefix.Maximum,
             },
             "SpacesInParens": "Custom",  # defer to Space.InParensOptions
             "SpacesInParensOptions": {
@@ -3915,7 +4103,7 @@ class ClangFormat(Resource):
                 "InEmptyParentheses": model.Space.InParensOptions.InEmptyParentheses,
                 "Other": model.Space.InParensOptions.Other,
             },
-            "SpacesInSquareBrackets": model.SpacesInSquareBrackets,
+            "SpacesInSquareBrackets": model.Space.InSquareBrackets,
             "Standard": "Auto",  # detect C++ standard from source files + compile db
             "TabWidth": model.TabWidth,
             "TemplateNames": model.TemplateNames,

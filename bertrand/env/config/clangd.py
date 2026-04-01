@@ -1,20 +1,19 @@
-"""TODO"""
+"""A configuration resource for clangd, which provides a robust LSP for C++, with
+clang-tidy integrations.
+
+This resource generates a `.clangd` artifact from a standardized `[clangd]` schema
+stored in project configuration.  The default settings are designed to be conservative
+and non-blocking, but can be customized as needed, and are exhaustively listed in a
+self-documenting fashion.
+"""
 from __future__ import annotations
 
 from typing import Annotated, Any, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, NonNegativeInt, model_validator
 
-from .core import (
-    NonEmpty,
-    Config,
-    NoCRLF,
-    RegexPattern,
-    Resource,
-    dump_yaml,
-    resource,
-)
 from ..run import CONTAINER_TMP_MOUNT, atomic_write_text
+from .core import Config, NoCRLF, NonEmpty, RegexPattern, Resource, dump_yaml, resource
 
 
 @resource("clangd")

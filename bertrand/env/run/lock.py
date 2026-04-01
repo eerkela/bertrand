@@ -5,8 +5,8 @@ import asyncio
 import json
 import os
 import shutil
-import time
 import threading
+import time
 from pathlib import Path
 from types import TracebackType
 from typing import Any, Self
@@ -14,7 +14,6 @@ from typing import Any, Self
 import psutil
 
 from .bertrand_git import METADATA_LOCK
-
 
 # TODO: Lock should probably implement a `try_lock()` method that attempts to acquire
 # the lock and returns immediately with a boolean success value, instead of blocking.

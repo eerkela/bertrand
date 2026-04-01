@@ -90,12 +90,14 @@ dev = [
     "mypy",
     "pandas-stubs",
     "pylint",
+    "ruff",
     "pytest",
     "pytest-cpp",
     "sphinx",
     "sphinx_rtd_theme",
     "sphinx-tabs",
     "sphinx-togglebutton",
+    "ty",
     # "types-colorama",
     # "types-beautifulsoup4",
     "types-psutil",
@@ -129,9 +131,57 @@ bertrand = [
 [tool.cibuildwheel.windows]
 before-all = "choco install visualstudio2022buildtools"  # C/C++ build tools
 
-[tool.black]
-line-length = 88
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+indent-width = 4
+output-format = "full"
+respect-gitignore = true
 
+[tool.ruff.format]
+quote-style = "preserve"
+indent-style = "space"
+line-ending = "auto"
+
+[tool.ruff.lint]
+select = [
+    "E",
+    "F",
+    "I",
+    "B",
+    "UP",
+    # "ANN",
+    # "D",
+    "DOC",
+    "FIX",
+]
+# preview = true
+exclude = ["*.pyi"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "numpy"
+
+[tool.ruff.lint.flake8-annotations]
+mypy-init-return = true
+
+[tool.ty.src]
+include = ["bertrand", "test", "ast_tests"]
+exclude = []
+respect-ignore-files = true
+
+[tool.ty.analysis]
+replace-imports-with-any = ["conan.**"]
+
+[tool.ty.rules]
+# Preserve default error behavior and explicitly track mypy-like warnings.
+possibly-unresolved-reference = "error"
+redundant-cast = "warn"
+unused-ignore-comment = "warn"
+
+[tool.ty.terminal]
+error-on-warning = false
+
+# Temporary legacy settings during mypy -> ty transition.
 [tool.mypy]
 allow_untyped_globals = false        # force globals to be typed
 disallow_untyped_defs = true         # force function signatures to be typed
@@ -149,6 +199,7 @@ error_summary = true                 # print a short summary for each error
 module = ["conan.*"]
 follow_untyped_imports = true
 
+# Temporary legacy settings during pylint -> ruff transition.
 [tool.pylint]
 ignore-patterns = [".*\\.pyi"]       # ignore type stubs
 disable = ["too-many-lines"]         # disable max line length for modules

@@ -4,25 +4,24 @@ from __future__ import annotations
 import importlib.resources as importlib_resources
 import re
 import string
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path, PosixPath
 from types import TracebackType
 from typing import (
     Annotated,
     Any,
-    Callable,
     ClassVar,
     Protocol,
     Self,
-    Sequence,
     TypeVar,
-    cast
+    cast,
 )
 
 import yaml
 from pydantic import (
-    AnyHttpUrl,
     AfterValidator,
+    AnyHttpUrl,
     BaseModel,
     Field,
     StringConstraints,
@@ -41,7 +40,6 @@ from ..run import (
     lock_worktree,
     run,
 )
-
 
 # TODO: maybe cache paths should be provided by each resource, so that they can also
 # be folded into the resource contract, along with rendering sections in

@@ -1,23 +1,18 @@
-"""TODO"""
+"""A configuration resource for Conan, which is a C/C++ package manager that can be
+used to manage C++ dependencies similar to `pip`/`uv` for Python.
+
+This resource generates `conanfile.py`, `default` conan profile, and `conanremotes.json`
+artifacts from a standardized `[tool.conan]` schema stored in project configuration.
+The available options are exhaustively listed in a self-documenting fashion, and may
+be customized accordingly.
+"""
 from __future__ import annotations
 
 import json
 import os
 import re
 from pathlib import PosixPath
-from typing import Any, Annotated, Literal
-
-from .core import (
-    Config,
-    NoCRLF,
-    NonEmpty,
-    NoWhiteSpace,
-    Resource,
-    URL,
-    resource
-)
-from ..run import CONTAINER_TMP_MOUNT, Scalar, atomic_write_text, run
-from ..version import VERSION
+from typing import Annotated, Any, Literal
 
 from conan.api.model.list import ListPattern, VersionRange
 from conan.api.model.refs import RecipeReference
@@ -25,6 +20,17 @@ from conan.errors import ConanException
 from conan.internal.model.conf import ConfDefinition
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, StringConstraints
 
+from ..run import CONTAINER_TMP_MOUNT, Scalar, atomic_write_text, run
+from ..version import VERSION
+from .core import (
+    URL,
+    Config,
+    NoCRLF,
+    NonEmpty,
+    NoWhiteSpace,
+    Resource,
+    resource,
+)
 
 CONAN_CACHE: PosixPath = PosixPath("/opt/conan")
 CONAN_HOME: PosixPath = PosixPath("/opt/conan")

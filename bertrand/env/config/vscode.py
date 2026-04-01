@@ -1,8 +1,15 @@
-"""TODO"""
+"""A configuration resource for VSCode, which is a popular text editor with robust
+support for remote development and containerized environments.
+
+This resource generates `vscode.code-workspace` artifact from a standardized
+`[tool.vscode]` schema stored in project configuration.  The available options are
+exhaustively listed in a self-documenting fashion, and may be customized accordingly.
+"""
 from __future__ import annotations
 
 import jinja2
 
+from ..run import WORKTREE_MOUNT
 from .core import (
     VSCODE_WORKSPACE_FILE,
     Config,
@@ -10,7 +17,9 @@ from .core import (
     locate_template,
     resource,
 )
-from ..run import WORKTREE_MOUNT
+
+# TODO: add more configuration for VSCode, such as recommended extensions and
+# settings.
 
 
 @resource("vscode", paths={VSCODE_WORKSPACE_FILE})

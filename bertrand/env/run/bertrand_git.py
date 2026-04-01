@@ -24,9 +24,10 @@ import shutil
 import subprocess
 import sys
 import uuid
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path, PosixPath
-from typing import Literal, Mapping, Sequence, TextIO, TypeAlias
+from typing import Literal, TextIO
 
 # pylint: disable=redefined-builtin, broad-exception-caught
 
@@ -69,8 +70,8 @@ CONTAINER_RUNTIME_ENV: str = "BERTRAND_RUNTIME" # relative path to worktree's ar
 
 
 # common type aliases for serialization
-Scalar: TypeAlias = str | bool | int | float
-JSONValue: TypeAlias = None | Scalar | Sequence["JSONValue"] | Mapping[str, "JSONValue"]
+type Scalar = str | bool | int | float
+type JSONValue = None | Scalar | Sequence["JSONValue"] | Mapping[str, "JSONValue"]
 
 
 def inside_image() -> bool:
@@ -407,7 +408,7 @@ async def run(
             input_bytes = None if input is None else input.encode("utf-8", errors="replace")
             try:
                 await asyncio.wait_for(proc.communicate(input_bytes), timeout=timeout)
-            except asyncio.TimeoutError as err:
+            except TimeoutError as err:
                 proc.kill()
                 await proc.communicate()
                 raise TimeoutExpired(
@@ -444,7 +445,7 @@ async def run(
                     proc.communicate(input_bytes),
                     timeout=timeout,
                 )
-            except asyncio.TimeoutError as err:
+            except TimeoutError as err:
                 proc.kill()
                 stdout_raw, stderr_raw = await proc.communicate()
                 raise TimeoutExpired(
@@ -487,7 +488,7 @@ async def run(
     try:
         try:
             await asyncio.wait_for(proc.wait(), timeout=timeout)
-        except asyncio.TimeoutError as err:
+        except TimeoutError as err:
             proc.kill()
             await proc.wait()
             for task in tasks:
@@ -642,7 +643,7 @@ class GitRefUpdate:
         bool
             True if this update created a new ref.
         """
-        return all((c == "0" for c in self.old)) and any((c != "0" for c in self.new))
+        return all(c == "0" for c in self.old) and any(c != "0" for c in self.new)
 
     @property
     def destroyed(self) -> bool:
@@ -652,7 +653,7 @@ class GitRefUpdate:
         bool
             True if this update deleted an existing ref.
         """
-        return any((c != "0" for c in self.old)) and all((c == "0" for c in self.new))
+        return any(c != "0" for c in self.old) and all(c == "0" for c in self.new)
 
     @classmethod
     def parse(cls, stdin: str) -> list[GitRefUpdate]:

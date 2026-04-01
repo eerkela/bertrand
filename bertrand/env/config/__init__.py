@@ -10,14 +10,14 @@ from .bertrand import (
     SHELLS,
     Bertrand,
 )
-from .clangd import (
-    Clangd,
-)
 from .clang_format import (
     ClangFormat,
 )
 from .clang_tidy import (
     ClangTidy,
+)
+from .clangd import (
+    Clangd,
 )
 from .conan import (
     CONAN_CACHE,
@@ -26,9 +26,9 @@ from .conan import (
 )
 from .core import (
     CACHE_MOUNT,
-    RESOURCES,
     RESOURCE_NAMES,
     RESOURCE_PATHS,
+    RESOURCES,
     UV_CACHE,
     VSCODE_WORKSPACE_FILE,
     Config,

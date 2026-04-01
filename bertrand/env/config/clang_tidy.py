@@ -1,4 +1,11 @@
-"""TODO"""
+"""A configuration resource for clang-tidy, which provides linting for C++ according
+to customizable rules.
+
+This resource generates a `.clang-tidy` artifact from a standardized `[clang-tidy]`
+schema stored in project configuration.  The default settings are designed to be
+conservative and non-blocking, but can be customized as needed, and are exhaustively
+listed in a self-documenting fashion.
+"""
 from __future__ import annotations
 
 from typing import Annotated, Any, Literal, Self
@@ -9,9 +16,10 @@ from pydantic import (
     ConfigDict,
     Field,
     StringConstraints,
-    model_validator
+    model_validator,
 )
 
+from ..run import CONTAINER_TMP_MOUNT, Scalar, atomic_write_text
 from .core import (
     Config,
     RegexPattern,
@@ -19,8 +27,6 @@ from .core import (
     dump_yaml,
     resource,
 )
-from ..run import CONTAINER_TMP_MOUNT, Scalar, atomic_write_text
-
 
 type ClangTidyCheckPattern = Annotated[str, StringConstraints(
     strip_whitespace=True,

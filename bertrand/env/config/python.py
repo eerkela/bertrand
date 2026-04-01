@@ -1,41 +1,50 @@
-"""TODO"""
+"""A configuration resource for `pyproject.toml`, which is the standard provider for
+project metadata.
+
+This resource locates, parses, validates, and renders the `pyproject.toml` file in the
+worktree root, which can also carry configuration for all other resources under the
+`[tool.*]` tables.  This resource only validates the core `pyproject.toml` fields
+defined by PEP 518/621, and defers validation of any tool tables to the relevant
+resource(s) that manage those tools.  The rendering logic is designed not to interfere
+with any user-managed fields that aren't part of Bertrand's configuration engine.
+"""
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Annotated, Literal, Self
+from typing import Annotated, Any, Literal, Self
 
-from .core import (
-    RESOURCE_NAMES,
-    Config,
-    Glob,
-    PosixPath,
-    NonEmpty,
-    NoWhiteSpace,
-    Resource,
-    TagName,
-    Trimmed,
-    URL,
-    URLLabel,
-    resource
-)
-from ..run import atomic_write_text
-from ..version import VERSION
-
-from email_validator import EmailNotValidError, validate_email
 import packaging.licenses
 import packaging.requirements
 import packaging.specifiers
 import packaging.utils
 import tomlkit
+from email_validator import EmailNotValidError, validate_email
 from pydantic import (
     AfterValidator,
     BaseModel,
     ConfigDict,
     Field,
     StringConstraints,
-    model_validator
+    model_validator,
 )
 from tomlkit.exceptions import TOMLKitError
+
+from ..run import atomic_write_text
+from ..version import VERSION
+from .core import (
+    RESOURCE_NAMES,
+    URL,
+    Config,
+    Glob,
+    NonEmpty,
+    NoWhiteSpace,
+    PosixPath,
+    Resource,
+    TagName,
+    Trimmed,
+    URLLabel,
+    resource,
+)
 
 
 def _check_pep508_requirement(requirement: str) -> str:
