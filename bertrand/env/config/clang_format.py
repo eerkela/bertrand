@@ -22,6 +22,14 @@ from .core import (
 from ..run import CONTAINER_TMP_MOUNT, atomic_write_text
 
 
+# TODO: I should maybe also write a `.clang-format-ignore` file as part of this.
+# There are actually many integrations described in
+# https://clang.llvm.org/docs/ClangFormat.html
+
+# TODO: it's also possible to toggle clang-format on/off in files by using
+# // clang-format off/on comments
+
+
 @resource("clang-format")
 class ClangFormat(Resource):
     """A resource describing a `.clang-format` file, which is used to configure
@@ -1678,40 +1686,309 @@ class ClangFormat(Resource):
             description="Options for horizontally aligning code",
         )]
 
-        # TODO: continue documenting these options
-
         class _Allow(BaseModel):
             """Validate the `[tool.clang-format.Allow]` table."""
             model_config = ConfigDict(extra="forbid")
-            AllArgumentsOnNextLine: Annotated[bool, Field(default=False)]
-            AllParametersOfDeclarationOnNextLine: Annotated[bool, Field(default=False)]
+            AllArgumentsOnNextLine: Annotated[bool, Field(
+                default=False,
+                description=
+                    "Controls whether to allow putting all arguments of a function "
+                    "call on the next line if they don't fit on the current line, "
+                    "even if `BinPackArguments` is false.\n"
+                    "   `true`:\n"
+                    "       ```cpp\n"
+                    "       callFunction(\n"
+                    "           a, b, c, d);\n"
+                    "       ```\n"
+                    "   `false`: preserve other formatting.",
+            )]
+            AllParametersOfDeclarationOnNextLine: Annotated[bool, Field(
+                default=False,
+                description=
+                    "Controls whether to allow putting all parameters of a function "
+                    "declaration on the next line if they don't fit on the current "
+                    "line, even if `BinPackParameters` is set to `OnePerLine`.\n"
+                    "   `true`:\n"
+                    "       ```cpp\n"
+                    "       void myFunction(\n"
+                    "           int a, int b, int c, int d, int e);\n"
+                    "       ```\n"
+                    "   `false`: preserve other formatting.",
+            )]
             BreakBeforeNoexceptSpecifier: Annotated[
                 Literal["Never", "OnlyWithParen", "Always"],
                 Field(
                     default="OnlyWithParen",
                     examples=["Never", "OnlyWithParen", "Always"],
+                    description=
+                        "Controls whether there could be a line break before a "
+                        "`noexcept` specifier.\n"
+                        "   `Never`: no line break allowed.\n"
+                        "       ```cpp\n"
+                        "       void foo(int arg1,\n"
+                        "                double arg2) noexcept;\n"
+                        "\n"
+                        "       void bar(int arg1, double arg2) noexcept(\n"
+                        "           noexcept(baz(arg1)) &&\n"
+                        "           noexcept(baz(arg2)));\n"
+                        "       ```\n"
+                        "   `OnlyWithParen`: line breaks are only allowed for "
+                        "conditional `noexcept` specifiers.\n"
+                        "       ```cpp\n"
+                        "       void foo(int arg1,\n"
+                        "                double arg2) noexcept;\n"
+                        "\n"
+                        "       void bar(int arg1, double arg2)\n"
+                        "           noexcept(noexcept(baz(arg1)) &&\n"
+                        "                    noexcept(baz(arg2)));\n"
+                        "       ```\n"
+                        "   `Always`: line breaks are allowed, but may be suppressed "
+                        "by other formatting rules.\n"
+                        "       ```cpp\n"
+                        "       void foo(int arg1,\n"
+                        "                double arg2) noexcept;\n"
+                        "\n"
+                        "       void bar(int arg1, double arg2)\n"
+                        "           noexcept(noexcept(baz(arg1)) &&\n"
+                        "                    noexcept(baz(arg2)));\n"
+                        "       ```",
                 )
             ]
             ShortBlocksOnASingleLine: Annotated[Literal["Never", "Empty", "Always"], Field(
                 default="Empty",
                 examples=["Never", "Empty", "Always"],
+                description=
+                    "Controls whether to attempt to place short control blocks on a "
+                    "single line.\n"
+                    "   `Never`: never merge blocks into a single line.\n"
+                    "       ```cpp\n"
+                    "       while (true) {\n"
+                    "       }\n"
+                    "       while (true) {\n"
+                    "           continue;\n"
+                    "       }\n"
+                    "       ```\n"
+                    "   `Empty`: only merge empty blocks into a single line.\n"
+                    "       ```cpp\n"
+                    "       while (true) {}\n"
+                    "       while (true) {\n"
+                    "           continue;\n"
+                    "       }\n"
+                    "       ```\n"
+                    "   `Always`: always merge short blocks into a single line.\n"
+                    "       ```cpp\n"
+                    "       while (true) {}\n"
+                    "       while (true) { continue; }\n"
+                    "       ```",
             )]
-            ShortCaseExpressionsOnASingleLine: Annotated[bool, Field(default=True)]
-            ShortCaseLabelsOnASingleLine: Annotated[bool, Field(default=True)]
-            ShortCompoundRequirementsOnASingleLine: Annotated[bool, Field(default=True)]
-            ShortEnumsOnASingleLine: Annotated[bool, Field(default=True)]
-            ShortFunctionsOnASingleLine: Annotated[
-                Literal["None", "InlineOnly", "Empty", "Inline", "All"],
-                Field(
-                    default="All",
-                    examples=["None", "InlineOnly", "Empty", "Inline", "All"],
-                )
-            ]
+            ShortCaseExpressionsOnASingleLine: Annotated[bool, Field(
+                default=True,
+                description=
+                    "Controls whether to merge a short switch labeled rule into a "
+                    "single line.\n"
+                    "   `true`:\n"
+                    "       ```cpp\n"
+                    "       switch (a) {\n"
+                    "       case 1 -> 1;\n"
+                    "       default -> 0;\n"
+                    "       }\n"
+                    "       ```\n"
+                    "   `false`:\n"
+                    "       ```cpp\n"
+                    "       switch (a) {\n"
+                    "       case 1 ->\n"
+                    "           1;\n"
+                    "       default ->\n"
+                    "           0;\n"
+                    "       }\n"
+                    "       ```",
+            )]
+            ShortCaseLabelsOnASingleLine: Annotated[bool, Field(
+                default=True,
+                description=
+                    "Controls whether to contract short case labels to a single line.\n"
+                    "   `true`:\n"
+                    "       ```cpp\n"
+                    "       switch (a) {\n"
+                    "       case 1: x = 1; break;\n"
+                    "       case 2: return;\n"
+                    "       }\n"
+                    "       ```\n"
+                    "   `false`:\n"
+                    "       ```cpp\n"
+                    "       switch (a) {\n"
+                    "       case 1:\n"
+                    "           x = 1;\n"
+                    "           break;\n"
+                    "       case 2:\n"
+                    "           return;\n"
+                    "       }\n"
+                    "       ```",
+            )]
+            ShortCompoundRequirementsOnASingleLine: Annotated[bool, Field(
+                default=True,
+                description=
+                    "Controls whether to allow short compound requirements on a "
+                    "single line.\n"
+                    "   `true`:\n"
+                    "       ```cpp\n"
+                    "       template <typename T>\n"
+                    "       concept c = requires(T x) {\n"
+                    "           { x + 1 } -> std::same_as<int>;\n"
+                    "       };\n"
+                    "       ```\n"
+                    "   `false`:\n"
+                    "       ```cpp\n"
+                    "       template <typename T>\n"
+                    "       concept c = requires(T x) {\n"
+                    "           {\n"
+                    "               x + 1\n"
+                    "           } -> std::same_as<int>;\n"
+                    "       };\n"
+                    "       ```",
+            )]
+            ShortEnumsOnASingleLine: Annotated[bool, Field(
+                default=True,
+                description=
+                    "Controls whether to allow short enums on a single line.\n"
+                    "   `true`:\n"
+                    "       ```cpp\n"
+                    "       enum { A, B } myEnum;\n"
+                    "       ```\n"
+                    "   `false`:\n"
+                    "       ```cpp\n"
+                    "       enum {\n"
+                    "           A,\n"
+                    "           B\n"
+                    "       } myEnum;\n"
+                    "       ```",
+            )]
+
+            class _ShortFunctionsOnASingleLine(BaseModel):
+                """Validate the `[tool.clang-format.Allow.ShortFunctionsOnASingleLine]`
+                table.
+                """
+                model_config = ConfigDict(extra="forbid")
+                Empty: Annotated[bool, Field(
+                    default=True,
+                    description=
+                        "Controls whether to allow empty functions on a single line.\n"
+                        "   `true`:\n"
+                        "       ```cpp\n"
+                        "       void f() {}\n"
+                        "       void f2() {\n"
+                        "           bar2();\n"
+                        "       }\n"
+                        "       void f3() { /* comment */ }\n"
+                        "       ```\n"
+                        "   `false`: preserve user formatting.",
+                )]
+                Inline: Annotated[bool, Field(
+                    default=True,
+                    description=
+                        "Controls whether to merge functions defined inside a class.\n"
+                        "   `true`:\n"
+                        "       ```cpp\n"
+                        "       class Foo {\n"
+                        "           void f() { foo(); }\n"
+                        "           void g() {}\n"
+                        "       };\n"
+                        "       void f() {\n"
+                        "           foo();\n"
+                        "       }\n"
+                        "       void f() {\n"
+                        "       }\n"
+                        "       ```\n"
+                        "   `false`: preserve user formatting.",
+                )]
+                Other: Annotated[bool, Field(
+                    default=True,
+                    description=
+                        "Controls whether to merge all functions fitting on a single "
+                        "line.  Note that this control does not include 'Empty'.\n"
+                        "   `true`:\n"
+                        "       ```cpp\n"
+                        "       class Foo {\n"
+                        "           void f() { foo(); }\n"
+                        "       };\n"
+                        "       void f() { bar(); }\n"
+                        "       ```\n"
+                        "   `false`: preserve user formatting.",
+                )]
+
+            ShortFunctionsOnASingleLine: Annotated[_ShortFunctionsOnASingleLine, Field(
+                default_factory=_ShortFunctionsOnASingleLine.model_construct,
+                description="Options for allowing short functions on a single line",
+            )]
             ShortIfStatementsOnASingleLine: Annotated[
                 Literal["None", "WithoutElse", "OnlyFirstIf", "AllIfsAndElse"],
                 Field(
                     default="WithoutElse",
                     examples=["None", "WithoutElse", "OnlyFirstIf", "AllIfsAndElse"],
+                    description=
+                        "Controls whether to attempt to place short if statements on a "
+                        "single line.\n"
+                        "   `None`: never put if statements into a single line.\n"
+                        "       ```cpp\n"
+                        "       if (a)\n"
+                        "           return;\n"
+                        "\n"
+                        "       if (b)\n"
+                        "           return;\n"
+                        "       else\n"
+                        "           return;\n"
+                        "\n"
+                        "       if (c)\n"
+                        "           return;"
+                        "       else {\n"
+                        "           return;\n"
+                        "       }\n"
+                        "       ```\n"
+                        "   `WithoutElse`: put short ifs on the same line only if they "
+                        "lack an `else` statement.\n"
+                        "       ```cpp\n"
+                        "       if (a) return;\n"
+                        "\n"
+                        "       if (b)\n"
+                        "           return;\n"
+                        "       else\n"
+                        "           return;\n"
+                        "\n"
+                        "       if (c)\n"
+                        "           return;"
+                        "       else {\n"
+                        "           return;\n"
+                        "       }\n"
+                        "       ```\n"
+                        "   `OnlyFirstIf`: put short ifs, but not else ifs nor else "
+                        "statements, on the same line.\n"
+                        "       ```cpp\n"
+                        "       if (a) return;\n"
+                        "\n"
+                        "       if (b) return;\n"
+                        "       else if (b)\n"
+                        "           return;\n"
+                        "       else\n"
+                        "           return;\n"
+                        "\n"
+                        "       if (c) return;"
+                        "       else {\n"
+                        "           return;\n"
+                        "       }\n"
+                        "       ```\n"
+                        "   `AllIfsAndElse`: always put short ifs, else ifs, and else "
+                        "statements on the same line.\n"
+                        "       ```cpp\n"
+                        "       if (a) return;\n"
+                        "\n"
+                        "       if (b) return;\n"
+                        "       else return;\n"
+                        "\n"
+                        "       if (c) return;"
+                        "       else {\n"
+                        "           return;\n"
+                        "       }\n"
+                        "       ```",
                 )
             ]
             ShortLambdasOnASingleLine: Annotated[
@@ -1719,28 +1996,98 @@ class ClangFormat(Resource):
                 Field(
                     default="All",
                     examples=["None", "Empty", "Inline", "All"],
+                    description=
+                        "Controls whether to attempt to place short lambda expressions "
+                        "on a single line.\n"
+                        "   `None`: never merge lambda expressions into a single line.\n"
+                        "   `Empty`: only merge empty lambdas.\n"
+                        "       ```cpp\n"
+                        "       auto lambda = [](int a) {};\n"
+                        "       auto lambda2 = [](int a) {\n"
+                        "           return a;\n"
+                        "       };\n"
+                        "       ```\n"
+                        "   `Inline`: only merge lambdas into a single line if they are "
+                        "an argument of a function.\n"
+                        "       ```cpp\n"
+                        "       auto lambda = [](int x, int y) {\n"
+                        "           return x < y;\n"
+                        "       };\n"
+                        "       sort(a.begin(), a.end(), [](int x, int y) { return x < y; });\n"
+                        "       ```\n"
+                        "   `All`: merge all lambdas that fit on a single line.\n"
+                        "       ```cpp\n"
+                        "       auto lambda = [](int a) {};\n"
+                        "       auto lambda2 = [](int a) { return a; };\n"
+                        "       ```",
                 )
             ]
-            ShortLoopsOnASingleLine: Annotated[bool, Field(default=True)]
-            ShortNamespacesOnASingleLine: Annotated[bool, Field(default=False)]
+            ShortLoopsOnASingleLine: Annotated[bool, Field(
+                default=True,
+                description=
+                    "Controls whether to attempt to place short loops on a single line.\n"
+                    "   `true`:\n"
+                    "       ```cpp\n"
+                    "       while (true) {}\n"
+                    "       for (int i = 0; i < 10; ++i) {}\n"
+                    "       do {} while (true);\n"
+                    "       ```\n"
+                    "   `false`: preserve user formatting.",
+            )]
+            ShortNamespacesOnASingleLine: Annotated[bool, Field(
+                default=False,
+                description=
+                    "Controls whether to attempt to place short namespaces on a single line.\n"
+                    "   `true`: merge short namespaces into a single line.\n"
+                    "       ```cpp\n"
+                    "       namespace a { class b; }\n"
+                    "       ```\n"
+                    "   `false`: preserve user formatting.",
+            )]
 
         Allow: Annotated[_Allow, Field(
-            default_factory=_Allow.model_construct
+            default_factory=_Allow.model_construct,
+            description="Options for compacting short constructs.",
         )]
 
         class _Break(BaseModel):
             """Validate the `[tool.clang-format.Break]` table."""
             model_config = ConfigDict(extra="forbid")
-            AdjacentStringLiterals: Annotated[bool, Field(default=True)]
+            AdjacentStringLiterals: Annotated[bool, Field(
+                default=True,
+                description=
+                    "Controls whether to break adjacent string literals.\n"
+                    "   `true`:\n"
+                    "       ```cpp\n"
+                    "       return \"Code\"\n"
+                    "              \"\0\52\26\55\55\0\"\n"
+                    "              \"x013\"\n"
+                    "              \"\02\xBA\"\n"
+                    "       ```\n"
+                    "   `false`:\n"
+                    "       ```cpp\n"
+                    "       return \"Code\" \"\0\52\26\55\55\0\" \"x013\" \"\02\xBA\";\n"
+                    "       ```",
+            )]
             AfterAttributes: Annotated[Literal["Never", "Leave", "Always"], Field(
                 default="Never",
                 examples=["Never", "Leave", "Always"],
             )]
-            AfterOpenBracketBracedList: Annotated[bool, Field(default=True)]
-            AfterOpenBracketFunction: Annotated[bool, Field(default=True)]
-            AfterOpenBracketIf: Annotated[bool, Field(default=True)]
-            AfterOpenBracketLoop: Annotated[bool, Field(default=True)]
-            AfterOpenBracketSwitch: Annotated[bool, Field(default=True)]
+            AfterOpenBracketBracedList: Annotated[bool, Field(
+                default=True
+            )]
+            AfterOpenBracketFunction: Annotated[bool, Field(
+                default=True
+            )]
+            AfterOpenBracketIf: Annotated[bool, Field(
+                default=True
+            )]
+            AfterOpenBracketLoop: Annotated[bool, Field(
+                default=True
+            )]
+            AfterOpenBracketSwitch: Annotated[bool, Field(
+                default=True
+            )]
             AfterReturnType: Annotated[
                 Literal[
                     "Automatic", "ExceptShortType", "TopLevel",
@@ -1758,11 +2105,21 @@ class ClangFormat(Resource):
                 default="None",
                 examples=["None", "NonAssignment", "All"],
             )]
-            BeforeCloseBracketBracedList: Annotated[bool, Field(default=True)]
-            BeforeCloseBracketFunction: Annotated[bool, Field(default=True)]
-            BeforeCloseBracketIf: Annotated[bool, Field(default=True)]
-            BeforeCloseBracketLoop: Annotated[bool, Field(default=True)]
-            BeforeCloseBracketSwitch: Annotated[bool, Field(default=True)]
+            BeforeCloseBracketBracedList: Annotated[bool, Field(
+                default=True
+            )]
+            BeforeCloseBracketFunction: Annotated[bool, Field(
+                default=True
+            )]
+            BeforeCloseBracketIf: Annotated[bool, Field(
+                default=True
+            )]
+            BeforeCloseBracketLoop: Annotated[bool, Field(
+                default=True
+            )]
+            BeforeCloseBracketSwitch: Annotated[bool, Field(
+                default=True
+            )]
             BeforeConceptDeclarations: Annotated[Literal["Never", "Allowed", "Always"], Field(
                 default="Always",
                 examples=["Never", "Allowed", "Always"],
@@ -1771,8 +2128,12 @@ class ClangFormat(Resource):
                 default="OnlyMultiline",
                 examples=["Never", "OnlyMultiline", "Always"],
             )]
-            BeforeTemplateCloser: Annotated[bool, Field(default=True)]
-            BeforeTernaryOperators: Annotated[bool, Field(default=False)]
+            BeforeTemplateCloser: Annotated[bool, Field(
+                default=True
+            )]
+            BeforeTernaryOperators: Annotated[bool, Field(
+                default=False
+            )]
             BinaryOperations: Annotated[
                 Literal["Never", "OnePerLine", "RespectPrecedence"],
                 Field(
@@ -1787,7 +2148,9 @@ class ClangFormat(Resource):
                     examples=["BeforeColon", "AfterColon", "BeforeComma", "AfterComma"],
                 )
             ]
-            FunctionDefinitionParameters: Annotated[bool, Field(default=False)]
+            FunctionDefinitionParameters: Annotated[bool, Field(
+                default=False
+            )]
             InheritanceList: Annotated[
                 Literal["BeforeColon", "AfterColon", "BeforeComma", "AfterComma"],
                 Field(
@@ -1795,7 +2158,9 @@ class ClangFormat(Resource):
                     examples=["BeforeColon", "AfterColon", "BeforeComma", "AfterComma"],
                 )
             ]
-            StringLiterals: Annotated[bool, Field(default=True)]
+            StringLiterals: Annotated[bool, Field(
+                default=True
+            )]
             TemplateDeclarations: Annotated[
                 Literal["Leave", "No", "Multiline", "Yes"],
                 Field(
@@ -1804,31 +2169,65 @@ class ClangFormat(Resource):
                 )
             ]
 
-        Break: Annotated[_Break, Field(default_factory=_Break.model_construct)]
+        Break: Annotated[_Break, Field(
+            default_factory=_Break.model_construct
+        )]
 
         class _BraceWrapping(BaseModel):
             """Validate the `[tool.clang-format.BraceWrapping]` table."""
             model_config = ConfigDict(extra="forbid")
-            AfterCaseLabel: Annotated[bool, Field(default=False)]
-            AfterClass: Annotated[bool, Field(default=False)]
+            AfterCaseLabel: Annotated[bool, Field(
+                default=False
+            )]
+            AfterClass: Annotated[bool, Field(
+                default=False
+            )]
             AfterControlStatement: Annotated[Literal["Never", "Multiline", "Always"], Field(
                 default="Never",
                 examples=["Never", "Multiline", "Always"],
             )]
-            AfterEnum: Annotated[bool, Field(default=False)]
-            AfterFunction: Annotated[bool, Field(default=False)]
-            AfterNamespace: Annotated[bool, Field(default=False)]
-            AfterStruct: Annotated[bool, Field(default=False)]
-            AfterUnion: Annotated[bool, Field(default=False)]
-            AfterExternBlock: Annotated[bool, Field(default=False)]
-            BeforeCatch: Annotated[bool, Field(default=False)]
-            BeforeElse: Annotated[bool, Field(default=False)]
-            BeforeLambdaBody: Annotated[bool, Field(default=False)]
-            BeforeWhile: Annotated[bool, Field(default=False)]
-            IndentBraces: Annotated[bool, Field(default=False)]
-            SplitEmptyFunction: Annotated[bool, Field(default=False)]
-            SplitEmptyRecord: Annotated[bool, Field(default=False)]
-            SplitEmptyNamespace: Annotated[bool, Field(default=False)]
+            AfterEnum: Annotated[bool, Field(
+                default=False
+            )]
+            AfterFunction: Annotated[bool, Field(
+                default=False
+            )]
+            AfterNamespace: Annotated[bool, Field(
+                default=False
+            )]
+            AfterStruct: Annotated[bool, Field(
+                default=False
+            )]
+            AfterUnion: Annotated[bool, Field(
+                default=False
+            )]
+            AfterExternBlock: Annotated[bool, Field(
+                default=False
+            )]
+            BeforeCatch: Annotated[bool, Field(
+                default=False
+            )]
+            BeforeElse: Annotated[bool, Field(
+                default=False
+            )]
+            BeforeLambdaBody: Annotated[bool, Field(
+                default=False
+            )]
+            BeforeWhile: Annotated[bool, Field(
+                default=False
+            )]
+            IndentBraces: Annotated[bool, Field(
+                default=False
+            )]
+            SplitEmptyFunction: Annotated[bool, Field(
+                default=False
+            )]
+            SplitEmptyRecord: Annotated[bool, Field(
+                default=False
+            )]
+            SplitEmptyNamespace: Annotated[bool, Field(
+                default=False
+            )]
 
         BraceWrapping: Annotated[_BraceWrapping, Field(
             default_factory=_BraceWrapping.model_construct
@@ -1837,17 +2236,31 @@ class ClangFormat(Resource):
         class _Indent(BaseModel):
             """Validate the `[tool.clang-format.Indent]` table."""
             model_config = ConfigDict(extra="forbid")
-            CaseLabels: Annotated[bool, Field(default=True)]
-            ExportBlock: Annotated[bool, Field(default=True)]
-            ExternBlock: Annotated[bool, Field(default=True)]
-            GotoLabels: Annotated[bool, Field(default=True)]
+            CaseLabels: Annotated[bool, Field(
+                default=True
+            )]
+            ExportBlock: Annotated[bool, Field(
+                default=True
+            )]
+            ExternBlock: Annotated[bool, Field(
+                default=True
+            )]
+            GotoLabels: Annotated[bool, Field(
+                default=True
+            )]
             PPDirectives: Annotated[Literal["None", "BeforeHash", "AfterHash", "Both"], Field(
                 default="BeforeHash",
                 examples=["None", "BeforeHash", "AfterHash", "Both"],
             )]
-            RequiresClause: Annotated[bool, Field(default=True)]
-            Width: Annotated[NonNegativeInt, Field(default=4)]
-            WrappedFunctionNames: Annotated[bool, Field(default=False)]
+            RequiresClause: Annotated[bool, Field(
+                default=True
+            )]
+            Width: Annotated[NonNegativeInt, Field(
+                default=4
+            )]
+            WrappedFunctionNames: Annotated[bool, Field(
+                default=False
+            )]
 
         Indent: Annotated[_Indent, Field(
             default_factory=_Indent.model_construct
@@ -1856,9 +2269,18 @@ class ClangFormat(Resource):
         class _IntegerLiteralSeparator(BaseModel):
             """Validate the `[tool.clang-format.IntegerLiteralSeparator]` table."""
             model_config = ConfigDict(extra="forbid")
-            Binary: Annotated[int, Field(default=8, ge=-1)]
-            Decimal: Annotated[int, Field(default=-1, ge=-1)]
-            Hex: Annotated[int, Field(default=4, ge=-1)]
+            Binary: Annotated[int, Field(
+                default=8,
+                ge=-1
+            )]
+            Decimal: Annotated[int, Field(
+                default=-1,
+                ge=-1
+            )]
+            Hex: Annotated[int, Field(
+                default=4,
+                ge=-1
+            )]
 
         IntegerLiteralSeparator: Annotated[_IntegerLiteralSeparator, Field(
             default_factory=_IntegerLiteralSeparator.model_construct
@@ -1867,9 +2289,15 @@ class ClangFormat(Resource):
         class _KeepEmptyLines(BaseModel):
             """Validate the `[tool.clang-format.KeepEmptyLines]` table."""
             model_config = ConfigDict(extra="forbid")
-            AtEndOfFile: Annotated[bool, Field(default=False)]
-            AtStartOfBlock: Annotated[bool, Field(default=False)]
-            AtStartOfFile: Annotated[bool, Field(default=False)]
+            AtEndOfFile: Annotated[bool, Field(
+                default=False
+            )]
+            AtStartOfBlock: Annotated[bool, Field(
+                default=False
+            )]
+            AtStartOfFile: Annotated[bool, Field(
+                default=False
+            )]
 
         KeepEmptyLines: Annotated[_KeepEmptyLines, Field(
             default_factory=_KeepEmptyLines.model_construct
@@ -1902,9 +2330,15 @@ class ClangFormat(Resource):
         class _SortIncludes(BaseModel):
             """Validate the `[tool.clang-format.SortIncludes]` table."""
             model_config = ConfigDict(extra="forbid")
-            Enabled: Annotated[bool, Field(default=True)]
-            IgnoreCase: Annotated[bool, Field(default=False)]
-            IgnoreExtension: Annotated[bool, Field(default=False)]
+            Enabled: Annotated[bool, Field(
+                default=True
+            )]
+            IgnoreCase: Annotated[bool, Field(
+                default=False
+            )]
+            IgnoreExtension: Annotated[bool, Field(
+                default=False
+            )]
 
         SortIncludes: Annotated[_SortIncludes, Field(
             default_factory=_SortIncludes.model_construct
@@ -1913,18 +2347,42 @@ class ClangFormat(Resource):
         class _Space(BaseModel):
             """Validate the `[tool.clang-format.Space]` table."""
             model_config = ConfigDict(extra="forbid")
-            AfterCStyleCast: Annotated[bool, Field(default=False)]
-            AfterLogicalNot: Annotated[bool, Field(default=False)]
-            AfterOperatorKeyword: Annotated[bool, Field(default=False)]
-            AfterTemplateKeyword: Annotated[bool, Field(default=False)]
-            BeforeAssignmentOperators: Annotated[bool, Field(default=True)]
-            BeforeCaseColon: Annotated[bool, Field(default=False)]
-            BeforeCpp11BracedList: Annotated[bool, Field(default=False)]
-            BeforeCtorInitializerColon: Annotated[bool, Field(default=True)]
-            BeforeInheritanceColon: Annotated[bool, Field(default=True)]
-            BeforeJsonColon: Annotated[bool, Field(default=False)]
-            BeforeRangeBasedForLoopColon: Annotated[bool, Field(default=True)]
-            BeforeSquareBrackets: Annotated[bool, Field(default=False)]
+            AfterCStyleCast: Annotated[bool, Field(
+                default=False
+            )]
+            AfterLogicalNot: Annotated[bool, Field(
+                default=False
+            )]
+            AfterOperatorKeyword: Annotated[bool, Field(
+                default=False
+            )]
+            AfterTemplateKeyword: Annotated[bool, Field(
+                default=False
+            )]
+            BeforeAssignmentOperators: Annotated[bool, Field(
+                default=True
+            )]
+            BeforeCaseColon: Annotated[bool, Field(
+                default=False
+            )]
+            BeforeCpp11BracedList: Annotated[bool, Field(
+                default=False
+            )]
+            BeforeCtorInitializerColon: Annotated[bool, Field(
+                default=True
+            )]
+            BeforeInheritanceColon: Annotated[bool, Field(
+                default=True
+            )]
+            BeforeJsonColon: Annotated[bool, Field(
+                default=False
+            )]
+            BeforeRangeBasedForLoopColon: Annotated[bool, Field(
+                default=True
+            )]
+            BeforeSquareBrackets: Annotated[bool, Field(
+                default=False
+            )]
             InEmptyBraces: Annotated[Literal["Never", "Block", "Always"], Field(
                 default="Never",
                 examples=["Never", "Block", "Always"],
@@ -1935,17 +2393,39 @@ class ClangFormat(Resource):
                 table.
                 """
                 model_config = ConfigDict(extra="forbid")
-                AfterControlStatements: Annotated[bool, Field(default=True)]
-                AfterForeachMacros: Annotated[bool, Field(default=True)]
-                AfterFunctionDeclarationName: Annotated[bool, Field(default=False)]
-                AfterFunctionDefinitionName: Annotated[bool, Field(default=False)]
-                AfterIfMacros: Annotated[bool, Field(default=True)]
-                AfterNot: Annotated[bool, Field(default=True)]
-                AfterOverloadedOperator: Annotated[bool, Field(default=False)]
-                AfterPlacementOperator: Annotated[bool, Field(default=True)]
-                AfterRequiresInClause: Annotated[bool, Field(default=False)]
-                AfterRequiresInExpression: Annotated[bool, Field(default=False)]
-                BeforeNonEmptyParentheses: Annotated[bool, Field(default=False)]
+                AfterControlStatements: Annotated[bool, Field(
+                    default=True
+                )]
+                AfterForeachMacros: Annotated[bool, Field(
+                    default=True
+                )]
+                AfterFunctionDeclarationName: Annotated[bool, Field(
+                    default=False
+                )]
+                AfterFunctionDefinitionName: Annotated[bool, Field(
+                    default=False
+                )]
+                AfterIfMacros: Annotated[bool, Field(
+                    default=True
+                )]
+                AfterNot: Annotated[bool, Field(
+                    default=True
+                )]
+                AfterOverloadedOperator: Annotated[bool, Field(
+                    default=False
+                )]
+                AfterPlacementOperator: Annotated[bool, Field(
+                    default=True
+                )]
+                AfterRequiresInClause: Annotated[bool, Field(
+                    default=False
+                )]
+                AfterRequiresInExpression: Annotated[bool, Field(
+                    default=False
+                )]
+                BeforeNonEmptyParentheses: Annotated[bool, Field(
+                    default=False
+                )]
 
             BeforeParensOptions: Annotated[_BeforeParensOptions, Field(
                 default_factory=_BeforeParensOptions.model_construct
@@ -1956,11 +2436,21 @@ class ClangFormat(Resource):
                 table.
                 """
                 model_config = ConfigDict(extra="forbid")
-                ExceptDoubleParentheses: Annotated[bool, Field(default=False)]
-                InConditionalStatements: Annotated[bool, Field(default=False)]
-                InCStyleCasts: Annotated[bool, Field(default=False)]
-                InEmptyParentheses: Annotated[bool, Field(default=False)]
-                Other: Annotated[bool, Field(default=False)]
+                ExceptDoubleParentheses: Annotated[bool, Field(
+                    default=False
+                )]
+                InConditionalStatements: Annotated[bool, Field(
+                    default=False
+                )]
+                InCStyleCasts: Annotated[bool, Field(
+                    default=False
+                )]
+                InEmptyParentheses: Annotated[bool, Field(
+                    default=False
+                )]
+                Other: Annotated[bool, Field(
+                    default=False
+                )]
 
             InParensOptions: Annotated[_InParensOptions, Field(
                 default_factory=_InParensOptions.model_construct
@@ -2037,7 +2527,11 @@ class ClangFormat(Resource):
             "AllowShortCompoundRequirementsOnASingleLine":
                 model.Allow.ShortCompoundRequirementsOnASingleLine,
             "AllowShortEnumsOnASingleLine": model.Allow.ShortEnumsOnASingleLine,
-            "AllowShortFunctionsOnASingleLine": model.Allow.ShortFunctionsOnASingleLine,
+            "AllowShortFunctionsOnASingleLine": {
+                "Empty": model.Allow.ShortFunctionsOnASingleLine.Empty,
+                "Inline": model.Allow.ShortFunctionsOnASingleLine.Inline,
+                "Other": model.Allow.ShortFunctionsOnASingleLine.Other,
+            },
             "AllowShortIfStatementsOnASingleLine": model.Allow.ShortIfStatementsOnASingleLine,
             "AllowShortLambdasOnASingleLine": model.Allow.ShortLambdasOnASingleLine,
             "AllowShortLoopsOnASingleLine": model.Allow.ShortLoopsOnASingleLine,
@@ -2212,4 +2706,3 @@ class ClangFormat(Resource):
             dump_yaml(content, resource_name=self.name),
             encoding="utf-8",
         )
-
