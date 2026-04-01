@@ -2072,21 +2072,182 @@ class ClangFormat(Resource):
             AfterAttributes: Annotated[Literal["Never", "Leave", "Always"], Field(
                 default="Never",
                 examples=["Never", "Leave", "Always"],
+                description=
+                    "Controls line breaks after groups of C++11 attributes before "
+                    "declarations or control statements.\n"
+                    "   `Never`: never break after the last attribute of the group.\n"
+                    "       ```cpp\n"
+                    "       [[maybe_unused]] const int i;\n"
+                    "       [[gnu::const]] [[maybe_unused]] int j;\n"
+                    "\n"
+                    "       [[nodiscard]] inline int f();\n"
+                    "       [[gnu::const]] [[nodiscard]] int g();\n"
+                    "\n"
+                    "       [[likely]] if (a)\n"
+                    "           f();\n"
+                    "       else\n"
+                    "           g();\n"
+                    "\n"
+                    "       switch (b) {\n"
+                    "       [[unlikely]] case 1:\n"
+                    "           ++b;\n"
+                    "           break;\n"
+                    "       [[likely]] default:\n"
+                    "           return;\n"
+                    "       }\n"
+                    "       ```\n"
+                    "   `Leave`: Leave the line breaking after the last attribute of "
+                    "the group as is.\n"
+                    "       ```cpp\n"
+                    "       [[maybe_unused]] const int i;\n"
+                    "       [[gnu::const]] [[maybe_unused]]\n"
+                    "       int j;\n"
+                    "\n"
+                    "       [[nodiscard]] inline int f();\n"
+                    "       [[gnu::const]] [[nodiscard]]\n"
+                    "       int g();\n"
+                    "\n"
+                    "       [[likely]] if (a)\n"
+                    "           f();\n"
+                    "       else\n"
+                    "           g();\n"
+                    "\n"
+                    "       switch (b) {\n"
+                    "       [[unlikely]] case 1:\n"
+                    "           ++b;\n"
+                    "           break;\n"
+                    "       [[likely]]\n"
+                    "       default:\n"
+                    "           return;\n"
+                    "       }\n"
+                    "       ```\n"
+                    "   `LeaveAll`: same as `Leave` except that it applies to all "
+                    "attributes of the group.\n"
+                    "       ```cpp\n"
+                    "       [[deprecated(\"Don't use this version\")]]\n"
+                    "       [[nodiscard]]\n"
+                    "       bool foo() {\n"
+                    "           return true;\n"
+                    "       }\n"
+                    "\n"
+                    "       [[deprecated(\"Don't use this version\")]]\n"
+                    "       [[nodiscard]] bool bar() {\n"
+                    "           return true;\n"
+                    "       }\n"
+                    "       ```\n"
+                    "   `Always`: always break after the last attribute of the group.\n"
+                    "       ```cpp\n"
+                    "       [[maybe_unused]]\n"
+                    "       const int i;\n"
+                    "       [[gnu::const]] [[maybe_unused]]\n"
+                    "       int j;\n"
+                    "\n"
+                    "       [[nodiscard]]\n"
+                    "       inline int f();\n"
+                    "       [[gnu::const]] [[nodiscard]]\n"
+                    "       int g();\n"
+                    "\n"
+                    "       [[likely]]\n"
+                    "       if (a)\n"
+                    "           f();\n"
+                    "       else\n"
+                    "           g();\n"
+                    "\n"
+                    "       switch (b) {\n"
+                    "       [[unlikely]]\n"
+                    "       case 1:\n"
+                    "           ++b;\n"
+                    "           break;\n"
+                    "       [[likely]]\n"
+                    "       default:\n"
+                    "           return;\n"
+                    "       }\n"
+                    "       ```",
             )]
             AfterOpenBracketBracedList: Annotated[bool, Field(
-                default=True
+                default=True,
+                description=
+                    "Controls whether to force a break after the left bracket of a "
+                    "braced initializer list when the list exceeds `ColumnLimit`.\n"
+                    "   `true`:\n"
+                    "       ```cpp\n"
+                    "       vector<int> x {\n"
+                    "           1, 2, 3}\n"
+                    "       ```\n"
+                    "   `false`:\n"
+                    "       ```cpp\n"
+                    "       vector<int> x {1,\n"
+                    "           2, 3}\n"
+                    "       ```",
             )]
             AfterOpenBracketFunction: Annotated[bool, Field(
-                default=True
+                default=True,
+                description=
+                    "Controls whether to force a break after the left parenthesis of a "
+                    "function (declaration, definition, call) when the parameters "
+                    "exceed `ColumnLimit`.\n"
+                    "   `true`:\n"
+                    "       ```cpp\n"
+                    "       foo (\n"
+                    "           a, b)\n"
+                    "       ```\n"
+                    "   `false`:\n"
+                    "       ```cpp\n"
+                    "       foo(a,\n"
+                    "           b)\n"
+                    "       ```",
             )]
             AfterOpenBracketIf: Annotated[bool, Field(
-                default=True
+                default=True,
+                description=
+                    "Controls whether to force a break after the left parenthesis of "
+                    "an `if` control statement once the expression exceeds `ColumnLimit`.\n"
+                    "   `true`:\n"
+                    "       ```cpp\n"
+                    "       if constexpr (\n"
+                    "           a || b)\n"
+                    "       ```\n"
+                    "   `false`:\n"
+                    "       ```cpp\n"
+                    "       if constexpr (a ||\n"
+                    "                     b)\n"
+                    "       ```",
             )]
             AfterOpenBracketLoop: Annotated[bool, Field(
-                default=True
+                default=True,
+                description=
+                    "Controls whether to force a break after the left parenthesis in "
+                    "a loop control statement once the condition exceeds `ColumnLimit`.\n"
+                    "   `true`:\n"
+                    "       ```cpp\n"
+                    "       while (\n"
+                    "           a && b) {\n"
+                    "       }\n"
+                    "       ```\n"
+                    "   `false`:\n"
+                    "       ```cpp\n"
+                    "       while (a &&\n"
+                    "              b) {\n"
+                    "       }\n"
+                    "       ```",
             )]
             AfterOpenBracketSwitch: Annotated[bool, Field(
-                default=True
+                default=True,
+                description=
+                    "Controls whether to force a break after the left parenthesis in "
+                    "`switch` control statements once the condition exceeds `ColumnLimit`.\n"
+                    "   `true`:\n"
+                    "       ```cpp\n"
+                    "       switch (\n"
+                    "           a + b) {\n"
+                    "       }\n"
+                    "       ```\n"
+                    "   `false`:\n"
+                    "       ```cpp\n"
+                    "       switch (a +\n"
+                    "               b) {\n"
+                    "       }\n"
+                    "       ```",
             )]
             AfterReturnType: Annotated[
                 Literal[
@@ -2099,78 +2260,494 @@ class ClangFormat(Resource):
                         "Automatic", "ExceptShortType", "TopLevel",
                         "TopLevelDefinitions", "All", "AllDefinitions",
                     ],
+                    description=
+                        "Controls line breaks around return types in function "
+                        "declarations and definitions.\n"
+                        "   `Automatic`: break after the return type based on "
+                        "configured penalties.\n"
+                        "       ```cpp\n"
+                        "       class A {\n"
+                        "           int f() { return 0; };\n"
+                        "       };\n"
+                        "       int f();\n"
+                        "       int f() { return 1; }\n"
+                        "       int\n"
+                        "       LongName::AnotherLongName();\n"
+                        "       ```\n"
+                        "   `ExceptShortType`: same as `Automatic`, except that there "
+                        "is no break after short return types.\n"
+                        "       ```cpp\n"
+                        "       class A {\n"
+                        "           int f() { return 0; };\n"
+                        "       };\n"
+                        "       int f();\n"
+                        "       int f() { return 1; }\n"
+                        "       int LongName::\n"
+                        "           AnotherLongName();\n"
+                        "       ```\n"
+                        "   `TopLevel`: always break after the return types of "
+                        "top-level functions.\n"
+                        "       ```cpp\n"
+                        "       class A {\n"
+                        "           int f() { return 0; };\n"
+                        "       };\n"
+                        "       int\n"
+                        "       f();\n"
+                        "       int f() {\n"
+                        "           return 1;\n"
+                        "       }\n"
+                        "       int\n"
+                        "       LongName::AnotherLongName();\n"
+                        "       ```\n"
+                        "   `TopLevelDefinitions`: always break after the return type "
+                        "of top-level definitions.\n"
+                        "       ```cpp\n"
+                        "       class A {\n"
+                        "           int f() { return 0; };\n"
+                        "       };\n"
+                        "       int f();\n"
+                        "       int\n"
+                        "       f() {\n"
+                        "           return 1;\n"
+                        "       }\n"
+                        "       int\n"
+                        "       LongName::AnotherLongName();\n"
+                        "       ```\n"
+                        "   `All`: always break after the return type.\n"
+                        "       ```cpp\n"
+                        "       class A {\n"
+                        "           int\n"
+                        "           f() {\n"
+                        "               return 0;\n"
+                        "           };\n"
+                        "       };\n"
+                        "       int\n"
+                        "       f();\n"
+                        "       int\n"
+                        "       f() {\n"
+                        "           return 1;\n"
+                        "       }\n"
+                        "       int\n"
+                        "       LongName::AnotherLongName();\n"
+                        "       ```\n"
+                        "   `AllDefinitions`: always break after the return type of "
+                        "function definitions.\n"
+                        "    ```cpp\n"
+                        "       class A {\n"
+                        "           int\n"
+                        "           f() {\n"
+                        "               return 0;\n"
+                        "           };\n"
+                        "       };\n"
+                        "       int f();\n"
+                        "       int\n"
+                        "       f() {\n"
+                        "           return 1;\n"
+                        "       }\n"
+                        "       int\n"
+                        "       LongName::AnotherLongName();\n"
+                        "    ```",
                 )
             ]
             BeforeBinaryOperators: Annotated[Literal["None", "NonAssignment", "All"], Field(
                 default="None",
                 examples=["None", "NonAssignment", "All"],
+                description=
+                    "Controls where wrapped binary operators are placed.\n"
+                    "   `None`: break after operators.\n"
+                    "       ```cpp\n"
+                    "       LooooooooooongType loooooooooooooooooooooongVariable =\n"
+                    "           someLooooooooooooooooongFunction();\n"
+                    "\n"
+                    "       bool value = aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa +\n"
+                    "                            aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa ==\n"
+                    "                        aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa &&\n"
+                    "                    aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa >\n"
+                    "                        ccccccccccccccccccccccccccccccccccccccccc;\n"
+                    "       ```\n"
+                    "   `NonAssignment`: break before non-assignment operators.\n"
+                    "       ```cpp\n"
+                    "       LooooooooooongType loooooooooooooooooooooongVariable =\n"
+                    "           someLooooooooooooooooongFunction();\n"
+                    "\n"
+                    "       bool value = aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"
+                    "                            + aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"
+                    "                        == aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"
+                    "                    && aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"
+                    "                           > ccccccccccccccccccccccccccccccccccccccccc;\n"
+                    "       ```\n"
+                    "   `All`: break before all operators, including assignment.\n"
+                    "       ```cpp\n"
+                    "       LooooooooooongType loooooooooooooooooooooongVariable\n"
+                    "           = someLooooooooooooooooongFunction();\n"
+                    "\n"
+                    "       bool value = aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"
+                    "                            + aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"
+                    "                        == aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"
+                    "                    && aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"
+                    "                           > ccccccccccccccccccccccccccccccccccccccccc;\n"
+                    "       ```",
             )]
             BeforeCloseBracketBracedList: Annotated[bool, Field(
-                default=True
+                default=True,
+                description=
+                    "Controls whether to force a break before the right bracket of a "
+                    "braced initializer list when the list exceeds `ColumnLimit`.  This "
+                    "only applies when there is a break after the opening bracket.\n"
+                    "   `true`:\n"
+                    "       ```cpp\n"
+                    "       vector<int> x {\n"
+                    "           1, 2, 3\n"
+                    "       }\n"
+                    "       ```\n"
+                    "   `false`:\n"
+                    "       ```cpp\n"
+                    "       vector<int> x {\n"
+                    "           1, 2, 3}\n"
+                    "       ```",
             )]
             BeforeCloseBracketFunction: Annotated[bool, Field(
-                default=True
+                default=True,
+                description=
+                    "Controls whether to force a break before the right parenthesis of "
+                    "a function (declaration, definition, call) when the parameters "
+                    "exceed `ColumnLimit`.\n"
+                    "   `true`:\n"
+                    "       ```cpp\n"
+                    "       foo(\n"
+                    "           a, b\n"
+                    "       )\n"
+                    "       ```\n"
+                    "   `false`:\n"
+                    "       ```cpp\n"
+                    "       foo(\n"
+                    "           a, b)\n"
+                    "       ```",
             )]
             BeforeCloseBracketIf: Annotated[bool, Field(
-                default=True
+                default=True,
+                description=
+                    "Controls whether to force a break before the right parenthesis of "
+                    "an `if` control statement when the condition exceeds `ColumnLimit`.  "
+                    "This only applies when there is a break after the opening parenthesis.\n"
+                    "   `true`:\n"
+                    "       ```cpp\n"
+                    "       if constexpr (\n"
+                    "           a || b\n"
+                    "       )\n"
+                    "       ```\n"
+                    "   `false`:\n"
+                    "       ```cpp\n"
+                    "       if constexpr (\n"
+                    "           a || b)\n"
+                    "       ```",
             )]
             BeforeCloseBracketLoop: Annotated[bool, Field(
-                default=True
+                default=True,
+                description=
+                    "Controls whether to force a break before the right parenthesis of "
+                    "a loop control statement when the condition exceeds `ColumnLimit`.  "
+                    "This only applies when there is a break after the opening parenthesis.\n"
+                    "   `true`:\n"
+                    "       ```cpp\n"
+                    "       while (\n"
+                    "           a && b\n"
+                    "       )\n"
+                    "       ```\n"
+                    "   `false`:\n"
+                    "       ```cpp\n"
+                    "       while (\n"
+                    "           a && b)\n"
+                    "       ```",
             )]
             BeforeCloseBracketSwitch: Annotated[bool, Field(
-                default=True
+                default=True,
+                description=
+                    "Controls whether to force a break before the right parenthesis of "
+                    "a `switch` control statement when the condition exceeds `ColumnLimit`.  "
+                    "This only applies when there is a break after the opening parenthesis.\n"
+                    "   `true`:\n"
+                    "       ```cpp\n"
+                    "       switch (\n"
+                    "           a + b\n"
+                    "       )\n"
+                    "       ```\n"
+                    "   `false`:\n"
+                    "       ```cpp\n"
+                    "       switch (\n"
+                    "           a + b)\n"
+                    "       ```",
             )]
             BeforeConceptDeclarations: Annotated[Literal["Never", "Allowed", "Always"], Field(
                 default="Always",
                 examples=["Never", "Allowed", "Always"],
+                description=
+                    "Controls line breaking before concept declarations.\n"
+                    "   `Never`: keep the template declaration and `concept` on one line.\n"
+                    "       ```cpp\n"
+                    "       template <typename T> concept C = ...;\n"
+                    "       ```\n"
+                    "   `Allowed`: allow breaking before `concept` according to other "
+                    "line-breaking rules and penalties.\n"
+                    "   `Always`: always break before `concept`.\n"
+                    "       ```cpp\n"
+                    "       template <typename T>\n"
+                    "       concept C = ...;\n"
+                    "       ```",
             )]
             BeforeInlineASMColon: Annotated[Literal["Never", "OnlyMultiline", "Always"], Field(
                 default="OnlyMultiline",
                 examples=["Never", "OnlyMultiline", "Always"],
+                description=
+                    "Controls line breaking before inline ASM colons.\n"
+                    "   `Never`: never break before the inline ASM colon.\n"
+                    "       ```cpp\n"
+                    "       asm volatile(\"string\", : : val);\n"
+                    "       ```\n"
+                    "   `OnlyMultiline`: break before the colon only when the statement "
+                    "exceeds `ColumnLimit`.\n"
+                    "       ```cpp\n"
+                    "       asm volatile(\"string\", : : val);\n"
+                    "       asm(\"cmoveq %1, %2, %[result]\"\n"
+                    "           : [result] \"=r\"(result)\n"
+                    "           : \"r\"(test), \"r\"(new), \"[result]\"(old));\n"
+                    "       ```\n"
+                    "   `Always`: always break before inline ASM colons.\n"
+                    "       ```cpp\n"
+                    "       asm volatile(\"string\",\n"
+                    "                    :\n"
+                    "                    : val);\n"
+                    "       ```",
             )]
             BeforeTemplateCloser: Annotated[bool, Field(
-                default=True
+                default=True,
+                description=
+                    "Controls whether to break before a template closing bracket (`>`) "
+                    "when there is a line break after the matching opening bracket (`<`).\n"
+                    "   `true`:\n"
+                    "       ```cpp\n"
+                    "       template <typename Foo, typename Bar>\n"
+                    "\n"
+                    "       template <typename Foo,\n"
+                    "                 typename Bar>\n"
+                    "\n"
+                    "       template <\n"
+                    "           typename Foo,\n"
+                    "           typename Bar\n"
+                    "       >\n"
+                    "       ```\n"
+                    "   `false`:\n"
+                    "       ```cpp\n"
+                    "       template <typename Foo, typename Bar>\n"
+                    "\n"
+                    "       template <typename Foo,\n"
+                    "                 typename Bar>\n"
+                    "\n"
+                    "       template <\n"
+                    "           typename Foo,\n"
+                    "           typename Bar>\n"
+                    "       ```",
             )]
             BeforeTernaryOperators: Annotated[bool, Field(
-                default=False
+                default=False,
+                description=
+                    "Controls whether ternary operators are placed after a line break.\n"
+                    "   `true`:\n"
+                    "       ```cpp\n"
+                    "       veryVeryVeryVeryVeryVeryVeryVeryVeryVeryVeryLongDescription\n"
+                    "           ? firstValue\n"
+                    "           : SecondValueVeryVeryVeryVeryLong;\n"
+                    "       ```\n"
+                    "   `false`:\n"
+                    "       ```cpp\n"
+                    "       veryVeryVeryVeryVeryVeryVeryVeryVeryVeryVeryLongDescription ?\n"
+                    "           firstValue :\n"
+                    "           SecondValueVeryVeryVeryVeryLong;\n"
+                    "       ```",
             )]
             BinaryOperations: Annotated[
                 Literal["Never", "OnePerLine", "RespectPrecedence"],
                 Field(
                     default="Never",
                     examples=["Never", "OnePerLine", "RespectPrecedence"],
+                    description=
+                        "Controls line breaking for chains of binary operations.\n"
+                        "   `Never`: do not force per-operation breaking.\n"
+                        "       ```cpp\n"
+                        "       aaa + bbbb * ccccc - ddddd +\n"
+                        "       eeeeeeeeeeeeeeee;\n"
+                        "       ```\n"
+                        "   `OnePerLine`: if the chain does not fit on one line, put "
+                        "each operation on its own line.\n"
+                        "       ```cpp\n"
+                        "       aaa +\n"
+                        "       bbbb *\n"
+                        "       ccccc -\n"
+                        "       ddddd +\n"
+                        "       eeeeeeeeeeeeeeee;\n"
+                        "       ```\n"
+                        "   `RespectPrecedence`: break long chains by precedence groups.\n"
+                        "       ```cpp\n"
+                        "       aaa +\n"
+                        "       bbbb * ccccc -\n"
+                        "       ddddd +\n"
+                        "       eeeeeeeeeeeeeeee;\n"
+                        "       ```",
                 )
             ]
             ConstructorInitializers: Annotated[
-                Literal["BeforeColon", "AfterColon", "BeforeComma", "AfterComma"],
+                Literal["BeforeColon", "BeforeComma", "AfterColon", "AfterComma"],
                 Field(
                     default="AfterColon",
-                    examples=["BeforeColon", "AfterColon", "BeforeComma", "AfterComma"],
+                    examples=["BeforeColon", "BeforeComma", "AfterColon", "AfterComma"],
+                    description=
+                        "Controls line breaking for constructor initializer lists.\n"
+                        "   `BeforeColon`: break before `:` and after commas.\n"
+                        "       ```cpp\n"
+                        "       Constructor()\n"
+                        "           : initializer1(),\n"
+                        "             initializer2()\n"
+                        "       ```\n"
+                        "   `BeforeComma`: break before `:` and before commas, aligning "
+                        "commas with the colon.\n"
+                        "       ```cpp\n"
+                        "       Constructor()\n"
+                        "           : initializer1()\n"
+                        "           , initializer2()\n"
+                        "       ```\n"
+                        "   `AfterColon`: break after `:` and after commas.\n"
+                        "       ```cpp\n"
+                        "       Constructor() :\n"
+                        "           initializer1(),\n"
+                        "           initializer2()\n"
+                        "       ```\n"
+                        "   `AfterComma`: break only after commas.\n"
+                        "       ```cpp\n"
+                        "       Constructor() : initializer1(),\n"
+                        "                       initializer2()\n"
+                        "       ```",
                 )
             ]
             FunctionDefinitionParameters: Annotated[bool, Field(
-                default=False
+                default=False,
+                description=
+                    "Controls whether to always break before function definition "
+                    "parameters.\n"
+                    "   `true`:\n"
+                    "       ```cpp\n"
+                    "       void functionDefinition(\n"
+                    "                int A, int B) {}\n"
+                    "       ```\n"
+                    "   `false`:\n"
+                    "       ```cpp\n"
+                    "       void functionDefinition(int A, int B) {}\n"
+                    "       ```",
             )]
             InheritanceList: Annotated[
-                Literal["BeforeColon", "AfterColon", "BeforeComma", "AfterComma"],
+                Literal["BeforeColon", "BeforeComma", "AfterColon", "AfterComma"],
                 Field(
                     default="AfterColon",
-                    examples=["BeforeColon", "AfterColon", "BeforeComma", "AfterComma"],
+                    examples=["BeforeColon", "BeforeComma", "AfterColon", "AfterComma"],
+                    description=
+                        "Controls line breaking for class inheritance lists.\n"
+                        "   `BeforeColon`: break before `:` and after commas.\n"
+                        "       ```cpp\n"
+                        "       class Foo\n"
+                        "           : Base1,\n"
+                        "             Base2\n"
+                        "       {};\n"
+                        "       ```\n"
+                        "   `BeforeComma`: break before `:` and before commas, aligning "
+                        "commas with the colon.\n"
+                        "       ```cpp\n"
+                        "       class Foo\n"
+                        "           : Base1\n"
+                        "           , Base2\n"
+                        "       {};\n"
+                        "       ```\n"
+                        "   `AfterColon`: break after `:` and after commas.\n"
+                        "       ```cpp\n"
+                        "       class Foo :\n"
+                        "           Base1,\n"
+                        "           Base2\n"
+                        "       {};\n"
+                        "       ```\n"
+                        "   `AfterComma`: break only after commas.\n"
+                        "       ```cpp\n"
+                        "       class Foo : Base1,\n"
+                        "                   Base2\n"
+                        "       {};\n"
+                        "       ```",
                 )
             ]
             StringLiterals: Annotated[bool, Field(
-                default=True
+                default=True,
+                description=
+                    "Controls whether clang-format may break long string literals.\n"
+                    "   `true`:\n"
+                    "       ```cpp\n"
+                    "       const char* x = \"veryVeryVeryVeryVeryVe\"\n"
+                    "                       \"ryVeryVeryVeryVeryVery\"\n"
+                    "                       \"VeryLongString\";\n"
+                    "       ```\n"
+                    "   `false`:\n"
+                    "       ```cpp\n"
+                    "       const char* x =\n"
+                    "           \"veryVeryVeryVeryVeryVeryVeryVeryVeryVeryVeryVeryLongString\";\n"
+                    "       ```",
             )]
             TemplateDeclarations: Annotated[
                 Literal["Leave", "No", "Multiline", "Yes"],
                 Field(
                     default="Yes",
                     examples=["Leave", "No", "Multiline", "Yes"],
+                    description=
+                        "Controls line breaking between template declarations and the "
+                        "following declaration.\n"
+                        "   `Leave`: preserve user formatting.\n"
+                        "       ```cpp\n"
+                        "       template <typename T>\n"
+                        "       T foo() {\n"
+                        "       }\n"
+                        "       template <typename T> T foo(int aaaaaaaaaaaaaaaaaaaaa,\n"
+                        "                                   int bbbbbbbbbbbbbbbbbbbbb) {\n"
+                        "       }\n"
+                        "       ```\n"
+                        "   `No`: do not force a break before the declaration, unless "
+                        "other formatting rules require it.\n"
+                        "       ```cpp\n"
+                        "       template <typename T> T foo() {\n"
+                        "       }\n"
+                        "       template <typename T> T foo(int aaaaaaaaaaaaaaaaaaaaa,\n"
+                        "                                   int bbbbbbbbbbbbbbbbbbbbb) {\n"
+                        "       }\n"
+                        "       ```\n"
+                        "   `Multiline`: force a break when the following declaration "
+                        "spans multiple lines.\n"
+                        "       ```cpp\n"
+                        "       template <typename T> T foo() {\n"
+                        "       }\n"
+                        "       template <typename T>\n"
+                        "       T foo(int aaaaaaaaaaaaaaaaaaaaa,\n"
+                        "             int bbbbbbbbbbbbbbbbbbbbb) {\n"
+                        "       }\n"
+                        "       ```\n"
+                        "   `Yes`: always break after the template declaration.\n"
+                        "       ```cpp\n"
+                        "       template <typename T>\n"
+                        "       T foo() {\n"
+                        "       }\n"
+                        "       template <typename T>\n"
+                        "       T foo(int aaaaaaaaaaaaaaaaaaaaa,\n"
+                        "             int bbbbbbbbbbbbbbbbbbbbb) {\n"
+                        "       }\n"
+                        "       ```",
                 )
             ]
 
         Break: Annotated[_Break, Field(
-            default_factory=_Break.model_construct
+            default_factory=_Break.model_construct,
+            description="Options for controlling line breaks.",
         )]
 
         class _BraceWrapping(BaseModel):
