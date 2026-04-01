@@ -1323,3 +1323,6 @@ class Bertrand(Resource):
             bertrand_minor=bertrand_version.minor,
             bertrand_patch=bertrand_version.micro,
         ), encoding="utf-8")
+
+    async def schema(self) -> dict[str, Any]:
+        return self.Model.model_json_schema(by_alias=True, mode="validation")

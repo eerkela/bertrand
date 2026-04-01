@@ -606,3 +606,6 @@ class ConanConfig(Resource):
         await self._render_conanfile(config, tag)
         await self._render_conanprofile(config, tag)
         await self._render_conanremotes(config, tag)
+
+    async def schema(self) -> dict[str, Any]:
+        return self.Model.model_json_schema(by_alias=True, mode="validation")

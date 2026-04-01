@@ -461,3 +461,6 @@ class PyProject(Resource):
             rendered += "\n"
         if rendered != text:
             atomic_write_text(path, rendered, encoding="utf-8")
+
+    async def schema(self) -> dict[str, Any]:
+        return self.Model.model_json_schema(by_alias=True, mode="validation")

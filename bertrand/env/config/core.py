@@ -386,6 +386,23 @@ class Resource:
         """
         return None
 
+    async def schema(self) -> dict[str, Any] | None:
+        """Return a JSON Schema description for this resource, if available.
+
+        Returns
+        -------
+        dict[str, Any] | None
+            The resource's validation-mode JSON Schema generated from its nested
+            Pydantic `Model` class using alias-aware keys, or None if the resource
+            does not define a `Model`.
+
+        Notes
+        -----
+        This is internal docs infrastructure used to expose authoritative resource
+        schemas without coupling to CLI/docsite export behavior.
+        """
+        return None
+
     async def render(self, config: Config, tag: str | None) -> None:
         """A render function that writes content for this resource during
         `Config.sync()`.
@@ -749,6 +766,24 @@ class Config:
         """
         return cast(_ResourceModel_co | None, self.resources.get(r.name))
 
+    @staticmethod
+    async def schema() -> dict[ResourceName, dict[str, Any] | None]:
+        """Return all registered resource schemas in deterministic catalog order.
+
+        Returns
+        -------
+        dict[ResourceName, dict[str, Any] | None]
+            A mapping from canonical resource names to their validation-mode,
+            alias-aware JSON Schemas.  Output-only resources are included with a
+            value of None.
+
+        Notes
+        -----
+        This omits pyproject table-path metadata by design and is intended for
+        internal docs composition.
+        """
+        return {r.name: await r.schema() for r in sorted(RESOURCES)}
+
     def image_args(self, worktree: Path, tag: str) -> list[str]:
         """Retrieve a set of `podman build` arguments to apply during image builds for
         the given tag.
@@ -916,7 +951,7 @@ class Config:
                     "--label", f"{IMAGE_TAG_ENV}={tag}",
                     name,
                 ], check=False, capture_output=True)
-            except:
+            except Exception:
                 pass
             mounts.extend([
                 "--mount",

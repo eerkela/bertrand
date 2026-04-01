@@ -4117,3 +4117,6 @@ class ClangFormat(Resource):
             dump_yaml(content, resource_name=self.name),
             encoding="utf-8",
         )
+
+    async def schema(self) -> dict[str, Any]:
+        return self.Model.model_json_schema(by_alias=True, mode="validation")
