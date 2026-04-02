@@ -477,14 +477,6 @@ def _check_build_context_path(path: PosixPath) -> PosixPath:
 type Shell = Annotated[NonEmpty[NoWhiteSpace], AfterValidator(_check_shell)]
 type Editor = Annotated[NonEmpty[NoWhiteSpace], AfterValidator(_check_editor)]
 type IgnoreList = Annotated[list[Glob], AfterValidator(_check_ignore_list)]
-type NetworkMode = Annotated[
-    str,
-    StringConstraints(
-        strip_whitespace=True,
-        min_length=1,
-        pattern=rf"^(none|host|private|slirp4netns|pasta|{NS_PATH_RE.pattern})$"
-    ),
-]
 type IPAddress = Annotated[NonEmpty[NoWhiteSpace], AfterValidator(_check_ip_address)]
 type HostName = Annotated[str, StringConstraints(
     strip_whitespace=True,
@@ -494,7 +486,7 @@ type HostName = Annotated[str, StringConstraints(
         r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
         r"(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$"
 )]
-type HostIP = Literal["host-gateway"] | NonEmpty[NoWhiteSpace]  # pylint: disable=invalid-name
+type HostIP = Literal["host-gateway"] | IPAddress  # pylint: disable=invalid-name
 type BuildArgName = Annotated[str, StringConstraints(
     strip_whitespace=True,
     min_length=1,
@@ -589,22 +581,59 @@ class Bertrand(Resource):
             default=DEFAULT_SHELL,
             examples=list(SHELLS),
             description=
-                "Default shell to use when entering a container via `bertrand enter` "
-                "within this project.  This is not a literal shell command, but "
-                "rather an identifier that maps to a backend command to prevent "
-                "remote code execution."
+                "Default shell to use when entering a container via `bertrand enter`.  "
+                "This is not a literal shell command, but rather an identifier that "
+                "maps to a backend command to prevent remote code execution."
         )]
         editor: Annotated[Editor, Field(
             default=DEFAULT_EDITOR,
             examples=list(EDITORS),
             description=
-                "Default text editor to use when invoking `bertrand code` within this "
-                "project.  This is not a literal shell command, but rather an "
-                "identifier that maps to a backend command to prevent remote code "
-                "execution."
+                "Default text editor to use when invoking `bertrand code`.  This is "
+                "not a literal shell command, but rather an identifier that maps to a "
+                "backend command to prevent remote code execution."
         )]
         ignore: Annotated[IgnoreList, Field(
-            default_factory=list,
+            default_factory=lambda: [
+                ".bertrand/*",
+                "**/.bertrand/",
+                "__pycache__/",
+                "*.py[cod]",
+                "*.egg-info/",
+                ".dist/",
+                ".build/",
+                ".eggs/",
+                ".venv/",
+                "venv/",
+                "*.o",
+                "*.obj",
+                "*.a",
+                "*.lib",
+                "*.so",
+                "*.dylib",
+                "*.dll",
+                ".vscode/",
+            ],
+            examples=[[
+                ".bertrand/*",
+                "**/.bertrand/",
+                "__pycache__/",
+                "*.py[cod]",
+                "*.egg-info/",
+                ".dist/",
+                ".build/",
+                ".eggs/",
+                ".venv/",
+                "venv/",
+                "*.o",
+                "*.obj",
+                "*.a",
+                "*.lib",
+                "*.so",
+                "*.dylib",
+                "*.dll",
+                ".vscode/",
+            ]],
             description=
                 "List of patterns to ignore within this project, which are shared "
                 "between both `.gitignore` and `.containerignore`.  Patterns are "
@@ -612,13 +641,18 @@ class Bertrand(Resource):
         )]
         git_ignore: Annotated[IgnoreList, Field(
             default_factory=list,
+            examples=[[]],
             alias="git-ignore",
             description=
                 "List of `.gitignore`-specific patterns, which are merged with the "
                 "global `ignore` patterns when generating `.gitignore`."
         )]
         container_ignore: Annotated[IgnoreList, Field(
-            default_factory=list,
+            default_factory=lambda: [
+                ".git/",
+                ".gitignore",
+            ],
+            examples=[[".git/", ".gitignore",]],
             alias="container-ignore",
             description=
                 "List of `.containerignore`-specific patterns, which are merged with "
@@ -629,56 +663,100 @@ class Bertrand(Resource):
             """Validate the `[bertrand.network]` table."""
             model_config = ConfigDict(extra="forbid")
 
-            # TODO: add examples here
-
             class Table(BaseModel):
-                """Validate the `[bertrand.network.build/run]` tables."""
+                """Validate common fields in `[bertrand.network.*]` tables."""
                 model_config = ConfigDict(extra="forbid")
-                mode: Annotated[NetworkMode, Field(
-                    default="pasta",
-                    examples=["none", "host", "private", "slirp4netns", "pasta", "ns:<path>"],
-                    description=
-                        "The networking driver to use within containers for this "
-                        "project.  'pasta' is the default for rootless networking, but "
-                        "'host' may be preferred for performance-sensitive applications "
-                        "where security is not a primary concern.  Equivalent to "
-                        "`podman create --network`.",
-                )]
+                mode: Annotated[
+                    str,
+                    StringConstraints(
+                        strip_whitespace=True,
+                        min_length=1,
+                        pattern=
+                            rf"^(none|host|private|slirp4netns|pasta|{NS_PATH_RE.pattern})$"
+                    ),
+                    Field(
+                        default="private",
+                        examples=["none", "host", "private", "slirp4netns", "pasta", "ns:<path>"],
+                        description=
+                            "The networking driver to use within containers for this "
+                            "project.  Equivalent to `podman build|create --network`\n"
+                            "   `none`: disable networking within the container.\n"
+                            "   `host`: use the host's network stack directly (best "
+                            "performance, no isolation, potentially insecure).\n"
+                            "   `private`: (default) create a new, private network "
+                            "namespace for the container.\n"
+                            "   `slirp4netns`: use slirp4netns for rootless networking.  "
+                            "This is often the default for many rootless container "
+                            "runtimes, but may be slower than other options and has "
+                            "some limitations.  See the podman documentation for more "
+                            "details.\n"
+                            "   `pasta`: use pasta for rootless networking.  This is "
+                            "slightly faster than slirp4netns in some scenarios, but is "
+                            "still slower than rootful host networking.  See the podman "
+                            "documentation for more details.\n"
+                            "   `ns:<path>`: join an existing network namespace specified "
+                            "by the given <path>.\n"
+                            "Bertrand intentionally omits `bridge`, `<network name|ID>`, "
+                            "and `container:id` from its configuration layer in order to "
+                            "keep projects portable across hosts."
+                    )
+                ]
                 options: Annotated[list[str], Field(
                     default_factory=list,
+                    examples=[[
+                        "--ipv4-only",
+                        "-a", "10.0.2.0",
+                        "-n", "24",
+                        "-g", "10.0.2.2",
+                        "--dns-forward", "10.0.2.3",
+                        "-m", "1500",
+                        "--no-ndp",
+                        "--no-dhcpv6",
+                        "--no-dhcp",
+                    ]],
                     description=
-                        "Additional options to pass to the networking driver.  See the "
-                        "podman documentation for the relevant 'mode' for supported "
-                        "options.",
+                        "Additional `--network` mode options, encoded as "
+                        "`mode:opt1,opt2,...`.  These are forwarded to the selected "
+                        "network backend.  In Bertrand's global networking contract, "
+                        "options are only valid for `slirp4netns` and `pasta` modes.  "
+                        "See the podman documentation for more details.",
                 )]
-                dns: Annotated[list[IPAddress], Field(
+                dns: Annotated[list[IPAddress | Literal["none"]], Field(
                     default_factory=list,
                     description=
-                        "List of custom DNS server IP addresses to use within "
-                        "containers.  Equivalent to `podman create --dns`.",
+                        "Set custom DNS servers.  Equivalent to "
+                        "`podman build|create --dns`.  The special value `none` disables "
+                        "creation of `/etc/resolv.conf` by Podman, so the image's "
+                        "`/etc/resolv.conf` is used unchanged.  For builds, this setting "
+                        "only affects `RUN` instructions and does not change "
+                        "`/etc/resolv.conf` in the final image.",
                 )]
-                dns_search: Annotated[list[str], Field(
+                dns_search: Annotated[list[NonEmpty[NoWhiteSpace]], Field(
                     default_factory=list,
                     alias="dns-search",
                     description=
-                        "List of custom DNS search domains to use within containers.  "
-                        "Equivalent to `podman create --dns-search`.",
+                        "Set custom DNS search domains.  Equivalent to "
+                        "`podman build|create --dns-search`.  For builds, this setting "
+                        "only affects `RUN` instructions and does not change "
+                        "`/etc/resolv.conf` in the final image.",
                 )]
-                dns_options: Annotated[list[str], Field(
+                dns_options: Annotated[list[NonEmpty[NoWhiteSpace]], Field(
                     default_factory=list,
                     alias="dns-options",
                     description=
-                        "List of custom DNS options to use within containers.  "
-                        "Equivalent to `podman create --dns-option`.",
+                        "Set custom DNS resolver options.  Equivalent to "
+                        "`podman build|create --dns-option`.  For builds, this setting "
+                        "only affects `RUN` instructions and does not change "
+                        "`/etc/resolv.conf` in the final image.",
                 )]
                 add_host: Annotated[dict[HostName, HostIP], Field(
                     default_factory=dict,
                     alias="add-host",
                     description=
                         "Mapping of additional host entries to add to container "
-                        "/etc/hosts, where keys are the hostnames and values are the "
-                        "corresponding IP addresses.  Equivalent to `podman create "
-                        "--add-host`.",
+                        "`/etc/hosts`.  Equivalent to `podman build|create --add-host`.  "
+                        "Keys are hostnames, and values are IPv4/IPv6 addresses or the "
+                        "special value `host-gateway`.",
                 )]
 
                 @model_validator(mode="after")
@@ -687,26 +765,60 @@ class Bertrand(Resource):
                         self.options or
                         self.dns or
                         self.dns_search or
-                        self.dns_options or
-                        self.add_host
+                        self.dns_options
                     ):
                         raise ValueError(
                             "network mode 'none' requires empty options, dns, "
-                            "dns-search, dns-options, and add-host"
+                            "dns-search, and dns-options"
                         )
                     return self
 
-            build: Annotated[Table, Field(
-                default_factory=Table.model_construct,
+                @model_validator(mode="after")
+                def _validate_driver_options_mode(self) -> Self:
+                    if self.options and self.mode not in ("slirp4netns", "pasta"):
+                        raise ValueError(
+                            "network options are only allowed for "
+                            "'slirp4netns' and 'pasta' modes"
+                        )
+                    return self
+
+                @model_validator(mode="after")
+                def _validate_dns_none(self) -> Self:
+                    if "none" in self.dns and len(self.dns) > 1:
+                        raise ValueError(
+                            "dns entry 'none' cannot be combined with other DNS servers"
+                        )
+                    return self
+
+            class Build(Table):
+                """Validate the `[bertrand.network.build]` table."""
+
+                @model_validator(mode="after")
+                def _validate_build_table(self) -> Self:
+                    # NOTE: build-specific networking restrictions should be added
+                    # here when build and run contracts diverge further.
+                    return self
+
+            class Run(Table):
+                """Validate the `[bertrand.network.run]` table."""
+
+                @model_validator(mode="after")
+                def _validate_run_table(self) -> Self:
+                    # NOTE: run-specific networking restrictions should be added
+                    # here when runtime networking coverage expands.
+                    return self
+
+            build: Annotated[Build, Field(
+                default_factory=Build.model_construct,
                 description=
-                    "Networking configuration to use during build-time "
-                    "`Containerfile` execution.",
+                    "Global networking policy to use during build-time `RUN` "
+                    "instructions.",
             )]
-            run: Annotated[Table, Field(
-                default_factory=Table.model_construct,
+            run: Annotated[Run, Field(
+                default_factory=Run.model_construct,
                 description=
-                    "Networking configuration to use during run-time container "
-                    "execution.",
+                    "Global networking policy to use during container creation and "
+                    "runtime execution.",
             )]
 
         network: Annotated[Network, Field(
@@ -714,7 +826,7 @@ class Bertrand(Resource):
             description="Networking configuration to use within this project.",
         )]
 
-        # TODO: continue documenting and pruning the tag
+        # TODO: continue documenting and pruning the tags
 
         class Tag(BaseModel):
             """Validate entries in the `[[tool.bertrand.tags]]` table."""

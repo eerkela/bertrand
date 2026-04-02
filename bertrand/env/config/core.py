@@ -500,6 +500,16 @@ class _ResourceLike(Protocol[_ResourceModel_co]):
     async def validate(self, config: Config, fragment: Any) -> _ResourceModel_co | None: ...
 
 
+class _NetworkTableLike(Protocol):
+    """A small structural type for network table argument emission helpers."""
+    mode: str
+    options: list[str]
+    dns: list[str]
+    dns_search: list[str]
+    dns_options: list[str]
+    add_host: dict[str, str]
+
+
 @dataclass
 class Config:
     """Read-only view representing resource placements within a worktree, as well as
@@ -780,7 +790,59 @@ class Config:
         """
         return {r.name: await r.schema() for r in sorted(RESOURCES)}
 
-    def image_args(self, worktree: Path, tag: str) -> list[str]:
+    async def sync(self, tag: str | None) -> None:
+        """Render and write derived artifact resources from active context snapshot.
+
+        This requires an active config context (`async with config:`).
+
+        Parameters
+        ----------
+        tag : str | None
+            The active image tag for the configured environment, which is used to
+            search the `bertrand.tags` list for tag-specific overrides during
+            rendering.  If None, then this method was called as part of a
+            `bertrand init` command, and only the global configuration worktree
+            resources will be rendered.  Otherwise, it was called from a
+            `bertrand build` command, and out-of-tree resources may also be rendered
+            to the container filesystem for the active tag.
+
+        Raises
+        ------
+        RuntimeError
+            If called outside a a Bertrand image or active config context.
+        OSError
+            If any render hooks fail.
+        """
+        if not self:
+            raise RuntimeError("sync() artifact rendering requires an active config context")
+
+        # invoke render hooks for all resources in deterministic order
+        async with lock_worktree(self.worktree):
+            for name in sorted(self.resources):
+                r = RESOURCE_NAMES[name]
+                try:
+                    await r.render(self, tag)
+                except Exception as err:
+                    raise OSError(f"failed to render resource '{r.name}': {err}") from err
+
+    @staticmethod
+    def _format_network(network: _NetworkTableLike) -> list[str]:
+        args: list[str] = ["--network"]
+        if network.options:
+            args.append(f"{network.mode}:{','.join(network.options)}")
+        else:
+            args.append(network.mode)
+        for dns in network.dns:
+            args.extend(["--dns", dns])
+        for search in network.dns_search:
+            args.extend(["--dns-search", search])
+        for option in network.dns_options:
+            args.extend(["--dns-option", option])
+        for host in sorted(network.add_host):
+            args.extend(["--add-host", f"{host}:{network.add_host[host]}"])
+        return args
+
+    async def image_args(self, worktree: Path, tag: str) -> list[str]:
         """Retrieve a set of `podman build` arguments to apply during image builds for
         the given tag.
 
@@ -827,12 +889,49 @@ class Config:
         worktree = worktree.expanduser().resolve()
         containerfile = worktree / cfg.containerfile
 
-        # TODO: expand the set of arguments to cover the entire build configuration
-        # for this tag.  This will be more complicated than it sounds because we need
-        # to cover the podman surface area.
         return [
             "--file", str(containerfile),
+            *self._format_network(bertrand.network.build),
         ]
+
+    @staticmethod
+    async def _format_volumes(tag: str, env_id: str) -> list[str]:
+        mounts: list[str] = []
+        for kind, destination in (
+            ("uv", str(CACHE_MOUNT / "uv")),
+            ("bertrand", str(CACHE_MOUNT / "bertrand")),
+            ("ccache", str(CACHE_MOUNT / "ccache")),
+            ("conan", "/opt/conan"),
+        ):
+            name = f"bertrand-{env_id[:13]}-{kind}"
+            try:
+                await run([
+                    "podman",
+                    "volume",
+                    "create",
+                    "--label", f"{BERTRAND_ENV}=1",
+                    "--label", f"{ENV_ID_ENV}={env_id}",
+                    "--label", f"{IMAGE_TAG_ENV}={tag}",
+                    name,
+                ], check=False, capture_output=True)
+            except Exception:
+                pass
+            mounts.extend([
+                "--mount",
+                f"type=volume,src={name},dst={destination}",
+            ])
+        return mounts
+
+    @staticmethod
+    def _format_entry_point(tag: str, cmd: list[str]) -> list[str]:
+        if not cmd:
+            raise ValueError(
+                f"tag '{tag}' has no effective entry point: provide a command override "
+                "or configure [tool.bertrand.tags.entry-point] for this tag"
+            )
+        if any(not part.strip() for part in cmd):
+            raise ValueError("entry point arguments must be non-empty strings")
+        return cmd
 
     async def container_args(
         self,
@@ -888,17 +987,6 @@ class Config:
             effective entry point is empty after accounting for overrides, or if any
             entry point argument is an empty or whitespace-only string.
         """
-        from .bertrand import Bertrand
-        bertrand = self.get(Bertrand)
-        if bertrand is None:
-            raise TypeError(
-                f"missing 'bertrand' configuration for environment at {self.worktree}"
-            )
-        cfg = next((t for t in bertrand.tags if t.tag == tag), None)
-        if cfg is None:
-            raise ValueError(
-                f"unknown image tag '{tag}' for environment at {self.worktree}"
-            )
         worktree = worktree.expanduser().resolve()
         if not worktree.exists() or not worktree.is_dir():
             raise ValueError(f"worktree must be an existing directory: {worktree}")
@@ -911,93 +999,25 @@ class Config:
         if not bootstrap.is_absolute():
             raise ValueError(f"path to bootstrap script must be absolute: {bootstrap}")
 
-        # determine effective entry point, accounting for override
-        if cmd is None:
-            entry_point = cfg.entry_point
-        else:
-            if not isinstance(cmd, list):
-                raise TypeError("command override must be a list of strings")
-            if not all(isinstance(part, str) for part in cmd):
-                raise TypeError("command override must be a list of strings")
-            entry_point = cmd
-        if not entry_point:
-            raise ValueError(
-                f"tag '{tag}' has no effective entry point: provide a command override "
-                "or configure [tool.bertrand.tags.entry-point] for this tag"
+        from .bertrand import Bertrand
+        bertrand = self.get(Bertrand)
+        if bertrand is None:
+            raise TypeError(
+                f"missing 'bertrand' configuration for environment at {self.worktree}"
             )
-        if any(not part.strip() for part in entry_point):
-            raise ValueError("entry point arguments must be non-empty strings")
+        cfg = next((t for t in bertrand.tags if t.tag == tag), None)
+        if cfg is None:
+            raise ValueError(
+                f"unknown image tag '{tag}' for environment at {self.worktree}"
+            )
 
-        # create/ensure named cache volumes and emit corresponding mount args
-        mounts: list[str] = []
-        for kind, destination in (
-            ("uv", str(CACHE_MOUNT / "uv")),
-            ("bertrand", str(CACHE_MOUNT / "bertrand")),
-            ("ccache", str(CACHE_MOUNT / "ccache")),
-            ("conan", "/opt/conan"),
-        ):
-            name = f"bertrand-{env_id[:13]}-{kind}"
-            try:
-                await run([
-                    "podman",
-                    "volume",
-                    "create",
-                    "--label", f"{BERTRAND_ENV}=1",
-                    "--label", f"{ENV_ID_ENV}={env_id}",
-                    "--label", f"{IMAGE_TAG_ENV}={tag}",
-                    name,
-                ], check=False, capture_output=True)
-            except Exception:
-                pass
-            mounts.extend([
-                "--mount",
-                f"type=volume,src={name},dst={destination}",
-            ])
-
-        # TODO: expand the set of arguments to cover the entire run configuration for
-        # this tag.  This will be more complicated than it sounds because we need to
-        # cover the podman surface area.
         return [
-            *mounts,
+            *(await self._format_volumes(tag, env_id)),
+            *self._format_network(bertrand.network.run),
             "--entrypoint", str(bootstrap),
             image_id,
-            *entry_point
+            *self._format_entry_point(tag, cmd or cfg.entry_point)
         ]
-
-    async def sync(self, tag: str | None) -> None:
-        """Render and write derived artifact resources from active context snapshot.
-
-        This requires an active config context (`async with config:`).
-
-        Parameters
-        ----------
-        tag : str | None
-            The active image tag for the configured environment, which is used to
-            search the `bertrand.tags` list for tag-specific overrides during
-            rendering.  If None, then this method was called as part of a
-            `bertrand init` command, and only the global configuration worktree
-            resources will be rendered.  Otherwise, it was called from a
-            `bertrand build` command, and out-of-tree resources may also be rendered
-            to the container filesystem for the active tag.
-
-        Raises
-        ------
-        RuntimeError
-            If called outside a a Bertrand image or active config context.
-        OSError
-            If any render hooks fail.
-        """
-        if not self:
-            raise RuntimeError("sync() artifact rendering requires an active config context")
-
-        # invoke render hooks for all resources in deterministic order
-        async with lock_worktree(self.worktree):
-            for name in sorted(self.resources):
-                r = RESOURCE_NAMES[name]
-                try:
-                    await r.render(self, tag)
-                except Exception as err:
-                    raise OSError(f"failed to render resource '{r.name}': {err}") from err
 
     async def build(self, tag: str) -> None:
         """Install Python dependencies and builds/installs the project for the given
