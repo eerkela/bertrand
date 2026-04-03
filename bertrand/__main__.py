@@ -1655,7 +1655,6 @@ class Internal:
                 f"'{IMAGE_TAG_ENV}'"
             )
         with Config.load(WORKTREE_MOUNT) as config:
-            config.sync(tag)
             config.build(tag)
 
     @staticmethod
@@ -1675,9 +1674,8 @@ class Internal:
         SystemExit
             If any check command exits non-zero.
         """
-        tag = _require_active_image_tag()
+        _require_active_image_tag()
         with Config.load(WORKTREE_MOUNT) as config:
-            config.sync(tag)
             files = config.sources()
         artifact_root = str(CONTAINER_TMP_MOUNT)
         clang_tidy_config = CONTAINER_TMP_MOUNT / ".clang-tidy"
@@ -1720,9 +1718,8 @@ class Internal:
         SystemExit
             If formatting exits non-zero.
         """
-        tag = _require_active_image_tag()
+        _require_active_image_tag()
         with Config.load(WORKTREE_MOUNT) as config:
-            config.sync(tag)
             files = config.sources()
         clang_format_config = CONTAINER_TMP_MOUNT / ".clang-format"
 

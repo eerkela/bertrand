@@ -42,8 +42,10 @@ from .run import (
     CONTAINER_SOCKET,
     IMAGE_TAG_ENV,
     PROJECT_ENV,
+    PROJECT_MOUNT,
     WORKTREE_ENV,
     WORKTREE_MOUNT,
+    GitRepository,
     JSONValue,
     TimeoutExpired,
     inside_image,
@@ -950,8 +952,10 @@ class CodeOpen:
             )
 
         # load editor selection from worktree config
-        async with await Config.load(WORKTREE_MOUNT) as config:
-            await config.sync(image_tag)
+        async with await Config.load(WORKTREE_MOUNT, repo=GitRepository(
+            git_dir=PROJECT_MOUNT / ".git",
+        )) as config:
+            await config.sync(image_tag)  # ensure config is up-to-date
             bertrand = config.get(Bertrand)
             if not bertrand:
                 raise RuntimeError(

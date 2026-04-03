@@ -329,14 +329,14 @@ class PyProject(Resource):
     async def init(self, config: Config, cli: Config.Init) -> dict[str, Any]:
         return self.Model.model_construct(
             project=self.Model.Project.model_construct(
-                name=cli.repo.git_dir.parent.name,
+                name=cli.repo.root.name,
                 version="0.1.0",
             )
         ).model_dump(by_alias=True)
 
     async def parse(self, config: Config) -> dict[str, dict[str, Any]]:
         # get content of the current worktree's `pyproject.toml`
-        path = config.worktree / "pyproject.toml"
+        path = config.root / "pyproject.toml"
         if not path.exists():
             return {}
         try:
@@ -384,7 +384,7 @@ class PyProject(Resource):
     async def validate(self, config: Config, fragment: Any) -> Model | None:
         from .bertrand import Bertrand
         result = self.Model.model_validate(fragment)
-        result.project.resolve_licenses(config.worktree)
+        result.project.resolve_licenses(config.root)
         _validate_dependency_groups(pyproject=result, bertrand=config.get(Bertrand))
         return result
 
@@ -394,7 +394,7 @@ class PyProject(Resource):
             return
 
         # parse existing `pyproject.toml` or initialize an empty document
-        path = config.worktree / "pyproject.toml"
+        path = config.root / "pyproject.toml"
         if path.exists():
             try:
                 text = path.read_text(encoding="utf-8")

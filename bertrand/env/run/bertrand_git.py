@@ -731,6 +731,17 @@ class GitRepository:
 
     git_dir: Path
 
+    @property
+    def root(self) -> Path:
+        """
+        Returns
+        -------
+        Path
+            The absolute path to the repository's root directory, which is the parent of
+            the .git directory.
+        """
+        return self.git_dir.parent
+
     def __post_init__(self) -> None:
         object.__setattr__(self, "git_dir", self.git_dir.expanduser().resolve())
 
@@ -810,7 +821,7 @@ class GitRepository:
         if await repo.is_bare():
             if not await cls.supports_relative_paths():
                 raise OSError(GIT_REQUIRE_RELATIVE_PATHS)
-            worktree = path.relative_to(repo.git_dir.parent)
+            worktree = path.relative_to(repo.root)
             if not worktree.parts:  # extend to HEAD worktree
                 head = await repo.head_branch()
                 if head is None:
@@ -836,16 +847,16 @@ class GitRepository:
             elif not any(wt.path == path for wt in await repo.worktrees()):
                 raise OSError(
                     f"worktree at {worktree} is not registered as a git worktree of "
-                    f"bare repository: {repo.git_dir.parent}"
+                    f"bare repository: {repo.root}"
                 )
             return repo, worktree
 
         # existing non-bare repository
-        worktree = path.relative_to(repo.git_dir.parent)
+        worktree = path.relative_to(repo.root)
         if worktree.parts and not any(wt.path == path for wt in await repo.worktrees()):
             raise OSError(
                 f"nested worktree at {worktree} is not registered as a git worktree "
-                f"of non-bare repository: {repo.git_dir.parent}"
+                f"of non-bare repository: {repo.root}"
             )
         return repo, worktree
 
@@ -985,7 +996,7 @@ class GitRepository:
             raise ValueError(f"empty --git-path output for {path!r}")
         resolved = Path(text).expanduser()
         if not resolved.is_absolute():
-            base = cwd if cwd is not None else self.git_dir.parent
+            base = cwd if cwd is not None else self.root
             resolved = (base / resolved).resolve()
         else:
             resolved = resolved.resolve()
@@ -1240,7 +1251,7 @@ class GitRepository:
         # clean up now-empty parent directories up to project root to account for
         # branch names that contain path separators
         cursor = path.parent
-        while cursor != self.git_dir.parent:
+        while cursor != self.root:
             try:
                 if any(cursor.iterdir()):
                     break
@@ -1324,7 +1335,7 @@ class GitRepository:
             If the git command fails.
         """
         if target is None:
-            target = self.git_dir.parent / branch
+            target = self.root / branch
         if target.exists():
             raise FileExistsError("path already exists")
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -1383,7 +1394,7 @@ class GitRepository:
             raise NotADirectoryError(f"worktree is not a directory: {source}")
 
         if target is None:
-            target = self.git_dir.parent / branch
+            target = self.root / branch
         if target == source:
             return
         if target.exists():
@@ -1482,7 +1493,7 @@ class GitRepository:
 
         # derive current and desired branch-to-path mappings
         current = await self._current_worktree_state()
-        desired = {branch: (self.git_dir.parent / branch) for branch in await self.branches()}
+        desired = {branch: (self.root / branch) for branch in await self.branches()}
 
         # derive explicit intent from transaction updates, preserving order
         created, destroyed, renamed = self._intended_worktree_changes(updates)

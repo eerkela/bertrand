@@ -42,6 +42,7 @@ from .config.bertrand import (
     TagName,
 )
 from .config.core import (
+    CACHE_LABEL,
     AbsolutePath,
     AbsolutePosixPath,
     NonEmpty,
@@ -51,20 +52,15 @@ from .config.core import (
 from .rpc import RPC_TIMEOUT
 from .run import (
     BERTRAND_ENV,
-    CONTAINER_ID_ENV,
     CONTAINER_RUNTIME_ENV,
-    CONTAINER_RUNTIME_MOUNT,
     CONTAINER_SOCKET,
     ENV_ID_ENV,
     IMAGE_ID_ENV,
     IMAGE_TAG_ENV,
     METADATA_DIR,
     METADATA_FILE,
-    METADATA_TMP,
     PROJECT_ENV,
-    PROJECT_MOUNT,
     WORKTREE_ENV,
-    WORKTREE_MOUNT,
     CommandError,
     CompletedProcess,
     Lock,
@@ -449,7 +445,7 @@ class Registry(BaseModel):
                     if ids:
                         await Container.remove(ids, force=True, timeout=TIMEOUT)
                         env_changed = True
-                except:
+                except Exception:
                     env.images[tag] = image
                     raise
 
@@ -917,21 +913,6 @@ class Container(BaseModel):
         cmd.extend(ids)
         await podman_cmd(cmd)
 
-        # remove any now-dangling volumes
-        volumes = list((await podman_cmd([
-            "volume",
-            "ls",
-            "-q",
-            "--filter", f"label={BERTRAND_ENV}=1",
-            "--filter", "dangling=true",
-        ], capture_output=True)).stdout.splitlines())
-        if volumes:
-            cmd = ["volume", "rm", "-i"]
-            if force:
-                cmd.append("-f")
-            cmd.extend(volumes)
-            await podman_cmd(cmd)
-
     async def start(
         self,
         *,
@@ -1130,119 +1111,28 @@ class Image(BaseModel):
             if not all(isinstance(part, str) for part in cmd):
                 raise TypeError("cmd override must be a list of strings")
 
-        # identify project root so that the full git repository remains in scope
-        # inside the container
-        project_root = await env.project_root
-        worktree = env.worktree.relative_to(project_root)
-        worktree_env = worktree.as_posix()
-
-        # create private runtime context inside the worktree's metadata directory to
-        # hold temporary artifacts for each container.  Storing these artifacts in the
-        # worktree trivializes bind mounts, and allows the host to inspect them
-        # if needed.  The directory is pre-seeded with a CID file storing the container
-        # identity, RPC socket metadata, and a bootstrap script that
-        # completes the runtime setup by symlinking the worktree and runtime
-        # directories into standard locations inside the container, and reading the
-        # CID file.
-        run_id = uuid.uuid4().hex
-        runtime = METADATA_TMP / f"{self.tag}.{run_id}"
-        (project_root / worktree / runtime).mkdir(parents=True, exist_ok=True)
-        host_cid = project_root / worktree / runtime / "cid"
-        host_bootstrap = project_root / worktree / runtime / "entrypoint.sh"
-        container_cid = PROJECT_MOUNT / worktree / runtime / "cid"
-        container_bootstrap = PROJECT_MOUNT / worktree / runtime / "entrypoint.sh"
-        atomic_write_text(host_bootstrap, "\n".join([
-            "#!/bin/sh",
-            "set -eu",
-            f"CID_FILE={shlex.quote(str(container_cid))}",
-            f"TARGET_WORKTREE={shlex.quote(str(PROJECT_MOUNT / worktree))}",
-            f"TARGET_RUNTIME={shlex.quote(str(PROJECT_MOUNT / worktree / runtime))}",
-            f"rm -rf {shlex.quote(str(WORKTREE_MOUNT))}",  # delete old worktree mount
-            (
-                "ln -s "  # symlink worktree dir
-                "\"$TARGET_WORKTREE\" "
-                f"{shlex.quote(str(WORKTREE_MOUNT))}"
-            ),
-            f"rm -rf {shlex.quote(str(CONTAINER_RUNTIME_MOUNT))}",  # delete old runtime dir
-            (
-                "ln -s "  # symlink runtime dir
-                "\"$TARGET_RUNTIME\" "
-                f"{shlex.quote(str(CONTAINER_RUNTIME_MOUNT))}"
-            ),
-            "if command -v git >/dev/null 2>&1; then",
-            (
-                "    git config --global --add safe.directory "
-                f"{shlex.quote(str(WORKTREE_MOUNT))} >/dev/null 2>&1 || true"
-            ),
-            (
-                "    git config --global --add safe.directory "
-                "\"$TARGET_WORKTREE\" >/dev/null 2>&1 || true"
-            ),
-            "fi",
-            "if [ -f \"$CID_FILE\" ]; then",
-            "    CID=\"$(cat \"$CID_FILE\" 2>/dev/null || true)\"",  # read CID file
-            "    if [ -n \"$CID\" ]; then",
-            f"        export {CONTAINER_ID_ENV}=\"$CID\"",  # export as env var
-            "    fi",
-            "fi",
-            "exec \"$@\"",  # execute original entry point
-            "",
-        ]), encoding="utf-8")
-        host_bootstrap.chmod(0o755)  # make executable
-
-        # create container with configured args and labels, including the bootstrap
-        # entry point, configured for ephemeral use.
-        argv = [
-            "create",
-            "--init",
-            "--rm",
-            "--cidfile", str(host_cid),
-
-            # labels for podman-level lookup
-            "--label", f"{BERTRAND_ENV}=1",
-            "--label", f"{PROJECT_ENV}={project_root}",
-            "--label", f"{WORKTREE_ENV}={worktree_env}",
-            "--label", f"{CONTAINER_RUNTIME_ENV}={runtime}",
-            "--label", f"{ENV_ID_ENV}={env.id}",
-            "--label", f"{IMAGE_ID_ENV}={self.id}",
-            "--label", f"{IMAGE_TAG_ENV}={self.tag}",
-
-            # mount full project root, with runtime wrapper linking canonical paths
-            "-v", f"{project_root}:{PROJECT_MOUNT}",
-
-            # environment variables for Bertrand runtime
-            "-e", f"{BERTRAND_ENV}=1",
-            "-e", f"{PROJECT_ENV}={project_root}",
-            "-e", f"{WORKTREE_ENV}={worktree_env}",
-            "-e", f"{CONTAINER_RUNTIME_ENV}={runtime}",
-            "-e", f"{ENV_ID_ENV}={env.id}",
-            "-e", f"{IMAGE_ID_ENV}={self.id}",
-            "-e", f"{IMAGE_TAG_ENV}={self.tag}",
-        ]
-        if env_vars:
-            for key, value in sorted(env_vars.items()):
-                argv.extend(["-e", f"{key}={value}"])
-        argv.extend(await env.config.container_args(
-            worktree=env.worktree,
+        # get arguments from environment configuration
+        bundle = await env.config.container_args(
             env_id=env.id,
             tag=self.tag,
             image_id=self.id,
             cmd=cmd,
-            bootstrap=container_bootstrap,
-        ))
+            env_vars=env_vars,
+        )
         await podman_cmd(
-            argv,
+            ["create", *bundle.argv],
             capture_output=True if quiet else None
         )
 
         # read created container ID and inspect to confirm creation + expected state
         container_id: str | None = None
+        cid_file = env.root / bundle.cid_file
         try:
-            if not host_cid.exists() or not host_cid.is_file():
-                raise OSError(f"podman create did not produce a cid file at {host_cid}")
-            container_id = host_cid.read_text(encoding="utf-8").strip()
+            if not cid_file.exists() or not cid_file.is_file():
+                raise OSError(f"podman create did not produce a cid file at {cid_file}")
+            container_id = cid_file.read_text(encoding="utf-8").strip()
             if not container_id:
-                raise OSError(f"podman create produced an empty cid file at {host_cid}")
+                raise OSError(f"podman create produced an empty cid file at {cid_file}")
             inspected = await Container.inspect([container_id])
             if len(inspected) != 1:
                 raise OSError(
@@ -1252,17 +1142,16 @@ class Image(BaseModel):
             container = inspected[0]
             if container.Id != container_id:
                 raise OSError(
-                    "container inspect ID mismatch after create: "
-                    f"cidfile={container_id}, inspect={container.Id}"
+                    f"container inspect ID mismatch after create: cidfile={container_id}, "
+                    f"inspect={container.Id}"
                 )
-            status = container.State.Status if container.State else None
-            if status != "created":
+            if container.State.Status != "created":
                 raise OSError(
                     f"container '{container_id}' is not in created state after create "
-                    f"(status={status!r})"
+                    f"command (status={container.State.Status!r})"
                 )
             return container
-        except:  # pylint: disable=bare-except
+        except Exception:
             if container_id:
                 await podman_cmd(
                     ["container", "rm", "-f", "-i", "-v", "--depend", container_id],
@@ -1315,6 +1204,11 @@ class Environment:
 
         retired: list[RetiredImage]
 
+    # TODO: `Environment.repo` should be store a `GitRepository`, and
+    # `Environment.worktree` will be relative to that repo, similar to `Config`.
+    # `Environment.root` will then convert the relative worktree path into an absolute
+    # path by concatenating with the repo root.
+
     worktree: Path
     _project_root: Path | None
     _json: JSON
@@ -1329,6 +1223,16 @@ class Environment:
         self._config = None
         self._lock = lock_worktree(self.worktree, timeout=timeout)
         self._entered = 0
+
+    @property
+    def root(self) -> AbsolutePath:
+        """
+        Returns
+        -------
+        AbsolutePath
+            The resolved worktree path as an absolute path.
+        """
+        return self.worktree
 
     async def __aenter__(self) -> Self:
         entered = self._entered
@@ -1690,16 +1594,36 @@ class Environment:
                 "configuration"
             )
 
+        # garbage collect dangling cache volumes associated with this environment
+        # before building, while this environment's lock is held and no builds are
+        # in-flight
+        try:
+            expected = await config.expected_cache_volumes(self.id)
+            result = await podman_cmd([
+                "volume",
+                "ls",
+                "-q",
+                "--filter", f"label={BERTRAND_ENV}=1",
+                "--filter", f"label={ENV_ID_ENV}={self.id}",
+                "--filter", f"label={CACHE_LABEL}=1",
+                "--filter", "dangling=true",
+            ], capture_output=True, check=False)
+            if result.returncode == 0:
+                dangling = sorted({
+                    name.strip() for name in result.stdout.splitlines() if name.strip()
+                })
+                stale = [name for name in dangling if name not in expected]
+                if stale:
+                    await podman_cmd(
+                        ["volume", "rm", "-i", *stale],
+                        capture_output=True,
+                        check=False
+                    )
+        except Exception:
+            pass
+
         # get arguments from configured build matrix
-        image_args = config.image_args(
-            worktree=self.worktree,
-            tag=tag
-        )
-        python = config.get(PyProject)
-        if python is not None:
-            project_name = python.project.name
-        else:
-            raise TypeError("could not determine project name")
+        bundle = await config.image_args(env_id=self.id, tag=tag)
 
         # build candidate image
         candidate = Image.model_construct(
@@ -1707,47 +1631,14 @@ class Environment:
             tag=tag,
             id="",  # corrected from iid file after build
             created=datetime.now(UTC),
-            image_args=image_args,
+            image_args=bundle.argv,
         )
-        run_id = uuid.uuid4().hex
-        project_root = await self.project_root
-        if self.worktree != project_root:  # bare parent-repository mode
-            scope_name = sanitize_name(self.worktree.relative_to(project_root).as_posix())
-        else:  # non-bare single-worktree mode
-            head = await run(
-                ["git", "-C", str(self.worktree), "symbolic-ref", "--quiet", "--short", "HEAD"],
-                check=False,
-                capture_output=True,
-            )
-            head_branch = head.stdout.strip()
-            if head.returncode == 0 and head_branch:
-                scope_name = sanitize_name(head_branch)
-            else:  # detached HEAD fallback
-                sha = await run(
-                    ["git", "-C", str(self.worktree), "rev-parse", "--short", "HEAD"],
-                    check=False,
-                    capture_output=True,
-                )
-                short_sha = sha.stdout.strip()
-                if sha.returncode == 0 and short_sha:
-                    scope_name = sanitize_name(f"detached-{short_sha}")
-                else:
-                    scope_name = "detached"
-        image_name = f"{project_name}.{scope_name}.{tag}.{run_id[:7]}"
-        iid_file = self.worktree / METADATA_TMP / f"{image_name}.iid"
-        iid_file.parent.mkdir(parents=True, exist_ok=True)
-        await podman_cmd([
-            "build",
-            "-t", image_name,
-            "--iidfile", str(iid_file),
-            "--label", f"{BERTRAND_ENV}=1",
-            "--label", f"{ENV_ID_ENV}={self.id}",
-            "--label", f"{IMAGE_TAG_ENV}={tag}",
-            *image_args,
-            str(self.worktree)
-        ], cwd=self.worktree, capture_output=quiet)
-        candidate.id = iid_file.read_text(encoding="utf-8").strip()
-        iid_file.unlink(missing_ok=True)
+        await podman_cmd(
+            ["build", *bundle.argv],
+            cwd=config.root,
+            capture_output=quiet
+        )
+        candidate.id = bundle.iid_file.read_text(encoding="utf-8").strip()
         existing = self.images.get(tag)
         changed = existing is None or existing.id != candidate.id
         try:
@@ -1755,7 +1646,7 @@ class Environment:
                 raise OSError(
                     f"failed to build image '{tag}' for environment at {self.worktree}"
                 )
-        except:
+        except Exception:
             if changed:
                 await podman_cmd(
                     ["image", "rm", "-f", candidate.id],

@@ -1,10 +1,15 @@
 """TODO"""
 from __future__ import annotations
 
+import hashlib
 import importlib.resources as importlib_resources
+import json
+import os
 import re
+import shlex
 import string
-from collections.abc import Callable, Sequence
+import uuid
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path, PosixPath
 from types import TracebackType
@@ -18,6 +23,8 @@ from typing import (
     cast,
 )
 
+import jinja2
+import packaging.version
 import yaml
 from pydantic import (
     AfterValidator,
@@ -31,24 +38,34 @@ from pydantic import (
 
 from ..run import (
     BERTRAND_ENV,
+    CONTAINER_ID_ENV,
+    CONTAINER_RUNTIME_ENV,
+    CONTAINER_RUNTIME_MOUNT,
     ENV_ID_ENV,
+    IMAGE_ID_ENV,
     IMAGE_TAG_ENV,
     LOCK_TIMEOUT,
+    METADATA_DIR,
+    PROJECT_ENV,
+    PROJECT_MOUNT,
+    WORKTREE_ENV,
+    WORKTREE_MOUNT,
     GitRepository,
+    atomic_write_text,
     inside_container,
     inside_image,
     lock_worktree,
     run,
+    sanitize_name,
 )
-
-# TODO: maybe cache paths should be provided by each resource, so that they can also
-# be folded into the resource contract, along with rendering sections in
-# `pyproject.toml` depending on the environment's capabilities?
-
+from ..version import VERSION
 
 CACHE_MOUNT: PosixPath = PosixPath("/tmp/.cache")
-UV_CACHE: PosixPath = CACHE_MOUNT / "uv"
-HTTP_URL = TypeAdapter(AnyHttpUrl)
+CACHE_LABEL: str = "bertrand.cache"
+CACHE_HASH_LABEL: str = "bertrand.cache.hash"
+CACHE_RESOURCE_LABEL: str = "bertrand.cache.resource"
+CACHE_TARGET_LABEL: str = "bertrand.cache.target"
+HTTP_URL: TypeAdapter[AnyHttpUrl] = TypeAdapter(AnyHttpUrl)
 GLOB_RE = re.compile(r"^[A-Za-z0-9._/\-\*\?\[\]!]+$")
 RESOURCE_NAME_RE = re.compile(r"^[a-z]([a-z0-9_.-]*[a-z0-9])?$")
 
@@ -376,23 +393,6 @@ class Resource:
         """
         return None
 
-    async def schema(self) -> dict[str, Any] | None:
-        """Return a JSON Schema description for this resource, if available.
-
-        Returns
-        -------
-        dict[str, Any] | None
-            The resource's validation-mode JSON Schema generated from its nested
-            Pydantic `Model` class using alias-aware keys, or None if the resource
-            does not define a `Model`.
-
-        Notes
-        -----
-        This is internal docs infrastructure used to expose authoritative resource
-        schemas without coupling to CLI/docsite export behavior.
-        """
-        return None
-
     async def render(self, config: Config, tag: str | None) -> None:
         """A render function that writes content for this resource during
         `Config.sync()`.
@@ -414,6 +414,55 @@ class Resource:
         This is used to generate derived artifacts from a validated config without
         coupling to any particular output schema.
         """
+
+    @dataclass(frozen=True)
+    class Mount:
+        """A resource-owned cache mount declaration used for build and runtime args.
+
+        Attributes
+        ----------
+        target : PosixPath
+            Absolute in-container mount target.
+        fingerprint : Mapping[str, Any]
+            JSON-compatible semantic payload that determines cache coherence for this
+            mount.
+        """
+        target: PosixPath
+        fingerprint: Mapping[str, Any]
+
+    async def mounts(self, config: Config, tag: str) -> list[Mount]:
+        """Declare resource-owned cache mounts for a given image tag.
+
+        Parameters
+        ----------
+        config : Config
+            The active configuration context.
+        tag : str
+            The active image tag.
+
+        Returns
+        -------
+        list[Mount]
+            A list of mount declarations owned by this resource.  Empty by default.
+        """
+        return []
+
+    async def schema(self) -> dict[str, Any] | None:
+        """Return a JSON Schema description for this resource, if available.
+
+        Returns
+        -------
+        dict[str, Any] | None
+            The resource's validation-mode JSON Schema generated from its nested
+            Pydantic `Model` class using alias-aware keys, or None if the resource
+            does not define a `Model`.
+
+        Notes
+        -----
+        This is internal docs infrastructure used to expose authoritative resource
+        schemas without coupling to CLI/docsite export behavior.
+        """
+        return None
 
 
 RESOURCES: set[Resource] = set()
@@ -539,7 +588,8 @@ class Config:
         repo: GitRepository
         worktree: RelativePath
 
-    worktree: Path
+    repo: GitRepository
+    worktree: RelativePath
     timeout: float
     resources: dict[ResourceName, BaseModel | None] = field(
         default_factory=lambda: {"bertrand": None}
@@ -547,8 +597,25 @@ class Config:
     init: Init | None = field(default=None, repr=False)
     _entered: int = field(default=0, repr=False)
 
+    @property
+    def root(self) -> AbsolutePath:
+        """
+        Returns
+        -------
+        AbsolutePath
+            The absolute path to the root of the environment, which concatenates the
+            repository root and the worktree relative path.
+        """
+        return self.repo.root / self.worktree
+
     @classmethod
-    async def load(cls, worktree: Path, *, timeout: float = LOCK_TIMEOUT) -> Self:
+    async def load(
+        cls,
+        worktree: Path,
+        *,
+        repo: GitRepository | None = None,
+        timeout: float = LOCK_TIMEOUT
+    ) -> Self:
         """Load a worktree configuration by scanning the environment root for known
         resource placements based on their managed paths, and resolving any collisions
         or invalid placements.
@@ -557,6 +624,10 @@ class Config:
         ----------
         worktree : Path
             The root path of the environment directory.
+        repo : GitRepository | None, optional
+            An optional parent git repository containing the worktree, which determines
+            the project root for the environment.  If not provided, then it will be
+            inferred from `worktree`, which must include a repository as a parent.
         timeout : float, optional
             Maximum time to wait for acquiring the worktree lock, in seconds.  If
             the lock cannot be acquired within this time, a `TimeoutError` is raised.
@@ -580,8 +651,27 @@ class Config:
             mapping to multiple paths).
         """
         worktree = worktree.expanduser().resolve()
+        if repo is None:
+            repo = await GitRepository.discover(worktree)
+            if repo is None:
+                raise ValueError(f"no git repository found for worktree: {worktree}")
+        if not any(wt.path == worktree for wt in await repo.worktrees()):
+            raise ValueError(
+                f"worktree {worktree} is not a valid worktree for repository at "
+                f"{repo.root}"
+            )
+        if not worktree.is_relative_to(repo.root):
+            raise ValueError(
+                f"worktree {worktree} is not a subdirectory of repository root at "
+                f"{repo.root}"
+            )
+
         async with lock_worktree(worktree, timeout=timeout):
-            self = cls(worktree=worktree, timeout=timeout)
+            self = cls(
+                repo=repo,
+                worktree=worktree.relative_to(repo.root),
+                timeout=timeout
+            )
             self.resources.update({
                 r.name: None
                 for r in RESOURCES
@@ -650,7 +740,7 @@ class Config:
 
         old_resources = self.resources.copy()
         try:
-            async with lock_worktree(self.worktree):
+            async with lock_worktree(self.root):
                 # invoke `init()` hooks for all resources to get baseline snapshot
                 snapshot = {} if self.init is None else {
                     r: await RESOURCE_NAMES[r].init(self, self.init)
@@ -817,13 +907,212 @@ class Config:
             raise RuntimeError("sync() artifact rendering requires an active config context")
 
         # invoke render hooks for all resources in deterministic order
-        async with lock_worktree(self.worktree):
+        async with lock_worktree(self.root):
             for name in sorted(self.resources):
                 r = RESOURCE_NAMES[name]
                 try:
                     await r.render(self, tag)
                 except Exception as err:
                     raise OSError(f"failed to render resource '{r.name}': {err}") from err
+
+    # TODO: review image and container args logic for new, vastly simplified layout,
+    # where `image_args()` writes the containerfile, and `container_args()` writes the
+    # bootstrap entry point script
+
+    @dataclass(frozen=True)
+    class ImageArgs:
+        """A full argument tail and metadata for `podman build`."""
+        argv: list[str]
+        run_id: str
+        image_name: str
+        iid_file: Path
+        containerfile: Path
+
+    @dataclass(frozen=True)
+    class _ResolvedMount:
+        resource_name: ResourceName
+        target: PosixPath
+        fingerprint: dict[str, Any]
+        digest: str
+        build_cache_id: str
+
+    @staticmethod
+    def _mount_payload_hash(*, target: PosixPath, fingerprint: Mapping[str, Any]) -> str:
+        payload = {
+            "target": target.as_posix(),
+            "fingerprint": dict(fingerprint),
+        }
+        try:
+            text = json.dumps(
+                payload,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+                allow_nan=False,
+            )
+        except (TypeError, ValueError) as err:
+            raise ValueError(
+                f"mount fingerprint is not JSON-serializable: {err}"
+            ) from err
+        return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _build_cache_id(resource_name: ResourceName, digest: str) -> str:
+        return sanitize_name(f"bertrand-cache-{resource_name}-{digest[:20]}")
+
+    @staticmethod
+    def _runtime_cache_volume_name(
+        *,
+        env_id: str,
+        resource_name: ResourceName,
+        digest: str,
+    ) -> str:
+        return sanitize_name(
+            f"bertrand-cache-{env_id[:13]}-{resource_name}-{digest[:20]}"
+        )
+
+    async def _collect_mount_specs(self, tag: str) -> list[_ResolvedMount]:
+        mounts: list[Config._ResolvedMount] = []
+        target_owner: dict[str, ResourceName] = {}
+
+        # ask each resource for its mounts, adapting to the current toolchain
+        for name in sorted(self.resources):
+            r = RESOURCE_NAMES[name]
+            try:
+                declared = await r.mounts(self, tag)
+            except Exception as err:
+                raise OSError(
+                    f"failed to resolve mounts for resource '{r.name}': {err}"
+                ) from err
+            if not isinstance(declared, list):
+                raise OSError(
+                    f"mount hook for resource '{r.name}' must return a list, got "
+                    f"{type(declared).__name__}"
+                )
+
+            for raw in declared:
+                if not isinstance(raw, Resource.Mount):
+                    raise OSError(
+                        f"mount hook for resource '{r.name}' must return Resource.Mount "
+                        f"entries, got {type(raw).__name__}"
+                    )
+                target = raw.target
+                if not target.is_absolute():
+                    raise OSError(
+                        f"resource '{r.name}' mount target must be "
+                        f"absolute: {target}"
+                    )
+                if any(part in (".", "..") for part in target.parts):
+                    raise OSError(
+                        f"resource '{r.name}' mount target cannot "
+                        f"contain '.' or '..' segments: {target}"
+                    )
+                target_key = target.as_posix()
+                owner = target_owner.setdefault(target_key, r.name)
+                if owner != r.name:
+                    raise OSError(
+                        f"mount target collision at '{target_key}' between resources "
+                        f"'{owner}' and '{r.name}'"
+                    )
+
+                if raw.fingerprint is None:
+                    raise OSError(
+                        f"resource '{r.name}' mount '{target_key}' missing "
+                        "required fingerprint payload"
+                    )
+                if not isinstance(raw.fingerprint, Mapping):
+                    raise OSError(
+                        f"resource '{r.name}' mount '{target_key}' fingerprint must be "
+                        f"a mapping, got {type(raw.fingerprint).__name__}"
+                    )
+                if any(not isinstance(k, str) for k in raw.fingerprint):
+                    raise OSError(
+                        f"resource '{r.name}' mount '{target_key}' fingerprint keys "
+                        "must be strings"
+                    )
+                fingerprint = dict(raw.fingerprint)
+                try:
+                    digest = self._mount_payload_hash(
+                        target=target,
+                        fingerprint=fingerprint,
+                    )
+                except ValueError as err:
+                    raise OSError(
+                        f"resource '{r.name}' mount '{target_key}' has invalid "
+                        f"fingerprint payload: {err}"
+                    ) from err
+
+                mounts.append(self._ResolvedMount(
+                    resource_name=r.name,
+                    target=target,
+                    fingerprint=fingerprint,
+                    digest=digest,
+                    build_cache_id=self._build_cache_id(r.name, digest),
+                ))
+
+        mounts.sort(key=lambda item: (item.resource_name, item.target.as_posix()))
+        return mounts
+
+    async def _format_runtime_mounts(self, tag: str, env_id: str) -> list[str]:
+        mounts: list[str] = []
+        for mount in await self._collect_mount_specs(tag):
+            name = self._runtime_cache_volume_name(
+                env_id=env_id,
+                resource_name=mount.resource_name,
+                digest=mount.digest,
+            )
+            try:
+                await run([
+                    "podman",
+                    "volume",
+                    "create",
+                    "--label", f"{BERTRAND_ENV}=1",
+                    "--label", f"{ENV_ID_ENV}={env_id}",
+                    "--label", f"{CACHE_LABEL}=1",
+                    "--label", f"{CACHE_RESOURCE_LABEL}={mount.resource_name}",
+                    "--label", f"{CACHE_TARGET_LABEL}={mount.target.as_posix()}",
+                    "--label", f"{CACHE_HASH_LABEL}={mount.digest}",
+                    name,
+                ], check=False, capture_output=True)
+            except Exception:
+                pass
+            mounts.extend([
+                "--mount",
+                f"type=volume,src={name},dst={mount.target.as_posix()}",
+            ])
+        return mounts
+
+    async def expected_cache_volumes(self, env_id: str) -> set[str]:
+        """Compute all deterministic runtime cache volume names for this environment.
+
+        Parameters
+        ----------
+        env_id : str
+            The Bertrand environment UUID used for volume-name namespacing.
+
+        Returns
+        -------
+        set[str]
+            Deterministic runtime cache volume names expected by active resources
+            across all declared tags.
+        """
+        from .bertrand import Bertrand
+        env_id = env_id.strip()
+        if not env_id:
+            raise ValueError("environment ID cannot be empty when resolving cache volumes")
+        bertrand = self.get(Bertrand)
+        if bertrand is None:
+            return set()
+
+        out: set[str] = set()
+        for cfg in bertrand.tags:
+            for mount in await self._collect_mount_specs(cfg.tag):
+                out.add(self._runtime_cache_volume_name(
+                    env_id=env_id,
+                    resource_name=mount.resource_name,
+                    digest=mount.digest,
+                ))
+        return out
 
     @staticmethod
     def _format_network(network: _NetworkTableLike) -> list[str]:
@@ -842,16 +1131,37 @@ class Config:
             args.extend(["--add-host", f"{host}:{network.add_host[host]}"])
         return args
 
-    async def image_args(self, worktree: Path, tag: str) -> list[str]:
-        """Retrieve a set of `podman build` arguments to apply during image builds for
-        the given tag.
+    async def _scope_name(self) -> str:
+        """Compute the stable scope component for generated image names."""
+        if self.worktree.parts:
+            return sanitize_name(self.worktree.as_posix())
+
+        branch = await self.repo.head_branch()
+        if branch:
+            return sanitize_name(branch)
+
+        sha = await self.repo.run(
+            ["rev-parse", "--short", "HEAD"],
+            check=False,
+            capture_output=True,
+        )
+        short_sha = sha.stdout.strip()
+        if sha.returncode == 0 and short_sha:
+            return sanitize_name(f"detached-{short_sha}")
+        return "detached"
+
+    async def image_args(
+        self,
+        *,
+        env_id: str,
+        tag: str,
+    ) -> ImageArgs:
+        """Retrieve a full `podman build` argument tail and metadata for the given tag.
 
         Parameters
         ----------
-        worktree : Path
-            Absolute path to the host worktree whose configuration is being used.  This
-            is used to resolve tag-relative artifact paths into concrete host
-            filesystem locations for podman to consume.
+        env_id : str
+            The Bertrand environment UUID used for image labels.
         tag : str
             The active image tag for the configured environment, which is used to
             search the `bertrand.tags` list for tag-specific overrides when generating
@@ -860,67 +1170,126 @@ class Config:
 
         Returns
         -------
-        list[str]
-            A list of arguments to append to the `podman build` command when building
-            the specified image.
+        ImageArgs
+            A verbose build bundle containing the full podman argument tail and
+            generated artifacts for this build invocation.
 
         Raises
         ------
-        TypeError
-            If the `bertrand` config is not present in this environment, or if the
-            `cmd` override is not a list of strings.
+        RuntimeError
+            If called inside an image/container environment or outside of an active
+            config context.
+        OSError
+            If required configuration tables are not present in this environment.
         ValueError
-            If the specified tag is not present in the `bertrand` config.
+            If the specified tag is not present in the `bertrand` config or if
+            `env_id` is empty.
         """
         from .bertrand import Bertrand
+        from .python import PyProject
+        if inside_image():
+            raise RuntimeError("image_args() cannot be called from within a container")
+        if not self:
+            raise RuntimeError("image_args() requires an active config context")
+        env_id = env_id.strip()
+        if not env_id:
+            raise ValueError("environment ID cannot be empty")
+
+        python = self.get(PyProject)
+        if python is None:
+            raise OSError(
+                f"missing 'python' configuration for environment at {self.root}"
+            )
         bertrand = self.get(Bertrand)
         if bertrand is None:
-            raise TypeError(
-                f"missing 'bertrand' configuration for environment at {self.worktree}"
+            raise OSError(
+                f"missing 'bertrand' configuration for environment at {self.root}"
             )
         cfg = next((t for t in bertrand.tags if t.tag == tag), None)
         if cfg is None:
             raise ValueError(
-                f"unknown image tag '{tag}' for environment at {self.worktree}"
+                f"unknown image tag '{tag}' for environment at {self.root}"
             )
 
-        # TODO: the containerfile is now an output artifact under the metadata
-        # directory, rather than a tracked file in the worktree
-        worktree = worktree.expanduser().resolve()
-        containerfile = worktree / cfg.containerfile
+        run_id = uuid.uuid4().hex
+        scope_name = await self._scope_name()
+        image_name = f"{python.project.name}.{scope_name}.{tag}.{run_id[:7]}"
+        iid_file = self.root / METADATA_DIR / "images" / tag / "iid"
+        iid_file.parent.mkdir(parents=True, exist_ok=True)
 
-        return [
-            "--file", str(containerfile),
-            *self._format_network(bertrand.network.build),
-        ]
+        # render private-per-tag containerfile if no override is given
+        if cfg.containerfile is None:
+            containerfile = self.root / METADATA_DIR / "images" / tag / "Containerfile"
+            containerfile.parent.mkdir(parents=True, exist_ok=True)
+            build_mounts: list[str] = []
+            for mount in await self._collect_mount_specs(tag):
+                parts = [
+                    "type=cache",
+                    f"id={mount.build_cache_id}",
+                    f"target={mount.target.as_posix()}",
+                    "sharing=locked",
+                ]
+                build_mounts.append(f"--mount={','.join(parts)}")
 
-    @staticmethod
-    async def _format_volumes(tag: str, env_id: str) -> list[str]:
-        mounts: list[str] = []
-        for kind, destination in (
-            ("uv", str(CACHE_MOUNT / "uv")),
-            ("bertrand", str(CACHE_MOUNT / "bertrand")),
-            ("ccache", str(CACHE_MOUNT / "ccache")),
-            ("conan", "/opt/conan"),
-        ):
-            name = f"bertrand-{env_id[:13]}-{kind}"
-            try:
-                await run([
-                    "podman",
-                    "volume",
-                    "create",
-                    "--label", f"{BERTRAND_ENV}=1",
-                    "--label", f"{ENV_ID_ENV}={env_id}",
-                    "--label", f"{IMAGE_TAG_ENV}={tag}",
-                    name,
-                ], check=False, capture_output=True)
-            except Exception:
-                pass
-            mounts.extend([
-                "--mount",
-                f"type=volume,src={name},dst={destination}",
-            ])
-        return mounts
+            # Render private per-tag Containerfile at build-arg resolution time so
+            # image builds always consume a fresh bootstrap artifact.
+            jinja = jinja2.Environment(
+                autoescape=False,
+                undefined=jinja2.StrictUndefined,
+                keep_trailing_newline=True,
+                trim_blocks=False,
+                lstrip_blocks=False,
+            )
+            template = jinja.from_string(locate_template(
+                "core",
+                "containerfile.v1"
+            ).read_text(encoding="utf-8"))
+            bertrand_version = packaging.version.parse(VERSION.bertrand)
+            python_version = packaging.version.parse(VERSION.python)
+            atomic_write_text(
+                containerfile,
+                template.render(
+                    python_major=python_version.major,
+                    python_minor=python_version.minor,
+                    python_patch=python_version.micro,
+                    bertrand_major=bertrand_version.major,
+                    bertrand_minor=bertrand_version.minor,
+                    bertrand_patch=bertrand_version.micro,
+                    cpus=0,
+                    page_size_kib=os.sysconf("SC_PAGE_SIZE") // 1024,
+                    env_mount=str(WORKTREE_MOUNT),
+                    build_mounts=build_mounts,
+                ),
+                encoding="utf-8",
+            )
+        else:
+            containerfile = self.root / cfg.containerfile
+
+        return self.ImageArgs(
+            argv=[
+                "-t", image_name,
+                "--iidfile", str(iid_file),
+                "--label", f"{BERTRAND_ENV}=1",
+                "--label", f"{ENV_ID_ENV}={env_id}",
+                "--label", f"{IMAGE_TAG_ENV}={tag}",
+                "--file", str(containerfile),
+                *self._format_network(bertrand.network.build),
+                str(self.root),
+            ],
+            run_id=run_id,
+            image_name=image_name,
+            iid_file=iid_file,
+            containerfile=containerfile,
+        )
+
+    @dataclass(frozen=True)
+    class ContainerArgs:
+        """A full argument tail and metadata for `podman create`."""
+        argv: list[str]
+        run_id: str
+        runtime_dir: RelativePath
+        cid_file: RelativePath
+        bootstrap_script: RelativePath
 
     @staticmethod
     def _format_entry_point(tag: str, cmd: list[str]) -> list[str]:
@@ -933,24 +1302,65 @@ class Config:
             raise ValueError("entry point arguments must be non-empty strings")
         return cmd
 
+    @staticmethod
+    def _render_bootstrap(
+        *,
+        container_cid: PosixPath,
+        container_worktree: PosixPath,
+        container_runtime: PosixPath,
+    ) -> str:
+        return "\n".join([
+            "#!/bin/sh",
+            "set -eu",
+            f"CID_FILE={shlex.quote(str(container_cid))}",
+            f"TARGET_WORKTREE={shlex.quote(str(container_worktree))}",
+            f"TARGET_RUNTIME={shlex.quote(str(container_runtime))}",
+            f"rm -rf {shlex.quote(str(WORKTREE_MOUNT))}",
+            (
+                "ln -s "
+                "\"$TARGET_WORKTREE\" "
+                f"{shlex.quote(str(WORKTREE_MOUNT))}"
+            ),
+            f"rm -rf {shlex.quote(str(CONTAINER_RUNTIME_MOUNT))}",
+            (
+                "ln -s "
+                "\"$TARGET_RUNTIME\" "
+                f"{shlex.quote(str(CONTAINER_RUNTIME_MOUNT))}"
+            ),
+            "if command -v git >/dev/null 2>&1; then",
+            (
+                "    git config --global --add safe.directory "
+                f"{shlex.quote(str(WORKTREE_MOUNT))} >/dev/null 2>&1 || true"
+            ),
+            (
+                "    git config --global --add safe.directory "
+                "\"$TARGET_WORKTREE\" >/dev/null 2>&1 || true"
+            ),
+            "fi",
+            "if [ -f \"$CID_FILE\" ]; then",
+            "    CID=\"$(cat \"$CID_FILE\" 2>/dev/null || true)\"",
+            "    if [ -n \"$CID\" ]; then",
+            f"        export {CONTAINER_ID_ENV}=\"$CID\"",
+            "    fi",
+            "fi",
+            "exec \"$@\"",
+            "",
+        ])
+
     async def container_args(
         self,
-        worktree: Path,
+        *,
         env_id: str,
         tag: str,
         image_id: str,
         cmd: list[NonEmpty[Trimmed]] | None,
-        bootstrap: PosixPath,
-    ) -> list[str]:
-        """Retrieve a set of `podman run` arguments to apply during container runs for
-        the given tag.
+        env_vars: Mapping[str, str] | None = None,
+    ) -> ContainerArgs:
+        """Retrieve a full `podman create` argument tail and metadata for the given
+        tag.
 
         Parameters
         ----------
-        worktree : Path
-            Absolute path to the host worktree whose configuration is being used.  This
-            is used to resolve tag-relative artifact paths into concrete host
-            filesystem locations for podman to consume.
         env_id : str
             The Bertrand environment UUID used for stable volume naming and labeling.
         tag : str
@@ -964,68 +1374,120 @@ class Config:
         cmd : list[str] | None
             Optional command override supplied by the CLI.  If not provided, the
             configured `entry-point` for the selected tag is used.
-        bootstrap : PosixPath
-            Absolute in-container path to the runtime bootstrap script that should be
-            used as the podman entrypoint.  This runs immediately before the normal
-            entry point and completes startup by creating various symlinks and
-            environment variables within the container context.
+        env_vars : Mapping[str, str] | None, optional
+            Optional additional environment variables to inject into the container.
 
         Returns
         -------
-        list[str]
-            A list of arguments to append to the `podman run` command when running a
-            container for the specified image tag, based on that tag's configuration
-            in the build matrix.
+        ContainerArgs
+            A verbose create bundle containing the full podman argument tail and
+            generated runtime artifact paths.
 
         Raises
         ------
         TypeError
-            If the `bertrand` config is not present in this environment, or if the
-            `cmd` override is not a list of strings.
+            If the `bertrand` config is not present in this environment.
         ValueError
             If the specified tag is not present in the `bertrand` config, if the
             effective entry point is empty after accounting for overrides, or if any
             entry point argument is an empty or whitespace-only string.
         """
-        worktree = worktree.expanduser().resolve()
-        if not worktree.exists() or not worktree.is_dir():
-            raise ValueError(f"worktree must be an existing directory: {worktree}")
+        if inside_image():
+            raise RuntimeError("image_args() cannot be called from within a container")
         env_id = env_id.strip()
         if not env_id:
             raise ValueError("environment ID cannot be empty when forming container args")
         image_id = image_id.strip()
         if not image_id:
             raise ValueError("image ID cannot be empty when forming container args")
-        if not bootstrap.is_absolute():
-            raise ValueError(f"path to bootstrap script must be absolute: {bootstrap}")
 
         from .bertrand import Bertrand
         bertrand = self.get(Bertrand)
         if bertrand is None:
             raise TypeError(
-                f"missing 'bertrand' configuration for environment at {self.worktree}"
+                f"missing 'bertrand' configuration for environment at {self.root}"
             )
         cfg = next((t for t in bertrand.tags if t.tag == tag), None)
         if cfg is None:
             raise ValueError(
-                f"unknown image tag '{tag}' for environment at {self.worktree}"
+                f"unknown image tag '{tag}' for environment at {self.root}"
             )
 
-        return [
-            *(await self._format_volumes(tag, env_id)),
-            *self._format_network(bertrand.network.run),
-            "--entrypoint", str(bootstrap),
-            image_id,
-            *self._format_entry_point(tag, cmd or cfg.entry_point)
+        run_id = uuid.uuid4().hex
+        runtime_rel = METADATA_DIR / "containers" / f"{tag}.{run_id}"
+        host_runtime_dir = self.root / runtime_rel
+        host_runtime_dir.mkdir(parents=True, exist_ok=True)
+        host_cid = host_runtime_dir / "cid"
+        host_bootstrap = host_runtime_dir / "entrypoint.sh"
+
+        if self.worktree.parts:
+            worktree_env = self.worktree.as_posix()
+            container_worktree = PROJECT_MOUNT / worktree_env
+        else:
+            worktree_env = "."
+            container_worktree = PROJECT_MOUNT
+        container_runtime = container_worktree / runtime_rel
+        container_cid = container_runtime / "cid"
+        container_bootstrap = container_runtime / "entrypoint.sh"
+
+        atomic_write_text(
+            host_bootstrap,
+            self._render_bootstrap(
+                container_cid=container_cid,
+                container_worktree=container_worktree,
+                container_runtime=container_runtime,
+            ),
+            encoding="utf-8",
+        )
+        host_bootstrap.chmod(0o755)
+
+        argv = [
+            "--init",
+            "--rm",
+            "--cidfile", str(host_cid),
+
+            # labels for podman lookup
+            "--label", f"{BERTRAND_ENV}=1",
+            "--label", f"{PROJECT_ENV}={self.repo.root}",
+            "--label", f"{WORKTREE_ENV}={worktree_env}",
+            "--label", f"{CONTAINER_RUNTIME_ENV}={runtime_rel}",
+            "--label", f"{ENV_ID_ENV}={env_id}",
+            "--label", f"{IMAGE_ID_ENV}={image_id}",
+            "--label", f"{IMAGE_TAG_ENV}={tag}",
+
+            # mount full git repository; runtime wrapper symlinks canonical paths
+            "-v", f"{self.repo.root}:{PROJECT_MOUNT}",
+
+            # in-container environment variables for runtime introspection
+            "-e", f"{BERTRAND_ENV}=1",
+            "-e", f"{PROJECT_ENV}={self.repo.root}",
+            "-e", f"{WORKTREE_ENV}={worktree_env}",
+            "-e", f"{CONTAINER_RUNTIME_ENV}={runtime_rel}",
+            "-e", f"{ENV_ID_ENV}={env_id}",
+            "-e", f"{IMAGE_ID_ENV}={image_id}",
+            "-e", f"{IMAGE_TAG_ENV}={tag}",
         ]
+        if env_vars:
+            for key, value in sorted(env_vars.items()):
+                argv.extend(["-e", f"{key}={value}"])
+        argv.extend([
+            *(await self._format_runtime_mounts(tag, env_id)),
+            *self._format_network(bertrand.network.run),
+            "--entrypoint", str(container_bootstrap),
+            image_id,
+            *self._format_entry_point(tag, cmd or cfg.entry_point),
+        ])
+
+        return self.ContainerArgs(
+            argv=argv,
+            run_id=run_id,
+            runtime_dir=runtime_rel,
+            cid_file=runtime_rel / "cid",
+            bootstrap_script=runtime_rel / "entrypoint.sh",
+        )
 
     async def build(self, tag: str) -> None:
-        """Install Python dependencies and builds/installs the project for the given
-        tag.
-
-        This requires an active config context (`async with config:`), and is intended to
-        run after `sync()` so generated artifacts are available before invoking build
-        backends.
+        """Invoke Bertrand's PEP517 backend from within an image or container context.
 
         Parameters
         ----------
@@ -1043,7 +1505,6 @@ class Config:
         """
         from .bertrand import Bertrand
         from .python import PyProject
-
         if not inside_image():
             raise RuntimeError("build() requires access to a container filesystem")
         if not self:
@@ -1054,6 +1515,7 @@ class Config:
             raise OSError("build() requires parsed 'pyproject' configuration")
         if bertrand is None:
             raise OSError("build() requires parsed 'bertrand' configuration")
+
         tags = {entry.tag for entry in bertrand.tags}
         if tag not in tags:
             raise OSError(
@@ -1082,6 +1544,7 @@ class Config:
         if not inside_container():
             sync_cmd.append("--no-editable")  # image build context -> non-editable
 
-        async with lock_worktree(self.worktree):
-            await run(["uv", "lock"], cwd=self.worktree)  # update lockfile
-            await run(sync_cmd, cwd=self.worktree)  # orchestrate build
+        async with lock_worktree(self.root):
+            await self.sync(tag)  # render artifacts to container filesystem
+            await run(["uv", "lock"], cwd=self.root)  # update lockfile
+            await run(sync_cmd, cwd=self.root)  # orchestrate build

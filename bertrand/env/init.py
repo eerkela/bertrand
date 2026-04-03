@@ -695,23 +695,23 @@ async def _init_repository(
 ) -> tuple[GitRepository, Path]:
     # resolve repository and worktree target
     repo, worktree = await GitRepository.resolve(path)
-    path = repo.git_dir.parent / worktree
+    path = repo.root / worktree
     new = not repo
     if new:
         initial_branch = worktree.as_posix()
         await repo.init(branch=initial_branch, bare=True)
         await repo.create_worktree(
             initial_branch,
-            target=repo.git_dir.parent / worktree,
+            target=repo.root / worktree,
             create_branch=True
         )
 
-    # TODO: honestly, maybe `Config.load()` should accept the repo and relative
-    # worktree path to avoid confusion, and have this abstraction replicated
-    # consistently across the CLI.
-
     # reconcile with existing configuration (if any)
-    config = await Config.load(path, timeout=timeout)  # locate existing in-tree resources
+    config = await Config.load(  # locate existing in-tree resources
+        path,
+        repo=repo,
+        timeout=timeout
+    )
     config.resources.update({r.name: None for r in resources})  # merge any new resources from CLI
     config.init = Config.Init(
         repo=repo,
@@ -765,7 +765,7 @@ async def _install_git_hooks(repo: GitRepository) -> None:
 
             # do not clobber non-managed hooks
             stage = f"resolve existing git hook at '{destination}'"
-            target = await repo.git_path(destination, cwd=repo.git_dir.parent)
+            target = await repo.git_path(destination, cwd=repo.root)
             if target.exists():
                 if not target.is_file():
                     raise OSError(f"git hook path is not a file: {target}")
@@ -791,7 +791,7 @@ async def _install_git_hooks(repo: GitRepository) -> None:
                     pass
         except Exception as err:
             print(
-                f"bertrand: failed to {stage} in {repo.git_dir.parent}\n{err}",
+                f"bertrand: failed to {stage} in {repo.root}\n{err}",
                 file=sys.stderr
             )
 

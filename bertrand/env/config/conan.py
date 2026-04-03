@@ -32,8 +32,9 @@ from .core import (
     resource,
 )
 
-CONAN_CACHE: PosixPath = PosixPath("/opt/conan")
-CONAN_HOME: PosixPath = PosixPath("/opt/conan")
+CONAN_CACHE: PosixPath = PosixPath("/root/.conan2")
+CONAN_HOME: PosixPath = PosixPath("/root/.conan2")
+CCACHE_CACHE: PosixPath = PosixPath("/root/.cache/ccache")
 CONAN_REF_TOKEN_RE = re.compile(r"^[a-z0-9_][a-z0-9_+.-]{1,100}\Z")
 
 
@@ -350,6 +351,29 @@ class ConanConfig(Resource):
 
     async def validate(self, config: Config, fragment: Any) -> Model | None:
         return self.Model.model_validate(fragment)
+
+    async def mounts(self, config: Config, tag: str) -> list[Resource.Mount]:
+        from .bertrand import Bertrand
+        model = config.get(ConanConfig)
+        if model is None:
+            return []
+
+        bertrand = config.get(Bertrand)
+        active = None if bertrand is None else next(
+            (entry for entry in bertrand.tags if entry.tag == tag),
+            None,
+        )
+        fingerprint = {
+            "conan": model.model_dump(by_alias=True, mode="json"),
+            "tag-conan": (
+                {} if active is None else active.conan.model_dump(by_alias=True, mode="json")
+            ),
+            "build-args": {} if active is None else dict(sorted(active.build_args.items())),
+        }
+        return [
+            Resource.Mount(target=CONAN_CACHE, fingerprint=fingerprint),
+            Resource.Mount(target=CCACHE_CACHE, fingerprint=fingerprint),
+        ]
 
     @staticmethod
     def _merge_options(out: dict[str, Scalar], options: ConanOptions) -> None:

@@ -6,12 +6,15 @@ additional uv-native keys to pass through unchanged for forward compatibility.
 """
 from __future__ import annotations
 
+from pathlib import PosixPath
 from typing import Annotated, Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from ..version import VERSION
 from .core import Config, Resource, Trimmed, resource
+
+UV_CACHE: PosixPath = PosixPath("/root/.cache/uv")
 
 
 @resource("uv")
@@ -60,6 +63,33 @@ class UvConfig(Resource):
 
     async def validate(self, config: Config, fragment: Any) -> Model | None:
         return self.Model.model_validate(fragment)
+
+    async def mounts(self, config: Config, tag: str) -> list[Resource.Mount]:
+        from .python import PyProject
+        model = config.get(UvConfig)
+        if model is None:
+            return []
+
+        python = config.get(PyProject)
+        optional: list[str] = []
+        dependencies: list[str] = []
+        requires_python: str | None = None
+        if python is not None:
+            dependencies = list(python.project.dependencies)
+            optional = list(python.project.optional_dependencies.get(tag, []))
+            requires_python = python.project.requires_python
+
+        return [Resource.Mount(
+            target=UV_CACHE,
+            fingerprint={
+                "uv": model.model_dump(by_alias=True, mode="json"),
+                "python": {
+                    "requires-python": requires_python,
+                    "dependencies": dependencies,
+                    "optional-dependencies": optional,
+                },
+            },
+        )]
 
     async def schema(self) -> dict[str, Any]:
         return self.Model.model_json_schema(by_alias=True, mode="validation")

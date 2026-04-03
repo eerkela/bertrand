@@ -23,21 +23,18 @@ FROM bertrand:${BERTRAND}.${DEBUG}.${DEV}.${CPUS}.{{ page_size_kib }}
 WORKDIR {{ env_mount }}
 
 # set up incremental builds
-ENV UV_CACHE_DIR={{ uv_cache }}
-ENV BERTRAND_CACHE={{ bertrand_cache }}
-ENV CCACHE_DIR={{ ccache_cache }}
-ENV CONAN_CACHE={{ conan_cache }}
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1
 COPY . {{ env_mount }}
 
 # you can extend this file in order to create a reproducible image that others can pull
-# from in their own Dockerfiles.  For example:
+# from in their own Containerfiles.  For example:
 
-RUN --mount=type=cache,target={{ uv_cache }},sharing=locked \
-    --mount=type=cache,target={{ bertrand_cache }},sharing=locked \
-    --mount=type=cache,target={{ ccache_cache }},sharing=locked \
-    --mount=type=cache,target={{ conan_cache }},sharing=locked \
+{% if build_mounts %}
+RUN {{ build_mounts | join(' \\\n    ') }} \
     bertrand build
+{% else %}
+RUN bertrand build
+{% endif %}
 
 # A `bertrand build` command of that form will incrementally compile the contents of
 # the local environment directory (WORKDIR) and install them into the base image as
@@ -55,7 +52,7 @@ RUN --mount=type=cache,target={{ uv_cache }},sharing=locked \
 # rules are sourced from `[tool.conan]`, `[tool.clangd]`, `[tool.clang-format]`, and
 # `[tool.clang-tidy]` in pyproject.toml, then emitted as generated `.clang-*` files,
 # `compile_commands.json`, and `conanfile.py` under `/tmp/bertrand/artifacts/` at
-# command runtime.  Conan remotes are generated into `/opt/conan/remotes.json` when
+# command runtime.  Conan remotes are generated into `/root/.conan2/remotes.json` when
 # `[tool.conan].remotes` is configured.
 # `pyproject.toml` is the single source of truth for dependencies and tooling
 # configuration across both languages.  If you'd like to add your own tools outside of

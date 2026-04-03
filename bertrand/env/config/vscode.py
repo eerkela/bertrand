@@ -44,7 +44,7 @@ class VSCodeWorkspace(Resource):
         template = jinja.from_string(
             locate_template("core", "vscode-workspace.v1").read_text(encoding="utf-8")
         )
-        target = config.worktree / VSCODE_WORKSPACE_FILE
+        target = config.root / VSCODE_WORKSPACE_FILE
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(template.render(
             mount_path=WORKTREE_MOUNT.as_posix(),

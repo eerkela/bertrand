@@ -9,7 +9,6 @@ artifacts needed by Bertrand's core functionality.
 from __future__ import annotations
 
 import ipaddress
-import os
 import re
 from collections.abc import Callable
 from pathlib import Path
@@ -30,21 +29,17 @@ from pydantic import (
 
 from ..run import (
     METADATA_DIR,
-    WORKTREE_MOUNT,
     Scalar,
     atomic_write_text,
     sanitize_name,
 )
 from ..version import VERSION
 from .conan import (
-    CONAN_CACHE,
     ConanConf,
     ConanConfig,
     ConanOptions,
 )
 from .core import (
-    CACHE_MOUNT,
-    UV_CACHE,
     AbsolutePosixPath,
     Config,
     Glob,
@@ -60,16 +55,6 @@ from .core import (
     resource,
 )
 from .python import PyProject, _validate_dependency_groups
-
-# TODO: continue adding descriptions and simplifying the structure of the Bertrand
-# model + checking default values.
-
-# TODO: add `examples` for any fields that have a constrained set of values.
-
-
-BERTRAND_CACHE: PosixPath = CACHE_MOUNT / "bertrand"
-CCACHE_CACHE: PosixPath = CACHE_MOUNT / "ccache"
-
 
 # Configuration options that affect CLI behavior
 DEFAULT_TAG: str = "default"
@@ -550,12 +535,6 @@ def _dump_ignore_list(patterns: list[str]) -> str:
     return "\n".join(lines) + "\n"
 
 
-# TODO: continue adding descriptions and simplifying the structure of the Bertrand
-# model + checking default values.
-
-# TODO: add `examples` for any fields that have a constrained set of values.
-
-
 @resource("bertrand")
 class Bertrand(Resource):
     """A resource describing the configuration state needed by Bertrand itself, which
@@ -672,7 +651,7 @@ class Bertrand(Resource):
                         strip_whitespace=True,
                         min_length=1,
                         pattern=
-                            rf"^(none|host|private|slirp4netns|pasta|{NS_PATH_RE.pattern})$"
+                            rf"^(none|host|private|slirp4netns|pasta|{NS_PATH_RE.pattern})$",
                     ),
                     Field(
                         default="private",
@@ -698,7 +677,7 @@ class Bertrand(Resource):
                             "by the given <path>.\n"
                             "Bertrand intentionally omits `bridge`, `<network name|ID>`, "
                             "and `container:id` from its configuration layer in order to "
-                            "keep projects portable across hosts."
+                            "keep projects portable across hosts.",
                     )
                 ]
                 options: Annotated[list[str], Field(
@@ -777,8 +756,8 @@ class Bertrand(Resource):
                 def _validate_driver_options_mode(self) -> Self:
                     if self.options and self.mode not in ("slirp4netns", "pasta"):
                         raise ValueError(
-                            "network options are only allowed for "
-                            "'slirp4netns' and 'pasta' modes"
+                            "network options are only allowed for 'slirp4netns' and "
+                            "'pasta' modes"
                         )
                     return self
 
@@ -795,7 +774,7 @@ class Bertrand(Resource):
 
                 @model_validator(mode="after")
                 def _validate_build_table(self) -> Self:
-                    # NOTE: build-specific networking restrictions should be added
+                    # TODO: build-specific networking restrictions should be added
                     # here when build and run contracts diverge further.
                     return self
 
@@ -804,7 +783,7 @@ class Bertrand(Resource):
 
                 @model_validator(mode="after")
                 def _validate_run_table(self) -> Self:
-                    # NOTE: run-specific networking restrictions should be added
+                    # TODO: run-specific networking restrictions should be added
                     # here when runtime networking coverage expands.
                     return self
 
@@ -833,8 +812,8 @@ class Bertrand(Resource):
             model_config = ConfigDict(extra="forbid")
             tag: TagName
             containerfile: Annotated[
-                RelativePosixPath,
-                Field(default=PosixPath("Containerfile"))
+                RelativePosixPath | None,
+                Field(default=None)
             ]
             build_args: Annotated[
                 dict[BuildArgName, Scalar],
@@ -1231,6 +1210,8 @@ class Bertrand(Resource):
             ]
 
             def resolve_containerfile(self, root: Path) -> None:
+                if self.containerfile is None:
+                    return
                 path = root / self.containerfile
                 suffix = f" for tag '{self.tag}'" if self.tag else ""
                 if not path.exists():
@@ -1350,8 +1331,11 @@ class Bertrand(Resource):
         result = self.Model.model_validate(fragment)
         _validate_dependency_groups(pyproject=config.get(PyProject), bertrand=result)
         for tag in result.tags:
-            tag.resolve_containerfile(config.worktree)
+            tag.resolve_containerfile(config.root)
         return result
+
+    async def mounts(self, config: Config, tag: str) -> list[Resource.Mount]:
+        return []
 
     async def render(self, config: Config, tag: str | None) -> None:
         bertrand = config.get(Bertrand)
@@ -1366,12 +1350,11 @@ class Bertrand(Resource):
         )
         bertrand_version = packaging.version.parse(VERSION.bertrand)
         python_version = packaging.version.parse(VERSION.python)
-        uv_version = packaging.version.parse(VERSION.uv)
 
         # render worktree directories
-        (config.worktree / "src").mkdir(parents=True, exist_ok=True)
-        (config.worktree / "tests").mkdir(parents=True, exist_ok=True)
-        (config.worktree / "docs").mkdir(parents=True, exist_ok=True)
+        (config.root / "src").mkdir(parents=True, exist_ok=True)
+        (config.root / "tests").mkdir(parents=True, exist_ok=True)
+        (config.root / "docs").mkdir(parents=True, exist_ok=True)
 
         # render ignore files
         ignore = [str(METADATA_DIR / "*")]  # always ignore Bertrand's metadata directory
@@ -1379,54 +1362,23 @@ class Bertrand(Resource):
         containerignore = ignore.copy()
         containerignore.extend(bertrand.container_ignore)
         atomic_write_text(
-            config.worktree / ".containerignore",
+            config.root / ".containerignore",
             _dump_ignore_list(containerignore),
             encoding="utf-8"
         )
         gitignore = ignore.copy()
         gitignore.extend(bertrand.git_ignore)
         atomic_write_text(
-            config.worktree / ".gitignore",
+            config.root / ".gitignore",
             _dump_ignore_list(gitignore),
             encoding="utf-8"
         )
-
-        # TODO: add a render() section that can update the preamble for the
-        # Containerfile based on config changes, including volume mounts and OCI
-        # dependencies.  The user can extend the Containerfile as long as they don't
-        # modify the preamble, which is delimited by comments.
-
-        # initialize Containerfile
-        containerfile_template = jinja.from_string(
-            locate_template("core", "containerfile.v1").read_text(encoding="utf-8")
-        )
-        containerfile_target = config.worktree / "Containerfile"
-        containerfile_target.parent.mkdir(parents=True, exist_ok=True)
-        containerfile_target.write_text(containerfile_template.render(
-            python_major=python_version.major,
-            python_minor=python_version.minor,
-            python_patch=python_version.micro,
-            bertrand_major=bertrand_version.major,
-            bertrand_minor=bertrand_version.minor,
-            bertrand_patch=bertrand_version.micro,
-            cpus=0,
-            page_size_kib=os.sysconf("SC_PAGE_SIZE") // 1024,
-            # TODO: pretty sure this is wrong, since the symlinks haven't been set up
-            # yet, but we also just need to rethink Containerfile rendering in general
-            # to better interact with the build system, since I now have the context
-            # necessary to do so with the init staging refactor.
-            env_mount=str(WORKTREE_MOUNT),
-            uv_cache=str(UV_CACHE),
-            bertrand_cache=str(BERTRAND_CACHE),
-            ccache_cache=str(CCACHE_CACHE),
-            conan_cache=str(CONAN_CACHE),
-        ), encoding="utf-8")
 
         # initialize CI publish action
         publish_template = jinja.from_string(
             locate_template("core", "publish.v1").read_text(encoding="utf-8")
         )
-        publish_target = config.worktree / ".github" / "workflows" / "publish.yml"
+        publish_target = config.root / ".github" / "workflows" / "publish.yml"
         publish_target.parent.mkdir(parents=True, exist_ok=True)
         publish_target.write_text(publish_template.render(
             python_major=python_version.major,
