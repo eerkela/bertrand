@@ -352,7 +352,7 @@ class ConanConfig(Resource):
     async def validate(self, config: Config, fragment: Any) -> Model | None:
         return self.Model.model_validate(fragment)
 
-    async def mounts(self, config: Config, tag: str) -> list[Resource.Mount]:
+    async def volumes(self, config: Config, tag: str) -> list[Resource.Volume]:
         from .bertrand import Bertrand
         model = config.get(ConanConfig)
         if model is None:
@@ -371,8 +371,8 @@ class ConanConfig(Resource):
             "build-args": {} if active is None else dict(sorted(active.build_args.items())),
         }
         return [
-            Resource.Mount(target=CONAN_CACHE, fingerprint=fingerprint),
-            Resource.Mount(target=CCACHE_CACHE, fingerprint=fingerprint),
+            Resource.Volume(target=CONAN_CACHE, fingerprint=fingerprint),
+            Resource.Volume(target=CCACHE_CACHE, fingerprint=fingerprint),
         ]
 
     @staticmethod

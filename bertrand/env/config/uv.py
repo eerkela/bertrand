@@ -64,7 +64,7 @@ class UvConfig(Resource):
     async def validate(self, config: Config, fragment: Any) -> Model | None:
         return self.Model.model_validate(fragment)
 
-    async def mounts(self, config: Config, tag: str) -> list[Resource.Mount]:
+    async def volumes(self, config: Config, tag: str) -> list[Resource.Volume]:
         from .python import PyProject
         model = config.get(UvConfig)
         if model is None:
@@ -79,7 +79,7 @@ class UvConfig(Resource):
             optional = list(python.project.optional_dependencies.get(tag, []))
             requires_python = python.project.requires_python
 
-        return [Resource.Mount(
+        return [Resource.Volume(
             target=UV_CACHE,
             fingerprint={
                 "uv": model.model_dump(by_alias=True, mode="json"),

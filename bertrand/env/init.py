@@ -20,7 +20,7 @@ from pydantic import BaseModel, ConfigDict, PositiveInt
 
 from .config import RESOURCE_NAMES, Config, Resource
 from .config.core import NonEmpty, RelativePath, Trimmed
-from .container import STATE_DIR, podman_cmd, podman_ids
+from .container import STATE_DIR, podman_ids
 from .run import (
     LOCK_TIMEOUT,
     GitRepository,
@@ -904,8 +904,8 @@ async def bertrand_clean(*, assume_yes: bool) -> None:
         If cleanup is declined by the user.
     """
     if not confirm(
-        "This will attempt to remove all containers, images, and volumes created by "
-        f"Bertrand, and delete all local state stored in {STATE_DIR}.  It will not "
+        "This will attempt to remove all containers, images, and volumes created "
+        f"by Bertrand, and delete all local state stored in {STATE_DIR}.  It will not "
         "uninstall podman or revert any host system settings.  Do you want to proceed? "
         "[y/N] ",
         assume_yes=assume_yes,
@@ -916,8 +916,8 @@ async def bertrand_clean(*, assume_yes: bool) -> None:
         try:
             containers = await podman_ids("container", {})
             if containers:
-                await podman_cmd(
-                    ["container", "rm", "-f", "-i", *containers],
+                await run(
+                    ["podman", "container", "rm", "-f", "-i", *containers],
                     check=False
                 )
         except Exception as err:
@@ -926,8 +926,8 @@ async def bertrand_clean(*, assume_yes: bool) -> None:
         try:
             images = await podman_ids("image", {})
             if images:
-                await podman_cmd(
-                    ["image", "rm", "-f", "-i", *images],
+                await run(
+                    ["podman", "image", "rm", "-f", "-i", *images],
                     check=False
                 )
         except Exception as err:
@@ -936,8 +936,8 @@ async def bertrand_clean(*, assume_yes: bool) -> None:
         try:
             volumes = await podman_ids("volume", {})
             if volumes:
-                await podman_cmd(
-                    ["volume", "rm", "-f", "-i", *volumes],
+                await run(
+                    ["podman", "volume", "rm", "-f", "-i", *volumes],
                     check=False
                 )
         except Exception as err:

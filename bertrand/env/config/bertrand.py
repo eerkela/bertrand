@@ -1334,9 +1334,6 @@ class Bertrand(Resource):
             tag.resolve_containerfile(config.root)
         return result
 
-    async def mounts(self, config: Config, tag: str) -> list[Resource.Mount]:
-        return []
-
     async def render(self, config: Config, tag: str | None) -> None:
         bertrand = config.get(Bertrand)
         if bertrand is None:

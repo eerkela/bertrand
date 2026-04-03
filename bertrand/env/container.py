@@ -42,7 +42,6 @@ from .config.bertrand import (
     TagName,
 )
 from .config.core import (
-    CACHE_LABEL,
     AbsolutePath,
     AbsolutePosixPath,
     NonEmpty,
@@ -519,62 +518,6 @@ async def _resolve_head_worktree(root: Path) -> Path:
     )
 
 
-async def podman_cmd(
-    args: list[str],
-    *,
-    check: bool = True,
-    capture_output: bool | None = False,
-    input: str | None = None,
-    timeout: float | None = None,
-    cwd: Path | None = None,
-    env: Mapping[str, str] | None = None,
-) -> CompletedProcess:
-    """Run a podman command.
-
-    Parameters
-    ----------
-    args : list[str]
-        The podman command arguments (excluding the 'podman' executable).
-    check : bool, optional
-        If True, raise CommandError on non-zero exit code.  Default is True.
-    capture_output : bool | None, optional
-        If True, capture stdout/stderr in the returned `CompletedProcess` or
-        `CommandError`.  If False, do not capture output.  If None, tee output to both
-        the console and the returned objects.
-    input : str | None, optional
-        Input to send to the command's stdin (default is None).
-    timeout : float | None, optional
-        An optional timeout in seconds to wait for the command to complete before
-        raising a `TimeoutExpired` exception.  Default is None, which means to wait
-        indefinitely.
-    cwd : Path | None, optional
-        An optional working directory to run the command in.  If None (the default),
-        then the current working directory will be used.
-    env : Mapping[str, str] | None, optional
-        An optional mapping of environment variables to set for the command.  If None
-        (the default), then the current environment will be used.
-
-    Returns
-    -------
-    CompletedProcess
-        The completed process result.
-
-    Raises
-    ------
-    CommandError
-        If the command fails and `check` is True.
-    """
-    return await run(
-        ["podman", *args],
-        check=check,
-        capture_output=capture_output,
-        input=input,
-        cwd=cwd,
-        env=env,
-        timeout=timeout
-    )
-
-
 async def podman_ids(
     mode: Literal["container", "image", "volume"],
     labels: Mapping[str, str],
@@ -622,7 +565,7 @@ async def podman_ids(
     deadline = time.time() + timeout
 
     # form basic command based on mode
-    cmd: list[str] = []
+    cmd: list[str] = ["podman"]
     if mode == "volume":
         cmd.extend(["volume", "ls", "-q", "--filter", f"label={BERTRAND_ENV}=1"])
     elif mode == "image":
@@ -654,7 +597,7 @@ async def podman_ids(
     try:
         # return all statuses by default
         if status is None:
-            result = await podman_cmd(
+            result = await run(
                 cmd,
                 capture_output=True,
                 check=False,
@@ -671,7 +614,7 @@ async def podman_ids(
 
         # filter by status
         for stat in status:
-            result = await podman_cmd(
+            result = await run(
                 [*cmd, "--filter", f"status={stat}"],
                 capture_output=True,
                 check=False,
@@ -707,7 +650,7 @@ async def _podman_retry(
     last: CommandError | None = None
     for attempt in range(1, attempts + 1):
         try:
-            return await podman_cmd(args, capture_output=True)
+            return await run(args, capture_output=True)
         except CommandError as err:
             last = err
             if attempt >= attempts:
@@ -865,8 +808,8 @@ class Container(BaseModel):
         """
         if not ids:
             return []
-        result = await podman_cmd(
-            ["container", "inspect", *ids],
+        result = await run(
+            ["podman", "container", "inspect", *ids],
             check=False,
             capture_output=True
         )
@@ -901,6 +844,7 @@ class Container(BaseModel):
             If the podman command fails.
         """
         cmd = [
+            "podman",
             "container",
             "rm",
             "--depend",  # remove dependent containers
@@ -911,7 +855,7 @@ class Container(BaseModel):
         if force:
             cmd.append("-f")
         cmd.extend(ids)
-        await podman_cmd(cmd)
+        await run(cmd)
 
     async def start(
         self,
@@ -934,14 +878,14 @@ class Container(BaseModel):
         interactive : bool
             If True, attach stdin for interactive input.
         """
-        cmd = ["container", "start"]
+        cmd = ["podman", "container", "start"]
         if attach:
             cmd.append("-a")
         if interactive:
             cmd.append("-i")
             cmd.append("--detach-keys=")
         cmd.append(self.Id)
-        await podman_cmd(
+        await run(
             cmd,
             timeout=timeout,
             capture_output=quiet,
@@ -995,8 +939,8 @@ class Image(BaseModel):
         Image.Inspect | None
             A JSON response from podman or None if the image could not be found.
         """
-        result = await podman_cmd(
-            ["image", "inspect", self.id],
+        result = await run(
+            ["podman", "image", "inspect", self.id],
             check=False,
             capture_output=True
         )
@@ -1059,17 +1003,17 @@ class Image(BaseModel):
             return False  # retire image instead of removing it
 
         # no containers remain; safe to remove image
-        cmd = ["image", "rm", "-i"]
+        cmd = ["podman", "image", "rm", "-i"]
         if force:
             cmd.append("-f")
         cmd.append(self.id)
-        await podman_cmd(cmd, timeout=deadline - time.monotonic())
+        await run(cmd, timeout=deadline - time.monotonic())
         return True
 
     async def create(
         self,
         env: Environment,
-        cmd: list[str] | None,
+        cmd: Sequence[str],
         *,
         env_vars: Mapping[str, str] | None = None,
         quiet: bool
@@ -1081,11 +1025,9 @@ class Image(BaseModel):
         env : Environment
             The parent environment this image belongs to, which describes the worktree
             directory that will be mounted into the container.
-        cmd : list[str] | None
+        cmd : Sequence[str]
             An optional command to override the container's default entry point.  If
-            None, then the container will use the configured tag entry point.  The
-            command must still be non-empty after resolving overrides; otherwise the
-            create will fail.
+            None, then the container will use the configured tag entry point.
         quiet : bool
             If True, suppress output from podman commands.
         env_vars : Mapping[str, str] | None, optional
@@ -1119,8 +1061,8 @@ class Image(BaseModel):
             cmd=cmd,
             env_vars=env_vars,
         )
-        await podman_cmd(
-            ["create", *bundle.argv],
+        await run(
+            ["podman", "create", *bundle.argv],
             capture_output=True if quiet else None
         )
 
@@ -1153,8 +1095,17 @@ class Image(BaseModel):
             return container
         except Exception:
             if container_id:
-                await podman_cmd(
-                    ["container", "rm", "-f", "-i", "-v", "--depend", container_id],
+                await run(
+                    [
+                        "podman",
+                        "container",
+                        "rm",
+                        "-f",
+                        "-i",
+                        "-v",
+                        "--depend",
+                        container_id,
+                    ],
                     check=False,
                     capture_output=True,
                 )
@@ -1594,34 +1545,6 @@ class Environment:
                 "configuration"
             )
 
-        # garbage collect dangling cache volumes associated with this environment
-        # before building, while this environment's lock is held and no builds are
-        # in-flight
-        try:
-            expected = await config.expected_cache_volumes(self.id)
-            result = await podman_cmd([
-                "volume",
-                "ls",
-                "-q",
-                "--filter", f"label={BERTRAND_ENV}=1",
-                "--filter", f"label={ENV_ID_ENV}={self.id}",
-                "--filter", f"label={CACHE_LABEL}=1",
-                "--filter", "dangling=true",
-            ], capture_output=True, check=False)
-            if result.returncode == 0:
-                dangling = sorted({
-                    name.strip() for name in result.stdout.splitlines() if name.strip()
-                })
-                stale = [name for name in dangling if name not in expected]
-                if stale:
-                    await podman_cmd(
-                        ["volume", "rm", "-i", *stale],
-                        capture_output=True,
-                        check=False
-                    )
-        except Exception:
-            pass
-
         # get arguments from configured build matrix
         bundle = await config.image_args(env_id=self.id, tag=tag)
 
@@ -1633,8 +1556,8 @@ class Environment:
             created=datetime.now(UTC),
             image_args=bundle.argv,
         )
-        await podman_cmd(
-            ["build", *bundle.argv],
+        await run(
+            ["podman", "build", *bundle.argv],
             cwd=config.root,
             capture_output=quiet
         )
@@ -1648,8 +1571,8 @@ class Environment:
                 )
         except Exception:
             if changed:
-                await podman_cmd(
-                    ["image", "rm", "-f", candidate.id],
+                await run(
+                    ["podman", "image", "rm", "-f", candidate.id],
                     check=False,
                     capture_output=quiet
                 )
@@ -1955,8 +1878,8 @@ async def podman_publish(
 
         # phase 1: build + publish arch-specific refs for the current runner
         if not manifest:
-            arch = _normalize_arch((await podman_cmd(
-                ["info", "--format", "{{.Host.Arch}}"],
+            arch = _normalize_arch((await run(
+                ["podman", "info", "--format", "{{.Host.Arch}}"],
                 capture_output=True,
             )).stdout)
             if not arch:
@@ -1979,9 +1902,9 @@ async def podman_publish(
                 suffix = "" if tag == DEFAULT_TAG else f"-{tag}"
                 image = built[tag]
                 ref = f"{repo}:{publish_version}{suffix}-{arch}"
-                await podman_cmd(["tag", image.id, ref], capture_output=True)
+                await run(["podman", "tag", image.id, ref], capture_output=True)
                 await _podman_retry(
-                    ["push", ref],
+                    ["podman", "push", ref],
                     context=f"failed to push arch image ref '{ref}'",
                 )
             return arch
@@ -1995,7 +1918,7 @@ async def podman_publish(
             for ref in source_refs:
                 try:
                     await _podman_retry(
-                        ["manifest", "inspect", f"docker://{ref}"],
+                        ["podman", "manifest", "inspect", f"docker://{ref}"],
                         context=f"failed to verify manifest source ref '{ref}'",
                     )
                 except OSError as err:
@@ -2003,27 +1926,37 @@ async def podman_publish(
                         f"failed to verify source image for manifest after retries: {ref}"
                     ) from err
             try:
-                await podman_cmd(
-                    ["manifest", "rm", manifest_ref],
+                await run(
+                    ["podman", "manifest", "rm", manifest_ref],
                     check=False,
                     capture_output=True,
                 )
-                await podman_cmd(["manifest", "create", manifest_ref], capture_output=True)
+                await run(
+                    ["podman", "manifest", "create", manifest_ref],
+                    capture_output=True
+                )
                 for ref in source_refs:
                     await _podman_retry(
-                        ["manifest", "add", manifest_ref, f"docker://{ref}"],
+                        ["podman", "manifest", "add", manifest_ref, f"docker://{ref}"],
                         context=(
                             "failed to add source image to manifest "
                             f"'{manifest_ref}' from '{ref}'"
                         ),
                     )
                 await _podman_retry(
-                    ["manifest", "push", "--all", manifest_ref, f"docker://{manifest_ref}"],
+                    [
+                        "podman",
+                        "manifest",
+                        "push",
+                        "--all",
+                        manifest_ref,
+                        f"docker://{manifest_ref}",
+                    ],
                     context=f"failed to push manifest '{manifest_ref}'",
                 )
             finally:
-                await podman_cmd(
-                    ["manifest", "rm", manifest_ref],
+                await run(
+                    ["podman", "manifest", "rm", manifest_ref],
                     check=False,
                     capture_output=True,
                 )
@@ -2035,7 +1968,7 @@ async def podman_start(
     workload: str | None,
     tag: str | None,
     *,
-    cmd: list[str] | None,
+    cmd: Sequence[str],
 ) -> None:
     """Start Bertrand containers within an environment.
 
@@ -2050,7 +1983,7 @@ async def podman_start(
     tag : str | None
         The member to target, if any.  All containers matching the tag will be included
         in the output, according to the workload.
-    cmd : list[str] | None
+    cmd : Sequence[str]
         An optional command to override the default entry point for the container.  If
         provided, then this command will be used instead of the default entry point
         defined in the project's build matrix for the selected tag.
@@ -2146,8 +2079,8 @@ async def podman_code(
                 attach=False,
                 interactive=False,
             )
-            wait = await podman_cmd(
-                ["container", "wait", container.Id],
+            wait = await run(
+                ["podman", "container", "wait", container.Id],
                 capture_output=True,
                 timeout=env.timeout,
             )
@@ -2162,8 +2095,17 @@ async def podman_code(
 
             # best-effort container cleanup fallback (container should usually be
             # removed automatically via --rm on command exit).
-            await podman_cmd(
-                ["container", "rm", "-f", "-i", "-v", "--depend", container.Id],
+            await run(
+                [
+                    "podman",
+                    "container",
+                    "rm",
+                    "-f",
+                    "-i",
+                    "-v",
+                    "--depend",
+                    container.Id,
+                ],
                 check=False,
                 capture_output=True,
             )
@@ -2238,7 +2180,7 @@ async def podman_enter(
         image = await env.build(tag or DEFAULT_TAG, quiet=False)
         container = await image.create(
             env,
-            list(shell_cmd),
+            shell_cmd,
             quiet=False,
         )
         deadline = time.monotonic() + min(env.timeout, RPC_TIMEOUT)
@@ -2269,8 +2211,17 @@ async def podman_enter(
 
             # best-effort container cleanup fallback (container should usually be
             # removed automatically via --rm on shell exit).
-            await podman_cmd(
-                ["container", "rm", "-f", "-i", "-v", "--depend", container.Id],
+            await run(
+                [
+                    "podman",
+                    "container",
+                    "rm",
+                    "-f",
+                    "-i",
+                    "-v",
+                    "--depend",
+                    container.Id,
+                ],
                 check=False,
                 capture_output=True,
             )
@@ -2312,8 +2263,9 @@ async def podman_stop(
         )
         if ids:
             timeout = deadline - time.time()
-            await podman_cmd(
+            await run(
                 [
+                    "podman",
                     "container",
                     "stop",
                     "-t", str(int(math.ceil(timeout))),
@@ -2358,7 +2310,10 @@ async def podman_pause(
             timeout=deadline - time.time()
         )
         if ids:
-            await podman_cmd(["container", "pause", *ids], timeout=deadline - time.time())
+            await run(
+                ["podman", "container", "pause", *ids],
+                timeout=deadline - time.time()
+            )
 
 
 async def podman_resume(
@@ -2396,7 +2351,10 @@ async def podman_resume(
             timeout=deadline - time.time()
         )
         if ids:
-            await podman_cmd(["container", "unpause", *ids], timeout=deadline - time.time())
+            await run(
+                ["podman", "container", "unpause", *ids],
+                timeout=deadline - time.time()
+            )
 
 
 async def podman_restart(
@@ -2447,8 +2405,9 @@ async def podman_restart(
             for container in containers:
                 try:
                     if container.Image == image.id:  # restart directly
-                        await podman_cmd(
+                        await run(
                             [
+                                "podman",
                                 "container",
                                 "restart",
                                 "-t", str(int(math.ceil(env.timeout))),
@@ -2457,8 +2416,9 @@ async def podman_restart(
                             timeout=env.timeout
                         )
                     else:  # stop and restart on updated image
-                        await podman_cmd(
+                        await run(
                             [
+                                "podman",
                                 "container",
                                 "stop",
                                 "-t", str(int(math.ceil(env.timeout))),
@@ -2609,6 +2569,7 @@ async def podman_ls(
 
         if image:
             cmd = [
+                "podman",
                 "image",
                 "ls",
                 "-a",
@@ -2630,6 +2591,7 @@ async def podman_ls(
                 )
         else:
             cmd = [
+                "podman",
                 "container",
                 "ls",
                 "-a",
@@ -2652,7 +2614,7 @@ async def podman_ls(
                     f"--format=table {template}"
                 )
 
-        await podman_cmd(cmd, timeout=deadline - time.time())
+        await run(cmd, timeout=deadline - time.time())
 
 
 async def podman_monitor(
@@ -2713,7 +2675,7 @@ async def podman_monitor(
                 print("[]")
             return
 
-        cmd = ["container", "stats"]
+        cmd = ["podman", "container", "stats"]
         if not interval:
             cmd.append("--no-stream")
         else:
@@ -2723,7 +2685,7 @@ async def podman_monitor(
             cmd.append("--no-trunc")
             cmd.append("--format=json")
             cmd.extend(ids)
-            await podman_cmd(cmd, timeout=deadline - time.time())
+            await run(cmd, timeout=deadline - time.time())
         else:
             template = (
                 table_template or
@@ -2734,7 +2696,7 @@ async def podman_monitor(
                 f"--format=table {template}"
             )
             cmd.extend(ids)
-            await podman_cmd(cmd, timeout=deadline - time.time())
+            await run(cmd, timeout=deadline - time.time())
 
 
 async def podman_top(
@@ -2768,8 +2730,8 @@ async def podman_top(
     async with Environment(worktree, timeout=deadline - time.time()) as env:
         ids = await _cli_containers(env, tag, timeout=deadline - time.time())
         for id in ids:
-            await podman_cmd(
-                ["container", "top", id],
+            await run(
+                ["podman", "container", "top", id],
                 timeout=deadline - time.time(),
             )
             print()  # delimiter between containers
@@ -2820,6 +2782,7 @@ async def podman_log(
         if image:
             ids = await _cli_images(env, tag, timeout=deadline - time.time())
             cmd = [
+                "podman",
                 "image",
                 "history",
                 "--human",
@@ -2835,6 +2798,7 @@ async def podman_log(
         else:
             ids = await _cli_containers(env, tag, timeout=deadline - time.time())
             cmd = [
+                "podman",
                 "container",
                 "logs",
                 "--color",
@@ -2851,7 +2815,5 @@ async def podman_log(
 
         # print results to stdout, delimiting each container with a newline
         for id in ids:
-            tmp = cmd.copy()
-            tmp.append(id)
-            await podman_cmd(tmp, timeout=deadline - time.time())
+            await run([*cmd, id], timeout=deadline - time.time())
             print()  # delimiter between containers

@@ -61,10 +61,7 @@ from ..run import (
 from ..version import VERSION
 
 CACHE_MOUNT: PosixPath = PosixPath("/tmp/.cache")
-CACHE_LABEL: str = "bertrand.cache"
-CACHE_HASH_LABEL: str = "bertrand.cache.hash"
-CACHE_RESOURCE_LABEL: str = "bertrand.cache.resource"
-CACHE_TARGET_LABEL: str = "bertrand.cache.target"
+CACHE_VOLUME_ENV: str = "BERTRAND_CACHE_VOLUME"
 HTTP_URL: TypeAdapter[AnyHttpUrl] = TypeAdapter(AnyHttpUrl)
 GLOB_RE = re.compile(r"^[A-Za-z0-9._/\-\*\?\[\]!]+$")
 RESOURCE_NAME_RE = re.compile(r"^[a-z]([a-z0-9_.-]*[a-z0-9])?$")
@@ -416,8 +413,8 @@ class Resource:
         """
 
     @dataclass(frozen=True)
-    class Mount:
-        """A resource-owned cache mount declaration used for build and runtime args.
+    class Volume:
+        """A resource-owned cache volume declaration used for build and runtime args.
 
         Attributes
         ----------
@@ -425,13 +422,13 @@ class Resource:
             Absolute in-container mount target.
         fingerprint : Mapping[str, Any]
             JSON-compatible semantic payload that determines cache coherence for this
-            mount.
+            volume.
         """
         target: PosixPath
         fingerprint: Mapping[str, Any]
 
-    async def mounts(self, config: Config, tag: str) -> list[Mount]:
-        """Declare resource-owned cache mounts for a given image tag.
+    async def volumes(self, config: Config, tag: str) -> list[Volume]:
+        """Declare resource-owned cache volumes for a given image tag.
 
         Parameters
         ----------
@@ -442,8 +439,8 @@ class Resource:
 
         Returns
         -------
-        list[Mount]
-            A list of mount declarations owned by this resource.  Empty by default.
+        list[Volume]
+            A list of volume declarations owned by this resource.  Empty by default.
         """
         return []
 
@@ -915,204 +912,140 @@ class Config:
                 except Exception as err:
                     raise OSError(f"failed to render resource '{r.name}': {err}") from err
 
-    # TODO: review image and container args logic for new, vastly simplified layout,
-    # where `image_args()` writes the containerfile, and `container_args()` writes the
-    # bootstrap entry point script
-
-    @dataclass(frozen=True)
-    class ImageArgs:
-        """A full argument tail and metadata for `podman build`."""
-        argv: list[str]
-        run_id: str
-        image_name: str
-        iid_file: Path
-        containerfile: Path
-
-    @dataclass(frozen=True)
-    class _ResolvedMount:
-        resource_name: ResourceName
-        target: PosixPath
-        fingerprint: dict[str, Any]
-        digest: str
-        build_cache_id: str
-
-    @staticmethod
-    def _mount_payload_hash(*, target: PosixPath, fingerprint: Mapping[str, Any]) -> str:
-        payload = {
-            "target": target.as_posix(),
-            "fingerprint": dict(fingerprint),
-        }
-        try:
-            text = json.dumps(
-                payload,
-                sort_keys=True,
-                separators=(",", ":"),
-                ensure_ascii=False,
-                allow_nan=False,
-            )
-        except (TypeError, ValueError) as err:
-            raise ValueError(
-                f"mount fingerprint is not JSON-serializable: {err}"
-            ) from err
-        return hashlib.sha256(text.encode("utf-8")).hexdigest()
-
-    @staticmethod
-    def _build_cache_id(resource_name: ResourceName, digest: str) -> str:
-        return sanitize_name(f"bertrand-cache-{resource_name}-{digest[:20]}")
-
-    @staticmethod
-    def _runtime_cache_volume_name(
-        *,
-        env_id: str,
-        resource_name: ResourceName,
-        digest: str,
-    ) -> str:
-        return sanitize_name(
-            f"bertrand-cache-{env_id[:13]}-{resource_name}-{digest[:20]}"
-        )
-
-    async def _collect_mount_specs(self, tag: str) -> list[_ResolvedMount]:
-        mounts: list[Config._ResolvedMount] = []
+    async def _collect_mount_specs(self, tag: str) -> list[tuple[str, PosixPath]]:
+        mounts: list[tuple[str, PosixPath]] = []
         target_owner: dict[str, ResourceName] = {}
 
-        # ask each resource for its mounts, adapting to the current toolchain
+        # ask each resource for its cache volumes, adapting to the current toolchain
         for name in sorted(self.resources):
             r = RESOURCE_NAMES[name]
             try:
-                declared = await r.mounts(self, tag)
+                declared = await r.volumes(self, tag)
             except Exception as err:
                 raise OSError(
-                    f"failed to resolve mounts for resource '{r.name}': {err}"
+                    f"failed to resolve cache volumes for resource '{r.name}': {err}"
                 ) from err
             if not isinstance(declared, list):
                 raise OSError(
-                    f"mount hook for resource '{r.name}' must return a list, got "
+                    f"volume hook for resource '{r.name}' must return a list, got "
                     f"{type(declared).__name__}"
                 )
 
+            # validate each declared volume and check for collisions
             for raw in declared:
-                if not isinstance(raw, Resource.Mount):
+                if not isinstance(raw, Resource.Volume):
                     raise OSError(
-                        f"mount hook for resource '{r.name}' must return Resource.Mount "
-                        f"entries, got {type(raw).__name__}"
+                        f"volume hook for resource '{r.name}' must return "
+                        f"`Resource.Volume` entries, got {type(raw).__name__}"
                     )
                 target = raw.target
                 if not target.is_absolute():
                     raise OSError(
-                        f"resource '{r.name}' mount target must be "
-                        f"absolute: {target}"
+                        f"resource '{r.name}' mount target must be absolute: {target}"
                     )
                 if any(part in (".", "..") for part in target.parts):
                     raise OSError(
-                        f"resource '{r.name}' mount target cannot "
-                        f"contain '.' or '..' segments: {target}"
+                        f"resource '{r.name}' mount target cannot contain '.' or '..' "
+                        f"segments: {target}"
                     )
                 target_key = target.as_posix()
                 owner = target_owner.setdefault(target_key, r.name)
                 if owner != r.name:
                     raise OSError(
-                        f"mount target collision at '{target_key}' between resources "
+                        f"volume target collision at '{target_key}' between resources "
                         f"'{owner}' and '{r.name}'"
                     )
 
-                if raw.fingerprint is None:
-                    raise OSError(
-                        f"resource '{r.name}' mount '{target_key}' missing "
-                        "required fingerprint payload"
-                    )
-                if not isinstance(raw.fingerprint, Mapping):
-                    raise OSError(
-                        f"resource '{r.name}' mount '{target_key}' fingerprint must be "
-                        f"a mapping, got {type(raw.fingerprint).__name__}"
-                    )
-                if any(not isinstance(k, str) for k in raw.fingerprint):
-                    raise OSError(
-                        f"resource '{r.name}' mount '{target_key}' fingerprint keys "
-                        "must be strings"
-                    )
+                # hash fingerprint to generate a stable cache key for this mount.  The
+                # result is mixed into the final volume name, which allows the volume
+                # to be reused across builds as long as the key remains stable.  If it
+                # changes, then the volume will be garbage collected on the next build,
+                # as long as no living container references it.
                 fingerprint = dict(raw.fingerprint)
                 try:
-                    digest = self._mount_payload_hash(
-                        target=target,
-                        fingerprint=fingerprint,
+                    payload = {
+                        "fingerprint": fingerprint,
+                        "target": target.as_posix(),
+                    }
+                    text = json.dumps(
+                        payload,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                        ensure_ascii=False,
+                        allow_nan=False,
                     )
+                    digest = hashlib.sha256(
+                        text.encode("utf-8")
+                    ).hexdigest()
                 except ValueError as err:
                     raise OSError(
                         f"resource '{r.name}' mount '{target_key}' has invalid "
                         f"fingerprint payload: {err}"
                     ) from err
 
-                mounts.append(self._ResolvedMount(
-                    resource_name=r.name,
-                    target=target,
-                    fingerprint=fingerprint,
-                    digest=digest,
-                    build_cache_id=self._build_cache_id(r.name, digest),
-                ))
+                mounts.append((sanitize_name(
+                    f"bertrand-cache-{r.name}-{digest[:20]}"
+                ), target))
 
-        mounts.sort(key=lambda item: (item.resource_name, item.target.as_posix()))
+        mounts.sort()
         return mounts
 
-    async def _format_runtime_mounts(self, tag: str, env_id: str) -> list[str]:
+    async def _format_volumes(self, tag: str, env_id: str) -> list[str]:
         mounts: list[str] = []
-        for mount in await self._collect_mount_specs(tag):
-            name = self._runtime_cache_volume_name(
-                env_id=env_id,
-                resource_name=mount.resource_name,
-                digest=mount.digest,
-            )
-            try:
-                await run([
-                    "podman",
-                    "volume",
-                    "create",
-                    "--label", f"{BERTRAND_ENV}=1",
-                    "--label", f"{ENV_ID_ENV}={env_id}",
-                    "--label", f"{CACHE_LABEL}=1",
-                    "--label", f"{CACHE_RESOURCE_LABEL}={mount.resource_name}",
-                    "--label", f"{CACHE_TARGET_LABEL}={mount.target.as_posix()}",
-                    "--label", f"{CACHE_HASH_LABEL}={mount.digest}",
-                    name,
-                ], check=False, capture_output=True)
-            except Exception:
-                pass
-            mounts.extend([
-                "--mount",
-                f"type=volume,src={name},dst={mount.target.as_posix()}",
-            ])
+        for volume_name, volume_target in await self._collect_mount_specs(tag):
+            # create or reuse cache volume depending on fingerprint hash
+            await run([
+                "podman",
+                "volume",
+                "create",
+                "--label", f"{CACHE_VOLUME_ENV}=1",
+                "--label", f"{ENV_ID_ENV}={env_id}",
+                volume_name,
+            ], check=False, capture_output=True)
+
+            # emit podman mount args to mount the created volume
+            mounts.extend(["--mount", f"type=volume,src={volume_name},dst={volume_target}"])
         return mounts
 
-    async def expected_cache_volumes(self, env_id: str) -> set[str]:
-        """Compute all deterministic runtime cache volume names for this environment.
-
-        Parameters
-        ----------
-        env_id : str
-            The Bertrand environment UUID used for volume-name namespacing.
-
-        Returns
-        -------
-        set[str]
-            Deterministic runtime cache volume names expected by active resources
-            across all declared tags.
-        """
+    async def _gc_volumes(self, env_id: str) -> None:
         from .bertrand import Bertrand
         env_id = env_id.strip()
         if not env_id:
             raise ValueError("environment ID cannot be empty when resolving cache volumes")
         bertrand = self.get(Bertrand)
         if bertrand is None:
-            return set()
+            return
 
-        out: set[str] = set()
-        for cfg in bertrand.tags:
-            for mount in await self._collect_mount_specs(cfg.tag):
-                out.add(self._runtime_cache_volume_name(
-                    env_id=env_id,
-                    resource_name=mount.resource_name,
-                    digest=mount.digest,
-                ))
-        return out
+        # collect expected names for all cache volumes associated with this environment
+        expected = {
+            volume_name
+            for cfg in bertrand.tags
+            for volume_name, _ in await self._collect_mount_specs(cfg.tag)
+        }
+
+        # get actual cache volumes by filtering based on labels
+        result = await run([
+            "podman",
+            "volume",
+            "ls",
+            "-q",
+            "--filter", f"label={CACHE_VOLUME_ENV}=1",
+            "--filter", f"label={ENV_ID_ENV}={env_id}",
+            "--filter", "dangling=true",
+        ], capture_output=True, check=False)
+        if result.returncode != 0:
+            return
+
+        # remove difference between expected and actual sets
+        actual = {name.strip() for name in result.stdout.splitlines()}
+        dangling = actual - expected
+        dangling.discard("")  # remove empty names, if any
+        if dangling:
+            await run(
+                ["podman", "volume", "rm", "-i", *sorted(dangling)],
+                capture_output=True,
+                check=False
+            )
 
     @staticmethod
     def _format_network(network: _NetworkTableLike) -> list[str]:
@@ -1131,24 +1064,14 @@ class Config:
             args.extend(["--add-host", f"{host}:{network.add_host[host]}"])
         return args
 
-    async def _scope_name(self) -> str:
-        """Compute the stable scope component for generated image names."""
-        if self.worktree.parts:
-            return sanitize_name(self.worktree.as_posix())
-
-        branch = await self.repo.head_branch()
-        if branch:
-            return sanitize_name(branch)
-
-        sha = await self.repo.run(
-            ["rev-parse", "--short", "HEAD"],
-            check=False,
-            capture_output=True,
-        )
-        short_sha = sha.stdout.strip()
-        if sha.returncode == 0 and short_sha:
-            return sanitize_name(f"detached-{short_sha}")
-        return "detached"
+    @dataclass(frozen=True)
+    class ImageArgs:
+        """A full argument tail and metadata for `podman build`."""
+        argv: list[str]
+        run_id: str
+        image_name: str
+        iid_file: Path
+        containerfile: Path
 
     async def image_args(
         self,
@@ -1185,8 +1108,6 @@ class Config:
             If the specified tag is not present in the `bertrand` config or if
             `env_id` is empty.
         """
-        from .bertrand import Bertrand
-        from .python import PyProject
         if inside_image():
             raise RuntimeError("image_args() cannot be called from within a container")
         if not self:
@@ -1195,6 +1116,9 @@ class Config:
         if not env_id:
             raise ValueError("environment ID cannot be empty")
 
+        # get config metadata
+        from .bertrand import Bertrand
+        from .python import PyProject
         python = self.get(PyProject)
         if python is None:
             raise OSError(
@@ -1211,28 +1135,38 @@ class Config:
                 f"unknown image tag '{tag}' for environment at {self.root}"
             )
 
+        # garbage collect dangling cache volumes associated with this environment
+        # before building, while this environment's lock is held and no builds are
+        # in-flight
+        try:
+            await self._gc_volumes(env_id)
+        except Exception:
+            pass
+
+        # assign unique run ID and descriptive image name
         run_id = uuid.uuid4().hex
-        scope_name = await self._scope_name()
-        image_name = f"{python.project.name}.{scope_name}.{tag}.{run_id[:7]}"
+        if self.worktree.parts:
+            scope = sanitize_name(self.worktree.as_posix())
+        else:
+            branch = await self.repo.head_branch()
+            if branch:
+                scope = sanitize_name(branch)
+            else:
+                scope = "detached"
+        image_name = f"{python.project.name}.{scope}.{tag}.{run_id[:7]}"
         iid_file = self.root / METADATA_DIR / "images" / tag / "iid"
         iid_file.parent.mkdir(parents=True, exist_ok=True)
 
-        # render private-per-tag containerfile if no override is given
+        # generate bootstrap containerfile if no override is given
         if cfg.containerfile is None:
             containerfile = self.root / METADATA_DIR / "images" / tag / "Containerfile"
             containerfile.parent.mkdir(parents=True, exist_ok=True)
-            build_mounts: list[str] = []
-            for mount in await self._collect_mount_specs(tag):
-                parts = [
-                    "type=cache",
-                    f"id={mount.build_cache_id}",
-                    f"target={mount.target.as_posix()}",
-                    "sharing=locked",
-                ]
-                build_mounts.append(f"--mount={','.join(parts)}")
+            build_mounts: list[str] = [
+                f"--mount=type=cache,id={volume_name},target={volume_target},sharing=locked"
+                for volume_name, volume_target in await self._collect_mount_specs(tag)
+            ]
 
-            # Render private per-tag Containerfile at build-arg resolution time so
-            # image builds always consume a fresh bootstrap artifact.
+            # render template packaged with Bertrand itself using configured metadata
             jinja = jinja2.Environment(
                 autoescape=False,
                 undefined=jinja2.StrictUndefined,
@@ -1263,47 +1197,31 @@ class Config:
                 encoding="utf-8",
             )
         else:
+            # allow overrides for advanced use cases, like bootstrapping Bertrand's
+            # base toolchain image, which the bootstrap Containerfile depends on
             containerfile = self.root / cfg.containerfile
 
+        # emit formatted arguments for podman build
+        argv = [
+            "-t", image_name,
+            "--file", str(containerfile),
+            "--iidfile", str(iid_file),
+            "--label", f"{BERTRAND_ENV}=1",
+            "--label", f"{ENV_ID_ENV}={env_id}",
+            "--label", f"{IMAGE_TAG_ENV}={tag}",
+            *self._format_network(bertrand.network.build),
+            str(self.root),
+        ]
         return self.ImageArgs(
-            argv=[
-                "-t", image_name,
-                "--iidfile", str(iid_file),
-                "--label", f"{BERTRAND_ENV}=1",
-                "--label", f"{ENV_ID_ENV}={env_id}",
-                "--label", f"{IMAGE_TAG_ENV}={tag}",
-                "--file", str(containerfile),
-                *self._format_network(bertrand.network.build),
-                str(self.root),
-            ],
+            argv=argv,
             run_id=run_id,
             image_name=image_name,
             iid_file=iid_file,
             containerfile=containerfile,
         )
 
-    @dataclass(frozen=True)
-    class ContainerArgs:
-        """A full argument tail and metadata for `podman create`."""
-        argv: list[str]
-        run_id: str
-        runtime_dir: RelativePath
-        cid_file: RelativePath
-        bootstrap_script: RelativePath
-
     @staticmethod
-    def _format_entry_point(tag: str, cmd: list[str]) -> list[str]:
-        if not cmd:
-            raise ValueError(
-                f"tag '{tag}' has no effective entry point: provide a command override "
-                "or configure [tool.bertrand.tags.entry-point] for this tag"
-            )
-        if any(not part.strip() for part in cmd):
-            raise ValueError("entry point arguments must be non-empty strings")
-        return cmd
-
-    @staticmethod
-    def _render_bootstrap(
+    def _render_bootstrap_script(
         *,
         container_cid: PosixPath,
         container_worktree: PosixPath,
@@ -1347,14 +1265,23 @@ class Config:
             "",
         ])
 
+    @dataclass(frozen=True)
+    class ContainerArgs:
+        """A full argument tail and metadata for `podman create`."""
+        argv: list[str]
+        run_id: str
+        runtime_dir: RelativePath
+        cid_file: RelativePath
+        bootstrap_script: RelativePath
+
     async def container_args(
         self,
         *,
         env_id: str,
         tag: str,
         image_id: str,
-        cmd: list[NonEmpty[Trimmed]] | None,
-        env_vars: Mapping[str, str] | None = None,
+        cmd: Sequence[NonEmpty[Trimmed]] = (),
+        env_vars: Mapping[NonEmpty[NoWhiteSpace], Trimmed] | None = None,
     ) -> ContainerArgs:
         """Retrieve a full `podman create` argument tail and metadata for the given
         tag.
@@ -1369,13 +1296,15 @@ class Config:
             run arguments.  Usually, this is supplied by either the build system or an
             in-container environment variable, but we make no assumptions here.
         image_id : str
-            The OCI image ID to run, used as the image operand in the final podman
-            argv tail.
-        cmd : list[str] | None
-            Optional command override supplied by the CLI.  If not provided, the
-            configured `entry-point` for the selected tag is used.
+            The OCI image ID to run, used as the image operand in the final `podman
+            create` tail.
+        cmd : Sequence[str], optional
+            Optional command override supplied by the CLI.  If empty (the default),
+            the configured `entry-point` for the selected tag will be used instead.
+            Must not contain empty or whitespace-only strings.
         env_vars : Mapping[str, str] | None, optional
-            Optional additional environment variables to inject into the container.
+            Optional additional environment variables to inject into the container
+            context.  The keys must be non-empty, and must not contain any whitespace.
 
         Returns
         -------
@@ -1401,6 +1330,7 @@ class Config:
         if not image_id:
             raise ValueError("image ID cannot be empty when forming container args")
 
+        # get config metadata
         from .bertrand import Bertrand
         bertrand = self.get(Bertrand)
         if bertrand is None:
@@ -1412,27 +1342,41 @@ class Config:
             raise ValueError(
                 f"unknown image tag '{tag}' for environment at {self.root}"
             )
+        if cmd:  # normalize
+            _cmd: list[str] = []
+            for part in cmd:
+                part = part.strip()
+                if not part:
+                    raise ValueError("entry point arguments must be non-empty strings")
+                _cmd.append(part)
+            cmd = _cmd
+        else:  # use default
+            cmd = cfg.entry_point
+            if not cmd:
+                raise ValueError(
+                    f"tag '{tag}' has no effective entry point: provide a command override "
+                    "or configure [tool.bertrand.tags.entry-point] for this tag"
+                )
 
+        # assign unique run ID and prepare runtime directory and bootstrap script
         run_id = uuid.uuid4().hex
-        runtime_rel = METADATA_DIR / "containers" / f"{tag}.{run_id}"
-        host_runtime_dir = self.root / runtime_rel
+        runtime = METADATA_DIR / "containers" / f"{tag}.{run_id}"
+        host_runtime_dir = self.root / runtime
         host_runtime_dir.mkdir(parents=True, exist_ok=True)
         host_cid = host_runtime_dir / "cid"
         host_bootstrap = host_runtime_dir / "entrypoint.sh"
-
         if self.worktree.parts:
             worktree_env = self.worktree.as_posix()
             container_worktree = PROJECT_MOUNT / worktree_env
         else:
             worktree_env = "."
             container_worktree = PROJECT_MOUNT
-        container_runtime = container_worktree / runtime_rel
+        container_runtime = container_worktree / runtime
         container_cid = container_runtime / "cid"
         container_bootstrap = container_runtime / "entrypoint.sh"
-
         atomic_write_text(
             host_bootstrap,
-            self._render_bootstrap(
+            self._render_bootstrap_script(
                 container_cid=container_cid,
                 container_worktree=container_worktree,
                 container_runtime=container_runtime,
@@ -1441,6 +1385,8 @@ class Config:
         )
         host_bootstrap.chmod(0o755)
 
+        # emit formatted arguments for podman create, including stable labels and
+        # resource-driven mounts, with the bootstrap script 
         argv = [
             "--init",
             "--rm",
@@ -1450,7 +1396,7 @@ class Config:
             "--label", f"{BERTRAND_ENV}=1",
             "--label", f"{PROJECT_ENV}={self.repo.root}",
             "--label", f"{WORKTREE_ENV}={worktree_env}",
-            "--label", f"{CONTAINER_RUNTIME_ENV}={runtime_rel}",
+            "--label", f"{CONTAINER_RUNTIME_ENV}={runtime}",
             "--label", f"{ENV_ID_ENV}={env_id}",
             "--label", f"{IMAGE_ID_ENV}={image_id}",
             "--label", f"{IMAGE_TAG_ENV}={tag}",
@@ -1462,28 +1408,33 @@ class Config:
             "-e", f"{BERTRAND_ENV}=1",
             "-e", f"{PROJECT_ENV}={self.repo.root}",
             "-e", f"{WORKTREE_ENV}={worktree_env}",
-            "-e", f"{CONTAINER_RUNTIME_ENV}={runtime_rel}",
+            "-e", f"{CONTAINER_RUNTIME_ENV}={runtime}",
             "-e", f"{ENV_ID_ENV}={env_id}",
             "-e", f"{IMAGE_ID_ENV}={image_id}",
             "-e", f"{IMAGE_TAG_ENV}={tag}",
         ]
         if env_vars:
             for key, value in sorted(env_vars.items()):
-                argv.extend(["-e", f"{key}={value}"])
+                key = key.strip()
+                if not key or any(c.isspace() for c in key):
+                    raise ValueError(
+                        "environment variable keys must be non-empty strings without "
+                        f"whitespace: {key!r}"
+                    )
+                argv.extend(["-e", f"{key}={value.strip()}"])
         argv.extend([
-            *(await self._format_runtime_mounts(tag, env_id)),
+            *(await self._format_volumes(tag, env_id)),
             *self._format_network(bertrand.network.run),
             "--entrypoint", str(container_bootstrap),
             image_id,
-            *self._format_entry_point(tag, cmd or cfg.entry_point),
+            *cmd,
         ])
-
         return self.ContainerArgs(
             argv=argv,
             run_id=run_id,
-            runtime_dir=runtime_rel,
-            cid_file=runtime_rel / "cid",
-            bootstrap_script=runtime_rel / "entrypoint.sh",
+            runtime_dir=runtime,
+            cid_file=runtime / "cid",
+            bootstrap_script=runtime / "entrypoint.sh",
         )
 
     async def build(self, tag: str) -> None:
@@ -1516,6 +1467,9 @@ class Config:
         if bertrand is None:
             raise OSError("build() requires parsed 'bertrand' configuration")
 
+        # confirm tag is declared and has a matching optional-dependencies group, which
+        # is the simplest and most efficient way to get pip to install the correct set
+        # of Python dependencies for this build, without needing a multi-stage build
         tags = {entry.tag for entry in bertrand.tags}
         if tag not in tags:
             raise OSError(
@@ -1544,6 +1498,7 @@ class Config:
         if not inside_container():
             sync_cmd.append("--no-editable")  # image build context -> non-editable
 
+        # render output artifacts, update lockfile, and invoke PEP517/660 backend
         async with lock_worktree(self.root):
             await self.sync(tag)  # render artifacts to container filesystem
             await run(["uv", "lock"], cwd=self.root)  # update lockfile
