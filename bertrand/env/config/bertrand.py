@@ -49,6 +49,7 @@ from .core import (
     PosixPath,
     RelativePosixPath,
     Resource,
+    ScreamingSnakeCase,
     TagName,
     Trimmed,
     locate_template,
@@ -472,11 +473,6 @@ type HostName = Annotated[str, StringConstraints(
         r"(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$"
 )]
 type HostIP = Literal["host-gateway"] | IPAddress  # pylint: disable=invalid-name
-type BuildArgName = Annotated[str, StringConstraints(
-    strip_whitespace=True,
-    min_length=1,
-    pattern=r"^[A-Za-z_][A-Za-z0-9_]*$"
-)]
 type NetworkAlias = Annotated[NonEmpty[NoWhiteSpace], AfterValidator(_check_network_alias)]
 type Memory = Annotated[str, StringConstraints(strip_whitespace=True, pattern=r"^\d+[bkmg]?$")]
 type ULimitName = Annotated[
@@ -500,10 +496,6 @@ type InstrumentTool = Annotated[str, StringConstraints(
     strip_whitespace=True,
     min_length=1,
     pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]*$"
-)]
-type ScreamingSnakeCase = Annotated[str, StringConstraints(
-    strip_whitespace=True,
-    pattern=r"^[A-Z][A-Z0-9_]*$"
 )]
 type DevicePermission = Annotated[
     NonEmpty[NoWhiteSpace],
@@ -620,8 +612,8 @@ class Bertrand(Resource):
         )]
         git_ignore: Annotated[IgnoreList, Field(
             default_factory=list,
-            examples=[[]],
             alias="git-ignore",
+            examples=[[]],
             description=
                 "List of `.gitignore`-specific patterns, which are merged with the "
                 "global `ignore` patterns when generating `.gitignore`."
@@ -631,8 +623,8 @@ class Bertrand(Resource):
                 ".git/",
                 ".gitignore",
             ],
-            examples=[[".git/", ".gitignore",]],
             alias="container-ignore",
+            examples=[[".git/", ".gitignore",]],
             description=
                 "List of `.containerignore`-specific patterns, which are merged with "
                 "the global `ignore` patterns when generating `.containerignore`."
@@ -805,27 +797,54 @@ class Bertrand(Resource):
             description="Networking configuration to use within this project.",
         )]
 
-        # TODO: continue documenting and pruning the tags
-
-        class Tag(BaseModel):
-            """Validate entries in the `[[tool.bertrand.tags]]` table."""
+        class Image(BaseModel):
+            """Validate entries in the `[tool.bertrand.image]` table."""
             model_config = ConfigDict(extra="forbid")
-            tag: TagName
-            containerfile: Annotated[
-                RelativePosixPath | None,
-                Field(default=None)
-            ]
-            build_args: Annotated[
-                dict[BuildArgName, Scalar],
-                Field(default_factory=dict, alias="build-args")
-            ]
-            entry_point: Annotated[
-                list[NonEmpty[Trimmed]],
-                Field(default_factory=list, alias="entry-point")
-            ]
+            containerfile: Annotated[RelativePosixPath | None, Field(
+                default=None,
+                examples=["path/to/Containerfile", None],
+                description=
+                    "Relative path to a Containerfile defining the build steps for this "
+                    "image.  This is intended to allow advanced users to define custom "
+                    "build steps for their projects outside of Bertrand's normal "
+                    "bootstrap procedure.  For the vast majority of users, this should "
+                    "be omitted, and relevant setup should be done through standard "
+                    "build tools and package managers defined elsewhere in project "
+                    "configuration.  If omitted, Bertrand will automatically generate "
+                    "a minimal Containerfile based on this information.",
+            )]
+            build_args: Annotated[dict[ScreamingSnakeCase, Scalar], Field(
+                default_factory=dict,
+                alias="build-args",
+                examples=["\n".join((
+                    f"[tool.bertrand.image.{DEFAULT_TAG}.build-args]",
+                    "CPUS = 8",
+                    "DEBUG = true",
+                    "PYTHON_VERSION = \"3.12.4\"",
+                    "..."
+                ))],
+                description=
+                    "Mapping of build-time ARG variables to their values, which are "
+                    "passed to the listed Containerfile.  Keys must be "
+                    "SCREAMING_SNAKE_CASE, and not start with a number or end with an "
+                    "underscore."
+            )]
+            cmd: Annotated[list[NonEmpty[Trimmed]], Field(
+                default_factory=list,
+                examples=[
+                    ["echo", "Hello, world!"],
+                    ["greet"],
+                ],
+                description=
+                    "The default entry point for containers built from this image, "
+                    "defined as a list of strings representing the command and its "
+                    "arguments.  If no override is supplied to `bertrand run`, then "
+                    "this command will be used instead.  If it is also empty, then the "
+                    "run will fail."
+            )]
 
             class Port(BaseModel):
-                """Validate entries in the `[[bertrand.tags.ports]]` table."""
+                """Validate entries in the `[bertrand.image.<tag>.ports]` table."""
                 model_config = ConfigDict(extra="forbid")
                 container: Annotated[int, Field(ge=1, le=65535)]
                 host: Annotated[int, Field(ge=1, le=65535)]
@@ -864,8 +883,28 @@ class Bertrand(Resource):
                 AfterValidator(_check_network_aliases),
                 Field(default_factory=list, alias="network-aliases")
             ]
-            cpus: Annotated[NonNegativeFloat, Field(default=0.0)]
-            memory: Annotated[Memory, Field(default="0")]
+            cpus: Annotated[NonNegativeFloat, Field(
+                default=0.0,
+                description=
+                    "The number of CPUs to allocate to containers built from this "
+                    "image.  0.0 (the default) removes the limit and allows the "
+                    "container to use all available resources.  Fractional values are "
+                    "allowed to specify partial CPU allocation (e.g. 0.5 for half a "
+                    "CPU)."
+            )]
+
+            # TODO: maybe the memory limit needs to be split between build and run
+            # time?
+            memory: Annotated[Memory, Field(
+                default="0",
+                examples=["1024b", "128k", "512m", "2g"],
+                description=
+                    "The amount of memory to allocate to containers built from this "
+                    "image.  0 (the default) removes the limit and allows the "
+                    "container to use all available resources.  If the machine "
+                    "supports swap memory, then the value may be larger than the "
+                    "physical memory.  Equivalent to `podman build|create -m`."
+            )]
             pids_limit: Annotated[
                 int,
                 Field(default=0, ge=-1, alias="pids-limit")
@@ -873,7 +912,7 @@ class Bertrand(Resource):
             shm_size: Annotated[Memory, Field(default="64m", alias="shm-size")]
 
             class ULimit(BaseModel):
-                """Validate entries in the `[[bertrand.tags.ulimit]]` table."""
+                """Validate entries in the `[tool.bertrand.image.<tag>.ulimit]` table."""
                 model_config = ConfigDict(extra="forbid")
                 name: ULimitName
                 soft: Annotated[int | None, Field(default=None, ge=-1)]
@@ -923,7 +962,7 @@ class Bertrand(Resource):
             ]
             cap_add: Annotated[
                 list[Capability],
-                AfterValidator(lambda x: Bertrand.Model.Tag._check_unique(
+                AfterValidator(lambda x: Bertrand.Model.Image._check_unique(
                     x,
                     where="cap-add capability"
                 )),
@@ -931,7 +970,7 @@ class Bertrand(Resource):
             ]
             cap_drop: Annotated[
                 list[Capability],
-                AfterValidator(lambda x: Bertrand.Model.Tag._check_unique(
+                AfterValidator(lambda x: Bertrand.Model.Image._check_unique(
                     x,
                     where="cap-drop capability"
                 )),
@@ -939,7 +978,7 @@ class Bertrand(Resource):
             ]
             security_opt: Annotated[
                 list[SecurityOpt],
-                AfterValidator(lambda x: Bertrand.Model.Tag._check_unique(
+                AfterValidator(lambda x: Bertrand.Model.Image._check_unique(
                     x,
                     where="security-opt entry"
                 )),
@@ -952,7 +991,9 @@ class Bertrand(Resource):
             ssh: Annotated[list[ScreamingSnakeCase], Field(default_factory=list)]
 
             class InstrumentEntry(BaseModel):
-                """Validate entries in the `[[bertrand.tags.instruments]]` AoT."""
+                """Validate entries in the `[tool.bertrand.image.<tag>.instruments]`
+                AoT.
+                """
                 model_config = ConfigDict(extra="allow")
                 tool: InstrumentTool
 
@@ -998,11 +1039,11 @@ class Bertrand(Resource):
             #   `RUN --mount=type=ssh,id=id ...`
 
             class Devices(BaseModel):
-                """Validate the `[bertrand.tags.devices]` table."""
+                """Validate the `[tool.bertrand.image.<tag>.devices]` table."""
                 model_config = ConfigDict(extra="forbid")
 
                 class Request(BaseModel):
-                    """Validate one entry in `[[bertrand.tags.devices.*]]`."""
+                    """Validate one entry in `[[tool.bertrand.image.<tag>.devices.*]]`."""
                     model_config = ConfigDict(extra="forbid")
                     id: ScreamingSnakeCase
                     required: bool = True
@@ -1024,7 +1065,7 @@ class Bertrand(Resource):
                 build: Annotated[
                     list[Request],
                     AfterValidator(
-                        lambda x: Bertrand.Model.Tag.Devices._check_unique_ids(
+                        lambda x: Bertrand.Model.Image.Devices._check_unique_ids(
                             x,
                             where="build"
                         )
@@ -1034,7 +1075,7 @@ class Bertrand(Resource):
                 run: Annotated[
                     list[Request],
                     AfterValidator(
-                        lambda x: Bertrand.Model.Tag.Devices._check_unique_ids(
+                        lambda x: Bertrand.Model.Image.Devices._check_unique_ids(
                             x,
                             where="run"
                         )
@@ -1060,7 +1101,7 @@ class Bertrand(Resource):
             devices: Annotated[Devices, Field(default_factory=Devices.model_construct)]
 
             class Secrets(BaseModel):
-                """Validate the `[tool.bertrand.tags.secrets]` table."""
+                """Validate the `[tool.bertrand.image.<tag>.secrets]` table."""
                 model_config = ConfigDict(extra="forbid")
 
                 class Request(BaseModel):
@@ -1081,7 +1122,7 @@ class Bertrand(Resource):
                 build: Annotated[
                     list[Request],
                     AfterValidator(
-                        lambda x: Bertrand.Model.Tag.Secrets._check_unique_ids(
+                        lambda x: Bertrand.Model.Image.Secrets._check_unique_ids(
                             x,
                             where="build"
                         )
@@ -1091,7 +1132,7 @@ class Bertrand(Resource):
                 run: Annotated[
                     list[Request],
                     AfterValidator(
-                        lambda x: Bertrand.Model.Tag.Secrets._check_unique_ids(
+                        lambda x: Bertrand.Model.Image.Secrets._check_unique_ids(
                             x,
                             where="run"
                         )
@@ -1117,7 +1158,7 @@ class Bertrand(Resource):
             secrets: Annotated[Secrets, Field(default_factory=Secrets.model_construct)]
 
             class Conan(BaseModel):
-                """Validate the `[bertrand.tags.conan]` table."""
+                """Validate the `[tool.bertrand.image.<tag>.conan]` table."""
                 model_config = ConfigDict(extra="forbid")
                 build_type: Annotated[
                     Literal["", "Release", "Debug"],
@@ -1134,7 +1175,7 @@ class Bertrand(Resource):
             conan: Annotated[Conan, Field(default_factory=Conan.model_construct)]
 
             class Build(BaseModel):
-                """Validate the `[bertrand.tags.build]` table."""
+                """Validate the `[tool.bertrand.image.<tag>.build]` table."""
                 model_config = ConfigDict(extra="forbid")
                 context: Annotated[BuildContextPath, Field(default=PosixPath("."))]
                 target: Annotated[
@@ -1150,7 +1191,7 @@ class Bertrand(Resource):
             build: Annotated[Build, Field(default_factory=Build.model_construct)]
 
             class Stop(BaseModel):
-                """Validate the `[bertrand.tags.stop]` table."""
+                """Validate the `[tool.bertrand.image.<tag>.stop]` table."""
                 model_config = ConfigDict(extra="forbid")
                 signal: Annotated[
                     str,
@@ -1162,7 +1203,7 @@ class Bertrand(Resource):
             stop: Annotated[Stop, Field(default_factory=Stop.model_construct)]
 
             class Restart(BaseModel):
-                """Validate the `[bertrand.tags.restart]` table."""
+                """Validate the `[tool.bertrand.image.<tag>.restart]` table."""
                 model_config = ConfigDict(extra="forbid")
                 policy: Annotated[
                     Literal["no", "on-failure", "always", "unless-stopped"],
@@ -1173,7 +1214,7 @@ class Bertrand(Resource):
             restart: Annotated[Restart, Field(default_factory=Restart.model_construct)]
 
             class Healthcheck(BaseModel):
-                """Validate the `[bertrand.tags.healthcheck]` table."""
+                """Validate the `[tool.bertrand.image.<tag>.healthcheck]` table."""
                 model_config = ConfigDict(extra="forbid")
                 cmd: Annotated[list[str], Field(default_factory=list)]
                 on_failure: Annotated[
@@ -1185,7 +1226,9 @@ class Bertrand(Resource):
                 timeout: Annotated[Timeout, Field(default="30s")]
 
                 class Startup(BaseModel):
-                    """Validate the `[bertrand.tags.healthcheck.startup]` table."""
+                    """Validate the `[tool.bertrand.image.<tag>.healthcheck.startup]`
+                    table.
+                    """
                     model_config = ConfigDict(extra="forbid")
                     cmd: Annotated[list[str], Field(default_factory=list)]
                     period: Annotated[Timeout, Field(default="0s")]
@@ -1196,7 +1239,9 @@ class Bertrand(Resource):
                 startup: Annotated[Startup, Field(default_factory=Startup.model_construct)]
 
                 class Log(BaseModel):
-                    """Validate the `[bertrand.tags.healthcheck.log]` table."""
+                    """Validate the `[tool.bertrand.image.<tag>.healthcheck.log]`
+                    table.
+                    """
                     model_config = ConfigDict(extra="forbid")
                     destination: Annotated[HealthLogDestination, Field(default="local")]
                     max_count: Annotated[NonNegativeInt, Field(default=0, alias="max-count")]
@@ -1209,120 +1254,121 @@ class Bertrand(Resource):
                 Field(default_factory=Healthcheck.model_construct)
             ]
 
-            def resolve_containerfile(self, root: Path) -> None:
+            def resolve_containerfile(self, root: Path, tag: TagName) -> None:
                 if self.containerfile is None:
                     return
                 path = root / self.containerfile
-                suffix = f" for tag '{self.tag}'" if self.tag else ""
                 if not path.exists():
-                    raise OSError(f"path does not exist{suffix}: {path}")
+                    raise OSError(f"path does not exist for tag '{tag}': {path}")
                 if not path.is_file():
-                    raise OSError(f"path is not a file{suffix}: {path}")
+                    raise OSError(f"path is not a file for tag '{tag}': {path}")
                 try:
                     path.read_text(encoding="utf-8")
                 except UnicodeDecodeError as err:
-                    raise OSError(f"file is not UTF-8 encoded{suffix}: {path}") from err
+                    raise OSError(
+                        f"file is not UTF-8 encoded for tag '{tag}': {path}"
+                    ) from err
 
-        tags: Annotated[list[Tag], Field(default_factory=lambda: [
-            Bertrand.Model.Tag.model_construct(tag=DEFAULT_TAG)
-        ])]
+        image: Annotated[dict[TagName, Image], Field(default_factory=lambda: {
+            DEFAULT_TAG: Bertrand.Model.Image.model_construct()
+        })]
 
         @model_validator(mode="after")
-        def _validate_tags(self) -> Self:
+        def _validate_images(self) -> Self:
             seen: set[str] = set()
-            for tag in self.tags:
-                if tag.tag in seen:
+            for image_name in self.image:
+                if image_name in seen:
                     raise ValueError(
-                        f"duplicate tag name in 'tool.bertrand.tags': '{tag.tag}'"
+                        f"duplicate image name in 'tool.bertrand.image': '{image_name}'"
                     )
-                seen.add(tag.tag)
+                seen.add(image_name)
             if DEFAULT_TAG not in seen:
                 raise ValueError(
-                    "missing required default tag in 'tool.bertrand.tags': "
+                    "missing required default image in 'tool.bertrand.image': "
                     f"'{DEFAULT_TAG}'"
                 )
             return self
 
-        @model_validator(mode="after")
-        def _validate_services(self) -> Self:
-            unknown_services: list[str] = []
-            for idx, service in enumerate(self.services):
-                if any(prev == service for prev in self.services[:idx]):
-                    raise ValueError(
-                        "duplicate service name in 'tool.bertrand.services': "
-                        f"'{service}'"
-                    )
-                if not any(tag.tag == service for tag in self.tags):
-                    unknown_services.append(service)
-            if unknown_services:
-                raise ValueError(
-                    "found service names in 'tool.bertrand.services' with no "
-                    f"matching tag in 'tool.bertrand.tags': "
-                    f"{', '.join(unknown_services)}"
-                )
-            return self
+        # @model_validator(mode="after")
+        # def _validate_services(self) -> Self:
+        #     unknown_services: list[str] = []
+        #     for idx, service in enumerate(self.services):
+        #         if any(prev == service for prev in self.services[:idx]):
+        #             raise ValueError(
+        #                 "duplicate service name in 'tool.bertrand.services': "
+        #                 f"'{service}'"
+        #             )
+        #         if service not in self.image:
+        #             unknown_services.append(service)
+        #     if unknown_services:
+        #         raise ValueError(
+        #             "found service names in 'tool.bertrand.services' with no "
+        #             f"matching tag in 'tool.bertrand.image': "
+        #             f"{', '.join(unknown_services)}"
+        #         )
+        #     return self
 
-        @model_validator(mode="after")
-        def _validate_namespace_refs(self) -> Self:
-            for tag in self.tags:
-                # if the current tag is a service, get its position in the list
-                curr_pos = next(
-                    (pos for pos, name in enumerate(self.services) if name == tag.tag),
-                    None
-                )
+        # @model_validator(mode="after")
+        # def _validate_namespace_refs(self) -> Self:
+        #     for tag in self.image:
+        #         # if the current tag is a service, get its position in the list
+        #         curr_pos = next(
+        #             (pos for pos, name in enumerate(self.services) if name == tag.tag),
+        #             None
+        #         )
 
-                # for each namespace field that references an external tag, ensure
-                # that the tag it references is a valid service
-                for option, mode in (
-                    ("userns", tag.userns),
-                    ("ipc", tag.ipc),
-                    ("pid", tag.pid),
-                    ("uts", tag.uts),
-                ):
-                    ref = _extract_container_ref(mode)
-                    if ref is None:
-                        continue
+        #         # for each namespace field that references an external tag, ensure
+        #         # that the tag it references is a valid service
+        #         for option, mode in (
+        #             ("userns", tag.userns),
+        #             ("ipc", tag.ipc),
+        #             ("pid", tag.pid),
+        #             ("uts", tag.uts),
+        #         ):
+        #             ref = _extract_container_ref(mode)
+        #             if ref is None:
+        #                 continue
 
-                    # outlaw self-references
-                    if ref == tag.tag:
-                        raise ValueError(
-                            f"{option} for tag '{tag.tag}' cannot reference "
-                            f"itself via 'container:{ref}'"
-                        )
+        #             # outlaw self-references
+        #             if ref == tag.tag:
+        #                 raise ValueError(
+        #                     f"{option} for tag '{tag.tag}' cannot reference "
+        #                     f"itself via 'container:{ref}'"
+        #                 )
 
-                    # get referenced service position + tag
-                    ref_pos = next(
-                        (pos for pos, name in enumerate(self.services) if name == ref),
-                        None
-                    )
-                    if ref_pos is None:
-                        raise ValueError(
-                            f"{option} for tag '{tag.tag}' references '{ref}', "
-                            f"but '{ref}' is not listed in "
-                            "'tool.bertrand.services'"
-                        )
-                    ref_tag = next((t for t in self.tags if t.tag == ref), None)
-                    if ref_tag is None:
-                        raise ValueError(
-                            f"{option} for tag '{tag.tag}' references unknown "
-                            f"tag '{ref}'"
-                        )
+        #             # get referenced service position + tag
+        #             ref_pos = next(
+        #                 (pos for pos, name in enumerate(self.services) if name == ref),
+        #                 None
+        #             )
+        #             if ref_pos is None:
+        #                 raise ValueError(
+        #                     f"{option} for tag '{tag.tag}' references '{ref}', "
+        #                     f"but '{ref}' is not listed in "
+        #                     "'tool.bertrand.services'"
+        #                 )
+        #             ref_tag = self.image.get(ref)
+        #             if ref_tag is None:
+        #                 raise ValueError(
+        #                     f"{option} for tag '{tag.tag}' references unknown "
+        #                     f"tag '{ref}'"
+        #                 )
 
-                    # enforce correct startup ordering
-                    if curr_pos is not None and ref_pos >= curr_pos:
-                        raise ValueError(
-                            f"{option} for service tag '{tag.tag}' references "
-                            f"'container:{ref}', but '{ref}' must appear earlier "
-                            f"than '{tag.tag}' in 'tool.bertrand.services'"
-                        )
+        #             # enforce correct startup ordering
+        #             if curr_pos is not None and ref_pos >= curr_pos:
+        #                 raise ValueError(
+        #                     f"{option} for service tag '{tag.tag}' references "
+        #                     f"'container:{ref}', but '{ref}' must appear earlier "
+        #                     f"than '{tag.tag}' in 'tool.bertrand.services'"
+        #                 )
 
-                    # ipc requires the referenced tag uses ipc=shareable
-                    if option == "ipc" and ref_tag.ipc != "shareable":
-                        raise ValueError(
-                            f"ipc for tag '{tag.tag}' uses 'container:{ref}', "
-                            f"but referenced tag '{ref}' must set ipc='shareable'"
-                        )
-            return self
+        #             # ipc requires the referenced tag uses ipc=shareable
+        #             if option == "ipc" and ref_tag.ipc != "shareable":
+        #                 raise ValueError(
+        #                     f"ipc for tag '{tag.tag}' uses 'container:{ref}', "
+        #                     f"but referenced tag '{ref}' must set ipc='shareable'"
+        #                 )
+        #     return self
 
     async def init(self, config: Config, cli: Config.Init) -> dict[str, Any]:
         return self.Model.model_construct().model_dump(by_alias=True)
@@ -1330,11 +1376,11 @@ class Bertrand(Resource):
     async def validate(self, config: Config, fragment: Any) -> Model | None:
         result = self.Model.model_validate(fragment)
         _validate_dependency_groups(pyproject=config.get(PyProject), bertrand=result)
-        for tag in result.tags:
-            tag.resolve_containerfile(config.root)
+        for image_name, image in result.image.items():
+            image.resolve_containerfile(config.root, image_name)
         return result
 
-    async def render(self, config: Config, tag: str | None) -> None:
+    async def render(self, config: Config, tag: TagName | None) -> None:
         bertrand = config.get(Bertrand)
         if bertrand is None:
             return

@@ -29,6 +29,7 @@ from .core import (
     NonEmpty,
     NoWhiteSpace,
     Resource,
+    TagName,
     resource,
 )
 
@@ -202,22 +203,22 @@ class ConanConfig(Resource):
             examples=["Release", "Debug"],
             description=
                 "Global default build type for Conan builds, which can be overridden "
-                "by individual tags.",
+                "by individual images.",
         )]
         conf: Annotated[ConanConf, Field(
             default_factory=dict,
             description=
                 "Global mapping of namespace tables to conf entries, which get "
                 "converted into '<namespace>:<name>=<value>' format in the generated "
-                "Conan profile.  Individual tags can specify additional entries that "
-                "merge with these global defaults.",
+                "Conan profile.  Individual images can specify additional entries "
+                "that merge with these global defaults.",
         )]
         options: Annotated[ConanOptions, Field(
             default_factory=dict,
             description=
                 "Global mapping of namespace tables to package options, which get "
                 "converted into '<package-pattern>:<option>=<value>' format in the "
-                "generated Conan profile.  Individual tags can specify additional "
+                "generated Conan profile.  Individual images can specify additional "
                 "options that merge with these global defaults.",
         )]
 
@@ -332,7 +333,7 @@ class ConanConfig(Resource):
             default_factory=list,
             description=
                 "Global list of Conan dependencies to install for the project, which "
-                "can be extended for individual tags.",
+                "can be extended for individual images.",
         )]
         remotes: Annotated[list[Remote], AfterValidator(_check_remotes), Field(
             default_factory=list,
@@ -352,17 +353,14 @@ class ConanConfig(Resource):
     async def validate(self, config: Config, fragment: Any) -> Model | None:
         return self.Model.model_validate(fragment)
 
-    async def volumes(self, config: Config, tag: str) -> list[Resource.Volume]:
+    async def volumes(self, config: Config, tag: TagName) -> list[Resource.Volume]:
         from .bertrand import Bertrand
         model = config.get(ConanConfig)
         if model is None:
             return []
 
         bertrand = config.get(Bertrand)
-        active = None if bertrand is None else next(
-            (entry for entry in bertrand.tags if entry.tag == tag),
-            None,
-        )
+        active = None if bertrand is None else bertrand.image.get(tag)
         fingerprint = {
             "conan": model.model_dump(by_alias=True, mode="json"),
             "tag-conan": (
@@ -381,7 +379,7 @@ class ConanConfig(Resource):
             for option, value in sorted(pattern_options.items()):
                 out[f"{pattern}:{option}"] = value
 
-    async def _render_conanfile(self, config: Config, tag: str) -> None:
+    async def _render_conanfile(self, config: Config, tag: TagName) -> None:
         from .bertrand import Bertrand
         from .python import PyProject
         python = config.get(PyProject)
@@ -394,7 +392,7 @@ class ConanConfig(Resource):
         active = None
         requires = list(conan.requires)
         if bertrand is not None:
-            active = next((t for t in bertrand.tags if t.tag == tag), None)
+            active = bertrand.image.get(tag)
             if active is not None:
                 requires.extend(active.conan.requires)
 
@@ -528,7 +526,7 @@ class ConanConfig(Resource):
             )
         return value
 
-    async def _render_conanprofile(self, config: Config, tag: str) -> None:
+    async def _render_conanprofile(self, config: Config, tag: TagName) -> None:
         from .bertrand import Bertrand
         bertrand = config.get(Bertrand)
         conan = config.get(ConanConfig)
@@ -549,7 +547,7 @@ class ConanConfig(Resource):
             conan.conf,
         )
         if bertrand is not None:
-            active = next((t for t in bertrand.tags if t.tag == tag), None)
+            active = bertrand.image.get(tag)
             if active is not None:
                 if active.conan.build_type:
                     build_type = active.conan.build_type
@@ -592,7 +590,7 @@ class ConanConfig(Resource):
             encoding="utf-8"
         )
 
-    async def _render_conanremotes(self, config: Config, tag: str) -> None:
+    async def _render_conanremotes(self, config: Config, tag: TagName) -> None:
         conan = config.get(ConanConfig)
         assert conan is not None
 
@@ -624,7 +622,7 @@ class ConanConfig(Resource):
             encoding="utf-8"
         )
 
-    async def render(self, config: Config, tag: str | None) -> None:
+    async def render(self, config: Config, tag: TagName | None) -> None:
         if tag is None or config.get(ConanConfig) is None:
             return
         await self._render_conanfile(config, tag)

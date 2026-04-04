@@ -38,14 +38,12 @@ from .config import (
     Config,
     PyProject,
 )
-from .config.bertrand import (
-    TagName,
-)
 from .config.core import (
     AbsolutePath,
     AbsolutePosixPath,
     NonEmpty,
     NoWhiteSpace,
+    TagName,
     Trimmed,
 )
 from .rpc import RPC_TIMEOUT
@@ -1508,7 +1506,7 @@ class Environment:
         self._project_root = project_root
         return project_root
 
-    async def build(self, tag: str, *, quiet: bool) -> Image:
+    async def build(self, tag: TagName, *, quiet: bool) -> Image:
         """Incrementally build an image from this environment, updating it and
         gracefully retiring any outdated alternatives.
 
@@ -1635,7 +1633,7 @@ def _parse_manifest_arches(value: str | None) -> list[str]:
 
 async def _cli_containers(
     env: Environment,
-    tag: str | None,
+    tag: TagName | None,
     *,
     status: tuple[ContainerState, ...] = ("created", "paused", "restarting", "running"),
     timeout: float,
@@ -1651,7 +1649,7 @@ async def _cli_containers(
 
 async def _cli_images(
     env: Environment,
-    tag: str | None,
+    tag: TagName | None,
     *,
     timeout: float,
 ) -> list[ImageId]:
@@ -1773,7 +1771,7 @@ def _parse_output_format(value: str, *, allow_id: bool) -> tuple[str, str | None
 async def podman_build(
     worktree: Path,
     workload: str | None,
-    tag: str | None,
+    tag: TagName | None,
     *,
     quiet: bool,
 ) -> None:
@@ -1861,8 +1859,7 @@ async def podman_publish(
             raise OSError("could not determine project version for publish")
         if bertrand is None:
             raise OSError("could not determine configured tags for publish")
-        tags = [entry.tag for entry in bertrand.tags]
-        if not tags:
+        if not bertrand.image:
             raise OSError("publish requires at least one configured tag")
 
         # normalize release version and ensure it matches project version
@@ -1889,7 +1886,7 @@ async def podman_publish(
 
             # build all declared tags first
             built: dict[str, Image] = {}
-            for tag in tags:
+            for tag in bertrand.image:
                 try:
                     built[tag] = await env.build(tag, quiet=False)
                 except Exception as err:
@@ -1898,7 +1895,7 @@ async def podman_publish(
                     ) from err
 
             # push only after full build success
-            for tag in tags:
+            for tag in bertrand.image:
                 suffix = "" if tag == DEFAULT_TAG else f"-{tag}"
                 image = built[tag]
                 ref = f"{repo}:{publish_version}{suffix}-{arch}"
@@ -1911,7 +1908,7 @@ async def podman_publish(
 
         # phase 2: assemble and publish multi-arch manifests
         arches = _parse_manifest_arches(manifest_arches)
-        for tag in tags:
+        for tag in bertrand.image:
             suffix = "" if tag == DEFAULT_TAG else f"-{tag}"
             manifest_ref = f"{repo}:{publish_version}{suffix}"
             source_refs = [f"{manifest_ref}-{arch}" for arch in arches]
@@ -1966,7 +1963,7 @@ async def podman_publish(
 async def podman_start(
     worktree: Path,
     workload: str | None,
-    tag: str | None,
+    tag: TagName | None,
     *,
     cmd: Sequence[str],
 ) -> None:
@@ -2012,7 +2009,7 @@ async def podman_start(
 async def podman_code(
     worktree: Path,
     workload: str | None,
-    tag: str | None,
+    tag: TagName | None,
     *,
     editor: str | None,
 ) -> None:
@@ -2114,7 +2111,7 @@ async def podman_code(
 async def podman_enter(
     worktree: Path,
     workload: str | None,
-    tag: str | None,
+    tag: TagName | None,
     *,
     shell: str | None,
 ) -> None:
@@ -2230,7 +2227,7 @@ async def podman_enter(
 async def podman_stop(
     worktree: Path,
     workload: str | None,
-    tag: str | None,
+    tag: TagName | None,
     *,
     deadline: float,
 ) -> None:
@@ -2278,7 +2275,7 @@ async def podman_stop(
 async def podman_pause(
     worktree: Path,
     workload: str | None,
-    tag: str | None,
+    tag: TagName | None,
     *,
     deadline: float
 ) -> None:
@@ -2319,7 +2316,7 @@ async def podman_pause(
 async def podman_resume(
     worktree: Path,
     workload: str | None,
-    tag: str | None,
+    tag: TagName | None,
     *,
     deadline: float
 ) -> None:
@@ -2360,7 +2357,7 @@ async def podman_resume(
 async def podman_restart(
     worktree: Path,
     workload: str | None,
-    tag: str | None,
+    tag: TagName | None,
 ) -> None:
     """Restart running or paused Bertrand containers within an environment.  If an
     image or container is out of date, then it will be rebuilt before restarting.
@@ -2458,7 +2455,7 @@ async def podman_restart(
 async def podman_rm(
     worktree: Path,
     workload: str | None,
-    tag: str | None,
+    tag: TagName | None,
     *,
     deadline: float,
     force: bool,
@@ -2515,7 +2512,7 @@ async def podman_rm(
 async def podman_ls(
     worktree: Path,
     workload: str | None,
-    tag: str | None,
+    tag: TagName | None,
     *,
     deadline: float,
     image: bool,
@@ -2620,7 +2617,7 @@ async def podman_ls(
 async def podman_monitor(
     worktree: Path,
     workload: str | None,
-    tag: str | None,
+    tag: TagName | None,
     *,
     deadline: float,
     interval: int,
@@ -2702,7 +2699,7 @@ async def podman_monitor(
 async def podman_top(
     worktree: Path,
     workload: str | None,
-    tag: str | None,
+    tag: TagName | None,
     *,
     deadline: float
 ) -> None:
@@ -2740,7 +2737,7 @@ async def podman_top(
 async def podman_log(
     worktree: Path,
     workload: str | None,
-    tag: str | None,
+    tag: TagName | None,
     *,
     deadline: float,
     image: bool,

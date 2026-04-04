@@ -51,6 +51,7 @@ from ..run import (
     WORKTREE_ENV,
     WORKTREE_MOUNT,
     GitRepository,
+    Scalar,
     atomic_write_text,
     inside_container,
     inside_image,
@@ -149,7 +150,11 @@ type URLLabel = Annotated[NonEmpty[Trimmed], AfterValidator(_check_url_label)]
 type TagName = Annotated[str, StringConstraints(
     strip_whitespace=True,
     min_length=1,
-    pattern=r"^[a-z0-9]+(?:-[a-z0-9]+)*$"
+    pattern=r"^[a-zA-Z]([a-zA-Z0-9-]*[a-zA-Z0-9])?$"
+)]
+type ScreamingSnakeCase = Annotated[str, StringConstraints(
+    strip_whitespace=True,
+    pattern=r"^[A-Z]([A-Z0-9_]*[A-Z0-9])?$"
 )]
 
 
@@ -390,7 +395,7 @@ class Resource:
         """
         return None
 
-    async def render(self, config: Config, tag: str | None) -> None:
+    async def render(self, config: Config, tag: TagName | None) -> None:
         """A render function that writes content for this resource during
         `Config.sync()`.
 
@@ -401,7 +406,7 @@ class Resource:
             outputs from the `validate()` phase.
         tag : str | None
             The active image tag for the configured environment, which is used to
-            search the `config.get(Bertrand).tags` list for tag-specific overrides
+            search the `config.get(Bertrand).image` table for tag-specific overrides
             during image builds.  If None, then it means this hook was invoked during
             a `bertrand init` command, and should therefore not attempt to render any
             out-of-tree artifacts that would require access to a container filesystem.
@@ -427,7 +432,7 @@ class Resource:
         target: PosixPath
         fingerprint: Mapping[str, Any]
 
-    async def volumes(self, config: Config, tag: str) -> list[Volume]:
+    async def volumes(self, config: Config, tag: TagName) -> list[Volume]:
         """Declare resource-owned cache volumes for a given image tag.
 
         Parameters
@@ -877,7 +882,7 @@ class Config:
         """
         return {r.name: await r.schema() for r in sorted(RESOURCES)}
 
-    async def sync(self, tag: str | None) -> None:
+    async def sync(self, tag: TagName | None) -> None:
         """Render and write derived artifact resources from active context snapshot.
 
         This requires an active config context (`async with config:`).
@@ -886,7 +891,7 @@ class Config:
         ----------
         tag : str | None
             The active image tag for the configured environment, which is used to
-            search the `bertrand.tags` list for tag-specific overrides during
+            search the `bertrand.image` table for tag-specific overrides during
             rendering.  If None, then this method was called as part of a
             `bertrand init` command, and only the global configuration worktree
             resources will be rendered.  Otherwise, it was called from a
@@ -912,7 +917,7 @@ class Config:
                 except Exception as err:
                     raise OSError(f"failed to render resource '{r.name}': {err}") from err
 
-    async def _collect_mount_specs(self, tag: str) -> list[tuple[str, PosixPath]]:
+    async def _collect_mount_specs(self, tag: TagName) -> list[tuple[str, PosixPath]]:
         mounts: list[tuple[str, PosixPath]] = []
         target_owner: dict[str, ResourceName] = {}
 
@@ -990,7 +995,7 @@ class Config:
         mounts.sort()
         return mounts
 
-    async def _format_volumes(self, tag: str, env_id: str) -> list[str]:
+    async def _format_volumes(self, tag: TagName, env_id: str) -> list[str]:
         mounts: list[str] = []
         for volume_name, volume_target in await self._collect_mount_specs(tag):
             # create or reuse cache volume depending on fingerprint hash
@@ -1019,8 +1024,8 @@ class Config:
         # collect expected names for all cache volumes associated with this environment
         expected = {
             volume_name
-            for cfg in bertrand.tags
-            for volume_name, _ in await self._collect_mount_specs(cfg.tag)
+            for image_name in bertrand.image
+            for volume_name, _ in await self._collect_mount_specs(image_name)
         }
 
         # get actual cache volumes by filtering based on labels
@@ -1046,6 +1051,13 @@ class Config:
                 capture_output=True,
                 check=False
             )
+
+    @staticmethod
+    def _format_build_args(build_args: dict[ScreamingSnakeCase, Scalar]) -> list[str]:
+        args: list[str] = []
+        for key, value in build_args.items():
+            args.extend(["--build-arg", f"{key}={value}"])
+        return args
 
     @staticmethod
     def _format_network(network: _NetworkTableLike) -> list[str]:
@@ -1077,7 +1089,7 @@ class Config:
         self,
         *,
         env_id: str,
-        tag: str,
+        tag: TagName,
     ) -> ImageArgs:
         """Retrieve a full `podman build` argument tail and metadata for the given tag.
 
@@ -1087,9 +1099,10 @@ class Config:
             The Bertrand environment UUID used for image labels.
         tag : str
             The active image tag for the configured environment, which is used to
-            search the `bertrand.tags` list for tag-specific overrides when generating
-            build arguments.  Usually, this is supplied by either the build system or an
-            in-container environment variable, but we make no assumptions here.
+            search the `bertrand.image` table for tag-specific overrides when
+            generating build arguments.  Usually, this is supplied by either the build
+            system or an in-container environment variable, but we make no assumptions
+            here.
 
         Returns
         -------
@@ -1129,8 +1142,8 @@ class Config:
             raise OSError(
                 f"missing 'bertrand' configuration for environment at {self.root}"
             )
-        cfg = next((t for t in bertrand.tags if t.tag == tag), None)
-        if cfg is None:
+        image = bertrand.image.get(tag)
+        if image is None:
             raise ValueError(
                 f"unknown image tag '{tag}' for environment at {self.root}"
             )
@@ -1158,7 +1171,7 @@ class Config:
         iid_file.parent.mkdir(parents=True, exist_ok=True)
 
         # generate bootstrap containerfile if no override is given
-        if cfg.containerfile is None:
+        if image.containerfile is None:
             containerfile = self.root / METADATA_DIR / "images" / tag / "Containerfile"
             containerfile.parent.mkdir(parents=True, exist_ok=True)
             build_mounts: list[str] = [
@@ -1199,7 +1212,7 @@ class Config:
         else:
             # allow overrides for advanced use cases, like bootstrapping Bertrand's
             # base toolchain image, which the bootstrap Containerfile depends on
-            containerfile = self.root / cfg.containerfile
+            containerfile = self.root / image.containerfile
 
         # emit formatted arguments for podman build
         argv = [
@@ -1209,6 +1222,7 @@ class Config:
             "--label", f"{BERTRAND_ENV}=1",
             "--label", f"{ENV_ID_ENV}={env_id}",
             "--label", f"{IMAGE_TAG_ENV}={tag}",
+            *self._format_build_args(image.build_args),
             *self._format_network(bertrand.network.build),
             str(self.root),
         ]
@@ -1265,6 +1279,10 @@ class Config:
             "",
         ])
 
+    @staticmethod
+    def _format_cpus(cpus: float) -> list[str]:
+        return ["--cpus", str(cpus)] if cpus > 0 else []
+
     @dataclass(frozen=True)
     class ContainerArgs:
         """A full argument tail and metadata for `podman create`."""
@@ -1278,7 +1296,7 @@ class Config:
         self,
         *,
         env_id: str,
-        tag: str,
+        tag: TagName,
         image_id: str,
         cmd: Sequence[NonEmpty[Trimmed]] = (),
         env_vars: Mapping[NonEmpty[NoWhiteSpace], Trimmed] | None = None,
@@ -1292,16 +1310,17 @@ class Config:
             The Bertrand environment UUID used for stable volume naming and labeling.
         tag : str
             The active image tag for the configured environment, which is used to
-            search the `bertrand.tags` list for tag-specific overrides when generating
-            run arguments.  Usually, this is supplied by either the build system or an
-            in-container environment variable, but we make no assumptions here.
+            search the `bertrand.image` table for tag-specific overrides when
+            generating run arguments.  Usually, this is supplied by either the build
+            system or an in-container environment variable, but we make no assumptions
+            here.
         image_id : str
             The OCI image ID to run, used as the image operand in the final `podman
             create` tail.
         cmd : Sequence[str], optional
             Optional command override supplied by the CLI.  If empty (the default),
-            the configured `entry-point` for the selected tag will be used instead.
-            Must not contain empty or whitespace-only strings.
+            the configured `cmd` for the selected tag will be used instead.  Must not
+            contain empty or whitespace-only strings.
         env_vars : Mapping[str, str] | None, optional
             Optional additional environment variables to inject into the container
             context.  The keys must be non-empty, and must not contain any whitespace.
@@ -1337,8 +1356,8 @@ class Config:
             raise TypeError(
                 f"missing 'bertrand' configuration for environment at {self.root}"
             )
-        cfg = next((t for t in bertrand.tags if t.tag == tag), None)
-        if cfg is None:
+        image = bertrand.image.get(tag)
+        if image is None:
             raise ValueError(
                 f"unknown image tag '{tag}' for environment at {self.root}"
             )
@@ -1351,11 +1370,12 @@ class Config:
                 _cmd.append(part)
             cmd = _cmd
         else:  # use default
-            cmd = cfg.entry_point
+            cmd = image.cmd
             if not cmd:
                 raise ValueError(
-                    f"tag '{tag}' has no effective entry point: provide a command override "
-                    "or configure [tool.bertrand.tags.entry-point] for this tag"
+                    f"tag '{tag}' has no effective entry point: provide a command "
+                    f"override or configure [tool.bertrand.image.{tag}.cmd] for this "
+                    "tag"
                 )
 
         # assign unique run ID and prepare runtime directory and bootstrap script
@@ -1425,6 +1445,7 @@ class Config:
         argv.extend([
             *(await self._format_volumes(tag, env_id)),
             *self._format_network(bertrand.network.run),
+            *self._format_cpus(image.cpus),
             "--entrypoint", str(container_bootstrap),
             image_id,
             *cmd,
@@ -1437,7 +1458,7 @@ class Config:
             bootstrap_script=runtime / "entrypoint.sh",
         )
 
-    async def build(self, tag: str) -> None:
+    async def build(self, tag: TagName) -> None:
         """Invoke Bertrand's PEP517 backend from within an image or container context.
 
         Parameters
@@ -1470,11 +1491,10 @@ class Config:
         # confirm tag is declared and has a matching optional-dependencies group, which
         # is the simplest and most efficient way to get pip to install the correct set
         # of Python dependencies for this build, without needing a multi-stage build
-        tags = {entry.tag for entry in bertrand.tags}
-        if tag not in tags:
+        if tag not in bertrand.image:
             raise OSError(
                 f"build() received unknown active tag '{tag}' (declared tags: "
-                f"{', '.join(sorted(repr(name) for name in tags))})"
+                f"{', '.join(sorted(repr(name) for name in bertrand.image))})"
             )
         groups = python.project.optional_dependencies
         if tag not in groups:
