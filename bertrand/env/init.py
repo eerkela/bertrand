@@ -1,15 +1,19 @@
 """Backend implementation for the `bertrand init` command, including host bootstrap
-for rootless container operation and project initialization.
+for MicroK8s runtime prerequisites and project initialization.
 """
 from __future__ import annotations
 
+import asyncio
+import grp
+import hashlib
 import json
 import os
 import platform
-import re
-import shlex
+import pwd
+import signal
 import shutil
 import sys
+import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from importlib import resources as importlib_resources
@@ -19,9 +23,27 @@ from typing import Literal, Self
 from pydantic import BaseModel, ConfigDict, PositiveInt
 
 from .config import RESOURCE_NAMES, Config, Resource
-from .config.core import NonEmpty, RelativePath, Trimmed
-from .container import STATE_DIR, podman_ids
+from .config.core import NonEmpty, Trimmed
+from .container import (
+    BUILDCTL_BIN,
+    BUILDKITD_BIN,
+    BUILDKIT_LOG_FILE,
+    BUILDKIT_PID_FILE,
+    MICROK8S_CHANNEL,
+    MICROK8S_GROUP,
+    NERDCTL_BASE_URL,
+    NERDCTL_BIN,
+    NERDCTL_CHECKSUM,
+    NERDCTL_INSTALL_DIR,
+    NERDCTL_VERSION,
+    NORMALIZE_ARCH,
+    STATE_DIR,
+    TOOLS_DIR,
+    TOOLS_TMP_DIR,
+    nerdctl,
+)
 from .run import (
+    BERTRAND_ENV,
     LOCK_TIMEOUT,
     GitRepository,
     Lock,
@@ -37,31 +59,24 @@ from .run import (
 # pylint: disable=bare-except, broad-exception-caught
 
 
-type InitStage = Literal[
-    "fresh",
-    "detect_platform",
-    "install_container_cli",
-    "enable_user_namespaces",
-    "provision_subids",
-    "delegate_controllers",
-    "ready",
-]
-
-type RepoMode = Literal["new", "bare", "non_bare"]
-
-
-@dataclass(frozen=True)
-class _ResolvedRepositoryTarget:
-    """A normalized repository/worktree target for `bertrand init` execution."""
-    repo: GitRepository
-    repo_root: Path
-    worktree: RelativePath
-    mode: RepoMode
+##################################
+####    PERSISTENT INSTALL    ####
+##################################
 
 
 INIT_LOCK = STATE_DIR / "init.lock"
 INIT_STATE_FILE = STATE_DIR / "init.state.json"
 INIT_STATE_VERSION: int = 1
+
+
+type InitStage = Literal[
+    "fresh",
+    "detect_platform",
+    "install_microk8s",
+    "add_to_microk8s_group",
+    "install_nerdctl",
+    "ready",
+]
 
 
 class InitState(BaseModel):
@@ -110,80 +125,6 @@ class InitState(BaseModel):
 
 async def _no_op(state: InitState, assume_yes: bool) -> None:
     return
-
-
-###############################
-####    DETECT PLATFORM    ####
-###############################
-
-
-def _read_os_release() -> dict[str, str]:
-    path = Path("/etc/os-release")
-    data: dict[str, str] = {}
-    if not path.exists():
-        return data
-    for line in path.read_text(encoding="utf-8", errors="ignore").splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        k, v = line.split("=", 1)
-        data[k.strip()] = v.strip().strip('"').strip("'")
-    return data
-
-
-async def _detect_platform(state: InitState, assume_yes: bool) -> None:
-    system = platform.system().lower()
-    if system != "linux":
-        raise OSError("Unsupported platform for package manager detection")
-
-    # read /etc/os-release for distro info
-    os_release = _read_os_release()
-    distro_id = (os_release.get("ID") or "").lower() or None
-    version_id = os_release.get("VERSION_ID") or None
-    codename = os_release.get("UBUNTU_CODENAME") or os_release.get("VERSION_CODENAME")
-
-    # detect package manager
-    manager: str | None = None
-    if distro_id in {"debian", "ubuntu"} and shutil.which("apt-get"):
-        manager = "apt"
-    elif shutil.which("dnf"):
-        manager = "dnf"
-    elif shutil.which("yum"):
-        manager = "yum"
-    elif shutil.which("zypper"):
-        manager = "zypper"
-    elif shutil.which("pacman"):
-        manager = "pacman"
-    elif shutil.which("apk"):
-        manager = "apk"
-    if manager is None:
-        raise OSError("No supported package manager found")
-
-    # populate state
-    user = User()
-    state.user = user.name
-    state.uid = user.uid
-    state.gid = user.gid
-    state.package_manager = manager
-    state.distro_id = distro_id
-    state.distro_version = version_id
-    state.distro_codename = codename
-
-
-###################################
-####    INSTALL OCI RUNTIME    ####
-###################################
-
-
-async def _podman_ready() -> bool:
-    if not shutil.which("podman"):
-        return False
-    result = await run(
-        ["podman", "info", "--format", "json"],
-        check=False,
-        capture_output=True
-    )
-    return result.returncode == 0
 
 
 @dataclass(frozen=True)
@@ -241,11 +182,7 @@ _INSTALL_SPECS: dict[str, _PackageSpec] = {
 }
 
 
-async def _install_container_cli(state: InitState, assume_yes: bool) -> None:
-    if await _podman_ready():
-        return
-    if os.name != "posix":
-        raise OSError("package manager operations require a POSIX system.")
+def _resolve_package_spec(state: InitState) -> tuple[str, _PackageSpec]:
     if state.package_manager is None:
         raise ValueError("package manager was not initialized in install state")
     spec = _INSTALL_SPECS.get(state.package_manager)
@@ -254,423 +191,478 @@ async def _install_container_cli(state: InitState, assume_yes: bool) -> None:
         raise ValueError(
             f"unsupported package manager '{state.package_manager}' (supported: {supported})"
         )
-
-    # prompt for installation
-    if not confirm(
-        "Bertrand requires 'podman' to manage rootless containers.  Would you like to "
-        f"install it now using {state.package_manager} (requires sudo).\n"
-        "[y/N] ",
-        assume_yes=assume_yes,
-    ):
-        raise OSError("Installation declined by user.")
-
-    # ensure we can elevate if needed
-    if os.geteuid() != 0 and not can_escalate():
-        raise PermissionError(
-            "package installation requires root privileges; sudo not available."
-        )
     if not shutil.which(spec.install[0]):
         raise FileNotFoundError(
             f"package manager '{state.package_manager}' not found: {spec.install[0]}"
         )
+    if spec.refresh is not None and not shutil.which(spec.refresh[0]):
+        raise FileNotFoundError(f"refresh command not found: {spec.refresh[0]}")
+    return state.package_manager, spec
 
-    # define required packages according to podman documentation
-    packages = [
-        "podman",
-        "slirp4netns",
-        "passt",
-        "fuse-overlayfs",
-    ]
-    if state.package_manager == "apt":
-        packages.append("uidmap")
-    elif state.package_manager == "dnf":
-        packages.append("shadow-utils")
 
-    # define environment for non-interactive installation if needed
+async def _install_packages(
+    state: InitState,
+    *,
+    packages: list[str],
+    assume_yes: bool,
+) -> None:
+    if os.name != "posix":
+        raise OSError("package manager operations require a POSIX system.")
+    manager, spec = _resolve_package_spec(state)
+    if os.geteuid() != 0 and not can_escalate():
+        raise PermissionError(
+            f"package installation using '{manager}' requires root privileges; "
+            "sudo not available."
+        )
+
+    # set noninteractive env vars if needed
     env: dict[str, str] | None = None
     if assume_yes and spec.noninteractive_env:
         env = os.environ.copy()
         env.update(spec.noninteractive_env)
 
-    # refresh package index
+    # refresh package lists if supported and requested
     if spec.refresh is not None:
-        if not shutil.which(spec.refresh[0]):
-            raise FileNotFoundError(f"refresh command not found: {spec.refresh[0]}")
         cmd = spec.refresh.copy()
         if assume_yes:
             cmd.extend(spec.yes_refresh)
-        await run(cmd, env=env)
+        await run(sudo(cmd, non_interactive=assume_yes), env=env)
 
-    # install packages
+    # install requested packages
     cmd = spec.install.copy()
     if assume_yes:
         cmd.extend(spec.yes_install)
     cmd.extend(packages)
-    await run(cmd, env=env)
-
-    # confirm success
-    if not await _podman_ready():
-        raise OSError(
-            "Installation completed, but 'podman' is still not found.  Please "
-            "investigate the issue and ensure the required packages are installed."
-        )
+    await run(sudo(cmd, non_interactive=assume_yes), env=env)
 
 
-########################################
-####    ROOTLESS USER NAMESPACES    ####
-########################################
-
-
-def _read_proc_sys(path: str) -> int | None:
-    p = Path("/proc/sys") / path
-    try:
-        return int(p.read_text(encoding="utf-8").strip())
-    except (OSError, ValueError):
-        return None
-
-
-async def _enable_user_namespaces(state: InitState, assume_yes: bool) -> None:
-    if os.name != "posix":
-        raise OSError("User management operations require a POSIX system.")
-
-    # check current status
-    needed = 15000  # recommended by podman
-    unpriv = _read_proc_sys("kernel/unprivileged_userns_clone")
-    maxns = _read_proc_sys("user/max_user_namespaces")
-    if (unpriv is None or unpriv != 0) and (maxns is None or maxns >= needed):
-        return
-
-    # prompt for sudo if needed
-    if os.geteuid() != 0 and not can_escalate():
-        raise PermissionError(
-            "Enabling user namespaces requires root privileges; no sudo available."
-        )
-    if not confirm(
-        "Rootless containers require unprivileged user namespaces to be enabled on "
-        "the host system.  This may require sudo privileges.\n"
-        "Do you want to proceed? [y/N] ",
-        assume_yes=assume_yes
-    ):
-        raise OSError("User declined to enable unprivileged user namespaces.")
-
-    # enable unprivileged user namespaces
-    if unpriv == 0:
-        await run(sudo(
-            ["sysctl", "-w", "kernel.unprivileged_userns_clone=1"],
-            non_interactive=assume_yes
-        ))
-    if maxns is not None and maxns < needed:
-        await run(sudo(
-            ["sysctl", "-w", f"user.max_user_namespaces={needed}"],
-            non_interactive=assume_yes
-        ))
-
-    # verify success
-    unpriv = _read_proc_sys("kernel/unprivileged_userns_clone")
-    maxns = _read_proc_sys("user/max_user_namespaces")
-    if (unpriv == 0) or (maxns is not None and maxns < needed):
-        raise OSError("Failed to enable unprivileged user namespaces.")
-
-
-###################################################
-####    ROOTLESS SUBUID/SUBGID PROVISIONING    ####
-###################################################
-
-
-SUBID_REGEX = re.compile(r"^(?P<user>[^:]+):(?P<start>\d+):(?P<count>\d+)\s*$")
-
-
-@dataclass(frozen=True)
-class SubIDRange:
-    """A range of subordinate IDs for a user.
-
-    Attributes
-    ----------
-    user : str
-        The username.
-    start : int
-        The starting subordinate ID.
-    count : int
-        The number of subordinate IDs in the range.
-    """
-    user: str
-    start: int
-    count: int
-
-    @property
-    def end(self) -> int:
-        """
-        Returns
-        -------
-        int
-            The first subordinate ID after the end of the range.
-        """
-        return self.start + self.count
-
-
-def _read_subid_file(path: Path) -> list[SubIDRange]:
+def _read_os_release() -> dict[str, str]:
+    path = Path("/etc/os-release")
+    data: dict[str, str] = {}
     if not path.exists():
-        return []
-    out: list[SubIDRange] = []
+        return data
     for line in path.read_text(encoding="utf-8", errors="ignore").splitlines():
         line = line.strip()
-        if not line or line.startswith("#"):
+        if not line or line.startswith("#") or "=" not in line:
             continue
-        m = SUBID_REGEX.match(line)
-        if not m:
-            continue
-        out.append(SubIDRange(
-            user=m.group("user"),
-            start=int(m.group("start")),
-            count=int(m.group("count")),
-        ))
-    return out
+        k, v = line.split("=", 1)
+        data[k.strip()] = v.strip().strip('"').strip("'")
+    return data
 
 
-def _choose_non_overlapping_subid_start(ranges: list[SubIDRange], needed: int) -> int:
-    base = 100000
-    max_end = max((r.end for r in ranges), default=base)
-    start = max(base, max_end)
-    rem = start % needed
-    if rem:
-        start += (needed - rem)
-    return start
+async def _detect_platform(state: InitState, assume_yes: bool) -> None:
+    system = platform.system().lower()
+    if system != "linux":
+        raise OSError("Unsupported platform for package manager detection")
+
+    # read /etc/os-release for distro info
+    os_release = _read_os_release()
+    distro_id = (os_release.get("ID") or "").lower() or None
+    version_id = os_release.get("VERSION_ID") or None
+    codename = os_release.get("UBUNTU_CODENAME") or os_release.get("VERSION_CODENAME")
+
+    # detect package manager
+    manager: str | None = None
+    if distro_id in {"debian", "ubuntu"} and shutil.which("apt-get"):
+        manager = "apt"
+    elif shutil.which("dnf"):
+        manager = "dnf"
+    elif shutil.which("yum"):
+        manager = "yum"
+    elif shutil.which("zypper"):
+        manager = "zypper"
+    elif shutil.which("pacman"):
+        manager = "pacman"
+    elif shutil.which("apk"):
+        manager = "apk"
+    if manager is None:
+        raise OSError("No supported package manager found")
+
+    # populate state
+    user = User()
+    state.user = user.name
+    state.uid = user.uid
+    state.gid = user.gid
+    state.package_manager = manager
+    state.distro_id = distro_id
+    state.distro_version = version_id
+    state.distro_codename = codename
 
 
-async def _append_subid(
-    path: Path,
-    user: str,
-    start: int,
-    count: int,
-    *,
-    assume_yes: bool
-) -> None:
-    line = f"{user}:{start}:{count}"
-    quoted_line = shlex.quote(line)
-    quoted_path = shlex.quote(str(path))
-    cmd = (
-        "set -euo pipefail; "
-        f"touch {quoted_path}; "
-        "if command -v flock >/dev/null 2>&1; then "
-        f"  exec 9>>{quoted_path}; flock -x 9; "
-        "fi; "
-        f"grep -F -x -q {quoted_line} {quoted_path} || echo {quoted_line} >> {quoted_path}"
-    )
-    await run(sudo(["sh", "-lc", cmd], non_interactive=assume_yes))
+def _digest_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as f:
+        while True:
+            chunk = f.read(1024 * 1024)  # 1 MiB chunks
+            if not chunk:
+                break
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
-async def _provision_subids(state: InitState, assume_yes: bool) -> None:
-    if os.name != "posix":
-        raise OSError("User management operations require a POSIX system.")
-    if state.user is None:
-        raise ValueError("State user is not set")
-
-    # check whether there are already enough subuids/subgids
-    needed = 65536  # recommended by podman
-    subuid_path = Path("/etc/subuid")
-    subgid_path = Path("/etc/subgid")
-    uid_ranges = _read_subid_file(subuid_path)
-    gid_ranges = _read_subid_file(subgid_path)
-    if (
-        any(r.user == state.user and r.count >= needed for r in uid_ranges) and
-        any(r.user == state.user and r.count >= needed for r in gid_ranges)
-    ):
+async def _install_prereq_utils(state: InitState, assume_yes: bool) -> None:
+    missing: list[str] = []
+    if not shutil.which("tar"):
+        missing.append("tar")
+    if not shutil.which("curl") and not shutil.which("wget"):
+        missing.append("curl")
+    if not missing:
         return
 
-    # prompt for sudo if needed
-    if os.geteuid() != 0 and not can_escalate():
-        raise PermissionError(
-            "Subuid/subgid provisioning requires root privileges; no sudo available."
-        )
     if not confirm(
-        "Rootless containers require subordinate UID/GID ranges (>= 65536) in "
-        "/etc/subuid and /etc/subgid.  Bertrand can configure this, but may "
-        "require sudo privileges to do so.\n"
-        "Do you want to proceed? [y/N] ",
-        assume_yes=assume_yes
+        "Bertrand requires extra host tools to install pinned nerdctl artifacts "
+        f"({', '.join(missing)}).  Install now (requires sudo)?\n[y/N] ",
+        assume_yes=assume_yes,
     ):
-        raise OSError("User declined to provision subordinate UID/GID ranges.")
+        raise OSError("Installation declined by user.")
+    await _install_packages(state, packages=missing, assume_yes=assume_yes)
 
-    # choose non-overlapping ranges and append to files
-    start_uid = _choose_non_overlapping_subid_start(uid_ranges, needed)
-    start_gid = _choose_non_overlapping_subid_start(gid_ranges, needed)
-    await _append_subid(subuid_path, state.user, start_uid, needed, assume_yes=assume_yes)
-    await _append_subid(subgid_path, state.user, start_gid, needed, assume_yes=assume_yes)
-
-    # verify success
-    uid_ranges = _read_subid_file(subuid_path)
-    gid_ranges = _read_subid_file(subgid_path)
-    if (
-        not any(r.user == state.user and r.count >= needed for r in uid_ranges) or
-        not any(r.user == state.user and r.count >= needed for r in gid_ranges)
-    ):
-        raise OSError("Failed to provision subuid/subgid ranges correctly.")
-
-
-######################################################################
-####    CONTROLLER DELEGATION (for cgroups v2 resource limits)    ####
-######################################################################
-
-
-def _cgroup_v2_controllers() -> set[str] | None:
-    path = Path("/sys/fs/cgroup/cgroup.controllers")
-    try:
-        text = path.read_text(encoding="utf-8").strip()
-    except OSError:
-        return None
-    return set(text.split()) if text else set()
-
-
-async def _systemd_version() -> int | None:
-    cp = await run(["systemctl", "--version"], check=False, capture_output=True)
-    if cp.returncode != 0:
-        return None
-    line = ""
-    if cp.stdout:
-        line = cp.stdout.splitlines()[0].strip()
-    match = re.search(r"systemd\s+(\d+)", line)
-    if not match:
-        return None
-    return int(match.group(1))
-
-
-def _dropin_delegate_controllers(path: Path) -> set[str]:
-    try:
-        text = path.read_text(encoding="utf-8")
-    except OSError:
-        return set()
-    for raw in text.splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#"):
-            continue
-        if line.startswith("Delegate="):
-            value = line.split("=", 1)[1].strip()
-            return set(value.split()) if value else set()
-    return set()
-
-
-async def _delegate_controllers(state: InitState, assume_yes: bool) -> None:
-    if os.name != "posix":
-        raise OSError("systemd operations require a POSIX system.")
-    if not shutil.which("systemctl"):
-        raise OSError("systemctl not found")
-
-    # check if cgroups v2 is in use and controllers are visible
-    root_controllers = _cgroup_v2_controllers()
-    if root_controllers is None:
-        return
-
-    # check if controllers are already delegated to the user slice
-    required = {"cpu", "io", "memory", "pids"}
-    systemd_version = await _systemd_version()
-    if "cpuset" in root_controllers:
-        if systemd_version is not None and systemd_version >= 244:
-            required.add("cpuset")
-        else:
-            print(
-                "bertrand: cpuset controller detected, but systemd < 244; "
-                "skipping cpuset delegation.",
-                file=sys.stderr
-            )
-    path = Path(
-        f"/sys/fs/cgroup/user.slice/user-{state.uid}.slice/"
-        f"user@{state.uid}.service/cgroup.controllers"
-    )
-    try:
-        delegated_text = path.read_text(encoding="utf-8").strip()
-        delegated = set(delegated_text.split()) if delegated_text else set()
-    except OSError:
-        delegated = set()
-    if required.issubset(delegated):
-        return
-
-    # check for existing drop-in configuration that hasn't taken effect yet
-    dropin_path = Path("/etc/systemd/system/user@.service.d/delegate.conf")
-    if required.issubset(_dropin_delegate_controllers(dropin_path)):
-        print(
-            "bertrand: controller delegation is configured but may require "
-            "logging out and back in to take effect.",
-            file=sys.stderr
-        )
-        return
-
-    # ensure we can elevate if needed
-    if os.geteuid() != 0 and not can_escalate():
-        raise PermissionError(
-            "Configuring controller delegation requires root privileges; no sudo "
-            "available."
-        )
-    if not confirm(
-        "Enforcing resource limits for rootless containers requires "
-        "cgroup controllers to be delegated to user sessions.  Bertrand "
-        "can configure this, but may require sudo privileges to do so.\n"
-        "Do you want to proceed? [y/N] ",
-        assume_yes=assume_yes
-    ):
-        return  # skip if user declines
-
-    # write drop-in configuration
-    controllers = sorted(required)
-    dropin_dir = Path("/etc/systemd/system/user@.service.d")
-    await run(sudo(["mkdir", "-p", str(dropin_dir)], non_interactive=assume_yes))
-
-    # write delegate.conf via sudo
-    delegate_path = dropin_dir / "delegate.conf"
-    contents = "[Service]\nDelegate=" + " ".join(controllers) + "\n"
-    quoted_path = shlex.quote(str(delegate_path))
-    await run(
-        sudo(["sh", "-lc", f"cat > {quoted_path}"], non_interactive=assume_yes),
-        input=contents
-    )
-
-    # reload system daemon to pick up drop-in
-    await run(sudo(["systemctl", "daemon-reload"], non_interactive=assume_yes))
-
-    # verify success
-    if required.issubset(_dropin_delegate_controllers(dropin_path)):
-        print(
-            "bertrand: controller delegation updated. You may need to log out and "
-            "back in for changes to take effect.",
-            file=sys.stderr
-        )
-    else:
-        print(
-            "bertrand: controller delegation could not be configured; some resource "
-            "limits may be unavailable.",
-            file=sys.stderr
-        )
-
-
-##################################
-####    PERSISTENT INSTALL    ####
-##################################
-
-
-async def _assert_container_cli_ready(state: InitState, assume_yes: bool) -> None:
-    if not await _podman_ready():
-        cmd = "bertrand init --yes" if assume_yes else "bertrand init"
+    if not shutil.which("tar"):
+        raise OSError("Installation completed, but 'tar' is still not available.")
+    if not shutil.which("curl") and not shutil.which("wget"):
         raise OSError(
-            "podman is installed but not usable for rootless operation after init "
-            "bootstrap. Verify host prerequisites (user namespaces, subuid/subgid, and "
-            "controller delegation) and retry.  Run `podman info` for diagnostics. "
-            f"(last command: `{cmd}`)"
+            "Installation completed, but neither 'curl' nor 'wget' is available."
+        )
+
+
+async def _download_file(url: str, target: Path) -> None:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if shutil.which("curl"):
+        await run(
+            [
+                "curl",
+                "-fL",
+                "--retry",
+                "3",
+                "--output",
+                str(target),
+                url,
+            ]
+        )
+        return
+    if shutil.which("wget"):
+        await run(
+            [
+                "wget",
+                "--tries=3",
+                "--output-document",
+                str(target),
+                url,
+            ]
+        )
+        return
+    raise OSError("No download tool available (expected curl or wget).")
+
+
+async def _snap_ready() -> bool:
+    if not shutil.which("snap"):
+        return False
+    result = await run(
+        ["snap", "--version"],
+        check=False,
+        capture_output=True,
+    )
+    return result.returncode == 0
+
+
+async def _microk8s_installed() -> bool:
+    if not await _snap_ready():
+        return False
+    result = await run(
+        ["snap", "list", "microk8s"],
+        check=False,
+        capture_output=True
+    )
+    return result.returncode == 0
+
+
+async def _microk8s_ready() -> bool:
+    if not await _microk8s_installed() or not shutil.which("microk8s"):
+        return False
+    result = await run(
+        ["microk8s", "--help"],
+        check=False,
+        capture_output=True,
+    )
+    return result.returncode == 0
+
+
+async def _install_microk8s(state: InitState, assume_yes: bool) -> None:
+    if await _microk8s_ready():
+        return
+    if state.distro_id not in {"ubuntu", "debian"} or state.package_manager != "apt":
+        distro = state.distro_id or "unknown"
+        manager = state.package_manager or "unknown"
+        raise OSError(
+            "MicroK8s bootstrap currently supports Ubuntu/Debian hosts using apt "
+            f"(detected distro={distro!r}, package_manager={manager!r})."
+        )
+
+    # install snapd if needed
+    if not await _snap_ready():
+        if not confirm(
+            "Bertrand requires 'snapd' to install MicroK8s.  Would you like to "
+            "install it now using apt (requires sudo)?\n"
+            "[y/N] ",
+            assume_yes=assume_yes,
+        ):
+            raise OSError("Installation declined by user.")
+        await _install_packages(
+            state,
+            packages=["snapd"],
+            assume_yes=assume_yes,
+        )
+        if not await _snap_ready():
+            raise OSError(
+                "Installation completed, but 'snap' is still not found.  Please "
+                "investigate the issue and ensure snapd is installed correctly."
+            )
+
+    # install/update microK8s
+    if not confirm(
+        "Bertrand requires MicroK8s as its runtime control plane.  Would you like to "
+        f"install/refresh MicroK8s now at channel '{MICROK8S_CHANNEL}' (requires sudo)?\n"
+        "[y/N] ",
+        assume_yes=assume_yes,
+    ):
+        raise OSError("Installation declined by user.")
+    if os.geteuid() != 0 and not can_escalate():
+        raise PermissionError(
+            "MicroK8s installation requires root privileges; sudo not available."
+        )
+    if await _microk8s_installed():
+        cmd = ["snap", "refresh", "microk8s", "--channel", MICROK8S_CHANNEL]
+    else:
+        cmd = [
+            "snap",
+            "install",
+            "microk8s",
+            "--classic",
+            "--channel",
+            MICROK8S_CHANNEL
+        ]
+    await run(sudo(cmd, non_interactive=assume_yes))
+
+    # confirm success
+    if not await _microk8s_ready():
+        raise OSError(
+            "MicroK8s installation completed, but the runtime is still not available.  "
+            "Please check `snap list microk8s` and `microk8s --help` for diagnostics."
+        )
+
+
+def _microk8s_group_status(user: str) -> tuple[bool, bool]:
+    try:
+        group = grp.getgrnam(MICROK8S_GROUP)
+    except KeyError:
+        return False, False
+
+    try:
+        primary_gid = pwd.getpwnam(user).pw_gid
+    except KeyError:
+        primary_gid = None
+
+    configured = user in group.gr_mem or primary_gid == group.gr_gid
+    active = group.gr_gid in os.getgroups() or os.getegid() == group.gr_gid
+    return configured, active
+
+
+async def _add_to_microk8s_group(state: InitState, assume_yes: bool) -> None:
+    if not await _microk8s_installed():
+        raise OSError("MicroK8s must be installed before configuring socket access.")
+    if state.user is None:
+        raise ValueError("init state user is missing; run platform detection first.")
+
+    configured, active = _microk8s_group_status(state.user)
+    if configured and active:
+        return
+
+    # create group if it doesn't exist
+    if not configured:
+        if not confirm(
+            f"Bertrand needs user '{state.user}' in the '{MICROK8S_GROUP}' "
+            "group to access the MicroK8s containerd socket.  Add this membership now "
+            "(requires sudo)?\n[y/N] ",
+            assume_yes=assume_yes,
+        ):
+            raise OSError("MicroK8s group membership update declined by user.")
+        if os.geteuid() != 0 and not can_escalate():
+            raise PermissionError(
+                "Updating MicroK8s group membership requires root privileges; "
+                "sudo not available."
+            )
+        await run(
+            sudo(
+                ["usermod", "-a", "-G", MICROK8S_GROUP, state.user],
+                non_interactive=assume_yes,
+            )
+        )
+        configured, active = _microk8s_group_status(state.user)
+        if not configured:
+            raise OSError(
+                f"Failed to add user '{state.user}' to group '{MICROK8S_GROUP}'."
+            )
+
+    # if we had to update group membership, then the user needs to log out and back in
+    # to finish setup
+    if not active:
+        print(
+            f"bertrand: added {state.user!r} to the {MICROK8S_GROUP!r} group, but "
+            f"sudo is still required in this session.  Run `newgrp {MICROK8S_GROUP}` "
+            "or log out and back in to pick up the new group privileges.",
+            file=sys.stderr
+        )
+
+
+def _managed_toolchain_ready() -> bool:
+    required = (
+        NERDCTL_BIN,
+        BUILDCTL_BIN,
+        BUILDKITD_BIN,
+    )
+    return all(path.exists() for path in required)
+
+
+async def _install_nerdctl(state: InitState, assume_yes: bool) -> None:
+    if _managed_toolchain_ready():
+        return
+    if state.distro_id not in {"ubuntu", "debian"} or state.package_manager != "apt":
+        distro = state.distro_id or "unknown"
+        manager = state.package_manager or "unknown"
+        raise OSError(
+            "Pinned nerdctl bootstrap currently supports Ubuntu/Debian hosts using apt "
+            f"(detected distro={distro!r}, package_manager={manager!r})."
+        )
+
+    # confirm arch is supported and get checksum
+    arch = NORMALIZE_ARCH.get(platform.machine().strip().lower())
+    if not arch:
+        raise OSError(
+            "Unsupported CPU architecture for pinned nerdctl artifact: "
+            f"{platform.machine()!r} (supported: {sorted(NORMALIZE_ARCH)})"
+        )
+    archive_name = f"nerdctl-full-{NERDCTL_VERSION}-linux-{arch}.tar.gz"
+    archive_path = TOOLS_TMP_DIR / archive_name
+    archive_url = f"{NERDCTL_BASE_URL}/{archive_name}"
+    expected_sha = NERDCTL_CHECKSUM[arch]
+
+    # install prereq utils (targ, curl, etc.)
+    await _install_prereq_utils(state, assume_yes)
+
+    # download and verify pinned archive
+    TOOLS_TMP_DIR.mkdir(parents=True, exist_ok=True)
+    needs_download = True
+    if archive_path.exists() and _digest_file(archive_path) == expected_sha:
+        needs_download = False
+    if needs_download:
+        await _download_file(archive_url, archive_path)
+        actual_sha = _digest_file(archive_path)
+        if actual_sha != expected_sha:
+            try:
+                archive_path.unlink()
+            except OSError:
+                pass
+            raise OSError(
+                f"Checksum mismatch for {archive_name}: expected {expected_sha}, "
+                f"got {actual_sha}."
+            )
+
+    # extract archive to final location
+    TOOLS_DIR.mkdir(parents=True, exist_ok=True)
+    staged = TOOLS_DIR / f".nerdctl-{uuid.uuid4().hex}.tmp"
+    if staged.exists():
+        shutil.rmtree(staged, ignore_errors=True)
+    staged.mkdir(parents=True, exist_ok=True)
+    try:
+        await run(["tar", "-xzf", str(archive_path), "-C", str(staged)])
+        if not (staged / "bin" / "nerdctl").exists():
+            raise OSError(
+                "Pinned nerdctl archive extracted successfully, but expected binary "
+                f"was not found at {(staged / 'bin' / 'nerdctl')}."
+            )
+        if NERDCTL_INSTALL_DIR.exists():
+            shutil.rmtree(NERDCTL_INSTALL_DIR, ignore_errors=True)
+        staged.replace(NERDCTL_INSTALL_DIR)
+    finally:
+        if staged.exists():
+            shutil.rmtree(staged, ignore_errors=True)
+
+    # confirm success
+    if not _managed_toolchain_ready():
+        raise OSError(
+            "Managed nerdctl toolchain installation completed, but required binaries "
+            "are still missing."
+        )
+
+
+async def _runtime_ready(state: InitState) -> bool:
+    if state.user is None or not await _microk8s_ready():
+        return False
+
+    configured, active = _microk8s_group_status(state.user)
+    if not configured or not active or not _managed_toolchain_ready():
+        return False
+
+    nerdctl_result = await nerdctl(
+        ["info"],
+        check=False,
+        capture_output=True,
+    )
+    return nerdctl_result.returncode == 0
+
+
+async def _assert_runtime_ready(state: InitState, assume_yes: bool) -> None:
+    if state.user is None:
+        raise ValueError("init state user is missing; rerun `bertrand init`.")
+    if not await _microk8s_ready():
+        raise OSError(
+            "MicroK8s is installed but not usable after init bootstrap.  Run "
+            "`snap list microk8s` and `microk8s --help` for diagnostics."
+        )
+
+    configured, active = _microk8s_group_status(state.user)
+    if not configured:
+        raise OSError(
+            f"user '{state.user}' is not in '{MICROK8S_GROUP}'.  Rerun `bertrand init` "
+            "to configure MicroK8s containerd socket access."
+        )
+    if not active:
+        raise OSError(
+            f"user '{state.user}' was added to '{MICROK8S_GROUP}', but the current "
+            "session has not picked up the new group membership.  Log out and back in, "
+            "then rerun `bertrand init`."
+        )
+    if not _managed_toolchain_ready():
+        raise OSError(
+            "Managed nerdctl/BuildKit toolchain is incomplete.  Rerun `bertrand init`."
+        )
+
+    nerdctl_result = await nerdctl(
+        ["info"],
+        check=False,
+        capture_output=True,
+    )
+    if nerdctl_result.returncode != 0:
+        detail = nerdctl_result.stderr.strip() or nerdctl_result.stdout.strip()
+        raise OSError(
+            "Managed nerdctl command failed to access the MicroK8s containerd daemon."
+            f"{f' Details: {detail}' if detail else ''}"
         )
 
 
 INIT_STAGES: tuple[tuple[InitStage, Callable[[InitState, bool], Awaitable[None]]], ...] = (
     ("fresh", _no_op),
     ("detect_platform", _detect_platform),
-    ("install_container_cli", _install_container_cli),
-    ("enable_user_namespaces", _enable_user_namespaces),
-    ("provision_subids", _provision_subids),
-    ("delegate_controllers", _delegate_controllers),
-    ("ready", _assert_container_cli_ready),
+    ("install_microk8s", _install_microk8s),
+    ("add_to_microk8s_group", _add_to_microk8s_group),
+    ("install_nerdctl", _install_nerdctl),
+    ("ready", _assert_runtime_ready),
 )
 
 
-#########################
-####    GIT HOOKS    ####
-#########################
+############################
+####    PROJECT INIT    ####
+############################
 
 
 MANAGED_HOOKS: tuple[tuple[str, str, bool], ...] = (
@@ -844,7 +836,7 @@ async def bertrand_init(
             "initialize the project repository and enable resources within it."
         )
 
-    # install container runtime if needed
+    # install runtime control plane if needed
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     async with Lock(INIT_LOCK, timeout=timeout):
         state = InitState.load()
@@ -852,7 +844,7 @@ async def bertrand_init(
             (i for i, (stage, _) in enumerate(INIT_STAGES) if stage == state.stage),
             0
         )
-        if index == len(INIT_STAGES) - 1 and not await _podman_ready():
+        if index == len(INIT_STAGES) - 1 and not await _runtime_ready(state):
             index = 0
             state = InitState(version=INIT_STATE_VERSION)
             state.dump()
@@ -890,8 +882,356 @@ async def bertrand_init(
     await _install_git_hooks(repo)
 
 
+# TODO: review cleanup logic after tying nerdctl into the new container.py runtime.
+
+
+def _append_clean_error(
+    errors: list[str],
+    context: str,
+    detail: str | Exception,
+) -> None:
+    message = str(detail).strip()
+    if message:
+        errors.append(f"{context}: {message}")
+    else:
+        errors.append(context)
+
+
+def _command_error_detail(stdout: str, stderr: str, code: int) -> str:
+    detail = stderr.strip() or stdout.strip()
+    if detail:
+        return detail
+    return f"exit code {code}"
+
+
+def _tail_text(path: Path, *, lines: int = 40) -> str:
+    try:
+        content = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return ""
+    if lines < 1:
+        return ""
+    return "\n".join(content[-lines:])
+
+
+def _chunks(values: list[str], size: int) -> list[list[str]]:
+    if size < 1:
+        raise ValueError("chunk size must be >= 1")
+    return [values[i:i + size] for i in range(0, len(values), size)]
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+async def _buildkit_stop_best_effort(errors: list[str]) -> None:
+    pid: int | None = None
+    try:
+        raw = BUILDKIT_PID_FILE.read_text(encoding="utf-8").strip()
+        if raw:
+            pid = int(raw)
+    except FileNotFoundError:
+        return
+    except Exception as err:
+        _append_clean_error(errors, "failed to read buildkit pid file", err)
+        return
+
+    if pid is None:
+        return
+    if not _pid_alive(pid):
+        try:
+            BUILDKIT_PID_FILE.unlink()
+        except OSError:
+            pass
+        return
+
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    except Exception as err:
+        _append_clean_error(errors, f"failed to terminate buildkitd pid {pid}", err)
+
+    deadline = asyncio.get_running_loop().time() + 5.0
+    while _pid_alive(pid) and asyncio.get_running_loop().time() < deadline:
+        await asyncio.sleep(0.1)
+
+    if _pid_alive(pid):
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        except Exception as err:
+            _append_clean_error(errors, f"failed to kill buildkitd pid {pid}", err)
+        await asyncio.sleep(0.1)
+
+    if _pid_alive(pid):
+        detail = _tail_text(BUILDKIT_LOG_FILE, lines=40)
+        if detail:
+            _append_clean_error(
+                errors,
+                f"buildkitd pid {pid} is still running after terminate/kill",
+                f"tail of {BUILDKIT_LOG_FILE}:\n{detail}",
+            )
+        else:
+            _append_clean_error(
+                errors,
+                f"buildkitd pid {pid} is still running after terminate/kill",
+                "",
+            )
+
+    try:
+        BUILDKIT_PID_FILE.unlink()
+    except FileNotFoundError:
+        pass
+    except OSError:
+        pass
+
+
+async def _nerdctl_ids_by_label(
+    mode: Literal["container", "image"],
+    label_key: str,
+    label_value: str,
+    errors: list[str],
+) -> list[str]:
+    if mode == "container":
+        cmd = [
+            "container",
+            "ls",
+            "-a",
+            "-q",
+            "--filter",
+            f"label={label_key}={label_value}",
+        ]
+    else:
+        cmd = [
+            "image",
+            "ls",
+            "-a",
+            "-q",
+            "--no-trunc",
+            "--filter",
+            f"label={label_key}={label_value}",
+        ]
+    try:
+        result = await nerdctl(cmd, check=False, capture_output=True)
+    except Exception as err:
+        _append_clean_error(errors, f"failed to list {mode}s for cleanup", err)
+        return []
+    if result.returncode != 0:
+        _append_clean_error(
+            errors,
+            f"failed to list {mode}s for cleanup",
+            _command_error_detail(result.stdout, result.stderr, result.returncode),
+        )
+        return []
+    seen: set[str] = set()
+    out: list[str] = []
+    for line in result.stdout.splitlines():
+        id_ = line.strip()
+        if not id_ or id_ in seen:
+            continue
+        seen.add(id_)
+        out.append(id_)
+    return out
+
+
+def _extract_labeled_ids_from_inspect(
+    payload: str,
+    *,
+    fallback_id: str | None,
+    label_key: str,
+    label_value: str,
+) -> list[str]:
+    data = json.loads(payload or "[]")
+    if isinstance(data, dict):
+        objects: list[object] = [data]
+    elif isinstance(data, list):
+        objects = data
+    else:
+        raise ValueError("inspect response was not a JSON object or array")
+
+    out: list[str] = []
+    for obj in objects:
+        if not isinstance(obj, dict):
+            continue
+        labels = obj.get("Labels")
+        if not isinstance(labels, dict):
+            continue
+        if labels.get(label_key) != label_value:
+            continue
+        candidate = obj.get("Name") or obj.get("ID") or obj.get("Id") or fallback_id
+        if not isinstance(candidate, str):
+            continue
+        candidate = candidate.strip()
+        if candidate:
+            out.append(candidate)
+    return out
+
+
+async def _nerdctl_resources_by_label_via_inspect(
+    mode: Literal["volume", "network"],
+    label_key: str,
+    label_value: str,
+    errors: list[str],
+) -> list[str]:
+    try:
+        listed = await nerdctl([mode, "ls", "-q"], check=False, capture_output=True)
+    except Exception as err:
+        _append_clean_error(errors, f"failed to list {mode}s for cleanup", err)
+        return []
+    if listed.returncode != 0:
+        _append_clean_error(
+            errors,
+            f"failed to list {mode}s for cleanup",
+            _command_error_detail(listed.stdout, listed.stderr, listed.returncode),
+        )
+        return []
+
+    ids: list[str] = []
+    seen: set[str] = set()
+    for line in listed.stdout.splitlines():
+        value = line.strip()
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        ids.append(value)
+    if not ids:
+        return []
+
+    selected: list[str] = []
+    selected_seen: set[str] = set()
+    for batch in _chunks(ids, 64):
+        try:
+            inspect = await nerdctl(
+                [mode, "inspect", *batch],
+                check=False,
+                capture_output=True,
+            )
+        except Exception as err:
+            _append_clean_error(
+                errors,
+                f"failed to inspect {mode} batch during cleanup",
+                err,
+            )
+            inspect = None
+        if inspect is not None and inspect.returncode == 0:
+            try:
+                matches = _extract_labeled_ids_from_inspect(
+                    inspect.stdout,
+                    fallback_id=None,
+                    label_key=label_key,
+                    label_value=label_value,
+                )
+            except Exception as err:
+                _append_clean_error(
+                    errors,
+                    f"failed to parse {mode} inspect output during cleanup",
+                    err,
+                )
+                matches = []
+            for match in matches:
+                if match in selected_seen:
+                    continue
+                selected_seen.add(match)
+                selected.append(match)
+            continue
+
+        # batch inspect failed; fall back to single-resource inspection.
+        for resource_id in batch:
+            try:
+                single = await nerdctl(
+                    [mode, "inspect", resource_id],
+                    check=False,
+                    capture_output=True,
+                )
+            except Exception as err:
+                _append_clean_error(
+                    errors,
+                    f"failed to inspect {mode} {resource_id}",
+                    err,
+                )
+                continue
+            if single.returncode != 0:
+                _append_clean_error(
+                    errors,
+                    f"failed to inspect {mode} {resource_id}",
+                    _command_error_detail(single.stdout, single.stderr, single.returncode),
+                )
+                continue
+            try:
+                matches = _extract_labeled_ids_from_inspect(
+                    single.stdout,
+                    fallback_id=resource_id,
+                    label_key=label_key,
+                    label_value=label_value,
+                )
+            except Exception as err:
+                _append_clean_error(
+                    errors,
+                    f"failed to parse {mode} inspect output for {resource_id}",
+                    err,
+                )
+                continue
+            for match in matches:
+                if match in selected_seen:
+                    continue
+                selected_seen.add(match)
+                selected.append(match)
+    return selected
+
+
+async def _clean_batch_rm(
+    mode: Literal["container", "image", "volume", "network"],
+    ids: list[str],
+    errors: list[str],
+) -> None:
+    if not ids:
+        return
+    if mode == "container":
+        base = ["container", "rm", "-f", "-v"]
+    elif mode == "image":
+        base = ["image", "rm", "-f"]
+    elif mode == "volume":
+        base = ["volume", "rm", "-f"]
+    else:
+        base = ["network", "rm"]
+
+    # first try a batched remove.
+    try:
+        bulk = await nerdctl([*base, *ids], check=False, capture_output=True)
+    except Exception as err:
+        _append_clean_error(errors, f"failed to remove {mode}s in batch", err)
+        bulk = None
+    if bulk is not None and bulk.returncode == 0:
+        return
+
+    # if batched remove failed, keep going one-by-one to maximize cleanup.
+    for resource_id in ids:
+        try:
+            result = await nerdctl([*base, resource_id], check=False, capture_output=True)
+        except Exception as err:
+            _append_clean_error(errors, f"failed to remove {mode} {resource_id}", err)
+            continue
+        if result.returncode == 0:
+            continue
+        _append_clean_error(
+            errors,
+            f"failed to remove {mode} {resource_id}",
+            _command_error_detail(result.stdout, result.stderr, result.returncode),
+        )
+
+
 async def bertrand_clean(*, assume_yes: bool) -> None:
-    """Best-effort cleanup of Bertrand-managed runtime artifacts on the host.
+    """Clean Bertrand-managed runtime objects and local state on the host.
 
     Parameters
     ----------
@@ -901,47 +1241,60 @@ async def bertrand_clean(*, assume_yes: bool) -> None:
     Raises
     ------
     OSError
-        If cleanup is declined by the user.
+        If cleanup is declined by the user, or if cleanup finished with failures.
     """
     if not confirm(
-        "This will attempt to remove all containers, images, and volumes created "
-        f"by Bertrand, and delete all local state stored in {STATE_DIR}.  It will not "
-        "uninstall podman or revert any host system settings.  Do you want to proceed? "
-        "[y/N] ",
+        "This will remove Bertrand-managed containers, images, volumes, and networks "
+        f"(label `{BERTRAND_ENV}=1`) and then delete local Bertrand state in "
+        f"{STATE_DIR}.  It will not uninstall MicroK8s or revert host system "
+        "settings.  Do you want to proceed? [y/N] ",
         assume_yes=assume_yes,
     ):
         raise OSError("Cleanup declined by user.")
 
-    if shutil.which("podman"):
-        try:
-            containers = await podman_ids("container", {})
-            if containers:
-                await run(
-                    ["podman", "container", "rm", "-f", "-i", *containers],
-                    check=False
-                )
-        except Exception as err:
-            print(f"bertrand: failed to clean containers:\n{err}", file=sys.stderr)
+    errors: list[str] = []
 
-        try:
-            images = await podman_ids("image", {})
-            if images:
-                await run(
-                    ["podman", "image", "rm", "-f", "-i", *images],
-                    check=False
-                )
-        except Exception as err:
-            print(f"bertrand: failed to clean images:\n{err}", file=sys.stderr)
+    # stop managed buildkit first so we don't leave stale daemon state behind.
+    await _buildkit_stop_best_effort(errors)
 
-        try:
-            volumes = await podman_ids("volume", {})
-            if volumes:
-                await run(
-                    ["podman", "volume", "rm", "-f", "-i", *volumes],
-                    check=False
-                )
-        except Exception as err:
-            print(f"bertrand: failed to clean volumes:\n{err}", file=sys.stderr)
+    # remove runtime objects associated with Bertrand metadata labels.
+    if NERDCTL_BIN.exists():
+        containers = await _nerdctl_ids_by_label("container", BERTRAND_ENV, "1", errors)
+        await _clean_batch_rm("container", containers, errors)
 
-    # delete the entire state directory
-    shutil.rmtree(STATE_DIR, ignore_errors=True)
+        images = await _nerdctl_ids_by_label("image", BERTRAND_ENV, "1", errors)
+        await _clean_batch_rm("image", images, errors)
+
+        volumes = await _nerdctl_resources_by_label_via_inspect(
+            "volume",
+            BERTRAND_ENV,
+            "1",
+            errors,
+        )
+        await _clean_batch_rm("volume", volumes, errors)
+
+        networks = await _nerdctl_resources_by_label_via_inspect(
+            "network",
+            BERTRAND_ENV,
+            "1",
+            errors,
+        )
+        await _clean_batch_rm("network", networks, errors)
+    else:
+        _append_clean_error(
+            errors,
+            "skipped runtime object cleanup",
+            f"managed nerdctl binary is missing at {NERDCTL_BIN}",
+        )
+
+    # delete the entire state directory last.
+    try:
+        shutil.rmtree(STATE_DIR)
+    except FileNotFoundError:
+        pass
+    except Exception as err:
+        _append_clean_error(errors, f"failed to remove {STATE_DIR}", err)
+
+    if errors:
+        details = "\n".join(f"- {entry}" for entry in errors)
+        raise OSError(f"Bertrand cleanup completed with errors:\n{details}")

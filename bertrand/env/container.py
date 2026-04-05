@@ -72,9 +72,38 @@ from .run import (
 # pylint: disable=redefined-builtin, redefined-outer-name, broad-except, bare-except
 
 
+# Kubernetes engine/`containerd` CLI
+MICROK8S_CHANNEL = "1.33/stable"
+MICROK8S_GROUP = "microk8s"
+MICROK8S_CONTAINERD_SOCKET = Path("/var/snap/microk8s/common/run/containerd.sock")
+MICROK8S_CONTAINERD_ADDRESS = f"unix://{MICROK8S_CONTAINERD_SOCKET.as_posix()}"
+NERDCTL_VERSION = "2.2.2"
+NERDCTL_NAMESPACE = "bertrand"
+NERDCTL_BASE_URL = (
+    f"https://github.com/containerd/nerdctl/releases/download/v{NERDCTL_VERSION}"
+)
+NERDCTL_CHECKSUM: dict[str, str] = {  # checksums for nerdctl download
+    "amd64": "8a477f35533c6cc1120c19558d8142967c74f25a4b952b481f48104e030de914",
+    "arm64": "55d68d2613b5f065021146bac21f620cde9e7fdd4bd3eff74cd324f5462e107a",
+}
+
+
 # environment metadata info
 CACHES: AbsolutePosixPath = PosixPath("/tmp/.cache")
 STATE_DIR = User().home / ".local" / "share" / "bertrand"
+TOOLS_DIR = STATE_DIR / "tools"
+TOOLS_BIN_DIR = STATE_DIR / "bin"
+TOOLS_RUN_DIR = STATE_DIR / "run"
+TOOLS_TMP_DIR = STATE_DIR / "tmp"
+NERDCTL_INSTALL_DIR = TOOLS_DIR / f"nerdctl-{NERDCTL_VERSION}"
+NERDCTL_BIN = NERDCTL_INSTALL_DIR / "bin" / "nerdctl"
+BUILDCTL_BIN = NERDCTL_INSTALL_DIR / "bin" / "buildctl"
+BUILDKITD_BIN = NERDCTL_INSTALL_DIR / "bin" / "buildkitd"
+BUILDKIT_SOCKET = TOOLS_RUN_DIR / "buildkitd.sock"
+BUILDKIT_ADDRESS = f"unix://{BUILDKIT_SOCKET.as_posix()}"
+BUILDKIT_PID_FILE = TOOLS_RUN_DIR / "buildkitd.pid"
+BUILDKIT_LOG_FILE = TOOLS_RUN_DIR / "buildkitd.log"
+BUILDKIT_LOCK_FILE = TOOLS_RUN_DIR / "buildkitd.lock"
 REGISTRY_FILE = STATE_DIR / "registry.json"
 REGISTRY_LOCK = STATE_DIR / "registry.lock"
 REGISTRY_PURGE_BATCH: int = 16
@@ -89,6 +118,336 @@ NORMALIZE_ARCH = {
     "aarch64": "arm64",
     "arm64": "arm64",
 }
+
+
+async def nerdctl(
+    argv: list[str],
+    *,
+    check: bool = True,
+    capture_output: bool | None = False,
+    input: str | None = None,
+    timeout: float | None = None,
+    cwd: Path | None = None,
+    env: Mapping[str, str] | None = None,
+) -> CompletedProcess:
+    """Invoke the managed nerdctl binary against Bertrand's MicroK8s containerd.
+
+    Parameters
+    ----------
+    argv : list[str]
+        The `nerdctl` subcommand to run, plus arguments, minus the `nerdctl` binary
+        itself.  The command will always target the MicroK8s containerd instance.
+    check : bool, optional
+        Whether to raise a `CommandError` if the command fails (default is True).  If
+        false, then any errors will be ignored.
+    capture_output : bool | None, optional
+        If true, then all output will be redirected to the returned `CompletedProcess`
+        or `CommandError`, and excluded from the inherited stdout/stderr streams.  If
+        false (the default), then the opposite is the case, and the returned
+        `CompletedProcess` or `CommandError` will not include any captured output.  If
+        None, then output will be "tee'd" to both the console and the returned objects
+        simultaneously.  Note that teeing output in this way may break TTY behavior for
+        some commands, and is not recommended for interactive use.
+    input : str | None, optional
+        Input to send to the command's stdin (default is None).
+    timeout : float | None, optional
+        An optional timeout in seconds to wait for the command to complete before
+        raising a `TimeoutExpired` exception.  Default is None, which means to wait
+        indefinitely.
+    cwd : Path | None, optional
+        An optional working directory to run the command in.  If None (the default),
+        then the current working directory will be used.
+    env : Mapping[str, str] | None, optional
+        An optional environment dictionary to use for the command.  If None (the
+        default), then the current process's environment will be used.
+
+    Returns
+    -------
+    CompletedProcess
+        The completed process result.
+
+    Raises
+    ------
+    CommandError
+        If the command fails and `check` is True.
+    TimeoutExpired
+        If the command does not complete within the specified timeout.
+    OSError
+        If we failed to open the subprocess or its output streams.
+    """
+    cmd = [
+        str(NERDCTL_BIN),
+        "--address", MICROK8S_CONTAINERD_ADDRESS,
+        "--namespace", NERDCTL_NAMESPACE,
+        *argv,
+    ]
+    merged_env = os.environ.copy()
+    if env is not None:
+        merged_env.update(env)
+    merged_env["BUILDKIT_HOST"] = BUILDKIT_ADDRESS
+    return await run(
+        cmd,
+        check=check,
+        capture_output=capture_output,
+        input=input,
+        timeout=timeout,
+        cwd=cwd,
+        env=merged_env,
+    )
+
+
+async def buildctl(
+    argv: list[str],
+    *,
+    check: bool = True,
+    capture_output: bool | None = False,
+    input: str | None = None,
+    timeout: float | None = None,
+    cwd: Path | None = None,
+    env: Mapping[str, str] | None = None,
+) -> CompletedProcess:
+    """Invoke the managed buildctl binary against Bertrand's BuildKit daemon.
+
+    Parameters
+    ----------
+    argv : list[str]
+        The `buildctl` subcommand to run, plus arguments, minus the `buildctl` binary
+        itself.  The command will always target Bertrand's pinned BuildKit daemon,
+        which must be started separately via the `ensure_buildkit()` helper before
+        calling this function.
+    check : bool, optional
+        Whether to raise a `CommandError` if the command fails (default is True).  If
+        false, then any errors will be ignored.
+    capture_output : bool | None, optional
+        If true, then all output will be redirected to the returned `CompletedProcess`
+        or `CommandError`, and excluded from the inherited stdout/stderr streams.  If
+        false (the default), then the opposite is the case, and the returned
+        `CompletedProcess` or `CommandError` will not include any captured output.  If
+        None, then output will be "tee'd" to both the console and the returned objects
+        simultaneously.  Note that teeing output in this way may break TTY behavior for
+        some commands, and is not recommended for interactive use.
+    input : str | None, optional
+        Input to send to the command's stdin (default is None).
+    timeout : float | None, optional
+        An optional timeout in seconds to wait for the command to complete before
+        raising a `TimeoutExpired` exception.  Default is None, which means to wait
+        indefinitely.
+    cwd : Path | None, optional
+        An optional working directory to run the command in.  If None (the default),
+        then the current working directory will be used.
+    env : Mapping[str, str] | None, optional
+        An optional environment dictionary to use for the command.  If None (the
+        default), then the current process's environment will be used.
+
+    Returns
+    -------
+    CompletedProcess
+        The completed process result.
+
+    Raises
+    ------
+    CommandError
+        If the command fails and `check` is True.
+    TimeoutExpired
+        If the command does not complete within the specified timeout.
+    OSError
+        If we failed to open the subprocess or its output streams.
+    """
+    cmd = [
+        str(BUILDCTL_BIN),
+        "--addr",
+        BUILDKIT_ADDRESS,
+        *argv,
+    ]
+    return await run(
+        cmd,
+        check=check,
+        capture_output=capture_output,
+        input=input,
+        timeout=timeout,
+        cwd=cwd,
+        env=env,
+    )
+
+
+def _buildkit_pid() -> int | None:
+    try:
+        value = BUILDKIT_PID_FILE.read_text(encoding="utf-8").strip()
+        if not value:
+            return None
+        return int(value)
+    except (OSError, ValueError):
+        return None
+
+
+def _buildkit_pid_alive(pid: int | None = None) -> bool:
+    if pid is None:
+        pid = _buildkit_pid()
+    if pid is None:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+async def _buildkit_workers_ready() -> bool:
+    if not BUILDKIT_SOCKET.exists():
+        return False
+    result = await buildctl(
+        ["debug", "workers"],
+        check=False,
+        capture_output=True,
+    )
+    return result.returncode == 0
+
+
+async def _start_buildkitd() -> None:
+    TOOLS_RUN_DIR.mkdir(parents=True, exist_ok=True)
+    BUILDKIT_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with BUILDKIT_LOG_FILE.open("ab") as log:
+        process = await asyncio.create_subprocess_exec(
+            str(BUILDKITD_BIN),
+            "--addr",
+            BUILDKIT_ADDRESS,
+            "--containerd-worker=true",
+            "--containerd-worker-addr",
+            str(MICROK8S_CONTAINERD_SOCKET),
+            "--containerd-worker-namespace",
+            NERDCTL_NAMESPACE,
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=log,
+            stderr=log,
+            start_new_session=True,
+        )
+    atomic_write_text(
+        BUILDKIT_PID_FILE,
+        f"{process.pid}\n",
+        encoding="utf-8",
+        private=True,
+    )
+
+
+def _tail_lines(path: Path, *, count: int = 40) -> str:
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return ""
+    if count < 1:
+        return ""
+    tail = lines[-count:]
+    return "\n".join(tail)
+
+
+async def ensure_buildkit(*, timeout: float = TIMEOUT) -> None:
+    """Ensure that the managed BuildKit daemon is running and ready.
+
+    Parameters
+    ----------
+    timeout : float
+        The maximum time to wait for the BuildKit daemon to become ready in seconds.
+        If the daemon is already running, then this function will return immediately
+        without waiting.  If the daemon is not running, then this function will attempt
+        to start it, and wait until it becomes responsive to `buildctl` commands, or
+        until the timeout is reached.
+
+    Raises
+    ------
+    OSError
+        If the managed binaries are missing.
+    TimeoutError
+        If the BuildKit daemon did not become ready within the specified timeout.
+
+    Notes
+    -----
+    A BuildKit daemon must be lazily started before attempting to build a Bertrand
+    image.  Once this function has been called, subsequent `nerdctl build` commands
+    will work normally, and will place the resulting images directly into the microK8s
+    image store, under the "bertrand" namespace.
+    """
+    if timeout < 0:
+        raise TimeoutError("BuildKit timeout must be non-negative.")
+    if not BUILDCTL_BIN.exists() or not BUILDKITD_BIN.exists():
+        raise OSError(
+            "Managed BuildKit binaries are missing.  Run `bertrand init` to install "
+            "the pinned toolchain."
+        )
+    TOOLS_RUN_DIR.mkdir(parents=True, exist_ok=True)
+    if await _buildkit_workers_ready():
+        return
+
+    async with Lock(BUILDKIT_LOCK_FILE, timeout=timeout):
+        if await _buildkit_workers_ready():
+            return
+
+        # clean up stale buildkit state from previous runs
+        pid = _buildkit_pid()
+        if pid is None or not _buildkit_pid_alive(pid):
+            try:
+                BUILDKIT_PID_FILE.unlink()
+            except FileNotFoundError:
+                pass
+            except OSError:
+                pass
+        if BUILDKIT_SOCKET.exists() and not await _buildkit_workers_ready():
+            try:
+                BUILDKIT_SOCKET.unlink()
+            except OSError:
+                pass
+
+        # if already, then we're done
+        if await _buildkit_workers_ready():
+            return
+
+        # start buildkitd
+        TOOLS_RUN_DIR.mkdir(parents=True, exist_ok=True)
+        BUILDKIT_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with BUILDKIT_LOG_FILE.open("ab") as log:
+            process = await asyncio.create_subprocess_exec(
+                str(BUILDKITD_BIN),
+                "--addr",
+                BUILDKIT_ADDRESS,
+                "--containerd-worker=true",
+                "--containerd-worker-addr",
+                str(MICROK8S_CONTAINERD_SOCKET),
+                "--containerd-worker-namespace",
+                NERDCTL_NAMESPACE,
+                stdin=asyncio.subprocess.DEVNULL,
+                stdout=log,
+                stderr=log,
+                start_new_session=True,
+            )
+        atomic_write_text(
+            BUILDKIT_PID_FILE,
+            f"{process.pid}\n",
+            encoding="utf-8",
+            private=True,
+        )
+
+        # wait for buildkitd to become reachable
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        while loop.time() <= deadline:
+            if await _buildkit_workers_ready():
+                return
+            if not _buildkit_pid_alive():
+                break
+            await asyncio.sleep(0.5)
+
+    # timed out waiting for buildkitd to start
+    detail = _tail_lines(BUILDKIT_LOG_FILE, count=40)
+    message = (
+        f"Failed to start BuildKit daemon at {BUILDKIT_ADDRESS}.  Check log at "
+        f"{BUILDKIT_LOG_FILE}."
+    )
+    if detail:
+        message += f"\n\nLast buildkitd log lines:\n{detail}"
+    raise OSError(message)
 
 
 def _check_uuid(value: str) -> str:
