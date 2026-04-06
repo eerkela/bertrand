@@ -1,5 +1,13 @@
-"""Install and run a rootless OCI container engine (podman) to orchestrate Bertrand's
-CLI.
+"""Build and run containerized environments using Bertrand's pinned Kubernetes engine
+and container runtime.
+
+This module serves as a bridge between Bertrand's local microK8s/containerd
+infrastructure and a git worktree's toolchain metadata.  It is responsible for
+bootstrapping the artifacts necessary to build images, expose them to the kubernetes
+engine, materialize workloads, and manage the lifecycle of containers and their
+metadata.  It also provides a number of endpoints for Bertrand's CLI, which hooks into
+the same primitives and provides a user-friendly interface for managing development
+environments.
 """
 from __future__ import annotations
 
@@ -9,13 +17,13 @@ import math
 import os
 import pathlib
 import re
-import shlex
 import shutil
 import stat
 import sys
 import time
 import uuid
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path, PosixPath
 from types import TracebackType
@@ -60,13 +68,13 @@ from .run import (
     WORKTREE_ENV,
     CommandError,
     CompletedProcess,
+    GitRepository,
     Lock,
     TimeoutExpired,
     User,
     atomic_write_text,
     lock_worktree,
     run,
-    sanitize_name,
 )
 
 # pylint: disable=redefined-builtin, redefined-outer-name, broad-except, bare-except
@@ -127,6 +135,8 @@ async def nerdctl(
     capture_output: bool | None = False,
     input: str | None = None,
     timeout: float | None = None,
+    attempts: int = 1,
+    delay: float = 0.1,
     cwd: Path | None = None,
     env: Mapping[str, str] | None = None,
 ) -> CompletedProcess:
@@ -153,7 +163,17 @@ async def nerdctl(
     timeout : float | None, optional
         An optional timeout in seconds to wait for the command to complete before
         raising a `TimeoutExpired` exception.  Default is None, which means to wait
-        indefinitely.
+        indefinitely.  If zero or negative, a `TimeoutExpired` exception will be raised
+        immediately.  Note that this does not reset between `attempts`, so the total
+        time spent on retries counts against the timeout.
+    attempts : int, optional
+        The total number of times to attempt the command.  Defaults to 1, which means
+        no retries.  If greater than 1, then any command that exits with a nonzero
+        exit code will be re-run after a short delay, up to the specified number
+        of times in total.
+    delay : float, optional
+        The delay in seconds to wait between retries when `attempts` is greater than 1.
+        Default is 0.1 seconds.  Must be non-negative.
     cwd : Path | None, optional
         An optional working directory to run the command in.  If None (the default),
         then the current working directory will be used.
@@ -191,9 +211,136 @@ async def nerdctl(
         capture_output=capture_output,
         input=input,
         timeout=timeout,
+        attempts=attempts,
+        delay=delay,
         cwd=cwd,
         env=merged_env,
     )
+
+
+async def nerdctl_ids(
+    mode: Literal["container", "image", "volume", "network", "secret"],
+    labels: Mapping[str, str],
+    *,
+    status: Sequence[ContainerState] | None = None,
+    timeout: float = TIMEOUT,
+) -> list[str]:
+    """Retrieve a list of nerdctl container/image/volume IDs that match the given
+    labels and status filters, if applicable.
+
+    Parameters
+    ----------
+    mode : Literal["container", "image", "volume", "network", "secret"]
+        The type of nerdctl objects to query for.
+    labels : Mapping[str, str]
+        A mapping of label keys and values to filter the results by.  Only objects that
+        have all of the specified labels with matching values will be included in the
+        results.
+    status : Sequence[ContainerState] | None, optional
+        An optional sequence of container statuses to filter by when `mode` is
+        "container".  If None (the default), then containers of all statuses will be
+        included in the results.
+    timeout : float, optional
+        The maximum time in seconds to wait for the nerdctl command to complete before
+        raising a `TimeoutExpired` exception.
+
+    Returns
+    -------
+    list[str]
+        A list of nerdctl container/image/volume IDs that match the specified filters.
+
+    Raises
+    ------
+    ValueError
+        If `mode` is not one of the allowed literals.
+    TimeoutError
+        If the nerdctl command does not complete within the specified timeout.
+    TimeoutExpired
+        If the nerdctl command does not complete within the specified timeout.
+    CommandError
+        If the nerdctl command fails for any reason other than a timeout.
+    KeyboardInterrupt
+        If the operation is interrupted by the user.
+    SystemExit
+        If some other fatal error is encountered.
+    """
+    deadline = time.time() + timeout
+
+    # form basic command based on mode
+    cmd: list[str] = []
+    if mode == "container":
+        cmd.extend([
+            "container",
+            "ls",
+            "-a",
+            "-q",
+            "--no-trunc",
+            "--filter", f"label={BERTRAND_ENV}=1"
+        ])
+    elif mode == "image":
+        cmd.extend([
+            "image",
+            "ls",
+            "-a",
+            "-q",
+            "--no-trunc",
+            "--filter", f"label={BERTRAND_ENV}=1"
+        ])
+    elif mode == "volume":
+        cmd.extend(["volume", "ls", "-q", "--filter", f"label={BERTRAND_ENV}=1"])
+    elif mode == "network":
+        cmd.extend(["network", "ls", "-q", "--filter", f"label={BERTRAND_ENV}=1"])
+    elif mode == "secret":
+        cmd.extend(["secret", "ls", "-q", "--filter", f"label={BERTRAND_ENV}=1"])
+    else:
+        raise ValueError(f"invalid mode: {mode}")
+
+    # append additional labels to filter results
+    for k, v in labels.items():
+        cmd.extend(["--filter", f"label={k}={v}"])
+
+    # parse results, returning an empty/partial list on failure (best-effort)
+    out: list[str] = []
+    seen: set[str] = set()
+    try:
+        # return all statuses by default
+        if status is None:
+            result = await nerdctl(
+                cmd,
+                capture_output=True,
+                check=False,
+                timeout=deadline - time.time()
+            )
+            if result.returncode == 0:
+                for raw_id in result.stdout.splitlines():
+                    container_id = raw_id.strip()
+                    if not container_id or container_id in seen:
+                        continue
+                    seen.add(container_id)
+                    out.append(container_id)
+            return out
+
+        # filter by status
+        for stat in status:
+            result = await nerdctl(
+                [*cmd, "--filter", f"status={stat}"],
+                capture_output=True,
+                check=False,
+                timeout=deadline - time.time()
+            )
+            if result.returncode != 0:
+                continue
+            for raw_id in result.stdout.splitlines():
+                container_id = raw_id.strip()
+                if not container_id or container_id in seen:
+                    continue
+                seen.add(container_id)
+                out.append(container_id)
+    except (TimeoutError, TimeoutExpired, KeyboardInterrupt, SystemExit):
+        raise
+    except Exception:
+        pass
+    return out
 
 
 async def buildctl(
@@ -203,6 +350,8 @@ async def buildctl(
     capture_output: bool | None = False,
     input: str | None = None,
     timeout: float | None = None,
+    attempts: int = 1,
+    delay: float = 0.1,
     cwd: Path | None = None,
     env: Mapping[str, str] | None = None,
 ) -> CompletedProcess:
@@ -231,7 +380,17 @@ async def buildctl(
     timeout : float | None, optional
         An optional timeout in seconds to wait for the command to complete before
         raising a `TimeoutExpired` exception.  Default is None, which means to wait
-        indefinitely.
+        indefinitely.  If zero or negative, a `TimeoutExpired` exception will be raised
+        immediately.  Note that this does not reset between `attempts`, so the total
+        time spent on retries counts against the timeout.
+    attempts : int, optional
+        The total number of times to attempt the command.  Defaults to 1, which means
+        no retries.  If greater than 1, then any command that exits with a nonzero
+        exit code will be re-run after a short delay, up to the specified number
+        of times in total.
+    delay : float, optional
+        The delay in seconds to wait between retries when `attempts` is greater than 1.
+        Default is 0.1 seconds.  Must be non-negative.
     cwd : Path | None, optional
         An optional working directory to run the command in.  If None (the default),
         then the current working directory will be used.
@@ -265,6 +424,8 @@ async def buildctl(
         capture_output=capture_output,
         input=input,
         timeout=timeout,
+        attempts=attempts,
+        delay=delay,
         cwd=cwd,
         env=env,
     )
@@ -305,32 +466,6 @@ async def _buildkit_workers_ready() -> bool:
         capture_output=True,
     )
     return result.returncode == 0
-
-
-async def _start_buildkitd() -> None:
-    TOOLS_RUN_DIR.mkdir(parents=True, exist_ok=True)
-    BUILDKIT_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
-    with BUILDKIT_LOG_FILE.open("ab") as log:
-        process = await asyncio.create_subprocess_exec(
-            str(BUILDKITD_BIN),
-            "--addr",
-            BUILDKIT_ADDRESS,
-            "--containerd-worker=true",
-            "--containerd-worker-addr",
-            str(MICROK8S_CONTAINERD_SOCKET),
-            "--containerd-worker-namespace",
-            NERDCTL_NAMESPACE,
-            stdin=asyncio.subprocess.DEVNULL,
-            stdout=log,
-            stderr=log,
-            start_new_session=True,
-        )
-    atomic_write_text(
-        BUILDKIT_PID_FILE,
-        f"{process.pid}\n",
-        encoding="utf-8",
-        private=True,
-    )
 
 
 def _tail_lines(path: Path, *, count: int = 40) -> str:
@@ -479,35 +614,7 @@ type CreatedAt = Annotated[AwareDatetime, AfterValidator(_to_utc)]
 type ArgsList = list[NonEmpty[Trimmed]]
 
 
-def _read_metadata(worktree: Path, *, missing_ok: bool = False) -> Environment.JSON | None:
-    env_file = worktree / METADATA_FILE
-    if not env_file.exists():
-        if missing_ok:
-            return None
-        raise FileNotFoundError(f"environment metadata file not found: {env_file}")
-    if not env_file.is_file():
-        raise OSError(f"environment metadata path is not a file: {env_file}")
-
-    try:
-        data = json_parser.loads(env_file.read_text(encoding="utf-8"))
-    except Exception as err:
-        raise OSError(f"failed to parse environment metadata at {env_file}: {err}") from err
-    if not isinstance(data, dict):
-        raise OSError(f"environment metadata at {env_file} must be a JSON object")
-
-    try:
-        return Environment.JSON.model_validate(data)
-    except Exception as err:
-        raise OSError(f"invalid environment metadata at {env_file}: {err}") from err
-
-
-def _write_metadata(worktree: Path, metadata: Environment.JSON) -> None:
-    atomic_write_text(
-        worktree / METADATA_FILE,
-        json_parser.dumps(metadata.model_dump(mode="json"), indent=2) + "\n",
-        encoding="utf-8",
-        private=True
-    )
+# TODO: make sure that the registry always stores absolute paths?
 
 
 class Registry(BaseModel):
@@ -573,7 +680,10 @@ class Registry(BaseModel):
     # methods assume the locks have already been handled by the caller.
 
     @staticmethod
-    async def _check_env(root: Path, env_id: UUID4Hex | None = None) -> Environment.JSON | None:
+    async def _check_env(
+        root: AbsolutePath,
+        env_id: UUID4Hex | None = None
+    ) -> Environment.JSON | None:
         try:
             root = root.expanduser().resolve()
             env_file = root / METADATA_FILE
@@ -589,7 +699,7 @@ class Registry(BaseModel):
 
     @staticmethod
     async def _discover_environment_mounts() -> list[Path]:
-        container_ids = await podman_ids("container", {})
+        container_ids = await nerdctl_ids("container", {})
         if not container_ids:
             return []
 
@@ -791,7 +901,7 @@ class Registry(BaseModel):
             while env.images:
                 tag, image = env.images.popitem()
                 try:
-                    ids = await podman_ids(
+                    ids = await nerdctl_ids(
                         "container",
                         labels={
                             ENV_ID_ENV: env.id,
@@ -841,182 +951,39 @@ class Registry(BaseModel):
             self.purge_cursor = None
 
 
-async def _resolve_head_worktree(root: Path) -> Path:
-    git_dir = root / ".git"
-    if git_dir.is_file():  # linked worktree
-        return root
-    if not git_dir.is_dir():
-        return root
+def _read_metadata(worktree: Path, *, missing_ok: bool = False) -> Environment.JSON | None:
+    env_file = worktree / METADATA_FILE
+    if not env_file.exists():
+        if missing_ok:
+            return None
+        raise FileNotFoundError(f"environment metadata file not found: {env_file}")
+    if not env_file.is_file():
+        raise OSError(f"environment metadata path is not a file: {env_file}")
 
-    # only parent bare repositories should auto-expand to the HEAD branch worktree
-    is_bare = await run(
-        ["git", "--git-dir", str(git_dir), "rev-parse", "--is-bare-repository"],
-        check=False,
-        capture_output=True,
-    )
-    if is_bare.returncode != 0 or is_bare.stdout.strip().lower() != "true":
-        return root
-
-    # expand to the current HEAD branch
-    head_branch = await run(
-        ["git", "--git-dir", str(git_dir), "symbolic-ref", "--quiet", "--short", "HEAD"],
-        check=False,
-        capture_output=True,
-    )
-    branch = head_branch.stdout.strip()
-    if head_branch.returncode != 0 or not branch:
-        return root
-    candidate = (root / branch).resolve()
-    if candidate.exists() and candidate.is_dir():
-        return candidate
-    raise FileNotFoundError(
-        f"bare repository at '{root}' resolved HEAD branch '{branch}', but expected "
-        f"worktree directory is missing: {candidate}"
-    )
-
-
-async def podman_ids(
-    mode: Literal["container", "image", "volume"],
-    labels: Mapping[str, str],
-    *,
-    status: Sequence[ContainerState] | None = None,
-    timeout: float = TIMEOUT,
-) -> list[str]:
-    """Retrieve a list of podman container/image/volume IDs that match the given labels
-    and status filters, if applicable.
-
-    Parameters
-    ----------
-    mode : Literal["container", "image", "volume"]
-        The type of podman objects to query for.
-    labels : Mapping[str, str]
-        A mapping of label keys and values to filter the results by.  Only objects that
-        have all of the specified labels with matching values will be included in the
-        results.
-    status : Sequence[ContainerState] | None, optional
-        An optional sequence of container statuses to filter by when `mode` is
-        "container".  If None (the default), then containers of all statuses will be
-        included in the results.
-    timeout : float, optional
-        The maximum time in seconds to wait for the podman command to complete before
-        raising a `TimeoutExpired` exception.
-
-    Returns
-    -------
-    list[str]
-        A list of podman container/image/volume IDs that match the specified filters.
-
-    Raises
-    ------
-    TimeoutError
-        If the podman command does not complete within the specified timeout.
-    TimeoutExpired
-        If the podman command does not complete within the specified timeout.
-    CommandError
-        If the podman command fails for any reason other than a timeout.
-    KeyboardInterrupt
-        If the operation is interrupted by the user.
-    SystemExit
-        If some other fatal error is encountered.
-    """
-    deadline = time.time() + timeout
-
-    # form basic command based on mode
-    cmd: list[str] = ["podman"]
-    if mode == "volume":
-        cmd.extend(["volume", "ls", "-q", "--filter", f"label={BERTRAND_ENV}=1"])
-    elif mode == "image":
-        cmd.extend([
-            "image",
-            "ls",
-            "-a",
-            "-q",
-            "--no-trunc",
-            "--filter", f"label={BERTRAND_ENV}=1"
-        ])
-    else:
-        cmd.extend([
-            "container",
-            "ls",
-            "-a",
-            "-q",
-            "--no-trunc",
-            "--filter", f"label={BERTRAND_ENV}=1"
-        ])
-
-    # append additional labels to filter results
-    for k, v in labels.items():
-        cmd.extend(["--filter", f"label={k}={v}"])
-
-    # parse results, returning an empty/partial list on failure (best-effort)
-    out: list[str] = []
-    seen: set[str] = set()
     try:
-        # return all statuses by default
-        if status is None:
-            result = await run(
-                cmd,
-                capture_output=True,
-                check=False,
-                timeout=deadline - time.time()
-            )
-            if result.returncode == 0:
-                for raw_id in result.stdout.splitlines():
-                    container_id = raw_id.strip()
-                    if not container_id or container_id in seen:
-                        continue
-                    seen.add(container_id)
-                    out.append(container_id)
-            return out
+        data = json_parser.loads(env_file.read_text(encoding="utf-8"))
+    except Exception as err:
+        raise OSError(f"failed to parse environment metadata at {env_file}: {err}") from err
+    if not isinstance(data, dict):
+        raise OSError(f"environment metadata at {env_file} must be a JSON object")
 
-        # filter by status
-        for stat in status:
-            result = await run(
-                [*cmd, "--filter", f"status={stat}"],
-                capture_output=True,
-                check=False,
-                timeout=deadline - time.time()
-            )
-            if result.returncode != 0:
-                continue
-            for raw_id in result.stdout.splitlines():
-                container_id = raw_id.strip()
-                if not container_id or container_id in seen:
-                    continue
-                seen.add(container_id)
-                out.append(container_id)
-    except (TimeoutError, TimeoutExpired, KeyboardInterrupt, SystemExit):
-        raise
-    except Exception:
-        pass
-    return out
+    try:
+        return Environment.JSON.model_validate(data)
+    except Exception as err:
+        raise OSError(f"invalid environment metadata at {env_file}: {err}") from err
 
 
-async def _podman_retry(
-    args: list[str],
-    *,
-    context: str,
-    attempts: int = 3,
-    delay: float = 0.5,
-) -> CompletedProcess:
-    if attempts < 1:
-        raise ValueError("attempts must be >= 1")
-    if delay <= 0:
-        raise ValueError("delay must be > 0")
+def _write_metadata(worktree: Path, metadata: Environment.JSON) -> None:
+    atomic_write_text(
+        worktree / METADATA_FILE,
+        json_parser.dumps(metadata.model_dump(mode="json"), indent=2) + "\n",
+        encoding="utf-8",
+        private=True
+    )
 
-    last: CommandError | None = None
-    for attempt in range(1, attempts + 1):
-        try:
-            return await run(args, capture_output=True)
-        except CommandError as err:
-            last = err
-            if attempt >= attempts:
-                break
-            await asyncio.sleep(delay * (2 ** (attempt - 1)))
 
-    assert last is not None
-    cmd = " ".join(shlex.quote(arg) for arg in ["podman", *args])
-    raise OSError(f"{context} after {attempts} attempts ({cmd}):\n{last}") from last
+# TODO: update or straight up remove `Container` inspect response, since we're now
+# using kubernetes as the control plane 
 
 
 class Container(BaseModel):
@@ -1336,14 +1303,14 @@ class Image(BaseModel):
         deadline = time.monotonic() + timeout
 
         # identify descendant containers to remove, and filter running containers
-        ids = await podman_ids(
+        ids = await nerdctl_ids(
             "container",
             labels={IMAGE_ID_ENV: self.id},
             timeout=timeout
         )
         retire = False
         if not force:
-            running = set(await podman_ids(
+            running = set(await nerdctl_ids(
                 "container",
                 labels={IMAGE_ID_ENV: self.id},
                 status=("paused", "restarting", "running"),
@@ -1425,7 +1392,7 @@ class Image(BaseModel):
 
         # read created container ID and inspect to confirm creation + expected state
         container_id: str | None = None
-        cid_file = env.root / bundle.cid_file
+        cid_file = env.config.root / bundle.cid_file
         try:
             if not cid_file.exists() or not cid_file.is_file():
                 raise OSError(f"podman create did not produce a cid file at {cid_file}")
@@ -1469,10 +1436,10 @@ class Image(BaseModel):
             raise
 
 
+@dataclass
 class Environment:
-    """On-disk metadata representing environment-level data structures, which map from
-    human-readable, stable tags to the corresponding images and containers built within
-    this environment directory.
+    """A context manager that orchestrates interactions with the kubernetes runtime in
+    order to build and schedule containerized workloads from a git worktree.
 
     This class is meant to be used as a context manager, which will automatically
     acquire and release a lock on the environment directory in order to prevent
@@ -1480,93 +1447,150 @@ class Environment:
     the outermost context, and written back to disk upon exiting it, in order to
     synchronize any changes made during the context's lifetime.
 
-    Parameters
-    ----------
-    root : Path
-        The root path of the environment directory.
-    timeout : int, optional
-        The maximum time in seconds to wait for acquiring the environment lock.
-        Defaults to `TIMEOUT`, which equates to 30 seconds.
-
     Attributes
     ----------
-    root : Path
-        An absolute root path to the environment directory.  This is not stored in the
-        on-disk JSON in order to allow relocation of the environment directory..
+    config : Config
+        The configuration object for this environment, which is responsible for loading
+        and resolving toolchain metadata from its worktree.
+    lock : Lock
+        The environment lock to synchronize access to the environment's metadata.  The
+        lock will be held as long as an `Environment` context is active.
     """
     class JSON(BaseModel):
-        """Pydantic model representing JSON metadata for a Bertrand environment."""
+        """Pydantic model representing JSON metadata to store in the environment."""
         model_config = ConfigDict(extra="forbid")
-        version: PositiveInt
-        host: UUID4Hex
-        id: UUID4Hex
-        images: dict[TagName, Image]
+        version: Annotated[PositiveInt, Field(
+            description=
+                "The schema version for backwards compatibility.  This should be "
+                "incremented whenever a breaking change is made to the metadata "
+                "format.",
+        )]
+        host: Annotated[UUID4Hex, Field(
+            description=
+                "The unique ID of the host registry this environment belongs to, which "
+                "is used to detect cross-host relocations.",
+        )]
+        id: Annotated[UUID4Hex, Field(
+            description=
+                "The unique environment ID, which is used for registry lookup and "
+                "identification purposes.  All kubernetes resources created within "
+                "this environment will be labeled with this ID to support "
+                "environment-wide lookups.",
+        )]
+        images: Annotated[dict[TagName, Image], Field(
+            default_factory=dict,
+            description=
+                "A mapping of image tags to their corresponding metadata.  Each tag "
+                "must be present in the environment's configured's `images` section.  "
+                "The values are populated when the image is built, and persisted to "
+                "disk as part of the environment metadata.",
+        )]
 
         class RetiredImage(BaseModel):
             """An entry in the retired images list, which allows garbage collection
             for outdated images that may still have running containers.
             """
             model_config = ConfigDict(extra="forbid")
-            force: bool
-            image: Image
+            force: Annotated[bool, Field(
+                description=
+                    "Whether to forcefully remove the image upon consumption, even if "
+                    "it has running containers.  This is used for explicit deletion, "
+                    "which is handled by the same system, but is distinct from the "
+                    "normal retirement process for incremental image builds.",
+            )]
+            image: Annotated[Image, Field(
+                description=
+                    "The metadata for the image to remove.  This starts out in the "
+                    "environment's `images` map, and moves to its `retired` list when "
+                    "the image is invalidated or removed.",
+            )]
 
-        retired: list[RetiredImage]
+        retired: Annotated[list[RetiredImage], Field(
+            default_factory=list,
+            description=
+                "A list of retired images that are pending removal.  Images are added "
+                "to this list when they are invalidated by a new image build, or when "
+                "they are explicitly deleted by the user.  The environment will "
+                "attempt to gracefully remove these images before writing the metadata "
+                "back to disk.",
+        )]
 
-    # TODO: `Environment.repo` should be store a `GitRepository`, and
-    # `Environment.worktree` will be relative to that repo, similar to `Config`.
-    # `Environment.root` will then convert the relative worktree path into an absolute
-    # path by concatenating with the repo root.
+    config: Config
+    lock: Lock = field(repr=False)
+    _json: JSON = field(
+        default_factory=lambda: Environment.JSON.model_construct(
+            version=0,
+            host="",
+            id="",
+            images={},
+            retired=[]
+        ),
+        repr=False
+    )
 
-    worktree: Path
-    _project_root: Path | None
-    _json: JSON
-    _config: Config | None
-    _lock: Lock
-    _entered: int
+    @classmethod
+    async def load(
+        cls,
+        worktree: Path,
+        *,
+        repo: GitRepository | None = None,
+        timeout: float = TIMEOUT,
+    ) -> Self:
+        """Load an environment at the given worktree path.
 
-    def __init__(self, worktree: Path, timeout: float = TIMEOUT) -> None:
-        self.worktree = worktree.expanduser().resolve()
-        self._project_root = None
-        self._json = self.JSON.model_construct(version=0, host="", id="", images={})
-        self._config = None
-        self._lock = lock_worktree(self.worktree, timeout=timeout)
-        self._entered = 0
+        Parameters
+        ----------
+        worktree : Path
+            The root path of the environment worktree to load.
+        repo : GitRepository | None, optional
+            An optional GitRepository instance to use for resolving the worktree path.
+            If omitted, then the repository will be automatically discovered by asking
+            git for the common directory at the worktree path.  The worktree path must
+            be a child of the repository's base directory, and must be a valid git
+            worktree associated with it.
+        timeout : float, optional
+            The maximum time in seconds to wait while acquiring the environment lock.
+            Defaults to `TIMEOUT`, which equates to 30 seconds.
 
-    @property
-    def root(self) -> AbsolutePath:
-        """
         Returns
         -------
-        AbsolutePath
-            The resolved worktree path as an absolute path.
+        Environment
+            The loaded environment instance, with initial metadata read from the
+            worktree configuration.  Note that the environment lock is not acquired,
+            and the full configuration is not loaded until the context manager is
+            entered by the caller.
         """
-        return self.worktree
+        return cls(
+            config=await Config.load(worktree, repo=repo, timeout=timeout),
+            lock=lock_worktree(worktree, timeout=timeout),
+        )
 
     async def __aenter__(self) -> Self:
-        entered = self._entered
+        """Acquire the environment lock for exclusive access, register the environment
+        to account for relocation, and finish loading the worktree's configuration.
+        """
+        nested = bool(self.config)
+        acquired = False
         try:
-            # obey registry > environment lock order
-            async with Registry.lock(timeout=self.timeout):
-                await self._lock.__aenter__()
-                self._entered += 1
-                if self._entered > 1:
-                    return self  # re-entrant case
+            # always obey registry > environment lock order
+            async with Registry.lock(timeout=self.lock.timeout):
+                await self.lock.__aenter__()
+                acquired = True
+                if nested:  # re-entrant case
+                    return self
 
                 # add to the environment registry while lock is held
                 registry = await Registry.load()
-                self._json = await registry.add(self.worktree)
+                self._json = await registry.add(self.config.root)
                 await registry.dump()
 
             # release registry lock before loading environment config to minimize contention
-            self._config = await Config.load(self.worktree)
-            await self._config.__aenter__()
+            await self.config.__aenter__()
             return self
 
         except Exception as err:
-            if self._entered > entered:
-                self._config = None
-                self._entered -= 1
-                await self._lock.__aexit__(
+            if acquired:
+                await self.lock.__aexit__(
                     type(err),
                     err,
                     getattr(err, "__traceback__", None)
@@ -1579,7 +1603,10 @@ class Environment:
         exc_value: BaseException | None,
         traceback: TracebackType | None
     ) -> None:
-        if self._entered < 1:
+        """Release the environment lock, retire outdated images, and write the new
+        metadata back to disk if anything changed.
+        """
+        if not self.config:
             raise RuntimeError("environment context manager was not entered")
 
         try:
@@ -1597,142 +1624,32 @@ class Environment:
                     continue  # already processed
                 ret.force = force
                 try:
-                    if not await ret.image.remove(force=force, timeout=self.timeout):
+                    if not await ret.image.remove(force=force, timeout=self.lock.timeout):
                         retired.append(ret)  # propagate to next generation
                 except Exception:
                     retired.append(ret)
             self._json.retired = retired
 
-            # write metadata back to disk
-            env_dir = self.worktree / METADATA_DIR
-            if self._entered == 1 and env_dir.exists():
-                _write_metadata(self.worktree, self._json)
-
         # always release the lock and local context depth
         finally:
-            if self._entered == 1 and self._config is not None:
-                await self._config.__aexit__(exc_type, exc_value, traceback)
-                self._config = None
-            await self._lock.__aexit__(exc_type, exc_value, traceback)
-            self._entered -= 1
+            await self.config.__aexit__(exc_type, exc_value, traceback)
+
+            # write metadata back to disk
+            if not self.config and (self.config.root / METADATA_DIR).exists():
+                _write_metadata(self.config.root, self._json)
+
+            await self.lock.__aexit__(exc_type, exc_value, traceback)
 
     def __bool__(self) -> bool:
-        return self._entered > 0 and self._config is not None
+        return bool(self.config)
 
     def __hash__(self) -> int:
-        return hash(self.worktree)
+        return hash(self.config)
 
     def __eq__(self, other: Any) -> bool:
-        if not isinstance(other, Environment):
-            return NotImplemented
-        return self.worktree == other.worktree
-
-    @staticmethod
-    async def parse(spec: str) -> tuple[Path, str | None, str | None]:
-        """Parse a string of the form `<worktree>[@<workload>][:<tag>]` into its
-        constituent parts.
-
-        Parameters
-        ----------
-        spec : str
-            The container specification string to parse, which is usually provided from
-            the command line or `$ bertrand ls`.
-
-        Returns
-        -------
-        tuple[Path, str, str]
-            A tuple containing the environment root path, workload, and container tag.
-            The environment root path is expanded and resolved into an absolute path,
-            which may extend a bare repository path to point to the current HEAD
-            branch.  The workload and container tag will be empty strings if not
-            provided.
-
-        Raises
-        ------
-        ValueError
-            If the environment path could not be resolved, or either tag is empty or
-            contains invalid characters.
-        """
-        workload: str | None
-        tag: str | None
-
-        # extract tag if present
-        prev, sep, tag = spec.rpartition(":")
-        if not sep:
-            prev = tag  # swap if no `:` found
-            tag = None
-        elif os.path.sep in tag:
-            prev = prev + ":" + tag  # replace if `:` is part of the path, not a tag
-            tag = None
-        if tag is not None:
-            tag = tag.strip()
-            if not tag:
-                raise ValueError(
-                    "tag cannot be empty following ':' in container specification"
-                )
-            san = sanitize_name(tag)
-            if not tag or tag != san:
-                raise ValueError(
-                    f"tag contains invalid characters: '{tag}' (sanitizes to: '{san}')"
-                )
-
-        # extract workload if present
-        worktree, sep, workload = prev.rpartition("@")
-        if not sep:
-            worktree = workload  # swap if no `@` found
-            workload = None
-        elif os.path.sep in workload:
-            worktree = prev + "@" + workload  # replace if `@` is part of the path (unlikely)
-            workload = None
-        if workload is not None:
-            workload = workload.strip()
-            if not workload:
-                raise ValueError(
-                    "workload cannot be empty following '@' in container specification"
-                )
-            san = sanitize_name(workload)
-            if not workload or workload != san:
-                raise ValueError(
-                    f"workload contains invalid characters: '{workload}' (sanitizes "
-                    f"to: '{san}')"
-                )
-
-        # attempt to load environment
-        root = Path(worktree.strip()).expanduser().resolve()
-        root = await _resolve_head_worktree(root)
-        return root, workload, tag
-
-    @property
-    def config(self) -> Config:
-        """
-        Returns
-        -------
-        Config
-            The configuration object representing the layout of the environment
-            directory and registered image/container tags and their arguments.
-
-        Raises
-        ------
-        OSError
-            If the environment has not been acquired as a context manager, or if the
-            configuration was not loaded from disk.
-        """
-        if self._entered < 1 or self._config is None:
-            raise OSError(
-                "environment must be acquired as a context manager before accessing "
-                "configuration"
-            )
-        return self._config
-
-    @property
-    def timeout(self) -> float:
-        """
-        Returns
-        -------
-        float
-            The maximum time in seconds to wait for acquiring the environment lock.
-        """
-        return self._lock.timeout
+        if isinstance(other, Environment):
+            return self.config == other.config
+        return NotImplemented
 
     @property
     def version(self) -> int:
@@ -1780,90 +1697,12 @@ class Environment:
             container that was just created and has not yet been started, or is
             currently paused, restarting, or running normally.
         """
-        ids = await podman_ids(
+        ids = await nerdctl_ids(
             "container",
             {ENV_ID_ENV: self.id},
             status=["created", "paused", "restarting", "running"]
         )
         return await Container.inspect(ids)
-
-    @property
-    async def project_root(self) -> Path:
-        """
-        Returns
-        -------
-        Path
-            The root path of the parent project repository for this linked worktree.
-            This is resolved strictly by validating that the worktree is attached to a
-            bare common-dir repository.
-
-        Raises
-        ------
-        FileNotFoundError
-            If the worktree is not attached to a valid linked-worktree repository
-            rooted at an ancestor bare project.
-        """
-        if self._project_root is not None:
-            return self._project_root
-
-        # ensure worktree is a recognized git worktree
-        inside = await run(
-            ["git", "-C", str(self.worktree), "rev-parse", "--is-inside-work-tree"],
-            capture_output=True,
-        )
-        if inside.stdout.strip().lower() != "true":
-            raise FileNotFoundError(
-                f"path is not a valid git worktree: {self.worktree}\n"
-                f"{(inside.stderr or inside.stdout).strip()}"
-            )
-
-        # resolve repository common dir and detect bare/non-bare mode
-        common = await run(
-            [
-                "git",
-                "-C", str(self.worktree),
-                "rev-parse",
-                "--path-format=absolute",
-                "--git-common-dir",
-            ],
-            capture_output=True,
-        )
-        common_dir = Path(common.stdout.strip()).expanduser().resolve()
-        if not common_dir.exists() or not common_dir.is_dir():
-            raise FileNotFoundError(
-                f"resolved git common directory does not exist or is not a directory: "
-                f"{common_dir}"
-            )
-        is_bare = await run(
-            ["git", f"--git-dir={str(common_dir)}", "rev-parse", "--is-bare-repository"],
-            capture_output=True,
-        )
-        bare = is_bare.stdout.strip().lower()
-        if bare not in {"true", "false"}:
-            raise FileNotFoundError(
-                "could not determine repository mode from git common dir: "
-                f"{common_dir}\n{(is_bare.stderr or is_bare.stdout).strip()}"
-            )
-
-        # derive project root from common-dir parent
-        project_root = common_dir.parent.resolve()
-        if bare == "true":
-            # bare parent-repo mode: worktree must be a descendant of project root
-            if not self.worktree.is_relative_to(project_root):
-                raise FileNotFoundError(
-                    f"worktree '{self.worktree}' is not contained in project root "
-                    f"'{project_root}'"
-                )
-        else:
-            # non-bare single-worktree mode: worktree must be the project root itself
-            if self.worktree != project_root:
-                raise FileNotFoundError(
-                    "non-bare repositories are supported only in single-worktree mode; "
-                    f"expected worktree '{project_root}', got '{self.worktree}'"
-                )
-
-        self._project_root = project_root
-        return project_root
 
     async def build(self, tag: TagName, *, quiet: bool) -> Image:
         """Incrementally build an image from this environment, updating it and
@@ -1895,15 +1734,14 @@ class Environment:
         ValueError
             If the tag is not recognized.
         """
-        config = self._config
-        if self._entered < 1 or config is None:
+        if not self.config:
             raise OSError(
                 "environment must be acquired as a context manager before accessing "
                 "configuration"
             )
 
         # get arguments from configured build matrix
-        bundle = await config.image_args(env_id=self.id, tag=tag)
+        bundle = await self.config.image_args(env_id=self.id, tag=tag)
 
         # build candidate image
         candidate = Image.model_construct(
@@ -1915,7 +1753,7 @@ class Environment:
         )
         await run(
             ["podman", "build", *bundle.argv],
-            cwd=config.root,
+            cwd=self.config.root,
             capture_output=quiet
         )
         candidate.id = bundle.iid_file.read_text(encoding="utf-8").strip()
@@ -1924,7 +1762,7 @@ class Environment:
         try:
             if await candidate.inspect() is None:
                 raise OSError(
-                    f"failed to build image '{tag}' for environment at {self.worktree}"
+                    f"failed to build image '{tag}' for environment at {self.config.root}"
                 )
         except Exception:
             if changed:
@@ -2003,7 +1841,12 @@ async def _cli_containers(
         raise KeyError(f"no image found for tag: '{tag}'")
     else:
         labels = {ENV_ID_ENV: env.id, IMAGE_TAG_ENV: tag}
-    return await podman_ids("container", labels=labels, status=status, timeout=timeout)
+    return await nerdctl_ids(
+        "container",
+        labels=labels,
+        status=status,
+        timeout=timeout
+    )
 
 
 async def _cli_images(
@@ -2016,7 +1859,7 @@ async def _cli_images(
         labels = {ENV_ID_ENV: env.id}
     else:
         labels = {ENV_ID_ENV: env.id, IMAGE_TAG_ENV: tag}
-    return await podman_ids("image", labels=labels, timeout=timeout)
+    return await nerdctl_ids("image", labels=labels, timeout=timeout)
 
 
 async def _start_rpc_sidecar(
@@ -2163,7 +2006,7 @@ async def podman_build(
     if tag is None:
         tag = DEFAULT_TAG
 
-    async with Environment(worktree, timeout=TIMEOUT) as env:
+    async with await Environment.load(worktree, timeout=TIMEOUT) as env:
         await env.build(tag, quiet=quiet)
 
 
@@ -2211,7 +2054,7 @@ async def podman_publish(
     if not repo:
         raise ValueError("OCI repository must be non-empty when provided")
 
-    async with Environment(worktree, timeout=TIMEOUT) as env:
+    async with await Environment.load(worktree, timeout=TIMEOUT) as env:
         bertrand = env.config.get(Bertrand)
         python = env.config.get(PyProject)
         if python is None:
@@ -2258,11 +2101,8 @@ async def podman_publish(
                 suffix = "" if tag == DEFAULT_TAG else f"-{tag}"
                 image = built[tag]
                 ref = f"{repo}:{publish_version}{suffix}-{arch}"
-                await run(["podman", "tag", image.id, ref], capture_output=True)
-                await _podman_retry(
-                    ["podman", "push", ref],
-                    context=f"failed to push arch image ref '{ref}'",
-                )
+                await nerdctl(["tag", image.id, ref], capture_output=True)
+                await nerdctl(["push", ref], attempts=3, capture_output=True)
             return arch
 
         # phase 2: assemble and publish multi-arch manifests
@@ -2272,47 +2112,35 @@ async def podman_publish(
             manifest_ref = f"{repo}:{publish_version}{suffix}"
             source_refs = [f"{manifest_ref}-{arch}" for arch in arches]
             for ref in source_refs:
-                try:
-                    await _podman_retry(
-                        ["podman", "manifest", "inspect", f"docker://{ref}"],
-                        context=f"failed to verify manifest source ref '{ref}'",
-                    )
-                except OSError as err:
-                    raise OSError(
-                        f"failed to verify source image for manifest after retries: {ref}"
-                    ) from err
+                await nerdctl(
+                    ["manifest", "inspect", f"docker://{ref}"],
+                    attempts=3,
+                    capture_output=True,
+                )
             try:
-                await run(
-                    ["podman", "manifest", "rm", manifest_ref],
+                await nerdctl(
+                    ["manifest", "rm", manifest_ref],
                     check=False,
                     capture_output=True,
                 )
-                await run(
-                    ["podman", "manifest", "create", manifest_ref],
+                await nerdctl(
+                    ["manifest", "create", manifest_ref],
                     capture_output=True
                 )
                 for ref in source_refs:
-                    await _podman_retry(
-                        ["podman", "manifest", "add", manifest_ref, f"docker://{ref}"],
-                        context=(
-                            "failed to add source image to manifest "
-                            f"'{manifest_ref}' from '{ref}'"
-                        ),
+                    await nerdctl(
+                        ["manifest", "add", manifest_ref, f"docker://{ref}"],
+                        attempts=3,
+                        capture_output=True
                     )
-                await _podman_retry(
-                    [
-                        "podman",
-                        "manifest",
-                        "push",
-                        "--all",
-                        manifest_ref,
-                        f"docker://{manifest_ref}",
-                    ],
-                    context=f"failed to push manifest '{manifest_ref}'",
+                await nerdctl(
+                    ["manifest", "push", "--all", manifest_ref, f"docker://{manifest_ref}"],
+                    attempts=3,
+                    capture_output=True
                 )
             finally:
-                await run(
-                    ["podman", "manifest", "rm", manifest_ref],
+                await nerdctl(
+                    ["manifest", "rm", manifest_ref],
                     check=False,
                     capture_output=True,
                 )
@@ -2349,17 +2177,13 @@ async def podman_start(
     if tag is None:
         tag = DEFAULT_TAG
 
-    async with Environment(worktree, timeout=TIMEOUT) as env:
-        config = env._config  # pylint: disable=protected-access
-        if config is None:
-            raise OSError(f"could not load environment at {worktree}")
-
+    async with await Environment.load(worktree, timeout=TIMEOUT) as env:
         # build/update image first, then materialize and start container from it
         image = await env.build(tag, quiet=False)
         container = await image.create(env, cmd, quiet=False)
         await container.start(
             quiet=False,
-            timeout=env.timeout,
+            timeout=env.lock.timeout,
             attach=False,
             interactive=False,
         )
@@ -2399,7 +2223,7 @@ async def podman_code(
         if not editor:
             raise ValueError("editor override must not be empty")
 
-    async with Environment(worktree, timeout=TIMEOUT) as env:
+    async with await Environment.load(worktree, timeout=TIMEOUT) as env:
         # find container runtime executable
         container_bin_str = shutil.which("podman")
         if container_bin_str is None:
@@ -2416,7 +2240,7 @@ async def podman_code(
             cmd,
             quiet=False,
         )
-        deadline = time.monotonic() + min(env.timeout, RPC_TIMEOUT)
+        deadline = time.monotonic() + min(env.lock.timeout, RPC_TIMEOUT)
 
         # strict sidecar startup for code flow
         sidecar: asyncio.subprocess.Process | None = None
@@ -2438,7 +2262,7 @@ async def podman_code(
             wait = await run(
                 ["podman", "container", "wait", container.Id],
                 capture_output=True,
-                timeout=env.timeout,
+                timeout=env.lock.timeout,
             )
             exit_code = wait.stdout.strip()
             if exit_code and exit_code != "0":
@@ -2508,7 +2332,7 @@ async def podman_enter(
             stderr="'bertrand enter' requires both stdin and stdout to be a TTY."
         )
 
-    async with Environment(worktree, timeout=TIMEOUT) as env:
+    async with await Environment.load(worktree, timeout=TIMEOUT) as env:
         # find container binary and configured shell command
         container_bin_str = shutil.which("podman")
         if container_bin_str is None:
@@ -2539,7 +2363,7 @@ async def podman_enter(
             shell_cmd,
             quiet=False,
         )
-        deadline = time.monotonic() + min(env.timeout, RPC_TIMEOUT)
+        deadline = time.monotonic() + min(env.lock.timeout, RPC_TIMEOUT)
 
         # best-effort sidecar startup for development RPC features
         sidecar = await _start_rpc_sidecar(
@@ -2610,7 +2434,7 @@ async def podman_stop(
     if workload is not None:
         raise NotImplementedError("kubernetes workloads are not yet supported")
 
-    async with Environment(worktree, timeout=deadline - time.time()) as env:
+    async with await Environment.load(worktree, timeout=deadline - time.time()) as env:
         ids = await _cli_containers(
             env,
             tag,
@@ -2658,7 +2482,7 @@ async def podman_pause(
     if workload is not None:
         raise NotImplementedError("kubernetes workloads are not yet supported")
 
-    async with Environment(worktree, timeout=deadline - time.time()) as env:
+    async with await Environment.load(worktree, timeout=deadline - time.time()) as env:
         ids = await _cli_containers(
             env,
             tag,
@@ -2699,7 +2523,7 @@ async def podman_resume(
     if workload is not None:
         raise NotImplementedError("kubernetes workloads are not yet supported")
 
-    async with Environment(worktree, timeout=deadline - time.time()) as env:
+    async with await Environment.load(worktree, timeout=deadline - time.time()) as env:
         ids = await _cli_containers(
             env,
             tag,
@@ -2736,7 +2560,7 @@ async def podman_restart(
     if workload is not None:
         raise NotImplementedError("kubernetes workloads are not yet supported")
 
-    async with Environment(worktree, timeout=TIMEOUT) as env:
+    async with await Environment.load(worktree, timeout=TIMEOUT) as env:
         tags: list[str]
         if tag is None:
             tags = list(env.images)
@@ -2748,7 +2572,7 @@ async def podman_restart(
                 env,
                 tag,
                 status=("running", "restarting", "paused"),
-                timeout=env.timeout
+                timeout=env.lock.timeout
             ))
             if not containers:
                 continue  # nothing to restart
@@ -2766,10 +2590,10 @@ async def podman_restart(
                                 "podman",
                                 "container",
                                 "restart",
-                                "-t", str(int(math.ceil(env.timeout))),
+                                "-t", str(int(math.ceil(env.lock.timeout))),
                                 container.Id
                             ],
-                            timeout=env.timeout
+                            timeout=env.lock.timeout
                         )
                     else:  # stop and restart on updated image
                         await run(
@@ -2777,10 +2601,10 @@ async def podman_restart(
                                 "podman",
                                 "container",
                                 "stop",
-                                "-t", str(int(math.ceil(env.timeout))),
+                                "-t", str(int(math.ceil(env.lock.timeout))),
                                 container.Id
                             ],
-                            timeout=env.timeout
+                            timeout=env.lock.timeout
                         )
                         if container.Path:
                             defer.append([container.Path, *container.Args])
@@ -2805,7 +2629,7 @@ async def podman_restart(
                 container = await image.create(env, cmd, quiet=False)
                 await container.start(
                     quiet=False,
-                    timeout=env.timeout,
+                    timeout=env.lock.timeout,
                     attach=False,
                     interactive=False,
                 )
@@ -2851,7 +2675,7 @@ async def podman_rm(
         raise NotImplementedError("kubernetes workloads are not yet supported")
 
     # pylint: disable=protected-access
-    async with Environment(worktree, timeout=deadline - time.time()) as env:
+    async with await Environment.load(worktree, timeout=deadline - time.time()) as env:
         if tag is None:
             while env.images:
                 tag, image = env.images.popitem()
@@ -2911,14 +2735,25 @@ async def podman_ls(
     """
     if workload is not None:
         raise NotImplementedError("kubernetes workloads are not yet supported")
-    format_mode, table_template = _parse_output_format(format, allow_id=True)
+    format_mode, table_template = _parse_output_format(
+        format,
+        allow_id=True
+    )
 
-    async with Environment(worktree, timeout=deadline - time.time()) as env:
+    async with await Environment.load(worktree, timeout=deadline - time.time()) as env:
         if format_mode == "id":
             if image:
-                ids = await _cli_images(env, tag, timeout=deadline - time.time())
+                ids = await _cli_images(
+                    env,
+                    tag,
+                    timeout=deadline - time.time()
+                )
             else:
-                ids = await _cli_containers(env, tag, timeout=deadline - time.time())
+                ids = await _cli_containers(
+                    env,
+                    tag,
+                    timeout=deadline - time.time()
+                )
             for id in ids:
                 print(id)
             return
@@ -3020,11 +2855,14 @@ async def podman_monitor(
         raise NotImplementedError("kubernetes workloads are not yet supported")
     if interval < 0:
         raise ValueError("interval must be non-negative")
-    format_mode, table_template = _parse_output_format(format, allow_id=False)
+    format_mode, table_template = _parse_output_format(
+        format,
+        allow_id=False
+    )
     if format_mode == "json" and interval:
         raise ValueError("cannot use 'json' and 'interval' together")
 
-    async with Environment(worktree, timeout=deadline - time.time()) as env:
+    async with await Environment.load(worktree, timeout=deadline - time.time()) as env:
         ids = await _cli_containers(env, tag, timeout=deadline - time.time())
         if not ids:
             if format_mode == "json":
@@ -3083,8 +2921,12 @@ async def podman_top(
     if workload is not None:
         raise NotImplementedError("kubernetes workloads are not yet supported")
 
-    async with Environment(worktree, timeout=deadline - time.time()) as env:
-        ids = await _cli_containers(env, tag, timeout=deadline - time.time())
+    async with await Environment.load(worktree, timeout=deadline - time.time()) as env:
+        ids = await _cli_containers(
+            env,
+            tag,
+            timeout=deadline - time.time()
+        )
         for id in ids:
             await run(
                 ["podman", "container", "top", id],
@@ -3134,7 +2976,7 @@ async def podman_log(
     if workload is not None:
         raise NotImplementedError("kubernetes workloads are not yet supported")
 
-    async with Environment(worktree, timeout=deadline - time.time()) as env:
+    async with await Environment.load(worktree, timeout=deadline - time.time()) as env:
         if image:
             ids = await _cli_images(env, tag, timeout=deadline - time.time())
             cmd = [
@@ -3152,7 +2994,11 @@ async def podman_log(
             if until is not None:
                 raise ValueError("cannot use 'until' with image logs")
         else:
-            ids = await _cli_containers(env, tag, timeout=deadline - time.time())
+            ids = await _cli_containers(
+                env,
+                tag,
+                timeout=deadline - time.time()
+            )
             cmd = [
                 "podman",
                 "container",

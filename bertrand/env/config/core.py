@@ -823,6 +823,14 @@ class Config:
     def __bool__(self) -> bool:
         return self._entered > 0
 
+    def __hash__(self) -> int:
+        return hash(self.root)
+
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, Config):
+            return self.root == other.root
+        return NotImplemented
+
     def __contains__(self, key: ResourceName | Resource | type[Resource]) -> bool:
         """Check if a resource ID is present in the environment.
 

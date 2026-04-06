@@ -10,8 +10,8 @@ import json
 import os
 import platform
 import pwd
-import signal
 import shutil
+import signal
 import sys
 import uuid
 from collections.abc import Awaitable, Callable
@@ -26,9 +26,8 @@ from .config import RESOURCE_NAMES, Config, Resource
 from .config.core import NonEmpty, Trimmed
 from .container import (
     BUILDCTL_BIN,
-    BUILDKITD_BIN,
-    BUILDKIT_LOG_FILE,
     BUILDKIT_PID_FILE,
+    BUILDKITD_BIN,
     MICROK8S_CHANNEL,
     MICROK8S_GROUP,
     NERDCTL_BASE_URL,
@@ -38,9 +37,11 @@ from .container import (
     NERDCTL_VERSION,
     NORMALIZE_ARCH,
     STATE_DIR,
+    TIMEOUT,
     TOOLS_DIR,
     TOOLS_TMP_DIR,
     nerdctl,
+    nerdctl_ids,
 )
 from .run import (
     BERTRAND_ENV,
@@ -882,44 +883,6 @@ async def bertrand_init(
     await _install_git_hooks(repo)
 
 
-# TODO: review cleanup logic after tying nerdctl into the new container.py runtime.
-
-
-def _append_clean_error(
-    errors: list[str],
-    context: str,
-    detail: str | Exception,
-) -> None:
-    message = str(detail).strip()
-    if message:
-        errors.append(f"{context}: {message}")
-    else:
-        errors.append(context)
-
-
-def _command_error_detail(stdout: str, stderr: str, code: int) -> str:
-    detail = stderr.strip() or stdout.strip()
-    if detail:
-        return detail
-    return f"exit code {code}"
-
-
-def _tail_text(path: Path, *, lines: int = 40) -> str:
-    try:
-        content = path.read_text(encoding="utf-8", errors="replace").splitlines()
-    except OSError:
-        return ""
-    if lines < 1:
-        return ""
-    return "\n".join(content[-lines:])
-
-
-def _chunks(values: list[str], size: int) -> list[list[str]]:
-    if size < 1:
-        raise ValueError("chunk size must be >= 1")
-    return [values[i:i + size] for i in range(0, len(values), size)]
-
-
 def _pid_alive(pid: int) -> bool:
     try:
         os.kill(pid, 0)
@@ -930,304 +893,6 @@ def _pid_alive(pid: int) -> bool:
     except OSError:
         return False
     return True
-
-
-async def _buildkit_stop_best_effort(errors: list[str]) -> None:
-    pid: int | None = None
-    try:
-        raw = BUILDKIT_PID_FILE.read_text(encoding="utf-8").strip()
-        if raw:
-            pid = int(raw)
-    except FileNotFoundError:
-        return
-    except Exception as err:
-        _append_clean_error(errors, "failed to read buildkit pid file", err)
-        return
-
-    if pid is None:
-        return
-    if not _pid_alive(pid):
-        try:
-            BUILDKIT_PID_FILE.unlink()
-        except OSError:
-            pass
-        return
-
-    try:
-        os.kill(pid, signal.SIGTERM)
-    except ProcessLookupError:
-        pass
-    except Exception as err:
-        _append_clean_error(errors, f"failed to terminate buildkitd pid {pid}", err)
-
-    deadline = asyncio.get_running_loop().time() + 5.0
-    while _pid_alive(pid) and asyncio.get_running_loop().time() < deadline:
-        await asyncio.sleep(0.1)
-
-    if _pid_alive(pid):
-        try:
-            os.kill(pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-        except Exception as err:
-            _append_clean_error(errors, f"failed to kill buildkitd pid {pid}", err)
-        await asyncio.sleep(0.1)
-
-    if _pid_alive(pid):
-        detail = _tail_text(BUILDKIT_LOG_FILE, lines=40)
-        if detail:
-            _append_clean_error(
-                errors,
-                f"buildkitd pid {pid} is still running after terminate/kill",
-                f"tail of {BUILDKIT_LOG_FILE}:\n{detail}",
-            )
-        else:
-            _append_clean_error(
-                errors,
-                f"buildkitd pid {pid} is still running after terminate/kill",
-                "",
-            )
-
-    try:
-        BUILDKIT_PID_FILE.unlink()
-    except FileNotFoundError:
-        pass
-    except OSError:
-        pass
-
-
-async def _nerdctl_ids_by_label(
-    mode: Literal["container", "image"],
-    label_key: str,
-    label_value: str,
-    errors: list[str],
-) -> list[str]:
-    if mode == "container":
-        cmd = [
-            "container",
-            "ls",
-            "-a",
-            "-q",
-            "--filter",
-            f"label={label_key}={label_value}",
-        ]
-    else:
-        cmd = [
-            "image",
-            "ls",
-            "-a",
-            "-q",
-            "--no-trunc",
-            "--filter",
-            f"label={label_key}={label_value}",
-        ]
-    try:
-        result = await nerdctl(cmd, check=False, capture_output=True)
-    except Exception as err:
-        _append_clean_error(errors, f"failed to list {mode}s for cleanup", err)
-        return []
-    if result.returncode != 0:
-        _append_clean_error(
-            errors,
-            f"failed to list {mode}s for cleanup",
-            _command_error_detail(result.stdout, result.stderr, result.returncode),
-        )
-        return []
-    seen: set[str] = set()
-    out: list[str] = []
-    for line in result.stdout.splitlines():
-        id_ = line.strip()
-        if not id_ or id_ in seen:
-            continue
-        seen.add(id_)
-        out.append(id_)
-    return out
-
-
-def _extract_labeled_ids_from_inspect(
-    payload: str,
-    *,
-    fallback_id: str | None,
-    label_key: str,
-    label_value: str,
-) -> list[str]:
-    data = json.loads(payload or "[]")
-    if isinstance(data, dict):
-        objects: list[object] = [data]
-    elif isinstance(data, list):
-        objects = data
-    else:
-        raise ValueError("inspect response was not a JSON object or array")
-
-    out: list[str] = []
-    for obj in objects:
-        if not isinstance(obj, dict):
-            continue
-        labels = obj.get("Labels")
-        if not isinstance(labels, dict):
-            continue
-        if labels.get(label_key) != label_value:
-            continue
-        candidate = obj.get("Name") or obj.get("ID") or obj.get("Id") or fallback_id
-        if not isinstance(candidate, str):
-            continue
-        candidate = candidate.strip()
-        if candidate:
-            out.append(candidate)
-    return out
-
-
-async def _nerdctl_resources_by_label_via_inspect(
-    mode: Literal["volume", "network"],
-    label_key: str,
-    label_value: str,
-    errors: list[str],
-) -> list[str]:
-    try:
-        listed = await nerdctl([mode, "ls", "-q"], check=False, capture_output=True)
-    except Exception as err:
-        _append_clean_error(errors, f"failed to list {mode}s for cleanup", err)
-        return []
-    if listed.returncode != 0:
-        _append_clean_error(
-            errors,
-            f"failed to list {mode}s for cleanup",
-            _command_error_detail(listed.stdout, listed.stderr, listed.returncode),
-        )
-        return []
-
-    ids: list[str] = []
-    seen: set[str] = set()
-    for line in listed.stdout.splitlines():
-        value = line.strip()
-        if not value or value in seen:
-            continue
-        seen.add(value)
-        ids.append(value)
-    if not ids:
-        return []
-
-    selected: list[str] = []
-    selected_seen: set[str] = set()
-    for batch in _chunks(ids, 64):
-        try:
-            inspect = await nerdctl(
-                [mode, "inspect", *batch],
-                check=False,
-                capture_output=True,
-            )
-        except Exception as err:
-            _append_clean_error(
-                errors,
-                f"failed to inspect {mode} batch during cleanup",
-                err,
-            )
-            inspect = None
-        if inspect is not None and inspect.returncode == 0:
-            try:
-                matches = _extract_labeled_ids_from_inspect(
-                    inspect.stdout,
-                    fallback_id=None,
-                    label_key=label_key,
-                    label_value=label_value,
-                )
-            except Exception as err:
-                _append_clean_error(
-                    errors,
-                    f"failed to parse {mode} inspect output during cleanup",
-                    err,
-                )
-                matches = []
-            for match in matches:
-                if match in selected_seen:
-                    continue
-                selected_seen.add(match)
-                selected.append(match)
-            continue
-
-        # batch inspect failed; fall back to single-resource inspection.
-        for resource_id in batch:
-            try:
-                single = await nerdctl(
-                    [mode, "inspect", resource_id],
-                    check=False,
-                    capture_output=True,
-                )
-            except Exception as err:
-                _append_clean_error(
-                    errors,
-                    f"failed to inspect {mode} {resource_id}",
-                    err,
-                )
-                continue
-            if single.returncode != 0:
-                _append_clean_error(
-                    errors,
-                    f"failed to inspect {mode} {resource_id}",
-                    _command_error_detail(single.stdout, single.stderr, single.returncode),
-                )
-                continue
-            try:
-                matches = _extract_labeled_ids_from_inspect(
-                    single.stdout,
-                    fallback_id=resource_id,
-                    label_key=label_key,
-                    label_value=label_value,
-                )
-            except Exception as err:
-                _append_clean_error(
-                    errors,
-                    f"failed to parse {mode} inspect output for {resource_id}",
-                    err,
-                )
-                continue
-            for match in matches:
-                if match in selected_seen:
-                    continue
-                selected_seen.add(match)
-                selected.append(match)
-    return selected
-
-
-async def _clean_batch_rm(
-    mode: Literal["container", "image", "volume", "network"],
-    ids: list[str],
-    errors: list[str],
-) -> None:
-    if not ids:
-        return
-    if mode == "container":
-        base = ["container", "rm", "-f", "-v"]
-    elif mode == "image":
-        base = ["image", "rm", "-f"]
-    elif mode == "volume":
-        base = ["volume", "rm", "-f"]
-    else:
-        base = ["network", "rm"]
-
-    # first try a batched remove.
-    try:
-        bulk = await nerdctl([*base, *ids], check=False, capture_output=True)
-    except Exception as err:
-        _append_clean_error(errors, f"failed to remove {mode}s in batch", err)
-        bulk = None
-    if bulk is not None and bulk.returncode == 0:
-        return
-
-    # if batched remove failed, keep going one-by-one to maximize cleanup.
-    for resource_id in ids:
-        try:
-            result = await nerdctl([*base, resource_id], check=False, capture_output=True)
-        except Exception as err:
-            _append_clean_error(errors, f"failed to remove {mode} {resource_id}", err)
-            continue
-        if result.returncode == 0:
-            continue
-        _append_clean_error(
-            errors,
-            f"failed to remove {mode} {resource_id}",
-            _command_error_detail(result.stdout, result.stderr, result.returncode),
-        )
 
 
 async def bertrand_clean(*, assume_yes: bool) -> None:
@@ -1244,57 +909,91 @@ async def bertrand_clean(*, assume_yes: bool) -> None:
         If cleanup is declined by the user, or if cleanup finished with failures.
     """
     if not confirm(
-        "This will remove Bertrand-managed containers, images, volumes, and networks "
-        f"(label `{BERTRAND_ENV}=1`) and then delete local Bertrand state in "
+        "This will remove Bertrand-managed containers, images, volumes, and "
+        f"networks (label `{BERTRAND_ENV}=1`) and then delete local Bertrand state in "
         f"{STATE_DIR}.  It will not uninstall MicroK8s or revert host system "
-        "settings.  Do you want to proceed? [y/N] ",
+        "settings.  Do you want to proceed?\n[y/N] ",
         assume_yes=assume_yes,
     ):
         raise OSError("Cleanup declined by user.")
 
-    errors: list[str] = []
-
-    # stop managed buildkit first so we don't leave stale daemon state behind.
-    await _buildkit_stop_best_effort(errors)
-
-    # remove runtime objects associated with Bertrand metadata labels.
-    if NERDCTL_BIN.exists():
-        containers = await _nerdctl_ids_by_label("container", BERTRAND_ENV, "1", errors)
-        await _clean_batch_rm("container", containers, errors)
-
-        images = await _nerdctl_ids_by_label("image", BERTRAND_ENV, "1", errors)
-        await _clean_batch_rm("image", images, errors)
-
-        volumes = await _nerdctl_resources_by_label_via_inspect(
-            "volume",
-            BERTRAND_ENV,
-            "1",
-            errors,
-        )
-        await _clean_batch_rm("volume", volumes, errors)
-
-        networks = await _nerdctl_resources_by_label_via_inspect(
-            "network",
-            BERTRAND_ENV,
-            "1",
-            errors,
-        )
-        await _clean_batch_rm("network", networks, errors)
-    else:
-        _append_clean_error(
-            errors,
-            "skipped runtime object cleanup",
-            f"managed nerdctl binary is missing at {NERDCTL_BIN}",
-        )
-
-    # delete the entire state directory last.
+    # stop managed buildkit first so we don't leave stale daemon state behind
     try:
-        shutil.rmtree(STATE_DIR)
-    except FileNotFoundError:
-        pass
-    except Exception as err:
-        _append_clean_error(errors, f"failed to remove {STATE_DIR}", err)
+        raw = BUILDKIT_PID_FILE.read_text(encoding="utf-8").strip()
+        if raw:
+            pid = int(raw)
+            if _pid_alive(pid):
+                # try to terminate gracefully
+                deadline = asyncio.get_running_loop().time() + TIMEOUT
+                os.kill(pid, signal.SIGTERM)
+                while _pid_alive(pid) and asyncio.get_running_loop().time() < deadline:
+                    await asyncio.sleep(0.1)
 
-    if errors:
-        details = "\n".join(f"- {entry}" for entry in errors)
-        raise OSError(f"Bertrand cleanup completed with errors:\n{details}")
+                # kill if still alive
+                if _pid_alive(pid):
+                    os.kill(pid, signal.SIGKILL)
+
+        BUILDKIT_PID_FILE.unlink(missing_ok=True)
+    except Exception as err:
+        print(
+            f"bertrand: failed to stop buildkitd during cleanup: {err}",
+            file=sys.stderr
+        )
+
+    # remove runtime objects associated with Bertrand metadata labels
+    if NERDCTL_BIN.exists():
+        chunk_size = 64  # chunks of 64 to avoid arg limits
+        try:
+            containers = await nerdctl_ids(
+                "container",
+                {BERTRAND_ENV: "1"}
+            )
+            for i in range(0, len(containers), chunk_size):
+                await nerdctl(
+                    ["container", "rm", "-f", "-i", *containers[i:i + chunk_size]],
+                    check=False,
+                )
+        except Exception as err:
+            print(f"bertrand: failed to clean containers:\n{err}", file=sys.stderr)
+
+        try:
+            images = await nerdctl_ids(
+                "image",
+                {BERTRAND_ENV: "1"}
+            )
+            for i in range(0, len(images), chunk_size):
+                await nerdctl(
+                    ["image", "rm", "-f", "-i", *images[i:i + chunk_size]],
+                    check=False,
+                )
+        except Exception as err:
+            print(f"bertrand: failed to clean images:\n{err}", file=sys.stderr)
+
+        try:
+            volumes = await nerdctl_ids(
+                "volume",
+                {BERTRAND_ENV: "1"}
+            )
+            for i in range(0, len(volumes), chunk_size):
+                await nerdctl(
+                    ["volume", "rm", "-f", *volumes[i:i + chunk_size]],
+                    check=False,
+                )
+        except Exception as err:
+            print(f"bertrand: failed to clean volumes:\n{err}", file=sys.stderr)
+
+        try:
+            networks = await nerdctl_ids(
+                "network",
+                {BERTRAND_ENV: "1"},
+            )
+            for i in range(0, len(networks), chunk_size):
+                await nerdctl(
+                    ["network", "rm", "-f", *networks[i:i + chunk_size]],
+                    check=False,
+                )
+        except Exception as err:
+            print(f"bertrand: failed to clean networks:\n{err}", file=sys.stderr)
+
+    # delete the state directory to remove pinned binaries
+    shutil.rmtree(STATE_DIR)

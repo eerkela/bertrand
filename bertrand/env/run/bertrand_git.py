@@ -304,6 +304,88 @@ def mkdir_private(path: Path) -> None:
         pass
 
 
+async def _run_no_capture(
+    argv: list[str],
+    proc: asyncio.subprocess.Process,
+    timeout: float | None,
+    input: str | None,
+) -> CompletedProcess | CommandError | None:
+    input_bytes = None if input is None else input.encode(
+        "utf-8",
+        errors="replace"
+    )
+    try:
+        await asyncio.wait_for(
+            proc.communicate(input_bytes),
+            timeout=timeout
+        )
+    except TimeoutError as err:
+        proc.kill()
+        await proc.communicate()
+        raise TimeoutExpired(
+            cmd=argv,
+            timeout=timeout or 0.0,
+            output=None,
+            stderr=None
+        ) from err
+
+    if proc.returncode is None:
+        proc.kill()
+        await proc.wait()
+        return None
+
+    if proc.returncode == 0:
+        return CompletedProcess(argv, proc.returncode, "", "")
+    return CommandError(proc.returncode, argv, "", "")
+
+
+async def _run_capture(
+    argv: list[str],
+    proc: asyncio.subprocess.Process,
+    timeout: float | None,
+    input: str | None,
+) -> CompletedProcess | CommandError | None:
+    input_bytes = None if input is None else input.encode(
+        "utf-8",
+        errors="replace"
+    )
+    try:
+        stdout_raw, stderr_raw = await asyncio.wait_for(
+            proc.communicate(input_bytes),
+            timeout=timeout,
+        )
+    except TimeoutError as err:
+        proc.kill()
+        stdout_raw, stderr_raw = await proc.communicate()
+        raise TimeoutExpired(
+            cmd=argv,
+            timeout=timeout or 0.0,
+            output=stdout_raw.decode("utf-8", errors="replace") or None,
+            stderr=stderr_raw.decode("utf-8", errors="replace") or None,
+        ) from err
+
+    if proc.returncode is None:
+        proc.kill()
+        await proc.wait()
+        return None
+
+    stdout_text = stdout_raw.decode("utf-8", errors="replace")
+    stderr_text = stderr_raw.decode("utf-8", errors="replace")
+    if proc.returncode == 0:
+        return CompletedProcess(
+            argv,
+            proc.returncode,
+            stdout_text,
+            stderr_text
+        )
+    return CommandError(
+        proc.returncode,
+        argv,
+        stdout_text,
+        stderr_text
+    )
+
+
 async def _tee(src: asyncio.StreamReader | None, sink: TextIO, buf_list: list[str]) -> None:
     if src is None:
         return
@@ -336,6 +418,66 @@ async def _write_stdin(dst: asyncio.StreamWriter | None, data: str) -> None:
             pass
 
 
+async def _run_tee(
+    argv: list[str],
+    proc: asyncio.subprocess.Process,
+    timeout: float | None,
+    input: str | None,
+) -> CompletedProcess | CommandError | None:
+    stdout_lines: list[str] = []
+    stderr_lines: list[str] = []
+    tasks: list[asyncio.Task[None]] = [
+        asyncio.create_task(_tee(
+            proc.stdout,
+            sys.stdout,
+            stdout_lines
+        )),
+        asyncio.create_task(_tee(
+            proc.stderr,
+            sys.stderr,
+            stderr_lines
+        )),
+    ]
+    if input is not None:
+        tasks.append(asyncio.create_task(_write_stdin(proc.stdin, input)))
+
+    try:
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=timeout)
+        except TimeoutError as err:
+            proc.kill()
+            await proc.wait()
+            for task in tasks:
+                await task
+            stdout_text = "".join(stdout_lines)
+            stderr_text = "".join(stderr_lines)
+            raise TimeoutExpired(
+                cmd=argv,
+                timeout=timeout or 0.0,
+                output=stdout_text or None,
+                stderr=stderr_text or None,
+            ) from err
+    finally:
+        for task in tasks:
+            await task
+
+    if proc.returncode is None:
+        proc.kill()
+        await proc.wait()
+        return None
+
+    stdout_text = "".join(stdout_lines)
+    stderr_text = "".join(stderr_lines)
+    if proc.returncode == 0:
+        return CompletedProcess(
+            argv,
+            proc.returncode,
+            stdout_text,
+            stderr_text
+        )
+    return CommandError(proc.returncode, argv, stdout_text, stderr_text)
+
+
 async def run(
     argv: list[str],
     *,
@@ -343,6 +485,8 @@ async def run(
     capture_output: bool | None = False,
     input: str | None = None,
     timeout: float | None = None,
+    attempts: int = 1,
+    delay: float = 0.1,    
     cwd: Path | None = None,
     env: Mapping[str, str] | None = None,
 ) -> CompletedProcess:
@@ -369,7 +513,17 @@ async def run(
     timeout : float | None, optional
         An optional timeout in seconds to wait for the command to complete before
         raising a `TimeoutExpired` exception.  Default is None, which means to wait
-        indefinitely.
+        indefinitely.  If zero or negative, a `TimeoutExpired` exception will be raised
+        immediately.  Note that this does not reset between `attempts`, so the total
+        time spent on retries counts against the timeout.
+    attempts : int, optional
+        The total number of times to attempt the command.  Defaults to 1, which means
+        no retries.  If greater than 1, then any command that exits with a nonzero
+        exit code will be re-run after a short delay, up to the specified number
+        of times in total.
+    delay : float, optional
+        The delay in seconds to wait between retries when `attempts` is greater than 1.
+        Default is 0.1 seconds.  Must be non-negative.
     cwd : Path | None, optional
         An optional working directory to run the command in.  If None (the default),
         then the current working directory will be used.
@@ -385,136 +539,93 @@ async def run(
     Raises
     ------
     CommandError
-        If the command fails and `check` is True.
+        If the command fails and `check` is True.  If `attempts > 1`, then this will
+        only reflect the last attempt, and any previous errors will be ignored.
     TimeoutExpired
         If the command does not complete within the specified timeout.
     OSError
         If we failed to open the subprocess or its output streams.
     """
-    if timeout is not None and timeout < 0:
+    if attempts < 1:
+        raise ValueError("attempts must be at least 1")
+    if delay < 0:
+        raise ValueError("delay must be non-negative")
+
+    # get overall deadline across attempts
+    deadline: float | None
+    if timeout is None:
+        deadline = None
+    elif timeout <= 0.0:
         raise TimeoutExpired(cmd=argv, timeout=timeout, output=None, stderr=None)
+    else:
+        deadline = asyncio.get_event_loop().time() + timeout
 
-    # capture_output=False -> inherit terminal streams and do not capture output
-    if capture_output is False:
+    # loop until success, deadline is exceeded, or attempts are exhausted
+    last_error: CommandError | None = None
+    while attempts > 0:
+        result: CompletedProcess | CommandError | None = None
         proc = await asyncio.create_subprocess_exec(
             *argv,
             stdin=asyncio.subprocess.PIPE if input is not None else None,
-            stdout=None,
-            stderr=None,
+            stdout=None if capture_output is False else asyncio.subprocess.PIPE,
+            stderr=None if capture_output is False else asyncio.subprocess.PIPE,
             cwd=cwd,
             env=env,
         )
-        try:
-            input_bytes = None if input is None else input.encode("utf-8", errors="replace")
-            try:
-                await asyncio.wait_for(proc.communicate(input_bytes), timeout=timeout)
-            except TimeoutError as err:
-                proc.kill()
-                await proc.communicate()
-                raise TimeoutExpired(
-                    cmd=argv,
-                    timeout=timeout or 0.0,
-                    output=None,
-                    stderr=None
-                ) from err
-        finally:
-            if proc.returncode is None:
-                proc.kill()
-                await proc.wait()
+        if deadline is not None:
+            timeout = deadline - asyncio.get_event_loop().time()
 
-        assert proc.returncode is not None
-        result = CompletedProcess(argv, proc.returncode, "", "")
-        if check and result.returncode != 0:
-            raise CommandError(result.returncode, argv, "", "")
-        return result
+        # capture_output=False -> inherit terminal streams and do not capture output
+        if capture_output is False:
+            result = await _run_no_capture(
+                argv,
+                proc,
+                timeout,
+                input
+            )
 
-    # capture_output=True -> full capture with no tee
-    if capture_output is True:
-        proc = await asyncio.create_subprocess_exec(
-            *argv,
-            stdin=asyncio.subprocess.PIPE if input is not None else None,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            cwd=cwd,
-            env=env,
+        # capture_output=True -> full capture with no tee
+        elif capture_output is True:
+            result = await _run_capture(
+                argv,
+                proc,
+                timeout,
+                input
+            )
+
+        # capture_output=None -> tee streams while capturing for return/errors
+        else:
+            result = await _run_tee(
+                argv,
+                proc,
+                timeout,
+                input
+            )
+
+        if isinstance(result, CompletedProcess):
+            return result
+        last_error = result
+        attempts -= 1
+        if attempts > 0:
+            await asyncio.sleep(delay)
+
+    # exhausted all attempts
+    if last_error is not None:
+        if check:
+            raise last_error
+        return CompletedProcess(
+            argv,
+            last_error.returncode,
+            last_error.output or "",
+            last_error.stderr or ""
         )
-        try:
-            input_bytes = None if input is None else input.encode("utf-8", errors="replace")
-            try:
-                stdout_raw, stderr_raw = await asyncio.wait_for(
-                    proc.communicate(input_bytes),
-                    timeout=timeout,
-                )
-            except TimeoutError as err:
-                proc.kill()
-                stdout_raw, stderr_raw = await proc.communicate()
-                raise TimeoutExpired(
-                    cmd=argv,
-                    timeout=timeout or 0.0,
-                    output=stdout_raw.decode("utf-8", errors="replace") or None,
-                    stderr=stderr_raw.decode("utf-8", errors="replace") or None,
-                ) from err
-        finally:
-            if proc.returncode is None:
-                proc.kill()
-                await proc.wait()
-
-        assert proc.returncode is not None
-        stdout_text = stdout_raw.decode("utf-8", errors="replace")
-        stderr_text = stderr_raw.decode("utf-8", errors="replace")
-        result = CompletedProcess(argv, proc.returncode, stdout_text, stderr_text)
-        if check and result.returncode != 0:
-            raise CommandError(result.returncode, argv, stdout_text, stderr_text)
-        return result
-
-    # capture_output=None -> tee streams while capturing for return/errors
-    proc = await asyncio.create_subprocess_exec(
-        *argv,
-        stdin=asyncio.subprocess.PIPE if input is not None else None,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        cwd=cwd,
-        env=env,
+    err = (
+        "unspecified error: command did not complete successfully, but no error "
+        "information was captured"
     )
-    stdout_lines: list[str] = []
-    stderr_lines: list[str] = []
-    tasks: list[asyncio.Task[None]] = [
-        asyncio.create_task(_tee(proc.stdout, sys.stdout, stdout_lines)),
-        asyncio.create_task(_tee(proc.stderr, sys.stderr, stderr_lines)),
-    ]
-    if input is not None:
-        tasks.append(asyncio.create_task(_write_stdin(proc.stdin, input)))
-
-    try:
-        try:
-            await asyncio.wait_for(proc.wait(), timeout=timeout)
-        except TimeoutError as err:
-            proc.kill()
-            await proc.wait()
-            for task in tasks:
-                await task
-            stdout_text = "".join(stdout_lines)
-            stderr_text = "".join(stderr_lines)
-            raise TimeoutExpired(
-                cmd=argv,
-                timeout=timeout or 0.0,
-                output=stdout_text or None,
-                stderr=stderr_text or None,
-            ) from err
-    finally:
-        if proc.returncode is None:
-            proc.kill()
-            await proc.wait()
-        for task in tasks:
-            await task
-
-    stdout_text = "".join(stdout_lines)
-    stderr_text = "".join(stderr_lines)
-    assert proc.returncode is not None
-    result = CompletedProcess(argv, proc.returncode, stdout_text, stderr_text)
-    if check and result.returncode != 0:
-        raise CommandError(result.returncode, argv, stdout_text, stderr_text)
-    return result
+    if check:
+        raise CommandError(-1, argv, None, err)
+    return CompletedProcess(argv, -1, "", err)
 
 
 SANITIZE = re.compile(r"[^a-zA-Z0-9._]+")
@@ -907,6 +1018,8 @@ class GitRepository:
         capture_output: bool | None = False,
         input: str | None = None,
         timeout: float | None = None,
+        attempts: int = 1,
+        delay: float = 0.1,
         cwd: Path | None = None,
         env: Mapping[str, str] | None = None,
     ) -> CompletedProcess:
@@ -917,22 +1030,33 @@ class GitRepository:
         argv : list[str]
             The command and its arguments to run, excluding the initial "git".
         check : bool, optional
-            Whether to raise a `CommandError` if the command fails (default is True).  If
-            false, then any errors will be ignored.
+            Whether to raise a `CommandError` if the command fails (default is True).
+            If false, then any errors will be ignored.
         capture_output : bool | None, optional
-            If true, then all output will be redirected to the returned `CompletedProcess`
-            or `CommandError`, and excluded from the inherited stdout/stderr streams.  If
-            false (the default), then the opposite is the case, and the returned
-            `CompletedProcess` or `CommandError` will not include any captured output.  If
-            None, then output will be "tee'd" to both the console and the returned objects
-            simultaneously.  Note that teeing output in this way may break TTY behavior for
-            some commands, and is not recommended for interactive use.
+            If true, then all output will be redirected to the returned
+            `CompletedProcess` or `CommandError`, and excluded from the inherited
+            stdout/stderr streams.  If false (the default), then the opposite is the
+            case, and the returned `CompletedProcess` or `CommandError` will not
+            include any captured output.  If None, then output will be "tee'd" to both
+            the console and the returned objects simultaneously.  Note that teeing
+            output in this way may break TTY behavior for some commands, and is not
+            recommended for interactive use.
         input : str | None, optional
             Input to send to the command's stdin (default is None).
         timeout : float | None, optional
             An optional timeout in seconds to wait for the command to complete before
             raising a `TimeoutExpired` exception.  Default is None, which means to wait
-            indefinitely.
+            indefinitely.  If zero or negative, a `TimeoutExpired` exception will be
+            raised immediately.  Note that this does not reset between `attempts`, so
+            the total time spent on retries counts against the timeout.
+        attempts : int, optional
+            The total number of times to attempt the command.  Defaults to 1, which
+            means no retries.  If greater than 1, then any command that exits with a
+            nonzero exit code will be re-run after a short delay, up to the specified
+            number of times in total.
+        delay : float, optional
+            The delay in seconds to wait between retries when `attempts` is greater
+            than 1.  Default is 0.1 seconds.  Must be non-negative.
         cwd : Path | None, optional
             An optional working directory to run the command in.  If None (the default),
             then the current working directory will be used.
@@ -960,6 +1084,8 @@ class GitRepository:
             capture_output=capture_output,
             input=input,
             timeout=timeout,
+            attempts=attempts,
+            delay=delay,
             cwd=cwd,
             env=env,
         )
