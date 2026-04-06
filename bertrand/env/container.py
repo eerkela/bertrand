@@ -17,7 +17,6 @@ import math
 import os
 import pathlib
 import re
-import shutil
 import stat
 import sys
 import time
@@ -990,7 +989,7 @@ class Container(BaseModel):
     """Type hint for container inspect output.  Note that due to the ephemeral
     container architecture, this is not persisted to disk, unlike image metadata.
 
-    https://docs.podman.io/en/latest/markdown/podman-container-inspect.1.html#examples
+    https://github.com/containerd/nerdctl/blob/main/docs/command-reference.md#whale-nerdctl-inspect
     """
     model_config = ConfigDict(extra="allow")
     Id: ContainerId
@@ -1117,23 +1116,23 @@ class Container(BaseModel):
 
     @classmethod
     async def inspect(cls, ids: list[ContainerId]) -> list[Self]:
-        """Invoke podman to inspect this container and return the parsed result.
+        """Inspect one or more containers via the container runtime.
 
         Parameters
         ----------
         ids : list[ContainerId]
-            The unique podman container IDs.
+            The unique container runtime IDs.
 
         Returns
         -------
         list[Self]
-            A list of validated JSON responses from podman.  If a container could not be
-            found, it will be omitted from the list.
+            A list of validated JSON responses from the container runtime.  If a
+            container could not be found, it will be omitted from the list.
         """
         if not ids:
             return []
-        result = await run(
-            ["podman", "container", "inspect", *ids],
+        result = await nerdctl(
+            ["container", "inspect", *ids],
             check=False,
             capture_output=True
         )
@@ -1149,12 +1148,12 @@ class Container(BaseModel):
 
     @staticmethod
     async def remove(ids: list[ContainerId], *, force: bool, timeout: float) -> None:
-        """Remove this container via podman.
+        """Remove this container via the container runtime.
 
         Parameters
         ----------
         ids : list[ContainerId]
-            The unique podman container IDs to remove.
+            The unique container runtime IDs to remove.
         force : bool
             If True, forcefully remove the container even if it is currently running
             or paused.  If False, only remove the container if it is currently stopped.
@@ -1165,10 +1164,9 @@ class Container(BaseModel):
         Raises
         ------
         CommandError
-            If the podman command fails.
+            If the container runtime command fails.
         """
         cmd = [
-            "podman",
             "container",
             "rm",
             "--depend",  # remove dependent containers
@@ -1179,7 +1177,7 @@ class Container(BaseModel):
         if force:
             cmd.append("-f")
         cmd.extend(ids)
-        await run(cmd)
+        await nerdctl(cmd)
 
     async def start(
         self,
@@ -1202,14 +1200,14 @@ class Container(BaseModel):
         interactive : bool
             If True, attach stdin for interactive input.
         """
-        cmd = ["podman", "container", "start"]
+        cmd = ["container", "start"]
         if attach:
             cmd.append("-a")
         if interactive:
             cmd.append("-i")
             cmd.append("--detach-keys=")
         cmd.append(self.Id)
-        await run(
+        await nerdctl(
             cmd,
             timeout=timeout,
             capture_output=quiet,
@@ -1233,16 +1231,16 @@ class Image(BaseModel):
         The user-friendly tag for this image, which is unique within the enclosing
         environment.
     id : str
-        The unique podman image ID.
+        The unique image ID.
     created : datetime
         The ISO timestamp when the image was created.
     image_args : list[str]
-        The original `podman build` args used to build the image.
+        The original `nerdctl build` args used to build the image.
     """
     class Inspect(BaseModel):
-        """Type hint for `podman image inspect` output.
+        """Type hint for `nerdctl image inspect` output.
 
-        https://docs.podman.io/en/latest/markdown/podman-image-inspect.1.html#example
+        https://github.com/containerd/nerdctl/blob/main/docs/command-reference.md#whale-nerdctl-image-inspect
         """
         model_config = ConfigDict(extra="allow")
         Id: ImageId
@@ -1256,15 +1254,15 @@ class Image(BaseModel):
     image_args: ArgsList
 
     async def inspect(self) -> Image.Inspect | None:
-        """Invoke podman to inspect this image.
+        """Inspect this image via the container runtime.
 
         Returns
         -------
         Image.Inspect | None
-            A JSON response from podman or None if the image could not be found.
+            A JSON response from nerdctl or None if the image could not be found.
         """
-        result = await run(
-            ["podman", "image", "inspect", self.id],
+        result = await nerdctl(
+            ["image", "inspect", self.id],
             check=False,
             capture_output=True
         )
@@ -1274,8 +1272,8 @@ class Image(BaseModel):
         return Image.Inspect.model_validate(data[0]) if data else None
 
     async def remove(self, *, force: bool, timeout: float) -> bool:
-        """Remove this image via podman.  Will also remove all containers built from
-        this image.
+        """Remove this image from the container runtime.  Will also remove all
+        containers built from this image.
 
         Parameters
         ----------
@@ -1298,7 +1296,7 @@ class Image(BaseModel):
         OSError
             If `force` is False and there are still containers referencing this image.
         CommandError
-            If any of the podman commands fail.
+            If any of the nerdctl commands fail.
         """
         deadline = time.monotonic() + timeout
 
@@ -1327,11 +1325,11 @@ class Image(BaseModel):
             return False  # retire image instead of removing it
 
         # no containers remain; safe to remove image
-        cmd = ["podman", "image", "rm", "-i"]
+        cmd = ["image", "rm", "-i"]
         if force:
             cmd.append("-f")
         cmd.append(self.id)
-        await run(cmd, timeout=deadline - time.monotonic())
+        await nerdctl(cmd, timeout=deadline - time.monotonic())
         return True
 
     async def create(
@@ -1353,7 +1351,7 @@ class Image(BaseModel):
             An optional command to override the container's default entry point.  If
             None, then the container will use the configured tag entry point.
         quiet : bool
-            If True, suppress output from podman commands.
+            If True, suppress output from container commands.
         env_vars : Mapping[str, str] | None, optional
             Optional additional environment variables to inject into the container
             process at create time.
@@ -1385,8 +1383,8 @@ class Image(BaseModel):
             cmd=cmd,
             env_vars=env_vars,
         )
-        await run(
-            ["podman", "create", *bundle.argv],
+        await nerdctl(
+            ["container", "create", *bundle.argv],
             capture_output=True if quiet else None
         )
 
@@ -1395,15 +1393,15 @@ class Image(BaseModel):
         cid_file = env.config.root / bundle.cid_file
         try:
             if not cid_file.exists() or not cid_file.is_file():
-                raise OSError(f"podman create did not produce a cid file at {cid_file}")
+                raise OSError(f"nerdctl create did not produce a cid file at {cid_file}")
             container_id = cid_file.read_text(encoding="utf-8").strip()
             if not container_id:
-                raise OSError(f"podman create produced an empty cid file at {cid_file}")
+                raise OSError(f"nerdctl create produced an empty cid file at {cid_file}")
             inspected = await Container.inspect([container_id])
             if len(inspected) != 1:
                 raise OSError(
-                    "podman create did not resolve to exactly one inspect result for "
-                    f"container '{container_id}'"
+                    "`nerdctl create` did not resolve to exactly one inspect result "
+                    f"for container '{container_id}'"
                 )
             container = inspected[0]
             if container.Id != container_id:
@@ -1419,9 +1417,8 @@ class Image(BaseModel):
             return container
         except Exception:
             if container_id:
-                await run(
+                await nerdctl(
                     [
-                        "podman",
                         "container",
                         "rm",
                         "-f",
@@ -1751,8 +1748,8 @@ class Environment:
             created=datetime.now(UTC),
             image_args=bundle.argv,
         )
-        await run(
-            ["podman", "build", *bundle.argv],
+        await nerdctl(
+            ["build", *bundle.argv],
             cwd=self.config.root,
             capture_output=quiet
         )
@@ -1766,8 +1763,8 @@ class Environment:
                 )
         except Exception:
             if changed:
-                await run(
-                    ["podman", "image", "rm", "-f", candidate.id],
+                await nerdctl(
+                    ["image", "rm", "-f", candidate.id],
                     check=False,
                     capture_output=quiet
                 )
@@ -1970,7 +1967,7 @@ def _parse_output_format(value: str, *, allow_id: bool) -> tuple[str, str | None
     raise ValueError(f"invalid format: {raw!r} (expected {expected})")
 
 
-async def podman_build(
+async def bertrand_build(
     worktree: Path,
     workload: str | None,
     tag: TagName | None,
@@ -1991,8 +1988,8 @@ async def podman_build(
         The member to target, if any.  All images matching the tag will be included in
         the output, according to the workload.
     quiet : bool
-        Whether to suppress build output from podman.  If true, then nothing will be
-        printed to stdout or stderr unless an error occurs.
+        Whether to suppress build output from the container runtime.  If true, then
+        nothing will be printed to stdout or stderr unless an error occurs.
 
     Notes
     -----
@@ -2010,7 +2007,7 @@ async def podman_build(
         await env.build(tag, quiet=quiet)
 
 
-async def podman_publish(
+async def bertrand_publish(
     worktree: Path,
     *,
     repo: str,
@@ -2044,8 +2041,8 @@ async def podman_publish(
     ------
     OSError
         If the environment is invalid, the project version cannot be determined, the
-        configured tags are invalid, or the podman CLI encounters an error during build
-        or publish.
+        configured tags are invalid, or the container runtime encounters an error
+        during build or publish.
     ValueError
         If the repository name is empty, the version string is invalid, or the manifest
         architectures are invalid.
@@ -2077,13 +2074,13 @@ async def podman_publish(
 
         # phase 1: build + publish arch-specific refs for the current runner
         if not manifest:
-            arch = _normalize_arch((await run(
-                ["podman", "info", "--format", "{{.Host.Arch}}"],
+            arch = _normalize_arch((await nerdctl(
+                ["info", "--format", "{{.Host.Arch}}"],
                 capture_output=True,
             )).stdout)
             if not arch:
                 raise OSError(
-                    "could not determine host architecture from podman info output"
+                    "could not determine host architecture from `nerdctl info` output"
                 )
 
             # build all declared tags first
@@ -2147,7 +2144,7 @@ async def podman_publish(
         return None
 
 
-async def podman_start(
+async def bertrand_start(
     worktree: Path,
     workload: str | None,
     tag: TagName | None,
@@ -2189,7 +2186,7 @@ async def podman_start(
         )
 
 
-async def podman_code(
+async def bertrand_code(
     worktree: Path,
     workload: str | None,
     tag: TagName | None,
@@ -2224,12 +2221,6 @@ async def podman_code(
             raise ValueError("editor override must not be empty")
 
     async with await Environment.load(worktree, timeout=TIMEOUT) as env:
-        # find container runtime executable
-        container_bin_str = shutil.which("podman")
-        if container_bin_str is None:
-            raise OSError("could not find a podman executable on PATH")
-        container_bin = Path(container_bin_str).expanduser().resolve()
-
         # build/update image first, then create code container with RPC metadata
         image = await env.build(tag, quiet=False)
         cmd = ["bertrand", "code", "--block"]
@@ -2247,7 +2238,7 @@ async def podman_code(
         try:
             sidecar = await _start_rpc_sidecar(
                 container=container,
-                container_bin=container_bin,
+                container_bin=NERDCTL_BIN,
                 deadline=deadline,
                 strict=True,
             )
@@ -2259,8 +2250,8 @@ async def podman_code(
                 attach=False,
                 interactive=False,
             )
-            wait = await run(
-                ["podman", "container", "wait", container.Id],
+            wait = await nerdctl(
+                ["container", "wait", container.Id],
                 capture_output=True,
                 timeout=env.lock.timeout,
             )
@@ -2275,9 +2266,8 @@ async def podman_code(
 
             # best-effort container cleanup fallback (container should usually be
             # removed automatically via --rm on command exit).
-            await run(
+            await nerdctl(
                 [
-                    "podman",
                     "container",
                     "rm",
                     "-f",
@@ -2291,7 +2281,7 @@ async def podman_code(
             )
 
 
-async def podman_enter(
+async def bertrand_enter(
     worktree: Path,
     workload: str | None,
     tag: TagName | None,
@@ -2333,11 +2323,6 @@ async def podman_enter(
         )
 
     async with await Environment.load(worktree, timeout=TIMEOUT) as env:
-        # find container binary and configured shell command
-        container_bin_str = shutil.which("podman")
-        if container_bin_str is None:
-            raise OSError("could not find a podman executable on PATH")
-        container_bin = Path(container_bin_str).expanduser().resolve()
         bertrand = env.config.get(Bertrand)
         if not bertrand:
             raise OSError(
@@ -2368,7 +2353,7 @@ async def podman_enter(
         # best-effort sidecar startup for development RPC features
         sidecar = await _start_rpc_sidecar(
             container=container,
-            container_bin=container_bin,
+            container_bin=NERDCTL_BIN,
             deadline=deadline,
             strict=False,
             warn_context=(
@@ -2391,9 +2376,8 @@ async def podman_enter(
 
             # best-effort container cleanup fallback (container should usually be
             # removed automatically via --rm on shell exit).
-            await run(
+            await nerdctl(
                 [
-                    "podman",
                     "container",
                     "rm",
                     "-f",
@@ -2407,7 +2391,7 @@ async def podman_enter(
             )
 
 
-async def podman_stop(
+async def bertrand_stop(
     worktree: Path,
     workload: str | None,
     tag: TagName | None,
@@ -2443,9 +2427,8 @@ async def podman_stop(
         )
         if ids:
             timeout = deadline - time.time()
-            await run(
+            await nerdctl(
                 [
-                    "podman",
                     "container",
                     "stop",
                     "-t", str(int(math.ceil(timeout))),
@@ -2455,7 +2438,7 @@ async def podman_stop(
             )
 
 
-async def podman_pause(
+async def bertrand_pause(
     worktree: Path,
     workload: str | None,
     tag: TagName | None,
@@ -2490,13 +2473,13 @@ async def podman_pause(
             timeout=deadline - time.time()
         )
         if ids:
-            await run(
-                ["podman", "container", "pause", *ids],
+            await nerdctl(
+                ["container", "pause", *ids],
                 timeout=deadline - time.time()
             )
 
 
-async def podman_resume(
+async def bertrand_resume(
     worktree: Path,
     workload: str | None,
     tag: TagName | None,
@@ -2531,13 +2514,13 @@ async def podman_resume(
             timeout=deadline - time.time()
         )
         if ids:
-            await run(
-                ["podman", "container", "unpause", *ids],
+            await nerdctl(
+                ["container", "unpause", *ids],
                 timeout=deadline - time.time()
             )
 
 
-async def podman_restart(
+async def bertrand_restart(
     worktree: Path,
     workload: str | None,
     tag: TagName | None,
@@ -2585,9 +2568,8 @@ async def podman_restart(
             for container in containers:
                 try:
                     if container.Image == image.id:  # restart directly
-                        await run(
+                        await nerdctl(
                             [
-                                "podman",
                                 "container",
                                 "restart",
                                 "-t", str(int(math.ceil(env.lock.timeout))),
@@ -2596,9 +2578,8 @@ async def podman_restart(
                             timeout=env.lock.timeout
                         )
                     else:  # stop and restart on updated image
-                        await run(
+                        await nerdctl(
                             [
-                                "podman",
                                 "container",
                                 "stop",
                                 "-t", str(int(math.ceil(env.lock.timeout))),
@@ -2635,7 +2616,7 @@ async def podman_restart(
                 )
 
 
-async def podman_rm(
+async def bertrand_rm(
     worktree: Path,
     workload: str | None,
     tag: TagName | None,
@@ -2692,7 +2673,7 @@ async def podman_rm(
                 ))
 
 
-async def podman_ls(
+async def bertrand_ls(
     worktree: Path,
     workload: str | None,
     tag: TagName | None,
@@ -2730,7 +2711,7 @@ async def podman_ls(
                 columns.
             -   `table <template>`: print the output as a human-readable table with
                 columns specified by the Go template string `<template>`.  See the
-                podman documentation for the available fields for containers and
+                nerdctl documentation for the available fields for containers and
                 images.
     """
     if workload is not None:
@@ -2760,7 +2741,6 @@ async def podman_ls(
 
         if image:
             cmd = [
-                "podman",
                 "image",
                 "ls",
                 "-a",
@@ -2782,7 +2762,6 @@ async def podman_ls(
                 )
         else:
             cmd = [
-                "podman",
                 "container",
                 "ls",
                 "-a",
@@ -2805,10 +2784,10 @@ async def podman_ls(
                     f"--format=table {template}"
                 )
 
-        await run(cmd, timeout=deadline - time.time())
+        await nerdctl(cmd, timeout=deadline - time.time())
 
 
-async def podman_monitor(
+async def bertrand_monitor(
     worktree: Path,
     workload: str | None,
     tag: TagName | None,
@@ -2848,7 +2827,7 @@ async def podman_monitor(
                 columns.
             -   `table <template>`: print the output as a human-readable table with
                 columns specified by the Go template string `<template>`.  See the
-                podman documentation for the available fields for containers and
+                nerdctl documentation for the available fields for containers and
                 images.
     """
     if workload is not None:
@@ -2869,7 +2848,7 @@ async def podman_monitor(
                 print("[]")
             return
 
-        cmd = ["podman", "container", "stats"]
+        cmd = ["container", "stats"]
         if not interval:
             cmd.append("--no-stream")
         else:
@@ -2879,7 +2858,7 @@ async def podman_monitor(
             cmd.append("--no-trunc")
             cmd.append("--format=json")
             cmd.extend(ids)
-            await run(cmd, timeout=deadline - time.time())
+            await nerdctl(cmd, timeout=deadline - time.time())
         else:
             template = (
                 table_template or
@@ -2890,10 +2869,10 @@ async def podman_monitor(
                 f"--format=table {template}"
             )
             cmd.extend(ids)
-            await run(cmd, timeout=deadline - time.time())
+            await nerdctl(cmd, timeout=deadline - time.time())
 
 
-async def podman_top(
+async def bertrand_top(
     worktree: Path,
     workload: str | None,
     tag: TagName | None,
@@ -2928,14 +2907,14 @@ async def podman_top(
             timeout=deadline - time.time()
         )
         for id in ids:
-            await run(
-                ["podman", "container", "top", id],
+            await nerdctl(
+                ["container", "top", id],
                 timeout=deadline - time.time(),
             )
             print()  # delimiter between containers
 
 
-async def podman_log(
+async def bertrand_log(
     worktree: Path,
     workload: str | None,
     tag: TagName | None,
@@ -2965,11 +2944,11 @@ async def podman_log(
     image : bool
         If True, then the logs will show image history instead of container logs.
     since : str | None
-        Only show logs since this timestamp.  Should be a string parsable by Podman,
+        Only show logs since this timestamp.  Should be a string parsable by nerdctl,
         such as "2024-01-01T00:00:00" or "5m" for 5 minutes ago.  If None, then all
         logs from the beginning of time will be shown.
     until : str | None
-        Only show logs until this timestamp.  Should be a string parsable by Podman,
+        Only show logs until this timestamp.  Should be a string parsable by nerdctl,
         such as "2024-01-01T00:00:00" or "5m" for 5 minutes ago.  If None, then all
         logs up to the current time will be shown.
     """
@@ -2980,7 +2959,6 @@ async def podman_log(
         if image:
             ids = await _cli_images(env, tag, timeout=deadline - time.time())
             cmd = [
-                "podman",
                 "image",
                 "history",
                 "--human",
@@ -3000,7 +2978,6 @@ async def podman_log(
                 timeout=deadline - time.time()
             )
             cmd = [
-                "podman",
                 "container",
                 "logs",
                 "--color",
@@ -3017,5 +2994,5 @@ async def podman_log(
 
         # print results to stdout, delimiting each container with a newline
         for id in ids:
-            await run([*cmd, id], timeout=deadline - time.time())
+            await nerdctl([*cmd, id], timeout=deadline - time.time())
             print()  # delimiter between containers

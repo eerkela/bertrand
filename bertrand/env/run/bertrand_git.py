@@ -628,6 +628,11 @@ async def run(
     return CompletedProcess(argv, -1, "", err)
 
 
+# TODO: I should probably just remove `sanitize_name()` to be honest, and do the
+# regex logic inline, since the set of allowable characters changes depending on the
+# context.
+
+
 SANITIZE = re.compile(r"[^a-zA-Z0-9._]+")
 
 
