@@ -12,11 +12,14 @@ environments.
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import json as json_parser
 import math
 import os
 import pathlib
 import re
+import shutil
 import stat
 import sys
 import time
@@ -50,7 +53,7 @@ from .config.core import (
     AbsolutePosixPath,
     NonEmpty,
     NoWhiteSpace,
-    TagName,
+    TOMLKey,
     Trimmed,
 )
 from .rpc import RPC_TIMEOUT
@@ -582,6 +585,214 @@ async def ensure_buildkit(*, timeout: float = TIMEOUT) -> None:
     if detail:
         message += f"\n\nLast buildkitd log lines:\n{detail}"
     raise OSError(message)
+
+
+
+
+# TODO: review these capability tokens, and maybe reduce them to config/core.py
+# or config/bertrand.py
+
+
+def _capability_token(value: str) -> str:
+    token = re.sub(r"[^a-z0-9_]+", "_", value.strip().lower())
+    token = token.strip("_")
+    if not token:
+        raise ValueError("capability ID cannot be empty")
+    return token
+
+
+def _capability_secret_name(
+    *,
+    env_id: str,
+    kind: Literal["ssh", "secret"],
+    capability_id: str,
+) -> str:
+    env_token = re.sub(r"[^a-z0-9]+", "", env_id.strip().lower())[:12]
+    if not env_token:
+        raise ValueError("environment ID cannot be empty")
+    capability_token = _capability_token(capability_id).replace("_", "-")
+    return f"bertrand-{env_token}-{kind}-{capability_token}"[:253]
+
+
+async def _cluster_secret_data(
+    *,
+    name: str,
+    timeout: float,
+) -> dict[str, str] | None:
+    result = await run(
+        [
+            "microk8s",
+            "kubectl",
+            "-n",
+            NERDCTL_NAMESPACE,
+            "get",
+            "secret",
+            name,
+            "-o",
+            "json",
+        ],
+        check=False,
+        capture_output=True,
+        timeout=timeout,
+    )
+    if result.returncode != 0:
+        return None
+    try:
+        payload = json_parser.loads(result.stdout)
+    except json_parser.JSONDecodeError as err:
+        raise OSError(
+            f"cluster secret '{name}' returned malformed JSON payload"
+        ) from err
+    raw = payload.get("data", {})
+    if not isinstance(raw, dict):
+        raise OSError(f"cluster secret '{name}' is missing a valid data mapping")
+    out: dict[str, str] = {}
+    for key, value in raw.items():
+        if isinstance(key, str) and isinstance(value, str):
+            out[key] = value
+    return out
+
+
+def _decode_cluster_secret(
+    *,
+    name: str,
+    data: Mapping[str, str],
+    preferred_keys: Sequence[str],
+) -> bytes:
+    keys = [key for key in preferred_keys if key in data]
+    if not keys and len(data) == 1:
+        keys = list(data)
+    if not keys:
+        raise OSError(
+            f"cluster secret '{name}' does not contain a recognized data key"
+        )
+    key = keys[0]
+    try:
+        return base64.b64decode(data[key], validate=True)
+    except (binascii.Error, ValueError) as err:
+        raise OSError(
+            f"cluster secret '{name}' contains invalid base64 data for key '{key}'"
+        ) from err
+
+
+def _device_env_var(capability_id: str) -> str:
+    token = re.sub(r"[^A-Za-z0-9]+", "_", capability_id.strip().upper())
+    token = token.strip("_")
+    if not token:
+        raise ValueError("capability ID cannot be empty")
+    return f"BERTRAND_DEVICE_{token}"
+
+
+async def _build_capability_flags(
+    *,
+    env_id: str,
+    tag: TOMLKey,
+    build: Bertrand.Model.Build,
+) -> tuple[list[str], Path | None]:
+    flags: list[str] = []
+    capability_dir: Path | None = None
+
+    def _ensure_capability_dir() -> Path:
+        nonlocal capability_dir
+        if capability_dir is None:
+            capability_dir = (
+                TOOLS_TMP_DIR /
+                "build-capabilities" /
+                f"{_capability_token(env_id)}.{_capability_token(tag)}.{uuid.uuid4().hex}"
+            )
+            capability_dir.mkdir(parents=True, exist_ok=True)
+        return capability_dir
+
+    def _warn_optional(kind: str, capability_id: str) -> None:
+        print(
+            f"bertrand: optional {kind} capability '{capability_id}' was not found; "
+            "continuing without it",
+            file=sys.stderr
+        )
+
+    # cluster-backed build secrets
+    for req in build.secrets:
+        secret_name = _capability_secret_name(
+            env_id=env_id,
+            kind="secret",
+            capability_id=req.id,
+        )
+        secret_data = await _cluster_secret_data(name=secret_name, timeout=TIMEOUT)
+        if secret_data is None:
+            if req.required:
+                raise OSError(
+                    f"missing required build secret capability '{req.id}' "
+                    f"(cluster secret '{secret_name}' not found in namespace "
+                    f"'{NERDCTL_NAMESPACE}')"
+                )
+            _warn_optional("secret", req.id)
+            continue
+        payload = _decode_cluster_secret(
+            name=secret_name,
+            data=secret_data,
+            preferred_keys=("value", "secret", req.id),
+        )
+        target = _ensure_capability_dir() / "secrets" / _capability_token(req.id)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(payload)
+        target.chmod(0o600)
+        flags.extend(["--secret", f"id={req.id},src={target}"])
+
+    # cluster-backed SSH keys
+    for req in build.ssh:
+        secret_name = _capability_secret_name(
+            env_id=env_id,
+            kind="ssh",
+            capability_id=req.id,
+        )
+        secret_data = await _cluster_secret_data(name=secret_name, timeout=TIMEOUT)
+        if secret_data is None:
+            if req.required:
+                raise OSError(
+                    f"missing required build ssh capability '{req.id}' "
+                    f"(cluster secret '{secret_name}' not found in namespace "
+                    f"'{NERDCTL_NAMESPACE}')"
+                )
+            _warn_optional("ssh", req.id)
+            continue
+        payload = _decode_cluster_secret(
+            name=secret_name,
+            data=secret_data,
+            preferred_keys=("private_key", "id_rsa", "value", req.id),
+        )
+        target = _ensure_capability_dir() / "ssh" / _capability_token(req.id)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(payload)
+        target.chmod(0o600)
+        flags.extend(["--ssh", f"{req.id}={target}"])
+
+    # node-local build devices
+    for req in build.devices:
+        env_var = _device_env_var(req.id)
+        selector = os.environ.get(env_var, "").strip()
+        if not selector:
+            if req.required:
+                raise OSError(
+                    f"missing required build device capability '{req.id}' "
+                    f"(set {env_var} to a CDI selector or device path)"
+                )
+            _warn_optional("device", req.id)
+            continue
+        flags.extend(["--device", f"{selector}:{req.permissions}"])
+
+    return flags, capability_dir
+
+
+def _cleanup_capability_dir(path: Path | None) -> None:
+    if path is None:
+        return
+    try:
+        shutil.rmtree(path)
+    except OSError:
+        pass
+
+
+
 
 
 def _check_uuid(value: str) -> str:
@@ -1248,7 +1459,7 @@ class Image(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
     version: PositiveInt
-    tag: TagName
+    tag: TOMLKey
     id: ImageId
     created: CreatedAt
     image_args: ArgsList
@@ -1474,7 +1685,7 @@ class Environment:
                 "this environment will be labeled with this ID to support "
                 "environment-wide lookups.",
         )]
-        images: Annotated[dict[TagName, Image], Field(
+        images: Annotated[dict[TOMLKey, Image], Field(
             default_factory=dict,
             description=
                 "A mapping of image tags to their corresponding metadata.  Each tag "
@@ -1671,11 +1882,11 @@ class Environment:
         return self._json.id
 
     @property
-    def images(self) -> dict[TagName, Image]:
+    def images(self) -> dict[TOMLKey, Image]:
         """
         Returns
         -------
-        dict[TagName, Image]
+        dict[str, Image]
             A dictionary mapping sanitized image names to their corresponding image objects.
             across all commits in this environment, which may be useful for performing
             environment-level operations across all images.
@@ -1701,7 +1912,7 @@ class Environment:
         )
         return await Container.inspect(ids)
 
-    async def build(self, tag: TagName, *, quiet: bool) -> Image:
+    async def build(self, tag: TOMLKey, *, quiet: bool) -> Image:
         """Incrementally build an image from this environment, updating it and
         gracefully retiring any outdated alternatives.
 
@@ -1736,6 +1947,16 @@ class Environment:
                 "environment must be acquired as a context manager before accessing "
                 "configuration"
             )
+        bertrand = self.config.get(Bertrand)
+        if bertrand is None:
+            raise OSError(
+                f"missing 'bertrand' configuration for environment at {self.config.root}"
+            )
+        build = bertrand.build.get(tag)
+        if build is None:
+            raise ValueError(
+                f"unknown build tag '{tag}' for environment at {self.config.root}"
+            )
 
         # get arguments from configured build matrix
         bundle = await self.config.image_args(env_id=self.id, tag=tag)
@@ -1748,27 +1969,42 @@ class Environment:
             created=datetime.now(UTC),
             image_args=bundle.argv,
         )
-        await nerdctl(
-            ["build", *bundle.argv],
-            cwd=self.config.root,
-            capture_output=quiet
+        capability_flags: list[str]
+        capability_dir: Path | None
+        capability_flags, capability_dir = await _build_capability_flags(
+            env_id=self.id,
+            tag=tag,
+            build=build,
         )
-        candidate.id = bundle.iid_file.read_text(encoding="utf-8").strip()
-        existing = self.images.get(tag)
-        changed = existing is None or existing.id != candidate.id
         try:
-            if await candidate.inspect() is None:
-                raise OSError(
-                    f"failed to build image '{tag}' for environment at {self.config.root}"
-                )
-        except Exception:
-            if changed:
-                await nerdctl(
-                    ["image", "rm", "-f", candidate.id],
-                    check=False,
-                    capture_output=quiet
-                )
-            raise
+            await nerdctl(
+                [
+                    "build",
+                    *bundle.argv[:-1],
+                    *capability_flags,
+                    bundle.argv[-1],
+                ],
+                cwd=self.config.root,
+                capture_output=quiet
+            )
+            candidate.id = bundle.iid_file.read_text(encoding="utf-8").strip()
+            existing = self.images.get(tag)
+            changed = existing is None or existing.id != candidate.id
+            try:
+                if await candidate.inspect() is None:
+                    raise OSError(
+                        f"failed to build image '{tag}' for environment at {self.config.root}"
+                    )
+            except Exception:
+                if changed:
+                    await nerdctl(
+                        ["image", "rm", "-f", candidate.id],
+                        check=False,
+                        capture_output=quiet
+                    )
+                raise
+        finally:
+            _cleanup_capability_dir(capability_dir)
 
         # retire existing image in favor of new candidate if they differ
         if changed:
@@ -1827,7 +2063,7 @@ def _parse_manifest_arches(value: str | None) -> list[str]:
 
 async def _cli_containers(
     env: Environment,
-    tag: TagName | None,
+    tag: TOMLKey | None,
     *,
     status: tuple[ContainerState, ...] = ("created", "paused", "restarting", "running"),
     timeout: float,
@@ -1848,7 +2084,7 @@ async def _cli_containers(
 
 async def _cli_images(
     env: Environment,
-    tag: TagName | None,
+    tag: TOMLKey | None,
     *,
     timeout: float,
 ) -> list[ImageId]:
@@ -1970,7 +2206,7 @@ def _parse_output_format(value: str, *, allow_id: bool) -> tuple[str, str | None
 async def bertrand_build(
     worktree: Path,
     workload: str | None,
-    tag: TagName | None,
+    tag: TOMLKey | None,
     *,
     quiet: bool,
 ) -> None:
@@ -2058,7 +2294,7 @@ async def bertrand_publish(
             raise OSError("could not determine project version for publish")
         if bertrand is None:
             raise OSError("could not determine configured tags for publish")
-        if not bertrand.image:
+        if not bertrand.build:
             raise OSError("publish requires at least one configured tag")
 
         # normalize release version and ensure it matches project version
@@ -2085,7 +2321,7 @@ async def bertrand_publish(
 
             # build all declared tags first
             built: dict[str, Image] = {}
-            for tag in bertrand.image:
+            for tag in bertrand.build:
                 try:
                     built[tag] = await env.build(tag, quiet=False)
                 except Exception as err:
@@ -2094,7 +2330,7 @@ async def bertrand_publish(
                     ) from err
 
             # push only after full build success
-            for tag in bertrand.image:
+            for tag in bertrand.build:
                 suffix = "" if tag == DEFAULT_TAG else f"-{tag}"
                 image = built[tag]
                 ref = f"{repo}:{publish_version}{suffix}-{arch}"
@@ -2104,7 +2340,7 @@ async def bertrand_publish(
 
         # phase 2: assemble and publish multi-arch manifests
         arches = _parse_manifest_arches(manifest_arches)
-        for tag in bertrand.image:
+        for tag in bertrand.build:
             suffix = "" if tag == DEFAULT_TAG else f"-{tag}"
             manifest_ref = f"{repo}:{publish_version}{suffix}"
             source_refs = [f"{manifest_ref}-{arch}" for arch in arches]
@@ -2147,7 +2383,7 @@ async def bertrand_publish(
 async def bertrand_start(
     worktree: Path,
     workload: str | None,
-    tag: TagName | None,
+    tag: TOMLKey | None,
     *,
     cmd: Sequence[str],
 ) -> None:
@@ -2189,7 +2425,7 @@ async def bertrand_start(
 async def bertrand_code(
     worktree: Path,
     workload: str | None,
-    tag: TagName | None,
+    tag: TOMLKey | None,
     *,
     editor: str | None,
 ) -> None:
@@ -2284,7 +2520,7 @@ async def bertrand_code(
 async def bertrand_enter(
     worktree: Path,
     workload: str | None,
-    tag: TagName | None,
+    tag: TOMLKey | None,
     *,
     shell: str | None,
 ) -> None:
@@ -2394,7 +2630,7 @@ async def bertrand_enter(
 async def bertrand_stop(
     worktree: Path,
     workload: str | None,
-    tag: TagName | None,
+    tag: TOMLKey | None,
     *,
     deadline: float,
 ) -> None:
@@ -2441,7 +2677,7 @@ async def bertrand_stop(
 async def bertrand_pause(
     worktree: Path,
     workload: str | None,
-    tag: TagName | None,
+    tag: TOMLKey | None,
     *,
     deadline: float
 ) -> None:
@@ -2482,7 +2718,7 @@ async def bertrand_pause(
 async def bertrand_resume(
     worktree: Path,
     workload: str | None,
-    tag: TagName | None,
+    tag: TOMLKey | None,
     *,
     deadline: float
 ) -> None:
@@ -2523,7 +2759,7 @@ async def bertrand_resume(
 async def bertrand_restart(
     worktree: Path,
     workload: str | None,
-    tag: TagName | None,
+    tag: TOMLKey | None,
 ) -> None:
     """Restart running or paused Bertrand containers within an environment.  If an
     image or container is out of date, then it will be rebuilt before restarting.
@@ -2619,7 +2855,7 @@ async def bertrand_restart(
 async def bertrand_rm(
     worktree: Path,
     workload: str | None,
-    tag: TagName | None,
+    tag: TOMLKey | None,
     *,
     deadline: float,
     force: bool,
@@ -2676,7 +2912,7 @@ async def bertrand_rm(
 async def bertrand_ls(
     worktree: Path,
     workload: str | None,
-    tag: TagName | None,
+    tag: TOMLKey | None,
     *,
     deadline: float,
     image: bool,
@@ -2790,7 +3026,7 @@ async def bertrand_ls(
 async def bertrand_monitor(
     worktree: Path,
     workload: str | None,
-    tag: TagName | None,
+    tag: TOMLKey | None,
     *,
     deadline: float,
     interval: int,
@@ -2875,7 +3111,7 @@ async def bertrand_monitor(
 async def bertrand_top(
     worktree: Path,
     workload: str | None,
-    tag: TagName | None,
+    tag: TOMLKey | None,
     *,
     deadline: float
 ) -> None:
@@ -2917,7 +3153,7 @@ async def bertrand_top(
 async def bertrand_log(
     worktree: Path,
     workload: str | None,
-    tag: TagName | None,
+    tag: TOMLKey | None,
     *,
     deadline: float,
     image: bool,

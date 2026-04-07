@@ -46,12 +46,14 @@ from .core import (
     NoCRLF,
     NonEmpty,
     NoWhiteSpace,
+    OCIImageRef,
     PosixPath,
     RelativePosixPath,
     Resource,
-    ScreamingSnakeCase,
-    TagName,
+    SnakeCase,
+    TOMLKey,
     Trimmed,
+    UpperSnakeCase,
     locate_template,
     resource,
 )
@@ -797,23 +799,297 @@ class Bertrand(Resource):
             description="Networking configuration to use within this project.",
         )]
 
-        class Image(BaseModel):
+        class Build(BaseModel):
+            """Validate entries in the `[tool.bertrand.build]` table."""
+            model_config = ConfigDict(extra="forbid")
+            containerfile: Annotated[RelativePosixPath | None, Field(
+                default=None,
+                examples=["path/to/Containerfile", None],
+                description=
+                    "Relative path to a Containerfile defining the build steps for "
+                    "this image.  This is intended to allow advanced users to define "
+                    "custom build steps for their projects outside of Bertrand's "
+                    "normal bootstrap procedure.  For the vast majority of users, this "
+                    "should be omitted, and relevant setup should be done through "
+                    "standard build tools and package managers defined elsewhere in "
+                    "project configuration.  If omitted, Bertrand will automatically "
+                    "generate a minimal Containerfile based on this information.",
+            )]
+            target: Annotated[TOMLKey | None, Field(
+                default=None,
+                examples=["stage-name", None],
+                description=
+                    "Optional target stage in a multi-stage Containerfile.  If "
+                    "omitted, the final stage will be used by default.  Cannot be "
+                    "used unless `containerfile` is also provided.",
+            )]
+            from_: Annotated[list[OCIImageRef], Field(
+                alias="from",
+                default_factory=list,
+                examples=[
+                    ["ghcr.io/acme/toolchain:1.2.3"],
+                    ["ghcr.io/acme/toolchain@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"],
+                    ["ghcr.io/acme/toolchain:1.2.3@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"],
+                ],
+                description=
+                    "List of OCI image dependencies to inject into the generated "
+                    "Containerfile.  References must be fully-qualified registry refs "
+                    "without transport prefixes, such as `ghcr.io/acme/toolchain:1.2.3`, "
+                    "`ghcr.io/acme/toolchain@sha256:<digest>`, or "
+                    "`ghcr.io/acme/toolchain:1.2.3@sha256:<digest>`.  Shorthand refs "
+                    "like `ubuntu:24.04` and transport-prefixed refs like "
+                    "`docker://ghcr.io/acme/toolchain:1.2.3` are rejected for "
+                    "portability.  This is incompatible with custom `containerfile`s, "
+                    "and is intended to supplement language-specific package managers "
+                    "for multilingual projects that make use of advanced features like "
+                    "dynamic compilation, which require a supporting toolchain.",
+            )]
+            args: Annotated[dict[NonEmpty[SnakeCase], Scalar], Field(
+                default_factory=dict,
+                examples=[
+                    "\n".join((
+                        f"[tool.bertrand.build.{DEFAULT_TAG}]",
+                        "args = { DEBUG = true, JIT = true }",
+                    )),
+                    "\n".join((
+                        f"[tool.bertrand.build.{DEFAULT_TAG}.args]",
+                        "DEBUG = true",
+                        "JIT = true",
+                        "..."
+                    ))
+                ],
+                description=
+                    "Mapping of build-time ARG variables to their values, which are "
+                    "passed to the listed Containerfile.  Bertrand-generated "
+                    "Containerfiles include only a small number of ARG instructions "
+                    "to constrain the base image, but custom Containerfiles are "
+                    "unrestricted.",
+            )]
+
+            # TODO: review + document conan configuration 
+
+            class Conan(BaseModel):
+                """Validate the `[tool.bertrand.build.<tag>.conan]` table."""
+                model_config = ConfigDict(extra="forbid")
+                build_type: Annotated[
+                    Literal["", "Release", "Debug"],
+                    Field(default="", alias="build-type")
+                ]
+                conf: Annotated[ConanConf, Field(default_factory=dict)]
+                options: Annotated[ConanOptions, Field(default_factory=dict)]
+                requires: Annotated[
+                    list[ConanConfig.Model.Require],
+                    AfterValidator(ConanConfig.Model._check_requires),
+                    Field(default_factory=list)
+                ]
+
+            conan: Annotated[Conan, Field(default_factory=Conan.model_construct)]
+
+            class Secret(BaseModel):
+                """Validate an entry in `[[tool.bertrand.build.<tag>.secrets]]`."""
+                model_config = ConfigDict(extra="forbid")
+                id: Annotated[SnakeCase, Field(
+                    examples=["pypi_token", "private_pkg_key"],
+                    description=
+                        "Host-agnostic capability ID for a build secret.  The ID is "
+                        "resolved against Bertrand's cluster-backed capability store "
+                        "at build time.",
+                )]
+                required: Annotated[bool, Field(
+                    default=True,
+                    description=
+                        "Whether this capability must be available to start the build.  "
+                        "If true and unresolved, the build fails before execution.",
+                )]
+
+            @staticmethod
+            def _check_unique_secrets(requests: list[Secret]) -> list[Secret]:
+                seen: set[SnakeCase] = set()
+                for req in requests:
+                    if req.id in seen:
+                        raise ValueError(f"duplicate secret id: '{req.id}'")
+                    seen.add(req.id)
+                return requests
+
+            secrets: Annotated[
+                list[Secret],
+                AfterValidator(_check_unique_secrets),
+                Field(
+                    default_factory=list,
+                    examples=[
+                        "\n".join((
+                            f"[tool.bertrand.build.{DEFAULT_TAG}]",
+                            "secrets = [{ id = \"pypi_token\", required = true }]",
+                        )),
+                        "\n".join((
+                            f"[[tool.bertrand.build.{DEFAULT_TAG}.secrets]]",
+                            "id = \"private_pkg_key\"",
+                            "required = false",
+                        )),
+                    ],
+                    description=
+                        "Build-time secret capability requests resolved from a "
+                        "cluster-backed capability store.  Each entry is an ID-only "
+                        "request with optional required/optional semantics."
+                )
+            ]
+
+            class SSH(BaseModel):
+                """Validate an entry in `[[tool.bertrand.build.<tag>.ssh]]`."""
+                model_config = ConfigDict(extra="forbid")
+                id: Annotated[SnakeCase, Field(
+                    examples=["git_deploy_key", "github_readonly"],
+                    description=
+                        "Host-agnostic capability ID for a build-time SSH credential.  "
+                        "The ID is resolved against Bertrand's cluster-backed capability "
+                        "store at build time.",
+                )]
+                required: Annotated[bool, Field(
+                    default=True,
+                    description=
+                        "Whether this SSH capability must be available to start the "
+                        "build.  If true and unresolved, the build fails before "
+                        "execution.",
+                )]
+
+            @staticmethod
+            def _check_unique_ssh(requests: list[SSH]) -> list[SSH]:
+                seen: set[SnakeCase] = set()
+                for req in requests:
+                    if req.id in seen:
+                        raise ValueError(f"duplicate ssh id: '{req.id}'")
+                    seen.add(req.id)
+                return requests
+
+            ssh: Annotated[
+                list[SSH],
+                AfterValidator(_check_unique_ssh),
+                Field(
+                    default_factory=list,
+                    examples=[
+                        "\n".join((
+                            f"[tool.bertrand.build.{DEFAULT_TAG}]",
+                            "secrets = [{ id = \"git_deploy_key\", required = true }]",
+                        )),
+                        "\n".join((
+                            f"[[tool.bertrand.build.{DEFAULT_TAG}.secrets]]",
+                            "id = \"github_readonly\"",
+                            "required = false",
+                        )),
+                    ],
+                    description=
+                        "Build-time SSH capability requests resolved from a "
+                        "cluster-backed capability store.  Each entry is an ID-only "
+                        "request with optional required/optional semantics."
+                )
+            ]
+
+            class Device(BaseModel):
+                """Validate an entry in `[[tool.bertrand.build.<tag>.devices]]`."""
+                model_config = ConfigDict(extra="forbid")
+                id: Annotated[SnakeCase, Field(
+                    examples=["gpu", "cuda0"],
+                    description=
+                        "Host-agnostic capability ID for build-time device access.  "
+                        "The ID is resolved by Bertrand at execution time into a "
+                        "node-local selector.",
+                )]
+                required: Annotated[bool, Field(
+                    default=True,
+                    description=
+                        "Whether this device capability must be available to start the "
+                        "build.  If true and unresolved, the build fails before "
+                        "execution.",
+                )]
+                permissions: Annotated[DevicePermission, Field(
+                    default="rwm",
+                    examples=["rwm", "rw", "r"],
+                    description=
+                        "Container-side access permissions for this build-time device "
+                        "request.",
+                )]
+
+            @staticmethod
+            def _check_unique_devices(requests: list[Device]) -> list[Device]:
+                seen: set[SnakeCase] = set()
+                for req in requests:
+                    if req.id in seen:
+                        raise ValueError(f"duplicate device id: '{req.id}'")
+                    seen.add(req.id)
+                return requests
+
+            devices: Annotated[
+                list[Device],
+                AfterValidator(_check_unique_devices),
+                Field(
+                    default_factory=list,
+                    examples=[
+                        "\n".join((
+                            f"[tool.bertrand.build.{DEFAULT_TAG}]",
+                            "secrets = [{ id = \"gpu\", required = true, permissions = \"rwm\" }]",
+                        )),
+                        "\n".join((
+                            f"[[tool.bertrand.build.{DEFAULT_TAG}.secrets]]",
+                            "id = \"fpga0\"",
+                            "required = false",
+                            "permissions = \"rw\"",
+                        )),
+                    ],
+                    description=
+                        "Build-time device capability requests.  IDs are resolved "
+                        "outside project config, while permissions remain configurable "
+                        "per request."
+                )
+            ]
+
+            @model_validator(mode="after")
+            def _validate_containerfile(self) -> Self:
+                if self.containerfile is None:
+                    if self.target is not None:
+                        raise ValueError("`target` cannot be set without `containerfile`")
+                else:
+                    if self.from_:
+                        raise ValueError(
+                            "`from` cannot be set with a custom `containerfile`"
+                        )
+                return self
+
+            def resolve_containerfile(self, root: Path, tag: TOMLKey) -> None:
+                if self.containerfile is None:
+                    return
+                path = root / self.containerfile
+                if not path.exists():
+                    raise OSError(f"path does not exist for tag '{tag}': {path}")
+                if not path.is_file():
+                    raise OSError(f"path is not a file for tag '{tag}': {path}")
+                try:
+                    path.read_text(encoding="utf-8")
+                except UnicodeDecodeError as err:
+                    raise OSError(
+                        f"file is not UTF-8 encoded for tag '{tag}': {path}"
+                    ) from err
+
+        build: Annotated[dict[TOMLKey, Build], Field(default_factory=lambda: {
+            DEFAULT_TAG: Bertrand.Model.Build.model_construct()
+        })]
+
+        class Workload(BaseModel):
             """Validate entries in the `[tool.bertrand.image]` table."""
             model_config = ConfigDict(extra="forbid")
             containerfile: Annotated[RelativePosixPath | None, Field(
                 default=None,
                 examples=["path/to/Containerfile", None],
                 description=
-                    "Relative path to a Containerfile defining the build steps for this "
-                    "image.  This is intended to allow advanced users to define custom "
-                    "build steps for their projects outside of Bertrand's normal "
-                    "bootstrap procedure.  For the vast majority of users, this should "
-                    "be omitted, and relevant setup should be done through standard "
-                    "build tools and package managers defined elsewhere in project "
-                    "configuration.  If omitted, Bertrand will automatically generate "
-                    "a minimal Containerfile based on this information.",
+                    "Relative path to a Containerfile defining the build steps for "
+                    "this image.  This is intended to allow advanced users to define "
+                    "custom build steps for their projects outside of Bertrand's "
+                    "normal bootstrap procedure.  For the vast majority of users, this "
+                    "should be omitted, and relevant setup should be done through "
+                    "standard build tools and package managers defined elsewhere in "
+                    "project configuration.  If omitted, Bertrand will automatically "
+                    "generate a minimal Containerfile based on this information.",
             )]
-            build_args: Annotated[dict[ScreamingSnakeCase, Scalar], Field(
+            build_args: Annotated[dict[UpperSnakeCase, Scalar], Field(
                 default_factory=dict,
                 alias="build-args",
                 examples=["\n".join((
@@ -962,7 +1238,7 @@ class Bertrand(Resource):
             ]
             cap_add: Annotated[
                 list[Capability],
-                AfterValidator(lambda x: Bertrand.Model.Image._check_unique(
+                AfterValidator(lambda x: Bertrand.Model.Workload._check_unique(
                     x,
                     where="cap-add capability"
                 )),
@@ -970,7 +1246,7 @@ class Bertrand(Resource):
             ]
             cap_drop: Annotated[
                 list[Capability],
-                AfterValidator(lambda x: Bertrand.Model.Image._check_unique(
+                AfterValidator(lambda x: Bertrand.Model.Workload._check_unique(
                     x,
                     where="cap-drop capability"
                 )),
@@ -978,7 +1254,7 @@ class Bertrand(Resource):
             ]
             security_opt: Annotated[
                 list[SecurityOpt],
-                AfterValidator(lambda x: Bertrand.Model.Image._check_unique(
+                AfterValidator(lambda x: Bertrand.Model.Workload._check_unique(
                     x,
                     where="security-opt entry"
                 )),
@@ -988,7 +1264,7 @@ class Bertrand(Resource):
             ipc: Annotated[IPCMode, Field(default="private")]
             pid: Annotated[PIDMode, Field(default="private")]
             uts: Annotated[UTSMode, Field(default="private")]
-            ssh: Annotated[list[ScreamingSnakeCase], Field(default_factory=list)]
+            ssh: Annotated[list[UpperSnakeCase], Field(default_factory=list)]
 
             class InstrumentEntry(BaseModel):
                 """Validate entries in the `[tool.bertrand.image.<tag>.instruments]`
@@ -1045,7 +1321,7 @@ class Bertrand(Resource):
                 class Request(BaseModel):
                     """Validate one entry in `[[tool.bertrand.image.<tag>.devices.*]]`."""
                     model_config = ConfigDict(extra="forbid")
-                    id: ScreamingSnakeCase
+                    id: UpperSnakeCase
                     required: bool = True
                     container_path: Annotated[
                         AbsolutePosixPath | None,
@@ -1055,7 +1331,7 @@ class Bertrand(Resource):
 
                 @staticmethod
                 def _check_unique_ids(requests: list[Request], *, where: str) -> list[Request]:
-                    seen: set[ScreamingSnakeCase] = set()
+                    seen: set[UpperSnakeCase] = set()
                     for req in requests:
                         if req.id in seen:
                             raise ValueError(f"duplicate {where} device id: '{req.id}'")
@@ -1065,7 +1341,7 @@ class Bertrand(Resource):
                 build: Annotated[
                     list[Request],
                     AfterValidator(
-                        lambda x: Bertrand.Model.Image.Devices._check_unique_ids(
+                        lambda x: Bertrand.Model.Workload.Devices._check_unique_ids(
                             x,
                             where="build"
                         )
@@ -1075,7 +1351,7 @@ class Bertrand(Resource):
                 run: Annotated[
                     list[Request],
                     AfterValidator(
-                        lambda x: Bertrand.Model.Image.Devices._check_unique_ids(
+                        lambda x: Bertrand.Model.Workload.Devices._check_unique_ids(
                             x,
                             where="run"
                         )
@@ -1107,12 +1383,12 @@ class Bertrand(Resource):
                 class Request(BaseModel):
                     """Validate an individual secret capability request."""
                     model_config = ConfigDict(extra="forbid")
-                    id: ScreamingSnakeCase
+                    id: UpperSnakeCase
                     required: bool = True
 
                 @staticmethod
                 def _check_unique_ids(requests: list[Request], *, where: str) -> list[Request]:
-                    seen: set[ScreamingSnakeCase] = set()
+                    seen: set[UpperSnakeCase] = set()
                     for req in requests:
                         if req.id in seen:
                             raise ValueError(f"duplicate {where} secret id: '{req.id}'")
@@ -1122,7 +1398,7 @@ class Bertrand(Resource):
                 build: Annotated[
                     list[Request],
                     AfterValidator(
-                        lambda x: Bertrand.Model.Image.Secrets._check_unique_ids(
+                        lambda x: Bertrand.Model.Workload.Secrets._check_unique_ids(
                             x,
                             where="build"
                         )
@@ -1132,7 +1408,7 @@ class Bertrand(Resource):
                 run: Annotated[
                     list[Request],
                     AfterValidator(
-                        lambda x: Bertrand.Model.Image.Secrets._check_unique_ids(
+                        lambda x: Bertrand.Model.Workload.Secrets._check_unique_ids(
                             x,
                             where="run"
                         )
@@ -1254,7 +1530,7 @@ class Bertrand(Resource):
                 Field(default_factory=Healthcheck.model_construct)
             ]
 
-            def resolve_containerfile(self, root: Path, tag: TagName) -> None:
+            def resolve_containerfile(self, root: Path, tag: TOMLKey) -> None:
                 if self.containerfile is None:
                     return
                 path = root / self.containerfile
@@ -1269,22 +1545,22 @@ class Bertrand(Resource):
                         f"file is not UTF-8 encoded for tag '{tag}': {path}"
                     ) from err
 
-        image: Annotated[dict[TagName, Image], Field(default_factory=lambda: {
-            DEFAULT_TAG: Bertrand.Model.Image.model_construct()
+        workload: Annotated[dict[TOMLKey, Workload], Field(default_factory=lambda: {
+            DEFAULT_TAG: Bertrand.Model.Workload.model_construct()
         })]
 
         @model_validator(mode="after")
-        def _validate_images(self) -> Self:
+        def _validate_build(self) -> Self:
             seen: set[str] = set()
-            for image_name in self.image:
-                if image_name in seen:
+            for tag in self.build:
+                if tag in seen:
                     raise ValueError(
-                        f"duplicate image name in 'tool.bertrand.image': '{image_name}'"
+                        f"duplicate build tag in 'tool.bertrand.build': '{tag}'"
                     )
-                seen.add(image_name)
+                seen.add(tag)
             if DEFAULT_TAG not in seen:
                 raise ValueError(
-                    "missing required default image in 'tool.bertrand.image': "
+                    "missing required default build tag in 'tool.bertrand.build': "
                     f"'{DEFAULT_TAG}'"
                 )
             return self
@@ -1376,11 +1652,11 @@ class Bertrand(Resource):
     async def validate(self, config: Config, fragment: Any) -> Model | None:
         result = self.Model.model_validate(fragment)
         _validate_dependency_groups(pyproject=config.get(PyProject), bertrand=result)
-        for image_name, image in result.image.items():
-            image.resolve_containerfile(config.root, image_name)
+        for tag, build in result.build.items():
+            build.resolve_containerfile(config.root, tag)
         return result
 
-    async def render(self, config: Config, tag: TagName | None) -> None:
+    async def render(self, config: Config, tag: TOMLKey | None) -> None:
         bertrand = config.get(Bertrand)
         if bertrand is None:
             return

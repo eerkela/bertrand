@@ -66,6 +66,14 @@ CACHE_VOLUME_ENV: str = "BERTRAND_CACHE_VOLUME"
 HTTP_URL: TypeAdapter[AnyHttpUrl] = TypeAdapter(AnyHttpUrl)
 GLOB_RE = re.compile(r"^[A-Za-z0-9._/\-\*\?\[\]!]+$")
 RESOURCE_NAME_RE = re.compile(r"^[a-z]([a-z0-9_.-]*[a-z0-9])?$")
+OCI_HOST_LABEL_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$")
+OCI_REPO_COMPONENT_PATTERN = r"[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*"
+OCI_IMAGE_REF_RE = re.compile(
+    rf"^(?P<registry>[^/@\s]+)/"
+    rf"(?P<path>{OCI_REPO_COMPONENT_PATTERN}(?:/{OCI_REPO_COMPONENT_PATTERN})*)"
+    r"(?::(?P<tag>[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}))?"
+    r"(?:@(?P<digest>sha256:[0-9a-f]{64}))?$"
+)
 
 
 def _check_glob(pattern: str) -> str:
@@ -121,7 +129,47 @@ def _check_url_label(label: str) -> str:
     return label.translate(removal_map).lower()
 
 
+def _check_oci_image_ref(value: str) -> str:
+    # match regex
+    ref = value.strip()
+    if not ref:
+        raise ValueError("OCI image reference cannot be empty")
+    match = OCI_IMAGE_REF_RE.fullmatch(ref)
+    if match is None:
+        raise ValueError(f"invalid OCI image reference: '{ref}'")
+
+    # verify OCI registry
+    registry = match.group("registry")
+    host, sep, port = registry.rpartition(":")
+    if not sep:  # no port
+        host = port
+        port = ""
+    if not host or (port and not port.isdigit()):
+        raise ValueError(f"invalid registry host/port in OCI image reference: '{ref}'")
+    if not all(
+        OCI_HOST_LABEL_RE.fullmatch(part) for part in host.split(".")
+    ):
+        raise ValueError(f"invalid registry host in OCI image reference: '{ref}'")
+    if host != "localhost" and "." not in host and not port:
+        raise ValueError(
+            "OCI image reference registry must be explicit: use 'localhost', "
+            "a dotted hostname, or a host with ':<port>'"
+        )
+
+    # enforce at least one of tag or digest to ensure portability
+    if match.group("tag") is None and match.group("digest") is None:
+        raise ValueError(
+            "OCI image reference must include a tag or sha256 digest pin "
+            f"(got '{ref}')"
+        )
+    return ref
+
+
 type NonEmpty[SequenceT: Sequence[Any]] = Annotated[SequenceT, Field(min_length=1)]
+type Unique[SequenceT: Sequence[Any]] = Annotated[
+    SequenceT,
+    AfterValidator(lambda x: len(set(x)) == len(x))
+]
 type Trimmed = Annotated[str, StringConstraints(strip_whitespace=True)]
 type NoCRLF = Annotated[  # pylint: disable=invalid-name
     str,
@@ -131,6 +179,23 @@ type NoWhiteSpace = Annotated[
     str,
     StringConstraints(strip_whitespace=True, pattern=r"^\S*$")
 ]
+type SnakeCase = Annotated[str, StringConstraints(
+    strip_whitespace=True,
+    pattern=r"^([a-zA-Z]([a-zA-Z0-9_]*[a-zA-Z0-9])?)?$"
+)]
+type LowerSnakeCase = Annotated[str, StringConstraints(
+    strip_whitespace=True,
+    pattern=r"^([a-z]([a-z0-9_]*[a-z0-9])?)?$"
+)]
+type UpperSnakeCase = Annotated[str, StringConstraints(
+    strip_whitespace=True,
+    pattern=r"^([A-Z]([A-Z0-9_]*[A-Z0-9])?)?$"
+)]
+type TOMLKey = Annotated[str, StringConstraints(
+    strip_whitespace=True,
+    min_length=1,
+    pattern=r"^[a-zA-Z]([a-zA-Z0-9_-]*[a-zA-Z0-9])?$"
+)]
 type Glob = Annotated[NonEmpty[NoWhiteSpace], AfterValidator(_check_glob)]
 type AbsolutePath = Annotated[Path, AfterValidator(_check_absolute_path)]
 type AbsolutePosixPath = Annotated[PosixPath, AfterValidator(_check_absolute_path)]
@@ -147,15 +212,10 @@ type URL = Annotated[  # pylint: disable=invalid-name
     AfterValidator(_check_url)
 ]
 type URLLabel = Annotated[NonEmpty[Trimmed], AfterValidator(_check_url_label)]
-type TagName = Annotated[str, StringConstraints(
-    strip_whitespace=True,
-    min_length=1,
-    pattern=r"^[a-zA-Z]([a-zA-Z0-9-]*[a-zA-Z0-9])?$"
-)]
-type ScreamingSnakeCase = Annotated[str, StringConstraints(
-    strip_whitespace=True,
-    pattern=r"^[A-Z]([A-Z0-9_]*[A-Z0-9])?$"
-)]
+type OCIImageRef = Annotated[
+    NonEmpty[NoWhiteSpace],
+    AfterValidator(_check_oci_image_ref)
+]
 
 
 def locate_template(namespace: str, name: str) -> Path:
@@ -395,7 +455,7 @@ class Resource:
         """
         return None
 
-    async def render(self, config: Config, tag: TagName | None) -> None:
+    async def render(self, config: Config, tag: TOMLKey | None) -> None:
         """A render function that writes content for this resource during
         `Config.sync()`.
 
@@ -432,7 +492,7 @@ class Resource:
         target: PosixPath
         fingerprint: Mapping[str, Any]
 
-    async def volumes(self, config: Config, tag: TagName) -> list[Volume]:
+    async def volumes(self, config: Config, tag: TOMLKey) -> list[Volume]:
         """Declare resource-owned cache volumes for a given image tag.
 
         Parameters
@@ -890,7 +950,7 @@ class Config:
         """
         return {r.name: await r.schema() for r in sorted(RESOURCES)}
 
-    async def sync(self, tag: TagName | None) -> None:
+    async def sync(self, tag: TOMLKey | None) -> None:
         """Render and write derived artifact resources from active context snapshot.
 
         This requires an active config context (`async with config:`).
@@ -925,7 +985,7 @@ class Config:
                 except Exception as err:
                     raise OSError(f"failed to render resource '{r.name}': {err}") from err
 
-    async def _collect_mount_specs(self, tag: TagName) -> list[tuple[str, PosixPath]]:
+    async def _collect_mount_specs(self, tag: TOMLKey) -> list[tuple[str, PosixPath]]:
         mounts: list[tuple[str, PosixPath]] = []
         target_owner: dict[str, ResourceName] = {}
 
@@ -1003,7 +1063,7 @@ class Config:
         mounts.sort()
         return mounts
 
-    async def _format_volumes(self, tag: TagName, env_id: str) -> list[str]:
+    async def _format_volumes(self, tag: TOMLKey, env_id: str) -> list[str]:
         mounts: list[str] = []
         for volume_name, volume_target in await self._collect_mount_specs(tag):
             # create or reuse cache volume depending on fingerprint hash
@@ -1032,8 +1092,8 @@ class Config:
         # collect expected names for all cache volumes associated with this environment
         expected = {
             volume_name
-            for image_name in bertrand.image
-            for volume_name, _ in await self._collect_mount_specs(image_name)
+            for tag in bertrand.build
+            for volume_name, _ in await self._collect_mount_specs(tag)
         }
 
         # get actual cache volumes by filtering based on labels
@@ -1061,7 +1121,7 @@ class Config:
             )
 
     @staticmethod
-    def _format_build_args(build_args: dict[ScreamingSnakeCase, Scalar]) -> list[str]:
+    def _format_build_args(build_args: dict[SnakeCase, Scalar]) -> list[str]:
         args: list[str] = []
         for key, value in build_args.items():
             args.extend(["--build-arg", f"{key}={value}"])
@@ -1097,7 +1157,7 @@ class Config:
         self,
         *,
         env_id: str,
-        tag: TagName,
+        tag: TOMLKey,
     ) -> ImageArgs:
         """Retrieve a full `podman build` argument tail and metadata for the given tag.
 
@@ -1150,10 +1210,10 @@ class Config:
             raise OSError(
                 f"missing 'bertrand' configuration for environment at {self.root}"
             )
-        image = bertrand.image.get(tag)
-        if image is None:
+        build = bertrand.build.get(tag)
+        if build is None:
             raise ValueError(
-                f"unknown image tag '{tag}' for environment at {self.root}"
+                f"unknown build tag '{tag}' for environment at {self.root}"
             )
 
         # garbage collect dangling cache volumes associated with this environment
@@ -1179,7 +1239,7 @@ class Config:
         iid_file.parent.mkdir(parents=True, exist_ok=True)
 
         # generate bootstrap containerfile if no override is given
-        if image.containerfile is None:
+        if build.containerfile is None:
             containerfile = self.root / METADATA_DIR / "images" / tag / "Containerfile"
             containerfile.parent.mkdir(parents=True, exist_ok=True)
             build_mounts: list[str] = [
@@ -1220,7 +1280,7 @@ class Config:
         else:
             # allow overrides for advanced use cases, like bootstrapping Bertrand's
             # base toolchain image, which the bootstrap Containerfile depends on
-            containerfile = self.root / image.containerfile
+            containerfile = self.root / build.containerfile
 
         # emit formatted arguments for podman build
         argv = [
@@ -1230,7 +1290,7 @@ class Config:
             "--label", f"{BERTRAND_ENV}=1",
             "--label", f"{ENV_ID_ENV}={env_id}",
             "--label", f"{IMAGE_TAG_ENV}={tag}",
-            *self._format_build_args(image.build_args),
+            *self._format_build_args(build.args),
             *self._format_network(bertrand.network.build),
             str(self.root),
         ]
@@ -1304,7 +1364,7 @@ class Config:
         self,
         *,
         env_id: str,
-        tag: TagName,
+        tag: TOMLKey,
         image_id: str,
         cmd: Sequence[NonEmpty[Trimmed]] = (),
         env_vars: Mapping[NonEmpty[NoWhiteSpace], Trimmed] | None = None,
@@ -1466,7 +1526,7 @@ class Config:
             bootstrap_script=runtime / "entrypoint.sh",
         )
 
-    async def build(self, tag: TagName) -> None:
+    async def build(self, tag: TOMLKey) -> None:
         """Invoke Bertrand's PEP517 backend from within an image or container context.
 
         Parameters

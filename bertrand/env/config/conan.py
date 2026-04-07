@@ -29,7 +29,7 @@ from .core import (
     NonEmpty,
     NoWhiteSpace,
     Resource,
-    TagName,
+    TOMLKey,
     resource,
 )
 
@@ -353,20 +353,20 @@ class ConanConfig(Resource):
     async def validate(self, config: Config, fragment: Any) -> Model | None:
         return self.Model.model_validate(fragment)
 
-    async def volumes(self, config: Config, tag: TagName) -> list[Resource.Volume]:
+    async def volumes(self, config: Config, tag: TOMLKey) -> list[Resource.Volume]:
         from .bertrand import Bertrand
         model = config.get(ConanConfig)
         if model is None:
             return []
 
         bertrand = config.get(Bertrand)
-        active = None if bertrand is None else bertrand.image.get(tag)
+        active = None if bertrand is None else bertrand.build.get(tag)
         fingerprint = {
             "conan": model.model_dump(by_alias=True, mode="json"),
             "tag-conan": (
                 {} if active is None else active.conan.model_dump(by_alias=True, mode="json")
             ),
-            "build-args": {} if active is None else dict(sorted(active.build_args.items())),
+            "build-args": {} if active is None else dict(sorted(active.args.items())),
         }
         return [
             Resource.Volume(target=CONAN_CACHE, fingerprint=fingerprint),
@@ -379,7 +379,7 @@ class ConanConfig(Resource):
             for option, value in sorted(pattern_options.items()):
                 out[f"{pattern}:{option}"] = value
 
-    async def _render_conanfile(self, config: Config, tag: TagName) -> None:
+    async def _render_conanfile(self, config: Config, tag: TOMLKey) -> None:
         from .bertrand import Bertrand
         from .python import PyProject
         python = config.get(PyProject)
@@ -392,7 +392,7 @@ class ConanConfig(Resource):
         active = None
         requires = list(conan.requires)
         if bertrand is not None:
-            active = bertrand.image.get(tag)
+            active = bertrand.build.get(tag)
             if active is not None:
                 requires.extend(active.conan.requires)
 
@@ -526,7 +526,7 @@ class ConanConfig(Resource):
             )
         return value
 
-    async def _render_conanprofile(self, config: Config, tag: TagName) -> None:
+    async def _render_conanprofile(self, config: Config, tag: TOMLKey) -> None:
         from .bertrand import Bertrand
         bertrand = config.get(Bertrand)
         conan = config.get(ConanConfig)
@@ -547,7 +547,7 @@ class ConanConfig(Resource):
             conan.conf,
         )
         if bertrand is not None:
-            active = bertrand.image.get(tag)
+            active = bertrand.build.get(tag)
             if active is not None:
                 if active.conan.build_type:
                     build_type = active.conan.build_type
@@ -590,7 +590,7 @@ class ConanConfig(Resource):
             encoding="utf-8"
         )
 
-    async def _render_conanremotes(self, config: Config, tag: TagName) -> None:
+    async def _render_conanremotes(self, config: Config, tag: TOMLKey) -> None:
         conan = config.get(ConanConfig)
         assert conan is not None
 
@@ -622,7 +622,7 @@ class ConanConfig(Resource):
             encoding="utf-8"
         )
 
-    async def render(self, config: Config, tag: TagName | None) -> None:
+    async def render(self, config: Config, tag: TOMLKey | None) -> None:
         if tag is None or config.get(ConanConfig) is None:
             return
         await self._render_conanfile(config, tag)
