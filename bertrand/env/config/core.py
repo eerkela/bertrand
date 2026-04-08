@@ -58,7 +58,6 @@ from ..run import (
     inside_container,
     inside_image,
     run,
-    sanitize_name,
 )
 from ..version import VERSION
 
@@ -75,6 +74,7 @@ OCI_IMAGE_REF_RE = re.compile(
     r"(?::(?P<tag>[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}))?"
     r"(?:@(?P<digest>sha256:[0-9a-f]{64}))?$"
 )
+SANITIZE_RE = re.compile(r"[^a-zA-Z0-9._]+")
 
 
 def _check_glob(pattern: str) -> str:
@@ -1057,9 +1057,11 @@ class Config:
                         f"fingerprint payload: {err}"
                     ) from err
 
-                mounts.append((sanitize_name(
+                sanitized = SANITIZE_RE.sub(
+                    "-",
                     f"bertrand-cache-{r.name}-{digest[:20]}"
-                ), target))
+                ).strip("-")
+                mounts.append((sanitized, target))
 
         mounts.sort()
         return mounts
@@ -1228,11 +1230,11 @@ class Config:
         # assign unique run ID and descriptive image name
         run_id = uuid.uuid4().hex
         if self.worktree.parts:
-            scope = sanitize_name(self.worktree.as_posix())
+            scope = SANITIZE_RE.sub( "-", self.worktree.as_posix()).strip("-")
         else:
             branch = await self.repo.head_branch()
             if branch:
-                scope = sanitize_name(branch)
+                scope = SANITIZE_RE.sub("-", branch).strip("-")
             else:
                 scope = "detached"
         image_name = f"{python.project.name}.{scope}.{tag}.{run_id[:7]}"

@@ -66,8 +66,8 @@ from .run import (
     METADATA_DIR,
     METADATA_FILE,
     METADATA_LOCK,
+    MICROK8S_NAMESPACE,
     NERDCTL_BIN,
-    NERDCTL_NAMESPACE,
     NORMALIZE_ARCH,
     PROJECT_ENV,
     STATE_DIR,
@@ -224,7 +224,7 @@ async def _build_capability_flags(
                 raise OSError(
                     f"missing required build secret capability '{req.id}' "
                     f"(cluster secret '{secret_name}' not found in namespace "
-                    f"'{NERDCTL_NAMESPACE}')"
+                    f"'{MICROK8S_NAMESPACE}')"
                 )
             _warn_optional("secret", req.id)
             continue
@@ -252,7 +252,7 @@ async def _build_capability_flags(
                 raise OSError(
                     f"missing required build ssh capability '{req.id}' "
                     f"(cluster secret '{secret_name}' not found in namespace "
-                    f"'{NERDCTL_NAMESPACE}')"
+                    f"'{MICROK8S_NAMESPACE}')"
                 )
             _warn_optional("ssh", req.id)
             continue
