@@ -24,7 +24,8 @@ from pydantic import BaseModel, ConfigDict, PositiveInt
 
 from .config import RESOURCE_NAMES, Config, Resource
 from .config.core import NonEmpty, Trimmed
-from .container import (
+from .run import (
+    BERTRAND_ENV,
     BUILDCTL_BIN,
     BUILDKIT_PID_FILE,
     BUILDKITD_BIN,
@@ -40,17 +41,14 @@ from .container import (
     TIMEOUT,
     TOOLS_DIR,
     TOOLS_TMP_DIR,
-    nerdctl,
-    nerdctl_ids,
-)
-from .run import (
-    BERTRAND_ENV,
     GitRepository,
     Lock,
     User,
     atomic_write_text,
     can_escalate,
     confirm,
+    nerdctl,
+    nerdctl_ids,
     run,
     sudo,
 )
