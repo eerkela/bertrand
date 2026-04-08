@@ -44,18 +44,19 @@ from ..run import (
     ENV_ID_ENV,
     IMAGE_ID_ENV,
     IMAGE_TAG_ENV,
-    LOCK_TIMEOUT,
     METADATA_DIR,
+    METADATA_LOCK,
     PROJECT_ENV,
     PROJECT_MOUNT,
+    TIMEOUT,
     WORKTREE_ENV,
     WORKTREE_MOUNT,
     GitRepository,
+    Lock,
     Scalar,
     atomic_write_text,
     inside_container,
     inside_image,
-    lock_worktree,
     run,
     sanitize_name,
 )
@@ -676,7 +677,7 @@ class Config:
         worktree: Path,
         *,
         repo: GitRepository | None = None,
-        timeout: float = LOCK_TIMEOUT
+        timeout: float = TIMEOUT
     ) -> Self:
         """Load a worktree configuration by scanning the environment root for known
         resource placements based on their managed paths, and resolving any collisions
@@ -728,7 +729,7 @@ class Config:
                 f"{repo.root}"
             )
 
-        async with lock_worktree(worktree, timeout=timeout):
+        async with Lock(worktree / METADATA_LOCK, timeout=timeout, mode="cluster"):
             self = cls(
                 repo=repo,
                 worktree=worktree.relative_to(repo.root),
@@ -802,7 +803,7 @@ class Config:
 
         old_resources = self.resources.copy()
         try:
-            async with lock_worktree(self.root):
+            async with Lock(self.root / METADATA_LOCK, timeout=TIMEOUT, mode="cluster"):
                 # invoke `init()` hooks for all resources to get baseline snapshot
                 snapshot = {} if self.init is None else {
                     r: await RESOURCE_NAMES[r].init(self, self.init)
@@ -977,7 +978,7 @@ class Config:
             raise RuntimeError("sync() artifact rendering requires an active config context")
 
         # invoke render hooks for all resources in deterministic order
-        async with lock_worktree(self.root):
+        async with Lock(self.root / METADATA_LOCK, timeout=TIMEOUT, mode="cluster"):
             for name in sorted(self.resources):
                 r = RESOURCE_NAMES[name]
                 try:
@@ -1587,7 +1588,7 @@ class Config:
             sync_cmd.append("--no-editable")  # image build context -> non-editable
 
         # render output artifacts, update lockfile, and invoke PEP517/660 backend
-        async with lock_worktree(self.root):
+        async with Lock(self.root / METADATA_LOCK, timeout=TIMEOUT, mode="cluster"):
             await self.sync(tag)  # render artifacts to container filesystem
             await run(["uv", "lock"], cwd=self.root)  # update lockfile
             await run(sync_cmd, cwd=self.root)  # orchestrate build

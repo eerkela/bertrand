@@ -66,6 +66,7 @@ from .run import (
     IMAGE_TAG_ENV,
     METADATA_DIR,
     METADATA_FILE,
+    METADATA_LOCK,
     PROJECT_ENV,
     WORKTREE_ENV,
     CommandError,
@@ -75,7 +76,6 @@ from .run import (
     TimeoutExpired,
     User,
     atomic_write_text,
-    lock_worktree,
     run,
 )
 
@@ -99,7 +99,6 @@ NERDCTL_CHECKSUM: dict[str, str] = {  # checksums for nerdctl download
 
 
 # environment metadata info
-CACHES: AbsolutePosixPath = PosixPath("/tmp/.cache")
 STATE_DIR = User().home / ".local" / "share" / "bertrand"
 TOOLS_DIR = STATE_DIR / "tools"
 TOOLS_BIN_DIR = STATE_DIR / "bin"
@@ -108,7 +107,7 @@ TOOLS_TMP_DIR = STATE_DIR / "tmp"
 NERDCTL_INSTALL_DIR = TOOLS_DIR / f"nerdctl-{NERDCTL_VERSION}"
 NERDCTL_BIN = NERDCTL_INSTALL_DIR / "bin" / "nerdctl"
 BUILDCTL_BIN = NERDCTL_INSTALL_DIR / "bin" / "buildctl"
-BUILDKITD_BIN = NERDCTL_INSTALL_DIR / "bin" / "buildkitd"
+BUILDKITD_BIN: Path = NERDCTL_INSTALL_DIR / "bin" / "buildkitd"
 BUILDKIT_SOCKET = TOOLS_RUN_DIR / "buildkitd.sock"
 BUILDKIT_ADDRESS = f"unix://{BUILDKIT_SOCKET.as_posix()}"
 BUILDKIT_PID_FILE = TOOLS_RUN_DIR / "buildkitd.pid"
@@ -128,6 +127,10 @@ NORMALIZE_ARCH = {
     "aarch64": "arm64",
     "arm64": "arm64",
 }
+
+
+# TODO: maybe these run helpers need to be placed in `run/`, so that they can be
+# shared with config/bertrand.py?
 
 
 async def nerdctl(
@@ -433,6 +436,89 @@ async def buildctl(
     )
 
 
+async def kubectl(
+    argv: list[str],
+    *,
+    check: bool = True,
+    capture_output: bool | None = False,
+    input: str | None = None,
+    timeout: float | None = None,
+    attempts: int = 1,
+    delay: float = 0.1,
+    cwd: Path | None = None,
+    env: Mapping[str, str] | None = None,
+) -> CompletedProcess:
+    """Invoke the `microk8s kubectl` command against the local MicroK8s cluster.
+
+    Parameters
+    ----------
+    argv : list[str]
+        The `kubectl` subcommand to run, plus arguments, minus the `microk8s kubectl`
+        prefix itself.  The command requires that the MicroK8s cluster is up and
+        running locally.
+    check : bool, optional
+        Whether to raise a `CommandError` if the command fails (default is True).  If
+        false, then any errors will be ignored.
+    capture_output : bool | None, optional
+        If true, then all output will be redirected to the returned `CompletedProcess`
+        or `CommandError`, and excluded from the inherited stdout/stderr streams.  If
+        false (the default), then the opposite is the case, and the returned
+        `CompletedProcess` or `CommandError` will not include any captured output.  If
+        None, then output will be "tee'd" to both the console and the returned objects
+        simultaneously.  Note that teeing output in this way may break TTY behavior for
+        some commands, and is not recommended for interactive use.
+    input : str | None, optional
+        Input to send to the command's stdin (default is None).
+    timeout : float | None, optional
+        An optional timeout in seconds to wait for the command to complete before
+        raising a `TimeoutExpired` exception.  Default is None, which means to wait
+        indefinitely.  If zero or negative, a `TimeoutExpired` exception will be raised
+        immediately.  Note that this does not reset between `attempts`, so the total
+        time spent on retries counts against the timeout.
+    attempts : int, optional
+        The total number of times to attempt the command.  Defaults to 1, which means
+        no retries.  If greater than 1, then any command that exits with a nonzero
+        exit code will be re-run after a short delay, up to the specified number
+        of times in total.
+    delay : float, optional
+        The delay in seconds to wait between retries when `attempts` is greater than 1.
+        Default is 0.1 seconds.  Must be non-negative.
+    cwd : Path | None, optional
+        An optional working directory to run the command in.  If None (the default),
+        then the current working directory will be used.
+    env : Mapping[str, str] | None, optional
+        An optional environment dictionary to use for the command.  If None (the
+        default), then the current process's environment will be used.
+
+    Returns
+    -------
+    CompletedProcess
+        The completed process result.
+
+    Raises
+    ------
+    CommandError
+        If the command fails and `check` is True.
+    TimeoutExpired
+        If the command does not complete within the specified timeout.
+    OSError
+        If we failed to open the subprocess or its output streams.
+    """
+    cmd = ["microk8s", "kubectl"]
+    cmd.extend(argv)
+    return await run(
+        cmd,
+        check=check,
+        capture_output=capture_output,
+        input=input,
+        timeout=timeout,
+        attempts=attempts,
+        delay=delay,
+        cwd=cwd,
+        env=env,
+    )
+
+
 def _buildkit_pid() -> int | None:
     try:
         value = BUILDKIT_PID_FILE.read_text(encoding="utf-8").strip()
@@ -518,7 +604,7 @@ async def ensure_buildkit(*, timeout: float = TIMEOUT) -> None:
     if await _buildkit_workers_ready():
         return
 
-    async with Lock(BUILDKIT_LOCK_FILE, timeout=timeout):
+    async with Lock(BUILDKIT_LOCK_FILE, timeout=timeout, mode="local"):
         if await _buildkit_workers_ready():
             return
 
@@ -619,12 +705,8 @@ async def _cluster_secret_data(
     name: str,
     timeout: float,
 ) -> dict[str, str] | None:
-    result = await run(
+    result = await kubectl(
         [
-            "microk8s",
-            "kubectl",
-            "-n",
-            NERDCTL_NAMESPACE,
             "get",
             "secret",
             name,
@@ -880,7 +962,7 @@ class Registry(BaseModel):
             releases it on exit.
         """
         STATE_DIR.mkdir(parents=True, exist_ok=True)
-        return Lock(REGISTRY_LOCK, timeout=timeout)
+        return Lock(REGISTRY_LOCK, timeout=timeout, mode="local")
 
     # NOTE: we have to strictly obey registry > environment locking order to avoid
     # deadlocks, since `add()` and purge both need to acquire environment locks to
@@ -975,7 +1057,7 @@ class Registry(BaseModel):
                     environments={}
                 )
                 for root in await cls._discover_environment_mounts():
-                    with lock_worktree(root, timeout=TIMEOUT):
+                    async with Lock(root / METADATA_LOCK, timeout=TIMEOUT, mode="cluster"):
                         env = await cls._check_env(root)
                         if env is None:
                             continue
@@ -1038,7 +1120,7 @@ class Registry(BaseModel):
                 continue
 
             try:
-                with lock_worktree(root, timeout=TIMEOUT):
+                async with Lock(root / METADATA_LOCK, timeout=TIMEOUT, mode="cluster"):
                     env = await self._check_env(root, env_id=env_id)
                 if env is None:
                     self.environments.pop(env_id, None)
@@ -1149,7 +1231,7 @@ class Registry(BaseModel):
         """
         normalized: dict[UUID4Hex, AbsolutePath] = {}
         for env_id, root in self.environments.items():
-            with lock_worktree(root, timeout=TIMEOUT):
+            async with Lock(root / METADATA_LOCK, timeout=TIMEOUT, mode="cluster"):
                 env = await self._check_env(root, env_id=env_id)
                 if env is None:
                     continue
@@ -1770,7 +1852,7 @@ class Environment:
         """
         return cls(
             config=await Config.load(worktree, repo=repo, timeout=timeout),
-            lock=lock_worktree(worktree, timeout=timeout),
+            lock=Lock(worktree / METADATA_LOCK, timeout=timeout, mode="cluster"),
         )
 
     async def __aenter__(self) -> Self:
@@ -1782,7 +1864,7 @@ class Environment:
         try:
             # always obey registry > environment lock order
             async with Registry.lock(timeout=self.lock.timeout):
-                await self.lock.__aenter__()
+                await self.lock.lock()
                 acquired = True
                 if nested:  # re-entrant case
                     return self
@@ -1798,11 +1880,7 @@ class Environment:
 
         except Exception as err:
             if acquired:
-                await self.lock.__aexit__(
-                    type(err),
-                    err,
-                    getattr(err, "__traceback__", None)
-                )
+                await self.lock.unlock(suppress_backend_errors=True)
             raise
 
     async def __aexit__(
@@ -1846,7 +1924,7 @@ class Environment:
             if not self.config and (self.config.root / METADATA_DIR).exists():
                 _write_metadata(self.config.root, self._json)
 
-            await self.lock.__aexit__(exc_type, exc_value, traceback)
+            await self.lock.unlock(suppress_backend_errors=exc_value is not None)
 
     def __bool__(self) -> bool:
         return bool(self.config)

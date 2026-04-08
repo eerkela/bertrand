@@ -866,25 +866,6 @@ class Bertrand(Resource):
                     "unrestricted.",
             )]
 
-            # TODO: review + document conan configuration 
-
-            class Conan(BaseModel):
-                """Validate the `[tool.bertrand.build.<tag>.conan]` table."""
-                model_config = ConfigDict(extra="forbid")
-                build_type: Annotated[
-                    Literal["", "Release", "Debug"],
-                    Field(default="", alias="build-type")
-                ]
-                conf: Annotated[ConanConf, Field(default_factory=dict)]
-                options: Annotated[ConanOptions, Field(default_factory=dict)]
-                requires: Annotated[
-                    list[ConanConfig.Model.Require],
-                    AfterValidator(ConanConfig.Model._check_requires),
-                    Field(default_factory=list)
-                ]
-
-            conan: Annotated[Conan, Field(default_factory=Conan.model_construct)]
-
             class Secret(BaseModel):
                 """Validate an entry in `[[tool.bertrand.build.<tag>.secrets]]`."""
                 model_config = ConfigDict(extra="forbid")
@@ -1041,6 +1022,25 @@ class Bertrand(Resource):
                         "per request."
                 )
             ]
+
+            # TODO: review + document conan configuration 
+
+            class Conan(BaseModel):
+                """Validate the `[tool.bertrand.build.<tag>.conan]` table."""
+                model_config = ConfigDict(extra="forbid")
+                build_type: Annotated[
+                    Literal["", "Release", "Debug"],
+                    Field(default="", alias="build-type")
+                ]
+                conf: Annotated[ConanConf, Field(default_factory=dict)]
+                options: Annotated[ConanOptions, Field(default_factory=dict)]
+                requires: Annotated[
+                    list[ConanConfig.Model.Require],
+                    AfterValidator(ConanConfig.Model._check_requires),
+                    Field(default_factory=list)
+                ]
+
+            conan: Annotated[Conan, Field(default_factory=Conan.model_construct)]
 
             @model_validator(mode="after")
             def _validate_containerfile(self) -> Self:
@@ -1710,3 +1710,22 @@ class Bertrand(Resource):
 
     async def schema(self) -> dict[str, Any]:
         return self.Model.model_json_schema(by_alias=True, mode="validation")
+
+
+def render_containerfile(model: Bertrand.Model, tag: TOMLKey) -> str:
+    """Render a `Containerfile` matching a given tag in the `Bertrand.Model.Build`
+    table.
+
+    Parameters
+    ----------
+    model : `Bertrand.Model`
+        The validated `Bertrand.Model` instance containing the build configuration.
+    tag : `str`
+        The image to render the `Containerfile` for.
+
+    Returns
+    -------
+    str
+        The rendered `Containerfile` content.
+    """
+    return ""

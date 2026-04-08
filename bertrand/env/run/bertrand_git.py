@@ -43,6 +43,9 @@ from typing import Literal, TextIO
 # main CLI, so there's no risk of duplication.
 
 
+TIMEOUT = 30
+
+
 # In-container path definitions for metadata and runtime control.
 METADATA_DIR: PosixPath = PosixPath(".bertrand")
 METADATA_LOCK: PosixPath = METADATA_DIR / ".lock"
@@ -694,6 +697,442 @@ def sudo(argv: list[str], *, non_interactive: bool = False) -> list[str]:
         out.append("-n")
     out.extend(argv)
     return out
+
+
+####################
+####    KUBE    ####
+####################
+
+
+# Kubernetes engine/`containerd` CLI config.
+MICROK8S_CHANNEL = "1.33/stable"
+MICROK8S_GROUP = "microk8s"
+MICROK8S_CONTAINERD_SOCKET = Path("/var/snap/microk8s/common/run/containerd.sock")
+MICROK8S_CONTAINERD_ADDRESS = f"unix://{MICROK8S_CONTAINERD_SOCKET.as_posix()}"
+NERDCTL_VERSION = "2.2.2"
+NERDCTL_NAMESPACE = "bertrand"
+NERDCTL_BASE_URL = (
+    f"https://github.com/containerd/nerdctl/releases/download/v{NERDCTL_VERSION}"
+)
+NERDCTL_CHECKSUM: dict[str, str] = {  # checksums for nerdctl download
+    "amd64": "8a477f35533c6cc1120c19558d8142967c74f25a4b952b481f48104e030de914",
+    "arm64": "55d68d2613b5f065021146bac21f620cde9e7fdd4bd3eff74cd324f5462e107a",
+}
+
+
+# Host paths for Bertrand's MicroK8s cluster and related tools
+STATE_DIR = User().home / ".local" / "share" / "bertrand"
+TOOLS_DIR = STATE_DIR / "tools"
+TOOLS_BIN_DIR = STATE_DIR / "bin"
+TOOLS_RUN_DIR = STATE_DIR / "run"
+TOOLS_TMP_DIR = STATE_DIR / "tmp"
+NERDCTL_INSTALL_DIR = TOOLS_DIR / f"nerdctl-{NERDCTL_VERSION}"
+NERDCTL_BIN = NERDCTL_INSTALL_DIR / "bin" / "nerdctl"
+BUILDCTL_BIN = NERDCTL_INSTALL_DIR / "bin" / "buildctl"
+BUILDKITD_BIN: Path = NERDCTL_INSTALL_DIR / "bin" / "buildkitd"
+BUILDKIT_SOCKET = TOOLS_RUN_DIR / "buildkitd.sock"
+BUILDKIT_ADDRESS = f"unix://{BUILDKIT_SOCKET.as_posix()}"
+BUILDKIT_PID_FILE = TOOLS_RUN_DIR / "buildkitd.pid"
+BUILDKIT_LOG_FILE = TOOLS_RUN_DIR / "buildkitd.log"
+BUILDKIT_LOCK_FILE = TOOLS_RUN_DIR / "buildkitd.lock"
+
+
+type ContainerState = Literal[
+    "created",
+    "restarting",
+    "running",
+    "removing",
+    "paused",
+    "exited",
+    "dead"
+]
+
+
+async def nerdctl(
+    argv: list[str],
+    *,
+    check: bool = True,
+    capture_output: bool | None = False,
+    input: str | None = None,
+    timeout: float | None = None,
+    attempts: int = 1,
+    delay: float = 0.1,
+    cwd: Path | None = None,
+    env: Mapping[str, str] | None = None,
+) -> CompletedProcess:
+    """Invoke the managed nerdctl binary against Bertrand's MicroK8s containerd.
+
+    Parameters
+    ----------
+    argv : list[str]
+        The `nerdctl` subcommand to run, plus arguments, minus the `nerdctl` binary
+        itself.  The command will always target the MicroK8s containerd instance.
+    check : bool, optional
+        Whether to raise a `CommandError` if the command fails (default is True).  If
+        false, then any errors will be ignored.
+    capture_output : bool | None, optional
+        If true, then all output will be redirected to the returned `CompletedProcess`
+        or `CommandError`, and excluded from the inherited stdout/stderr streams.  If
+        false (the default), then the opposite is the case, and the returned
+        `CompletedProcess` or `CommandError` will not include any captured output.  If
+        None, then output will be "tee'd" to both the console and the returned objects
+        simultaneously.  Note that teeing output in this way may break TTY behavior for
+        some commands, and is not recommended for interactive use.
+    input : str | None, optional
+        Input to send to the command's stdin (default is None).
+    timeout : float | None, optional
+        An optional timeout in seconds to wait for the command to complete before
+        raising a `TimeoutExpired` exception.  Default is None, which means to wait
+        indefinitely.  If zero or negative, a `TimeoutExpired` exception will be raised
+        immediately.  Note that this does not reset between `attempts`, so the total
+        time spent on retries counts against the timeout.
+    attempts : int, optional
+        The total number of times to attempt the command.  Defaults to 1, which means
+        no retries.  If greater than 1, then any command that exits with a nonzero
+        exit code will be re-run after a short delay, up to the specified number
+        of times in total.
+    delay : float, optional
+        The delay in seconds to wait between retries when `attempts` is greater than 1.
+        Default is 0.1 seconds.  Must be non-negative.
+    cwd : Path | None, optional
+        An optional working directory to run the command in.  If None (the default),
+        then the current working directory will be used.
+    env : Mapping[str, str] | None, optional
+        An optional environment dictionary to use for the command.  If None (the
+        default), then the current process's environment will be used.
+
+    Returns
+    -------
+    CompletedProcess
+        The completed process result.
+
+    Raises
+    ------
+    CommandError
+        If the command fails and `check` is True.
+    TimeoutExpired
+        If the command does not complete within the specified timeout.
+    OSError
+        If we failed to open the subprocess or its output streams.
+    """
+    cmd = [
+        str(NERDCTL_BIN),
+        "--address", MICROK8S_CONTAINERD_ADDRESS,
+        "--namespace", NERDCTL_NAMESPACE,
+        *argv,
+    ]
+    merged_env = os.environ.copy()
+    if env is not None:
+        merged_env.update(env)
+    merged_env["BUILDKIT_HOST"] = BUILDKIT_ADDRESS
+    return await run(
+        cmd,
+        check=check,
+        capture_output=capture_output,
+        input=input,
+        timeout=timeout,
+        attempts=attempts,
+        delay=delay,
+        cwd=cwd,
+        env=merged_env,
+    )
+
+
+async def nerdctl_ids(
+    mode: Literal["container", "image", "volume", "network", "secret"],
+    labels: Mapping[str, str],
+    *,
+    status: Sequence[ContainerState] | None = None,
+    timeout: float = TIMEOUT,
+) -> list[str]:
+    """Retrieve a list of nerdctl container/image/volume IDs that match the given
+    labels and status filters, if applicable.
+
+    Parameters
+    ----------
+    mode : Literal["container", "image", "volume", "network", "secret"]
+        The type of nerdctl objects to query for.
+    labels : Mapping[str, str]
+        A mapping of label keys and values to filter the results by.  Only objects that
+        have all of the specified labels with matching values will be included in the
+        results.
+    status : Sequence[ContainerState] | None, optional
+        An optional sequence of container statuses to filter by when `mode` is
+        "container".  If None (the default), then containers of all statuses will be
+        included in the results.
+    timeout : float, optional
+        The maximum time in seconds to wait for the nerdctl command to complete before
+        raising a `TimeoutExpired` exception.
+
+    Returns
+    -------
+    list[str]
+        A list of nerdctl container/image/volume IDs that match the specified filters.
+
+    Raises
+    ------
+    ValueError
+        If `mode` is not one of the allowed literals.
+    TimeoutError
+        If the nerdctl command does not complete within the specified timeout.
+    TimeoutExpired
+        If the nerdctl command does not complete within the specified timeout.
+    CommandError
+        If the nerdctl command fails for any reason other than a timeout.
+    KeyboardInterrupt
+        If the operation is interrupted by the user.
+    SystemExit
+        If some other fatal error is encountered.
+    """
+    loop = asyncio.get_event_loop()
+    deadline = loop.time() + timeout
+
+    # form basic command based on mode
+    cmd: list[str] = []
+    if mode == "container":
+        cmd.extend([
+            "container",
+            "ls",
+            "-a",
+            "-q",
+            "--no-trunc",
+            "--filter", f"label={BERTRAND_ENV}=1"
+        ])
+    elif mode == "image":
+        cmd.extend([
+            "image",
+            "ls",
+            "-a",
+            "-q",
+            "--no-trunc",
+            "--filter", f"label={BERTRAND_ENV}=1"
+        ])
+    elif mode == "volume":
+        cmd.extend(["volume", "ls", "-q", "--filter", f"label={BERTRAND_ENV}=1"])
+    elif mode == "network":
+        cmd.extend(["network", "ls", "-q", "--filter", f"label={BERTRAND_ENV}=1"])
+    elif mode == "secret":
+        cmd.extend(["secret", "ls", "-q", "--filter", f"label={BERTRAND_ENV}=1"])
+    else:
+        raise ValueError(f"invalid mode: {mode}")
+
+    # append additional labels to filter results
+    for k, v in labels.items():
+        cmd.extend(["--filter", f"label={k}={v}"])
+
+    # parse results, returning an empty/partial list on failure (best-effort)
+    out: list[str] = []
+    seen: set[str] = set()
+    try:
+        # return all statuses by default
+        if status is None:
+            result = await nerdctl(
+                cmd,
+                capture_output=True,
+                check=False,
+                timeout=deadline - loop.time()
+            )
+            if result.returncode == 0:
+                for raw_id in result.stdout.splitlines():
+                    container_id = raw_id.strip()
+                    if not container_id or container_id in seen:
+                        continue
+                    seen.add(container_id)
+                    out.append(container_id)
+            return out
+
+        # filter by status
+        for stat in status:
+            result = await nerdctl(
+                [*cmd, "--filter", f"status={stat}"],
+                capture_output=True,
+                check=False,
+                timeout=deadline - loop.time()
+            )
+            if result.returncode != 0:
+                continue
+            for raw_id in result.stdout.splitlines():
+                container_id = raw_id.strip()
+                if not container_id or container_id in seen:
+                    continue
+                seen.add(container_id)
+                out.append(container_id)
+    except (TimeoutError, TimeoutExpired, KeyboardInterrupt, SystemExit):
+        raise
+    except Exception:
+        pass
+    return out
+
+
+async def buildctl(
+    argv: list[str],
+    *,
+    check: bool = True,
+    capture_output: bool | None = False,
+    input: str | None = None,
+    timeout: float | None = None,
+    attempts: int = 1,
+    delay: float = 0.1,
+    cwd: Path | None = None,
+    env: Mapping[str, str] | None = None,
+) -> CompletedProcess:
+    """Invoke the managed buildctl binary against Bertrand's BuildKit daemon.
+
+    Parameters
+    ----------
+    argv : list[str]
+        The `buildctl` subcommand to run, plus arguments, minus the `buildctl` binary
+        itself.  The command will always target Bertrand's pinned BuildKit daemon,
+        which must be started separately via the `ensure_buildkit()` helper before
+        calling this function.
+    check : bool, optional
+        Whether to raise a `CommandError` if the command fails (default is True).  If
+        false, then any errors will be ignored.
+    capture_output : bool | None, optional
+        If true, then all output will be redirected to the returned `CompletedProcess`
+        or `CommandError`, and excluded from the inherited stdout/stderr streams.  If
+        false (the default), then the opposite is the case, and the returned
+        `CompletedProcess` or `CommandError` will not include any captured output.  If
+        None, then output will be "tee'd" to both the console and the returned objects
+        simultaneously.  Note that teeing output in this way may break TTY behavior for
+        some commands, and is not recommended for interactive use.
+    input : str | None, optional
+        Input to send to the command's stdin (default is None).
+    timeout : float | None, optional
+        An optional timeout in seconds to wait for the command to complete before
+        raising a `TimeoutExpired` exception.  Default is None, which means to wait
+        indefinitely.  If zero or negative, a `TimeoutExpired` exception will be raised
+        immediately.  Note that this does not reset between `attempts`, so the total
+        time spent on retries counts against the timeout.
+    attempts : int, optional
+        The total number of times to attempt the command.  Defaults to 1, which means
+        no retries.  If greater than 1, then any command that exits with a nonzero
+        exit code will be re-run after a short delay, up to the specified number
+        of times in total.
+    delay : float, optional
+        The delay in seconds to wait between retries when `attempts` is greater than 1.
+        Default is 0.1 seconds.  Must be non-negative.
+    cwd : Path | None, optional
+        An optional working directory to run the command in.  If None (the default),
+        then the current working directory will be used.
+    env : Mapping[str, str] | None, optional
+        An optional environment dictionary to use for the command.  If None (the
+        default), then the current process's environment will be used.
+
+    Returns
+    -------
+    CompletedProcess
+        The completed process result.
+
+    Raises
+    ------
+    CommandError
+        If the command fails and `check` is True.
+    TimeoutExpired
+        If the command does not complete within the specified timeout.
+    OSError
+        If we failed to open the subprocess or its output streams.
+    """
+    cmd = [
+        str(BUILDCTL_BIN),
+        "--addr",
+        BUILDKIT_ADDRESS,
+        *argv,
+    ]
+    return await run(
+        cmd,
+        check=check,
+        capture_output=capture_output,
+        input=input,
+        timeout=timeout,
+        attempts=attempts,
+        delay=delay,
+        cwd=cwd,
+        env=env,
+    )
+
+
+async def kubectl(
+    argv: list[str],
+    *,
+    check: bool = True,
+    capture_output: bool | None = False,
+    input: str | None = None,
+    timeout: float | None = None,
+    attempts: int = 1,
+    delay: float = 0.1,
+    cwd: Path | None = None,
+    env: Mapping[str, str] | None = None,
+) -> CompletedProcess:
+    """Invoke the `microk8s kubectl` command against the local MicroK8s cluster.
+
+    Parameters
+    ----------
+    argv : list[str]
+        The `kubectl` subcommand to run, plus arguments, minus the `microk8s kubectl`
+        prefix itself.  The command requires that the MicroK8s cluster is up and
+        running locally.
+    check : bool, optional
+        Whether to raise a `CommandError` if the command fails (default is True).  If
+        false, then any errors will be ignored.
+    capture_output : bool | None, optional
+        If true, then all output will be redirected to the returned `CompletedProcess`
+        or `CommandError`, and excluded from the inherited stdout/stderr streams.  If
+        false (the default), then the opposite is the case, and the returned
+        `CompletedProcess` or `CommandError` will not include any captured output.  If
+        None, then output will be "tee'd" to both the console and the returned objects
+        simultaneously.  Note that teeing output in this way may break TTY behavior for
+        some commands, and is not recommended for interactive use.
+    input : str | None, optional
+        Input to send to the command's stdin (default is None).
+    timeout : float | None, optional
+        An optional timeout in seconds to wait for the command to complete before
+        raising a `TimeoutExpired` exception.  Default is None, which means to wait
+        indefinitely.  If zero or negative, a `TimeoutExpired` exception will be raised
+        immediately.  Note that this does not reset between `attempts`, so the total
+        time spent on retries counts against the timeout.
+    attempts : int, optional
+        The total number of times to attempt the command.  Defaults to 1, which means
+        no retries.  If greater than 1, then any command that exits with a nonzero
+        exit code will be re-run after a short delay, up to the specified number
+        of times in total.
+    delay : float, optional
+        The delay in seconds to wait between retries when `attempts` is greater than 1.
+        Default is 0.1 seconds.  Must be non-negative.
+    cwd : Path | None, optional
+        An optional working directory to run the command in.  If None (the default),
+        then the current working directory will be used.
+    env : Mapping[str, str] | None, optional
+        An optional environment dictionary to use for the command.  If None (the
+        default), then the current process's environment will be used.
+
+    Returns
+    -------
+    CompletedProcess
+        The completed process result.
+
+    Raises
+    ------
+    CommandError
+        If the command fails and `check` is True.
+    TimeoutExpired
+        If the command does not complete within the specified timeout.
+    OSError
+        If we failed to open the subprocess or its output streams.
+    """
+    cmd = ["microk8s", "kubectl"]
+    cmd.extend(argv)
+    return await run(
+        cmd,
+        check=check,
+        capture_output=capture_output,
+        input=input,
+        timeout=timeout,
+        attempts=attempts,
+        delay=delay,
+        cwd=cwd,
+        env=env,
+    )
 
 
 ###################

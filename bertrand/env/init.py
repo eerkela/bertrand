@@ -45,7 +45,6 @@ from .container import (
 )
 from .run import (
     BERTRAND_ENV,
-    LOCK_TIMEOUT,
     GitRepository,
     Lock,
     User,
@@ -799,7 +798,7 @@ async def bertrand_init(
     *,
     enable: list[str],
     yes: bool,
-    timeout: float = LOCK_TIMEOUT,
+    timeout: float = TIMEOUT,
 ) -> None:
     """Initialize host prerequisites and optionally bootstrap an environment root.
 
@@ -839,7 +838,7 @@ async def bertrand_init(
 
     # install runtime control plane if needed
     STATE_DIR.mkdir(parents=True, exist_ok=True)
-    async with Lock(INIT_LOCK, timeout=timeout):
+    async with Lock(INIT_LOCK, timeout=timeout, mode="local"):
         state = InitState.load()
         index = next(
             (i for i, (stage, _) in enumerate(INIT_STAGES) if stage == state.stage),

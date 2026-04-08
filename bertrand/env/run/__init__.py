@@ -22,6 +22,7 @@ from .bertrand_git import (
     METADATA_TMP,
     PROJECT_ENV,
     PROJECT_MOUNT,
+    TIMEOUT,
     WORKTREE_ENV,
     WORKTREE_MOUNT,
     CommandError,
@@ -44,7 +45,5 @@ from .bertrand_git import (
     sudo,
 )
 from .lock import (
-    LOCK_TIMEOUT,
     Lock,
-    lock_worktree,
 )
