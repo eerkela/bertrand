@@ -14,7 +14,6 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from collections.abc import Mapping
 from pathlib import PosixPath
 from typing import Any
 

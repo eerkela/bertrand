@@ -1,29 +1,14 @@
-"""Kubernetes runtime orchestration layer for Bertrand."""
-
-from .build import (
-    ContainerArgs,
-    ImageArgs,
-    build_capability_flags,
-    cleanup_capability_dir,
-    container_args,
-    image_args,
-    render_containerfile,
-)
+"""Kubernetes runtime orchestration primitives for Bertrand."""
+from .capability import build_capability_flags, cleanup_capability_dir
 from .container import (
-    Environment,
-    _recover_spec,
-    bertrand_build,
-    bertrand_code,
-    bertrand_enter,
-    bertrand_log,
-    bertrand_ls,
-    bertrand_monitor,
-    bertrand_pause,
-    bertrand_publish,
-    bertrand_restart,
-    bertrand_resume,
-    bertrand_rm,
-    bertrand_start,
-    bertrand_stop,
-    bertrand_top,
+    Container,
+    ContainerArgs,
+    container_args,
+    start_rpc_sidecar,
+    stop_rpc_sidecar,
 )
+from .environment import Environment
+from .image import Image, ImageArgs, image_args, render_containerfile
+from .network import format_cpus, format_network
+from .registry import EnvironmentMetadata, Registry
+from .volume import collect_mount_specs, format_volumes, gc_volumes
