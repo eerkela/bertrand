@@ -12,14 +12,10 @@ environments.
 from __future__ import annotations
 
 import asyncio
-import base64
-import binascii
 import json as json_parser
 import math
-import os
 import pathlib
 import re
-import shutil
 import stat
 import sys
 import time
@@ -41,22 +37,22 @@ from pydantic import (
     PositiveInt,
 )
 
-from .config import (
+from ..config import (
     DEFAULT_TAG,
     SHELLS,
     Bertrand,
     Config,
     PyProject,
 )
-from .config.core import (
+from ..config.core import (
     AbsolutePath,
     NonEmpty,
     NoWhiteSpace,
     TOMLKey,
     Trimmed,
 )
-from .rpc import RPC_TIMEOUT
-from .run import (
+from ..rpc import RPC_TIMEOUT
+from ..run import (
     BERTRAND_ENV,
     CONTAINER_RUNTIME_ENV,
     CONTAINER_SOCKET,
@@ -66,24 +62,32 @@ from .run import (
     METADATA_DIR,
     METADATA_FILE,
     METADATA_LOCK,
-    MICROK8S_NAMESPACE,
     NERDCTL_BIN,
     NORMALIZE_ARCH,
     PROJECT_ENV,
     STATE_DIR,
     TIMEOUT,
-    TOOLS_TMP_DIR,
     WORKTREE_ENV,
     CommandError,
     GitRepository,
     Lock,
     atomic_write_text,
-    kubectl,
     nerdctl,
     nerdctl_ids,
 )
+from .build import (
+    build_capability_flags,
+    cleanup_capability_dir,
+    container_args,
+    image_args,
+)
 
 # pylint: disable=redefined-builtin, redefined-outer-name, broad-except, bare-except
+
+
+# TODO: many of these components should be separated into their own modules in this
+# subpackage, like image builds, which can be encapsulated with all of its args and
+# containerfile rendering, etc.
 
 
 # environment metadata info
@@ -92,208 +96,6 @@ REGISTRY_LOCK = STATE_DIR / "registry.lock"
 REGISTRY_PURGE_BATCH: int = 16
 REGISTRY_PURGE_EVERY: int = 64
 VERSION: int = 1
-
-
-# TODO: review these capability tokens, and maybe reduce them to config/core.py
-# or config/bertrand.py
-
-
-def _capability_token(value: str) -> str:
-    token = re.sub(r"[^a-z0-9_]+", "_", value.strip().lower())
-    token = token.strip("_")
-    if not token:
-        raise ValueError("capability ID cannot be empty")
-    return token
-
-
-def _capability_secret_name(
-    *,
-    env_id: str,
-    kind: Literal["ssh", "secret"],
-    capability_id: str,
-) -> str:
-    env_token = re.sub(r"[^a-z0-9]+", "", env_id.strip().lower())[:12]
-    if not env_token:
-        raise ValueError("environment ID cannot be empty")
-    capability_token = _capability_token(capability_id).replace("_", "-")
-    return f"bertrand-{env_token}-{kind}-{capability_token}"[:253]
-
-
-async def _cluster_secret_data(
-    *,
-    name: str,
-    timeout: float,
-) -> dict[str, str] | None:
-    result = await kubectl(
-        [
-            "get",
-            "secret",
-            name,
-            "-o",
-            "json",
-        ],
-        check=False,
-        capture_output=True,
-        timeout=timeout,
-    )
-    if result.returncode != 0:
-        return None
-    try:
-        payload = json_parser.loads(result.stdout)
-    except json_parser.JSONDecodeError as err:
-        raise OSError(
-            f"cluster secret '{name}' returned malformed JSON payload"
-        ) from err
-    raw = payload.get("data", {})
-    if not isinstance(raw, dict):
-        raise OSError(f"cluster secret '{name}' is missing a valid data mapping")
-    out: dict[str, str] = {}
-    for key, value in raw.items():
-        if isinstance(key, str) and isinstance(value, str):
-            out[key] = value
-    return out
-
-
-def _decode_cluster_secret(
-    *,
-    name: str,
-    data: Mapping[str, str],
-    preferred_keys: Sequence[str],
-) -> bytes:
-    keys = [key for key in preferred_keys if key in data]
-    if not keys and len(data) == 1:
-        keys = list(data)
-    if not keys:
-        raise OSError(
-            f"cluster secret '{name}' does not contain a recognized data key"
-        )
-    key = keys[0]
-    try:
-        return base64.b64decode(data[key], validate=True)
-    except (binascii.Error, ValueError) as err:
-        raise OSError(
-            f"cluster secret '{name}' contains invalid base64 data for key '{key}'"
-        ) from err
-
-
-def _device_env_var(capability_id: str) -> str:
-    token = re.sub(r"[^A-Za-z0-9]+", "_", capability_id.strip().upper())
-    token = token.strip("_")
-    if not token:
-        raise ValueError("capability ID cannot be empty")
-    return f"BERTRAND_DEVICE_{token}"
-
-
-async def _build_capability_flags(
-    *,
-    env_id: str,
-    tag: TOMLKey,
-    build: Bertrand.Model.Build,
-) -> tuple[list[str], Path | None]:
-    flags: list[str] = []
-    capability_dir: Path | None = None
-
-    def _ensure_capability_dir() -> Path:
-        nonlocal capability_dir
-        if capability_dir is None:
-            capability_dir = (
-                TOOLS_TMP_DIR /
-                "build-capabilities" /
-                f"{_capability_token(env_id)}.{_capability_token(tag)}.{uuid.uuid4().hex}"
-            )
-            capability_dir.mkdir(parents=True, exist_ok=True)
-        return capability_dir
-
-    def _warn_optional(kind: str, capability_id: str) -> None:
-        print(
-            f"bertrand: optional {kind} capability '{capability_id}' was not found; "
-            "continuing without it",
-            file=sys.stderr
-        )
-
-    # cluster-backed build secrets
-    for req in build.secrets:
-        secret_name = _capability_secret_name(
-            env_id=env_id,
-            kind="secret",
-            capability_id=req.id,
-        )
-        secret_data = await _cluster_secret_data(name=secret_name, timeout=TIMEOUT)
-        if secret_data is None:
-            if req.required:
-                raise OSError(
-                    f"missing required build secret capability '{req.id}' "
-                    f"(cluster secret '{secret_name}' not found in namespace "
-                    f"'{MICROK8S_NAMESPACE}')"
-                )
-            _warn_optional("secret", req.id)
-            continue
-        payload = _decode_cluster_secret(
-            name=secret_name,
-            data=secret_data,
-            preferred_keys=("value", "secret", req.id),
-        )
-        target = _ensure_capability_dir() / "secrets" / _capability_token(req.id)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(payload)
-        target.chmod(0o600)
-        flags.extend(["--secret", f"id={req.id},src={target}"])
-
-    # cluster-backed SSH keys
-    for req in build.ssh:
-        secret_name = _capability_secret_name(
-            env_id=env_id,
-            kind="ssh",
-            capability_id=req.id,
-        )
-        secret_data = await _cluster_secret_data(name=secret_name, timeout=TIMEOUT)
-        if secret_data is None:
-            if req.required:
-                raise OSError(
-                    f"missing required build ssh capability '{req.id}' "
-                    f"(cluster secret '{secret_name}' not found in namespace "
-                    f"'{MICROK8S_NAMESPACE}')"
-                )
-            _warn_optional("ssh", req.id)
-            continue
-        payload = _decode_cluster_secret(
-            name=secret_name,
-            data=secret_data,
-            preferred_keys=("private_key", "id_rsa", "value", req.id),
-        )
-        target = _ensure_capability_dir() / "ssh" / _capability_token(req.id)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(payload)
-        target.chmod(0o600)
-        flags.extend(["--ssh", f"{req.id}={target}"])
-
-    # node-local build devices
-    for req in build.devices:
-        env_var = _device_env_var(req.id)
-        selector = os.environ.get(env_var, "").strip()
-        if not selector:
-            if req.required:
-                raise OSError(
-                    f"missing required build device capability '{req.id}' "
-                    f"(set {env_var} to a CDI selector or device path)"
-                )
-            _warn_optional("device", req.id)
-            continue
-        flags.extend(["--device", f"{selector}:{req.permissions}"])
-
-    return flags, capability_dir
-
-
-def _cleanup_capability_dir(path: Path | None) -> None:
-    if path is None:
-        return
-    try:
-        shutil.rmtree(path)
-    except OSError:
-        pass
-
-
-
 
 
 def _check_uuid(value: str) -> str:
@@ -1088,7 +890,8 @@ class Image(BaseModel):
                 raise TypeError("cmd override must be a list of strings")
 
         # get arguments from environment configuration
-        bundle = await env.config.container_args(
+        bundle = await container_args(
+            env.config,
             env_id=env.id,
             tag=self.tag,
             image_id=self.id,
@@ -1456,7 +1259,7 @@ class Environment:
             )
 
         # get arguments from configured build matrix
-        bundle = await self.config.image_args(env_id=self.id, tag=tag)
+        bundle = await image_args(self.config, env_id=self.id, tag=tag)
 
         # build candidate image
         candidate = Image.model_construct(
@@ -1468,10 +1271,11 @@ class Environment:
         )
         capability_flags: list[str]
         capability_dir: Path | None
-        capability_flags, capability_dir = await _build_capability_flags(
+        capability_flags, capability_dir = await build_capability_flags(
             env_id=self.id,
             tag=tag,
             build=build,
+            timeout=self.lock.timeout,
         )
         try:
             await nerdctl(
@@ -1501,7 +1305,7 @@ class Environment:
                     )
                 raise
         finally:
-            _cleanup_capability_dir(capability_dir)
+            cleanup_capability_dir(capability_dir)
 
         # retire existing image in favor of new candidate if they differ
         if changed:

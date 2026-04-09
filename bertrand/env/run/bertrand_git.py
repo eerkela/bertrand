@@ -699,9 +699,10 @@ def sudo(argv: list[str], *, non_interactive: bool = False) -> list[str]:
 
 
 # Kubernetes engine/`containerd` CLI config.
+BERTRAND_NAMESPACE = "bertrand"
 MICROK8S_CHANNEL = "1.33/stable"
 MICROK8S_GROUP = "microk8s"
-MICROK8S_NAMESPACE = "bertrand"
+MICROK8S_NAMESPACE = "k8s.io"
 MICROK8S_CONTAINERD_SOCKET = Path("/var/snap/microk8s/common/run/containerd.sock")
 MICROK8S_CONTAINERD_ADDRESS = f"unix://{MICROK8S_CONTAINERD_SOCKET.as_posix()}"
 NERDCTL_VERSION = "2.2.2"
@@ -813,7 +814,7 @@ async def nerdctl(
     cmd = [
         str(NERDCTL_BIN),
         "--address", MICROK8S_CONTAINERD_ADDRESS,
-        "--namespace", MICROK8S_NAMESPACE,
+        "--namespace", BERTRAND_NAMESPACE,
         *argv,
     ]
     merged_env = os.environ.copy()
@@ -1028,12 +1029,8 @@ async def buildctl(
     OSError
         If we failed to open the subprocess or its output streams.
     """
-    cmd = [
-        str(BUILDCTL_BIN),
-        "--addr",
-        BUILDKIT_ADDRESS,
-        *argv,
-    ]
+    cmd = [str(BUILDCTL_BIN), "--addr", BUILDKIT_ADDRESS]
+    cmd.extend(argv)
     return await run(
         cmd,
         check=check,
@@ -1250,7 +1247,7 @@ async def ensure_buildkit(*, timeout: float = TIMEOUT) -> None:
                 "--containerd-worker-addr",
                 str(MICROK8S_CONTAINERD_SOCKET),
                 "--containerd-worker-namespace",
-                MICROK8S_NAMESPACE,
+                BERTRAND_NAMESPACE,
                 stdin=asyncio.subprocess.DEVNULL,
                 stdout=log,
                 stderr=log,
@@ -1296,7 +1293,7 @@ async def _kube_api_ready(*, timeout: float) -> bool:
 
 async def _ensure_kube_namespace(*, timeout: float) -> None:
     ready = await kubectl(
-        ["get", "namespace", MICROK8S_NAMESPACE, "-o", "name"],
+        ["get", "namespace", BERTRAND_NAMESPACE, "-o", "name"],
         check=False,
         capture_output=True,
         timeout=timeout,
@@ -1304,7 +1301,7 @@ async def _ensure_kube_namespace(*, timeout: float) -> None:
     if ready.returncode != 0:
         try:
             await kubectl(
-                ["create", "namespace", MICROK8S_NAMESPACE],
+                ["create", "namespace", BERTRAND_NAMESPACE],
                 capture_output=True,
                 timeout=timeout,
             )
@@ -1549,7 +1546,7 @@ class _ClusterLeaseLock:
         self,
         path: Path,
         *,
-        namespace: str = MICROK8S_NAMESPACE,
+        namespace: str = BERTRAND_NAMESPACE,
         lease_duration: int = LEASE_DURATION_SECONDS,
     ) -> None:
         self._namespace = namespace

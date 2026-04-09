@@ -40,7 +40,7 @@ from .core import (
     NoWhiteSpace,
     PosixPath,
     Resource,
-    TagName,
+    TOMLKey,
     Trimmed,
     URLLabel,
     resource,
@@ -266,7 +266,7 @@ class PyProject(Resource):
                 description=
                     "Python-level dependencies as PEP508 requirement specifiers.",
             )]
-            optional_dependencies: Annotated[dict[TagName, list[PEP508Requirement]], Field(
+            optional_dependencies: Annotated[dict[TOMLKey, list[PEP508Requirement]], Field(
                 default_factory=dict,
                 alias="optional-dependencies",
                 description=

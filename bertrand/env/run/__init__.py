@@ -8,6 +8,7 @@ environment.
 """
 from .bertrand_git import (
     BERTRAND_ENV,
+    BERTRAND_NAMESPACE,
     BUILDCTL_BIN,
     BUILDKIT_ADDRESS,
     BUILDKIT_LOCK_FILE,

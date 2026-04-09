@@ -31,7 +31,6 @@ from ..run import (
     METADATA_DIR,
     Scalar,
     atomic_write_text,
-    sanitize_name,
 )
 from ..version import VERSION
 from .conan import (
@@ -40,6 +39,7 @@ from .conan import (
     ConanOptions,
 )
 from .core import (
+    SANITIZE_RE,
     AbsolutePosixPath,
     Config,
     Glob,
@@ -327,7 +327,7 @@ def _check_userns(userns: str) -> str:
             raise ValueError(
                 f"invalid userns '{userns}' (container tag must use [A-Za-z0-9._-]+)"
             )
-        sanitized = sanitize_name(ref)
+        sanitized = SANITIZE_RE.sub("-", ref).strip("-")
         if ref != sanitized:
             raise ValueError(
                 f"invalid userns '{userns}' (container tag sanitizes to '{sanitized}')"
@@ -374,7 +374,7 @@ def _check_namespace_mode(
             raise ValueError(
                 f"invalid {option} '{mode}' (container tag must use [A-Za-z0-9._-]+)"
             )
-        sanitized = sanitize_name(ref)
+        sanitized = SANITIZE_RE.sub("-", ref).strip("-")
         if ref != sanitized:
             raise ValueError(
                 f"invalid {option} '{mode}' (container tag sanitizes to '{sanitized}')"
@@ -1710,22 +1710,3 @@ class Bertrand(Resource):
 
     async def schema(self) -> dict[str, Any]:
         return self.Model.model_json_schema(by_alias=True, mode="validation")
-
-
-def render_containerfile(model: Bertrand.Model, tag: TOMLKey) -> str:
-    """Render a `Containerfile` matching a given tag in the `Bertrand.Model.Build`
-    table.
-
-    Parameters
-    ----------
-    model : `Bertrand.Model`
-        The validated `Bertrand.Model` instance containing the build configuration.
-    tag : `str`
-        The image to render the `Containerfile` for.
-
-    Returns
-    -------
-    str
-        The rendered `Containerfile` content.
-    """
-    return ""
