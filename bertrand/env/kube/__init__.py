@@ -1,5 +1,5 @@
 """Kubernetes runtime orchestration primitives for Bertrand."""
-from .capability import build_capability_flags, cleanup_capability_dir
+from .capability import Capabilities, capability_secret_name
 from .container import (
     Container,
     ContainerArgs,

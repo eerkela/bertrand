@@ -40,6 +40,11 @@ from ..run import (
 )
 
 CACHE_MOUNT: PosixPath = PosixPath("/tmp/.cache")
+SNAKE_CASE_RE = re.compile(r"^([a-zA-Z]([a-zA-Z0-9_]*[a-zA-Z0-9])?)?$")
+LOWER_SNAKE_CASE_RE = re.compile(r"^([a-z]([a-z0-9_]*[a-z0-9])?)?$")
+UPPER_SNAKE_CASE_RE = re.compile(r"^([A-Z]([A-Z0-9_]*[A-Z0-9])?)?$")
+TOML_KEY_RE = re.compile(r"^[a-zA-Z]([a-zA-Z0-9_-]*[a-zA-Z0-9])?$")
+KUBE_SECRET_RE = re.compile(r"^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$")
 HTTP_URL: TypeAdapter[AnyHttpUrl] = TypeAdapter(AnyHttpUrl)
 GLOB_RE = re.compile(r"^[A-Za-z0-9._/\-\*\?\[\]!]+$")
 RESOURCE_NAME_RE = re.compile(r"^[a-z]([a-z0-9_.-]*[a-z0-9])?$")
@@ -159,20 +164,25 @@ type NoWhiteSpace = Annotated[
 ]
 type SnakeCase = Annotated[str, StringConstraints(
     strip_whitespace=True,
-    pattern=r"^([a-zA-Z]([a-zA-Z0-9_]*[a-zA-Z0-9])?)?$"
+    pattern=SNAKE_CASE_RE.pattern
 )]
 type LowerSnakeCase = Annotated[str, StringConstraints(
     strip_whitespace=True,
-    pattern=r"^([a-z]([a-z0-9_]*[a-z0-9])?)?$"
+    pattern=LOWER_SNAKE_CASE_RE.pattern
 )]
 type UpperSnakeCase = Annotated[str, StringConstraints(
     strip_whitespace=True,
-    pattern=r"^([A-Z]([A-Z0-9_]*[A-Z0-9])?)?$"
+    pattern=UPPER_SNAKE_CASE_RE.pattern
 )]
 type TOMLKey = Annotated[str, StringConstraints(
     strip_whitespace=True,
     min_length=1,
-    pattern=r"^[a-zA-Z]([a-zA-Z0-9_-]*[a-zA-Z0-9])?$"
+    pattern=TOML_KEY_RE.pattern
+)]
+type SecretName = Annotated[str, StringConstraints(
+    strip_whitespace=True,
+    min_length=1,
+    pattern=KUBE_SECRET_RE.pattern
 )]
 type Glob = Annotated[NonEmpty[NoWhiteSpace], AfterValidator(_check_glob)]
 type AbsolutePath = Annotated[Path, AfterValidator(_check_absolute_path)]

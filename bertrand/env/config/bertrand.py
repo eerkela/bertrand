@@ -50,6 +50,7 @@ from .core import (
     PosixPath,
     RelativePosixPath,
     Resource,
+    SecretName,
     SnakeCase,
     TOMLKey,
     Trimmed,
@@ -869,12 +870,12 @@ class Bertrand(Resource):
             class Secret(BaseModel):
                 """Validate an entry in `[[tool.bertrand.build.<tag>.secrets]]`."""
                 model_config = ConfigDict(extra="forbid")
-                id: Annotated[SnakeCase, Field(
+                id: Annotated[SecretName, Field(
                     examples=["pypi_token", "private_pkg_key"],
                     description=
                         "Host-agnostic capability ID for a build secret.  The ID is "
-                        "resolved against Bertrand's cluster-backed capability store "
-                        "at build time.",
+                        "resolved using a Kubernetes Secret in the \"bertrand\" "
+                        "namespace, which provides the secret's payload.",
                 )]
                 required: Annotated[bool, Field(
                     default=True,
@@ -885,7 +886,7 @@ class Bertrand(Resource):
 
             @staticmethod
             def _check_unique_secrets(requests: list[Secret]) -> list[Secret]:
-                seen: set[SnakeCase] = set()
+                seen: set[SecretName] = set()
                 for req in requests:
                     if req.id in seen:
                         raise ValueError(f"duplicate secret id: '{req.id}'")
@@ -909,21 +910,19 @@ class Bertrand(Resource):
                         )),
                     ],
                     description=
-                        "Build-time secret capability requests resolved from a "
-                        "cluster-backed capability store.  Each entry is an ID-only "
-                        "request with optional required/optional semantics."
+                        "Build-time secrets resolved from the local Kubernetes cluster."
                 )
             ]
 
             class SSH(BaseModel):
                 """Validate an entry in `[[tool.bertrand.build.<tag>.ssh]]`."""
                 model_config = ConfigDict(extra="forbid")
-                id: Annotated[SnakeCase, Field(
+                id: Annotated[SecretName, Field(
                     examples=["git_deploy_key", "github_readonly"],
                     description=
                         "Host-agnostic capability ID for a build-time SSH credential.  "
-                        "The ID is resolved against Bertrand's cluster-backed capability "
-                        "store at build time.",
+                        "The ID is resolved using a Kubernetes Secret in the "
+                        "\"bertrand\" namespace, which provides the credential payload.",
                 )]
                 required: Annotated[bool, Field(
                     default=True,
@@ -935,7 +934,7 @@ class Bertrand(Resource):
 
             @staticmethod
             def _check_unique_ssh(requests: list[SSH]) -> list[SSH]:
-                seen: set[SnakeCase] = set()
+                seen: set[SecretName] = set()
                 for req in requests:
                     if req.id in seen:
                         raise ValueError(f"duplicate ssh id: '{req.id}'")
@@ -950,30 +949,30 @@ class Bertrand(Resource):
                     examples=[
                         "\n".join((
                             f"[tool.bertrand.build.{DEFAULT_TAG}]",
-                            "secrets = [{ id = \"git_deploy_key\", required = true }]",
+                            "ssh = [{ id = \"git_deploy_key\", required = true }]",
                         )),
                         "\n".join((
-                            f"[[tool.bertrand.build.{DEFAULT_TAG}.secrets]]",
+                            f"[[tool.bertrand.build.{DEFAULT_TAG}.ssh]]",
                             "id = \"github_readonly\"",
                             "required = false",
                         )),
                     ],
                     description=
-                        "Build-time SSH capability requests resolved from a "
-                        "cluster-backed capability store.  Each entry is an ID-only "
-                        "request with optional required/optional semantics."
+                        "Build-time SSH credentials to apply to `RUN` instructions in "
+                        "the associated Containerfile.",
                 )
             ]
 
             class Device(BaseModel):
                 """Validate an entry in `[[tool.bertrand.build.<tag>.devices]]`."""
                 model_config = ConfigDict(extra="forbid")
-                id: Annotated[SnakeCase, Field(
+                id: Annotated[SecretName, Field(
                     examples=["gpu", "cuda0"],
                     description=
-                        "Host-agnostic capability ID for build-time device access.  "
-                        "The ID is resolved by Bertrand at execution time into a "
-                        "node-local selector.",
+                        "Host-agnostic capability ID for a build-time device "
+                        "capability.  The ID is resolved using a Kubernetes Secret in "
+                        "the \"bertrand\" namespace, which provides the host device "
+                        "endpoint.",
                 )]
                 required: Annotated[bool, Field(
                     default=True,
@@ -992,7 +991,7 @@ class Bertrand(Resource):
 
             @staticmethod
             def _check_unique_devices(requests: list[Device]) -> list[Device]:
-                seen: set[SnakeCase] = set()
+                seen: set[SecretName] = set()
                 for req in requests:
                     if req.id in seen:
                         raise ValueError(f"duplicate device id: '{req.id}'")
@@ -1007,19 +1006,18 @@ class Bertrand(Resource):
                     examples=[
                         "\n".join((
                             f"[tool.bertrand.build.{DEFAULT_TAG}]",
-                            "secrets = [{ id = \"gpu\", required = true, permissions = \"rwm\" }]",
+                            "devices = [{ id = \"gpu\", required = true, permissions = \"rwm\" }]",
                         )),
                         "\n".join((
-                            f"[[tool.bertrand.build.{DEFAULT_TAG}.secrets]]",
+                            f"[[tool.bertrand.build.{DEFAULT_TAG}.devices]]",
                             "id = \"fpga0\"",
                             "required = false",
                             "permissions = \"rw\"",
                         )),
                     ],
                     description=
-                        "Build-time device capability requests.  IDs are resolved "
-                        "outside project config, while permissions remain configurable "
-                        "per request."
+                        "Build-time device capabilities resolved from the local "
+                        "Kubernetes cluster.",
                 )
             ]
 
@@ -1089,7 +1087,7 @@ class Bertrand(Resource):
                     "project configuration.  If omitted, Bertrand will automatically "
                     "generate a minimal Containerfile based on this information.",
             )]
-            build_args: Annotated[dict[UpperSnakeCase, Scalar], Field(
+            build_args: Annotated[dict[NonEmpty[UpperSnakeCase], Scalar], Field(
                 default_factory=dict,
                 alias="build-args",
                 examples=["\n".join((
@@ -1264,7 +1262,7 @@ class Bertrand(Resource):
             ipc: Annotated[IPCMode, Field(default="private")]
             pid: Annotated[PIDMode, Field(default="private")]
             uts: Annotated[UTSMode, Field(default="private")]
-            ssh: Annotated[list[UpperSnakeCase], Field(default_factory=list)]
+            ssh: Annotated[list[SecretName], Field(default_factory=list)]
 
             class InstrumentEntry(BaseModel):
                 """Validate entries in the `[tool.bertrand.image.<tag>.instruments]`
@@ -1321,7 +1319,7 @@ class Bertrand(Resource):
                 class Request(BaseModel):
                     """Validate one entry in `[[tool.bertrand.image.<tag>.devices.*]]`."""
                     model_config = ConfigDict(extra="forbid")
-                    id: UpperSnakeCase
+                    id: SecretName
                     required: bool = True
                     container_path: Annotated[
                         AbsolutePosixPath | None,
@@ -1331,7 +1329,7 @@ class Bertrand(Resource):
 
                 @staticmethod
                 def _check_unique_ids(requests: list[Request], *, where: str) -> list[Request]:
-                    seen: set[UpperSnakeCase] = set()
+                    seen: set[SecretName] = set()
                     for req in requests:
                         if req.id in seen:
                             raise ValueError(f"duplicate {where} device id: '{req.id}'")
@@ -1383,12 +1381,12 @@ class Bertrand(Resource):
                 class Request(BaseModel):
                     """Validate an individual secret capability request."""
                     model_config = ConfigDict(extra="forbid")
-                    id: UpperSnakeCase
+                    id: SecretName
                     required: bool = True
 
                 @staticmethod
                 def _check_unique_ids(requests: list[Request], *, where: str) -> list[Request]:
-                    seen: set[UpperSnakeCase] = set()
+                    seen: set[SecretName] = set()
                     for req in requests:
                         if req.id in seen:
                             raise ValueError(f"duplicate {where} secret id: '{req.id}'")
