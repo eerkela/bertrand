@@ -10,7 +10,7 @@ import sys
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Annotated, Literal, Self, cast
+from typing import Annotated, Literal, Self, cast, overload
 
 from pydantic import BaseModel, ConfigDict, Field, StrictStr, ValidationError
 
@@ -24,11 +24,6 @@ CAPABILITY_MANAGED_V1 = "bertrand.dev/capability-managed.v1"
 CAPABILITY_KIND_V1 = "bertrand.dev/capability-kind.v1"
 CAPABILITY_ENV_ID_V1 = "bertrand.dev/capability-env-id.v1"
 CAPABILITY_ID_V1 = "bertrand.dev/capability-id.v1"
-CAPABILITY_DATA_KEY: dict[CapabilityKind, Literal["value", "private_key", "selector"]] = {
-    "secret": "value",
-    "ssh": "private_key",
-    "device": "selector",
-}
 
 
 class KubeSecret(BaseModel):
@@ -88,17 +83,11 @@ class KubeSecret(BaseModel):
                 f"cluster secret {name!r} returned malformed JSON payload"
             ) from err
 
-    def decode(
-        self,
-        kind: Literal["value", "private_key", "selector"],
-        name: str
-    ) -> bytes:
+    def decode(self, name: str) -> bytes:
         """Decode a base64-encoded value from the validated Kube Secret.
 
         Parameters
         ----------
-        kind : str
-            The key within the Kubernetes Secret data to decode.
         name : str
             The name of the Kubernetes Secret, for error messages.
 
@@ -113,16 +102,17 @@ class KubeSecret(BaseModel):
             If the specified key is not defined in the Secret data, or if the value is
             not valid base64-encoded data.
         """
-        if kind not in self.data:
+        value = self.data.get("value")
+        if value is None:
             raise OSError(
-                f"cluster secret {name!r} does not define required key 'data.{kind}'"
+                f"cluster secret {name!r} does not define required key 'data.value'"
             )
         try:
-            return base64.b64decode(self.data[kind], validate=True)
+            return base64.b64decode(value, validate=True)
         except (binascii.Error, ValueError) as err:
             raise OSError(
                 f"cluster secret {name!r} contains invalid base64 data for key "
-                f"'data.{kind}'"
+                f"'data.value'"
             ) from err
 
 
@@ -186,7 +176,7 @@ class CapabilityMetadata:
         env_id: str | None = secret.metadata.labels.get(CAPABILITY_ENV_ID_V1)
         if env_id is None:
             raise OSError(
-                f"cluster secret {secret.metadata.name!r} is missing annotation "
+                f"cluster secret {secret.metadata.name!r} is missing label "
                 f"{CAPABILITY_ENV_ID_V1!r}"
             )
         env_id = _normalize_env_id(None if env_id == "shared" else env_id)
@@ -206,6 +196,10 @@ def _normalize_id(value: str) -> SecretName:
     return normalized
 
 
+@overload
+def _normalize_env_id(value: None) -> None: ...
+@overload
+def _normalize_env_id(value: str) -> str: ...
 def _normalize_env_id(value: str | None) -> str | None:
     if value is None:
         return None
@@ -276,9 +270,7 @@ class Capabilities:
     _finalized: bool = field(default=False, repr=False)
 
     def __post_init__(self) -> None:
-        self.env_id = self.env_id.strip()
-        if not self.env_id:
-            raise ValueError("environment ID cannot be empty")
+        self.env_id = _normalize_env_id(self.env_id)
         if self.timeout < 0:
             raise TimeoutError("capability timeout must be non-negative")
 
@@ -429,27 +421,6 @@ class Capabilities:
             )
         self._devices[id] = self.Device(required=required, permissions=permissions)
 
-    @staticmethod
-    def _missing_required(
-        kind: Literal["secret", "ssh", "device"],
-        id: SecretName,
-        env_token: str,
-        shared_token: str
-    ) -> OSError:
-        return OSError(
-            f"missing required build {kind} capability {id!r} (cluster secrets "
-            f"{env_token!r} and {shared_token!r} not found in namespace "
-            f"{BERTRAND_NAMESPACE!r})"
-        )
-
-    @staticmethod
-    def _warn_optional(kind: str, id: SecretName) -> None:
-        print(
-            f"bertrand: optional {kind} capability {id!r} was not found; "
-            "continuing without it",
-            file=sys.stderr,
-        )
-
     def _stage_payload(
         self,
         kind: Literal["secrets", "ssh"],
@@ -469,28 +440,34 @@ class Capabilities:
     ) -> tuple[KubeSecret, CapabilityMetadata] | None:
         # check local secrets first
         expected = CapabilityMetadata(kind=kind, id=id, env_id=self.env_id)
-        secret = await KubeSecret.get(expected.name, timeout=self.timeout)
-        if secret is None:
-            return None
-        if expected != CapabilityMetadata.from_secret(secret):
-            raise OSError(
-                f"cluster secret {expected.name!r} metadata does not match requested "
-                f"{expected.kind} capability {expected.id!r}"
-            )
+        secret = await KubeSecret.get(
+            expected.name,
+            timeout=self.timeout
+        )
+        if secret is not None:
+            if expected != CapabilityMetadata.from_secret(secret):
+                raise OSError(
+                    f"environment secret {expected.name!r} metadata does not match "
+                    f"requested {expected.kind} capability {expected.id!r}"
+                )
+            return secret, expected
 
         # fall back to cluster-wide secrets if env-scoped and not found
-        if self.env_id is None:
-            return secret, expected
         expected = CapabilityMetadata(kind=kind, id=id, env_id=None)
-        secret = await KubeSecret.get(expected.name, timeout=self.timeout)
-        if secret is None:
-            return None
-        if expected != CapabilityMetadata.from_secret(secret):
-            raise OSError(
-                f"cluster secret {expected.name!r} metadata does not match requested "
-                f"{expected.kind} capability {expected.id!r}"
-            )
-        return secret, expected
+        secret = await KubeSecret.get(
+            expected.name,
+            timeout=self.timeout
+        )
+        if secret is not None:
+            if expected != CapabilityMetadata.from_secret(secret):
+                raise OSError(
+                    f"cluster secret {expected.name!r} metadata does not match "
+                    f"requested {expected.kind} capability {expected.id!r}"
+                )
+            return secret, expected
+
+        # missing
+        return None
 
     async def _resolve_secret(self, id: SecretName, request: Secret) -> list[str]:
         resolved = await self._resolve(
@@ -499,18 +476,16 @@ class Capabilities:
         )
         if resolved is None:
             if request.required:
-                raise self._missing_required(
-                    "secret",
-                    id,
-                    _kube_secret_name("secret", id, self.env_id),
-                    _kube_secret_name("secret", id, None),
-                )
-            self._warn_optional("secret", id)
+                raise OSError(f"missing required secret: {id!r}")
+            print(
+                f"bertrand: optional secret {id!r} was not found; continuing without it",
+                file=sys.stderr,
+            )
             return []
 
         data, meta = resolved
         token = meta.name
-        payload = data.decode("value", token)
+        payload = data.decode(token)
         target = self._stage_payload("secrets", id, payload)
         return ["--secret", f"id={id},src={target}"]
 
@@ -521,18 +496,17 @@ class Capabilities:
         )
         if resolved is None:
             if request.required:
-                raise self._missing_required(
-                    "ssh",
-                    id,
-                    _kube_secret_name("ssh", id, self.env_id),
-                    _kube_secret_name("ssh", id, None),
-                )
-            self._warn_optional("ssh", id)
+                raise OSError(f"missing required ssh credential: {id!r}")
+            print(
+                f"bertrand: optional ssh credential {id!r} was not found; continuing "
+                "without it",
+                file=sys.stderr,
+            )
             return []
 
         data, meta = resolved
         token = meta.name
-        payload = data.decode("private_key", token)
+        payload = data.decode(token)
         target = self._stage_payload("ssh", id, payload)
         return ["--ssh", f"id={id},src={target}"]
 
@@ -543,28 +517,24 @@ class Capabilities:
         )
         if resolved is None:
             if request.required:
-                raise self._missing_required(
-                    "device",
-                    id,
-                    _kube_secret_name("device", id, self.env_id),
-                    _kube_secret_name("device", id, None),
-                )
-            self._warn_optional("device", id)
+                raise OSError(f"missing required device selector: {id!r}")
+            print(
+                f"bertrand: optional device selector {id!r} was not found; continuing "
+                "without it",
+                file=sys.stderr,
+            )
             return []
 
         data, meta = resolved
         token = meta.name
         try:
-            selector = data.decode(
-                "selector",
-                token
-            ).decode("utf-8").strip()
+            selector = data.decode(token).decode("utf-8").strip()
         except UnicodeDecodeError as err:
             raise OSError(
-                f"cluster secret {token!r} key 'data.selector' must decode as UTF-8 text"
+                f"cluster secret {token!r} key 'data.value' must decode as UTF-8 text"
             ) from err
         if not selector:
-            raise OSError(f"cluster secret {token!r} key 'data.selector' cannot be empty")
+            raise OSError(f"cluster secret {token!r} key 'data.value' cannot be empty")
         return ["--device", f"{selector}:{request.permissions}"]
 
     async def finalize(self) -> tuple[str, ...]:
@@ -706,6 +676,7 @@ async def put_capability(
             "name": expected.name,
             "namespace": BERTRAND_NAMESPACE,
             "labels": {
+                CAPABILITY_MANAGED_V1: "true",
                 CAPABILITY_KIND_V1: expected.kind,
                 CAPABILITY_ENV_ID_V1: expected.env_id or "shared",
             },
@@ -713,7 +684,7 @@ async def put_capability(
         },
         "type": "Opaque",
         "data": {
-            CAPABILITY_DATA_KEY[kind]: base64.b64encode(payload).decode("ascii"),
+            "value": base64.b64encode(payload).decode("ascii"),
         },
     }
 
@@ -790,8 +761,11 @@ async def list_capabilities(
     kind : CapabilityKind
         The kind of capability to filter by.
     env_id : str | None
-        The environment ID to filter by.  If None, capabilities of all environment IDs
-        will be returned.
+        The environment ID to filter by.  If None, cluster-wide capabilities will be
+        returned.  Note that final build system bootstrap will always proceed from
+        environment scope to cluster scope, so the effective set of candidates for a
+        given environment is the union of both scopes.  This function only lists one
+        scope at a time.
     timeout : float
         The maximum time to wait for the Kubernetes Secret list, in seconds.
 

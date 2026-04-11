@@ -3,13 +3,10 @@ from .capability import (
     Capabilities,
     CapabilityKind,
     CapabilityMetadata,
-    CapabilityScope,
-    capability_secret_name,
     delete_capability,
     get_capability,
     list_capabilities,
-    resolve_with_fallback,
-    upsert_capability,
+    put_capability,
 )
 from .container import (
     Container,
