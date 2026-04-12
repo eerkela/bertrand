@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import base64
-import binascii
 import hashlib
 import json
 import shutil
@@ -10,12 +9,13 @@ import sys
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Annotated, Literal, Self, cast, overload
+from typing import Literal, Self, cast
 
-from pydantic import BaseModel, ConfigDict, Field, StrictStr, ValidationError
+from pydantic import ValidationError
 
-from ..config.core import KUBE_SECRET_RE, SecretName
+from ..config.core import KubeName, _check_kube_name, _check_uuid
 from ..run import BERTRAND_NAMESPACE, TOOLS_TMP_DIR, atomic_write_bytes, kubectl
+from .helper import KubeSecret
 
 type CapabilityKind = Literal["secret", "ssh", "device"]
 DEVICE_PERMISSIONS = frozenset({"r", "w", "m", "rw", "rm", "wm", "rwm"})
@@ -26,107 +26,18 @@ CAPABILITY_ENV_ID_V1 = "bertrand.dev/capability-env-id.v1"
 CAPABILITY_ID_V1 = "bertrand.dev/capability-id.v1"
 
 
-class KubeSecret(BaseModel):
-    """Validated subset of a Kubernetes Secret payload."""
-    class Metadata(BaseModel):
-        """Validated subset of Kubernetes Secret metadata."""
-        model_config = ConfigDict(extra="ignore")
-        name: str = ""
-        labels: Annotated[dict[StrictStr, StrictStr], Field(default_factory=dict)]
-        annotations: Annotated[dict[StrictStr, StrictStr], Field(default_factory=dict)]
-
-    class List(BaseModel):
-        """Validated subset of a Kubernetes Secret list payload."""
-        model_config = ConfigDict(extra="ignore")
-        items: list[KubeSecret] = Field(default_factory=list)
-
-    model_config = ConfigDict(extra="ignore")
-    metadata: Metadata = Field(default_factory=Metadata.model_construct)
-    data: Annotated[dict[StrictStr, StrictStr], Field(default_factory=dict)]
-
-    @classmethod
-    async def get(cls, name: SecretName, timeout: float) -> Self | None:
-        """Load a Kubernetes Secret by name and validate its structure.
-
-        Parameters
-        ----------
-        name : str
-            The name of the Kubernetes Secret, which must be lowercase with `-` and/or
-            `.` separators.
-        timeout : float
-            The maximum time to wait for the Kubernetes Secret to be retrieved, in
-            seconds.
-
-        Returns
-        -------
-        KubeSecret | None
-            The validated Kubernetes Secret data, or `None` if the Secret is not found.
-        """
-        payload = (await kubectl(
-            [
-                "get",
-                "secret",
-                name,
-                "-n", BERTRAND_NAMESPACE,
-                "-o", "json",
-                "--ignore-not-found=true",
-            ],
-            capture_output=True,
-            timeout=timeout,
-        )).stdout.strip()
-        if not payload:
-            return None
-        try:
-            return cls.model_validate_json(payload)
-        except ValidationError as err:
-            raise OSError(
-                f"cluster secret {name!r} returned malformed JSON payload"
-            ) from err
-
-    def decode(self, name: str) -> bytes:
-        """Decode a base64-encoded value from the validated Kube Secret.
-
-        Parameters
-        ----------
-        name : str
-            The name of the Kubernetes Secret, for error messages.
-
-        Returns
-        -------
-        bytes
-            The decoded value of the specified key.
-
-        Raises
-        ------
-        OSError
-            If the specified key is not defined in the Secret data, or if the value is
-            not valid base64-encoded data.
-        """
-        value = self.data.get("value")
-        if value is None:
-            raise OSError(
-                f"cluster secret {name!r} does not define required key 'data.value'"
-            )
-        try:
-            return base64.b64decode(value, validate=True)
-        except (binascii.Error, ValueError) as err:
-            raise OSError(
-                f"cluster secret {name!r} contains invalid base64 data for key "
-                f"'data.value'"
-            ) from err
-
-
 @dataclass(frozen=True)
 class CapabilityMetadata:
     """Metadata for one managed capability secret."""
     kind: CapabilityKind
-    id: SecretName
+    id: KubeName
     env_id: str | None
-    name: SecretName = field(init=False, repr=False)
+    name: KubeName = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "id", _normalize_id(self.id))
-        object.__setattr__(self, "env_id", _normalize_env_id(self.env_id))
+        object.__setattr__(self, "id", _check_kube_name(self.id))
+        if self.env_id is not None:
+            object.__setattr__(self, "env_id", _check_uuid(self.env_id))
         object.__setattr__(self, "name", _kube_secret_name(
             kind=self.kind,
             id=self.id,
@@ -172,50 +83,25 @@ class CapabilityMetadata:
                 f"cluster secret {secret.metadata.name!r} is missing annotation "
                 f"{CAPABILITY_ID_V1!r}"
             )
-        id = _normalize_id(id)
+        id = _check_kube_name(id)
         env_id: str | None = secret.metadata.labels.get(CAPABILITY_ENV_ID_V1)
         if env_id is None:
             raise OSError(
                 f"cluster secret {secret.metadata.name!r} is missing label "
                 f"{CAPABILITY_ENV_ID_V1!r}"
             )
-        env_id = _normalize_env_id(None if env_id == "shared" else env_id)
+        env_id = None if env_id == "shared" else _check_uuid(env_id)
         return cls(kind=kind, id=id, env_id=env_id)
-
-
-def _normalize_id(value: str) -> SecretName:
-    normalized = value.strip()
-    if not normalized:
-        raise ValueError("capability ID cannot be empty")
-    match = KUBE_SECRET_RE.fullmatch(normalized)
-    if not match:
-        raise ValueError(
-            "capability ID must be a valid Kubernetes secret name (lowercase "
-            f"alphanumeric with `-` and `.`): {value!r}"
-        )
-    return normalized
-
-
-@overload
-def _normalize_env_id(value: None) -> None: ...
-@overload
-def _normalize_env_id(value: str) -> str: ...
-def _normalize_env_id(value: str | None) -> str | None:
-    if value is None:
-        return None
-    try:
-        return uuid.UUID(value.strip()).hex
-    except ValueError as err:
-        raise ValueError(f"environment ID must be a valid UUID: {value!r}") from err
 
 
 def _kube_secret_name(
     kind: CapabilityKind,
-    id: SecretName,
+    id: KubeName,
     env_id: str | None,
-) -> SecretName:
-    id = _normalize_id(id)
-    env_id = _normalize_env_id(env_id)
+) -> KubeName:
+    id = _check_kube_name(id)
+    if env_id is not None:
+        env_id = _check_uuid(env_id)
 
     # if env-scoped, salt the hash with the given env id
     if env_id is None:
@@ -270,7 +156,7 @@ class Capabilities:
     _finalized: bool = field(default=False, repr=False)
 
     def __post_init__(self) -> None:
-        self.env_id = _normalize_env_id(self.env_id)
+        self.env_id = _check_uuid(self.env_id)
         if self.timeout < 0:
             raise TimeoutError("capability timeout must be non-negative")
 
@@ -295,7 +181,7 @@ class Capabilities:
             if exc_type is None:
                 raise
 
-    def secret(self, *, id: SecretName, required: bool) -> None:
+    def secret(self, *, id: KubeName, required: bool) -> None:
         """Register one build secret capability request.
 
         Parameters
@@ -319,7 +205,7 @@ class Capabilities:
             raise RuntimeError(
                 "capabilities are already finalized and cannot be modified"
             )
-        id = _normalize_id(id)
+        id = _check_kube_name(id)
         if id in self._secrets:
             raise ValueError(f"duplicate secret capability ID: {id!r}")
         if id in self._ssh:
@@ -332,7 +218,7 @@ class Capabilities:
             )
         self._secrets[id] = self.Secret(required=required)
 
-    def ssh(self, *, id: SecretName, required: bool) -> None:
+    def ssh(self, *, id: KubeName, required: bool) -> None:
         """Register one build SSH capability request.
 
         Parameters
@@ -356,7 +242,7 @@ class Capabilities:
             raise RuntimeError(
                 "capabilities are already finalized and cannot be modified"
             )
-        id = _normalize_id(id)
+        id = _check_kube_name(id)
         if id in self._secrets:
             raise ValueError(
                 f"capability ID {id!r} is already registered as a secret capability"
@@ -372,7 +258,7 @@ class Capabilities:
     def device(
         self,
         *,
-        id: SecretName,
+        id: KubeName,
         required: bool,
         permissions: str,
     ) -> None:
@@ -403,7 +289,7 @@ class Capabilities:
             raise RuntimeError(
                 "capabilities are already finalized and cannot be modified"
             )
-        id = _normalize_id(id)
+        id = _check_kube_name(id)
         if id in self._secrets:
             raise ValueError(
                 f"capability ID {id!r} is already registered as a secret capability"
@@ -424,7 +310,7 @@ class Capabilities:
     def _stage_payload(
         self,
         kind: Literal["secrets", "ssh"],
-        id: SecretName,
+        id: KubeName,
         payload: bytes,
     ) -> Path:
         target = CAPABILITY_DIR / self.run_id / kind / id
@@ -436,7 +322,7 @@ class Capabilities:
     async def _resolve(
         self,
         kind: CapabilityKind,
-        id: SecretName
+        id: KubeName
     ) -> tuple[KubeSecret, CapabilityMetadata] | None:
         # check local secrets first
         expected = CapabilityMetadata(kind=kind, id=id, env_id=self.env_id)
@@ -469,7 +355,7 @@ class Capabilities:
         # missing
         return None
 
-    async def _resolve_secret(self, id: SecretName, request: Secret) -> list[str]:
+    async def _resolve_secret(self, id: KubeName, request: Secret) -> list[str]:
         resolved = await self._resolve(
             kind="secret",
             id=id,
@@ -489,7 +375,7 @@ class Capabilities:
         target = self._stage_payload("secrets", id, payload)
         return ["--secret", f"id={id},src={target}"]
 
-    async def _resolve_ssh(self, id: SecretName, request: SSH) -> list[str]:
+    async def _resolve_ssh(self, id: KubeName, request: SSH) -> list[str]:
         resolved = await self._resolve(
             kind="ssh",
             id=id,
@@ -510,7 +396,7 @@ class Capabilities:
         target = self._stage_payload("ssh", id, payload)
         return ["--ssh", f"id={id},src={target}"]
 
-    async def _resolve_device(self, id: SecretName, request: Device) -> list[str]:
+    async def _resolve_device(self, id: KubeName, request: Device) -> list[str]:
         resolved = await self._resolve(
             kind="device",
             id=id,
@@ -575,7 +461,7 @@ class Capabilities:
 async def get_capability(
     *,
     kind: CapabilityKind,
-    id: SecretName,
+    id: KubeName,
     env_id: str | None,
     timeout: float,
 ) -> tuple[KubeSecret, CapabilityMetadata] | None:
@@ -623,7 +509,7 @@ async def get_capability(
 async def put_capability(
     *,
     kind: CapabilityKind,
-    id: SecretName,
+    id: KubeName,
     env_id: str | None,
     timeout: float,
     payload: bytes,
@@ -696,7 +582,7 @@ async def put_capability(
 async def delete_capability(
     *,
     kind: CapabilityKind,
-    id: SecretName,
+    id: KubeName,
     env_id: str | None,
     timeout: float,
 ) -> bool:
@@ -776,7 +662,8 @@ async def list_capabilities(
         first element of each tuple is the raw, sensitve Kubernetes Secret data, and
         the second element is the parsed metadata, which is safe to log or display.
     """
-    env_id = _normalize_env_id(env_id)
+    if env_id is not None:
+        env_id = _check_uuid(env_id)
     payload = (await kubectl(
         [
             "get",

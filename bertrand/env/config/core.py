@@ -4,6 +4,7 @@ from __future__ import annotations
 import importlib.resources as importlib_resources
 import re
 import string
+import uuid
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path, PosixPath
@@ -44,7 +45,8 @@ SNAKE_CASE_RE = re.compile(r"^([a-zA-Z]([a-zA-Z0-9_]*[a-zA-Z0-9])?)?$")
 LOWER_SNAKE_CASE_RE = re.compile(r"^([a-z]([a-z0-9_]*[a-z0-9])?)?$")
 UPPER_SNAKE_CASE_RE = re.compile(r"^([A-Z]([A-Z0-9_]*[A-Z0-9])?)?$")
 TOML_KEY_RE = re.compile(r"^[a-zA-Z]([a-zA-Z0-9_-]*[a-zA-Z0-9])?$")
-KUBE_SECRET_RE = re.compile(r"^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$")
+KUBE_NAME_RE = re.compile(r"^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$")
+KUBE_SANITIZE_RE = re.compile(r"[^a-z0-9.-]+")
 HTTP_URL: TypeAdapter[AnyHttpUrl] = TypeAdapter(AnyHttpUrl)
 GLOB_RE = re.compile(r"^[A-Za-z0-9._/\-\*\?\[\]!]+$")
 RESOURCE_NAME_RE = re.compile(r"^[a-z]([a-z0-9_.-]*[a-z0-9])?$")
@@ -57,6 +59,23 @@ OCI_IMAGE_REF_RE = re.compile(
     r"(?:@(?P<digest>sha256:[0-9a-f]{64}))?$"
 )
 SANITIZE_RE = re.compile(r"[^a-zA-Z0-9._]+")
+
+
+def _check_kube_name(value: str) -> str:
+    if not KUBE_NAME_RE.fullmatch(value):
+        raise ValueError(
+            f"invalid Kubernetes name: {value!r} (must be lowercase alphanumeric, "
+            "'.', or '-', must not be empty, and must start with a letter and end with "
+            "a letter or number)"
+        )
+    return value
+
+
+def _check_uuid(value: str) -> str:
+    try:
+        return uuid.UUID(value).hex
+    except ValueError as err:
+        raise ValueError(f"invalid UUID hex string: {value}") from err
 
 
 def _check_glob(pattern: str) -> str:
@@ -179,11 +198,12 @@ type TOMLKey = Annotated[str, StringConstraints(
     min_length=1,
     pattern=TOML_KEY_RE.pattern
 )]
-type SecretName = Annotated[str, StringConstraints(
+type KubeName = Annotated[str, StringConstraints(
     strip_whitespace=True,
     min_length=1,
-    pattern=KUBE_SECRET_RE.pattern
+    pattern=KUBE_NAME_RE.pattern
 )]
+type UUIDHex = Annotated[str, AfterValidator(_check_uuid)]
 type Glob = Annotated[NonEmpty[NoWhiteSpace], AfterValidator(_check_glob)]
 type AbsolutePath = Annotated[Path, AfterValidator(_check_absolute_path)]
 type AbsolutePosixPath = Annotated[PosixPath, AfterValidator(_check_absolute_path)]

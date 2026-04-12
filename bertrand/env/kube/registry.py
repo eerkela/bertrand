@@ -4,10 +4,9 @@ from __future__ import annotations
 import json as json_parser
 import uuid
 from pathlib import Path
-from typing import Annotated, Self
+from typing import Self
 
 from pydantic import (
-    AfterValidator,
     BaseModel,
     ConfigDict,
     Field,
@@ -16,7 +15,7 @@ from pydantic import (
 )
 
 from ..config import Config
-from ..config.core import AbsolutePath, NonEmpty, NoWhiteSpace, TOMLKey
+from ..config.core import AbsolutePath, TOMLKey, UUIDHex
 from ..run import (
     ENV_ID_ENV,
     IMAGE_ID_ENV,
@@ -41,16 +40,6 @@ VERSION: int = 1
 # TODO: restore inline comments, which were deleted after reorganization.
 # -> Also, these utilities should probably go in `environment.py`, which is the only
 # place they are meant to be used.
-
-
-def _check_uuid(value: str) -> str:
-    try:
-        return uuid.UUID(value).hex
-    except Exception as err:
-        raise ValueError(f"'id' must be a valid UUID: {value}") from err
-
-
-type UUID4Hex = Annotated[NonEmpty[NoWhiteSpace], AfterValidator(_check_uuid)]
 
 
 class EnvironmentMetadata(BaseModel):
@@ -79,8 +68,8 @@ class EnvironmentMetadata(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
     version: PositiveInt
-    host: UUID4Hex
-    id: UUID4Hex
+    host: UUIDHex
+    id: UUIDHex
     images: dict[TOMLKey, Image] = Field(default_factory=dict)
     retired: list[RetiredImage] = Field(default_factory=list)
 
@@ -147,24 +136,24 @@ class Registry(BaseModel):
 
     Attributes
     ----------
-    host : UUID4Hex
+    host : UUIDHex
         UUID tied to the registry lifetime. Every environment metadata file stores the
         host UUID that claimed it. When that host UUID differs, the environment is
         treated as cross-host relocation and rebuilt.
-    environments : dict[UUID4Hex, AbsolutePath]
+    environments : dict[UUIDHex, AbsolutePath]
         Mapping of environment UUIDs to canonical worktree roots. This map is used to
         detect same-host copy vs move semantics.
     ops_since_purge : int
         Counts successful `add()` operations since the last incremental purge trigger.
-    purge_cursor : UUID4Hex | None
+    purge_cursor : UUIDHex | None
         Cursor used to scan environment IDs in deterministic batches during stale
         entry purges.
     """
     model_config = ConfigDict(extra="forbid")
-    host: UUID4Hex
-    environments: dict[UUID4Hex, AbsolutePath]
+    host: UUIDHex
+    environments: dict[UUIDHex, AbsolutePath]
     ops_since_purge: NonNegativeInt
-    purge_cursor: UUID4Hex | None = None
+    purge_cursor: UUIDHex | None = None
 
     @staticmethod
     def lock(*, timeout: float) -> Lock:
@@ -189,7 +178,7 @@ class Registry(BaseModel):
     @staticmethod
     async def _check_env(
         root: AbsolutePath,
-        env_id: UUID4Hex | None = None,
+        env_id: UUIDHex | None = None,
     ) -> EnvironmentMetadata | None:
         try:
             root = root.expanduser().resolve()
@@ -294,7 +283,7 @@ class Registry(BaseModel):
             private=True,
         )
 
-    def _purge_candidates(self, *, batch_size: int) -> list[UUID4Hex]:
+    def _purge_candidates(self, *, batch_size: int) -> list[UUIDHex]:
         env_ids = sorted(self.environments)
         if not env_ids:
             self.purge_cursor = None
@@ -411,7 +400,7 @@ class Registry(BaseModel):
         environment roots. `add()` will trigger an incremental purge at a low
         frequency, but this method can be called to trigger a full purge on demand.
         """
-        normalized: dict[UUID4Hex, AbsolutePath] = {}
+        normalized: dict[UUIDHex, AbsolutePath] = {}
         for env_id, root in self.environments.items():
             async with Lock(root / METADATA_LOCK, timeout=TIMEOUT, mode="cluster"):
                 env = await self._check_env(root, env_id=env_id)

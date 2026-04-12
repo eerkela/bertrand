@@ -1,24 +1,12 @@
-"""Cache volume orchestration helpers used by Bertrand runtime assembly.
-
-This module exposes deterministic cache mount specification parsing plus
-Kubernetes-native cache PVC lifecycle helpers.
-
-Notes
------
-This layer assumes the caller has already ensured kube API reachability.
-"""
+"""Persistent cache volumes managed by Bertrand's runtime bootstrapping mechanism."""
 from __future__ import annotations
 
 import hashlib
 import json
-import re
-from decimal import Decimal, InvalidOperation
 from pathlib import PosixPath
 
-from pydantic import BaseModel, ConfigDict, Field
-
 from ..config import RESOURCE_NAMES, Bertrand, Config, Resource
-from ..config.core import NonEmpty, Trimmed
+from ..config.core import KUBE_SANITIZE_RE, _check_uuid
 from ..run import (
     BERTRAND_ENV,
     BERTRAND_NAMESPACE,
@@ -29,118 +17,18 @@ from ..run import (
     kubectl,
     run,
 )
-from .capability import _normalize_env_id
+from .helper import (
+    PersistentVolumeClaim,
+    Pod,
+    StorageClass,
+    parse_pvc_size,
+)
 
 CACHE_VOLUME_ENV: str = "BERTRAND_CACHE_VOLUME"
 CACHE_PVC_LOCK = TOOLS_RUN_DIR / "cache-pvc.lock"
 OPENEBS_ADDON = "openebs"
 OPENEBS_HOSTPATH_STORAGE_CLASS = "openebs-hostpath"
-DEFAULT_CACHE_SIZE = "1Gi"
-SANITIZE_RE = re.compile(r"[^a-zA-Z0-9._]+")
-_QUANTITY_RE = re.compile(r"^([0-9]+(?:\.[0-9]+)?)([A-Za-z]{0,2})$")
-_STORAGE_FACTORS: dict[str, Decimal] = {
-    "": Decimal(1),
-    "m": Decimal("0.001"),
-    "k": Decimal(10) ** 3,
-    "K": Decimal(10) ** 3,
-    "M": Decimal(10) ** 6,
-    "G": Decimal(10) ** 9,
-    "T": Decimal(10) ** 12,
-    "P": Decimal(10) ** 15,
-    "E": Decimal(10) ** 18,
-    "Ki": Decimal(2) ** 10,
-    "Mi": Decimal(2) ** 20,
-    "Gi": Decimal(2) ** 30,
-    "Ti": Decimal(2) ** 40,
-    "Pi": Decimal(2) ** 50,
-    "Ei": Decimal(2) ** 60,
-}
-
-
-# TODO: probably move most of these models (like Metadata + Pods) into a helper.py
-# module, so that they can be shared across Kube components.
-
-
-class Metadata(BaseModel):
-    """Generic metadata subset shared by Kubernetes payload models."""
-    model_config = ConfigDict(extra="ignore")
-    name: Trimmed = ""
-    annotations: dict[Trimmed, Trimmed] = Field(default_factory=dict)
-    deletionTimestamp: Trimmed | None = None
-
-
-class StorageClass(BaseModel):
-    """Validated subset of one Kubernetes StorageClass."""
-    model_config = ConfigDict(extra="ignore")
-    metadata: Metadata = Field(default_factory=Metadata)
-    provisioner: Trimmed = ""
-    allowVolumeExpansion: bool = False
-
-    class List(BaseModel):
-        """Validated subset of a Kubernetes StorageClass list payload."""
-        model_config = ConfigDict(extra="ignore")
-        items: list[StorageClass] = Field(default_factory=list)
-
-
-class PersistentVolumeClaim(BaseModel):
-    """Validated subset of one Kubernetes PersistentVolumeClaim payload."""
-    class Spec(BaseModel):
-        """Validated subset of one PVC spec."""
-        class Resources(BaseModel):
-            """Validated subset of PVC resources."""
-            class Requests(BaseModel):
-                """Validated subset of PVC request resources."""
-                model_config = ConfigDict(extra="ignore")
-                storage: NonEmpty[Trimmed]
-
-            model_config = ConfigDict(extra="ignore")
-            requests: PersistentVolumeClaim.Spec.Resources.Requests
-
-        model_config = ConfigDict(extra="ignore")
-        storageClassName: Trimmed | None = None
-        resources: PersistentVolumeClaim.Spec.Resources
-
-    model_config = ConfigDict(extra="ignore")
-    metadata: Metadata = Field(default_factory=Metadata)
-    spec: PersistentVolumeClaim.Spec
-
-    class List(BaseModel):
-        """Validated subset of a Kubernetes PersistentVolumeClaim list payload."""
-        model_config = ConfigDict(extra="ignore")
-        items: list[PersistentVolumeClaim] = Field(default_factory=list)
-
-
-class Pod(BaseModel):
-    """Validated subset of one Kubernetes Pod payload."""
-    class Volume(BaseModel):
-        """Validated subset of one pod volume entry."""
-        class Ref(BaseModel):
-            """Validated subset of one pod PVC reference."""
-            model_config = ConfigDict(extra="ignore")
-            claimName: Trimmed
-
-        model_config = ConfigDict(extra="ignore")
-        persistentVolumeClaim: Pod.Volume.Ref | None = None
-
-    class Status(BaseModel):
-        """Validated subset of one pod status payload."""
-        model_config = ConfigDict(extra="ignore")
-        phase: Trimmed = ""
-
-    class Spec(BaseModel):
-        """Validated subset of one pod spec."""
-        model_config = ConfigDict(extra="ignore")
-        volumes: list[Pod.Volume] = Field(default_factory=list)
-
-    model_config = ConfigDict(extra="ignore")
-    metadata: Metadata = Field(default_factory=Metadata)
-    status: Pod.Status = Field(default_factory=lambda: Pod.Status.model_construct())
-    spec: Pod.Spec = Field(default_factory=lambda: Pod.Spec.model_construct())
-
-    class List(BaseModel):
-        """Validated subset of a Kubernetes pod list payload."""
-        model_config = ConfigDict(extra="ignore")
-        items: list[Pod] = Field(default_factory=list)
+DEFAULT_CACHE_SIZE = "16Mi"
 
 
 async def collect_mount_specs(
@@ -176,7 +64,7 @@ async def collect_mount_specs(
     Names are derived as stable hashes over each volume's semantic fingerprint
     plus target path. Target collisions across resources are rejected.
     """
-    env_id = _normalize_env_id(env_id)
+    env_id = _check_uuid(env_id)
     mounts: list[tuple[str, PosixPath]] = []
     target_owner: dict[str, str] = {}
     for name in sorted(config.resources):
@@ -238,7 +126,7 @@ async def collect_mount_specs(
                     f"fingerprint payload: {err}"
                 ) from err
 
-            volume_name = SANITIZE_RE.sub(
+            volume_name = KUBE_SANITIZE_RE.sub(
                 "-",
                 f"bertrand-cache-{resource.name}-{digest}",
             ).strip("-")
@@ -246,27 +134,6 @@ async def collect_mount_specs(
 
     mounts.sort()
     return mounts
-
-
-def _parse_request_size(value: str) -> Decimal:
-    match = _QUANTITY_RE.fullmatch(value.strip())
-    if not match:
-        raise ValueError(f"invalid Kubernetes PVC request size: {value!r}")
-
-    number, suffix = match.groups()
-    factor = _STORAGE_FACTORS.get(suffix)
-    if factor is None:
-        raise ValueError(
-            f"invalid Kubernetes memory unit for PVC request: {suffix!r} (options are "
-            f"{', '.join(repr(s) for s in _STORAGE_FACTORS)})"
-        )
-
-    try:
-        return Decimal(number) * factor
-    except (InvalidOperation, ValueError) as err:
-        raise ValueError(
-            f"invalid Kubernetes memory quantity for PVC request: {value!r}"
-        ) from err
 
 
 async def _get_storage_class(*, timeout: float) -> StorageClass:
@@ -353,13 +220,13 @@ async def ensure_cache_volumes(
     This function assumes kube API reachability is ensured by the caller. It does not
     call `ensure_kube()`.
     """
-    env_id = _normalize_env_id(env_id)
+    env_id = _check_uuid(env_id)
     if timeout < 0:
         raise TimeoutError("timeout must be non-negative")
     size_request = size_request.strip()
     if not size_request:
         raise ValueError("cache PVC size request cannot be empty")
-    requested = _parse_request_size(size_request)
+    requested = parse_pvc_size(size_request)
 
     TOOLS_RUN_DIR.mkdir(parents=True, exist_ok=True)
     async with Lock(CACHE_PVC_LOCK, timeout=timeout, mode="local"):
@@ -419,9 +286,7 @@ async def ensure_cache_volumes(
             pvc = PersistentVolumeClaim.model_validate_json(
                 payload
             )
-            current_size = _parse_request_size(
-                pvc.spec.resources.requests.storage
-            )
+            current_size = parse_pvc_size(pvc.spec.resources.requests.storage)
             if current_size < requested:
                 patch = json.dumps(
                     {"spec": {"resources": {"requests": {"storage": size_request}}}},
@@ -473,7 +338,7 @@ async def gc_cache_volumes(config: Config, env_id: str, *, timeout: float) -> No
     Only Bertrand-labeled cache PVCs for this environment are candidates. Claims
     currently referenced by active pods are never deleted.
     """
-    env_id = _normalize_env_id(env_id)
+    env_id = _check_uuid(env_id)
     if timeout < 0:
         raise TimeoutError("timeout must be non-negative")
     bertrand = config.get(Bertrand)

@@ -43,6 +43,7 @@ from .core import (
     AbsolutePosixPath,
     Config,
     Glob,
+    KubeName,
     NoCRLF,
     NonEmpty,
     NoWhiteSpace,
@@ -50,7 +51,6 @@ from .core import (
     PosixPath,
     RelativePosixPath,
     Resource,
-    SecretName,
     SnakeCase,
     TOMLKey,
     Trimmed,
@@ -870,7 +870,7 @@ class Bertrand(Resource):
             class Secret(BaseModel):
                 """Validate an entry in `[[tool.bertrand.build.<tag>.secrets]]`."""
                 model_config = ConfigDict(extra="forbid")
-                id: Annotated[SecretName, Field(
+                id: Annotated[KubeName, Field(
                     examples=["pypi_token", "private_pkg_key"],
                     description=
                         "Host-agnostic capability ID for a build secret.  The ID is "
@@ -886,7 +886,7 @@ class Bertrand(Resource):
 
             @staticmethod
             def _check_unique_secrets(requests: list[Secret]) -> list[Secret]:
-                seen: set[SecretName] = set()
+                seen: set[KubeName] = set()
                 for req in requests:
                     if req.id in seen:
                         raise ValueError(f"duplicate secret id: '{req.id}'")
@@ -917,7 +917,7 @@ class Bertrand(Resource):
             class SSH(BaseModel):
                 """Validate an entry in `[[tool.bertrand.build.<tag>.ssh]]`."""
                 model_config = ConfigDict(extra="forbid")
-                id: Annotated[SecretName, Field(
+                id: Annotated[KubeName, Field(
                     examples=["git_deploy_key", "github_readonly"],
                     description=
                         "Host-agnostic capability ID for a build-time SSH credential.  "
@@ -934,7 +934,7 @@ class Bertrand(Resource):
 
             @staticmethod
             def _check_unique_ssh(requests: list[SSH]) -> list[SSH]:
-                seen: set[SecretName] = set()
+                seen: set[KubeName] = set()
                 for req in requests:
                     if req.id in seen:
                         raise ValueError(f"duplicate ssh id: '{req.id}'")
@@ -966,7 +966,7 @@ class Bertrand(Resource):
             class Device(BaseModel):
                 """Validate an entry in `[[tool.bertrand.build.<tag>.devices]]`."""
                 model_config = ConfigDict(extra="forbid")
-                id: Annotated[SecretName, Field(
+                id: Annotated[KubeName, Field(
                     examples=["gpu", "cuda0"],
                     description=
                         "Host-agnostic capability ID for a build-time device "
@@ -991,7 +991,7 @@ class Bertrand(Resource):
 
             @staticmethod
             def _check_unique_devices(requests: list[Device]) -> list[Device]:
-                seen: set[SecretName] = set()
+                seen: set[KubeName] = set()
                 for req in requests:
                     if req.id in seen:
                         raise ValueError(f"duplicate device id: '{req.id}'")
@@ -1262,7 +1262,7 @@ class Bertrand(Resource):
             ipc: Annotated[IPCMode, Field(default="private")]
             pid: Annotated[PIDMode, Field(default="private")]
             uts: Annotated[UTSMode, Field(default="private")]
-            ssh: Annotated[list[SecretName], Field(default_factory=list)]
+            ssh: Annotated[list[KubeName], Field(default_factory=list)]
 
             class InstrumentEntry(BaseModel):
                 """Validate entries in the `[tool.bertrand.image.<tag>.instruments]`
@@ -1319,7 +1319,7 @@ class Bertrand(Resource):
                 class Request(BaseModel):
                     """Validate one entry in `[[tool.bertrand.image.<tag>.devices.*]]`."""
                     model_config = ConfigDict(extra="forbid")
-                    id: SecretName
+                    id: KubeName
                     required: bool = True
                     container_path: Annotated[
                         AbsolutePosixPath | None,
@@ -1329,7 +1329,7 @@ class Bertrand(Resource):
 
                 @staticmethod
                 def _check_unique_ids(requests: list[Request], *, where: str) -> list[Request]:
-                    seen: set[SecretName] = set()
+                    seen: set[KubeName] = set()
                     for req in requests:
                         if req.id in seen:
                             raise ValueError(f"duplicate {where} device id: '{req.id}'")
@@ -1381,12 +1381,12 @@ class Bertrand(Resource):
                 class Request(BaseModel):
                     """Validate an individual secret capability request."""
                     model_config = ConfigDict(extra="forbid")
-                    id: SecretName
+                    id: KubeName
                     required: bool = True
 
                 @staticmethod
                 def _check_unique_ids(requests: list[Request], *, where: str) -> list[Request]:
-                    seen: set[SecretName] = set()
+                    seen: set[KubeName] = set()
                     for req in requests:
                         if req.id in seen:
                             raise ValueError(f"duplicate {where} secret id: '{req.id}'")
