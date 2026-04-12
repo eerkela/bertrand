@@ -38,6 +38,11 @@ REGISTRY_PURGE_EVERY: int = 64
 VERSION: int = 1
 
 
+# TODO: restore inline comments, which were deleted after reorganization.
+# -> Also, these utilities should probably go in `environment.py`, which is the only
+# place they are meant to be used.
+
+
 def _check_uuid(value: str) -> str:
     try:
         return uuid.UUID(value).hex
@@ -361,6 +366,9 @@ class Registry(BaseModel):
         if env.host != self.host:
             env.images.clear()
             env.host = self.host
+            env.id = uuid.uuid4().hex
+            while env.id in self.environments:
+                env.id = uuid.uuid4().hex
             env_changed = True
 
         owner = self.environments.setdefault(env.id, worktree)
