@@ -41,6 +41,7 @@ from .bertrand_git import (
     NORMALIZE_ARCH,
     PROJECT_ENV,
     PROJECT_MOUNT,
+    REPO_ID_ENV,
     STATE_DIR,
     TIMEOUT,
     TOOLS_BIN_DIR,

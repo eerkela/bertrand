@@ -42,6 +42,10 @@ VERSION: int = 1
 # place they are meant to be used.
 
 
+# TODO: also, the new `volume.py` CephFS host mount model changes a lot of the
+# relocation logic, so we need to be vigilant when we finally update this file.
+
+
 class EnvironmentMetadata(BaseModel):
     """Pydantic model representing environment metadata persisted in each worktree.
 

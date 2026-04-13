@@ -17,13 +17,15 @@ from .container import (
 )
 from .environment import Environment
 from .image import Image, ImageArgs, image_args, render_containerfile
-from .mount import (
-    WorktreeMountSpec,
-    delete_worktree_mount,
-    ensure_worktree_mount,
-    list_worktree_mounts,
-    resolve_worktree_mount,
-)
 from .network import format_cpus, format_network
 from .registry import EnvironmentMetadata, Registry
-from .volume import collect_mount_specs, format_volumes, gc_volumes
+from .volume import (
+    CacheVolume,
+    RepoMount,
+    configured_cache_volumes,
+    delete_repo_mount,
+    ensure_cache_volumes,
+    ensure_repo_mount,
+    gc_cache_volumes,
+    list_repo_mounts,
+)

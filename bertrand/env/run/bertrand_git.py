@@ -80,6 +80,7 @@ CONTAINER_TMP_MOUNT: PosixPath = PosixPath("/tmp/bertrand")
 # at build time or upon starting the container context, and used to control the
 # behavior of the bertrand CLI both inside and outside the container.
 BERTRAND_ENV: str = "BERTRAND"                  # "1" to mark as a Bertrand context
+REPO_ID_ENV: str = "BERTRAND_REPO_ID"             # unique repository UUID
 ENV_ID_ENV: str = "BERTRAND_ENV_ID"             # unique Bertrand environment UUID
 IMAGE_ID_ENV: str = "BERTRAND_IMAGE_ID"         # unique OCI image ID
 CONTAINER_ID_ENV: str = "BERTRAND_CONTAINER_ID" # unique OCI container ID

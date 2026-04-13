@@ -328,6 +328,7 @@ class Capabilities:
         expected = CapabilityMetadata(kind=kind, id=id, env_id=self.env_id)
         secret = await KubeSecret.get(
             expected.name,
+            namespace=BERTRAND_NAMESPACE,
             timeout=self.timeout
         )
         if secret is not None:
@@ -342,6 +343,7 @@ class Capabilities:
         expected = CapabilityMetadata(kind=kind, id=id, env_id=None)
         secret = await KubeSecret.get(
             expected.name,
+            namespace=BERTRAND_NAMESPACE,
             timeout=self.timeout
         )
         if secret is not None:
@@ -495,7 +497,11 @@ async def get_capability(
         If a matching Kubernetes Secret is found but has malformed metadata.
     """
     expected = CapabilityMetadata(kind=kind, id=id, env_id=env_id)
-    secret = await KubeSecret.get(expected.name, timeout=timeout)
+    secret = await KubeSecret.get(
+        expected.name,
+        namespace=BERTRAND_NAMESPACE,
+        timeout=timeout
+    )
     if secret is None:
         return None
     if expected != CapabilityMetadata.from_secret(secret):
@@ -547,7 +553,11 @@ async def put_capability(
     """
     # search for existing secret at indicated scope
     expected = CapabilityMetadata(kind=kind, id=id, env_id=env_id)
-    existing = await KubeSecret.get(expected.name, timeout=timeout)
+    existing = await KubeSecret.get(
+        expected.name,
+        namespace=BERTRAND_NAMESPACE,
+        timeout=timeout
+    )
     if existing is not None and expected != CapabilityMetadata.from_secret(existing):
         raise OSError(
             f"cluster secret {expected.name!r} metadata does not match requested "
@@ -612,7 +622,11 @@ async def delete_capability(
         If a matching Kubernetes Secret is found but has malformed metadata.
     """
     expected = CapabilityMetadata(kind=kind, id=id, env_id=env_id)
-    existing = await KubeSecret.get(expected.name, timeout=timeout)
+    existing = await KubeSecret.get(
+        expected.name,
+        namespace=BERTRAND_NAMESPACE,
+        timeout=timeout
+    )
     if existing is None:
         return False
     if expected != CapabilityMetadata.from_secret(existing):
