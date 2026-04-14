@@ -298,6 +298,7 @@ class PersistentVolumeClaim(BaseModel):
         model_config = ConfigDict(extra="ignore")
         accessModes: Annotated[list[Trimmed], Field(default_factory=list)]
         storageClassName: Annotated[Trimmed | None, Field(default=None)]
+        volumeName: Annotated[Trimmed | None, Field(default=None)]
         resources: PersistentVolumeClaim.Spec.Resources
 
     model_config = ConfigDict(extra="ignore")
@@ -637,6 +638,56 @@ class Pod(BaseModel):
             cmd.extend(["-o", "json"])
             result = await kubectl(cmd, capture_output=True, timeout=timeout)
             return cls.model_validate_json(result.stdout.strip())
+
+
+class PersistentVolume(BaseModel):
+    """Validated subset of one Kubernetes PersistentVolume payload."""
+    class Spec(BaseModel):
+        """Validated subset of one PV spec."""
+        class CSI(BaseModel):
+            """Validated subset of one CSI-backed PV source."""
+            model_config = ConfigDict(extra="ignore")
+            driver: Annotated[Trimmed, Field(default="")]
+            volumeAttributes: Annotated[dict[Trimmed, Trimmed], Field(default_factory=dict)]
+
+        model_config = ConfigDict(extra="ignore")
+        csi: Annotated[PersistentVolume.Spec.CSI | None, Field(default=None)]
+
+    model_config = ConfigDict(extra="ignore")
+    metadata: Annotated[KubeMetadata, Field(default_factory=KubeMetadata.model_construct)]
+    spec: PersistentVolume.Spec
+
+    @classmethod
+    async def get(cls, name: KubeName, *, timeout: float) -> Self | None:
+        """Load a Kubernetes PersistentVolume by name and validate its structure.
+
+        Parameters
+        ----------
+        name : str
+            The name of the Kubernetes PersistentVolume.
+        timeout : float
+            The maximum time to wait for the Kubernetes PersistentVolume to be
+            retrieved, in seconds.
+
+        Returns
+        -------
+        PersistentVolume | None
+            The validated Kubernetes PersistentVolume data, or `None` if not found.
+        """
+        payload = (await kubectl(
+            [
+                "get",
+                "pv",
+                name,
+                "-o", "json",
+                "--ignore-not-found=true",
+            ],
+            capture_output=True,
+            timeout=timeout,
+        )).stdout.strip()
+        if payload:
+            return cls.model_validate_json(payload)
+        return None
 
 
 def parse_pvc_size(value: str) -> Decimal:

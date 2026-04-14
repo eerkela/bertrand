@@ -21,11 +21,9 @@ from .network import format_cpus, format_network
 from .registry import EnvironmentMetadata, Registry
 from .volume import (
     CacheVolume,
+    MountInfo,
     RepoMount,
     configured_cache_volumes,
-    delete_repo_mount,
     ensure_cache_volumes,
-    ensure_repo_mount,
     gc_cache_volumes,
-    list_repo_mounts,
 )

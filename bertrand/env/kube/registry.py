@@ -42,8 +42,40 @@ VERSION: int = 1
 # place they are meant to be used.
 
 
-# TODO: also, the new `volume.py` CephFS host mount model changes a lot of the
-# relocation logic, so we need to be vigilant when we finally update this file.
+# TODO(eerkela): Refactor registry for repo-alias attachments over hidden Ceph mounts.
+#
+# Motivation:
+# Registry currently treats absolute path as canonical environment location. With hidden
+# repo mounts + symlink aliases, attachment path and environment identity must be
+# decoupled.
+#
+# Required work:
+# 1) Split identity from attachment.
+#    - Identity: env_id + host UUID + metadata validity.
+#    - Attachment: repo_id -> hidden_mount + alias_path from binding manifest.
+# 2) Discovery source.
+#    - Prefer binding manifests for attachment discovery.
+#    - Use container inspection as supplemental signal, not sole source of truth.
+# 3) Same-host relocation.
+#    - Alias change with same env metadata is relocation only; update canonical path.
+# 4) Same-host copy.
+#    - If two independently valid env roots coexist with same metadata, retain copy
+#      semantics (mint new env_id for copy) unless explicit shared-mode is introduced.
+# 5) Cross-host relocation.
+#    - Keep host UUID mismatch behavior: clear host-local runtime/image state and
+#      re-claim.
+# 6) Recovery behavior.
+#    - If alias missing but hidden mount + metadata are valid, recover alias attachment
+#      instead of immediately purging registry entry.
+# 7) Git/worktree safety.
+#    - Validate active attachment root before worktree sync.
+#    - Add repair path when git worktree metadata holds stale absolute paths after alias
+#      move.
+# 8) Destructive safeguards.
+#    - Any environment purge/delete path must verify "not mounted" before recursive
+#      delete.
+# 9) Schema.
+#    - Bump registry VERSION and hard-cut rewrite in prototype mode (no migration shim).
 
 
 class EnvironmentMetadata(BaseModel):

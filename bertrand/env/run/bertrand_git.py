@@ -55,6 +55,7 @@ else:
 
 
 # generic utils
+ROOT_DIR = Path(Path(sys.executable).anchor)
 TIMEOUT = 30
 NORMALIZE_ARCH = {
     "x86_64": "amd64",
@@ -210,6 +211,50 @@ class User:
             object.__setattr__(self, 'home', Path(pw.pw_dir))
 
 
+def atomic_symlink(source: Path, target: Path, private: bool = False) -> None:
+    """Atomically create a symbolic link, avoiding race conditions and partial writes.
+
+    Parameters
+    ----------
+    source : Path
+        The source path the symbolic link should point to.
+    target : Path
+        The target path of the symbolic link to create.
+    private : bool, optional
+        Whether to set private permissions (0600) on the created symlink, by default
+        False.
+    """
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp = target.with_name(f"{target.name}.tmp.{uuid.uuid4().hex}")
+    tmp.symlink_to(source)
+    if private:
+        tmp.chmod(0o600)
+    tmp.replace(target)
+
+
+def atomic_write_bytes(path: Path, data: bytes, private: bool = False) -> None:
+    """Atomically write bytes to a file, avoiding race conditions and partial writes.
+
+    Parameters
+    ----------
+    path : Path
+        The path to write to.
+    data : bytes
+        The bytes to write.
+    private : bool, optional
+        Whether to set private permissions (0600) on the written file, by default False.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f"{path.name}.tmp.{uuid.uuid4().hex}")
+    tmp.write_bytes(data)
+    with tmp.open("r+b") as f:
+        f.flush()
+        os.fsync(f.fileno())
+    if private:
+        tmp.chmod(0o600)
+    tmp.replace(path)
+
+
 def atomic_write_text(
     path: Path,
     text: str,
@@ -232,46 +277,11 @@ def atomic_write_text(
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f"{path.name}.tmp.{uuid.uuid4().hex}")
     tmp.write_text(text, encoding=encoding)
-    try:
-        with tmp.open("r+", encoding=encoding) as f:
-            f.flush()
-            os.fsync(f.fileno())
-    except OSError:
-        pass
+    with tmp.open("r+", encoding=encoding) as f:
+        f.flush()
+        os.fsync(f.fileno())
     if private:
-        try:
-            tmp.chmod(0o600)
-        except OSError:
-            pass
-    tmp.replace(path)
-
-
-def atomic_write_bytes(path: Path, data: bytes, private: bool = False) -> None:
-    """Atomically write bytes to a file, avoiding race conditions and partial writes.
-
-    Parameters
-    ----------
-    path : Path
-        The path to write to.
-    data : bytes
-        The bytes to write.
-    private : bool, optional
-        Whether to set private permissions (0600) on the written file, by default False.
-    """
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(f"{path.name}.tmp.{uuid.uuid4().hex}")
-    tmp.write_bytes(data)
-    try:
-        with tmp.open("r+b") as f:
-            f.flush()
-            os.fsync(f.fileno())
-    except OSError:
-        pass
-    if private:
-        try:
-            tmp.chmod(0o600)
-        except OSError:
-            pass
+        tmp.chmod(0o600)
     tmp.replace(path)
 
 
@@ -714,6 +724,12 @@ NERDCTL_CHECKSUM: dict[str, str] = {  # checksums for nerdctl download
     "amd64": "8a477f35533c6cc1120c19558d8142967c74f25a4b952b481f48104e030de914",
     "arm64": "55d68d2613b5f065021146bac21f620cde9e7fdd4bd3eff74cd324f5462e107a",
 }
+
+
+# TODO: STATE_DIR should probably be moved out of user storage and into root storage,
+# with a special "bertrand" group to grant access to it, since the cluster should not
+# be user-specific, as that would amplify the overhead on multi-user systems and
+# prevent sharing images, repositories, etc.
 
 
 # Host paths for Bertrand's MicroK8s cluster and related tools
@@ -1885,7 +1901,7 @@ class Lock:
         mode: LockMode,
     ) -> Lock:
         if timeout < 0:
-            raise TimeoutError(f"Lock timeout must be non-negative, got {timeout}")
+            raise TimeoutError(f"could not acquire lock within {timeout} seconds")
         path = path.expanduser().resolve()
         if mode == "local" and path.exists() and path.is_dir():
             raise OSError(
