@@ -33,8 +33,6 @@ from .helper import PersistentVolume, PersistentVolumeClaim, Pod, StorageClass
 CACHE_VOLUME_ENV: str = "BERTRAND_CACHE_VOLUME"
 REPO_MOUNT_ENV: str = "BERTRAND_REPO_MOUNT"
 DEFAULT_VOLUME_SIZE = "16Mi"
-DEFAULT_REPO_STORAGE_CLASS = "cephfs"
-DEFAULT_REPO_SIZE_REQUEST = "20Gi"
 DEFAULT_REPO_FS_NAME = "ceph"
 if not DEFAULT_REPO_FS_NAME:
     raise ValueError("internal default repository Ceph fs_name cannot be empty")
@@ -482,7 +480,7 @@ class MountInfo:
         return None
 
 
-@dataclass
+@dataclass(frozen=True)
 class RepoMount:
     """Structured metadata for a CephFS-backed repository volume in the local cluster.
 
@@ -858,6 +856,11 @@ class RepoMount:
         except OSError as err:
             raise OSError(f"failed to write repository alias index file: {err}") from err
 
+    # TODO: try to automate away the `ceph_user`, `ceph_secretfile`, and `monitors`
+    # implementation details.  This file should be the only one that ever needs to
+    # interact with Ceph, and should do so end-to-end in a fully-automated way, with
+    # zero Ceph-related user input.
+
     async def mount(
         self,
         path: Path,
@@ -1138,3 +1141,5 @@ class RepoMount:
                     f"repository hidden mount is still attached after umount: {mount_path}"
                 )
             return True
+
+    # TODO: add snapshotting functionality for repository mounts.
