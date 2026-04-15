@@ -214,7 +214,7 @@ async def ensure_cache_volumes(
     Notes
     -----
     This function assumes kube API reachability is ensured by the caller. It does not
-    call `ensure_kube()`.
+    call `start_microk8s()`.
     """
     env_id = _check_uuid(env_id)
     if timeout < 0:

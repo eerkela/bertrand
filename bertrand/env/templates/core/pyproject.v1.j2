@@ -120,7 +120,7 @@ build-type = "Release"                      # Release|Debug (may be overridden i
 shell = "{{ shell }}"          # sh|bash|zsh|fish (shell to execute during `bertrand enter`)
 editor = "{{ editor }}"       # vscode (editor to launch during `bertrand code`)
 ignore = [              # ignore patterns shared between .gitignore and .containerignore
-    ".bertrand/",
+    ".bertrand/*",
     "**/.bertrand/",
     "__pycache__/",
     "*.py[cod]",
@@ -130,8 +130,6 @@ ignore = [              # ignore patterns shared between .gitignore and .contain
     ".eggs/",
     ".venv/",
     "venv/",
-    "build/",
-    "out/",
     "*.o",
     "*.obj",
     "*.a",
@@ -140,8 +138,6 @@ ignore = [              # ignore patterns shared between .gitignore and .contain
     "*.dylib",
     "*.dll",
     ".vscode/",
-    ".idea/",
-    ".DS_Store",
 ]
 git-ignore = []         # additional .gitignore patterns
 container-ignore = [    # additional .containerignore patterns

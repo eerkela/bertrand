@@ -16,9 +16,11 @@ from __future__ import annotations
 
 import asyncio
 import errno
+import grp
 import hashlib
 import json
 import os
+import platform
 import pwd
 import re
 import shlex
@@ -48,10 +50,10 @@ else:
 #######################
 
 
-# NOTE: These utilities don't specifically have to do with Git, but are included here
-# because they don't have any dependencies, and can be reused by Git hooks to improve
-# functionality without breaking isolation.  The same utilities are exported to the
-# main CLI, so there's no risk of duplication.
+# NOTE: These utilities don't specifically have to do with Git or the kubernetes
+# runtime, but are included here because they don't have any dependencies, and can be
+# reused by Git hooks to improve functionality without breaking isolation.  The same
+# utilities are exported to the main CLI, so there's no risk of duplication.
 
 
 # generic utils
@@ -700,6 +702,373 @@ def sudo(argv: list[str], *, non_interactive: bool = False) -> list[str]:
     return out
 
 
+@dataclass(frozen=True)
+class _PackageSpec:
+    install: list[str]
+    refresh: list[str] | None
+    yes_install: list[str]
+    yes_refresh: list[str]
+    noninteractive_env: dict[str, str] | None
+
+
+_INSTALL_SPECS: dict[str, _PackageSpec] = {
+    "apt": _PackageSpec(
+        install=["apt-get", "install"],
+        refresh=["apt-get", "update"],
+        yes_install=["-y"],
+        yes_refresh=[],
+        noninteractive_env={"DEBIAN_FRONTEND": "noninteractive"},
+    ),
+    "dnf": _PackageSpec(
+        install=["dnf", "install"],
+        refresh=["dnf", "makecache"],
+        yes_install=["-y"],
+        yes_refresh=["-y"],
+        noninteractive_env=None,
+    ),
+    "yum": _PackageSpec(
+        install=["yum", "install"],
+        refresh=["yum", "makecache"],
+        yes_install=["-y"],
+        yes_refresh=["-y"],
+        noninteractive_env=None,
+    ),
+    "zypper": _PackageSpec(
+        install=["zypper", "install"],
+        refresh=["zypper", "refresh"],
+        yes_install=["--non-interactive"],
+        yes_refresh=["--non-interactive"],
+        noninteractive_env=None,
+    ),
+    "pacman": _PackageSpec(
+        install=["pacman", "-S"],
+        refresh=["pacman", "-Sy"],
+        yes_install=["--noconfirm"],
+        yes_refresh=[],
+        noninteractive_env=None,
+    ),
+    "apk": _PackageSpec(
+        install=["apk", "add"],
+        refresh=["apk", "update"],
+        yes_install=["--no-interactive"],
+        yes_refresh=["--no-interactive"],
+        noninteractive_env=None,
+    ),
+}
+
+
+async def install_packages(
+    package_manager: str,
+    packages: Sequence[str],
+    *,
+    assume_yes: bool,
+    timeout: float | None = None,
+) -> None:
+    """Install OS packages with the requested host package manager.
+
+    Parameters
+    ----------
+    package_manager : str
+        The package manager to use (e.g. "apt", "dnf", etc.).
+    packages : Sequence[str]
+        The packages to install.
+    assume_yes : bool
+        If True, automatically confirm any prompts for installation or refreshing
+        package lists.  Default is False.
+    timeout : float | None, optional
+        An optional timeout in seconds to wait for each package manager command to
+        complete before raising a `TimeoutExpired` exception.  Default is None, which
+        means to wait indefinitely.  If zero or negative, a `TimeoutExpired` exception
+        will be raised immediately.
+
+    Raises
+    ------
+    OSError
+        If the package manager is not supported on the current system.
+    PermissionError
+        If the package manager requires root privileges and they are not available.
+    ValueError
+        If the specified package manager is not supported.
+    FileNotFoundError
+        If the package manager's executable or its refresh command (if applicable) is
+        not found in the system PATH.
+    CommandError
+        If the package manager command fails for any reason, including if the command
+        is not found, if the user cancels a password prompt, or if the installation
+        fails for any reason.
+    TimeoutExpired
+        If the package manager command does not complete within the specified timeout.
+    """
+    if os.name != "posix":
+        raise OSError("package manager operations require a POSIX system.")
+    if os.geteuid() != 0 and not can_escalate():
+        raise PermissionError(
+            f"package installation using {package_manager!r} requires root "
+            "privileges; sudo not available."
+        )
+    deadline: float = 0.0
+    loop = asyncio.get_event_loop()
+    if timeout is not None:
+        if timeout <= 0.0:
+            raise TimeoutExpired(
+                cmd=[package_manager],
+                timeout=timeout,
+                output=None,
+                stderr="timed out before command could be started"
+            )
+        deadline = loop.time() + timeout
+
+    # get package manager spec
+    spec = _INSTALL_SPECS.get(package_manager)
+    if spec is None:
+        raise ValueError(
+            f"unsupported package manager {package_manager!r} (supported: "
+            f"{sorted(_INSTALL_SPECS)})"
+        )
+    if not shutil.which(spec.install[0]):
+        raise FileNotFoundError(
+            f"package manager {package_manager!r} not found: {spec.install[0]}"
+        )
+    if spec.refresh is not None and not shutil.which(spec.refresh[0]):
+        raise FileNotFoundError(f"refresh command not found: {spec.refresh[0]}")
+
+    # generate environment for non-interactive installs, if needed
+    env: dict[str, str] | None = None
+    if assume_yes and spec.noninteractive_env:
+        env = os.environ.copy()
+        env.update(spec.noninteractive_env)
+
+    # refresh package lists if supported
+    if spec.refresh is not None:
+        cmd = spec.refresh.copy()
+        if assume_yes:
+            cmd.extend(spec.yes_refresh)
+        await run(
+            sudo(cmd, non_interactive=assume_yes),
+            env=env,
+            timeout=None if timeout is None else deadline - loop.time()
+        )
+
+    # install requested packages
+    cmd = spec.install.copy()
+    if assume_yes:
+        cmd.extend(spec.yes_install)
+    cmd.extend(packages)
+    await run(
+        sudo(cmd, non_interactive=assume_yes),
+        env=env,
+        timeout=None if timeout is None else deadline - loop.time()
+    )
+
+
+@dataclass(frozen=True)
+class GroupStatus:
+    """A simple struct representing a user's membership status in a host group.
+
+    Attributes
+    ----------
+    configured : bool
+        Whether the user is configured as a member of the group (either as a primary or
+        secondary member).
+    active : bool
+        Whether the user's current session is active in the group (i.e. whether the
+        group is included in the user's current group list, which is determined at
+        login and may need to be refreshed via `newgrp` or a logout/login cycle).
+    """
+    user: str
+    group: str
+    configured: bool
+    active: bool
+
+    @classmethod
+    def get(cls, user: str, group: str) -> Self:
+        """Return (configured, active) for user membership in a host group.
+
+        Parameters
+        ----------
+        user : str
+            The username to check for.
+        group : str
+            The group name to check against.
+
+        Returns
+        -------
+        GroupStatus
+            A GroupStatus object representing the user's membership status.
+        """
+        try:
+            group_info = grp.getgrnam(group)
+        except KeyError:
+            return cls(
+                user=user,
+                group=group,
+                configured=False,
+                active=False
+            )
+        try:
+            primary_gid = pwd.getpwnam(user).pw_gid
+        except KeyError:
+            primary_gid = None
+        configured = user in group_info.gr_mem or primary_gid == group_info.gr_gid
+        active = group_info.gr_gid in os.getgroups() or os.getegid() == group_info.gr_gid
+        return cls(
+            user=user,
+            group=group,
+            configured=configured,
+            active=active
+        )
+
+    async def activate(self, *, assume_yes: bool) -> None:
+        """Ensure that the user is a member of the group, prompting or warning as
+        needed.
+
+        Parameters
+        ----------
+        assume_yes : bool
+            If True, automatically confirm any prompts for fixing group membership.
+
+        Raises
+        ------
+        PermissionError
+            If the user declines to update their group membership, or if the update
+            requires root privileges and they are not available.
+        CommandError
+            If the group membership command fails for any reason.
+        OSError
+            If group membership still isn't properly configured after attempting to
+            update it.
+        """
+        status = self
+        if status.configured and status.active:
+            return
+
+        # ensure membership
+        if not status.configured:
+            if not confirm(
+                f"Bertrand must add user {status.user!r} to the {status.group!r} "
+                f"group in order to avoid future root escalation.  Would you like "
+                "Bertrand to add this membership now (requires sudo)?\n[y/N] ",
+                assume_yes=assume_yes,
+            ):
+                raise PermissionError(
+                    f"{status.group} group membership update declined by user."
+                )
+            if os.geteuid() != 0 and not can_escalate():
+                raise PermissionError(
+                    f"Updating {status.group} group membership requires root privileges; "
+                    "sudo not available."
+                )
+            await run(
+                sudo(
+                    ["usermod", "-a", "-G", status.group, status.user],
+                    non_interactive=assume_yes,
+                )
+            )
+            status = GroupStatus.get(status.user, status.group)
+            if not status.configured:
+                raise OSError(f"failed to add user '{status.user}' to group '{status.group}'")
+
+        # warn if group membership is not active in current session
+        if not status.active:
+            print(
+                f"bertrand: added {status.user!r} to the {status.group!r} group, but "
+                f"sudo is still required for this session.  Run `newgrp {status.group}` "
+                "or log out and back in to pick up the new group privileges before "
+                "proceeding.",
+                file=sys.stderr
+            )
+
+
+async def download_file(url: str, target: Path, *, retries: int = 3) -> None:
+    """Download a file from a URL to a target path, using curl or wget if available.
+
+    Parameters
+    ----------
+    url : str
+        The URL to download from.
+    target : Path
+        The target path to save the downloaded file to.
+
+    Raises
+    ------
+    OSError
+        If neither curl nor wget is available on the system.
+    CommandError
+        If the download command fails for any reason, including if the command is not
+        found, if the download fails, or if the download is interrupted.
+    """
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if shutil.which("curl"):
+        await run([
+            "curl",
+            "-fL",
+            "--retry", str(retries),
+            "--output", str(target),
+            url,
+        ])
+    elif shutil.which("wget"):
+        await run([
+            "wget",
+            f"--tries={retries}",
+            "--output-document",
+            str(target),
+            url,
+        ])
+    else:
+        raise OSError("No download tool available (expected curl or wget).")
+
+
+def file_digest(path: Path) -> str:
+    """Compute a SHA-256 hex digest of a file's contents, reading in chunks to avoid
+    memory issues on large files.
+
+    Parameters
+    ----------
+    path : Path
+        The path to the file to compute the digest of.
+
+    Returns
+    -------
+    str
+        The SHA-256 hex digest of the file's raw binary contents.
+    """
+    digest = hashlib.sha256()
+    with path.open("rb") as f:
+        while True:
+            chunk = f.read(1024 * 1024)  # 1 MiB chunks
+            if not chunk:
+                break
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def tail_lines(path: Path, *, count: int = 40) -> str:
+    """Return the last `count` lines of a text file, or an empty string if the file
+    cannot be read for any reason.
+
+    Parameters
+    ----------
+    path : Path
+        The path to the text file to read.
+    count : int, optional
+        The number of lines to return from the end of the file.  Default is 40.  If
+        less than 1, then an empty string will be returned.
+
+    Returns
+    -------
+    str
+        The last `count` lines of the file, with newlines normalized to '\n'.
+    """
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return ""
+    if count < 1:
+        return ""
+    tail = lines[-count:]
+    return "\n".join(tail)
+
+
 ####################
 ####    KUBE    ####
 ####################
@@ -711,8 +1080,11 @@ def sudo(argv: list[str], *, non_interactive: bool = False) -> list[str]:
 
 # Kubernetes engine/`containerd` CLI config.
 BERTRAND_NAMESPACE = "bertrand"
+BERTRAND_GROUP = "bertrand"
 MICROK8S_CHANNEL = "1.33/stable"
 MICROK8S_GROUP = "microk8s"
+MICROCEPH_CHANNEL = "quincy/stable"
+MICROCEPH_GROUP = "microceph"
 MICROK8S_NAMESPACE = "k8s.io"
 MICROK8S_CONTAINERD_SOCKET = Path("/var/snap/microk8s/common/run/containerd.sock")
 MICROK8S_CONTAINERD_ADDRESS = f"unix://{MICROK8S_CONTAINERD_SOCKET.as_posix()}"
@@ -726,28 +1098,598 @@ NERDCTL_CHECKSUM: dict[str, str] = {  # checksums for nerdctl download
 }
 
 
-# TODO: STATE_DIR should probably be moved out of user storage and into root storage,
-# with a special "bertrand" group to grant access to it, since the cluster should not
-# be user-specific, as that would amplify the overhead on multi-user systems and
-# prevent sharing images, repositories, etc.
-
-
-# Host paths for Bertrand's MicroK8s cluster and related tools
-STATE_DIR = User().home / ".local" / "share" / "bertrand"
+# Host paths for Bertrand's shared runtime state.
+STATE_DIR_MODE = 0o2770
+STATE_DIR = Path("/var/lib/bertrand")
+BIN_DIR = STATE_DIR / "bin"
+CACHE_DIR = STATE_DIR / "cache"
+RUN_DIR = STATE_DIR / "run"
 TOOLS_DIR = STATE_DIR / "tools"
-TOOLS_BIN_DIR = STATE_DIR / "bin"
-TOOLS_RUN_DIR = STATE_DIR / "run"
-TOOLS_TMP_DIR = STATE_DIR / "tmp"
 NERDCTL_INSTALL_DIR = TOOLS_DIR / f"nerdctl-{NERDCTL_VERSION}"
 NERDCTL_BIN = NERDCTL_INSTALL_DIR / "bin" / "nerdctl"
 BUILDCTL_BIN = NERDCTL_INSTALL_DIR / "bin" / "buildctl"
 BUILDKITD_BIN: Path = NERDCTL_INSTALL_DIR / "bin" / "buildkitd"
-BUILDKIT_SOCKET = TOOLS_RUN_DIR / "buildkitd.sock"
+BUILDKIT_SOCKET = RUN_DIR / "buildkitd.sock"
 BUILDKIT_ADDRESS = f"unix://{BUILDKIT_SOCKET.as_posix()}"
-BUILDKIT_PID_FILE = TOOLS_RUN_DIR / "buildkitd.pid"
-BUILDKIT_LOG_FILE = TOOLS_RUN_DIR / "buildkitd.log"
-BUILDKIT_LOCK_FILE = TOOLS_RUN_DIR / "buildkitd.lock"
-KUBE_LOCK_FILE = TOOLS_RUN_DIR / "microk8s.lock"
+BUILDKIT_PID_FILE = RUN_DIR / "buildkitd.pid"
+BUILDKIT_LOG_FILE = RUN_DIR / "buildkitd.log"
+BUILDKIT_LOCK_FILE = RUN_DIR / "buildkitd.lock"
+KUBE_LOCK_FILE = RUN_DIR / "microk8s.lock"
+CEPH_LOCK_FILE = RUN_DIR / "microceph.lock"
+NERDCTL_REQUIRED_PATHS = (
+    NERDCTL_BIN,
+    BUILDCTL_BIN,
+    BUILDKITD_BIN,
+)
+
+
+def _state_root_configured(group_gid: int) -> bool:
+    try:
+        if STATE_DIR.is_symlink():
+            return False
+        if not STATE_DIR.is_dir():
+            return False
+        stat_info = STATE_DIR.stat()
+    except OSError:
+        return False
+    return (
+        stat_info.st_uid == 0
+        and stat_info.st_gid == group_gid
+        and (stat_info.st_mode & 0o7777) == STATE_DIR_MODE
+    )
+
+
+async def _state_acl_configured(group: str) -> bool:
+    if not shutil.which("getfacl"):
+        return False
+    result = await run(
+        ["getfacl", "-cp", str(STATE_DIR)],
+        check=False,
+        capture_output=True,
+    )
+    if result.returncode != 0:
+        return False
+    lines = {line.strip() for line in result.stdout.splitlines() if line.strip()}
+    access = f"group:{group}:rwx"
+    default = f"default:group:{group}:rwx"
+    return access in lines and default in lines
+
+
+async def ensure_bertrand_group(
+    *,
+    timeout: float | None,
+    assume_yes: bool,
+) -> grp.struct_group:
+    """Add a shared user group for Bertrand if it doesn't already exist, prompting as
+    needed.
+
+    Parameters
+    ----------
+    timeout : float | None
+        An optional timeout in seconds to wait for any required system commands to
+        complete before raising a `TimeoutExpired` exception.
+    assume_yes : bool
+        If True, automatically confirm any prompts for creating the shared group.
+
+    Returns
+    -------
+    grp.struct_group
+        The shared Bertrand group information.
+
+    Raises
+    ------
+    PermissionError
+        If creating the shared group requires root privileges, but they are not
+        available or the user declines to use them.
+    OSError
+        If the shared group cannot be created for any other reason.
+    """
+    loop = asyncio.get_event_loop()
+    deadline = 0.0 if timeout is None else loop.time() + timeout
+
+    # fast path
+    try:
+        return grp.getgrnam(BERTRAND_GROUP)
+    except KeyError:
+        pass
+
+    # create user group
+    if not confirm(
+        f"Bertrand uses a shared host group named {BERTRAND_GROUP!r} for unprivileged "
+        "access to global runtime state.  Create this system group now (requires sudo)?\n"
+        "[y/N] ",
+        assume_yes=assume_yes,
+    ):
+        raise PermissionError("Bertrand shared-group bootstrap declined by user.")
+    if os.geteuid() != 0 and not can_escalate():
+        raise PermissionError(
+            f"Creating group {BERTRAND_GROUP!r} requires root privileges; sudo not "
+            "available."
+        )
+    try:
+        await run(
+            sudo(
+                ["groupadd", "--system", BERTRAND_GROUP],
+                non_interactive=assume_yes,
+            ),
+            capture_output=True,
+            timeout=None if timeout is None else deadline - loop.time(),
+        )
+    except CommandError as err:
+        out = f"{err.stdout}\n{err.stderr}".lower().strip()
+        if "already exists" not in out and "alreadyexist" not in out:
+            raise err
+
+    # confirm success
+    try:
+        return grp.getgrnam(BERTRAND_GROUP)
+    except KeyError as err:
+        raise OSError(
+            f"Failed to create shared Bertrand group {BERTRAND_GROUP!r}."
+        ) from err
+
+
+async def ensure_bertrand_state(
+    *,
+    user: str,
+    assume_yes: bool,
+    timeout: float | None,
+) -> GroupStatus:
+    """Ensure Bertrand's shared host state roots and group access are configured.
+
+    Parameters
+    ----------
+    user : str
+        The host username to configure for runtime group access.
+    assume_yes : bool
+        Whether to automatically answer yes to all prompts during installation, for
+        non-interactive use.
+    timeout : float | None
+        An optional timeout in seconds to wait for any required system commands to
+        complete before raising a `TimeoutExpired` exception.
+
+    Returns
+    -------
+    GroupStatus
+        The user's group membership status for the Bertrand group after bootstrapping
+        the configuration directories.
+
+    Raises
+    ------
+    OSError
+        If the host is not POSIX-compliant, or if the shared group cannot be created
+        or accessed, or if the shared state directories cannot be configured with the
+    """
+    if os.name != "posix":
+        raise OSError("Bertrand state bootstrap requires a POSIX host.")
+    loop = asyncio.get_event_loop()
+    deadline = 0.0 if timeout is None else loop.time() + timeout
+
+    # identify misconfigured root state layout
+    group_info = await ensure_bertrand_group(
+        timeout=None if timeout is None else deadline - loop.time(),
+        assume_yes=assume_yes,
+    )
+    configure = (
+        not _state_root_configured(group_gid=group_info.gr_gid) or
+        not await _state_acl_configured(group=BERTRAND_GROUP)
+    )
+    if configure:
+        if not confirm(
+            "Bertrand requires shared host state under "
+            f"{STATE_DIR} with root-owned {BERTRAND_GROUP!r} access and strict ACL "
+            "inheritance.  Configure it now (requires sudo)?\n[y/N] ",
+            assume_yes=assume_yes,
+        ):
+            raise PermissionError("Bertrand shared-state bootstrap declined by user.")
+        if os.geteuid() != 0 and not can_escalate():
+            raise PermissionError(
+                "Configuring Bertrand shared-state directories requires root "
+                "privileges; sudo not available."
+            )
+        await run(
+            sudo(
+                [
+                    "install",
+                    "-d",
+                    "-m", f"{STATE_DIR_MODE:o}",
+                    "-o", "root",
+                    "-g", BERTRAND_GROUP,
+                    str(STATE_DIR),
+                ],
+                non_interactive=assume_yes,
+            ),
+            timeout=None if timeout is None else deadline - loop.time(),
+        )
+
+        # configure ACLs to allow child paths to inherit group access without needing
+        # to be individually configured
+        if not shutil.which("setfacl") or not shutil.which("getfacl"):
+            raise OSError(
+                "Strict Bertrand state ACL setup requires `setfacl` and `getfacl`, "
+                "but they were not found.  Install the host `acl` package and rerun "
+                "`bertrand init`."
+            )
+        for cmd in (
+            ["setfacl", "-m", f"group:{BERTRAND_GROUP}:rwx", str(STATE_DIR)],
+            ["setfacl", "-m", "mask::rwx", str(STATE_DIR)],
+            ["setfacl", "-d", "-m", f"group:{BERTRAND_GROUP}:rwx", str(STATE_DIR)],
+            ["setfacl", "-d", "-m", "mask::rwx", str(STATE_DIR)],
+        ):
+            await run(
+                sudo(cmd, non_interactive=assume_yes),
+                timeout=None if timeout is None else deadline - loop.time()
+            )
+
+    # confirm required layout
+    if not _state_root_configured(group_gid=group_info.gr_gid):
+        raise OSError(f"Failed to configure shared Bertrand state directory: {STATE_DIR}")
+    if not await _state_acl_configured(group=BERTRAND_GROUP):
+        raise OSError(
+            f"Failed to configure strict ACL inheritance for shared Bertrand state: "
+            f"{STATE_DIR}"
+        )
+
+    # activate bertrand group access for user
+    group = GroupStatus.get(user, BERTRAND_GROUP)
+    await group.activate(assume_yes=assume_yes)
+    return group
+
+
+async def _snap_ready() -> bool:
+    if not shutil.which("snap"):
+        return False
+    return (await run(
+        ["snap", "--version"],
+        check=False,
+        capture_output=True,
+    )).returncode == 0
+
+
+async def _install_snap(
+    package_manager: str,
+    *,
+    assume_yes: bool,
+    component: str,
+) -> None:
+    if await _snap_ready():
+        return
+    if not confirm(
+        f"Bertrand requires 'snapd' to install {component}.  Would you like to "
+        "install it now using apt (requires sudo)?\n[y/N] ",
+        assume_yes=assume_yes,
+    ):
+        raise PermissionError("Installation declined by user.")
+
+    await install_packages(package_manager, ["snapd"], assume_yes=assume_yes)
+    if not await _snap_ready():
+        raise OSError(
+            "Installation completed, but 'snap' is still not found.  Please "
+            "investigate the issue and ensure snapd is installed correctly."
+        )
+
+
+async def _microceph_installed() -> bool:
+    if not shutil.which("snap"):
+        return False
+    return (await run(
+        ["snap", "list", "microceph"],
+        check=False,
+        capture_output=True
+    )).returncode == 0
+
+
+async def _microk8s_installed() -> bool:
+    if not shutil.which("snap"):
+        return False
+    return (await run(
+        ["snap", "list", "microk8s"],
+        check=False,
+        capture_output=True
+    )).returncode == 0
+
+
+async def _microceph_ready() -> bool:
+    if not await _microceph_installed() or not shutil.which("microceph"):
+        return False
+    return (await run(
+        ["microceph", "--help"],
+        check=False,
+        capture_output=True,
+    )).returncode == 0
+
+
+async def _microk8s_ready() -> bool:
+    if not await _microk8s_installed():
+        return False
+    return (await run(
+        ["microk8s", "--help"],
+        check=False,
+        capture_output=True,
+    )).returncode == 0
+
+
+async def install_microceph(
+    *,
+    package_manager: str,
+    user: str,
+    distro_id: str,
+    assume_yes: bool,
+) -> None:
+    """Install/refresh MicroCeph and configure runtime group access.
+
+    Parameters
+    ----------
+    package_manager : str
+        The host package manager to use for installing dependencies.
+    user : str
+        The host username to configure for runtime group access.
+    distro_id : str
+        The host Linux distribution ID, used for validating compatibility and selecting
+        installation steps.
+    assume_yes : bool
+        Whether to automatically answer yes to all prompts during installation, for
+        non-interactive use.
+    """
+    if distro_id not in {"ubuntu", "debian"} or package_manager != "apt":
+        raise OSError(
+            f"MicroCeph bootstrap currently supports Ubuntu/Debian hosts using apt "
+            f"(detected distro={distro_id!r}, package_manager={package_manager!r})."
+        )
+    group = GroupStatus.get(user, MICROCEPH_GROUP)
+
+    # short-circuit if MicroCeph is already installed and ready
+    if await _microceph_ready():
+        await group.activate(assume_yes=assume_yes)
+        return
+
+    # install snap package manager
+    await _install_snap(package_manager, assume_yes=assume_yes, component="MicroCeph")
+
+    # install or refresh MicroCeph snap package
+    if not await _microceph_ready():
+        if not confirm(
+            "Bertrand requires MicroCeph as its kubernetes storage backend.  "
+            "Would you like to install/refresh MicroCeph now at channel "
+            f"{MICROCEPH_CHANNEL!r} (requires sudo)?\n[y/N] ",
+            assume_yes=assume_yes,
+        ):
+            raise PermissionError("MicroCeph installation declined by user.")
+        if os.geteuid() != 0 and not can_escalate():
+            raise PermissionError(
+                "MicroCeph installation requires root privileges; sudo not available."
+            )
+        if await _microceph_installed():
+            cmd = ["snap", "refresh", "microceph", "--channel", MICROCEPH_CHANNEL]
+        else:
+            cmd = [
+                "snap",
+                "install",
+                "microceph",
+                "--classic",
+                "--channel",
+                MICROCEPH_CHANNEL
+            ]
+        await run(sudo(cmd, non_interactive=assume_yes))
+        if not await _microceph_ready():
+            raise OSError(
+                "MicroCeph installation completed, but the runtime is still not available.  "
+                "Please check `snap list microceph` and `microceph --help` for diagnostics."
+            )
+
+    # add to microceph group to ensure unprivileged access to CLI and storage
+    await group.activate(assume_yes=assume_yes)
+
+
+async def install_microk8s(
+    *,
+    package_manager: str,
+    user: str,
+    distro_id: str,
+    assume_yes: bool,
+) -> None:
+    """Install/refresh MicroK8s and configure runtime group access.
+
+    Parameters
+    ----------
+    package_manager : str
+        The host package manager to use for installing dependencies.
+    user : str
+        The host username to configure for runtime group access.
+    distro_id : str
+        The host Linux distribution ID, used for validating compatibility and selecting
+        installation steps.
+    assume_yes : bool
+        Whether to automatically answer yes to all prompts during installation, for
+        non-interactive use.
+    """
+    if distro_id not in {"ubuntu", "debian"} or package_manager != "apt":
+        raise OSError(
+            f"MicroK8s bootstrap currently supports Ubuntu/Debian hosts using apt "
+            f"(detected distro={distro_id!r}, package_manager={package_manager!r})."
+        )
+    group = GroupStatus.get(user, MICROK8S_GROUP)
+
+    # short-circuit if MicroK8s is already installed and ready
+    if await _microk8s_ready():
+        await group.activate(assume_yes=assume_yes)
+        return
+
+    # install snap package manager
+    await _install_snap(package_manager, assume_yes=assume_yes, component="MicroK8s")
+
+    # install or refresh MicroK8s snap package
+    if not await _microk8s_ready():
+        if not confirm(
+            "Bertrand requires MicroK8s as its kubernetes control plane.  Would "
+            f"you like to install/refresh MicroK8s now at channel {MICROK8S_CHANNEL!r} "
+            "(requires sudo)?\n[y/N] ",
+            assume_yes=assume_yes,
+        ):
+            raise PermissionError("MicroK8s installation declined by user.")
+        if os.geteuid() != 0 and not can_escalate():
+            raise PermissionError(
+                "MicroK8s installation requires root privileges; sudo not available."
+            )
+        if await _microk8s_installed():
+            cmd = ["snap", "refresh", "microk8s", "--channel", MICROK8S_CHANNEL]
+        else:
+            cmd = [
+                "snap",
+                "install",
+                "microk8s",
+                "--classic",
+                "--channel",
+                MICROK8S_CHANNEL
+            ]
+        await run(sudo(cmd, non_interactive=assume_yes))
+        if not await _microk8s_ready():
+            raise OSError(
+                "MicroK8s installation completed, but the runtime is still not "
+                "available.  Please check `snap list microk8s` and `microk8s --help` "
+                "for diagnostics."
+            )
+
+    # add to microk8s group to ensure unprivileged access to socket, CLI, storage
+    await group.activate(assume_yes=assume_yes)
+
+
+async def install_nerdctl() -> None:
+    """Install `nerdctl` to provide a Docker-like interface for MicroK8s' `containerd`
+    container runtime.
+    """
+    if all(path.exists() for path in NERDCTL_REQUIRED_PATHS):
+        return
+
+    # confirm arch is supported and get checksum
+    arch = NORMALIZE_ARCH.get(platform.machine().strip().lower())
+    if not arch:
+        raise OSError(
+            "Unsupported CPU architecture for pinned nerdctl artifact: "
+            f"{platform.machine()!r} (supported: {sorted(NORMALIZE_ARCH)})"
+        )
+    archive_name = f"nerdctl-full-{NERDCTL_VERSION}-linux-{arch}.tar.gz"
+    archive_path = CACHE_DIR / archive_name
+    archive_url = f"{NERDCTL_BASE_URL}/{archive_name}"
+    expected_sha = NERDCTL_CHECKSUM[arch]
+
+    # download and verify pinned archive
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    needs_download = True
+    if archive_path.exists() and file_digest(archive_path) == expected_sha:
+        needs_download = False
+    if needs_download:
+        await download_file(archive_url, archive_path)
+        actual_sha = file_digest(archive_path)
+        if actual_sha != expected_sha:
+            try:
+                archive_path.unlink()
+            except OSError:
+                pass
+            raise OSError(
+                f"Checksum mismatch for {archive_name}: expected {expected_sha}, "
+                f"got {actual_sha}."
+            )
+
+    # extract archive to final location
+    TOOLS_DIR.mkdir(parents=True, exist_ok=True)
+    staged = TOOLS_DIR / f".nerdctl-{uuid.uuid4().hex}.tmp"
+    if staged.exists():
+        shutil.rmtree(staged, ignore_errors=True)
+    staged.mkdir(parents=True, exist_ok=True)
+    try:
+        await run(["tar", "-xzf", str(archive_path), "-C", str(staged)])
+        if not (staged / "bin" / "nerdctl").exists():
+            raise OSError(
+                "Pinned nerdctl archive extracted successfully, but expected binary "
+                f"was not found at {(staged / 'bin' / 'nerdctl')}."
+            )
+        if NERDCTL_INSTALL_DIR.exists():
+            shutil.rmtree(NERDCTL_INSTALL_DIR, ignore_errors=True)
+        staged.replace(NERDCTL_INSTALL_DIR)
+    finally:
+        if staged.exists():
+            shutil.rmtree(staged, ignore_errors=True)
+
+    # confirm success
+    if not all(path.exists() for path in NERDCTL_REQUIRED_PATHS):
+        raise OSError(
+            "Managed nerdctl toolchain installation completed, but required binaries "
+            "are still missing."
+        )
+
+
+async def assert_microceph_installed(*, user: str) -> None:
+    """Raise with actionable diagnostics when MicroCeph runtime is unusable.
+
+    Parameters
+    ----------
+    user : str
+        The host username to check for runtime group access.
+
+    Raises
+    ------
+    OSError
+        If MicroCeph is not installed, not usable, or if the user does not have proper
+        group access after installation.
+    """
+    if not await _microceph_ready():
+        raise OSError(
+            "MicroCeph is installed but not usable after init bootstrap.  Run "
+            "`snap list microceph` and `microceph --help` for diagnostics."
+        )
+
+    group = GroupStatus.get(user, MICROCEPH_GROUP)
+    if not group.configured:
+        raise OSError(
+            f"user '{user}' is not in '{MICROCEPH_GROUP}'.  Rerun `bertrand init` "
+            "to configure MicroCeph access."
+        )
+
+
+async def assert_microk8s_installed(*, user: str) -> None:
+    """Raise with actionable diagnostics when MicroK8s runtime is unusable.
+
+    Parameters
+    ----------
+    user : str
+        The host username to check for runtime group access.
+
+    Raises
+    ------
+    OSError
+        If MicroK8s is not installed, not usable, or if the user does not have proper
+        group access after installation.
+    """
+    if not await _microk8s_ready():
+        raise OSError(
+            "MicroK8s is installed but not usable after init bootstrap.  Run "
+            "`snap list microk8s` and `microk8s --help` for diagnostics."
+        )
+    group = GroupStatus.get(user, MICROK8S_GROUP)
+    if not group.configured:
+        raise OSError(
+            f"user {user!r} is not in {MICROK8S_GROUP!r}.  Rerun `bertrand init` "
+            "to configure MicroK8s access."
+        )
+
+
+async def assert_nerdctl_installed() -> None:
+    """Raise with actionable diagnostics when the managed nerdctl toolchain is
+    unusable.
+
+    Raises
+    ------
+    OSError
+        If the managed nerdctl toolchain is not installed or incomplete after init
+        bootstrap.
+    """
+    if not all(path.exists() for path in NERDCTL_REQUIRED_PATHS):
+        raise OSError(
+            "Managed nerdctl toolchain is not installed or incomplete after init "
+            "bootstrap.  Please ensure that the following binaries are present:\n"
+            f"{'\n'.join(str(path) for path in NERDCTL_REQUIRED_PATHS)}."
+        )
 
 
 type ContainerState = Literal[
@@ -759,6 +1701,173 @@ type ContainerState = Literal[
     "exited",
     "dead"
 ]
+
+
+async def kubectl(
+    argv: list[str],
+    *,
+    check: bool = True,
+    capture_output: bool | None = False,
+    input: str | None = None,
+    timeout: float | None = None,
+    attempts: int = 1,
+    delay: float = 0.1,
+    cwd: Path | None = None,
+    env: Mapping[str, str] | None = None,
+) -> CompletedProcess:
+    """Invoke the `microk8s kubectl` command against the local MicroK8s cluster.
+
+    Parameters
+    ----------
+    argv : list[str]
+        The `kubectl` subcommand to run, plus arguments, minus the `microk8s kubectl`
+        prefix itself.  The command requires that the MicroK8s cluster is up and
+        running locally.
+    check : bool, optional
+        Whether to raise a `CommandError` if the command fails (default is True).  If
+        false, then any errors will be ignored.
+    capture_output : bool | None, optional
+        If true, then all output will be redirected to the returned `CompletedProcess`
+        or `CommandError`, and excluded from the inherited stdout/stderr streams.  If
+        false (the default), then the opposite is the case, and the returned
+        `CompletedProcess` or `CommandError` will not include any captured output.  If
+        None, then output will be "tee'd" to both the console and the returned objects
+        simultaneously.  Note that teeing output in this way may break TTY behavior for
+        some commands, and is not recommended for interactive use.
+    input : str | None, optional
+        Input to send to the command's stdin (default is None).
+    timeout : float | None, optional
+        An optional timeout in seconds to wait for the command to complete before
+        raising a `TimeoutExpired` exception.  Default is None, which means to wait
+        indefinitely.  If zero or negative, a `TimeoutExpired` exception will be raised
+        immediately.  Note that this does not reset between `attempts`, so the total
+        time spent on retries counts against the timeout.
+    attempts : int, optional
+        The total number of times to attempt the command.  Defaults to 1, which means
+        no retries.  If greater than 1, then any command that exits with a nonzero
+        exit code will be re-run after a short delay, up to the specified number
+        of times in total.
+    delay : float, optional
+        The delay in seconds to wait between retries when `attempts` is greater than 1.
+        Default is 0.1 seconds.  Must be non-negative.
+    cwd : Path | None, optional
+        An optional working directory to run the command in.  If None (the default),
+        then the current working directory will be used.
+    env : Mapping[str, str] | None, optional
+        An optional environment dictionary to use for the command.  If None (the
+        default), then the current process's environment will be used.
+
+    Returns
+    -------
+    CompletedProcess
+        The completed process result.
+
+    Raises
+    ------
+    CommandError
+        If the command fails and `check` is True.
+    TimeoutExpired
+        If the command does not complete within the specified timeout.
+    OSError
+        If we failed to open the subprocess or its output streams.
+    """
+    cmd = ["microk8s", "kubectl"]
+    cmd.extend(argv)
+    return await run(
+        cmd,
+        check=check,
+        capture_output=capture_output,
+        input=input,
+        timeout=timeout,
+        attempts=attempts,
+        delay=delay,
+        cwd=cwd,
+        env=env,
+    )
+
+
+async def buildctl(
+    argv: list[str],
+    *,
+    check: bool = True,
+    capture_output: bool | None = False,
+    input: str | None = None,
+    timeout: float | None = None,
+    attempts: int = 1,
+    delay: float = 0.1,
+    cwd: Path | None = None,
+    env: Mapping[str, str] | None = None,
+) -> CompletedProcess:
+    """Invoke the managed buildctl binary against Bertrand's BuildKit daemon.
+
+    Parameters
+    ----------
+    argv : list[str]
+        The `buildctl` subcommand to run, plus arguments, minus the `buildctl` binary
+        itself.  The command will always target Bertrand's pinned BuildKit daemon,
+        which must be started separately via the `start_buildkit()` helper before
+        calling this function.
+    check : bool, optional
+        Whether to raise a `CommandError` if the command fails (default is True).  If
+        false, then any errors will be ignored.
+    capture_output : bool | None, optional
+        If true, then all output will be redirected to the returned `CompletedProcess`
+        or `CommandError`, and excluded from the inherited stdout/stderr streams.  If
+        false (the default), then the opposite is the case, and the returned
+        `CompletedProcess` or `CommandError` will not include any captured output.  If
+        None, then output will be "tee'd" to both the console and the returned objects
+        simultaneously.  Note that teeing output in this way may break TTY behavior for
+        some commands, and is not recommended for interactive use.
+    input : str | None, optional
+        Input to send to the command's stdin (default is None).
+    timeout : float | None, optional
+        An optional timeout in seconds to wait for the command to complete before
+        raising a `TimeoutExpired` exception.  Default is None, which means to wait
+        indefinitely.  If zero or negative, a `TimeoutExpired` exception will be raised
+        immediately.  Note that this does not reset between `attempts`, so the total
+        time spent on retries counts against the timeout.
+    attempts : int, optional
+        The total number of times to attempt the command.  Defaults to 1, which means
+        no retries.  If greater than 1, then any command that exits with a nonzero
+        exit code will be re-run after a short delay, up to the specified number
+        of times in total.
+    delay : float, optional
+        The delay in seconds to wait between retries when `attempts` is greater than 1.
+        Default is 0.1 seconds.  Must be non-negative.
+    cwd : Path | None, optional
+        An optional working directory to run the command in.  If None (the default),
+        then the current working directory will be used.
+    env : Mapping[str, str] | None, optional
+        An optional environment dictionary to use for the command.  If None (the
+        default), then the current process's environment will be used.
+
+    Returns
+    -------
+    CompletedProcess
+        The completed process result.
+
+    Raises
+    ------
+    CommandError
+        If the command fails and `check` is True.
+    TimeoutExpired
+        If the command does not complete within the specified timeout.
+    OSError
+        If we failed to open the subprocess or its output streams.
+    """
+    cmd = [str(BUILDCTL_BIN), "--addr", BUILDKIT_ADDRESS]
+    cmd.extend(argv)
+    return await run(
+        cmd,
+        check=check,
+        capture_output=capture_output,
+        input=input,
+        timeout=timeout,
+        attempts=attempts,
+        delay=delay,
+        cwd=cwd,
+        env=env,
+    )
 
 
 async def nerdctl(
@@ -977,186 +2086,14 @@ async def nerdctl_ids(
     return out
 
 
-async def buildctl(
-    argv: list[str],
-    *,
-    check: bool = True,
-    capture_output: bool | None = False,
-    input: str | None = None,
-    timeout: float | None = None,
-    attempts: int = 1,
-    delay: float = 0.1,
-    cwd: Path | None = None,
-    env: Mapping[str, str] | None = None,
-) -> CompletedProcess:
-    """Invoke the managed buildctl binary against Bertrand's BuildKit daemon.
-
-    Parameters
-    ----------
-    argv : list[str]
-        The `buildctl` subcommand to run, plus arguments, minus the `buildctl` binary
-        itself.  The command will always target Bertrand's pinned BuildKit daemon,
-        which must be started separately via the `ensure_buildkit()` helper before
-        calling this function.
-    check : bool, optional
-        Whether to raise a `CommandError` if the command fails (default is True).  If
-        false, then any errors will be ignored.
-    capture_output : bool | None, optional
-        If true, then all output will be redirected to the returned `CompletedProcess`
-        or `CommandError`, and excluded from the inherited stdout/stderr streams.  If
-        false (the default), then the opposite is the case, and the returned
-        `CompletedProcess` or `CommandError` will not include any captured output.  If
-        None, then output will be "tee'd" to both the console and the returned objects
-        simultaneously.  Note that teeing output in this way may break TTY behavior for
-        some commands, and is not recommended for interactive use.
-    input : str | None, optional
-        Input to send to the command's stdin (default is None).
-    timeout : float | None, optional
-        An optional timeout in seconds to wait for the command to complete before
-        raising a `TimeoutExpired` exception.  Default is None, which means to wait
-        indefinitely.  If zero or negative, a `TimeoutExpired` exception will be raised
-        immediately.  Note that this does not reset between `attempts`, so the total
-        time spent on retries counts against the timeout.
-    attempts : int, optional
-        The total number of times to attempt the command.  Defaults to 1, which means
-        no retries.  If greater than 1, then any command that exits with a nonzero
-        exit code will be re-run after a short delay, up to the specified number
-        of times in total.
-    delay : float, optional
-        The delay in seconds to wait between retries when `attempts` is greater than 1.
-        Default is 0.1 seconds.  Must be non-negative.
-    cwd : Path | None, optional
-        An optional working directory to run the command in.  If None (the default),
-        then the current working directory will be used.
-    env : Mapping[str, str] | None, optional
-        An optional environment dictionary to use for the command.  If None (the
-        default), then the current process's environment will be used.
-
-    Returns
-    -------
-    CompletedProcess
-        The completed process result.
-
-    Raises
-    ------
-    CommandError
-        If the command fails and `check` is True.
-    TimeoutExpired
-        If the command does not complete within the specified timeout.
-    OSError
-        If we failed to open the subprocess or its output streams.
-    """
-    cmd = [str(BUILDCTL_BIN), "--addr", BUILDKIT_ADDRESS]
-    cmd.extend(argv)
-    return await run(
-        cmd,
-        check=check,
-        capture_output=capture_output,
-        input=input,
-        timeout=timeout,
-        attempts=attempts,
-        delay=delay,
-        cwd=cwd,
-        env=env,
-    )
-
-
-async def kubectl(
-    argv: list[str],
-    *,
-    check: bool = True,
-    capture_output: bool | None = False,
-    input: str | None = None,
-    timeout: float | None = None,
-    attempts: int = 1,
-    delay: float = 0.1,
-    cwd: Path | None = None,
-    env: Mapping[str, str] | None = None,
-) -> CompletedProcess:
-    """Invoke the `microk8s kubectl` command against the local MicroK8s cluster.
-
-    Parameters
-    ----------
-    argv : list[str]
-        The `kubectl` subcommand to run, plus arguments, minus the `microk8s kubectl`
-        prefix itself.  The command requires that the MicroK8s cluster is up and
-        running locally.
-    check : bool, optional
-        Whether to raise a `CommandError` if the command fails (default is True).  If
-        false, then any errors will be ignored.
-    capture_output : bool | None, optional
-        If true, then all output will be redirected to the returned `CompletedProcess`
-        or `CommandError`, and excluded from the inherited stdout/stderr streams.  If
-        false (the default), then the opposite is the case, and the returned
-        `CompletedProcess` or `CommandError` will not include any captured output.  If
-        None, then output will be "tee'd" to both the console and the returned objects
-        simultaneously.  Note that teeing output in this way may break TTY behavior for
-        some commands, and is not recommended for interactive use.
-    input : str | None, optional
-        Input to send to the command's stdin (default is None).
-    timeout : float | None, optional
-        An optional timeout in seconds to wait for the command to complete before
-        raising a `TimeoutExpired` exception.  Default is None, which means to wait
-        indefinitely.  If zero or negative, a `TimeoutExpired` exception will be raised
-        immediately.  Note that this does not reset between `attempts`, so the total
-        time spent on retries counts against the timeout.
-    attempts : int, optional
-        The total number of times to attempt the command.  Defaults to 1, which means
-        no retries.  If greater than 1, then any command that exits with a nonzero
-        exit code will be re-run after a short delay, up to the specified number
-        of times in total.
-    delay : float, optional
-        The delay in seconds to wait between retries when `attempts` is greater than 1.
-        Default is 0.1 seconds.  Must be non-negative.
-    cwd : Path | None, optional
-        An optional working directory to run the command in.  If None (the default),
-        then the current working directory will be used.
-    env : Mapping[str, str] | None, optional
-        An optional environment dictionary to use for the command.  If None (the
-        default), then the current process's environment will be used.
-
-    Returns
-    -------
-    CompletedProcess
-        The completed process result.
-
-    Raises
-    ------
-    CommandError
-        If the command fails and `check` is True.
-    TimeoutExpired
-        If the command does not complete within the specified timeout.
-    OSError
-        If we failed to open the subprocess or its output streams.
-    """
-    cmd = ["microk8s", "kubectl"]
-    cmd.extend(argv)
-    return await run(
-        cmd,
-        check=check,
-        capture_output=capture_output,
-        input=input,
-        timeout=timeout,
-        attempts=attempts,
-        delay=delay,
-        cwd=cwd,
-        env=env,
-    )
-
-
-def _buildkit_pid() -> int | None:
+def _buildkit_pid_alive() -> bool:
+    pid: int | None = None
     try:
         value = BUILDKIT_PID_FILE.read_text(encoding="utf-8").strip()
-        if not value:
-            return None
-        return int(value)
+        if value:
+            pid = int(value)
     except (OSError, ValueError):
-        return None
-
-
-def _buildkit_pid_alive(pid: int | None = None) -> bool:
-    if pid is None:
-        pid = _buildkit_pid()
+        pass
     if pid is None:
         return False
     try:
@@ -1170,39 +2107,29 @@ def _buildkit_pid_alive(pid: int | None = None) -> bool:
     return True
 
 
-async def _buildkit_workers_ready() -> bool:
+async def _buildkit_workers_ready(*, timeout: float | None) -> bool:
     if not BUILDKIT_SOCKET.exists():
         return False
-    result = await buildctl(
+    return (await buildctl(
         ["debug", "workers"],
         check=False,
         capture_output=True,
-    )
-    return result.returncode == 0
+        timeout=timeout,
+    )).returncode == 0
 
 
-def _tail_lines(path: Path, *, count: int = 40) -> str:
-    try:
-        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
-    except OSError:
-        return ""
-    if count < 1:
-        return ""
-    tail = lines[-count:]
-    return "\n".join(tail)
-
-
-async def ensure_buildkit(*, timeout: float = TIMEOUT) -> None:
+async def start_buildkit(*, timeout: float | None) -> None:
     """Ensure that the managed BuildKit daemon is running and ready.
 
     Parameters
     ----------
-    timeout : float
+    timeout : float | None
         The maximum time to wait for the BuildKit daemon to become ready in seconds.
         If the daemon is already running, then this function will return immediately
         without waiting.  If the daemon is not running, then this function will attempt
         to start it, and wait until it becomes responsive to `buildctl` commands, or
-        until the timeout is reached.
+        until the timeout is reached.  If None, then this function will wait
+        indefinitely for the daemon to become ready.
 
     Raises
     ------
@@ -1218,42 +2145,42 @@ async def ensure_buildkit(*, timeout: float = TIMEOUT) -> None:
     will work normally, and will place the resulting images directly into the microK8s
     image store, under the "bertrand" namespace.
     """
-    if timeout < 0:
+    if timeout is not None and timeout < 0:
         raise TimeoutError("BuildKit timeout must be non-negative.")
     if not BUILDCTL_BIN.exists() or not BUILDKITD_BIN.exists():
         raise OSError(
             "Managed BuildKit binaries are missing.  Run `bertrand init` to install "
             "the pinned toolchain."
         )
-    TOOLS_RUN_DIR.mkdir(parents=True, exist_ok=True)
-    if await _buildkit_workers_ready():
+    loop = asyncio.get_running_loop()
+    deadline = 0.0 if timeout is None else loop.time() + timeout
+    if await _buildkit_workers_ready(  # optimistic, no locking
+        timeout=None if timeout is None else deadline - loop.time()
+    ):
         return
 
-    async with Lock(BUILDKIT_LOCK_FILE, timeout=timeout, mode="local"):
-        if await _buildkit_workers_ready():
+    # lock to prevent concurrent startups
+    async with Lock(
+        BUILDKIT_LOCK_FILE,
+        timeout=TIMEOUT if timeout is None else deadline - loop.time(),
+        mode="local"
+    ):
+        if await _buildkit_workers_ready(  # check again after acquiring lock
+            timeout=None if timeout is None else deadline - loop.time()
+        ):
             return
 
         # clean up stale buildkit state from previous runs
-        pid = _buildkit_pid()
-        if pid is None or not _buildkit_pid_alive(pid):
+        if not _buildkit_pid_alive():
             try:
                 BUILDKIT_PID_FILE.unlink()
             except FileNotFoundError:
                 pass
             except OSError:
                 pass
-        if BUILDKIT_SOCKET.exists() and not await _buildkit_workers_ready():
-            try:
-                BUILDKIT_SOCKET.unlink()
-            except OSError:
-                pass
+        BUILDKIT_SOCKET.unlink(missing_ok=True)
 
-        # if already, then we're done
-        if await _buildkit_workers_ready():
-            return
-
-        # start buildkitd
-        TOOLS_RUN_DIR.mkdir(parents=True, exist_ok=True)
+        # start buildkitd and write PID file
         BUILDKIT_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
         with BUILDKIT_LOG_FILE.open("ab") as log:
             process = await asyncio.create_subprocess_exec(
@@ -1274,21 +2201,22 @@ async def ensure_buildkit(*, timeout: float = TIMEOUT) -> None:
             BUILDKIT_PID_FILE,
             f"{process.pid}\n",
             encoding="utf-8",
-            private=True,
         )
 
         # wait for buildkitd to become reachable
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + timeout
-        while loop.time() <= deadline:
-            if await _buildkit_workers_ready():
+        timestamp = loop.time()
+        while timeout is None or timestamp <= deadline:
+            if await _buildkit_workers_ready(
+                timeout=None if timeout is None else deadline - timestamp
+            ):
                 return
             if not _buildkit_pid_alive():
                 break
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(0.1)
+            timestamp = loop.time()
 
     # timed out waiting for buildkitd to start
-    detail = _tail_lines(BUILDKIT_LOG_FILE, count=40)
+    detail = tail_lines(BUILDKIT_LOG_FILE, count=40)
     message = (
         f"Failed to start BuildKit daemon at {BUILDKIT_ADDRESS}.  Check log at "
         f"{BUILDKIT_LOG_FILE}."
@@ -1298,47 +2226,149 @@ async def ensure_buildkit(*, timeout: float = TIMEOUT) -> None:
     raise OSError(message)
 
 
-async def _kube_api_ready(*, timeout: float) -> bool:
-    result = await run(
+async def _microceph_cluster_ready(*, timeout: float | None) -> bool:
+    return (await run(
+        ["microceph", "status"],
+        check=False,
+        capture_output=True,
+        timeout=timeout,
+    )).returncode == 0
+
+
+async def start_microceph(*, timeout: float | None) -> None:
+    """Ensure that a local MicroCeph cluster is bootstrapped and ready.
+
+    Parameters
+    ----------
+    timeout : float | None
+        Maximum time in seconds to wait for startup/readiness checks.  If None,
+        then this function will wait indefinitely until MicroCeph is ready.
+
+    Raises
+    ------
+    OSError
+        If MicroCeph is missing or cluster bootstrap fails.
+    TimeoutError
+        If readiness checks do not succeed before `timeout`.
+    """
+    if timeout is not None and timeout < 0:
+        raise TimeoutError("MicroCeph timeout must be non-negative.")
+    if not shutil.which("microceph"):
+        raise OSError(
+            "MicroCeph CLI was not found in PATH.  Run `bertrand init` to install "
+            "the managed runtime."
+        )
+    loop = asyncio.get_running_loop()
+    deadline = 0.0 if timeout is None else loop.time() + timeout
+
+    # optimistic: cluster already up (no locking)
+    if await _microceph_cluster_ready(
+        timeout=None if timeout is None else deadline - loop.time()
+    ):
+        return
+
+    try:
+        async with Lock(
+            CEPH_LOCK_FILE,
+            timeout=TIMEOUT if timeout is None else deadline - loop.time(),
+            mode="local"
+        ):
+            # defensive: check again after acquiring lock
+            if await _microceph_cluster_ready(
+                timeout=None if timeout is None else deadline - loop.time()
+            ):
+                return
+
+            # bootstrap cluster if not already initialized
+            bootstrap = await run(
+                ["microceph", "cluster", "bootstrap"],
+                check=False,
+                capture_output=True,
+                timeout=None if timeout is None else deadline - loop.time(),
+            )
+            if bootstrap.returncode != 0:
+                stdout = bootstrap.stdout.strip() if bootstrap.stdout else ""
+                stderr = bootstrap.stderr.strip() if bootstrap.stderr else ""
+                out = "\n".join((stdout, stderr)).lower()
+                if not (
+                    "already initialized" in out
+                    or "already exists" in out
+                    or "already part of a cluster" in out
+                    or "already bootstrapped" in out
+                ):
+                    detail = "\n".join(line for line in (stdout, stderr) if line)
+                    raise OSError(
+                        "Failed to bootstrap MicroCeph cluster."
+                        f"{f' Details: {detail}' if detail else ''}"
+                    )
+
+            # poll cluster readiness after bootstrap/startup
+            timestamp = loop.time()
+            while timeout is None or timestamp <= deadline:
+                if await _microceph_cluster_ready(
+                    timeout=None if timeout is None else deadline - timestamp
+                ):
+                    return
+                await asyncio.sleep(0.1)
+                timestamp = loop.time()
+
+        raise TimeoutError(
+            f"timed out waiting for MicroCeph to become ready after {timeout} seconds"
+        )
+    except TimeoutExpired as err:
+        raise TimeoutError(
+            f"timed out waiting for MicroCeph to become ready after {timeout} seconds"
+        ) from err
+    except CommandError as err:
+        raise OSError(
+            "Failed to start MicroCeph.  You may need to re-run `bertrand init` to "
+            "ensure proper setup and group membership.\n"
+            f"{err}"
+        ) from err
+
+
+async def _microk8s_cluster_ready(*, timeout: float | None) -> bool:
+    return (await run(
         ["microk8s", "kubectl", "get", "--raw=/readyz"],
         check=False,
         capture_output=True,
         timeout=timeout,
-    )
-    return result.returncode == 0
+    )).returncode == 0
 
 
-async def _ensure_kube_namespace(*, timeout: float) -> None:
+async def _add_bertrand_kube_namespace(*, timeout: float | None) -> None:
+    loop = asyncio.get_running_loop()
+    deadline = 0.0 if timeout is None else loop.time() + timeout
     ready = await kubectl(
         ["get", "namespace", BERTRAND_NAMESPACE, "-o", "name"],
         check=False,
         capture_output=True,
-        timeout=timeout,
+        timeout=None if timeout is None else deadline - loop.time(),
     )
     if ready.returncode != 0:
         try:
             await kubectl(
                 ["create", "namespace", BERTRAND_NAMESPACE],
                 capture_output=True,
-                timeout=timeout,
+                timeout=None if timeout is None else deadline - loop.time(),
             )
         except CommandError as err:
             stdout = err.stdout.strip() if err.stdout else ""
             stderr = err.stderr.strip() if err.stderr else ""
             out = "\n".join((stdout, stderr)).lower()
-            if "already exists" in out or "alreadyexists" in out:
+            if "already exists" in out or "alreadyexists" in out:  # race-tolerant
                 return
             raise err
 
 
-async def ensure_kube(*, timeout: float = TIMEOUT) -> None:
+async def start_microk8s(*, timeout: float | None) -> None:
     """Ensure that MicroK8s is running and Bertrand's namespace is available.
 
     Parameters
     ----------
-    timeout : float, optional
-        Maximum time in seconds to wait for startup/readiness checks.  Defaults to
-        `TIMEOUT`.
+    timeout : float
+        Maximum time in seconds to wait for startup/readiness checks.  If None,
+        then this function will wait indefinitely until MicroK8s is ready.
 
     Raises
     ------
@@ -1348,37 +2378,59 @@ async def ensure_kube(*, timeout: float = TIMEOUT) -> None:
     TimeoutError
         If readiness checks do not succeed before `timeout`.
     """
-    if timeout < 0:
+    if timeout is not None and timeout < 0:
         raise TimeoutError("MicroK8s timeout must be non-negative.")
     if not shutil.which("microk8s"):
         raise OSError(
             "MicroK8s CLI was not found in PATH.  Run `bertrand init` to install "
             "the managed runtime."
         )
+    loop = asyncio.get_running_loop()
+    deadline = 0.0 if timeout is None else loop.time() + timeout
+
+    # optimistic: cluster already up (no locking)
+    if await _microk8s_cluster_ready(
+        timeout=None if timeout is None else deadline - loop.time()
+    ):
+        await _add_bertrand_kube_namespace(
+            timeout=None if timeout is None else deadline - loop.time()
+        )
+        return
 
     try:
-        TOOLS_RUN_DIR.mkdir(parents=True, exist_ok=True)
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + timeout
-        async with Lock(KUBE_LOCK_FILE, timeout=timeout, mode="local"):
-            # fast path: cluster already up and namespace already present
-            if await _kube_api_ready(timeout=deadline - loop.time()):
-                await _ensure_kube_namespace(timeout=deadline - loop.time())
+        async with Lock(
+            KUBE_LOCK_FILE,
+            timeout=TIMEOUT if timeout is None else deadline - loop.time(),
+            mode="local"
+        ):
+            # defensive: check again after acquiring lock
+            if await _microk8s_cluster_ready(
+                timeout=None if timeout is None else deadline - loop.time()
+            ):
+                await _add_bertrand_kube_namespace(
+                    timeout=None if timeout is None else deadline - loop.time()
+                )
                 return
 
             # try user-mode startup first
             await run(
                 ["microk8s", "start"],
                 capture_output=True,
-                timeout=deadline - loop.time(),
+                timeout=None if timeout is None else deadline - loop.time(),
             )
 
             # poll API readiness after successful start
-            while loop.time() <= deadline:
-                if await _kube_api_ready(timeout=deadline - loop.time()):
-                    await _ensure_kube_namespace(timeout=deadline - loop.time())
+            timestamp = loop.time()
+            while timeout is None or timestamp <= deadline:
+                if await _microk8s_cluster_ready(
+                    timeout=None if timeout is None else deadline - timestamp
+                ):
+                    await _add_bertrand_kube_namespace(
+                        timeout=None if timeout is None else deadline - loop.time()
+                    )
                     return
                 await asyncio.sleep(0.1)
+                timestamp = loop.time()
 
         raise TimeoutError(
             f"timed out waiting for MicroK8s to become ready after {timeout} seconds"
@@ -1420,8 +2472,9 @@ LEASE_POLL_SECONDS = 0.25
 LEASE_QUERY_TIMEOUT = 5.0
 LOCK_POLL_SECONDS = 0.1
 LEASE_NAME_HEX_LENGTH = 48
+LOCK_DEFAULT_PRIVILEGES = 0o600
 LOCK_GUARD = threading.RLock()
-LOCKS: dict[tuple[str, LockMode], Lock] = {}
+LOCKS: dict[tuple[str, LockMode, int], Lock] = {}
 
 
 def _to_rfc3339(value: datetime) -> str:
@@ -1447,6 +2500,7 @@ def _parse_rfc3339(value: str) -> datetime | None:
 class _LocalFileLock:
     """Local OS file-lock backend."""
     path: Path
+    privileges: int = LOCK_DEFAULT_PRIVILEGES
     _fd: int | None = field(default=None, init=False)
 
     async def acquire(self, deadline: float) -> bool:
@@ -1483,7 +2537,16 @@ class _LocalFileLock:
         """
         self.path.parent.mkdir(parents=True, exist_ok=True)
         if self._fd is None:
-            self._fd = os.open(self.path, os.O_RDWR | os.O_CREAT, 0o600)
+            self._fd = os.open(
+                self.path,
+                os.O_RDWR | os.O_CREAT,
+                self.privileges
+            )
+            if hasattr(os, "fchmod"):
+                try:
+                    os.fchmod(self._fd, self.privileges)
+                except OSError:
+                    pass
 
         # Windows file lock on a 1-byte region
         if os.name == "nt":
@@ -1877,6 +2940,9 @@ class Lock:
         The backend used to perform cross-process synchronization.  "local" uses host
         OS file locking primitives, while "cluster" uses a Kubernetes Lease in the
         local MicroK8s runtime.
+    privileges : int
+        The file mode to apply when creating a local lock file.  This is ignored for
+        cluster locks.  Defaults to `0o600`.
 
     Raises
     ------
@@ -1889,7 +2955,8 @@ class Lock:
     path: Path
     timeout: float
     mode: LockMode
-    _key: tuple[str, LockMode]
+    privileges: int
+    _key: tuple[str, LockMode, int]
     _backend: _LocalFileLock | _ClusterLeaseLock
     _owner: asyncio.Task[Any] | None
     _depth: int
@@ -1899,28 +2966,34 @@ class Lock:
         path: Path,
         timeout: float,
         mode: LockMode,
+        *,
+        privileges: int = LOCK_DEFAULT_PRIVILEGES,
     ) -> Lock:
         if timeout < 0:
             raise TimeoutError(f"could not acquire lock within {timeout} seconds")
         path = path.expanduser().resolve()
+        if mode == "local" and (privileges < 0 or privileges > 0o777):
+            raise ValueError(f"invalid local lock file mode: {oct(privileges)}")
         if mode == "local" and path.exists() and path.is_dir():
             raise OSError(
                 "local lock path must be a file, but a directory already exists: "
                 f"{path}"
             )
+        privileges = privileges if mode == "local" else LOCK_DEFAULT_PRIVILEGES
 
         # allow re-entrancy with unique lock instances per owning task
         with LOCK_GUARD:
-            key = (str(path), mode)
+            key = (str(path), mode, privileges)
             self = LOCKS.get(key)
             if self is None:
                 self = super().__new__(cls)
                 self.path = path
                 self.timeout = timeout
                 self.mode = mode
+                self.privileges = privileges
                 self._key = key
                 self._backend = (
-                    _LocalFileLock(path)
+                    _LocalFileLock(path, privileges=privileges)
                     if mode == "local" else
                     _ClusterLeaseLock(path)
                 )
@@ -2057,7 +3130,11 @@ class Lock:
 
     def __repr__(self) -> str:
         return (
-            f"Lock(path={repr(self.path)}, timeout={self.timeout}, mode={repr(self.mode)})"
+            "Lock("
+            f"path={repr(self.path)}, "
+            f"timeout={self.timeout}, "
+            f"mode={repr(self.mode)}"
+            ")"
         )
 
 

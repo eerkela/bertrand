@@ -316,7 +316,6 @@ class Registry(BaseModel):
                 separators=(",", ":"),
             ) + "\n",
             encoding="utf-8",
-            private=True,
         )
 
     def _purge_candidates(self, *, batch_size: int) -> list[UUIDHex]:

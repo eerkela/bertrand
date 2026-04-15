@@ -44,11 +44,17 @@ async def bertrand_clean(*, assume_yes: bool) -> None:
     OSError
         If cleanup is declined by the user, or if cleanup finished with failures.
     """
+    if os.geteuid() != 0:
+        raise PermissionError(
+            "Global Bertrand cleanup requires root privileges.  Re-run this command "
+            "with sudo."
+        )
+
     if not confirm(
         "This will remove Bertrand-managed containers, images, volumes, and "
         f"networks (label `{BERTRAND_ENV}=1`) and then delete local Bertrand state in "
-        f"{STATE_DIR}.  It will not uninstall MicroK8s or revert host system "
-        "settings.  Do you want to proceed?\n[y/N] ",
+        f"{STATE_DIR}.  It will not uninstall "
+        "MicroK8s or revert host system settings.  Do you want to proceed?\n[y/N] ",
         assume_yes=assume_yes,
     ):
         raise OSError("Cleanup declined by user.")
@@ -131,5 +137,5 @@ async def bertrand_clean(*, assume_yes: bool) -> None:
         except Exception as err:
             print(f"bertrand: failed to clean networks:\n{err}", file=sys.stderr)
 
-    # delete the state directory to remove pinned binaries
-    shutil.rmtree(STATE_DIR)
+    # delete global Bertrand state root
+    shutil.rmtree(STATE_DIR, ignore_errors=True)

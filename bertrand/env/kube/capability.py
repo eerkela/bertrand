@@ -14,12 +14,12 @@ from typing import Literal, Self, cast
 from pydantic import ValidationError
 
 from ..config.core import KubeName, _check_kube_name, _check_uuid
-from ..run import BERTRAND_NAMESPACE, TOOLS_TMP_DIR, atomic_write_bytes, kubectl
+from ..run import BERTRAND_NAMESPACE, CACHE_DIR, atomic_write_bytes, kubectl
 from .helper import KubeSecret
 
 type CapabilityKind = Literal["secret", "ssh", "device"]
 DEVICE_PERMISSIONS = frozenset({"r", "w", "m", "rw", "rm", "wm", "rwm"})
-CAPABILITY_DIR = TOOLS_TMP_DIR / "capabilities"
+CAPABILITY_DIR = CACHE_DIR / "capabilities"
 CAPABILITY_MANAGED_V1 = "bertrand.dev/capability-managed.v1"
 CAPABILITY_KIND_V1 = "bertrand.dev/capability-kind.v1"
 CAPABILITY_ENV_ID_V1 = "bertrand.dev/capability-env-id.v1"

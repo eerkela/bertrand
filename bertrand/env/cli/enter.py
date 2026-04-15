@@ -9,6 +9,7 @@ from ..config import DEFAULT_TAG, SHELLS, Bertrand
 from ..kube import Environment
 from ..rpc import start_rpc_sidecar, stop_rpc_sidecar
 from ..run import NERDCTL_BIN, TIMEOUT, CommandError, nerdctl
+from ._helper import _recover_spec
 
 
 async def bertrand_enter(

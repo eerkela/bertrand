@@ -1,22 +1,15 @@
-"""CLI runtime bridge for host bootstrap and environment lifecycle commands.
-
-This module exposes Bertrand's external command handlers, including persistent host
-bootstrap (`bertrand init` / `bertrand clean`) and runtime build/container operations
-that target the local MicroK8s + nerdctl control plane.
+"""Bootstrap Bertrand's host runtime, then generate and/or configure a new project
+repository, if requested.
 """
 from __future__ import annotations
 
 import grp
-import hashlib
 import json
-import os
 import platform
-import pwd
 import shutil
+import subprocess
 import sys
-import uuid
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
 from importlib import resources as importlib_resources
 from pathlib import Path
 from typing import Literal, Self
@@ -25,34 +18,27 @@ from pydantic import BaseModel, ConfigDict, PositiveInt
 
 from ..config import RESOURCE_NAMES, Config, Resource
 from ..config.core import NonEmpty, Trimmed
-from ..kube import Environment
 from ..run import (
-    BUILDCTL_BIN,
-    BUILDKITD_BIN,
-    ENV_ID_ENV,
-    IMAGE_TAG_ENV,
-    MICROK8S_CHANNEL,
-    MICROK8S_GROUP,
-    NERDCTL_BASE_URL,
-    NERDCTL_BIN,
-    NERDCTL_CHECKSUM,
-    NERDCTL_INSTALL_DIR,
-    NERDCTL_VERSION,
-    NORMALIZE_ARCH,
+    BERTRAND_GROUP,
     STATE_DIR,
     TIMEOUT,
-    TOOLS_DIR,
-    TOOLS_TMP_DIR,
     GitRepository,
+    GroupStatus,
     Lock,
     User,
+    assert_microceph_installed,
+    assert_microk8s_installed,
+    assert_nerdctl_installed,
     atomic_write_text,
-    can_escalate,
     confirm,
-    nerdctl,
-    nerdctl_ids,
+    ensure_bertrand_state,
+    install_microceph,
+    install_microk8s,
+    install_nerdctl,
+    install_packages,
     run,
-    sudo,
+    start_microceph,
+    start_microk8s,
 )
 
 # pylint: disable=unused-argument, missing-function-docstring, missing-return-doc
@@ -64,7 +50,8 @@ from ..run import (
 ##################################
 
 
-INIT_LOCK = STATE_DIR / "init.lock"
+INIT_LOCK = Path("/tmp/bertrand-init.lock")
+INIT_LOCK_MODE = 0o666
 INIT_STATE_FILE = STATE_DIR / "init.state.json"
 INIT_STATE_VERSION: int = 1
 
@@ -72,10 +59,12 @@ INIT_STATE_VERSION: int = 1
 type InitStage = Literal[
     "fresh",
     "detect_platform",
-    "install_microk8s",
-    "add_to_microk8s_group",
+    "install_prereqs",
+    "bootstrap_state_dir",
+    "install_ceph_runtime",
+    "install_kube_runtime",
     "install_nerdctl",
-    "ready",
+    "installed",
 ]
 
 
@@ -92,148 +81,74 @@ class InitState(BaseModel):
     distro_version: NonEmpty[Trimmed] | None = None
     distro_codename: NonEmpty[Trimmed] | None = None
 
+    @staticmethod
+    def backend_trustworthy() -> bool:
+        """Return True when the shared init-state backend can be safely reused.
+
+        Returns
+        -------
+        bool
+            True if the backend is trustworthy and can be reused, False otherwise.
+        """
+        if (
+            not shutil.which("setfacl") or
+            not shutil.which("getfacl") or
+            not STATE_DIR.is_dir() or
+            STATE_DIR.is_symlink()
+        ):
+            return False
+        try:
+            group_info = grp.getgrnam(BERTRAND_GROUP)
+            stat_info = STATE_DIR.stat()
+        except (KeyError, OSError):
+            return False
+        if (
+            stat_info.st_uid != 0 or
+            stat_info.st_gid != group_info.gr_gid or
+            (stat_info.st_mode & 0o7777) != 0o2770
+        ):
+            return False
+        result = subprocess.run(
+            ["getfacl", "-cp", str(STATE_DIR)],
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+        )
+        if result.returncode != 0:
+            return False
+        acl_lines = {line.strip() for line in result.stdout.splitlines() if line.strip()}
+        access = f"group:{BERTRAND_GROUP}:rwx"
+        default = f"default:group:{BERTRAND_GROUP}:rwx"
+        return access in acl_lines and default in acl_lines
+
     @classmethod
     def load(cls) -> Self:
-        STATE_DIR.mkdir(parents=True, exist_ok=True)
-        if not INIT_STATE_FILE.exists():
-            self = cls(version=INIT_STATE_VERSION)
-            self.dump()
-            return self
+        if not cls.backend_trustworthy():
+            return cls(version=INIT_STATE_VERSION)
+        if not INIT_STATE_FILE.exists() or not INIT_STATE_FILE.is_file():
+            return cls(version=INIT_STATE_VERSION)
         try:
             data = json.loads(INIT_STATE_FILE.read_text(encoding="utf-8"))
             if not isinstance(data, dict):
                 raise ValueError("init state JSON must be an object")
             self = cls.model_validate(data)
         except Exception:
-            self = cls(version=INIT_STATE_VERSION)
-            self.dump()
-            return self
+            return cls(version=INIT_STATE_VERSION)
         if self.version != INIT_STATE_VERSION:
-            self = cls(version=INIT_STATE_VERSION)
-            self.dump()
+            return cls(version=INIT_STATE_VERSION)
         return self
 
     def dump(self) -> None:
-        STATE_DIR.mkdir(parents=True, exist_ok=True)
         atomic_write_text(
             INIT_STATE_FILE,
             json.dumps(self.model_dump(mode="json"), separators=(",", ":")) + "\n",
             encoding="utf-8",
-            private=True,
         )
 
 
 async def _no_op(state: InitState, assume_yes: bool) -> None:
     return
-
-
-@dataclass(frozen=True)
-class _PackageSpec:
-    install: list[str]
-    refresh: list[str] | None
-    yes_install: list[str]
-    yes_refresh: list[str]
-    noninteractive_env: dict[str, str] | None
-
-
-_INSTALL_SPECS: dict[str, _PackageSpec] = {
-    "apt": _PackageSpec(
-        install=["apt-get", "install"],
-        refresh=["apt-get", "update"],
-        yes_install=["-y"],
-        yes_refresh=[],
-        noninteractive_env={"DEBIAN_FRONTEND": "noninteractive"},
-    ),
-    "dnf": _PackageSpec(
-        install=["dnf", "install"],
-        refresh=["dnf", "makecache"],
-        yes_install=["-y"],
-        yes_refresh=["-y"],
-        noninteractive_env=None,
-    ),
-    "yum": _PackageSpec(
-        install=["yum", "install"],
-        refresh=["yum", "makecache"],
-        yes_install=["-y"],
-        yes_refresh=["-y"],
-        noninteractive_env=None,
-    ),
-    "zypper": _PackageSpec(
-        install=["zypper", "install"],
-        refresh=["zypper", "refresh"],
-        yes_install=["--non-interactive"],
-        yes_refresh=["--non-interactive"],
-        noninteractive_env=None,
-    ),
-    "pacman": _PackageSpec(
-        install=["pacman", "-S"],
-        refresh=["pacman", "-Sy"],
-        yes_install=["--noconfirm"],
-        yes_refresh=[],
-        noninteractive_env=None,
-    ),
-    "apk": _PackageSpec(
-        install=["apk", "add"],
-        refresh=["apk", "update"],
-        yes_install=["--no-interactive"],
-        yes_refresh=["--no-interactive"],
-        noninteractive_env=None,
-    ),
-}
-
-
-def _resolve_package_spec(state: InitState) -> tuple[str, _PackageSpec]:
-    if state.package_manager is None:
-        raise ValueError("package manager was not initialized in install state")
-    spec = _INSTALL_SPECS.get(state.package_manager)
-    if spec is None:
-        supported = ", ".join(sorted(_INSTALL_SPECS))
-        raise ValueError(
-            f"unsupported package manager '{state.package_manager}' (supported: {supported})"
-        )
-    if not shutil.which(spec.install[0]):
-        raise FileNotFoundError(
-            f"package manager '{state.package_manager}' not found: {spec.install[0]}"
-        )
-    if spec.refresh is not None and not shutil.which(spec.refresh[0]):
-        raise FileNotFoundError(f"refresh command not found: {spec.refresh[0]}")
-    return state.package_manager, spec
-
-
-async def _install_packages(
-    state: InitState,
-    *,
-    packages: list[str],
-    assume_yes: bool,
-) -> None:
-    if os.name != "posix":
-        raise OSError("package manager operations require a POSIX system.")
-    manager, spec = _resolve_package_spec(state)
-    if os.geteuid() != 0 and not can_escalate():
-        raise PermissionError(
-            f"package installation using '{manager}' requires root privileges; "
-            "sudo not available."
-        )
-
-    # set noninteractive env vars if needed
-    env: dict[str, str] | None = None
-    if assume_yes and spec.noninteractive_env:
-        env = os.environ.copy()
-        env.update(spec.noninteractive_env)
-
-    # refresh package lists if supported and requested
-    if spec.refresh is not None:
-        cmd = spec.refresh.copy()
-        if assume_yes:
-            cmd.extend(spec.yes_refresh)
-        await run(sudo(cmd, non_interactive=assume_yes), env=env)
-
-    # install requested packages
-    cmd = spec.install.copy()
-    if assume_yes:
-        cmd.extend(spec.yes_install)
-    cmd.extend(packages)
-    await run(sudo(cmd, non_interactive=assume_yes), env=env)
 
 
 def _read_os_release() -> dict[str, str]:
@@ -289,33 +204,30 @@ async def _detect_platform(state: InitState, assume_yes: bool) -> None:
     state.distro_codename = codename
 
 
-def _digest_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as f:
-        while True:
-            chunk = f.read(1024 * 1024)  # 1 MiB chunks
-            if not chunk:
-                break
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-async def _install_prereq_utils(state: InitState, assume_yes: bool) -> None:
+async def _install_prereqs(state: InitState, assume_yes: bool) -> None:
     missing: list[str] = []
     if not shutil.which("tar"):
         missing.append("tar")
     if not shutil.which("curl") and not shutil.which("wget"):
         missing.append("curl")
+    if not shutil.which("setfacl") or not shutil.which("getfacl"):
+        missing.append("acl")
     if not missing:
         return
 
+    if state.package_manager is None:
+        raise OSError("Package manager is not detected; cannot install prerequisites.")
     if not confirm(
         "Bertrand requires extra host tools to install pinned nerdctl artifacts "
         f"({', '.join(missing)}).  Install now (requires sudo)?\n[y/N] ",
         assume_yes=assume_yes,
     ):
         raise OSError("Installation declined by user.")
-    await _install_packages(state, packages=missing, assume_yes=assume_yes)
+    await install_packages(
+        package_manager=state.package_manager,
+        packages=missing,
+        assume_yes=assume_yes,
+    )
 
     if not shutil.which("tar"):
         raise OSError("Installation completed, but 'tar' is still not available.")
@@ -323,346 +235,104 @@ async def _install_prereq_utils(state: InitState, assume_yes: bool) -> None:
         raise OSError(
             "Installation completed, but neither 'curl' nor 'wget' is available."
         )
-
-
-async def _download_file(url: str, target: Path) -> None:
-    target.parent.mkdir(parents=True, exist_ok=True)
-    if shutil.which("curl"):
-        await run(
-            [
-                "curl",
-                "-fL",
-                "--retry",
-                "3",
-                "--output",
-                str(target),
-                url,
-            ]
-        )
-        return
-    if shutil.which("wget"):
-        await run(
-            [
-                "wget",
-                "--tries=3",
-                "--output-document",
-                str(target),
-                url,
-            ]
-        )
-        return
-    raise OSError("No download tool available (expected curl or wget).")
-
-
-async def _snap_ready() -> bool:
-    if not shutil.which("snap"):
-        return False
-    result = await run(
-        ["snap", "--version"],
-        check=False,
-        capture_output=True,
-    )
-    return result.returncode == 0
-
-
-async def _microk8s_installed() -> bool:
-    if not await _snap_ready():
-        return False
-    result = await run(
-        ["snap", "list", "microk8s"],
-        check=False,
-        capture_output=True
-    )
-    return result.returncode == 0
-
-
-async def _microk8s_ready() -> bool:
-    if not await _microk8s_installed() or not shutil.which("microk8s"):
-        return False
-    result = await run(
-        ["microk8s", "--help"],
-        check=False,
-        capture_output=True,
-    )
-    return result.returncode == 0
-
-
-async def _install_microk8s(state: InitState, assume_yes: bool) -> None:
-    if await _microk8s_ready():
-        return
-    if state.distro_id not in {"ubuntu", "debian"} or state.package_manager != "apt":
-        distro = state.distro_id or "unknown"
-        manager = state.package_manager or "unknown"
+    if not shutil.which("setfacl") or not shutil.which("getfacl"):
         raise OSError(
-            "MicroK8s bootstrap currently supports Ubuntu/Debian hosts using apt "
-            f"(detected distro={distro!r}, package_manager={manager!r})."
-        )
-
-    # install snapd if needed
-    if not await _snap_ready():
-        if not confirm(
-            "Bertrand requires 'snapd' to install MicroK8s.  Would you like to "
-            "install it now using apt (requires sudo)?\n"
-            "[y/N] ",
-            assume_yes=assume_yes,
-        ):
-            raise OSError("Installation declined by user.")
-        await _install_packages(
-            state,
-            packages=["snapd"],
-            assume_yes=assume_yes,
-        )
-        if not await _snap_ready():
-            raise OSError(
-                "Installation completed, but 'snap' is still not found.  Please "
-                "investigate the issue and ensure snapd is installed correctly."
-            )
-
-    # install/update microK8s
-    if not confirm(
-        "Bertrand requires MicroK8s as its runtime control plane.  Would you like to "
-        f"install/refresh MicroK8s now at channel '{MICROK8S_CHANNEL}' (requires sudo)?\n"
-        "[y/N] ",
-        assume_yes=assume_yes,
-    ):
-        raise OSError("Installation declined by user.")
-    if os.geteuid() != 0 and not can_escalate():
-        raise PermissionError(
-            "MicroK8s installation requires root privileges; sudo not available."
-        )
-    if await _microk8s_installed():
-        cmd = ["snap", "refresh", "microk8s", "--channel", MICROK8S_CHANNEL]
-    else:
-        cmd = [
-            "snap",
-            "install",
-            "microk8s",
-            "--classic",
-            "--channel",
-            MICROK8S_CHANNEL
-        ]
-    await run(sudo(cmd, non_interactive=assume_yes))
-
-    # confirm success
-    if not await _microk8s_ready():
-        raise OSError(
-            "MicroK8s installation completed, but the runtime is still not available.  "
-            "Please check `snap list microk8s` and `microk8s --help` for diagnostics."
+            "Installation completed, but ACL tooling is still unavailable "
+            "(`setfacl`/`getfacl`)."
         )
 
 
-def _microk8s_group_status(user: str) -> tuple[bool, bool]:
-    try:
-        group = grp.getgrnam(MICROK8S_GROUP)
-    except KeyError:
-        return False, False
-
-    try:
-        primary_gid = pwd.getpwnam(user).pw_gid
-    except KeyError:
-        primary_gid = None
-
-    configured = user in group.gr_mem or primary_gid == group.gr_gid
-    active = group.gr_gid in os.getgroups() or os.getegid() == group.gr_gid
-    return configured, active
-
-
-async def _add_to_microk8s_group(state: InitState, assume_yes: bool) -> None:
-    if not await _microk8s_installed():
-        raise OSError("MicroK8s must be installed before configuring socket access.")
+async def _bootstrap_state_dir(state: InitState, assume_yes: bool) -> None:
     if state.user is None:
-        raise ValueError("init state user is missing; run platform detection first.")
-
-    configured, active = _microk8s_group_status(state.user)
-    if configured and active:
-        return
-
-    # create group if it doesn't exist
-    if not configured:
-        if not confirm(
-            f"Bertrand needs user '{state.user}' in the '{MICROK8S_GROUP}' "
-            "group to access the MicroK8s containerd socket.  Add this membership now "
-            "(requires sudo)?\n[y/N] ",
-            assume_yes=assume_yes,
-        ):
-            raise OSError("MicroK8s group membership update declined by user.")
-        if os.geteuid() != 0 and not can_escalate():
-            raise PermissionError(
-                "Updating MicroK8s group membership requires root privileges; "
-                "sudo not available."
-            )
-        await run(
-            sudo(
-                ["usermod", "-a", "-G", MICROK8S_GROUP, state.user],
-                non_interactive=assume_yes,
-            )
-        )
-        configured, active = _microk8s_group_status(state.user)
-        if not configured:
-            raise OSError(
-                f"Failed to add user '{state.user}' to group '{MICROK8S_GROUP}'."
-            )
-
-    # if we had to update group membership, then the user needs to log out and back in
-    # to finish setup
-    if not active:
-        print(
-            f"bertrand: added {state.user!r} to the {MICROK8S_GROUP!r} group, but "
-            f"sudo is still required in this session.  Run `newgrp {MICROK8S_GROUP}` "
-            "or log out and back in to pick up the new group privileges.",
-            file=sys.stderr
-        )
-
-
-def _managed_toolchain_ready() -> bool:
-    required = (
-        NERDCTL_BIN,
-        BUILDCTL_BIN,
-        BUILDKITD_BIN,
+        raise OSError("init state user is missing; rerun `bertrand init`.")
+    await ensure_bertrand_state(
+        user=state.user,
+        assume_yes=assume_yes,
+        timeout=None,
     )
-    return all(path.exists() for path in required)
+
+
+async def _install_ceph_runtime(state: InitState, assume_yes: bool) -> None:
+    if state.user is None:
+        raise OSError("init state user is missing; rerun `bertrand init`.")
+    if state.package_manager is None:
+        raise OSError("Package manager is not detected; cannot install Ceph runtime.")
+    if state.distro_id is None:
+        raise OSError("Distro ID is not detected; cannot install Ceph runtime.")
+
+    await install_microceph(
+        user=state.user,
+        package_manager=state.package_manager,
+        distro_id=state.distro_id,
+        assume_yes=assume_yes,
+    )
+
+
+async def _install_kube_runtime(state: InitState, assume_yes: bool) -> None:
+    if state.user is None:
+        raise OSError("init state user is missing; rerun `bertrand init`.")
+    if state.package_manager is None:
+        raise OSError("Package manager is not detected; cannot install Kubernetes runtime.")
+    if state.distro_id is None:
+        raise OSError("Distro ID is not detected; cannot install Kubernetes runtime.")
+
+    await install_microk8s(
+        package_manager=state.package_manager,
+        user=state.user,
+        distro_id=state.distro_id,
+        assume_yes=assume_yes,
+    )
 
 
 async def _install_nerdctl(state: InitState, assume_yes: bool) -> None:
-    if _managed_toolchain_ready():
-        return
-    if state.distro_id not in {"ubuntu", "debian"} or state.package_manager != "apt":
-        distro = state.distro_id or "unknown"
-        manager = state.package_manager or "unknown"
-        raise OSError(
-            "Pinned nerdctl bootstrap currently supports Ubuntu/Debian hosts using apt "
-            f"(detected distro={distro!r}, package_manager={manager!r})."
-        )
-
-    # confirm arch is supported and get checksum
-    arch = NORMALIZE_ARCH.get(platform.machine().strip().lower())
-    if not arch:
-        raise OSError(
-            "Unsupported CPU architecture for pinned nerdctl artifact: "
-            f"{platform.machine()!r} (supported: {sorted(NORMALIZE_ARCH)})"
-        )
-    archive_name = f"nerdctl-full-{NERDCTL_VERSION}-linux-{arch}.tar.gz"
-    archive_path = TOOLS_TMP_DIR / archive_name
-    archive_url = f"{NERDCTL_BASE_URL}/{archive_name}"
-    expected_sha = NERDCTL_CHECKSUM[arch]
-
-    # install prereq utils (targ, curl, etc.)
-    await _install_prereq_utils(state, assume_yes)
-
-    # download and verify pinned archive
-    TOOLS_TMP_DIR.mkdir(parents=True, exist_ok=True)
-    needs_download = True
-    if archive_path.exists() and _digest_file(archive_path) == expected_sha:
-        needs_download = False
-    if needs_download:
-        await _download_file(archive_url, archive_path)
-        actual_sha = _digest_file(archive_path)
-        if actual_sha != expected_sha:
-            try:
-                archive_path.unlink()
-            except OSError:
-                pass
-            raise OSError(
-                f"Checksum mismatch for {archive_name}: expected {expected_sha}, "
-                f"got {actual_sha}."
-            )
-
-    # extract archive to final location
-    TOOLS_DIR.mkdir(parents=True, exist_ok=True)
-    staged = TOOLS_DIR / f".nerdctl-{uuid.uuid4().hex}.tmp"
-    if staged.exists():
-        shutil.rmtree(staged, ignore_errors=True)
-    staged.mkdir(parents=True, exist_ok=True)
-    try:
-        await run(["tar", "-xzf", str(archive_path), "-C", str(staged)])
-        if not (staged / "bin" / "nerdctl").exists():
-            raise OSError(
-                "Pinned nerdctl archive extracted successfully, but expected binary "
-                f"was not found at {(staged / 'bin' / 'nerdctl')}."
-            )
-        if NERDCTL_INSTALL_DIR.exists():
-            shutil.rmtree(NERDCTL_INSTALL_DIR, ignore_errors=True)
-        staged.replace(NERDCTL_INSTALL_DIR)
-    finally:
-        if staged.exists():
-            shutil.rmtree(staged, ignore_errors=True)
-
-    # confirm success
-    if not _managed_toolchain_ready():
-        raise OSError(
-            "Managed nerdctl toolchain installation completed, but required binaries "
-            "are still missing."
-        )
+    await install_nerdctl()
 
 
-async def _runtime_ready(state: InitState) -> bool:
-    if state.user is None or not await _microk8s_ready():
-        return False
-
-    configured, active = _microk8s_group_status(state.user)
-    if not configured or not active or not _managed_toolchain_ready():
-        return False
-
-    nerdctl_result = await nerdctl(
-        ["info"],
-        check=False,
-        capture_output=True,
-    )
-    return nerdctl_result.returncode == 0
-
-
-async def _assert_runtime_ready(state: InitState, assume_yes: bool) -> None:
+async def _assert_installed(state: InitState, assume_yes: bool) -> None:
     if state.user is None:
-        raise ValueError("init state user is missing; rerun `bertrand init`.")
-    if not await _microk8s_ready():
+        raise OSError("init state user is missing; rerun `bertrand init`.")
+
+    bertrand_group = GroupStatus.get(state.user, BERTRAND_GROUP)
+    if not bertrand_group.configured:
         raise OSError(
-            "MicroK8s is installed but not usable after init bootstrap.  Run "
-            "`snap list microk8s` and `microk8s --help` for diagnostics."
+            f"user {state.user!r} is not in {BERTRAND_GROUP!r}.  Rerun `bertrand init` "
+            "to configure shared Bertrand host-state access."
+        )
+    if not bertrand_group.active:
+        raise OSError(
+            f"user {state.user!r} is in {BERTRAND_GROUP!r}, but the current session "
+            f"is not active in that group.  Run `newgrp {BERTRAND_GROUP}` or log out "
+            "and back in, then rerun `bertrand init`."
         )
 
-    configured, active = _microk8s_group_status(state.user)
-    if not configured:
-        raise OSError(
-            f"user '{state.user}' is not in '{MICROK8S_GROUP}'.  Rerun `bertrand init` "
-            "to configure MicroK8s containerd socket access."
-        )
-    if not active:
-        raise OSError(
-            f"user '{state.user}' was added to '{MICROK8S_GROUP}', but the current "
-            "session has not picked up the new group membership.  Log out and back in, "
-            "then rerun `bertrand init`."
-        )
-    if not _managed_toolchain_ready():
-        raise OSError(
-            "Managed nerdctl/BuildKit toolchain is incomplete.  Rerun `bertrand init`."
-        )
-
-    nerdctl_result = await nerdctl(
-        ["info"],
-        check=False,
-        capture_output=True,
-    )
-    if nerdctl_result.returncode != 0:
-        detail = nerdctl_result.stderr.strip() or nerdctl_result.stdout.strip()
-        raise OSError(
-            "Managed nerdctl command failed to access the MicroK8s containerd daemon."
-            f"{f' Details: {detail}' if detail else ''}"
-        )
+    await assert_microceph_installed(user=state.user)
+    await assert_microk8s_installed(user=state.user)
+    await assert_nerdctl_installed()
 
 
 INIT_STAGES: tuple[tuple[InitStage, Callable[[InitState, bool], Awaitable[None]]], ...] = (
     ("fresh", _no_op),
     ("detect_platform", _detect_platform),
-    ("install_microk8s", _install_microk8s),
-    ("add_to_microk8s_group", _add_to_microk8s_group),
+    ("install_prereqs", _install_prereqs),
+    ("bootstrap_state_dir", _bootstrap_state_dir),
+    ("install_ceph_runtime", _install_ceph_runtime),
+    ("install_kube_runtime", _install_kube_runtime),
     ("install_nerdctl", _install_nerdctl),
-    ("ready", _assert_runtime_ready),
+    ("installed", _assert_installed),
 )
 
 
 ############################
 ####    PROJECT INIT    ####
 ############################
+
+
+# TODO: This should start the microceph and microk8s runtimes before generating a
+# repository, since we need to place that repository into a safe MicroCeph volume to
+# ensure it's available across the cluster.
+
+
+# TODO: also, add a dataclass for the managed hooks
 
 
 MANAGED_HOOKS: tuple[tuple[str, str, bool], ...] = (
@@ -798,7 +468,6 @@ async def bertrand_init(
     *,
     enable: list[str],
     yes: bool,
-    timeout: float = TIMEOUT,
 ) -> None:
     """Initialize host prerequisites and optionally bootstrap an environment root.
 
@@ -817,11 +486,6 @@ async def bertrand_init(
         corresponding, unique `Resource` implementations.
     yes : bool
         Whether to auto-accept prompts during host bootstrap stages.
-    timeout : float
-        Timeout in seconds to wait when acquiring locks for the initialization target.
-        This applies to both the init lock for the host bootstrap stages and the
-        environment lock for rendering worktree resources.  It does not restrict the
-        runtime of either of these stages, only the time spent waiting to start them.
 
     Raises
     ------
@@ -836,24 +500,28 @@ async def bertrand_init(
             "initialize the project repository and enable resources within it."
         )
 
-    # install runtime control plane if needed
-    STATE_DIR.mkdir(parents=True, exist_ok=True)
-    async with Lock(INIT_LOCK, timeout=timeout, mode="local"):
+    # bootstrap runtime control plane if needed
+    async with Lock(INIT_LOCK, timeout=TIMEOUT, mode="local", privileges=INIT_LOCK_MODE):
         state = InitState.load()
         index = next(
             (i for i, (stage, _) in enumerate(INIT_STAGES) if stage == state.stage),
             0
         )
-        if index == len(INIT_STAGES) - 1 and not await _runtime_ready(state):
-            index = 0
-            state = InitState(version=INIT_STATE_VERSION)
-            state.dump()
+        if index == len(INIT_STAGES) - 1:
+            try:
+                await _assert_installed(state, yes)
+            except OSError:  # reported as finished, but runtime is not actually installed
+                index = 0
+                state = InitState(version=INIT_STATE_VERSION)
+                if InitState.backend_trustworthy():
+                    state.dump()
 
         # run any unfinished stages
         for stage, step in INIT_STAGES[index:]:
             await step(state, yes)
             state.stage = stage
-            state.dump()
+            if InitState.backend_trustworthy():
+                state.dump()
 
     # if no project root is provided, then we're done
     if path is None:
@@ -878,85 +546,5 @@ async def bertrand_init(
             resources.add(r)
 
     # initialize git repository if needed, then install/update git hooks within it
-    repo, _ = await _init_repository(path, resources=resources, timeout=timeout)
+    repo, _ = await _init_repository(path, resources=resources, timeout=TIMEOUT)
     await _install_git_hooks(repo)
-
-
-# TODO: devolve these helpers to a separate helper.py module, or refactor to make them
-# obsolete.
-
-
-async def _cli_containers(
-    env: Environment,
-    tag: str | None,
-    *,
-    status: tuple[str, ...] = ("created", "paused", "restarting", "running"),
-    timeout: float,
-) -> list[str]:
-    """Resolve container IDs for an environment/tag scope and status filter."""
-    if tag is None:
-        labels = {ENV_ID_ENV: env.id}
-    elif tag not in env.images:
-        raise KeyError(f"no image found for tag: '{tag}'")
-    else:
-        labels = {ENV_ID_ENV: env.id, IMAGE_TAG_ENV: tag}
-    return await nerdctl_ids(
-        "container",
-        labels=labels,
-        status=status,
-        timeout=timeout
-    )
-
-
-async def _cli_images(
-    env: Environment,
-    tag: str | None,
-    *,
-    timeout: float,
-) -> list[str]:
-    """Resolve image IDs for an environment/tag scope."""
-    if tag is None:
-        labels = {ENV_ID_ENV: env.id}
-    else:
-        labels = {ENV_ID_ENV: env.id, IMAGE_TAG_ENV: tag}
-    return await nerdctl_ids("image", labels=labels, timeout=timeout)
-
-
-def _recover_spec(worktree: Path, workload: str | None, tag: str | None) -> str:
-    """Render a compact CLI target spec for diagnostics."""
-    spec = str(worktree)
-    if workload:
-        spec += f"@{workload}"
-    if tag:
-        spec += f":{tag}"
-    return spec
-
-
-def _parse_output_format(value: str, *, allow_id: bool) -> tuple[str, str | None]:
-    """Parse `bertrand ls/monitor` format strings into mode + template."""
-    raw = value.strip()
-    if not raw:
-        raise ValueError("format must not be empty")
-
-    mode, _, tail = raw.partition(" ")
-    mode = mode.strip().lower()
-    template = tail.strip() or None
-    if mode == "table":
-        return mode, template
-    if template is not None:
-        raise ValueError(
-            "only table format accepts a template (expected: 'table' or "
-            "'table <template>')"
-        )
-    if mode == "json":
-        return mode, None
-    if mode == "id":
-        if not allow_id:
-            raise ValueError("format 'id' is only supported for the 'ls' command")
-        return mode, None
-
-    if allow_id:
-        expected = "id, json, table, or table <template>"
-    else:
-        expected = "json, table, or table <template>"
-    raise ValueError(f"invalid format: {raw!r} (expected {expected})")

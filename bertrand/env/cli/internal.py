@@ -1,4 +1,4 @@
-"""Bertrand's in-container CLI entry point."""
+"""Bertrand's in-container CLI endpoints."""
 from __future__ import annotations
 
 import argparse
