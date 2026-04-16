@@ -1356,16 +1356,26 @@ async def _install_snap(
         return
     if not confirm(
         f"Bertrand requires 'snapd' to install {component}.  Would you like to "
-        "install it now using apt (requires sudo)?\n[y/N] ",
+        f"install it now using {package_manager} (requires sudo)?\n[y/N] ",
         assume_yes=assume_yes,
     ):
         raise PermissionError("Installation declined by user.")
 
-    await install_packages(package_manager, ["snapd"], assume_yes=assume_yes)
+    try:
+        await install_packages(package_manager, ["snapd"], assume_yes=assume_yes)
+    except (CommandError, TimeoutExpired, OSError, ValueError, PermissionError) as err:
+        raise OSError(
+            f"Bertrand uses a snap-based runtime path for {component}, but failed to "
+            f"install 'snapd' via {package_manager!r}.  This host is unsupported for "
+            "the current Bertrand runtime installation model unless snapd can be "
+            "installed and made operational.\n"
+            f"{err}"
+        ) from err
     if not await _snap_ready():
         raise OSError(
-            "Installation completed, but 'snap' is still not found.  Please "
-            "investigate the issue and ensure snapd is installed correctly."
+            "Bertrand uses a snap-based runtime path, but 'snap' is still unavailable "
+            "after installing snapd.  This host is unsupported for the current runtime "
+            "installation model unless snapd can be installed and made operational."
         )
 
 
@@ -1416,7 +1426,8 @@ async def install_microceph(
     distro_id: str,
     assume_yes: bool,
 ) -> None:
-    """Install/refresh MicroCeph and configure runtime group access.
+    """Install/refresh MicroCeph and configure runtime group access using Bertrand's
+    snap-based best-effort Linux runtime path.
 
     Parameters
     ----------
@@ -1425,17 +1436,12 @@ async def install_microceph(
     user : str
         The host username to configure for runtime group access.
     distro_id : str
-        The host Linux distribution ID, used for validating compatibility and selecting
-        installation steps.
+        The host Linux distribution ID, used for diagnostics when running in
+        non-Ubuntu/Debian best-effort mode.
     assume_yes : bool
         Whether to automatically answer yes to all prompts during installation, for
         non-interactive use.
     """
-    if distro_id not in {"ubuntu", "debian"} or package_manager != "apt":
-        raise OSError(
-            f"MicroCeph bootstrap currently supports Ubuntu/Debian hosts using apt "
-            f"(detected distro={distro_id!r}, package_manager={package_manager!r})."
-        )
     group = GroupStatus.get(user, MICROCEPH_GROUP)
 
     # short-circuit if MicroCeph is already installed and ready
@@ -1488,7 +1494,8 @@ async def install_microk8s(
     distro_id: str,
     assume_yes: bool,
 ) -> None:
-    """Install/refresh MicroK8s and configure runtime group access.
+    """Install/refresh MicroK8s and configure runtime group access using Bertrand's
+    snap-based best-effort Linux runtime path.
 
     Parameters
     ----------
@@ -1497,17 +1504,12 @@ async def install_microk8s(
     user : str
         The host username to configure for runtime group access.
     distro_id : str
-        The host Linux distribution ID, used for validating compatibility and selecting
-        installation steps.
+        The host Linux distribution ID, used for diagnostics when running in
+        non-Ubuntu/Debian best-effort mode.
     assume_yes : bool
         Whether to automatically answer yes to all prompts during installation, for
         non-interactive use.
     """
-    if distro_id not in {"ubuntu", "debian"} or package_manager != "apt":
-        raise OSError(
-            f"MicroK8s bootstrap currently supports Ubuntu/Debian hosts using apt "
-            f"(detected distro={distro_id!r}, package_manager={package_manager!r})."
-        )
     group = GroupStatus.get(user, MICROK8S_GROUP)
 
     # short-circuit if MicroK8s is already installed and ready
@@ -2280,27 +2282,21 @@ async def start_microceph(*, timeout: float | None) -> None:
                 return
 
             # bootstrap cluster if not already initialized
-            bootstrap = await run(
-                ["microceph", "cluster", "bootstrap"],
-                check=False,
-                capture_output=True,
-                timeout=None if timeout is None else deadline - loop.time(),
-            )
-            if bootstrap.returncode != 0:
-                stdout = bootstrap.stdout.strip() if bootstrap.stdout else ""
-                stderr = bootstrap.stderr.strip() if bootstrap.stderr else ""
-                out = "\n".join((stdout, stderr)).lower()
+            try:
+                await run(
+                    ["microceph", "cluster", "bootstrap"],
+                    capture_output=True,
+                    timeout=None if timeout is None else deadline - loop.time(),
+                )
+            except CommandError as err:
+                out = f"{err.stdout}\n{err.stderr}".strip().lower()
                 if not (
-                    "already initialized" in out
-                    or "already exists" in out
-                    or "already part of a cluster" in out
-                    or "already bootstrapped" in out
+                    "already initialized" in out or
+                    "already exists" in out or
+                    "already part of a cluster" in out or
+                    "already bootstrapped" in out
                 ):
-                    detail = "\n".join(line for line in (stdout, stderr) if line)
-                    raise OSError(
-                        "Failed to bootstrap MicroCeph cluster."
-                        f"{f' Details: {detail}' if detail else ''}"
-                    )
+                    raise OSError(f"failed to bootstrap MicroCeph cluster:\n{err}") from err
 
             # poll cluster readiness after bootstrap/startup
             timestamp = loop.time()

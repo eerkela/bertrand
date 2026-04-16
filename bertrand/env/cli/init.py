@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import grp
 import json
+import os
 import platform
 import shutil
 import subprocess
@@ -30,6 +31,7 @@ from ..run import (
     assert_microk8s_installed,
     assert_nerdctl_installed,
     atomic_write_text,
+    can_escalate,
     confirm,
     ensure_bertrand_state,
     install_microceph,
@@ -54,6 +56,66 @@ INIT_LOCK = Path("/tmp/bertrand-init.lock")
 INIT_LOCK_MODE = 0o666
 INIT_STATE_FILE = STATE_DIR / "init.state.json"
 INIT_STATE_VERSION: int = 1
+INIT_PREREQS = {
+    "apt": {
+        "tar": "tar",
+        "curl": "curl",
+        "getfacl": "acl",
+        "setfacl": "acl",
+        "groupadd": "passwd",
+        "usermod": "passwd",
+        "install": "coreutils",
+    },
+    "dnf": {
+        "tar": "tar",
+        "curl": "curl",
+        "acl": "acl",
+        "groupadd": "shadow-utils",
+        "usermod": "shadow-utils",
+        "install": "coreutils",
+    },
+    "yum": {
+        "tar": "tar",
+        "curl": "curl",
+        "acl": "acl",
+        "groupadd": "shadow-utils",
+        "usermod": "shadow-utils",
+        "install": "coreutils",
+    },
+    "zypper": {
+        "tar": "tar",
+        "curl": "curl",
+        "acl": "acl",
+        "groupadd": "shadow",
+        "usermod": "shadow",
+        "install": "coreutils",
+    },
+    "pacman": {
+        "tar": "tar",
+        "curl": "curl",
+        "acl": "acl",
+        "groupadd": "shadow",
+        "usermod": "shadow",
+        "install": "coreutils",
+    },
+    "apk": {
+        "tar": "tar",
+        "curl": "curl",
+        "acl": "acl",
+        "groupadd": "shadow",
+        "usermod": "shadow",
+        "install": "coreutils",
+    },
+}
+INIT_CHECK_PREREQS = (
+    ("tar", ("tar",)),
+    ("curl/wget", ("curl", "wget")),
+    ("getfacl", ("getfacl",)),
+    ("setfacl", ("setfacl",)),
+    ("groupadd", ("groupadd",)),
+    ("usermod", ("usermod",)),
+    ("install", ("install",)),
+)
 
 
 type InitStage = Literal[
@@ -205,40 +267,61 @@ async def _detect_platform(state: InitState, assume_yes: bool) -> None:
 
 
 async def _install_prereqs(state: InitState, assume_yes: bool) -> None:
-    missing: list[str] = []
-    if not shutil.which("tar"):
-        missing.append("tar")
-    if not shutil.which("curl") and not shutil.which("wget"):
-        missing.append("curl")
-    if not shutil.which("setfacl") or not shutil.which("getfacl"):
-        missing.append("acl")
+    # fail fast if no escalation path is available for package installs
+    if os.geteuid() != 0 and not can_escalate():
+        raise PermissionError(
+            "Bertrand requires root escalation to install host bootstrap dependencies, "
+            "but neither 'sudo' nor 'doas' is available.  Install one of these tools "
+            "or manually rerun `bertrand init` as root."
+        )
+    if state.package_manager is None:
+        raise OSError("Package manager is not detected; cannot install prerequisites.")
+
+    # package mapping for bootstrap-required host tools across supported package managers
+    packages = INIT_PREREQS.get(state.package_manager)
+    if packages is None:
+        raise OSError(
+            f"Unsupported package manager for prerequisite installation: "
+            f"{state.package_manager!r}"
+        )
+
+    # detect missing required bootstrap tools
+    missing: set[str] = set()
+    for tool, package in packages.items():
+        if package in missing:
+            continue
+        if tool == "curl/wget":
+            if shutil.which("curl") or shutil.which("wget"):
+                continue
+        elif shutil.which(tool):
+            continue
+        missing.add(package)
     if not missing:
         return
 
-    if state.package_manager is None:
-        raise OSError("Package manager is not detected; cannot install prerequisites.")
+    # install missing tools
     if not confirm(
-        "Bertrand requires extra host tools to install pinned nerdctl artifacts "
-        f"({', '.join(missing)}).  Install now (requires sudo)?\n[y/N] ",
+        "Bertrand requires host bootstrap tools to configure runtime "
+        f"dependencies and shared state (missing: {', '.join(missing)}).  Would "
+        "you like Bertrand to install missing packages now (requires sudo)?\n[y/N] ",
         assume_yes=assume_yes,
     ):
-        raise OSError("Installation declined by user.")
+        raise PermissionError("Installation declined by user.")
     await install_packages(
         package_manager=state.package_manager,
-        packages=missing,
+        packages=sorted(missing),
         assume_yes=assume_yes,
     )
 
-    if not shutil.which("tar"):
-        raise OSError("Installation completed, but 'tar' is still not available.")
-    if not shutil.which("curl") and not shutil.which("wget"):
+    # verify all required tools after installation
+    unresolved: list[str] = [
+        name for name, cmd in INIT_CHECK_PREREQS
+        if not any(shutil.which(c) for c in cmd)
+    ]
+    if unresolved:
         raise OSError(
-            "Installation completed, but neither 'curl' nor 'wget' is available."
-        )
-    if not shutil.which("setfacl") or not shutil.which("getfacl"):
-        raise OSError(
-            "Installation completed, but ACL tooling is still unavailable "
-            "(`setfacl`/`getfacl`)."
+            "Prerequisite installation completed, but required host bootstrap tools "
+            f"are still missing: {', '.join(unresolved)}."
         )
 
 
