@@ -546,6 +546,12 @@ async def _install_git_hooks(repo: GitRepository) -> None:
 ###################
 
 
+# TODO: I should make sure that any user group (microk8s, microceph, bertrand) is
+# not just configured, but active for the current user, and warn consistently, outside
+# of the main init loop, so that it always warns on every init until those privileges
+# are activated.
+
+
 async def bertrand_init(
     path: Path | None,
     *,

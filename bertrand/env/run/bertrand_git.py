@@ -28,6 +28,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import threading
 import uuid
 from collections.abc import Mapping, Sequence
@@ -1104,6 +1105,8 @@ STATE_DIR = Path("/var/lib/bertrand")
 BIN_DIR = STATE_DIR / "bin"
 CACHE_DIR = STATE_DIR / "cache"
 RUN_DIR = STATE_DIR / "run"
+RUN_TMPFS_MOUNT_UNIT_NAME = "bertrand-run.mount"
+RUN_TMPFS_MOUNT_UNIT_PATH = Path("/etc/systemd/system") / RUN_TMPFS_MOUNT_UNIT_NAME
 TOOLS_DIR = STATE_DIR / "tools"
 NERDCTL_INSTALL_DIR = TOOLS_DIR / f"nerdctl-{NERDCTL_VERSION}"
 NERDCTL_BIN = NERDCTL_INSTALL_DIR / "bin" / "nerdctl"
@@ -1139,6 +1142,46 @@ def _state_root_configured(group_gid: int) -> bool:
     )
 
 
+async def _configure_state_acl(
+    *,
+    deadline: float | None,
+    assume_yes: bool
+) -> None:
+    loop = asyncio.get_event_loop()
+    if not shutil.which("setfacl") or not shutil.which("getfacl"):
+        raise OSError(
+            "Strict Bertrand state ACL setup requires `setfacl` and `getfacl`, "
+            "but they were not found.  Install the host `acl` package and rerun "
+            "`bertrand init`."
+        )
+    for cmd in (
+        ["setfacl", "-m", f"group:{BERTRAND_GROUP}:rwx", str(STATE_DIR)],
+        ["setfacl", "-m", "mask::rwx", str(STATE_DIR)],
+        ["setfacl", "-d", "-m", f"group:{BERTRAND_GROUP}:rwx", str(STATE_DIR)],
+        ["setfacl", "-d", "-m", "mask::rwx", str(STATE_DIR)],
+    ):
+        await run(
+            sudo(cmd, non_interactive=assume_yes),
+            timeout=None if deadline is None else deadline - loop.time()
+        )
+
+    # ensure mountpoint directory exists before enabling the managed tmpfs unit
+    await run(
+        sudo(
+            [
+                "install",
+                "-d",
+                "-m", f"{STATE_DIR_MODE:o}",
+                "-o", "root",
+                "-g", BERTRAND_GROUP,
+                str(RUN_DIR),
+            ],
+            non_interactive=assume_yes,
+        ),
+        timeout=None if deadline is None else deadline - loop.time(),
+    )
+
+
 async def _state_acl_configured(group: str) -> bool:
     if not shutil.which("getfacl"):
         return False
@@ -1153,6 +1196,123 @@ async def _state_acl_configured(group: str) -> bool:
     access = f"group:{group}:rwx"
     default = f"default:group:{group}:rwx"
     return access in lines and default in lines
+
+
+def _run_mount_unit_text(*, group_gid: int) -> str:
+    return "\n".join((
+        "[Unit]",
+        "Description=Bertrand tmpfs runtime state",
+        "After=local-fs.target",
+        "",
+        "[Mount]",
+        "What=tmpfs",
+        f"Where={RUN_DIR}",
+        "Type=tmpfs",
+        f"Options=mode={STATE_DIR_MODE:o},uid=0,gid={group_gid},nosuid,nodev,noexec",
+        "",
+        "[Install]",
+        "WantedBy=multi-user.target",
+        "",
+    ))
+
+
+def _run_mount_unit_configured(*, group_gid: int) -> bool:
+    try:
+        current = RUN_TMPFS_MOUNT_UNIT_PATH.read_text(encoding="utf-8")
+        return current == _run_mount_unit_text(group_gid=group_gid)
+    except OSError:
+        return False
+
+
+def _run_dir_tmpfs_mounted() -> bool:
+    mountinfo = ROOT_DIR / "proc" / "self" / "mountinfo"
+    try:
+        lines = mountinfo.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return False
+    needle = os.path.normpath(str(RUN_DIR))
+    for line in lines:
+        parts = line.strip().split()
+        if len(parts) < 10:
+            continue
+        try:
+            sep = parts.index("-")
+        except ValueError:
+            continue
+        if sep + 2 >= len(parts):
+            continue
+        mount_point = (
+            parts[4]
+            .replace("\\040", " ")
+            .replace("\\011", "\t")
+            .replace("\\012", "\n")
+            .replace("\\134", "\\")
+        )
+        if os.path.normpath(mount_point) == needle:
+            return parts[sep + 1] == "tmpfs"
+    return False
+
+
+async def _configure_run_tmpfs_mount(
+    *,
+    group_gid: int,
+    assume_yes: bool,
+    timeout: float | None,
+) -> None:
+    if not shutil.which("systemctl"):
+        raise OSError(
+            "Bertrand requires systemd (`systemctl`) to manage the runtime tmpfs "
+            f"mount at {RUN_DIR}."
+        )
+    loop = asyncio.get_event_loop()
+    deadline = 0.0 if timeout is None else loop.time() + timeout
+
+    # atomically create unit file
+    fd: int | None = None
+    temp_unit: Path | None = None
+    try:
+        fd, name = tempfile.mkstemp(prefix="bertrand-run-mount.", suffix=".mount")
+        temp_unit = Path(name)
+        os.write(fd, _run_mount_unit_text(group_gid=group_gid).encode("utf-8"))
+        os.fsync(fd)
+        os.close(fd)
+        fd = None
+
+        # install unit with correct permissions for systemd access
+        await run(
+            sudo(
+                [
+                    "install",
+                    "-m", "0644",
+                    "-o", "root",
+                    "-g", "root",
+                    str(temp_unit),
+                    str(RUN_TMPFS_MOUNT_UNIT_PATH),
+                ],
+                non_interactive=assume_yes,
+            ),
+            timeout=None if timeout is None else deadline - loop.time(),
+        )
+
+    # unconditionally remove temp file
+    finally:
+        if fd is not None:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        if temp_unit is not None:
+            temp_unit.unlink(missing_ok=True)
+
+    # enable and start unit
+    for cmd in (
+        ["systemctl", "daemon-reload"],
+        ["systemctl", "enable", "--now", RUN_TMPFS_MOUNT_UNIT_NAME],
+    ):
+        await run(
+            sudo(cmd, non_interactive=assume_yes),
+            timeout=None if timeout is None else deadline - loop.time(),
+        )
 
 
 async def ensure_bertrand_group(
@@ -1256,9 +1416,13 @@ async def ensure_bertrand_state(
 
     Raises
     ------
+    PermissionError
+        If configuration is required, but the user declines elevation or no escalation
+        path is available.
     OSError
-        If the host is not POSIX-compliant, or if the shared group cannot be created
-        or accessed, or if the shared state directories cannot be configured with the
+        If the host is not POSIX-compliant, if shared state root configuration fails,
+        if strict ACL configuration fails, or if the tmpfs submount at `RUN_DIR` cannot
+        be converged and verified.
     """
     if os.name != "posix":
         raise OSError("Bertrand state bootstrap requires a POSIX host.")
@@ -1270,15 +1434,17 @@ async def ensure_bertrand_state(
         timeout=None if timeout is None else deadline - loop.time(),
         assume_yes=assume_yes,
     )
-    configure = (
+    if (
         not _state_root_configured(group_gid=group_info.gr_gid) or
-        not await _state_acl_configured(group=BERTRAND_GROUP)
-    )
-    if configure:
+        not await _state_acl_configured(group=BERTRAND_GROUP) or
+        not _run_mount_unit_configured(group_gid=group_info.gr_gid) or
+        not _run_dir_tmpfs_mounted()
+    ):
         if not confirm(
             "Bertrand requires shared host state under "
             f"{STATE_DIR} with root-owned {BERTRAND_GROUP!r} access and strict ACL "
-            "inheritance.  Configure it now (requires sudo)?\n[y/N] ",
+            f"inheritance, with a tmpfs runtime mount at {RUN_DIR}.  Configure it "
+            "now (requires sudo)?\n[y/N] ",
             assume_yes=assume_yes,
         ):
             raise PermissionError("Bertrand shared-state bootstrap declined by user.")
@@ -1304,22 +1470,17 @@ async def ensure_bertrand_state(
 
         # configure ACLs to allow child paths to inherit group access without needing
         # to be individually configured
-        if not shutil.which("setfacl") or not shutil.which("getfacl"):
-            raise OSError(
-                "Strict Bertrand state ACL setup requires `setfacl` and `getfacl`, "
-                "but they were not found.  Install the host `acl` package and rerun "
-                "`bertrand init`."
-            )
-        for cmd in (
-            ["setfacl", "-m", f"group:{BERTRAND_GROUP}:rwx", str(STATE_DIR)],
-            ["setfacl", "-m", "mask::rwx", str(STATE_DIR)],
-            ["setfacl", "-d", "-m", f"group:{BERTRAND_GROUP}:rwx", str(STATE_DIR)],
-            ["setfacl", "-d", "-m", "mask::rwx", str(STATE_DIR)],
-        ):
-            await run(
-                sudo(cmd, non_interactive=assume_yes),
-                timeout=None if timeout is None else deadline - loop.time()
-            )
+        await _configure_state_acl(
+            deadline=None if timeout is None else deadline,
+            assume_yes=assume_yes,
+        )
+
+        # configure and activate tmpfs mount for runtime state
+        await _configure_run_tmpfs_mount(
+            group_gid=group_info.gr_gid,
+            assume_yes=assume_yes,
+            timeout=None if timeout is None else deadline - loop.time(),
+        )
 
     # confirm required layout
     if not _state_root_configured(group_gid=group_info.gr_gid):
@@ -1328,6 +1489,16 @@ async def ensure_bertrand_state(
         raise OSError(
             f"Failed to configure strict ACL inheritance for shared Bertrand state: "
             f"{STATE_DIR}"
+        )
+    if not _run_mount_unit_configured(group_gid=group_info.gr_gid):
+        raise OSError(
+            "Failed to install Bertrand systemd tmpfs mount unit for runtime state: "
+            f"{RUN_TMPFS_MOUNT_UNIT_PATH}"
+        )
+    if not _run_dir_tmpfs_mounted():
+        raise OSError(
+            f"Failed to activate Bertrand tmpfs runtime mount at {RUN_DIR}.  Check "
+            f"`systemctl status {RUN_TMPFS_MOUNT_UNIT_NAME}` for diagnostics."
         )
 
     # activate bertrand group access for user
@@ -1788,6 +1959,88 @@ async def kubectl(
     )
 
 
+async def ceph(
+    argv: list[str],
+    *,
+    check: bool = True,
+    capture_output: bool | None = False,
+    input: str | None = None,
+    timeout: float | None = None,
+    attempts: int = 1,
+    delay: float = 0.1,
+    cwd: Path | None = None,
+    env: Mapping[str, str] | None = None,
+) -> CompletedProcess:
+    """Invoke the MicroCeph-backed Ceph CLI (`microceph.ceph`).
+
+    Parameters
+    ----------
+    argv : list[str]
+        The Ceph subcommand to run, plus arguments, minus the `microceph.ceph`
+        prefix itself.
+    check : bool, optional
+        Whether to raise a `CommandError` if the command fails (default is True).  If
+        false, then any errors will be ignored.
+    capture_output : bool | None, optional
+        If true, then all output will be redirected to the returned `CompletedProcess`
+        or `CommandError`, and excluded from the inherited stdout/stderr streams.  If
+        false (the default), then the opposite is the case, and the returned
+        `CompletedProcess` or `CommandError` will not include any captured output.  If
+        None, then output will be "tee'd" to both the console and the returned objects
+        simultaneously.  Note that teeing output in this way may break TTY behavior for
+        some commands, and is not recommended for interactive use.
+    input : str | None, optional
+        Input to send to the command's stdin (default is None).
+    timeout : float | None, optional
+        An optional timeout in seconds to wait for the command to complete before
+        raising a `TimeoutExpired` exception.  Default is None, which means to wait
+        indefinitely.  If zero or negative, a `TimeoutExpired` exception will be raised
+        immediately.  Note that this does not reset between `attempts`, so the total
+        time spent on retries counts against the timeout.
+    attempts : int, optional
+        The total number of times to attempt the command.  Defaults to 1, which means
+        no retries.  If greater than 1, then any command that exits with a nonzero
+        exit code will be re-run after a short delay, up to the specified number
+        of times in total.
+    delay : float, optional
+        The delay in seconds to wait between retries when `attempts` is greater than 1.
+        Default is 0.1 seconds.  Must be non-negative.
+    cwd : Path | None, optional
+        An optional working directory to run the command in.  If None (the default),
+        then the current working directory will be used.
+    env : Mapping[str, str] | None, optional
+        An optional environment dictionary to use for the command.  If None (the
+        default), then the current process's environment will be used.
+
+    Returns
+    -------
+    CompletedProcess
+        The completed process result.
+
+    Raises
+    ------
+    CommandError
+        If the command fails and `check` is True.
+    TimeoutExpired
+        If the command does not complete within the specified timeout.
+    OSError
+        If we failed to open the subprocess or its output streams.
+    """
+    cmd = ["microceph.ceph"]
+    cmd.extend(argv)
+    return await run(
+        cmd,
+        check=check,
+        capture_output=capture_output,
+        input=input,
+        timeout=timeout,
+        attempts=attempts,
+        delay=delay,
+        cwd=cwd,
+        env=env,
+    )
+
+
 async def buildctl(
     argv: list[str],
     *,
@@ -2229,11 +2482,21 @@ async def start_buildkit(*, timeout: float | None) -> None:
 
 
 async def _microceph_cluster_ready(*, timeout: float | None) -> bool:
-    return (await run(
+    loop = asyncio.get_running_loop()
+    deadline = 0.0 if timeout is None else loop.time() + timeout
+    result = await run(
         ["microceph", "status"],
         check=False,
         capture_output=True,
-        timeout=timeout,
+        timeout=None if timeout is None else deadline - loop.time(),
+    )
+    if result.returncode != 0 or not shutil.which("microceph.ceph"):
+        return False
+    return (await run(
+        ["microceph.ceph", "status", "--format", "json"],
+        check=False,
+        capture_output=True,
+        timeout=None if timeout is None else deadline - loop.time(),
     )).returncode == 0
 
 
@@ -2926,7 +3189,9 @@ class Lock:
     path : Path
         The path used to derive lock identity and resources.  In local mode, this is
         the lock file path.  In cluster mode, this path is hashed into a stable lease
-        name.
+        name, and nothing will be written on the local filesystem.  Using a standard,
+        exclusive path location means that the same lock can be configured for either
+        mode without changing any other parameters.
     timeout : float
         The maximum number of seconds to wait for the lock to be acquired before
         raising a `TimeoutError`.  Note that due to the shared lock instances across
