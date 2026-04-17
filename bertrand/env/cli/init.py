@@ -410,9 +410,9 @@ INIT_STAGES: tuple[tuple[InitStage, Callable[[InitState, bool], Awaitable[None]]
 ############################
 
 
-# TODO: This should start the microceph and microk8s runtimes before generating a
-# repository, since we need to place that repository into a safe MicroCeph volume to
-# ensure it's available across the cluster.
+# TODO: This should start the microceph and microk8s runtimes, then invoke
+# `run.link_kube_ceph()`, before generating a repository.  That orchestration pass is
+# intentionally deferred until the Ceph mount integration is revisited.
 
 
 # TODO: also, add a dataclass for the managed hooks

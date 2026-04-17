@@ -1119,6 +1119,7 @@ BUILDKIT_LOG_FILE = RUN_DIR / "buildkitd.log"
 BUILDKIT_LOCK_FILE = RUN_DIR / "buildkitd.lock"
 KUBE_LOCK_FILE = RUN_DIR / "microk8s.lock"
 CEPH_LOCK_FILE = RUN_DIR / "microceph.lock"
+KUBE_CEPH_LINK_LOCK_FILE = RUN_DIR / "kube-ceph-link.lock"
 NERDCTL_REQUIRED_PATHS = (
     NERDCTL_BIN,
     BUILDCTL_BIN,
@@ -2704,6 +2705,174 @@ async def start_microk8s(*, timeout: float | None) -> None:
             "ensure proper setup and group membership.\n"
             f"{err}"
         ) from err
+
+
+async def _ceph_csi_storage_classes(*, timeout: float | None) -> list[str]:
+    # get all storage classes available for PVC requests
+    try:
+        result = await kubectl(
+            ["get", "storageclass", "-o", "json"],
+            capture_output=True,
+            timeout=timeout,
+        )
+    except CommandError as err:
+        raise OSError(
+            "failed to query Kubernetes storage classes while linking MicroK8s to "
+            f"MicroCeph:\n{err}"
+        ) from err
+    try:
+        payload = json.loads(result.stdout)
+    except (TypeError, ValueError) as err:
+        raise OSError(
+            "failed to parse storage class payload while linking MicroK8s to "
+            f"MicroCeph: {err}"
+        ) from err
+    items = payload.get("items")
+    if not isinstance(items, list):
+        raise OSError(
+            "storage class payload is malformed: expected top-level 'items' list"
+        )
+
+    # filter for unique storage classes with rook-ceph provisioner
+    out: list[str] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        metadata = item.get("metadata")
+        name = ""
+        if isinstance(metadata, dict):
+            raw_name = metadata.get("name")
+            if isinstance(raw_name, str):
+                name = raw_name.strip()
+        provisioner = item.get("provisioner")
+        if (
+            not isinstance(provisioner, str) or
+            "csi.ceph.com" not in provisioner.strip().lower()
+        ):
+            continue
+        if name:
+            out.append(name)
+
+    # deterministic ordering
+    return sorted(set(out))
+
+
+async def link_kube_ceph(*, timeout: float | None) -> None:
+    """Converge MicroK8s rook-ceph integration with the local MicroCeph cluster.
+
+    Parameters
+    ----------
+    timeout : float | None
+        Maximum time in seconds to wait for linkage convergence.  If None, wait
+        indefinitely.
+
+    Raises
+    ------
+    OSError
+        If runtimes are not available, addon/link subcommands fail, or no Ceph CSI
+        storage classes materialize after linkage.
+    TimeoutError
+        If linkage does not converge before the timeout.
+    """
+    if timeout is not None and timeout < 0:
+        raise TimeoutError("kube-ceph link timeout must be non-negative.")
+    if not shutil.which("microk8s"):
+        raise OSError(
+            "MicroK8s CLI was not found in PATH.  Run `bertrand init` to install the "
+            "managed runtime."
+        )
+    if not shutil.which("microceph"):
+        raise OSError(
+            "MicroCeph CLI was not found in PATH.  Run `bertrand init` to install the "
+            "managed runtime."
+        )
+
+
+    loop = asyncio.get_running_loop()
+    deadline = 0.0 if timeout is None else loop.time() + timeout
+    async with Lock(
+        KUBE_CEPH_LINK_LOCK_FILE,
+        timeout=TIMEOUT if timeout is None else deadline - loop.time(),
+        mode="local",
+    ):
+        # recheck cluster preconditions and fast path under lock
+        if not await _microk8s_cluster_ready(
+            timeout=None if timeout is None else deadline - loop.time()
+        ):
+            raise OSError(
+                "MicroK8s must be started before linking to MicroCeph.  Run "
+                "`start_microk8s(...)` first."
+            )
+        if not await _microceph_cluster_ready(
+            timeout=None if timeout is None else deadline - loop.time()
+        ):
+            raise OSError(
+                "MicroCeph must be started before linking to MicroK8s.  Run "
+                "`start_microceph(...)` first."
+            )
+        if await _ceph_csi_storage_classes(
+            timeout=None if timeout is None else deadline - loop.time()
+        ):
+            return  # already linked
+
+        # converge rook-ceph addon state
+        try:
+            await run(
+                ["microk8s", "enable", "rook-ceph"],
+                capture_output=True,
+                timeout=None if timeout is None else deadline - loop.time(),
+            )
+        except CommandError as err:
+            detail = f"{err.stdout}\n{err.stderr}".lower()
+            if not (
+                "already enabled" in detail or
+                "is already enabled" in detail or
+                "already exists" in detail or
+                "alreadyexist" in detail
+            ):
+                raise OSError(
+                    "failed to enable MicroK8s rook-ceph addon while linking to "
+                    f"MicroCeph:\n{err}"
+                ) from err
+
+        # converge external Ceph import state
+        try:
+            await run(
+                ["microk8s", "connect-external-ceph"],
+                capture_output=True,
+                timeout=None if timeout is None else deadline - loop.time(),
+            )
+        except CommandError as err:
+            detail = f"{err.stdout}\n{err.stderr}".lower()
+            if not (
+                "already connected" in detail or
+                "already imported" in detail or
+                "already configured" in detail or
+                "already exists" in detail or
+                "alreadyexist" in detail
+            ):
+                raise OSError(
+                    "failed to link MicroK8s rook-ceph to the external MicroCeph "
+                    "cluster.  Check `microk8s connect-external-ceph --help` and "
+                    f"runtime status for diagnostics.\n{err}"
+                ) from err
+
+        # wait for Ceph CSI classes to materialize
+        timestamp = loop.time()
+        while timeout is None or timestamp <= deadline:
+            if await _ceph_csi_storage_classes(
+                timeout=None if timeout is None else deadline - timestamp
+            ):
+                return
+            await asyncio.sleep(0.1)
+            timestamp = loop.time()
+
+    # timed out waiting for storage classes to materialize after linkage
+    raise OSError(
+        "MicroK8s rook-ceph linkage completed, but no Ceph CSI storage classes were "
+        "discovered.  Check `microk8s kubectl get storageclass` and "
+        "`microk8s connect-external-ceph --help` for diagnostics."
+    )
 
 
 #####################

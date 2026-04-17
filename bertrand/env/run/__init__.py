@@ -79,6 +79,7 @@ from .bertrand_git import (
     install_nerdctl,
     install_packages,
     kubectl,
+    link_kube_ceph,
     mkdir_private,
     nerdctl,
     nerdctl_ids,
