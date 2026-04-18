@@ -3,9 +3,11 @@ and caching mechanisms.
 """
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 from dataclasses import dataclass
+from pathlib import PosixPath
 from typing import Self
 
 from ..config import RESOURCE_NAMES, Bertrand, Config, Resource
@@ -21,9 +23,7 @@ from .helper import PersistentVolume, PersistentVolumeClaim, Pod, StorageClass
 CACHE_VOLUME_ENV: str = "BERTRAND_CACHE_VOLUME"
 REPO_VOLUME_ENV: str = "BERTRAND_REPO_VOLUME"
 DEFAULT_VOLUME_SIZE = "16Mi"
-
-
-# TODO: timeout should permit indefinite waits here
+REPO_STORAGE_CLASS_PREFERENCES: tuple[str, ...] = ("cephfs", "rook-cephfs")
 
 
 @dataclass(frozen=True)
@@ -183,7 +183,7 @@ class CacheVolume:
         tag: str,
         env_id: str,
         *,
-        timeout: float,
+        timeout: float | None,
         storage_class: str,
         size_request: str,
     ) -> None:
@@ -197,8 +197,8 @@ class CacheVolume:
             Active build tag used to resolve requested cache volumes.
         env_id : str
             Canonical environment UUID used for managed PVC labels.
-        timeout : float
-            Maximum runtime command timeout in seconds.
+        timeout : float | None
+            Maximum runtime command timeout in seconds.  If None, wait indefinitely.
         storage_class : str
             StorageClass name used for claim creation and validation.
         size_request : str
@@ -225,7 +225,7 @@ class CacheVolume:
         call `start_microk8s()`.
         """
         env_id = _check_uuid(env_id)
-        if timeout < 0:
+        if timeout is not None and timeout <= 0:
             raise TimeoutError("timeout must be non-negative")
         storage_class = storage_class.strip()
         if not storage_class:
@@ -233,12 +233,14 @@ class CacheVolume:
         size_request = size_request.strip()
         if not size_request:
             raise ValueError("size request cannot be empty")
+        loop = asyncio.get_running_loop()
+        deadline = None if timeout is None else loop.time() + timeout
 
         # get PVC storage class and assert that it supports volume expansion for
         # dynamic resizing
         storage = await StorageClass.get(
             storage_class,
-            timeout=timeout
+            timeout=None if deadline is None else deadline - loop.time()
         )
         if storage is None:
             raise OSError(
@@ -256,7 +258,7 @@ class CacheVolume:
             pvc = await PersistentVolumeClaim.get(
                 volume.name,
                 namespace=BERTRAND_NAMESPACE,
-                timeout=timeout
+                timeout=None if deadline is None else deadline - loop.time()
             )
             if pvc is None:  # create a new volume with the requested size
                 pvc = await PersistentVolumeClaim.create({
@@ -280,7 +282,7 @@ class CacheVolume:
                             },
                         },
                     },
-                }, timeout=timeout)
+                }, timeout=None if deadline is None else deadline - loop.time())
 
             cls._assert_managed_cache(
                 pvc,
@@ -291,10 +293,13 @@ class CacheVolume:
             )
 
             # try to grow existing volume if necessary
-            await pvc.grow(size_request, timeout=timeout)
+            await pvc.grow(
+                size_request,
+                timeout=None if deadline is None else deadline - loop.time()
+            )
 
     @classmethod
-    async def gc(cls, config: Config, env_id: str, *, timeout: float) -> None:
+    async def gc(cls, config: Config, env_id: str, *, timeout: float | None) -> None:
         """Garbage-collect stale labeled cache PVCs for an environment.
 
         Parameters
@@ -303,8 +308,8 @@ class CacheVolume:
             Active configuration context.
         env_id : str
             Canonical environment UUID used to scope labeled cache PVCs.
-        timeout : float
-            Maximum runtime command timeout in seconds.
+        timeout : float | None
+            Maximum runtime command timeout in seconds.  If None, wait indefinitely.
 
         Returns
         -------
@@ -326,8 +331,11 @@ class CacheVolume:
         currently referenced by active pods are never deleted.
         """
         env_id = _check_uuid(env_id)
-        if timeout < 0:
+        if timeout is not None and timeout <= 0:
             raise TimeoutError("timeout must be non-negative")
+
+        loop = asyncio.get_running_loop()
+        deadline = None if timeout is None else loop.time() + timeout
         bertrand = config.get(Bertrand)
         if bertrand is None:
             return
@@ -336,7 +344,7 @@ class CacheVolume:
         actual = (await PersistentVolumeClaim.List.get(
             {BERTRAND_ENV: "1", CACHE_VOLUME_ENV: "1", ENV_ID_ENV: env_id},
             namespace=BERTRAND_NAMESPACE,
-            timeout=timeout,
+            timeout=None if deadline is None else deadline - loop.time(),
         )).items
         if not actual:
             return  # no volumes to clean up
@@ -347,7 +355,7 @@ class CacheVolume:
             for pod in (await Pod.List.get(
                 {BERTRAND_ENV: "1", ENV_ID_ENV: env_id},
                 namespace=BERTRAND_NAMESPACE,
-                timeout=timeout,
+                timeout=None if deadline is None else deadline - loop.time(),
             )).items if (
                 not pod.metadata.deletionTimestamp and
                 pod.status.phase in {"Pending", "Running", "Unknown"}
@@ -379,7 +387,7 @@ class CacheVolume:
                 storage_class=None,
                 require_rwo=False,
             )
-            await pvc.delete(timeout=timeout)
+            await pvc.delete(timeout=None if deadline is None else deadline - loop.time())
 
 
 @dataclass(frozen=True)
@@ -456,8 +464,7 @@ class RepoVolume:
         cls,
         repo_id: str,
         *,
-        timeout: float,
-        storage_class: str,
+        timeout: float | None,
         size_request: str,
     ) -> Self:
         """Ensure a deterministic, cluster-wide RWX claim exists for one repository
@@ -467,10 +474,8 @@ class RepoVolume:
         ----------
         repo_id : str
             Stable, caller-provided repository identity used for deterministic claim names.
-        timeout : float
-            Maximum runtime command timeout in seconds.
-        storage_class : str
-            StorageClass name used for claim creation and validation.
+        timeout : float | None
+            Maximum runtime command timeout in seconds.  If None, wait indefinitely.
         size_request : str
             Requested storage quantity for initial creation and resize checks.
 
@@ -482,35 +487,42 @@ class RepoVolume:
         Raises
         ------
         ValueError
-            If `repo_id`, `storage_class`, or `size_request` is empty, or if the PVC
-            payload fails validation checks.
+            If `repo_id` or `size_request` is empty, or if the PVC payload fails
+            validation checks.
         TimeoutError
             If `timeout` is negative or if any kube API calls exceed the timeout.
         CommandError
             If any kube API call fails.
         """
         repo_id = _check_uuid(repo_id)
-        if timeout < 0:
+        if timeout is not None and timeout <= 0:
             raise TimeoutError("timeout must be non-negative")
-        storage_class = storage_class.strip()
-        if not storage_class:
-            raise ValueError("storage class cannot be empty")
         size_request = size_request.strip()
         if not size_request:
             raise ValueError("size request cannot be empty")
         claim_name = cls._kube_name(repo_id)
+        loop = asyncio.get_running_loop()
+        deadline = None if timeout is None else loop.time() + timeout
 
-        # get PVC storage class and assert that it supports volume expansion for
-        # dynamic resizing
-        storage = await StorageClass.get(
-            storage_class,
-            timeout=timeout
-        )
-        if storage is None:
-            raise OSError(
-                f"required storage class {storage_class!r} is not available; repository "
-                "volume provisioning cannot proceed"
+        # select the preferred CephFS storage class in deterministic order
+        storage_class: str | None = None
+        storage: StorageClass | None = None
+        for candidate in REPO_STORAGE_CLASS_PREFERENCES:
+            storage = await StorageClass.get(
+                candidate,
+                timeout=None if deadline is None else deadline - loop.time()
             )
+            if storage is not None:
+                storage_class = candidate
+                break
+        if storage_class is None or storage is None:
+            preferred = ", ".join(repr(name) for name in REPO_STORAGE_CLASS_PREFERENCES)
+            raise OSError(
+                "required CephFS storage class is not available; expected one of "
+                f"{preferred}.  Ensure MicroK8s is linked to MicroCeph."
+            )
+
+        # assert that the selected class supports dynamic resizing and CephFS CSI
         if not storage.allowVolumeExpansion:
             raise OSError(
                 f"storage class {storage_class!r} must set allowVolumeExpansion=true "
@@ -522,15 +534,15 @@ class RepoVolume:
                 f"storage class {storage_class!r} uses provisioner "
                 f"{storage.provisioner!r}, but Bertrand repository volumes require a "
                 "CephFS CSI provisioner (for example 'rook-ceph.cephfs.csi.ceph.com').  "
-                "Ensure MicroK8s is linked to MicroCeph and pass the CephFS storage "
-                "class name."
+                "Ensure MicroK8s is linked to MicroCeph and that the preferred "
+                "CephFS storage class is configured correctly."
             )
 
         # get existing PVC or create a new one if missing
         pvc = await PersistentVolumeClaim.get(
             claim_name,
             namespace=BERTRAND_NAMESPACE,
-            timeout=timeout,
+            timeout=None if deadline is None else deadline - loop.time(),
         )
         if pvc is None:
             pvc = await PersistentVolumeClaim.create({
@@ -554,7 +566,7 @@ class RepoVolume:
                         },
                     },
                 },
-            }, timeout=timeout)
+            }, timeout=None if deadline is None else deadline - loop.time())
 
         cls._assert_managed_pvc(
             pvc,
@@ -565,19 +577,22 @@ class RepoVolume:
         )
 
         # try to grow existing volume if necessary
-        await pvc.grow(size_request, timeout=timeout)
+        await pvc.grow(
+            size_request,
+            timeout=None if deadline is None else deadline - loop.time()
+        )
         return cls(repo_id=repo_id, pvc=pvc)
 
     @classmethod
-    async def get(cls, repo_id: str | None, *, timeout: float) -> list[Self]:
+    async def get(cls, repo_id: str | None, *, timeout: float | None) -> list[Self]:
         """List repository volumes currently present in the cluster.
 
         Parameters
         ----------
         repo_id : str | None
             If provided, filter the repository volumes by this specific repository ID.
-        timeout : float
-            Maximum runtime command timeout in seconds.
+        timeout : float | None
+            Maximum runtime command timeout in seconds.  If None, wait indefinitely.
 
         Returns
         -------
@@ -589,7 +604,7 @@ class RepoVolume:
         if repo_id is not None:
             repo_id = _check_uuid(repo_id)
             labels[REPO_ID_ENV] = repo_id
-        if timeout < 0:
+        if timeout is not None and timeout <= 0:
             raise TimeoutError("timeout must be non-negative")
 
         # get matching PVCs
@@ -619,25 +634,27 @@ class RepoVolume:
         out.sort(key=lambda m: (m.repo_id, m.pvc.metadata.name))
         return out
 
-    async def delete(self, *, timeout: float, force: bool) -> None:
+    async def delete(self, *, timeout: float | None, force: bool) -> None:
         """Delete this repository volume claim from the cluster.
 
         Parameters
         ----------
-        timeout : float
-            Maximum runtime command timeout in seconds.
+        timeout : float | None
+            Maximum runtime command timeout in seconds.  If None, wait indefinitely.
         force : bool
             If True, delete the claim even if it is currently referenced by active pods.
         """
-        if timeout < 0:
+        if timeout is not None and timeout <= 0:
             raise TimeoutError("timeout must be non-negative")
+        loop = asyncio.get_running_loop()
+        deadline = None if timeout is None else loop.time() + timeout
 
         # check for running pods associated with this pvc, unless overridden
         if not force:
             pods = (await Pod.List.get(
                 {BERTRAND_ENV: "1", REPO_ID_ENV: self.repo_id},
                 namespace=BERTRAND_NAMESPACE,
-                timeout=timeout,
+                timeout=None if deadline is None else deadline - loop.time(),
             )).items
             active = {
                 volume.persistentVolumeClaim.claimName
@@ -655,51 +672,83 @@ class RepoVolume:
                 )
 
         # delete the volume, ignoring race conditions
-        await self.pvc.delete(timeout=timeout)
+        await self.pvc.delete(timeout=None if deadline is None else deadline - loop.time())
 
-    async def resolve_ceph_path(self, *, timeout: float) -> str:
+    async def resolve_ceph_path(self, *, timeout: float | None) -> PosixPath:
         """Resolve this repo claim's CephFS path from its bound PVC/PV metadata.
 
         Parameters
         ----------
-        timeout : float
-            Maximum runtime command timeout in seconds.
+        timeout : float | None
+            Maximum runtime command timeout in seconds.  If None, wait indefinitely.
+
+        Returns
+        -------
+        PosixPath
+            Absolute path to the claimed CephFS subvolume within the Ceph filesystem,
+            as specified in the PV's CSI volume attributes.
         """
-        volume_name = (self.pvc.spec.volumeName or "").strip()
-        if not volume_name:
+        if timeout is not None and timeout <= 0:
+            raise TimeoutError("timeout must be non-negative")
+        name = self.pvc.metadata.name
+        namespace = self.pvc.metadata.namespace
+        if not name:
+            raise OSError("cannot resolve Ceph path for PVC with missing metadata.name")
+        if not namespace:
             raise OSError(
-                f"repository claim {self.pvc.metadata.name!r} is not bound to a "
-                "PersistentVolume"
+                f"cannot resolve Ceph path for PVC {name!r} with missing "
+                "metadata.namespace"
             )
-        volume = await PersistentVolume.get(
-            volume_name,
-            timeout=timeout
-        )
-        if volume is None:
-            raise OSError(
-                f"repository claim {self.pvc.metadata.name!r} references missing "
-                f"PersistentVolume {volume_name!r}"
+
+        # wait until the PV is bound with the expected CSI attributes
+        loop = asyncio.get_running_loop()
+        deadline = None if timeout is None else loop.time() + timeout
+        while True:
+            pvc = await PersistentVolumeClaim.get(
+                name,
+                namespace=namespace,
+                timeout=None if deadline is None else deadline - loop.time(),
             )
-        csi = volume.spec.csi
-        if csi is None:
-            raise OSError(
-                f"PersistentVolume {volume_name!r} is not CSI-backed and cannot be "
-                "mounted as a Ceph repository volume"
-            )
-        driver = csi.driver.lower()
-        if "cephfs" not in driver:
-            raise OSError(
-                f"PersistentVolume {volume_name!r} uses CSI driver {csi.driver!r}, "
-                "expected a CephFS driver"
-            )
-        for key in ("subvolumePath", "rootPath", "path"):
-            value = csi.volumeAttributes.get(key, "").strip()
-            if not value:
+            if pvc is None:  # pvc died during resolution
+                raise OSError(
+                    f"repository claim {name!r} disappeared during Ceph path "
+                    "resolution"
+                )
+            volume_name = (pvc.spec.volumeName or "").strip()
+            if not volume_name:  # volumeName hasn't been populated yet, wait and retry
+                await asyncio.sleep(0.1)
                 continue
-            if not value.startswith("/"):
-                value = f"/{value}"
-            return value
-        raise OSError(
-            "repository PersistentVolume is missing CephFS path attributes (expected "
-            "one of 'subvolumePath', 'rootPath', or 'path')"
-        )
+
+            # wait until the PV is available
+            volume = await PersistentVolume.get(
+                volume_name,
+                timeout=None if deadline is None else deadline - loop.time()
+            )
+            if volume is None:
+                await asyncio.sleep(0.1)
+                continue
+
+            # confirm CSI driver with cephfs backend
+            csi = volume.spec.csi
+            if csi is None:
+                raise OSError(
+                    f"PersistentVolume {volume_name!r} is not CSI-backed and cannot be "
+                    "mounted as a Ceph repository volume"
+                )
+            driver = csi.driver.lower()
+            if "cephfs" not in driver:
+                raise OSError(
+                    f"PersistentVolume {volume_name!r} uses CSI driver {csi.driver!r}, "
+                    "expected a CephFS driver"
+                )
+            for key in ("subvolumePath", "rootPath", "path"):
+                value = csi.volumeAttributes.get(key, "").strip()
+                if not value:
+                    continue
+                if not value.startswith("/"):
+                    value = f"/{value}"
+                return PosixPath(value)
+            raise OSError(
+                "repository PersistentVolume is missing CephFS path attributes "
+                "(expected one of 'subvolumePath', 'rootPath', or 'path')"
+            )

@@ -7,12 +7,16 @@ import os
 import platform
 from collections.abc import Sequence
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PosixPath
 from typing import Self
 
 from ..run import (
-    ROOT_DIR,
-    STATE_DIR,
+    HOST_MOUNTS,
+    REPO_ALIASES_EXT,
+    REPO_DIR,
+    REPO_LOCK_EXT,
+    REPO_MOUNT_EXT,
+    TIMEOUT,
     Lock,
     atomic_symlink,
     atomic_write_text,
@@ -30,11 +34,6 @@ if any("," in opt for opt in DEFAULT_REPO_MOUNT_OPTIONS):
     raise ValueError(
         "internal default repository mount options cannot contain comma separators"
     )
-REPO_MOUNT_ROOT = STATE_DIR / "repositories"
-REPO_MOUNT_REL = Path("mount")
-REPO_LOCK_REL = Path("lock")
-REPO_ALIASES_REL = Path("aliases.json")
-HOST_MOUNT_INFO = ROOT_DIR / "proc" / "self" / "mountinfo"
 
 
 @dataclass(frozen=True)
@@ -67,7 +66,7 @@ class MountInfo:
         # `/proc/self/mountinfo` is the kernel's canonical view of active mounts for
         # this process, so we parse it directly instead of shelling out.
         try:
-            lines = HOST_MOUNT_INFO.read_text(encoding="utf-8").splitlines()
+            lines = HOST_MOUNTS.read_text(encoding="utf-8").splitlines()
         except OSError as err:
             raise OSError(f"failed to inspect host mount table: {err}") from err
 
@@ -130,13 +129,19 @@ class RepoMount:
     ----------
     repo_id : str
         Stable repository identity used for deterministic host mount state paths.
-    ceph_path : str
-        Absolute CephFS path to mount for this repository identity.
+    ceph_path : PosixPath
+        Absolute CephFS path to mount for this repository identity within the Ceph
+        filesystem.
     """
     repo_id: str
-    ceph_path: str
+    ceph_path: PosixPath
 
-    def _assert_ceph_mount(self, mount: MountInfo, *, ceph_path: str | None = None) -> None:
+    def _assert_ceph_mount(
+        self,
+        mount: MountInfo,
+        *,
+        ceph_path: PosixPath | None = None
+    ) -> None:
         if mount.fs_type != "ceph":
             raise OSError(
                 f"repository mount target {mount.mount_point!r} is mounted with "
@@ -165,9 +170,9 @@ class RepoMount:
         return RepoMount._alias_path(target) == RepoMount._alias_path(mount_path)
 
     def _load_aliases(self) -> set[Path]:
-        root = REPO_MOUNT_ROOT / self.repo_id
-        mount_path = root / REPO_MOUNT_REL
-        path = root / REPO_ALIASES_REL
+        root = REPO_DIR / self.repo_id
+        mount_path = root / REPO_MOUNT_EXT
+        path = root / REPO_ALIASES_EXT
         if not path.exists():
             return set()
         if not path.is_file():
@@ -202,7 +207,7 @@ class RepoMount:
         return aliases
 
     def _write_aliases(self, aliases: set[Path]) -> None:
-        path = REPO_MOUNT_ROOT / self.repo_id / REPO_ALIASES_REL
+        path = REPO_DIR / self.repo_id / REPO_ALIASES_EXT
         try:
             text = json.dumps(
                 sorted(str(alias) for alias in aliases),
@@ -215,16 +220,11 @@ class RepoMount:
         except OSError as err:
             raise OSError(f"failed to write repository alias index file: {err}") from err
 
-    # TODO: try to automate away the `ceph_user`, `ceph_secretfile`, and `monitors`
-    # implementation details.  This file should be the only one that ever needs to
-    # interact with Ceph, and should do so end-to-end in a fully-automated way, with
-    # zero Ceph-related user input.
-
     async def mount(
         self,
         path: Path,
         *,
-        timeout: float,
+        timeout: float | None,
         monitors: Sequence[str],
         ceph_user: str,
         ceph_secretfile: Path,
@@ -239,9 +239,10 @@ class RepoMount:
             stored internally and not meant to be directly accessed by users.  Instead,
             the symlink can can be freely renamed, relocated, or removed without
             affecting the underlying Ceph volume.
-        timeout : float
+        timeout : float | None
             Maximum runtime command timeout in seconds for the entire mount operation,
-            including any necessary setup, validation, and retries.
+            including any necessary setup, validation, and retries.  If None, wait
+            indefinitely.
         monitors : Sequence[str]
             List of Ceph monitor endpoints to use for mounting.  Each endpoint should
             be a valid Ceph monitor address.
@@ -252,37 +253,13 @@ class RepoMount:
             Path to the Ceph secret file containing the authentication credentials for
             the specified Ceph user.  This file must exist and be a regular file, and
             it should have appropriate permissions to ensure security.
-
-        Raises
-        ------
-        OSError
-            If the platform is unsupported, or if the path already exists and is not
-            a symlink to the expected location, or if the Ceph mount fails to appear
-            in the host's mount table after a successful mount command, or any
-            filesystem operation fails.
-        TimeoutError
-            If `timeout` is negative.
-        ValueError
-            If `ceph_user` is empty or contains invalid characters, or if `monitors` is
-            empty or contains invalid endpoints, or if any alias paths in the existing
-            index file are invalid.
-        FileNotFoundError
-            If `ceph_secretfile` does not exist or is not a regular file, or if the
-            repository's alias index file exists but is not a regular file.
-        TypeError
-            If the repository's alias index file exists but does not contain a valid
-            JSON list of absolute paths, or if any item in the list is not a string.
-        CommandError
-            If the mount command fails.
-        TimeoutExpired
-            If the mount command exceeds the timeout.
         """
-        root = REPO_MOUNT_ROOT / self.repo_id
-        mount_path = root / REPO_MOUNT_REL
+        root = REPO_DIR / self.repo_id
+        mount_path = root / REPO_MOUNT_EXT
         ceph_path = self.ceph_path
         if os.name != "posix" or platform.system() != "Linux":
             raise OSError("repository mounts are only supported on Linux platforms")
-        if timeout < 0:
+        if timeout and timeout <= 0:
             raise TimeoutError("timeout must be non-negative")
         path = self._alias_path(path)
         if path.is_symlink() and not self._alias_targets_mount(path, mount_path):
@@ -310,11 +287,11 @@ class RepoMount:
 
         # use a local repository lock to prevent race conditions
         loop = asyncio.get_event_loop()
-        deadline = loop.time() + timeout
+        deadline = None if timeout is None else loop.time() + timeout
         root.mkdir(parents=True, exist_ok=True)
         async with Lock(
-            root / REPO_LOCK_REL,
-            timeout=deadline - loop.time(),
+            root / REPO_LOCK_EXT,
+            timeout=TIMEOUT if deadline is None else deadline - loop.time(),
             mode="local",
         ):
             # get or create the host mount for this repository claim
@@ -338,13 +315,13 @@ class RepoMount:
                         ]
                     ),
                     capture_output=True,
-                    timeout=deadline - loop.time(),
+                    timeout=None if deadline is None else deadline - loop.time(),
                 )
                 mounted = MountInfo.search(mount_path)
                 if mounted is None:
                     raise OSError(
                         f"repository mount target {mount_path!r} failed to appear in "
-                        f"{HOST_MOUNT_INFO} after successful mount subcommand"
+                        f"{HOST_MOUNTS} after successful mount subcommand"
                     )
 
             # validate ceph mount, then write public symlink
@@ -365,7 +342,7 @@ class RepoMount:
         self,
         path: Path,
         *,
-        timeout: float,
+        timeout: float | None,
         force: bool,
         lazy: bool,
     ) -> bool:
@@ -378,9 +355,10 @@ class RepoMount:
             Absolute path to a symlink produced by `mount()`.  If this is the last
             symlink alias to the underlying mount, the mount will be detached from the
             host.
-        timeout : float
+        timeout : float | None
             Maximum runtime command timeout in seconds for the entire unmount
-            operation, including any necessary setup, validation, and retries.
+            operation, including any necessary setup, validation, and retries.  If
+            None, wait indefinitely.
         force : bool
             If True, forcefully unmount the repository volume even if it is currently
             referenced by active processes.  This option is passed directly to the
@@ -399,43 +377,22 @@ class RepoMount:
             True if the underlying mount was detached from the host as a result of this
             operation, or False if the mount is still present (e.g. because other
             aliases still point to it).
-
-        Raises
-        ------
-        OSError
-            If the platform is unsupported, or if the path does not exist or is not a
-            symlink to the expected location, or the mount is busy, or if the Ceph
-            mount is still present in the host's mount table after a successful unmount
-            command, or any filesystem operation fails.
-        TimeoutError
-            If `timeout` is negative.
-        ValueError
-            If any alias paths in the existing index file are invalid.
-        FileNotFoundError
-            If the repository's alias index file exists but is not a regular file.
-        TypeError
-            If the repository's alias index file exists but does not contain a valid
-            JSON list of absolute paths, or if any item in the list is not a string.
-        CommandError
-            If the unmount command fails.
-        TimeoutExpired
-            If the unmount command exceeds the timeout.
         """
-        root = REPO_MOUNT_ROOT / self.repo_id
-        mount_path = root / REPO_MOUNT_REL
+        root = REPO_DIR / self.repo_id
+        mount_path = root / REPO_MOUNT_EXT
         if os.name != "posix" or platform.system() != "Linux":
             raise OSError("repository mounts are only supported on Linux platforms")
-        if timeout < 0:
+        if timeout is not None and timeout <= 0:
             raise TimeoutError("timeout must be non-negative")
         path = self._alias_path(path)
 
         # use a local repository lock to prevent race conditions
         loop = asyncio.get_event_loop()
-        deadline = loop.time() + timeout
+        deadline = None if timeout is None else loop.time() + timeout
         root.mkdir(parents=True, exist_ok=True)
         async with Lock(
-            root / REPO_LOCK_REL,
-            timeout=deadline - loop.time(),
+            root / REPO_LOCK_EXT,
+            timeout=TIMEOUT if deadline is None else deadline - loop.time(),
             mode="local",
         ):
             # remove symlink
@@ -466,7 +423,7 @@ class RepoMount:
                     sudo(["fuser", "-m", str(mount_path)]),
                     check=False,
                     capture_output=True,
-                    timeout=deadline - loop.time(),
+                    timeout=None if deadline is None else deadline - loop.time(),
                 )
                 if result.returncode == 0:
                     detail = (f"{result.stdout}\n{result.stderr}").strip()
@@ -493,7 +450,7 @@ class RepoMount:
             await run(
                 sudo(cmd),
                 capture_output=True,
-                timeout=deadline - loop.time(),
+                timeout=None if deadline is None else deadline - loop.time(),
             )
             if MountInfo.search(mount_path) is not None:
                 raise OSError(

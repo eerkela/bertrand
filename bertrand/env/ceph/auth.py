@@ -207,15 +207,15 @@ async def ensure_repo_credentials(
         ceph_path = PosixPath("/") / ceph_path
     entity = f"{REPO_ENTITY_PREFIX}{repo_id}"
     loop = asyncio.get_running_loop()
-    deadline = 0.0 if timeout is None else loop.time() + timeout
+    deadline = None if timeout is None else loop.time() + timeout
 
     # bootstrap the microceph cluster if it's not already running
-    await start_microceph(timeout=None if timeout is None else deadline - loop.time())
+    await start_microceph(timeout=None if deadline is None else deadline - loop.time())
 
     # `fs authorize` is idempotent and converges CephX caps for this identity.
     await ceph(
         ["fs", "authorize", REPO_FS_NAME, entity, str(ceph_path), "rw"],
-        timeout=None if timeout is None else deadline - loop.time(),
+        timeout=None if deadline is None else deadline - loop.time(),
         capture_output=True,
     )
 
@@ -223,7 +223,7 @@ async def ensure_repo_credentials(
     # exist.
     key = await _get_key(
         entity,
-        timeout=None if timeout is None else deadline - loop.time(),
+        timeout=None if deadline is None else deadline - loop.time(),
     )
     if key is None:
         raise OSError(
@@ -234,7 +234,7 @@ async def ensure_repo_credentials(
     # information to confidently connect to and mount the repository using the
     # returned credentials.
     monitors = await _get_monitors(
-        timeout=None if timeout is None else deadline - loop.time()
+        timeout=None if deadline is None else deadline - loop.time()
     )
     return RepoCredentials(
         repo_id=repo_id,
@@ -270,22 +270,22 @@ async def get_repo_credentials(
     repo_id = _check_uuid(repo_id)
     entity = f"{REPO_ENTITY_PREFIX}{repo_id}"
     loop = asyncio.get_running_loop()
-    deadline = 0.0 if timeout is None else loop.time() + timeout
+    deadline = None if timeout is None else loop.time() + timeout
 
     # bootstrap the microceph cluster if it's not already running
-    await start_microceph(timeout=None if timeout is None else deadline - loop.time())
+    await start_microceph(timeout=None if deadline is None else deadline - loop.time())
 
     # get repository credentials if they exist
     key = await _get_key(
         entity,
-        timeout=None if timeout is None else deadline - loop.time(),
+        timeout=None if deadline is None else deadline - loop.time(),
     )
     if key is None:
         return None
 
     # retrieve current monitor endpoints
     monitors = await _get_monitors(
-        timeout=None if timeout is None else deadline - loop.time()
+        timeout=None if deadline is None else deadline - loop.time()
     )
     return RepoCredentials(
         repo_id=repo_id,
@@ -329,14 +329,14 @@ async def delete_repo_credentials(repo_id: UUIDHex, *, timeout: float | None) ->
     repo_id = _check_uuid(repo_id)
     entity = f"{REPO_ENTITY_PREFIX}{repo_id}"
     loop = asyncio.get_running_loop()
-    deadline = 0.0 if timeout is None else loop.time() + timeout
+    deadline = None if timeout is None else loop.time() + timeout
 
     # bootstrap the microceph cluster if it's not already running
-    await start_microceph(timeout=None if timeout is None else deadline - loop.time())
+    await start_microceph(timeout=None if deadline is None else deadline - loop.time())
 
     result = await ceph(
         ["auth", "del", entity],
-        timeout=None if timeout is None else deadline - loop.time(),
+        timeout=None if deadline is None else deadline - loop.time(),
         check=False,
         capture_output=True,
     )

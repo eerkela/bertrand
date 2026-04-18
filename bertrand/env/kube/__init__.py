@@ -19,4 +19,4 @@ from .environment import Environment
 from .image import Image, ImageArgs, image_args, render_containerfile
 from .network import format_cpus, format_network
 from .registry import EnvironmentMetadata, Registry
-from .volume import CacheVolume, RepoVolume
+from .volume import DEFAULT_VOLUME_SIZE, CacheVolume, RepoVolume

@@ -1,6 +1,7 @@
 """Shared utility helpers for Bertrand's Kubernetes runtime assembly."""
 from __future__ import annotations
 
+import asyncio
 import base64
 import binascii
 import json
@@ -34,15 +35,15 @@ STORAGE_FACTORS: dict[str, Decimal] = {
 }
 
 
-async def enable_addon(name: str, *, timeout: float) -> None:
+async def enable_addon(name: str, *, timeout: float | None) -> None:
     """Enable a Kubernetes addon by name, if not already enabled.
 
     Parameters
     ----------
     name : str
         The name of the addon to enable.
-    timeout : float
-        Maximum runtime command timeout in seconds.
+    timeout : float | None
+        Maximum runtime command timeout in seconds.  If None, wait indefinitely.
 
     Raises
     ------
@@ -83,7 +84,13 @@ class KubeSecret(BaseModel):
         items: Annotated[list[KubeSecret], Field(default_factory=list)]
 
         @classmethod
-        async def get(cls, labels: dict[str, str], *, namespace: str, timeout: float) -> Self:
+        async def get(
+            cls,
+            labels: dict[str, str],
+            *,
+            namespace: str,
+            timeout: float | None
+        ) -> Self:
             """Load all Kubernetes Secrets and validate their structure.
 
             Parameters
@@ -92,9 +99,9 @@ class KubeSecret(BaseModel):
                 The labels to filter the Kubernetes Secrets by.
             namespace : str
                 The namespace to search within.
-            timeout : float
+            timeout : float | None
                 The maximum time to wait for the Kubernetes Secrets to be retrieved, in
-                seconds.
+                seconds.  If None, wait indefinitely.
 
             Returns
             -------
@@ -114,11 +121,21 @@ class KubeSecret(BaseModel):
                 selector = ",".join(f"{k}={v}" for k, v in labels.items())
                 cmd.extend(["-l", selector])
             cmd.extend(["-o", "json"])
-            result = await kubectl(cmd, capture_output=True, timeout=timeout)
+            result = await kubectl(
+                cmd,
+                capture_output=True,
+                timeout=timeout
+            )
             return cls.model_validate_json(result.stdout.strip())
 
     @classmethod
-    async def get(cls, name: KubeName, *, namespace: str, timeout: float) -> Self | None:
+    async def get(
+        cls,
+        name: KubeName,
+        *,
+        namespace: str,
+        timeout: float | None
+    ) -> Self | None:
         """Load a Kubernetes Secret by name and validate its structure.
 
         Parameters
@@ -128,9 +145,9 @@ class KubeSecret(BaseModel):
             `.` separators.
         namespace : str
             The namespace to search within.
-        timeout : float
+        timeout : float | None
             The maximum time to wait for the Kubernetes Secret to be retrieved, in
-            seconds.
+            seconds.  If None, wait indefinitely.
 
         Returns
         -------
@@ -205,16 +222,21 @@ class StorageClass(BaseModel):
         items: Annotated[list[StorageClass], Field(default_factory=list)]
 
         @classmethod
-        async def get(cls, labels: dict[str, str], *, timeout: float) -> StorageClass.List:
+        async def get(
+            cls,
+            labels: dict[str, str],
+            *,
+            timeout: float | None
+        ) -> StorageClass.List:
             """Load all Kubernetes StorageClasses and validate their structure.
 
             Parameters
             ----------
             labels : dict[str, str]
                 The labels to filter the Kubernetes StorageClasses by.
-            timeout : float
+            timeout : float | None
                 The maximum time to wait for the Kubernetes StorageClasses to be
-                retrieved, in seconds.
+                retrieved, in seconds.  If None, wait indefinitely.
 
             Returns
             -------
@@ -235,11 +257,15 @@ class StorageClass(BaseModel):
                 selector = ",".join(f"{k}={v}" for k, v in labels.items())
                 cmd.extend(["-l", selector])
             cmd.extend(["-o", "json"])
-            result = await kubectl(cmd, capture_output=True, timeout=timeout)
+            result = await kubectl(
+                cmd,
+                capture_output=True,
+                timeout=timeout
+            )
             return cls.model_validate_json(result.stdout.strip())
 
     @classmethod
-    async def get(cls, name: KubeName, timeout: float) -> Self | None:
+    async def get(cls, name: KubeName, timeout: float | None) -> Self | None:
         """Load a Kubernetes StorageClass by name and validate its structure.
 
         Parameters
@@ -247,9 +273,9 @@ class StorageClass(BaseModel):
         name : str
             The name of the Kubernetes StorageClass, which must be lowercase with `-`
             and/or `.` separators.
-        timeout : float
+        timeout : float | None
             The maximum time to wait for the Kubernetes StorageClass to be retrieved, in
-            seconds.
+            seconds.  If None, wait indefinitely.
 
         Returns
         -------
@@ -311,7 +337,13 @@ class PersistentVolumeClaim(BaseModel):
         items: Annotated[list[PersistentVolumeClaim], Field(default_factory=list)]
 
         @classmethod
-        async def get(cls, labels: dict[str, str], *, namespace: str, timeout: float) -> Self:
+        async def get(
+            cls,
+            labels: dict[str, str],
+            *,
+            namespace: str,
+            timeout: float | None,
+        ) -> Self:
             """Load all Kubernetes PersistentVolumeClaims and validate their structure.
 
             Parameters
@@ -322,9 +354,9 @@ class PersistentVolumeClaim(BaseModel):
                 labels with matching values will be included in the results.
             namespace : str
                 The namespace to search within.
-            timeout : float
+            timeout : float | None
                 The maximum time to wait for the Kubernetes PersistentVolumeClaims to
-                be retrieved, in seconds.
+                be retrieved, in seconds.  If None, wait indefinitely.
 
             Returns
             -------
@@ -345,11 +377,21 @@ class PersistentVolumeClaim(BaseModel):
                 selector = ",".join(f"{k}={v}" for k, v in labels.items())
                 cmd.extend(["-l", selector])
             cmd.extend(["-o", "json"])
-            result = await kubectl(cmd, capture_output=True, timeout=timeout)
+            result = await kubectl(
+                cmd,
+                capture_output=True,
+                timeout=timeout
+            )
             return cls.model_validate_json(result.stdout.strip())
 
     @classmethod
-    async def get(cls, name: KubeName, *, namespace: str, timeout: float) -> Self | None:
+    async def get(
+        cls,
+        name: KubeName,
+        *,
+        namespace: str,
+        timeout: float | None,
+    ) -> Self | None:
         """Load a Kubernetes PersistentVolumeClaim by name and validate its structure.
 
         Parameters
@@ -359,9 +401,9 @@ class PersistentVolumeClaim(BaseModel):
             with `-` and/or `.` separators.
         namespace : str
             The namespace to search within.
-        timeout : float
+        timeout : float | None
             The maximum time to wait for the Kubernetes PersistentVolumeClaim to be
-            retrieved, in seconds.
+            retrieved, in seconds.  If None, wait indefinitely.
 
         Returns
         -------
@@ -394,16 +436,21 @@ class PersistentVolumeClaim(BaseModel):
         return None
 
     @classmethod
-    async def create(cls, data: dict[str, JSONValue], *, timeout: float) -> Self:
+    async def create(
+        cls,
+        data: dict[str, JSONValue],
+        *,
+        timeout: float | None,
+    ) -> Self:
         """Create a Kubernetes PersistentVolumeClaim with the specified parameters.
 
         Parameters
         ----------
         data : dict[str, JSONValue]
             The payload to send to the Kubernetes PersistentVolumeClaim API.
-        timeout : float
+        timeout : float | None
             The maximum time to wait for the Kubernetes PersistentVolumeClaim to be
-            created, in seconds.
+            created, in seconds.  If None, wait indefinitely.
 
         Returns
         -------
@@ -427,12 +474,14 @@ class PersistentVolumeClaim(BaseModel):
             namespace = model.namespace
 
         # attempt to create PVC and parse returned payload
+        loop = asyncio.get_event_loop()
+        deadline = None if timeout is None else loop.time() + timeout
         try:
             payload = (await kubectl(
                 ["create", "-o", "json", "-f", "-"],
                 input=json.dumps(data, separators=(",", ":"), ensure_ascii=False),
                 capture_output=True,
-                timeout=timeout,
+                timeout=None if deadline is None else deadline - loop.time(),
             )).stdout.strip()
             if payload:
                 return cls.model_validate_json(payload)
@@ -450,7 +499,7 @@ class PersistentVolumeClaim(BaseModel):
             created = await cls.get(
                 name,
                 namespace=namespace,
-                timeout=timeout
+                timeout=None if deadline is None else deadline - loop.time()
             )
             if created is not None:
                 return created
@@ -458,7 +507,12 @@ class PersistentVolumeClaim(BaseModel):
             "kubernetes accepted PVC creation, but no valid PVC payload was returned"
         )
 
-    async def grow(self, requested: str, *, timeout: float) -> None:
+    async def grow(
+        self,
+        requested: str,
+        *,
+        timeout: float | None,
+    ) -> None:
         """Resize the PVC if the current size is smaller than the requested size.
 
         Parameters
@@ -466,9 +520,9 @@ class PersistentVolumeClaim(BaseModel):
         requested : str
             The requested size for the PVC, as a Kubernetes PVC request size string
             (e.g., "1Gi", "500Mi").
-        timeout : float
+        timeout : float | None
             The maximum time to wait for the Kubernetes PersistentVolumeClaim to be
-            resized, in seconds.
+            resized, in seconds.  If None, wait indefinitely.
 
         Raises
         ------
@@ -492,8 +546,14 @@ class PersistentVolumeClaim(BaseModel):
             ensure_ascii=False,
         )
 
+        loop = asyncio.get_event_loop()
+        deadline = None if timeout is None else loop.time() + timeout
         for attempt in range(PVC_GROW_RETRIES):
-            live = await type(self).get(name, namespace=namespace, timeout=timeout)
+            live = await type(self).get(
+                name,
+                namespace=namespace,
+                timeout=None if deadline is None else deadline - loop.time()
+            )
             if live is None:
                 raise OSError(
                     f"PVC {name!r} disappeared during resize lifecycle"
@@ -514,7 +574,7 @@ class PersistentVolumeClaim(BaseModel):
                         "-p", patch,
                     ],
                     capture_output=True,
-                    timeout=timeout,
+                    timeout=None if deadline is None else deadline - loop.time(),
                 )
             except CommandError as err:
                 detail = f"{err.stdout}\n{err.stderr}".lower()
@@ -529,7 +589,11 @@ class PersistentVolumeClaim(BaseModel):
                     continue
                 raise
 
-            live = await type(self).get(name, namespace=namespace, timeout=timeout)
+            live = await type(self).get(
+                name,
+                namespace=namespace,
+                timeout=None if deadline is None else deadline - loop.time()
+            )
             if live is None:
                 raise OSError(
                     f"PVC {name!r} disappeared during resize lifecycle"
@@ -544,14 +608,14 @@ class PersistentVolumeClaim(BaseModel):
                 f"after {PVC_GROW_RETRIES} attempts"
             )
 
-    async def delete(self, *, timeout: float) -> None:
+    async def delete(self, *, timeout: float | None) -> None:
         """Delete the PVC from the cluster.
 
         Parameters
         ----------
-        timeout : float
+        timeout : float | None
             The maximum time to wait for the Kubernetes PersistentVolumeClaim to be
-            deleted, in seconds.
+            deleted, in seconds.  If None, wait indefinitely.
 
         Raises
         ------
@@ -605,7 +669,13 @@ class Pod(BaseModel):
         items: Annotated[list[Pod], Field(default_factory=list)]
 
         @classmethod
-        async def get(cls, labels: dict[str, str], *, namespace: str, timeout: float) -> Self:
+        async def get(
+            cls,
+            labels: dict[str, str],
+            *,
+            namespace: str,
+            timeout: float | None,
+        ) -> Self:
             """Load all Kubernetes pods and validate their structure.
 
             Parameters
@@ -614,9 +684,9 @@ class Pod(BaseModel):
                 The labels to filter the Kubernetes pods by.
             namespace : str
                 The namespace to search within.
-            timeout : float
+            timeout : float | None
                 The maximum time to wait for the Kubernetes pods to be retrieved, in
-                seconds.
+                seconds.  If None, wait indefinitely.
 
             Returns
             -------
@@ -636,7 +706,11 @@ class Pod(BaseModel):
                 selector = ",".join(f"{k}={v}" for k, v in labels.items())
                 cmd.extend(["-l", selector])
             cmd.extend(["-o", "json"])
-            result = await kubectl(cmd, capture_output=True, timeout=timeout)
+            result = await kubectl(
+                cmd,
+                capture_output=True,
+                timeout=timeout,
+            )
             return cls.model_validate_json(result.stdout.strip())
 
 
@@ -658,16 +732,16 @@ class PersistentVolume(BaseModel):
     spec: PersistentVolume.Spec
 
     @classmethod
-    async def get(cls, name: KubeName, *, timeout: float) -> Self | None:
+    async def get(cls, name: KubeName, *, timeout: float | None) -> Self | None:
         """Load a Kubernetes PersistentVolume by name and validate its structure.
 
         Parameters
         ----------
         name : str
             The name of the Kubernetes PersistentVolume.
-        timeout : float
+        timeout : float | None
             The maximum time to wait for the Kubernetes PersistentVolume to be
-            retrieved, in seconds.
+            retrieved, in seconds.  If None, wait indefinitely.
 
         Returns
         -------

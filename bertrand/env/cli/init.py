@@ -3,6 +3,7 @@ repository, if requested.
 """
 from __future__ import annotations
 
+import asyncio
 import grp
 import json
 import os
@@ -10,19 +11,29 @@ import platform
 import shutil
 import subprocess
 import sys
+import uuid
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from importlib import resources as importlib_resources
 from pathlib import Path
 from typing import Literal, Self
 
 from pydantic import BaseModel, ConfigDict, PositiveInt
 
+from ..ceph import RepoMount, ensure_repo_credentials, secretfile
 from ..config import RESOURCE_NAMES, Config, Resource
 from ..config.core import NonEmpty, Trimmed
+from ..kube import DEFAULT_VOLUME_SIZE, RepoVolume
 from ..run import (
     BERTRAND_GROUP,
+    HOST_MOUNTS,
+    REPO_ALIASES_EXT,
+    REPO_DIR,
+    REPO_LOCK_EXT,
+    REPO_MOUNT_EXT,
     STATE_DIR,
     TIMEOUT,
+    CommandError,
     GitRepository,
     GroupStatus,
     Lock,
@@ -38,6 +49,7 @@ from ..run import (
     install_microk8s,
     install_nerdctl,
     install_packages,
+    link_kube_ceph,
     run,
     start_microceph,
     start_microk8s,
@@ -410,76 +422,135 @@ INIT_STAGES: tuple[tuple[InitStage, Callable[[InitState, bool], Awaitable[None]]
 ############################
 
 
-# TODO: This should start the microceph and microk8s runtimes, then invoke
-# `run.link_kube_ceph()`, before generating a repository.  That orchestration pass is
-# intentionally deferred until the Ceph mount integration is revisited.
+@dataclass(frozen=True)
+class GitHook:
+    """Specifies a git hook to be installed into project repositories during
+    initialization.
+
+    Attributes
+    ----------
+    source : Path
+        Relative path to the hook payload, starting from `bertrand.env.run`.
+    destination : Path
+        Relative path to the target hook location, starting from the repository's
+        `.git/` directory (e.g. `hooks/pre-commit`).
+    executable : bool
+        Whether the installed hook should have executable permissions set.
+    """
+    source: Path
+    destination: Path
+    executable: bool
 
 
-# TODO: also, add a dataclass for the managed hooks
-
-
-MANAGED_HOOKS: tuple[tuple[str, str, bool], ...] = (
-    (
-        "reference_transaction.py",         # source path relative to `bertrand.env.run`
-        "hooks/reference-transaction",      # target git path
-        True,                               # executable
+MANAGED_GIT_HOOKS: tuple[GitHook, ...] = (
+    GitHook(
+        source=Path("reference_transaction.py"),
+        destination=Path("hooks/reference-transaction"),
+        executable=True,
     ),
-    (
-        "bertrand_git.py",
-        "hooks/bertrand_git.py",
-        False,
+    GitHook(
+        source=Path("bertrand_git.py"),
+        destination=Path("hooks/bertrand_git.py"),
+        executable=False,
     ),
 )
+
+
+async def _init_new_repository(
+    repo: GitRepository,
+    worktree: Path,
+    *,
+    deadline: float | None,
+) -> tuple[GitRepository, Path, bool]:
+    # generate unique repository ID to track this repository in the Ceph filesystem
+    repo_id = uuid.uuid4().hex
+    loop = asyncio.get_running_loop()
+
+    # allocate CephFS volume for the repository
+    volume = await RepoVolume.create(
+        repo_id=repo_id,
+        timeout=None if deadline is None else deadline - loop.time(),
+        size_request=DEFAULT_VOLUME_SIZE,
+    )
+
+    # wait for the volume to be provisioned and retrieve its final CephFS path
+    ceph_path = await volume.resolve_ceph_path(
+        timeout=None if deadline is None else deadline - loop.time()
+    )
+
+    # generate per-repo credentials for that path
+    credentials = await ensure_repo_credentials(
+        repo_id=repo_id,
+        ceph_path=ceph_path,
+        timeout=None if deadline is None else deadline - loop.time(),
+    )
+
+    # mount the volume to the host and place a symlink at the requested path
+    with secretfile(credentials) as ceph_secretfile:
+        await RepoMount(repo_id=repo_id, ceph_path=ceph_path).mount(
+            repo.root,
+            timeout=None if deadline is None else deadline - loop.time(),
+            monitors=credentials.monitors,
+            ceph_user=credentials.entity.removeprefix("client."),
+            ceph_secretfile=ceph_secretfile,
+        )
+
+    # write the repository ID to the mount path for later validation and recovery
+    # TODO: atomic_write_text()
+
+    # initialize a git repository and bare worktree in the new volume
+    initial_branch = worktree.as_posix()
+    await repo.init(branch=initial_branch, bare=True)
+    await repo.create_worktree(
+        initial_branch,
+        target=repo.root / worktree,
+        create_branch=True
+    )
+    return repo, worktree, True
 
 
 async def _init_repository(
     path: Path,
     *,
-    resources: set[Resource],
-    timeout: float,
-) -> tuple[GitRepository, Path]:
+    timeout: float | None,
+) -> tuple[GitRepository, Path, bool]:
+    loop = asyncio.get_running_loop()
+    deadline = None if timeout is None else loop.time() + timeout
+
     # resolve repository and worktree target
     repo, worktree = await GitRepository.resolve(path)
-    path = repo.root / worktree
-    new = not repo
-    if new:
-        initial_branch = worktree.as_posix()
-        await repo.init(branch=initial_branch, bare=True)
-        await repo.create_worktree(
-            initial_branch,
-            target=repo.root / worktree,
-            create_branch=True
+
+    # if no repository exists at the target path, then we will initialize a new one
+    # inside a CephFS volume, which is mounted to this host, and then symlinked to the
+    # target path.
+    if not repo:
+        if path.exists() or path.is_symlink():
+            raise OSError(
+                f"cannot initialize repository at {path!r}: path is already "
+                "occupied by an existing filesystem entry"
+            )
+        return await _init_new_repository(
+            repo=repo,
+            worktree=worktree,
+            deadline=deadline,
         )
 
-    # reconcile with existing configuration (if any)
-    config = await Config.load(  # locate existing in-tree resources
-        path,
-        repo=repo,
-        timeout=timeout
-    )
-    config.resources.update({r.name: None for r in resources})  # merge any new resources from CLI
-    config.init = Config.Init(
-        repo=repo,
-        worktree=worktree,
-    )
-    async with config:  # init default values, load overrides, and validate all resources
-        await config.sync(tag=None)  # render in-tree resources with validated config
+    # if a repo already exists, confirm that it points to a valid CephFS mount with a
+    # valid repo_id file, or move it there if not
 
-        # make an initial commit if this is a new repository
-        if new:
-            try:
-                await run(["git", "add", "-A"], cwd=path, capture_output=True)
-                await run(
-                    ["git", "commit", "--quiet", "-m", "Initial commit"],
-                    cwd=path,
-                    capture_output=True,
-                )
-            except Exception as err:
-                print(
-                    f"bertrand: failed to create initial commit in {path}\n{err}",
-                    file=sys.stderr
-                )
-        return repo, worktree
+    # TODO: check symlink to a repo directory, presence in HOST_MOUNTS, and
+    # .bertrand/repo_id file with a valid UUID that matches a PVC in the cluster.
+    # If any of those checks fail, then we should continue like below, but move
+    # the existing repository into a new CephFS volume, converting to a bare
+    # layout and mirroring all branches.
+    return repo, worktree, False
+
+
+    
+
+    # TODO: Ceph volume allocation happens here?
+
+    
 
 
 async def _install_git_hooks(repo: GitRepository) -> None:
@@ -490,27 +561,27 @@ async def _install_git_hooks(repo: GitRepository) -> None:
 
     # load managed hook payloads before install; this preserves fail-fast behavior if
     # packaged hook definitions are malformed.
-    for source, destination, executable in MANAGED_HOOKS:
-        stage = f"resolve managed hook for '{destination}'"
-        marker = f"# bertrand-managed: {source}"
+    for hook in MANAGED_GIT_HOOKS:
+        stage = f"resolve managed hook for '{hook.destination}'"
+        marker = f"# bertrand-managed: {hook.source}"
         try:
             # load hook from Bertrand package resources and verify shebang/marker
             expected: list[str] = []
-            if executable:
+            if hook.executable:
                 expected.append("#!/usr/bin/env python3")
             expected.append(marker)
             hook_text = importlib_resources.files("bertrand.env").joinpath(
                 "run",
-                source,
+                hook.source,
             ).read_text(encoding="utf-8")
             if hook_text.splitlines()[:len(expected)] != expected:
                 raise ValueError(
-                    f"packaged {source} must start with:\n{'\n'.join(expected)}"
+                    f"packaged {hook.source} must start with:\n{'\n'.join(expected)}"
                 )
 
             # do not clobber non-managed hooks
-            stage = f"resolve existing git hook at '{destination}'"
-            target = await repo.git_path(destination, cwd=repo.root)
+            stage = f"resolve existing git hook at '{hook.destination}'"
+            target = await repo.git_path(hook.destination, cwd=repo.root)
             if target.exists():
                 if not target.is_file():
                     raise OSError(f"git hook path is not a file: {target}")
@@ -528,7 +599,7 @@ async def _install_git_hooks(repo: GitRepository) -> None:
             # install hook into git directory
             stage = f"write git hook to {target}"
             atomic_write_text(target, hook_text, encoding="utf-8")
-            if executable:
+            if hook.executable:
                 stage = f"set executable permissions on git hook {target}"
                 try:
                     target.chmod(0o755)
@@ -539,6 +610,53 @@ async def _install_git_hooks(repo: GitRepository) -> None:
                 f"bertrand: failed to {stage} in {repo.root}\n{err}",
                 file=sys.stderr
             )
+
+
+async def _render_worktree(
+    repo: GitRepository,
+    worktree: Path,
+    *,
+    resources: set[Resource],
+    timeout: float | None,
+) -> None:
+    # TODO: this (rendering the initial worktree state from config) should happen in a
+    # separate helper.  This function is solely concerned with making sure a repository
+    # exists at the indicated path, and that it is mounted as a CephFS volume.  If it
+    # previously was not, then we should move it into a cephFS volume in order to
+    # normalize the repository layout.  That might also be when I convert to a
+    # standardized, bare repository layout.
+
+    # reconcile with existing configuration (if any)
+    config = await Config.load(  # locate existing in-tree resources
+        repo.root / worktree,
+        repo=repo,
+        timeout=timeout
+    )
+    config.resources.update({r.name: None for r in resources})  # merge any new resources from CLI
+    config.init = Config.Init(
+        repo=repo,
+        worktree=worktree,
+    )
+    async with config:  # init default values, load overrides, and validate all resources
+        await config.sync(tag=None)  # render in-tree resources with validated config
+        if new:  # make an initial commit if this is a new repository
+            try:
+                await run(
+                    ["git", "add", "-A"],
+                    cwd=repo.root / worktree,
+                    capture_output=True
+                )
+                await run(
+                    ["git", "commit", "--quiet", "-m", "Initial commit"],
+                    cwd=repo.root / worktree,
+                    capture_output=True,
+                )
+            except CommandError as err:
+                print(
+                    "bertrand: failed to create initial commit in "
+                    f"{repo.root / worktree}\n{err}",
+                    file=sys.stderr
+                )
 
 
 ###################
@@ -555,6 +673,7 @@ async def _install_git_hooks(repo: GitRepository) -> None:
 async def bertrand_init(
     path: Path | None,
     *,
+    timeout: float | None,
     enable: list[str],
     yes: bool,
 ) -> None:
@@ -569,6 +688,11 @@ async def bertrand_init(
         Git repository.  If no repository is found, then a new bare repository will be
         initialized at the indicated path, and an isolated worktree will be created to
         hold its default branch.
+    timeout : float | None
+        Time (in seconds) to wait for the repository to become available with the
+        expected configuration.  If None, then wait indefinitely.  Note that this does
+        not apply to any host bootstrapping stages, which may require user confirmation,
+        and are only run once per host (not per repository).
     enable : list[str]
         List of resources to enable at the resolved worktree.  Each component is a
         comma-separated list of resource names or aliases, which are resolved to their
@@ -588,9 +712,16 @@ async def bertrand_init(
             "Cannot enable resources without a worktree.  Please specify a path to "
             "initialize the project repository and enable resources within it."
         )
+    if timeout is not None and timeout <= 0:
+        raise TimeoutError("timed out before checking host bootstrap")
 
     # bootstrap runtime control plane if needed
-    async with Lock(INIT_LOCK, timeout=TIMEOUT, mode="local", privileges=INIT_LOCK_MODE):
+    async with Lock(
+        INIT_LOCK,
+        timeout=TIMEOUT,
+        mode="local",
+        privileges=INIT_LOCK_MODE
+    ):
         state = InitState.load()
         index = next(
             (i for i, (stage, _) in enumerate(INIT_STAGES) if stage == state.stage),
@@ -615,14 +746,17 @@ async def bertrand_init(
     # if no project root is provided, then we're done
     if path is None:
         return
+    path = path.expanduser().resolve()
+    loop = asyncio.get_running_loop()
+    deadline = None if timeout is None else loop.time() + timeout
+
+    # fail fast if required tools are missing, and validate the resources to enable at
+    # the worktree path
     if not shutil.which("git"):
         raise OSError(
             "Bertrand requires 'git' to initialize a project repository, but it was "
             "not found in PATH."
         )
-    path = path.expanduser().resolve()
-
-    # identify the resources to enable at the worktree path
     resources: set[Resource] = {RESOURCE_NAMES["bertrand"]}
     for spec in enable:
         for component in spec.split(","):
@@ -634,6 +768,19 @@ async def bertrand_init(
                 )
             resources.add(r)
 
-    # initialize git repository if needed, then install/update git hooks within it
-    repo, _ = await _init_repository(path, resources=resources, timeout=TIMEOUT)
+    # start both clusters if they are not already running, and link them via rook-ceph
+    await start_microceph(timeout=None if deadline is None else deadline - loop.time())
+    await start_microk8s(timeout=None if deadline is None else deadline - loop.time())
+    await link_kube_ceph(timeout=None if deadline is None else deadline - loop.time())
+
+    # retrieve or allocate a repository volume for the target path, mount it to the
+    # host system, and then ensure a git repository inside it with the proper hooks
+    repo, worktree, new = await _init_repository(
+        path,
+        timeout=None if deadline is None else deadline - loop.time(),
+    )
     await _install_git_hooks(repo)
+
+    # TODO: render the initial worktree state for all configured resources.
+
+    # TODO: make an initial commit with the rendered state

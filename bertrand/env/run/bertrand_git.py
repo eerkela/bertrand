@@ -59,6 +59,7 @@ else:
 
 # generic utils
 ROOT_DIR = Path(Path(sys.executable).anchor)
+HOST_MOUNTS = ROOT_DIR / "proc" / "self" / "mountinfo"
 TIMEOUT = 30
 NORMALIZE_ARCH = {
     "x86_64": "amd64",
@@ -1102,8 +1103,12 @@ NERDCTL_CHECKSUM: dict[str, str] = {  # checksums for nerdctl download
 # Host paths for Bertrand's shared runtime state.
 STATE_DIR_MODE = 0o2770
 STATE_DIR = Path("/var/lib/bertrand")
+REPO_DIR = STATE_DIR / "repositories"
+REPO_ALIASES_EXT = Path("aliases.json")
+REPO_LOCK_EXT = Path("lock")
+REPO_MOUNT_EXT = Path("mount")
 BIN_DIR = STATE_DIR / "bin"
-CACHE_DIR = STATE_DIR / "cache"
+CACHE_DIR = STATE_DIR / "cache"  # TODO: delete in favor of RUN_DIR / "cache"?
 RUN_DIR = STATE_DIR / "run"
 RUN_TMPFS_MOUNT_UNIT_NAME = "bertrand-run.mount"
 RUN_TMPFS_MOUNT_UNIT_PATH = Path("/etc/systemd/system") / RUN_TMPFS_MOUNT_UNIT_NAME
@@ -1226,9 +1231,8 @@ def _run_mount_unit_configured(*, group_gid: int) -> bool:
 
 
 def _run_dir_tmpfs_mounted() -> bool:
-    mountinfo = ROOT_DIR / "proc" / "self" / "mountinfo"
     try:
-        lines = mountinfo.read_text(encoding="utf-8").splitlines()
+        lines = HOST_MOUNTS.read_text(encoding="utf-8").splitlines()
     except OSError:
         return False
     needle = os.path.normpath(str(RUN_DIR))
@@ -1266,7 +1270,7 @@ async def _configure_run_tmpfs_mount(
             f"mount at {RUN_DIR}."
         )
     loop = asyncio.get_event_loop()
-    deadline = 0.0 if timeout is None else loop.time() + timeout
+    deadline = None if timeout is None else loop.time() + timeout
 
     # atomically create unit file
     fd: int | None = None
@@ -1292,7 +1296,7 @@ async def _configure_run_tmpfs_mount(
                 ],
                 non_interactive=assume_yes,
             ),
-            timeout=None if timeout is None else deadline - loop.time(),
+            timeout=None if deadline is None else deadline - loop.time(),
         )
 
     # unconditionally remove temp file
@@ -1312,7 +1316,7 @@ async def _configure_run_tmpfs_mount(
     ):
         await run(
             sudo(cmd, non_interactive=assume_yes),
-            timeout=None if timeout is None else deadline - loop.time(),
+            timeout=None if deadline is None else deadline - loop.time(),
         )
 
 
@@ -1346,7 +1350,7 @@ async def ensure_bertrand_group(
         If the shared group cannot be created for any other reason.
     """
     loop = asyncio.get_event_loop()
-    deadline = 0.0 if timeout is None else loop.time() + timeout
+    deadline = None if timeout is None else loop.time() + timeout
 
     # fast path
     try:
@@ -1374,7 +1378,7 @@ async def ensure_bertrand_group(
                 non_interactive=assume_yes,
             ),
             capture_output=True,
-            timeout=None if timeout is None else deadline - loop.time(),
+            timeout=None if deadline is None else deadline - loop.time(),
         )
     except CommandError as err:
         out = f"{err.stdout}\n{err.stderr}".lower().strip()
@@ -1428,11 +1432,11 @@ async def ensure_bertrand_state(
     if os.name != "posix":
         raise OSError("Bertrand state bootstrap requires a POSIX host.")
     loop = asyncio.get_event_loop()
-    deadline = 0.0 if timeout is None else loop.time() + timeout
+    deadline = None if timeout is None else loop.time() + timeout
 
     # identify misconfigured root state layout
     group_info = await ensure_bertrand_group(
-        timeout=None if timeout is None else deadline - loop.time(),
+        timeout=None if deadline is None else deadline - loop.time(),
         assume_yes=assume_yes,
     )
     if (
@@ -1466,13 +1470,13 @@ async def ensure_bertrand_state(
                 ],
                 non_interactive=assume_yes,
             ),
-            timeout=None if timeout is None else deadline - loop.time(),
+            timeout=None if deadline is None else deadline - loop.time(),
         )
 
         # configure ACLs to allow child paths to inherit group access without needing
         # to be individually configured
         await _configure_state_acl(
-            deadline=None if timeout is None else deadline,
+            deadline=None if deadline is None else deadline,
             assume_yes=assume_yes,
         )
 
@@ -1480,7 +1484,7 @@ async def ensure_bertrand_state(
         await _configure_run_tmpfs_mount(
             group_gid=group_info.gr_gid,
             assume_yes=assume_yes,
-            timeout=None if timeout is None else deadline - loop.time(),
+            timeout=None if deadline is None else deadline - loop.time(),
         )
 
     # confirm required layout
@@ -2216,6 +2220,9 @@ async def nerdctl(
     )
 
 
+# TODO: allow timeout to be None for nerdctl_ids
+
+
 async def nerdctl_ids(
     mode: Literal["container", "image", "volume", "network", "secret"],
     labels: Mapping[str, str],
@@ -2409,20 +2416,20 @@ async def start_buildkit(*, timeout: float | None) -> None:
             "the pinned toolchain."
         )
     loop = asyncio.get_running_loop()
-    deadline = 0.0 if timeout is None else loop.time() + timeout
+    deadline = None if timeout is None else loop.time() + timeout
     if await _buildkit_workers_ready(  # optimistic, no locking
-        timeout=None if timeout is None else deadline - loop.time()
+        timeout=None if deadline is None else deadline - loop.time()
     ):
         return
 
     # lock to prevent concurrent startups
     async with Lock(
         BUILDKIT_LOCK_FILE,
-        timeout=TIMEOUT if timeout is None else deadline - loop.time(),
+        timeout=TIMEOUT if deadline is None else deadline - loop.time(),
         mode="local"
     ):
         if await _buildkit_workers_ready(  # check again after acquiring lock
-            timeout=None if timeout is None else deadline - loop.time()
+            timeout=None if deadline is None else deadline - loop.time()
         ):
             return
 
@@ -2461,9 +2468,9 @@ async def start_buildkit(*, timeout: float | None) -> None:
 
         # wait for buildkitd to become reachable
         timestamp = loop.time()
-        while timeout is None or timestamp <= deadline:
+        while deadline is None or timestamp <= deadline:
             if await _buildkit_workers_ready(
-                timeout=None if timeout is None else deadline - timestamp
+                timeout=None if deadline is None else deadline - timestamp
             ):
                 return
             if not _buildkit_pid_alive():
@@ -2484,12 +2491,12 @@ async def start_buildkit(*, timeout: float | None) -> None:
 
 async def _microceph_cluster_ready(*, timeout: float | None) -> bool:
     loop = asyncio.get_running_loop()
-    deadline = 0.0 if timeout is None else loop.time() + timeout
+    deadline = None if timeout is None else loop.time() + timeout
     result = await run(
         ["microceph", "status"],
         check=False,
         capture_output=True,
-        timeout=None if timeout is None else deadline - loop.time(),
+        timeout=None if deadline is None else deadline - loop.time(),
     )
     if result.returncode != 0 or not shutil.which("microceph.ceph"):
         return False
@@ -2497,7 +2504,7 @@ async def _microceph_cluster_ready(*, timeout: float | None) -> bool:
         ["microceph.ceph", "status", "--format", "json"],
         check=False,
         capture_output=True,
-        timeout=None if timeout is None else deadline - loop.time(),
+        timeout=None if deadline is None else deadline - loop.time(),
     )).returncode == 0
 
 
@@ -2525,23 +2532,23 @@ async def start_microceph(*, timeout: float | None) -> None:
             "the managed runtime."
         )
     loop = asyncio.get_running_loop()
-    deadline = 0.0 if timeout is None else loop.time() + timeout
+    deadline = None if timeout is None else loop.time() + timeout
 
     # optimistic: cluster already up (no locking)
     if await _microceph_cluster_ready(
-        timeout=None if timeout is None else deadline - loop.time()
+        timeout=None if deadline is None else deadline - loop.time()
     ):
         return
 
     try:
         async with Lock(
             CEPH_LOCK_FILE,
-            timeout=TIMEOUT if timeout is None else deadline - loop.time(),
+            timeout=TIMEOUT if deadline is None else deadline - loop.time(),
             mode="local"
         ):
             # defensive: check again after acquiring lock
             if await _microceph_cluster_ready(
-                timeout=None if timeout is None else deadline - loop.time()
+                timeout=None if deadline is None else deadline - loop.time()
             ):
                 return
 
@@ -2550,7 +2557,7 @@ async def start_microceph(*, timeout: float | None) -> None:
                 await run(
                     ["microceph", "cluster", "bootstrap"],
                     capture_output=True,
-                    timeout=None if timeout is None else deadline - loop.time(),
+                    timeout=None if deadline is None else deadline - loop.time(),
                 )
             except CommandError as err:
                 out = f"{err.stdout}\n{err.stderr}".strip().lower()
@@ -2564,9 +2571,9 @@ async def start_microceph(*, timeout: float | None) -> None:
 
             # poll cluster readiness after bootstrap/startup
             timestamp = loop.time()
-            while timeout is None or timestamp <= deadline:
+            while deadline is None or timestamp <= deadline:
                 if await _microceph_cluster_ready(
-                    timeout=None if timeout is None else deadline - timestamp
+                    timeout=None if deadline is None else deadline - timestamp
                 ):
                     return
                 await asyncio.sleep(0.1)
@@ -2598,19 +2605,19 @@ async def _microk8s_cluster_ready(*, timeout: float | None) -> bool:
 
 async def _add_bertrand_kube_namespace(*, timeout: float | None) -> None:
     loop = asyncio.get_running_loop()
-    deadline = 0.0 if timeout is None else loop.time() + timeout
+    deadline = None if timeout is None else loop.time() + timeout
     ready = await kubectl(
         ["get", "namespace", BERTRAND_NAMESPACE, "-o", "name"],
         check=False,
         capture_output=True,
-        timeout=None if timeout is None else deadline - loop.time(),
+        timeout=None if deadline is None else deadline - loop.time(),
     )
     if ready.returncode != 0:
         try:
             await kubectl(
                 ["create", "namespace", BERTRAND_NAMESPACE],
                 capture_output=True,
-                timeout=None if timeout is None else deadline - loop.time(),
+                timeout=None if deadline is None else deadline - loop.time(),
             )
         except CommandError as err:
             stdout = err.stdout.strip() if err.stdout else ""
@@ -2626,7 +2633,7 @@ async def start_microk8s(*, timeout: float | None) -> None:
 
     Parameters
     ----------
-    timeout : float
+    timeout : float | None
         Maximum time in seconds to wait for startup/readiness checks.  If None,
         then this function will wait indefinitely until MicroK8s is ready.
 
@@ -2646,29 +2653,29 @@ async def start_microk8s(*, timeout: float | None) -> None:
             "the managed runtime."
         )
     loop = asyncio.get_running_loop()
-    deadline = 0.0 if timeout is None else loop.time() + timeout
+    deadline = None if timeout is None else loop.time() + timeout
 
     # optimistic: cluster already up (no locking)
     if await _microk8s_cluster_ready(
-        timeout=None if timeout is None else deadline - loop.time()
+        timeout=None if deadline is None else deadline - loop.time()
     ):
         await _add_bertrand_kube_namespace(
-            timeout=None if timeout is None else deadline - loop.time()
+            timeout=None if deadline is None else deadline - loop.time()
         )
         return
 
     try:
         async with Lock(
             KUBE_LOCK_FILE,
-            timeout=TIMEOUT if timeout is None else deadline - loop.time(),
+            timeout=TIMEOUT if deadline is None else deadline - loop.time(),
             mode="local"
         ):
             # defensive: check again after acquiring lock
             if await _microk8s_cluster_ready(
-                timeout=None if timeout is None else deadline - loop.time()
+                timeout=None if deadline is None else deadline - loop.time()
             ):
                 await _add_bertrand_kube_namespace(
-                    timeout=None if timeout is None else deadline - loop.time()
+                    timeout=None if deadline is None else deadline - loop.time()
                 )
                 return
 
@@ -2676,17 +2683,17 @@ async def start_microk8s(*, timeout: float | None) -> None:
             await run(
                 ["microk8s", "start"],
                 capture_output=True,
-                timeout=None if timeout is None else deadline - loop.time(),
+                timeout=None if deadline is None else deadline - loop.time(),
             )
 
             # poll API readiness after successful start
             timestamp = loop.time()
-            while timeout is None or timestamp <= deadline:
+            while deadline is None or timestamp <= deadline:
                 if await _microk8s_cluster_ready(
-                    timeout=None if timeout is None else deadline - timestamp
+                    timeout=None if deadline is None else deadline - timestamp
                 ):
                     await _add_bertrand_kube_namespace(
-                        timeout=None if timeout is None else deadline - loop.time()
+                        timeout=None if deadline is None else deadline - loop.time()
                     )
                     return
                 await asyncio.sleep(0.1)
@@ -2787,31 +2794,31 @@ async def link_kube_ceph(*, timeout: float | None) -> None:
             "managed runtime."
         )
 
-
+    # linking requires both clusters to be up
     loop = asyncio.get_running_loop()
-    deadline = 0.0 if timeout is None else loop.time() + timeout
+    deadline = None if timeout is None else loop.time() + timeout
     async with Lock(
         KUBE_CEPH_LINK_LOCK_FILE,
-        timeout=TIMEOUT if timeout is None else deadline - loop.time(),
+        timeout=TIMEOUT if deadline is None else deadline - loop.time(),
         mode="local",
     ):
         # recheck cluster preconditions and fast path under lock
         if not await _microk8s_cluster_ready(
-            timeout=None if timeout is None else deadline - loop.time()
+            timeout=None if deadline is None else deadline - loop.time()
         ):
             raise OSError(
                 "MicroK8s must be started before linking to MicroCeph.  Run "
                 "`start_microk8s(...)` first."
             )
         if not await _microceph_cluster_ready(
-            timeout=None if timeout is None else deadline - loop.time()
+            timeout=None if deadline is None else deadline - loop.time()
         ):
             raise OSError(
                 "MicroCeph must be started before linking to MicroK8s.  Run "
                 "`start_microceph(...)` first."
             )
         if await _ceph_csi_storage_classes(
-            timeout=None if timeout is None else deadline - loop.time()
+            timeout=None if deadline is None else deadline - loop.time()
         ):
             return  # already linked
 
@@ -2820,7 +2827,7 @@ async def link_kube_ceph(*, timeout: float | None) -> None:
             await run(
                 ["microk8s", "enable", "rook-ceph"],
                 capture_output=True,
-                timeout=None if timeout is None else deadline - loop.time(),
+                timeout=None if deadline is None else deadline - loop.time(),
             )
         except CommandError as err:
             detail = f"{err.stdout}\n{err.stderr}".lower()
@@ -2840,7 +2847,7 @@ async def link_kube_ceph(*, timeout: float | None) -> None:
             await run(
                 ["microk8s", "connect-external-ceph"],
                 capture_output=True,
-                timeout=None if timeout is None else deadline - loop.time(),
+                timeout=None if deadline is None else deadline - loop.time(),
             )
         except CommandError as err:
             detail = f"{err.stdout}\n{err.stderr}".lower()
@@ -2859,9 +2866,9 @@ async def link_kube_ceph(*, timeout: float | None) -> None:
 
         # wait for Ceph CSI classes to materialize
         timestamp = loop.time()
-        while timeout is None or timestamp <= deadline:
+        while deadline is None or timestamp <= deadline:
             if await _ceph_csi_storage_classes(
-                timeout=None if timeout is None else deadline - timestamp
+                timeout=None if deadline is None else deadline - timestamp
             ):
                 return
             await asyncio.sleep(0.1)
@@ -3967,7 +3974,7 @@ class GitRepository:
             env=env,
         )
 
-    async def git_path(self, path: str, *, cwd: Path | None = None) -> Path:
+    async def git_path(self, path: Path, *, cwd: Path | None = None) -> Path:
         """Resolve a git-path using `git rev-parse --git-path`.
 
         Parameters
@@ -3989,14 +3996,15 @@ class GitRepository:
         CommandError
             If the git command fails.
         """
+        path_str = path.as_posix()
         result = await self.run(
-            ["rev-parse", "--path-format=absolute", "--git-path", path],
+            ["rev-parse", "--path-format=absolute", "--git-path", path_str],
             capture_output=True,
             cwd=cwd,
         )
         text = result.stdout.strip()
         if not text:
-            raise ValueError(f"empty --git-path output for {path!r}")
+            raise ValueError(f"empty --git-path output for {path_str!r}")
         resolved = Path(text).expanduser()
         if not resolved.is_absolute():
             base = cwd if cwd is not None else self.root
