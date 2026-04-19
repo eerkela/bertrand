@@ -36,6 +36,13 @@ if any("," in opt for opt in DEFAULT_REPO_MOUNT_OPTIONS):
     )
 
 
+# TODO: I also have to cover true garbage collection for stale mounts that have no
+# aliases, separate from just the unmount on last alias removal.  This should
+# periodically scan the mount directory for any such mounts and unmount them, probably
+# in blocks of a fixed size every time we mount a new repository, similar to the
+# current environment registry.
+
+
 @dataclass(frozen=True)
 class MountInfo:
     """Subset of `/proc/self/mountinfo` fields used by Bertrand mount validation.
