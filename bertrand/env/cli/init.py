@@ -15,18 +15,25 @@ import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from importlib import resources as importlib_resources
-from pathlib import Path
+from pathlib import Path, PosixPath
 from typing import Literal, Self
 
 from pydantic import BaseModel, ConfigDict, PositiveInt
 
-from ..ceph import RepoMount, ensure_repo_credentials, secretfile
+from ..ceph import (
+    MountInfo,
+    RepoCredentials,
+    RepoMount,
+    ensure_repo_credentials,
+    secretfile,
+)
 from ..config import RESOURCE_NAMES, Config, Resource
-from ..config.core import NonEmpty, Trimmed
+from ..config.core import AbsolutePosixPath, NonEmpty, Trimmed, UUIDHex, _check_uuid
 from ..kube import DEFAULT_VOLUME_SIZE, RepoVolume
 from ..run import (
     BERTRAND_GROUP,
     HOST_MOUNTS,
+    METADATA_REPO_ID,
     REPO_ALIASES_EXT,
     REPO_DIR,
     REPO_LOCK_EXT,
@@ -456,7 +463,7 @@ MANAGED_GIT_HOOKS: tuple[GitHook, ...] = (
 )
 
 
-async def _init_new_repository(
+async def _allocate_new_repository(
     repo: GitRepository,
     worktree: Path,
     *,
@@ -496,7 +503,7 @@ async def _init_new_repository(
         )
 
     # write the repository ID to the mount path for later validation and recovery
-    # TODO: atomic_write_text()
+    atomic_write_text(repo.root / METADATA_REPO_ID, repo_id)
 
     # initialize a git repository and bare worktree in the new volume
     initial_branch = worktree.as_posix()
@@ -507,6 +514,111 @@ async def _init_new_repository(
         create_branch=True
     )
     return repo, worktree, True
+
+
+@dataclass(frozen=True)
+class ExistingRepository:
+    """Resolved context for an existing Bertrand repository mount, which may or may
+    not be reusable based on whether its current state matches the ground truth from
+    the local Ceph cluster.
+
+    Attributes
+    ----------
+    repo_id: str
+        Repository identity read from the repository's metadata file, which may or may
+        not be trustworthy depending on the integrity of the existing mount.
+    ceph_path : PosixPath
+        An absolute path to the CephFS volume backing the repository, within the Ceph
+        cluster's virtual filesystem.
+    credentials : RepoCredentials
+        Authentication credentials for the CephFS volume backing the repository, which
+        will have been converged to match the current `ceph_path`, and are unique per
+        repository ID.  All host-local mounts will be performed using these
+        credentials.
+    """
+    repo_id: UUIDHex
+    ceph_path: AbsolutePosixPath
+    credentials: RepoCredentials
+
+    @classmethod
+    async def resolve(
+        cls,
+        repo: GitRepository,
+        *,
+        timeout: float | None
+    ) -> Self | None:
+        """Attempt to resolve an existing repository at the given path, assuming it is
+        already managed by Bertrand.
+
+        Parameters
+        ----------
+        repo : GitRepository
+            Resolved repository at the target path, as reported by Git.  This may or
+            may not represent a valid Bertrand repository backed by a shared CephFS
+            volume.  If it does not, then this function will return None.
+        timeout : float | None
+            Maximum time to spend attempting to resolve the repository as a valid
+            Bertrand-managed repository, in seconds.  If None, then resolution will
+            wait indefinitely.
+
+        Returns
+        -------
+        ExistingRepository | None
+            An ExistingRepository context if the given repository can be confirmed to be
+            a valid Bertrand-managed repository, or None if it cannot be confirmed as
+            such (e.g. because it is not mounted as a CephFS volume, or its metadata
+            file is missing or does not match any volumes in the cluster).
+        """
+        if timeout is not None and timeout <= 0:
+            raise TimeoutError("timeout must be non-negative")
+        loop = asyncio.get_running_loop()
+        deadline = None if timeout is None else loop.time() + timeout
+
+        # assert repository root is stored in Bertrand's host repository directory
+        if not repo.root.is_relative_to(REPO_DIR):
+            return None
+
+        # assert repository contains a valid Bertrand repo_id file
+        repo_id_file = repo.root / METADATA_REPO_ID
+        if not repo_id_file.is_file():
+            return None
+        try:
+            repo_id = _check_uuid(repo_id_file.read_text(encoding="utf-8").strip())
+        except ValueError:
+            return None
+
+        # assert repository is mounted as a CephFS volume
+        mount = MountInfo.search(repo.root)
+        if mount is None or not mount.is_cephfs():
+            return None
+
+        # search cluster for matching repository volumes and confirm at least one resolves
+        # to the currently mounted CephFS path
+        volumes = await RepoVolume.get(
+            repo_id,
+            timeout=None if deadline is None else deadline - loop.time(),
+        )
+        if not volumes:
+            return None
+        for volume in volumes:
+            try:
+                ceph_path = await volume.resolve_ceph_path(
+                    timeout=None if deadline is None else deadline - loop.time()
+                )
+            except (OSError, TimeoutError, CommandError):
+                continue
+            if mount.references_ceph_path(ceph_path):
+                credentials = await ensure_repo_credentials(
+                    repo_id=repo_id,
+                    ceph_path=ceph_path,
+                    timeout=None if deadline is None else deadline - loop.time(),
+                )
+                return cls(
+                    repo_id=repo_id,
+                    ceph_path=ceph_path,
+                    credentials=credentials,
+                )
+        return None
 
 
 async def _init_repository(
@@ -529,28 +641,39 @@ async def _init_repository(
                 f"cannot initialize repository at {path!r}: path is already "
                 "occupied by an existing filesystem entry"
             )
-        return await _init_new_repository(
+        return await _allocate_new_repository(
             repo=repo,
             worktree=worktree,
             deadline=deadline,
         )
 
     # if a repo already exists, confirm that it points to a valid CephFS mount with a
-    # valid repo_id file, or move it there if not
+    # repo_id file
+    existing = await ExistingRepository.resolve(
+        repo,
+        timeout=None if deadline is None else deadline - loop.time(),
+    )
+    if existing is not None:
+        with secretfile(existing.credentials) as ceph_secretfile:
+            await RepoMount(
+                repo_id=existing.repo_id,
+                ceph_path=existing.ceph_path
+            ).mount(
+                repo.root,
+                timeout=None if deadline is None else deadline - loop.time(),
+                monitors=existing.credentials.monitors,
+                ceph_user=existing.credentials.entity.removeprefix("client."),
+                ceph_secretfile=ceph_secretfile,
+            )
+        return repo, worktree, False
 
-    # TODO: check symlink to a repo directory, presence in HOST_MOUNTS, and
-    # .bertrand/repo_id file with a valid UUID that matches a PVC in the cluster.
-    # If any of those checks fail, then we should continue like below, but move
-    # the existing repository into a new CephFS volume, converting to a bare
-    # layout and mirroring all branches.
+
+    # TODO: an existing repository was found, but is not a valid Bertrand cluster
+    # mount.  Create a new CephFS volume, mount it locally, copy the repository data
+    # into it, mirror all existing branches as bare worktrees, and then replace the
+    # original repository with a symlink to the new mount.
     return repo, worktree, False
 
-
-    
-
-    # TODO: Ceph volume allocation happens here?
-
-    
 
 
 async def _install_git_hooks(repo: GitRepository) -> None:

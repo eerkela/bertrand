@@ -61,6 +61,33 @@ class MountInfo:
     fs_type: str
     source: str
 
+    def is_cephfs(self) -> bool:
+        """
+        Returns
+        -------
+        bool
+            True when this mount entry is a kernel CephFS mount.
+        """
+        return self.fs_type.strip().lower() == "ceph"
+
+    def references_ceph_path(self, ceph_path: PosixPath) -> bool:
+        """Check whether the target of this mount references the given CephFS path.
+
+        Parameters
+        ----------
+        ceph_path : PosixPath
+            Absolute or relative CephFS path to check for.  If relative, it is resolved
+            against the CephFS root (i.e. treated as if it were prefixed with "/").
+
+        Returns
+        -------
+        bool
+            True if this mount's source references the given CephFS path.
+        """
+        if not ceph_path.is_absolute():
+            ceph_path = PosixPath("/") / ceph_path
+        return self.source.endswith(f":{ceph_path}")
+
     @classmethod
     def search(cls, path: Path) -> Self | None:
         # `/proc/self/mountinfo` is the kernel's canonical view of active mounts for
@@ -142,12 +169,12 @@ class RepoMount:
         *,
         ceph_path: PosixPath | None = None
     ) -> None:
-        if mount.fs_type != "ceph":
+        if not mount.is_cephfs():
             raise OSError(
                 f"repository mount target {mount.mount_point!r} is mounted with "
                 f"unsupported filesystem type {mount.fs_type!r}, expected 'ceph'"
             )
-        if ceph_path is not None and not mount.source.endswith(f":{ceph_path}"):
+        if ceph_path is not None and not mount.references_ceph_path(ceph_path):
             raise OSError(
                 f"repository mount target {mount.mount_point!r} is attached to "
                 f"{mount.source!r}, expected Ceph source suffix ':{ceph_path}'"

@@ -71,8 +71,9 @@ NORMALIZE_ARCH = {
 
 # In-container path definitions for metadata and runtime control.
 METADATA_DIR: PosixPath = PosixPath(".bertrand")
-METADATA_LOCK: PosixPath = METADATA_DIR / ".lock"
 METADATA_FILE: PosixPath = METADATA_DIR / "env.json"
+METADATA_LOCK: PosixPath = METADATA_DIR / ".lock"
+METADATA_REPO_ID: PosixPath = METADATA_DIR / "repo_id"
 METADATA_TMP: PosixPath = METADATA_DIR / "tmp"
 WORKTREE_MOUNT: PosixPath = PosixPath("/bertrand")
 PROJECT_MOUNT: PosixPath = PosixPath("/.bertrand")

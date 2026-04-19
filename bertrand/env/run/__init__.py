@@ -29,6 +29,7 @@ from .bertrand_git import (
     METADATA_DIR,
     METADATA_FILE,
     METADATA_LOCK,
+    METADATA_REPO_ID,
     METADATA_TMP,
     MICROCEPH_CHANNEL,
     MICROCEPH_GROUP,
