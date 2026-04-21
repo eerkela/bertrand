@@ -17,9 +17,9 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from importlib import resources as importlib_resources
 from pathlib import Path
-from typing import Literal, Self
+from typing import Annotated, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, PositiveInt
+from pydantic import BaseModel, ConfigDict, Field, PositiveInt
 
 from ..ceph import (
     MountInfo,
@@ -29,13 +29,21 @@ from ..ceph import (
     secretfile,
 )
 from ..config import RESOURCE_NAMES, Config, Resource
-from ..config.core import AbsolutePosixPath, NonEmpty, Trimmed, UUIDHex, _check_uuid
+from ..config.core import (
+    AbsolutePath,
+    AbsolutePosixPath,
+    NonEmpty,
+    Trimmed,
+    UUIDHex,
+    _check_uuid,
+)
 from ..kube import DEFAULT_VOLUME_SIZE, RepoVolume
 from ..run import (
     BERTRAND_GROUP,
     METADATA_REPO_ID,
     REPO_DIR,
     REPO_MOUNT_EXT,
+    RUN_DIR,
     STATE_DIR,
     TIMEOUT,
     CommandError,
@@ -460,60 +468,8 @@ MANAGED_GIT_HOOKS: tuple[GitHook, ...] = (
         executable=False,
     ),
 )
-
-
-# TODO: repo checkpoints should probably be stored in the tmpfs RUN_DIR to make
-# garbage collection easy.
-
-
 REPO_CHECKPOINT_VERSION = 1
-REPO_CHECKPOINT_DIR = STATE_DIR / "repo-conversions"
-
-
-type RepoCheckpointPhase = Literal[
-    "repo_id",
-    "volume_ready",
-    "mount_ready",
-    "layout_ready",
-    "cutover_ready",
-    "complete",
-]
-
-
-class RepoCheckpoint(BaseModel):
-    """Persistent resume checkpoint for repository convergence.
-
-    Attributes
-    ----------
-    version : int
-        Schema version for this checkpoint payload.
-    source_path : str
-        Absolute path where convergence started for this repository.
-    source_git_dir : str
-        Absolute git-common-dir path used as this checkpoint's stable key.
-    source_dev : int | None
-        Device ID fingerprint for stale-check detection.
-    source_ino : int | None
-        Inode fingerprint for stale-check detection.
-    repo_id : str
-        Repository UUID currently assigned to this convergence run.
-    claim_name : str | None
-        Resolved claim name in the cluster, when known.
-    ceph_path : AbsolutePosixPath | None
-        Resolved CephFS path for the repository claim, when known.
-    phase : RepoCheckpointPhase
-        Most recently completed convergence phase.
-    """
-    model_config = ConfigDict(extra="forbid")
-    version: PositiveInt
-    source_path: str
-    source_git_dir: str
-    source_dev: int | None = None
-    source_ino: int | None = None
-    repo_id: UUIDHex
-    claim_name: str | None = None
-    ceph_path: AbsolutePosixPath | None = None
-    phase: RepoCheckpointPhase = "repo_id"
+REPO_CHECKPOINT_DIR = RUN_DIR / "init"
 
 
 @dataclass
@@ -530,222 +486,195 @@ class RepoState:
         Repository handle resolved from the target path.
     worktree : Path
         Relative worktree path resolved from the target path.
-    repo_id : str | None
-        Repository UUID assigned to this convergence run.
+    checkpoint : RepoState.Checkpoint
+        Persistent checkpoint state for this repository convergence run.
     volume : RepoVolume | None
         Repository PVC resolved or provisioned for `repo_id`.
-    ceph_path : AbsolutePosixPath | None
-        CephFS path resolved from the selected PVC/PV.
     credentials : RepoCredentials | None
         Repository-scoped Ceph credentials for host mounting.
-    mount_alias : Path | None
-        Host alias path currently used for mount convergence.
-    new_repo : bool
-        True when the target path does not currently resolve to an initialized
-        repository.
     """
+    class Checkpoint(BaseModel):
+        """Persistent resume checkpoint for repository convergence."""
+        model_config = ConfigDict(extra="forbid")
+        version: PositiveInt
+        root: AbsolutePath
+        repo_id: UUIDHex
+        git_head_ref: Annotated[str | None, Field(default=None)]
+        git_head_oid: Annotated[str | None, Field(default=None)]
+        git_refs_digest: Annotated[str | None, Field(default=None)]
+        claim_name: Annotated[str | None, Field(default=None)]
+        ceph_path: Annotated[AbsolutePosixPath | None, Field(default=None)]
+        mount_alias: Annotated[AbsolutePath | None, Field(default=None)]
+        cutover_staged_link: Annotated[AbsolutePath | None, Field(default=None)]
+        cutover_backup_path: Annotated[AbsolutePath | None, Field(default=None)]
+
+        @staticmethod
+        def lock(root: AbsolutePath, timeout: float) -> Lock:
+            digest = hashlib.sha256(str(root).encode("utf-8"))
+            return Lock(
+                REPO_CHECKPOINT_DIR / f"{digest.hexdigest()}.lock",
+                timeout=timeout,
+                mode="local",
+                privileges=INIT_LOCK_MODE,
+            )
+
+        @staticmethod
+        def file(root: AbsolutePath) -> AbsolutePath:
+            digest = hashlib.sha256(str(root).encode("utf-8"))
+            return REPO_CHECKPOINT_DIR / f"{digest.hexdigest()}.json"
+
+        @staticmethod
+        async def _git_head_ref(repo: GitRepository) -> str | None:
+            head = await repo.run(
+                ["symbolic-ref", "--quiet", "HEAD"],
+                check=False,
+                capture_output=True,
+            )
+            if head.returncode == 0:
+                ref = head.stdout.strip()
+                if not ref:
+                    raise ValueError("empty symbolic-ref output for HEAD")
+                return ref
+            if head.returncode == 1:
+                return None
+            raise CommandError(head.returncode, head.args, head.stdout, head.stderr)
+
+        @staticmethod
+        async def _git_head_oid(repo: GitRepository) -> str | None:
+            head_oid = await repo.run(
+                ["rev-parse", "--verify", "HEAD"],
+                check=False,
+                capture_output=True,
+            )
+            if head_oid.returncode == 0:
+                out = head_oid.stdout.strip()
+                oid = out.lower()
+                if len(oid) != 40 or any(char not in "0123456789abcdef" for char in oid):
+                    raise ValueError(f"invalid HEAD object ID: {out}")
+                return oid
+            err = head_oid.stderr.strip().lower()
+            unborn_markers = (
+                "needed a single revision",
+                "unknown revision or path not in the working tree",
+                "ambiguous argument 'head'",
+            )
+            if (
+                head_oid.returncode == 128 and
+                (not head_oid.stdout.strip() or any(marker in err for marker in unborn_markers))
+            ):
+                return None
+            raise CommandError(head_oid.returncode, head_oid.args, head_oid.stdout, head_oid.stderr)
+
+        @staticmethod
+        async def _git_refs_digest(repo: GitRepository) -> str:
+            refs = await repo.run(
+                ["for-each-ref", "--format=%(refname)%00%(objectname)", "--sort=refname", "refs"],
+                capture_output=True,
+            )
+            return hashlib.sha256(refs.stdout.encode("utf-8")).hexdigest()
+
+        @classmethod
+        async def load(cls, repo: GitRepository) -> Self:
+            """Create or load a durable checkpoint for a given repository."""
+            root = repo.root
+            repo_id_file = root / METADATA_REPO_ID
+            repo_id: UUIDHex | None = None
+            if repo_id_file.is_file():
+                try:
+                    repo_id = _check_uuid(repo_id_file.read_text(encoding="utf-8").strip())
+                except ValueError:
+                    repo_id = None
+            if repo_id is None:
+                repo_id = _check_uuid(uuid.uuid4().hex)
+            git_head_ref = await cls._git_head_ref(repo)
+            git_head_oid = await cls._git_head_oid(repo)
+            git_refs_digest = await cls._git_refs_digest(repo)
+            checkpoint = cls.file(root)
+            if not checkpoint.exists():
+                return cls.model_construct(
+                    version=REPO_CHECKPOINT_VERSION,
+                    root=root,
+                    repo_id=repo_id,
+                    git_head_ref=git_head_ref,
+                    git_head_oid=git_head_oid,
+                    git_refs_digest=git_refs_digest,
+                )
+            if not checkpoint.is_file():
+                raise FileExistsError(f"checkpoint path {checkpoint} exists but is not a file")
+            try:
+                self: Self | None = cls.model_validate_json(checkpoint.read_text(encoding="utf-8"))
+                if (
+                    self.version != REPO_CHECKPOINT_VERSION or
+                    self.root != root or
+                    self.git_head_ref != git_head_ref or
+                    self.git_head_oid != git_head_oid or
+                    self.git_refs_digest != git_refs_digest
+                ):
+                    self = None
+            except (OSError, ValueError, TypeError):
+                self = None
+            if self is None:
+                checkpoint.unlink(missing_ok=True)
+                return cls.model_construct(
+                    version=REPO_CHECKPOINT_VERSION,
+                    root=root,
+                    repo_id=repo_id,
+                    git_head_ref=git_head_ref,
+                    git_head_oid=git_head_oid,
+                    git_refs_digest=git_refs_digest,
+                )
+            return self
+
+        def dump(self) -> None:
+            atomic_write_text(
+                self.file(self.root),
+                json.dumps(self.model_dump(mode="json"), separators=(",", ":")) + "\n",
+                encoding="utf-8",
+            )
+
     path: Path
     deadline: float | None
     repo: GitRepository
     worktree: Path
-    repo_id: UUIDHex | None = None
+    checkpoint: Checkpoint
     volume: RepoVolume | None = None
-    ceph_path: AbsolutePosixPath | None = None
     credentials: RepoCredentials | None = None
-    mount_alias: Path | None = None
-    new_repo: bool = False
+
+    def sync_checkpoint(self, **changes: object) -> None:
+        """Update and persist checkpoint fields atomically."""
+        self.checkpoint = self.checkpoint.model_copy(update=changes)
+        self.checkpoint.dump()
 
 
-def _remaining_timeout(deadline: float | None, now: float) -> float | None:
-    """Compute stage-local timeout from an absolute convergence deadline."""
-    if deadline is None:
-        return None
-    return max(0.0, deadline - now)
-
-
-def _checkpoint_path(source_git_dir: Path) -> Path:
-    """Return deterministic checkpoint path for a source git directory."""
-    digest = hashlib.sha256(str(source_git_dir).encode("utf-8")).hexdigest()
-    return REPO_CHECKPOINT_DIR / f"{digest}.json"
-
-
-def _load_repo_checkpoint(path: Path) -> RepoCheckpoint | None:
-    """Load a repository checkpoint from disk.
-
-    Parameters
-    ----------
-    path : Path
-        Checkpoint JSON path.
-
-    Returns
-    -------
-    RepoCheckpoint | None
-        Parsed checkpoint, or None if the file does not exist or is malformed.
-    """
-    if not path.exists() or not path.is_file():
-        return None
+def _alias_points_to(path: Path, target: Path) -> bool:
+    if not path.is_symlink():
+        return False
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-        if not isinstance(data, dict):
-            raise ValueError("checkpoint JSON must be an object")
-        checkpoint = RepoCheckpoint.model_validate(data)
-    except Exception:
-        return None
-    if checkpoint.version != REPO_CHECKPOINT_VERSION:
-        return None
-    return checkpoint
-
-
-def _write_repo_checkpoint(path: Path, checkpoint: RepoCheckpoint) -> None:
-    """Persist one repository checkpoint atomically."""
-    atomic_write_text(
-        path,
-        json.dumps(checkpoint.model_dump(mode="json"), separators=(",", ":")) + "\n",
-        encoding="utf-8",
+        current = path.readlink()
+    except OSError:
+        return False
+    if not current.is_absolute():
+        current = path.parent / current
+    return Path(os.path.abspath(str(current.expanduser()))) == Path(
+        os.path.abspath(str(target.expanduser()))
     )
-
-
-def _is_checkpoint_stale(
-    checkpoint: RepoCheckpoint,
-    *,
-    source_path: Path,
-    source_git_dir: Path,
-    source_dev: int | None,
-    source_ino: int | None,
-) -> bool:
-    """Return True when a checkpoint does not match current source identity."""
-    if checkpoint.source_path != str(source_path):
-        return True
-    if checkpoint.source_git_dir != str(source_git_dir):
-        return True
-    if (
-        checkpoint.source_dev is not None and
-        source_dev is not None and
-        checkpoint.source_dev != source_dev
-    ):
-        return True
-    if (
-        checkpoint.source_ino is not None and
-        source_ino is not None and
-        checkpoint.source_ino != source_ino
-    ):
-        return True
-    return False
-
-
-async def _resolve_repo(
-    state: RepoState,
-) -> tuple[RepoCheckpoint | None, Path, Path, int | None, int | None]:
-    """Resolve repository target and load matching resume checkpoint.
-
-    Parameters
-    ----------
-    state : RepoState
-        Mutable convergence state to populate with resolved repository data.
-
-    Returns
-    -------
-    tuple[RepoCheckpoint | None, Path, Path, int | None, int | None]
-        Checkpoint (if valid), source path, source git-dir, source device ID, and
-        source inode ID used for stale-check matching.
-    """
-    repo, worktree = await GitRepository.resolve(state.path)
-    state.repo = repo
-    state.worktree = worktree
-    state.new_repo = not repo
-    if state.new_repo and (state.path.exists() or state.path.is_symlink()):
-        raise OSError(
-            f"cannot initialize repository at {state.path!r}: path is already occupied "
-            "by an existing filesystem entry"
-        )
-
-    source_path = repo.root if not state.new_repo else state.path
-    source_git_dir = repo.git_dir
-    source_dev: int | None = None
-    source_ino: int | None = None
-    stat_target = source_git_dir if source_git_dir.exists() else source_path
-    if stat_target.exists():
-        stat_info = stat_target.stat()
-        source_dev = int(stat_info.st_dev)
-        source_ino = int(stat_info.st_ino)
-
-    checkpoint_path = _checkpoint_path(source_git_dir)
-    checkpoint = _load_repo_checkpoint(checkpoint_path)
-    if checkpoint is not None and _is_checkpoint_stale(
-        checkpoint,
-        source_path=source_path,
-        source_git_dir=source_git_dir,
-        source_dev=source_dev,
-        source_ino=source_ino,
-    ):
-        checkpoint = None
-    if checkpoint is not None and checkpoint.phase == "complete":
-        checkpoint_path.unlink(missing_ok=True)
-        checkpoint = None
-    if checkpoint is not None:
-        state.repo_id = checkpoint.repo_id
-        state.ceph_path = checkpoint.ceph_path
-    return checkpoint, checkpoint_path, source_path, source_dev, source_ino
-
-
-async def _ensure_repo_id(
-    state: RepoState,
-    *,
-    checkpoint: RepoCheckpoint | None,
-    checkpoint_path: Path,
-    source_path: Path,
-    source_git_dir: Path,
-    source_dev: int | None,
-    source_ino: int | None,
-) -> RepoCheckpoint:
-    """Ensure a repository UUID is available and persisted to checkpoint state."""
-    repo_id_file = state.repo.root / METADATA_REPO_ID
-    if repo_id_file.is_file():
-        try:
-            state.repo_id = _check_uuid(repo_id_file.read_text(encoding="utf-8").strip())
-        except ValueError:
-            state.repo_id = None
-    if state.repo_id is None and checkpoint is not None:
-        state.repo_id = checkpoint.repo_id
-    if state.repo_id is None:
-        state.repo_id = _check_uuid(uuid.uuid4().hex)
-    checkpoint = RepoCheckpoint(
-        version=REPO_CHECKPOINT_VERSION,
-        source_path=str(source_path),
-        source_git_dir=str(source_git_dir),
-        source_dev=source_dev,
-        source_ino=source_ino,
-        repo_id=state.repo_id,
-        claim_name=checkpoint.claim_name if checkpoint is not None else None,
-        ceph_path=state.ceph_path,
-        phase="repo_id",
-    )
-    _write_repo_checkpoint(checkpoint_path, checkpoint)
-    return checkpoint
 
 
 async def _ensure_repo_volume(
     state: RepoState,
     *,
     yes: bool,
-    checkpoint: RepoCheckpoint,
-    checkpoint_path: Path,
-    source_path: Path,
-    source_git_dir: Path,
-    source_dev: int | None,
-    source_ino: int | None,
-) -> RepoCheckpoint:
-    """Ensure repository volume claim and Ceph path converge for the current repo ID."""
-    if state.repo_id is None:
-        raise OSError("repository ID is missing before volume convergence")
+    resources: set[Resource],
+) -> None:
+    """Ensure repository volume claim and Ceph path converge for the checkpoint repo ID."""
     loop = asyncio.get_running_loop()
     deadline = state.deadline
-    mount = None if state.new_repo else MountInfo.search(state.repo.root)
+    mount = MountInfo.search(state.repo.root)
 
     while True:
         volumes = await RepoVolume.get(
-            state.repo_id,
-            timeout=_remaining_timeout(deadline, loop.time()),
+            state.checkpoint.repo_id,
+            timeout=None if deadline is None else deadline - loop.time(),
         )
         matched_volume: RepoVolume | None = None
         matched_path: AbsolutePosixPath | None = None
@@ -753,7 +682,7 @@ async def _ensure_repo_volume(
             for volume in volumes:
                 try:
                     candidate = await volume.resolve_ceph_path(
-                        timeout=_remaining_timeout(deadline, loop.time()),
+                        timeout=None if deadline is None else deadline - loop.time(),
                     )
                 except (OSError, TimeoutError, CommandError):
                     continue
@@ -764,28 +693,43 @@ async def _ensure_repo_volume(
 
         if matched_volume is not None and matched_path is not None:
             state.volume = matched_volume
-            state.ceph_path = matched_path
-            break
+            state.sync_checkpoint(
+                claim_name=matched_volume.pvc.metadata.name,
+                ceph_path=matched_path,
+            )
+            return
+
+        # If we previously checkpointed a claim name, reuse that deterministic
+        # identity even when there is no active host mount to match against.
+        checkpoint_claim = state.checkpoint.claim_name
+        if checkpoint_claim is not None:
+            claimed = next(
+                (volume for volume in volumes if volume.pvc.metadata.name == checkpoint_claim),
+                None,
+            )
+            if claimed is not None:
+                ceph_path = await claimed.resolve_ceph_path(
+                    timeout=None if deadline is None else deadline - loop.time(),
+                )
+                state.volume = claimed
+                state.sync_checkpoint(
+                    claim_name=claimed.pvc.metadata.name,
+                    ceph_path=ceph_path,
+                )
+                return
 
         if volumes:
-            # Existing claims for this repo_id do not match the source mount identity;
-            # rotate to a fresh repo_id and retry claim convergence.
-            state.repo_id = _check_uuid(uuid.uuid4().hex)
-            checkpoint = RepoCheckpoint(
-                version=REPO_CHECKPOINT_VERSION,
-                source_path=str(source_path),
-                source_git_dir=str(source_git_dir),
-                source_dev=source_dev,
-                source_ino=source_ino,
-                repo_id=state.repo_id,
+            state.sync_checkpoint(
+                repo_id=_check_uuid(uuid.uuid4().hex),
                 claim_name=None,
                 ceph_path=None,
-                phase="repo_id",
+                mount_alias=None,
+                cutover_staged_link=None,
+                cutover_backup_path=None,
             )
-            _write_repo_checkpoint(checkpoint_path, checkpoint)
             continue
 
-        if not state.new_repo and not confirm(
+        if state.repo and state.checkpoint.claim_name is None and not confirm(
             "Bertrand found an existing unmanaged repository and needs to allocate a "
             "managed CephFS volume before conversion. Continue?\n[y/N] ",
             assume_yes=yes,
@@ -793,107 +737,94 @@ async def _ensure_repo_volume(
             raise PermissionError("repository conversion declined by user")
 
         state.volume = await RepoVolume.create(
-            repo_id=state.repo_id,
-            timeout=_remaining_timeout(deadline, loop.time()),
+            repo_id=state.checkpoint.repo_id,
+            timeout=None if deadline is None else deadline - loop.time(),
             size_request=DEFAULT_VOLUME_SIZE,
         )
-        state.ceph_path = await state.volume.resolve_ceph_path(
-            timeout=_remaining_timeout(deadline, loop.time()),
+        ceph_path = await state.volume.resolve_ceph_path(
+            timeout=None if deadline is None else deadline - loop.time(),
         )
-        break
-
-    checkpoint = RepoCheckpoint(
-        version=REPO_CHECKPOINT_VERSION,
-        source_path=str(source_path),
-        source_git_dir=str(source_git_dir),
-        source_dev=source_dev,
-        source_ino=source_ino,
-        repo_id=state.repo_id,
-        claim_name=state.volume.pvc.metadata.name if state.volume is not None else None,
-        ceph_path=state.ceph_path,
-        phase="volume_ready",
-    )
-    _write_repo_checkpoint(checkpoint_path, checkpoint)
-    return checkpoint
+        state.sync_checkpoint(
+            claim_name=state.volume.pvc.metadata.name,
+            ceph_path=ceph_path,
+        )
+        return
 
 
-async def _ensure_repo_credentials(state: RepoState) -> None:
+async def _ensure_repo_credentials(
+    state: RepoState,
+    *,
+    yes: bool,
+    resources: set[Resource],
+) -> None:
     """Ensure Ceph credentials exist for current repository identity."""
-    if state.repo_id is None or state.ceph_path is None:
-        raise OSError("repo volume must be resolved before credential convergence")
     loop = asyncio.get_running_loop()
+    ceph_path = state.checkpoint.ceph_path
+    if ceph_path is None:
+        raise OSError("repo volume must be resolved before credential convergence")
     state.credentials = await ensure_repo_credentials(
-        repo_id=state.repo_id,
-        ceph_path=state.ceph_path,
-        timeout=_remaining_timeout(state.deadline, loop.time()),
+        repo_id=state.checkpoint.repo_id,
+        ceph_path=ceph_path,
+        timeout=None if state.deadline is None else state.deadline - loop.time(),
     )
 
 
 async def _ensure_host_mount(
     state: RepoState,
     *,
-    checkpoint: RepoCheckpoint,
-    checkpoint_path: Path,
-    source_path: Path,
-    source_git_dir: Path,
-    source_dev: int | None,
-    source_ino: int | None,
-) -> RepoCheckpoint:
-    """Ensure host mount is attached for this repository identity."""
-    if state.repo_id is None or state.ceph_path is None or state.credentials is None:
-        raise OSError("host mount convergence requires repo ID, path, and credentials")
+    yes: bool,
+    resources: set[Resource],
+) -> None:
+    """Ensure host mount is attached and checkpointed for this repository identity."""
     loop = asyncio.get_running_loop()
+    ceph_path = state.checkpoint.ceph_path
+    if ceph_path is None or state.credentials is None:
+        raise OSError("host mount convergence requires resolved volume and credentials")
     target = state.repo.root
     if target.exists() and not target.is_symlink():
-        state.mount_alias = target.parent / f".{target.name}.bertrand.mount.{state.repo_id}"
+        mount_alias = target.parent / f".{target.name}.bertrand.mount.{state.checkpoint.repo_id}"
     else:
-        state.mount_alias = target
+        mount_alias = target
     with secretfile(state.credentials) as ceph_secretfile:
-        await RepoMount(repo_id=state.repo_id, ceph_path=state.ceph_path).mount(
-            state.mount_alias,
-            timeout=_remaining_timeout(state.deadline, loop.time()),
+        await RepoMount(repo_id=state.checkpoint.repo_id, ceph_path=ceph_path).mount(
+            mount_alias,
+            timeout=None if state.deadline is None else state.deadline - loop.time(),
             monitors=state.credentials.monitors,
             ceph_user=state.credentials.entity.removeprefix("client."),
             ceph_secretfile=ceph_secretfile,
         )
-    checkpoint = RepoCheckpoint(
-        version=REPO_CHECKPOINT_VERSION,
-        source_path=str(source_path),
-        source_git_dir=str(source_git_dir),
-        source_dev=source_dev,
-        source_ino=source_ino,
-        repo_id=state.repo_id,
-        claim_name=checkpoint.claim_name,
-        ceph_path=state.ceph_path,
-        phase="mount_ready",
-    )
-    _write_repo_checkpoint(checkpoint_path, checkpoint)
-    return checkpoint
+    state.sync_checkpoint(mount_alias=mount_alias)
 
 
 async def _ensure_bare_worktrees(
     state: RepoState,
     *,
     yes: bool,
-    checkpoint: RepoCheckpoint,
-    checkpoint_path: Path,
-    source_path: Path,
-    source_git_dir: Path,
-    source_dev: int | None,
-    source_ino: int | None,
-) -> RepoCheckpoint:
+    resources: set[Resource],
+) -> None:
     """Converge repository to Bertrand's bare+worktree layout."""
-    if state.mount_alias is None or state.repo_id is None or state.ceph_path is None:
-        raise OSError("bare-worktree convergence requires mounted repository state")
-    if state.credentials is None:
-        raise OSError("bare-worktree convergence requires repository credentials")
     loop = asyncio.get_running_loop()
     deadline = state.deadline
-    destination_root = state.mount_alias
+    ceph_path = state.checkpoint.ceph_path
+    mount_alias = state.checkpoint.mount_alias
+    if ceph_path is None or mount_alias is None or state.credentials is None:
+        raise OSError("bare-worktree convergence requires mounted repository credentials")
+    destination_root = mount_alias
     destination_repo = GitRepository(destination_root / ".git")
     source_repo = state.repo
+    if (
+        not source_repo and
+        state.checkpoint.cutover_backup_path is not None
+    ):
+        resumed_source = GitRepository(state.checkpoint.cutover_backup_path / ".git")
+        if resumed_source:
+            source_repo = resumed_source
 
-    if state.new_repo:
+    fresh_init = (
+        not source_repo and
+        state.checkpoint.cutover_backup_path is None
+    )
+    if fresh_init:
         if not destination_repo:
             branch = state.worktree.as_posix()
             await destination_repo.init(branch=branch, bare=True)
@@ -903,19 +834,11 @@ async def _ensure_bare_worktrees(
                 create_branch=True,
             )
         state.repo = destination_repo
-        checkpoint = RepoCheckpoint(
-            version=REPO_CHECKPOINT_VERSION,
-            source_path=str(source_path),
-            source_git_dir=str(source_git_dir),
-            source_dev=source_dev,
-            source_ino=source_ino,
-            repo_id=state.repo_id,
-            claim_name=checkpoint.claim_name,
-            ceph_path=state.ceph_path,
-            phase="layout_ready",
+        state.sync_checkpoint(
+            cutover_staged_link=None,
+            cutover_backup_path=None,
         )
-        _write_repo_checkpoint(checkpoint_path, checkpoint)
-        return checkpoint
+        return
 
     if destination_root != source_repo.root:
         if not confirm(
@@ -925,26 +848,30 @@ async def _ensure_bare_worktrees(
             assume_yes=yes,
         ):
             raise PermissionError("repository layout conversion declined by user")
-
-        clean = await run(
-            ["git", "-C", str(source_repo.root), "status", "--porcelain"],
-            capture_output=True,
-            timeout=_remaining_timeout(deadline, loop.time()),
-        )
-        if clean.stdout.strip():
-            raise OSError(
-                f"cannot convert repository at {source_repo.root}: worktree has "
-                "uncommitted changes"
+        if source_repo:
+            clean = await run(
+                ["git", "-C", str(source_repo.root), "status", "--porcelain"],
+                capture_output=True,
+                timeout=None if deadline is None else deadline - loop.time(),
             )
-
+            if clean.stdout.strip():
+                raise OSError(
+                    f"cannot convert repository at {source_repo.root}: worktree has "
+                    "uncommitted changes"
+                )
         if not destination_repo:
+            if not source_repo:
+                raise OSError(
+                    f"cannot resume repository conversion at {state.checkpoint.root}: "
+                    "source repository state is unavailable"
+                )
             await run(
                 ["git", "clone", "--mirror", str(source_repo.root), str(destination_repo.git_dir)],
                 capture_output=True,
-                timeout=_remaining_timeout(deadline, loop.time()),
+                timeout=None if deadline is None else deadline - loop.time(),
             )
             destination_repo = GitRepository(destination_root / ".git")
-        else:
+        elif source_repo:
             await run(
                 [
                     "git",
@@ -955,60 +882,83 @@ async def _ensure_bare_worktrees(
                     "+refs/*:refs/*",
                 ],
                 capture_output=True,
-                timeout=_remaining_timeout(deadline, loop.time()),
+                timeout=None if deadline is None else deadline - loop.time(),
             )
         await destination_repo.sync_worktrees()
 
-        checkpoint = RepoCheckpoint(
-            version=REPO_CHECKPOINT_VERSION,
-            source_path=str(source_path),
-            source_git_dir=str(source_git_dir),
-            source_dev=source_dev,
-            source_ino=source_ino,
-            repo_id=state.repo_id,
-            claim_name=checkpoint.claim_name,
-            ceph_path=state.ceph_path,
-            phase="cutover_ready",
+        original = state.checkpoint.root
+        hidden_mount = REPO_DIR / state.checkpoint.repo_id / REPO_MOUNT_EXT
+        staged_link = (
+            state.checkpoint.cutover_staged_link
+            if state.checkpoint.cutover_staged_link is not None
+            else original.parent / f".{original.name}.bertrand.link.{state.checkpoint.repo_id}.tmp"
         )
-        _write_repo_checkpoint(checkpoint_path, checkpoint)
+        backup = (
+            state.checkpoint.cutover_backup_path
+            if state.checkpoint.cutover_backup_path is not None
+            else original.parent / f".{original.name}.bertrand.backup.{state.checkpoint.repo_id}"
+        )
+        state.sync_checkpoint(
+            cutover_staged_link=staged_link,
+            cutover_backup_path=backup,
+        )
 
-        hidden_mount = REPO_DIR / state.repo_id / REPO_MOUNT_EXT
-        original = source_repo.root
-        staged_link = original.parent / f".{original.name}.bertrand.link.{state.repo_id}.tmp"
-        backup = original.parent / f".{original.name}.bertrand.backup.{state.repo_id}"
-        if backup.exists() or backup.is_symlink():
-            raise FileExistsError(
-                f"cannot cut over repository at {original}: backup path already exists "
-                f"({backup})"
-            )
-        atomic_symlink(hidden_mount, staged_link)
-        original.rename(backup)
-        try:
+        if original.exists() and original.is_symlink():
+            if not _alias_points_to(original, hidden_mount):
+                raise OSError(
+                    f"repository cutover path {original} is already a symlink, but does not "
+                    "target the expected mounted Ceph volume"
+                )
+        elif original.exists():
+            if backup.exists() or backup.is_symlink():
+                raise FileExistsError(
+                    f"cannot cut over repository at {original}: backup path already exists "
+                    f"({backup})"
+                )
+            atomic_symlink(hidden_mount, staged_link)
+            original.rename(backup)
+            try:
+                staged_link.rename(original)
+            except Exception as err:
+                if backup.exists() and not original.exists():
+                    backup.rename(original)
+                staged_link.unlink(missing_ok=True)
+                raise OSError(
+                    f"failed to atomically swap repository path at {original}"
+                ) from err
+        elif backup.exists() and backup.is_dir():
+            if not staged_link.exists():
+                atomic_symlink(hidden_mount, staged_link)
+            elif not _alias_points_to(staged_link, hidden_mount):
+                raise OSError(
+                    f"staged link {staged_link} exists but does not target expected "
+                    f"mount path {hidden_mount}"
+                )
             staged_link.rename(original)
-        except Exception as err:
-            backup.rename(original)
-            staged_link.unlink(missing_ok=True)
-            raise OSError(f"failed to atomically swap repository path at {original}") from err
+        else:
+            raise OSError(
+                f"cannot resume repository cutover at {original}: neither source path "
+                "nor conversion backup is available"
+            )
 
-        # Re-run mount convergence so alias registration reflects the final path.
         with secretfile(state.credentials) as ceph_secretfile:
-            await RepoMount(repo_id=state.repo_id, ceph_path=state.ceph_path).mount(
+            await RepoMount(repo_id=state.checkpoint.repo_id, ceph_path=ceph_path).mount(
                 original,
-                timeout=_remaining_timeout(deadline, loop.time()),
+                timeout=None if deadline is None else deadline - loop.time(),
                 monitors=state.credentials.monitors,
                 ceph_user=state.credentials.entity.removeprefix("client."),
                 ceph_secretfile=ceph_secretfile,
             )
-        if state.mount_alias != original:
+        if destination_root != original:
             try:
-                await RepoMount(repo_id=state.repo_id, ceph_path=state.ceph_path).unmount(
-                    state.mount_alias,
-                    timeout=_remaining_timeout(deadline, loop.time()),
+                await RepoMount(repo_id=state.checkpoint.repo_id, ceph_path=ceph_path).unmount(
+                    destination_root,
+                    timeout=None if deadline is None else deadline - loop.time(),
                     force=False,
                     lazy=False,
                 )
             except OSError:
-                state.mount_alias.unlink(missing_ok=True)
+                destination_root.unlink(missing_ok=True)
         try:
             shutil.rmtree(backup)
         except OSError as err:
@@ -1016,33 +966,32 @@ async def _ensure_bare_worktrees(
                 f"bertrand: warning: failed to delete conversion backup at {backup}: {err}",
                 file=sys.stderr,
             )
-        state.mount_alias = original
+        staged_link.unlink(missing_ok=True)
         state.repo = GitRepository(original / ".git")
+        state.sync_checkpoint(mount_alias=original)
     else:
         if destination_repo and await destination_repo.is_bare():
             await destination_repo.sync_worktrees()
             state.repo = destination_repo
 
-    checkpoint = RepoCheckpoint(
-        version=REPO_CHECKPOINT_VERSION,
-        source_path=str(source_path),
-        source_git_dir=str(source_git_dir),
-        source_dev=source_dev,
-        source_ino=source_ino,
-        repo_id=state.repo_id,
-        claim_name=checkpoint.claim_name,
-        ceph_path=state.ceph_path,
-        phase="layout_ready",
+    state.sync_checkpoint(
+        cutover_staged_link=None,
+        cutover_backup_path=None,
     )
-    _write_repo_checkpoint(checkpoint_path, checkpoint)
-    return checkpoint
 
 
-async def _ensure_repo_hooks(state: RepoState) -> None:
+async def _ensure_repo_hooks(
+    state: RepoState,
+    *,
+    yes: bool,
+    resources: set[Resource],
+) -> None:
     """Write repository metadata and install managed git hooks."""
-    if state.repo_id is None:
-        raise OSError("repository ID is missing before hook convergence")
-    atomic_write_text(state.repo.root / METADATA_REPO_ID, state.repo_id, encoding="utf-8")
+    atomic_write_text(
+        state.repo.root / METADATA_REPO_ID,
+        state.checkpoint.repo_id,
+        encoding="utf-8",
+    )
     await _install_git_hooks(state.repo)
 
 
@@ -1145,6 +1094,7 @@ async def _render_worktree(
 async def _render_config_artifacts(
     state: RepoState,
     *,
+    yes: bool,
     resources: set[Resource],
 ) -> None:
     """Converge rendered configuration artifacts for the current worktree."""
@@ -1153,11 +1103,16 @@ async def _render_config_artifacts(
         state.repo,
         state.worktree,
         resources=resources,
-        timeout=_remaining_timeout(state.deadline, loop.time()),
+        timeout=None if state.deadline is None else state.deadline - loop.time(),
     )
 
 
-async def _make_initial_commit(state: RepoState) -> None:
+async def _make_initial_commit(
+    state: RepoState,
+    *,
+    yes: bool,
+    resources: set[Resource],
+) -> None:
     """Create initial commit when repository is empty and staged diff is non-empty."""
     loop = asyncio.get_running_loop()
     worktree_path = state.repo.root / state.worktree
@@ -1166,7 +1121,7 @@ async def _make_initial_commit(state: RepoState) -> None:
         cwd=worktree_path,
         check=False,
         capture_output=True,
-        timeout=_remaining_timeout(state.deadline, loop.time()),
+        timeout=None if state.deadline is None else state.deadline - loop.time(),
     )
     if head.returncode == 0:
         return  # repository already has commits
@@ -1180,14 +1135,14 @@ async def _make_initial_commit(state: RepoState) -> None:
         ["git", "add", "-A"],
         cwd=worktree_path,
         capture_output=True,
-        timeout=_remaining_timeout(state.deadline, loop.time()),
+        timeout=None if state.deadline is None else state.deadline - loop.time(),
     )
     staged = await run(
         ["git", "diff", "--cached", "--quiet"],
         cwd=worktree_path,
         check=False,
         capture_output=True,
-        timeout=_remaining_timeout(state.deadline, loop.time()),
+        timeout=None if state.deadline is None else state.deadline - loop.time(),
     )
     if staged.returncode == 0:
         return  # nothing staged after render
@@ -1200,120 +1155,30 @@ async def _make_initial_commit(state: RepoState) -> None:
         ["git", "commit", "--quiet", "-m", "Initial commit"],
         cwd=worktree_path,
         capture_output=True,
-        timeout=_remaining_timeout(state.deadline, loop.time()),
+        timeout=None if state.deadline is None else state.deadline - loop.time(),
     )
 
 
 async def _finalize(
+    state: RepoState,
     *,
-    checkpoint: RepoCheckpoint,
-    checkpoint_path: Path,
+    yes: bool,
+    resources: set[Resource],
 ) -> None:
     """Mark convergence complete and remove resume checkpoint."""
-    complete = checkpoint.model_copy(update={"phase": "complete"})
-    _write_repo_checkpoint(checkpoint_path, complete)
-    checkpoint_path.unlink(missing_ok=True)
+    state.checkpoint.file(state.checkpoint.root).unlink(missing_ok=True)
 
 
-async def _converge_repository(
-    path: Path,
-    *,
-    resources: set[Resource],
-    timeout: float | None,
-    yes: bool,
-) -> tuple[GitRepository, Path, bool]:
-    """Run repository convergence stages in a fixed forward order.
-
-    Parameters
-    ----------
-    path : Path
-        Absolute target path passed to `bertrand init`.
-    resources : set[Resource]
-        Resource set selected by CLI flags.
-    timeout : float | None
-        Maximum total convergence timeout in seconds.  If None, wait indefinitely.
-    yes : bool
-        Whether confirmation prompts should be auto-accepted.
-
-    Returns
-    -------
-    tuple[GitRepository, Path, bool]
-        Converged repository object, selected worktree, and whether the repository was
-        newly initialized in this run.
-    """
-    loop = asyncio.get_running_loop()
-    deadline = None if timeout is None else loop.time() + timeout
-    state = RepoState(
-        path=path,
-        deadline=deadline,
-        repo=GitRepository(path / ".git"),
-        worktree=Path("."),
-    )
-
-    # resolve_repo
-    checkpoint, checkpoint_path, source_path, source_dev, source_ino = await _resolve_repo(state)
-
-    # ensure_repo_id
-    checkpoint = await _ensure_repo_id(
-        state,
-        checkpoint=checkpoint,
-        checkpoint_path=checkpoint_path,
-        source_path=source_path,
-        source_git_dir=state.repo.git_dir,
-        source_dev=source_dev,
-        source_ino=source_ino,
-    )
-
-    # ensure_repo_volume
-    checkpoint = await _ensure_repo_volume(
-        state,
-        yes=yes,
-        checkpoint=checkpoint,
-        checkpoint_path=checkpoint_path,
-        source_path=source_path,
-        source_git_dir=state.repo.git_dir,
-        source_dev=source_dev,
-        source_ino=source_ino,
-    )
-
-    # ensure_repo_credentials
-    await _ensure_repo_credentials(state)
-
-    # ensure_host_mount
-    checkpoint = await _ensure_host_mount(
-        state,
-        checkpoint=checkpoint,
-        checkpoint_path=checkpoint_path,
-        source_path=source_path,
-        source_git_dir=state.repo.git_dir,
-        source_dev=source_dev,
-        source_ino=source_ino,
-    )
-
-    # ensure_bare_worktrees
-    checkpoint = await _ensure_bare_worktrees(
-        state,
-        yes=yes,
-        checkpoint=checkpoint,
-        checkpoint_path=checkpoint_path,
-        source_path=source_path,
-        source_git_dir=state.repo.git_dir,
-        source_dev=source_dev,
-        source_ino=source_ino,
-    )
-
-    # ensure_repo_hooks
-    await _ensure_repo_hooks(state)
-
-    # render_config_artifacts
-    await _render_config_artifacts(state, resources=resources)
-
-    # make_initial_commit
-    await _make_initial_commit(state)
-
-    # finalize
-    await _finalize(checkpoint=checkpoint, checkpoint_path=checkpoint_path)
-    return state.repo, state.worktree, state.new_repo
+REPO_STAGES: tuple[Callable[..., Awaitable[None]], ...] = (
+    _ensure_repo_volume,
+    _ensure_repo_credentials,
+    _ensure_host_mount,
+    _ensure_bare_worktrees,
+    _ensure_repo_hooks,
+    _render_config_artifacts,
+    _make_initial_commit,
+    _finalize,
+)
 
 
 ###################
@@ -1372,7 +1237,7 @@ async def bertrand_init(
     if timeout is not None and timeout <= 0:
         raise TimeoutError("timed out before checking host bootstrap")
 
-    # bootstrap runtime control plane if needed
+    # bootstrap host runtime control plane (persistent, system-wide)
     async with Lock(
         INIT_LOCK,
         timeout=TIMEOUT,
@@ -1392,55 +1257,67 @@ async def bertrand_init(
                 state = InitState(version=INIT_STATE_VERSION)
                 if InitState.backend_trustworthy():
                     state.dump()
-
-        # run any unfinished stages
         for stage, step in INIT_STAGES[index:]:
             await step(state, yes)
             state.stage = stage
             if InitState.backend_trustworthy():
                 state.dump()
 
+        # start both clusters if they are not already running, and link them via rook-ceph
+        loop = asyncio.get_running_loop()
+        deadline = None if timeout is None else loop.time() + timeout
+        await start_microceph(timeout=None if deadline is None else deadline - loop.time())
+        await start_microk8s(timeout=None if deadline is None else deadline - loop.time())
+        await link_kube_ceph(timeout=None if deadline is None else deadline - loop.time())
+
     # if no project root is provided, then we're done
     if path is None:
         return
-    path = path.expanduser().resolve()
-    loop = asyncio.get_running_loop()
-    deadline = None if timeout is None else loop.time() + timeout
 
-    # fail fast if required tools are missing, and validate the resources to enable at
-    # the worktree path
-    if not shutil.which("git"):
-        raise OSError(
-            "Bertrand requires 'git' to initialize a project repository, but it was "
-            "not found in PATH."
-        )
+    # fail fast if required tools are missing, and validate the resources to enable
+    # at the worktree path
     resources: set[Resource] = {RESOURCE_NAMES["bertrand"]}
     for spec in enable:
         for component in spec.split(","):
             r = RESOURCE_NAMES.get(component.strip())
             if r is None:
                 raise ValueError(
-                    f"unknown resource '{component}' - Options are:\n"
+                    f"unknown resource '{component}'.  Options are:\n"
                     f"{'\n'.join(f'    {name}' for name in sorted(RESOURCE_NAMES))}"
                 )
             resources.add(r)
 
-    # serialize runtime + repository convergence so checkpoint updates have one writer.
-    async with Lock(
-        INIT_LOCK,
-        timeout=TIMEOUT,
-        mode="local",
-        privileges=INIT_LOCK_MODE,
-    ):
-        # start both clusters if they are not already running, and link them via rook-ceph
-        await start_microceph(timeout=None if deadline is None else deadline - loop.time())
-        await start_microk8s(timeout=None if deadline is None else deadline - loop.time())
-        await link_kube_ceph(timeout=None if deadline is None else deadline - loop.time())
-
-        # converge repository state onto Bertrand's managed CephFS-backed layout
-        await _converge_repository(
-            path,
-            resources=resources,
-            timeout=None if deadline is None else deadline - loop.time(),
-            yes=yes,
+    # resolve path into parent git repository and relative worktree, then synchronize
+    # uniquely for each repository path to limit global init lock contention
+    if not shutil.which("git"):
+        raise OSError(
+            "Bertrand requires 'git' to initialize a project repository, but it "
+            "was not found in PATH."
         )
+    repo, worktree = await GitRepository.resolve(
+        path.expanduser().resolve()
+    )
+    async with RepoState.Checkpoint.lock(
+        repo.root,
+        timeout=TIMEOUT if deadline is None else deadline - loop.time()
+    ):
+        if repo and await repo.dirty():
+            raise OSError(
+                f"repository at {repo.root} has uncommitted changes; please commit or "
+                "stash them before calling `bertrand init`."
+            )
+
+        # create or load checkpoint for this repository path
+        checkpoint = await RepoState.Checkpoint.load(repo)
+        state = RepoState(
+            path=path.expanduser().resolve(),
+            deadline=deadline,
+            repo=repo,
+            worktree=worktree,
+            checkpoint=checkpoint,
+        )
+
+        # execute all idempotent convergence stages in sequence, allowing recovery from
+        # previous runs
+        for stage in REPO_STAGES:
+            await stage(state, yes=yes, resources=resources)

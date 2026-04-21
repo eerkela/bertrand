@@ -3975,6 +3975,45 @@ class GitRepository:
             env=env,
         )
 
+    async def dirty(self) -> bool:
+        """Check whether this repository has uncommitted changes.
+
+        Returns
+        -------
+        bool
+            `True` if any checked-out worktree for this repository has uncommitted
+            changes, or `False` otherwise. Non-bare repositories are checked directly
+            at `self.root`. Bare repositories are checked by scanning every registered
+            worktree. Bare repositories with zero worktrees are considered clean.
+
+        Raises
+        ------
+        CommandError
+            If the git command fails.
+        OSError
+            If worktree inspection fails.
+        """
+        if not await self.is_bare():
+            result = await self.run(
+                ["status", "--porcelain"],
+                capture_output=True,
+                cwd=self.root,
+            )
+            return bool(result.stdout.strip())
+
+        # Bare repositories do not have their own worktree; check each attached
+        # worktree under a sanitized git environment instead.
+        env = await self._strip_env()
+        for wt in await self.worktrees():
+            result = await run(
+                ["git", "-C", str(wt.path), "status", "--porcelain"],
+                capture_output=True,
+                env=env,
+            )
+            if result.stdout.strip():
+                return True
+        return False
+
     async def git_path(self, path: Path, *, cwd: Path | None = None) -> Path:
         """Resolve a git-path using `git rev-parse --git-path`.
 
