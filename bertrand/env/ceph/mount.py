@@ -199,9 +199,7 @@ class RepoMount:
             target = path.readlink()
         except OSError:
             return False
-        if not target.is_absolute():
-            target = path.parent / target
-        return RepoMount._alias_path(target) == RepoMount._alias_path(mount_path)
+        return target.is_absolute() and target == mount_path
 
     def _load_aliases(self) -> set[Path]:
         root = REPO_DIR / self.repo_id

@@ -9,7 +9,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path, PosixPath
-from typing import Annotated
+from typing import Annotated, Self
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -18,6 +18,7 @@ from ..run import RUN_DIR, CommandError, ceph, start_microceph
 
 REPO_FS_NAME = "ceph"
 REPO_ENTITY_PREFIX = "bertrand-repo-"
+REPO_ENTITY_NAMESPACE = "client"
 MON_ENDPOINT_RE = re.compile(r"^(?:v[12]:)?(?P<addr>.+)$")
 
 
@@ -94,7 +95,7 @@ class CephMonitors(BaseModel):
                     out.append(endpoint)
 
             # older format: mons[].addr = "v2:x:3300/0,v1:x:6789/0"
-            elif mon.addr:
+            if mon.addr:
                 for token in mon.addr.split(","):
                     endpoint = self._extract_addr_token(token).strip()
                     if not self._is_host_port(endpoint) or endpoint in seen:
@@ -151,252 +152,267 @@ class RepoCredentials:
     ----------
     repo_id : str
         Repository UUID that these credentials are associated with.
+    user : str
+        Unqualified Ceph client user name used by kernel mount operations (for
+        example, `name=<user>`).
     entity : str
-        A Ceph entity derived from `repo_id`, which tracks the per-repository user
-        identity in the Ceph cluster.
+        Canonical CephX entity name derived from `repo_id` in fully-qualified form
+        (for example, `client.<user>`), used for Ceph auth DB operations.
     key : str
         CephX key for the repository entity.
     monitors : tuple[str, ...]
         Ordered Ceph monitor endpoints in `host:port` format.
     """
     repo_id: UUIDHex
+    user: str
     entity: str
     key: str
     monitors: tuple[str, ...]
 
+    @classmethod
+    async def create(
+        cls,
+        repo_id: UUIDHex,
+        *,
+        ceph_path: PosixPath,
+        timeout: float | None,
+    ) -> Self:
+        """Ensure per-repo Ceph credentials exist and return fresh auth material.
 
-async def ensure_repo_credentials(
-    repo_id: UUIDHex,
-    *,
-    ceph_path: PosixPath,
-    timeout: float | None,
-) -> RepoCredentials:
-    """Ensure per-repo Ceph credentials exist and return fresh auth material.
+        Parameters
+        ----------
+        repo_id : str
+            Repository UUID to ensure credentials for.
+        ceph_path : PosixPath
+            CephFS path prefix to authorize this identity for (for example, `/myrepo`).
+        timeout : float | None
+            Maximum time to wait for the cluster to be ready and credentials to
+            materialize, in seconds.  If None, wait indefinitely.
 
-    Parameters
-    ----------
-    repo_id : str
-        Repository UUID to ensure credentials for.
-    ceph_path : PosixPath
-        CephFS path prefix to authorize this identity for (for example, `/myrepo`).
-    timeout : float | None
-        Maximum time to wait for the cluster to be ready and credentials to
-        materialize, in seconds.  If None, wait indefinitely.
+        Returns
+        -------
+        RepoCredentials
+            Fresh credentials for this repository identity.  The credentials will be
+            created if they do not already exist.
 
-    Returns
-    -------
-    RepoCredentials
-        Fresh credentials for this repository identity.  The credentials will be
-        created if they do not already exist.
+        Notes
+        -----
+        This function is idempotent and lock-free, and the credentials it returns are
+        bounded to the lifetime of a corresponding CephFS repository volume, which is only
+        removed explicitly deleted via the CLI and no active reference exists in the
+        cluster.  As a result, concurrent ensure/delete operations for the same `repo_id`
+        should never occur under normal operation, and if they do, they should fail
+        gracefully.
+        """
+        if timeout is not None and timeout < 0:
+            raise TimeoutError("timeout must be non-negative")
+        repo_id = _check_uuid(repo_id)
+        if not ceph_path.parts:
+            raise ValueError("Ceph repository path cannot be empty")
+        if not ceph_path.is_absolute():
+            ceph_path = PosixPath("/") / ceph_path
 
-    Notes
-    -----
-    This function is idempotent and lock-free, and the credentials it returns are
-    bounded to the lifetime of a corresponding CephFS repository volume, which is only
-    removed explicitly deleted via the CLI and no active reference exists in the
-    cluster.  As a result, concurrent ensure/delete operations for the same `repo_id`
-    should never occur under normal operation, and if they do, they should fail
-    gracefully.
-    """
-    if timeout is not None and timeout < 0:
-        raise TimeoutError("timeout must be non-negative")
-    repo_id = _check_uuid(repo_id)
-    if not ceph_path.parts:
-        raise ValueError("Ceph repository path cannot be empty")
-    if not ceph_path.is_absolute():
-        ceph_path = PosixPath("/") / ceph_path
-    entity = f"{REPO_ENTITY_PREFIX}{repo_id}"
-    loop = asyncio.get_running_loop()
-    deadline = None if timeout is None else loop.time() + timeout
+        user = f"{REPO_ENTITY_PREFIX}{repo_id}"
+        entity = f"{REPO_ENTITY_NAMESPACE}.{user}"
+        if not entity.startswith(f"{REPO_ENTITY_NAMESPACE}."):
+            raise ValueError(
+                f"Ceph entity must be namespaced as {REPO_ENTITY_NAMESPACE!r}: {entity!r}"
+            )
+        loop = asyncio.get_running_loop()
+        deadline = None if timeout is None else loop.time() + timeout
 
-    # bootstrap the microceph cluster if it's not already running
-    await start_microceph(timeout=None if deadline is None else deadline - loop.time())
+        # bootstrap the microceph cluster if it's not already running
+        await start_microceph(timeout=None if deadline is None else deadline - loop.time())
 
-    # `fs authorize` is idempotent and converges CephX caps for this identity.
-    await ceph(
-        ["fs", "authorize", REPO_FS_NAME, entity, str(ceph_path), "rw"],
-        timeout=None if deadline is None else deadline - loop.time(),
-        capture_output=True,
-    )
-
-    # `fs authorize` should materialize a key for this entity if it didn't already
-    # exist.
-    key = await _get_key(
-        entity,
-        timeout=None if deadline is None else deadline - loop.time(),
-    )
-    if key is None:
-        raise OSError(
-            f"Ceph authorization did not materialize credentials for {entity!r}"
+        # `fs authorize` is idempotent and converges CephX caps for this identity.
+        await ceph(
+            ["fs", "authorize", REPO_FS_NAME, entity, str(ceph_path), "rw"],
+            timeout=None if deadline is None else deadline - loop.time(),
+            capture_output=True,
         )
 
-    # retrieve current monitor endpoints; this ensures the caller has enough
-    # information to confidently connect to and mount the repository using the
-    # returned credentials.
-    monitors = await _get_monitors(
-        timeout=None if deadline is None else deadline - loop.time()
-    )
-    return RepoCredentials(
-        repo_id=repo_id,
-        entity=entity,
-        key=key,
-        monitors=monitors,
-    )
+        # `fs authorize` should materialize a key for this entity if it didn't already
+        # exist.
+        key = await _get_key(
+            entity,
+            timeout=None if deadline is None else deadline - loop.time(),
+        )
+        if key is None:
+            raise OSError(
+                f"Ceph authorization did not materialize credentials for {entity!r}"
+            )
 
+        # retrieve current monitor endpoints; this ensures the caller has enough
+        # information to confidently connect to and mount the repository using the
+        # returned credentials.
+        monitors = await _get_monitors(
+            timeout=None if deadline is None else deadline - loop.time()
+        )
+        return cls(
+            repo_id=repo_id,
+            user=user,
+            entity=entity,
+            key=key,
+            monitors=monitors,
+        )
 
-async def get_repo_credentials(
-    repo_id: UUIDHex,
-    *,
-    timeout: float | None,
-) -> RepoCredentials | None:
-    """Get existing per-repo Ceph credentials without creating new identities.
+    @classmethod
+    async def get(
+        cls,
+        repo_id: UUIDHex,
+        *,
+        timeout: float | None,
+    ) -> Self | None:
+        """Get existing per-repo Ceph credentials without creating new identities.
 
-    Parameters
-    ----------
-    repo_id : str
-        Repository UUID to get credentials for.
-    timeout : float | None
-        Maximum time to wait for the cluster to be ready and credentials to
-        materialize, in seconds.  If None, wait indefinitely.
+        Parameters
+        ----------
+        repo_id : str
+            Repository UUID to get credentials for.
+        timeout : float | None
+            Maximum time to wait for the cluster to be ready and credentials to
+            materialize, in seconds.  If None, wait indefinitely.
 
-    Returns
-    -------
-    RepoCredentials | None
-        Fresh credentials for this repository identity, or None if credentials do not
-        exist.
-    """
-    if timeout is not None and timeout < 0:
-        raise TimeoutError("timeout must be non-negative")
-    repo_id = _check_uuid(repo_id)
-    entity = f"{REPO_ENTITY_PREFIX}{repo_id}"
-    loop = asyncio.get_running_loop()
-    deadline = None if timeout is None else loop.time() + timeout
+        Returns
+        -------
+        RepoCredentials | None
+            Fresh credentials for this repository identity, or None if credentials do not
+            exist.
+        """
+        if timeout is not None and timeout < 0:
+            raise TimeoutError("timeout must be non-negative")
 
-    # bootstrap the microceph cluster if it's not already running
-    await start_microceph(timeout=None if deadline is None else deadline - loop.time())
+        repo_id = _check_uuid(repo_id)
+        user = f"{REPO_ENTITY_PREFIX}{repo_id}"
+        entity = f"{REPO_ENTITY_NAMESPACE}.{user}"
+        if not entity.startswith(f"{REPO_ENTITY_NAMESPACE}."):
+            raise ValueError(
+                f"Ceph entity must be namespaced as {REPO_ENTITY_NAMESPACE!r}: {entity!r}"
+            )
+        loop = asyncio.get_running_loop()
+        deadline = None if timeout is None else loop.time() + timeout
 
-    # get repository credentials if they exist
-    key = await _get_key(
-        entity,
-        timeout=None if deadline is None else deadline - loop.time(),
-    )
-    if key is None:
-        return None
+        # bootstrap the microceph cluster if it's not already running
+        await start_microceph(timeout=None if deadline is None else deadline - loop.time())
 
-    # retrieve current monitor endpoints
-    monitors = await _get_monitors(
-        timeout=None if deadline is None else deadline - loop.time()
-    )
-    return RepoCredentials(
-        repo_id=repo_id,
-        entity=entity,
-        key=key,
-        monitors=monitors,
-    )
+        # get repository credentials if they exist
+        key = await _get_key(
+            entity,
+            timeout=None if deadline is None else deadline - loop.time(),
+        )
+        if key is None:
+            return None
 
+        # retrieve current monitor endpoints
+        monitors = await _get_monitors(
+            timeout=None if deadline is None else deadline - loop.time()
+        )
+        return cls(
+            repo_id=repo_id,
+            user=user,
+            entity=entity,
+            key=key,
+            monitors=monitors,
+        )
 
-# TODO: deleting the credentials for a volume should only occur after deleting the
-# volume itself, which can only occur when there are zero active pods referencing it,
-# and the user explicitly deletes that volume via the CLI.  When that occurs, I should
-# also trigger each node in the cluster to unmount the volume and delete any local
-# symlinks referencing it, then proceed to delete its credentials.
+    # TODO: deleting the credentials for a volume should only occur after deleting the
+    # volume itself, which can only occur when there are zero active pods referencing it,
+    # and the user explicitly deletes that volume via the CLI.  When that occurs, I should
+    # also trigger each node in the cluster to unmount the volume and delete any local
+    # symlinks referencing it, then proceed to delete its credentials.
 
+    async def delete(self, *, timeout: float | None) -> bool:
+        """Delete per-repo Ceph credentials if they exist.
 
-async def delete_repo_credentials(repo_id: UUIDHex, *, timeout: float | None) -> bool:
-    """Delete per-repo Ceph credentials if they exist.
+        Parameters
+        ----------
+        timeout : float | None
+            Maximum time to wait for the cluster to be ready and credentials to be deleted,
+            in seconds.  If None, wait indefinitely.
 
-    Parameters
-    ----------
-    repo_id : str
-        Repository UUID to delete credentials for.
-    timeout : float | None
-        Maximum time to wait for the cluster to be ready and credentials to be deleted,
-        in seconds.  If None, wait indefinitely.
+        Returns
+        -------
+        bool
+            True if credentials were deleted, False if credentials did not exist.
 
-    Returns
-    -------
-    bool
-        True if credentials were deleted, False if credentials did not exist.
+        Notes
+        -----
+        This function intentionally uses eventual-consistency semantics.  Concurrent
+        ensure/delete operations for the same `repo_id` may race in Ceph's auth DB.
+        Callers should retry and revalidate on transient auth failures.
+        """
+        if timeout is not None and timeout < 0:
+            raise TimeoutError("timeout must be non-negative")
+        repo_id = self.repo_id
+        user = f"{REPO_ENTITY_PREFIX}{repo_id}"
+        entity = f"{REPO_ENTITY_NAMESPACE}.{user}"
+        if not entity.startswith(f"{REPO_ENTITY_NAMESPACE}."):
+            raise ValueError(
+                f"Ceph entity must be namespaced as {REPO_ENTITY_NAMESPACE!r}: {entity!r}"
+            )
+        loop = asyncio.get_running_loop()
+        deadline = None if timeout is None else loop.time() + timeout
 
-    Notes
-    -----
-    This function intentionally uses eventual-consistency semantics.  Concurrent
-    ensure/delete operations for the same `repo_id` may race in Ceph's auth DB.
-    Callers should retry and revalidate on transient auth failures.
-    """
-    if timeout is not None and timeout < 0:
-        raise TimeoutError("timeout must be non-negative")
-    repo_id = _check_uuid(repo_id)
-    entity = f"{REPO_ENTITY_PREFIX}{repo_id}"
-    loop = asyncio.get_running_loop()
-    deadline = None if timeout is None else loop.time() + timeout
+        # bootstrap the microceph cluster if it's not already running
+        await start_microceph(timeout=None if deadline is None else deadline - loop.time())
 
-    # bootstrap the microceph cluster if it's not already running
-    await start_microceph(timeout=None if deadline is None else deadline - loop.time())
+        result = await ceph(
+            ["auth", "del", entity],
+            timeout=None if deadline is None else deadline - loop.time(),
+            check=False,
+            capture_output=True,
+        )
+        if result.returncode == 0:
+            return True
+        detail = f"{result.stdout}\n{result.stderr}".lower()
+        if (
+            "not found" in detail or
+            "does not exist" in detail or
+            "enoent" in detail or
+            "error enoent" in detail
+        ):
+            return False
+        # NOTE: we intentionally do not print the error here, since it could possibly
+        # expose a secret key (although unlikely)
+        raise OSError(f"failed to delete Ceph credentials for {entity!r}")
 
-    result = await ceph(
-        ["auth", "del", entity],
-        timeout=None if deadline is None else deadline - loop.time(),
-        check=False,
-        capture_output=True,
-    )
-    if result.returncode == 0:
-        return True
-    detail = f"{result.stdout}\n{result.stderr}".lower()
-    if (
-        "not found" in detail or
-        "does not exist" in detail or
-        "enoent" in detail or
-        "error enoent" in detail
-    ):
-        return False
-    # NOTE: we intentionally do not print the error here, since it could possibly
-    # expose a secret key (although unlikely)
-    raise OSError(f"failed to delete Ceph credentials for {entity!r}")
+    @contextmanager
+    def secretfile(self) -> Iterator[Path]:
+        """Yield a temporary secretfile path for kernel Ceph mount operations.
 
+        The file is created with private mode (0600), stored under Bertrand's runtime
+        directory (`RUN_DIR`) which is expected to be tmpfs-backed, contains only the Ceph
+        key, and is always deleted when the context exits.
 
-@contextmanager
-def secretfile(credentials: RepoCredentials) -> Iterator[Path]:
-    """Yield a temporary secretfile path for kernel Ceph mount operations.
+        Yields
+        ------
+        Path
+            The path to the temporary secretfile, which is valid only for the duration of
+            the context.
+        """
+        key = self.key.strip()
+        if not key:
+            raise ValueError("repository credentials key cannot be empty")
 
-    The file is created with private mode (0600), stored under Bertrand's runtime
-    directory (`RUN_DIR`) which is expected to be tmpfs-backed, contains only the Ceph
-    key, and is always deleted when the context exits.
+        # create private tempfile
+        fd: int | None = None
+        path: Path | None = None
+        try:
+            fd, name = tempfile.mkstemp(prefix="bertrand-ceph-secret.", dir=RUN_DIR)
+            path = Path(name)
+            os.fchmod(fd, 0o600)
+            os.write(fd, f"{key}\n".encode(encoding="utf-8"))  # noqa: UP012
+            os.fsync(fd)
+            os.close(fd)
+            fd = None
+            yield path
 
-    Parameters
-    ----------
-    credentials : RepoCredentials
-        The repository credentials to write to the secretfile.
-
-    Yields
-    ------
-    Path
-        The path to the temporary secretfile, which is valid only for the duration of
-        the context.
-    """
-    key = credentials.key.strip()
-    if not key:
-        raise ValueError("repository credentials key cannot be empty")
-
-    # create private tempfile
-    fd: int | None = None
-    path: Path | None = None
-    try:
-        fd, name = tempfile.mkstemp(prefix="bertrand-ceph-secret.", dir=RUN_DIR)
-        path = Path(name)
-        os.fchmod(fd, 0o600)
-        os.write(fd, f"{key}\n".encode(encoding="utf-8"))  # noqa: UP012
-        os.fsync(fd)
-        os.close(fd)
-        fd = None
-        yield path
-
-    # unconditionally delete the file on context exit
-    finally:
-        if fd is not None:
-            try:
-                os.close(fd)
-            except OSError:
-                pass
-        if path is not None:
-            path.unlink(missing_ok=True)
+        # unconditionally delete the file on context exit
+        finally:
+            if fd is not None:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+            if path is not None:
+                path.unlink(missing_ok=True)
