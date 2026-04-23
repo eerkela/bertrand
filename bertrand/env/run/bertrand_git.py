@@ -3830,10 +3830,7 @@ class GitRepository:
                     None
                 )
                 if candidate is None:
-                    raise OSError(
-                        f"HEAD branch '{head}' is not checked out in any worktree of "
-                        f"repository: {path}"
-                    )
+                    return repo, Path(head)
                 if not candidate.is_relative_to(path):
                     raise OSError(
                         f"resolved worktree path '{candidate}' is not contained within "
@@ -3868,6 +3865,14 @@ class GitRepository:
             ).returncode == 0
         )
 
+    def __hash__(self) -> int:
+        return hash(self.git_dir)
+
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, GitRepository):
+            return self.git_dir == other.git_dir
+        return NotImplemented
+
     async def init(self, *, branch: str | None = None, bare: bool = True) -> None:
         """Initialize a new Git repository at the given path.
 
@@ -3894,6 +3899,70 @@ class GitRepository:
             cmd.append("--bare")
         cmd.append(str(self.git_dir))
         await run(cmd)
+
+    async def mirror_from(
+        self,
+        source: GitRepository,
+        *,
+        timeout: float | None,
+    ) -> None:
+        """Converge this repository from a source using mirror semantics.
+
+        This is a repository-convergence helper, not a generic clone API. It performs
+        first-time mirror initialization when the destination is uninitialized, and
+        subsequent full-ref mirror updates on reruns.
+
+        Parameters
+        ----------
+        source : GitRepository
+            Source repository whose refs/object graph should be mirrored.
+        timeout : float | None
+            Maximum runtime command timeout in seconds. If None, wait indefinitely.
+
+        Raises
+        ------
+        TimeoutError
+            If `timeout` is negative.
+        CommandError
+            If clone/fetch commands fail.
+        """
+        if timeout is not None and timeout < 0:
+            raise TimeoutError("timeout must be non-negative")
+        if not source:
+            raise OSError(
+                f"cannot mirror from uninitialized source repository: {source.git_dir}"
+            )
+        loop = asyncio.get_event_loop()
+        deadline = None if timeout is None else loop.time() + timeout
+
+        # if this is a fresh repository, just clone directly to initialize it
+        if not self:
+            await run(
+                [
+                    "git",
+                    "clone",
+                    "--mirror",
+                    str(source.root),
+                    str(self.git_dir),
+                ],
+                capture_output=True,
+                timeout=None if deadline is None else deadline - loop.time(),
+            )
+
+        # otherwise, fetch and mirror all refs to converge with the source repository
+        else:
+            await run(
+                [
+                    "git",
+                    "--git-dir", str(self.git_dir),
+                    "fetch",
+                    "--prune",
+                    str(source.root),
+                    "+refs/*:refs/*",
+                ],
+                capture_output=True,
+                timeout=None if deadline is None else deadline - loop.time(),
+            )
 
     async def run(
         self,

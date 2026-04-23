@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path, PosixPath
 from typing import Annotated, Self
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from ..config.core import UUIDHex, _check_uuid
 from ..run import RUN_DIR, CommandError, ceph, start_microceph
@@ -137,7 +137,12 @@ async def _get_monitors(*, timeout: float | None) -> tuple[str, ...]:
         timeout=timeout,
         capture_output=True,
     )
-    parsed = CephMonitors.model_validate_json(result.stdout)
+    try:
+        parsed = CephMonitors.model_validate_json(result.stdout)
+    except ValidationError as err:
+        raise OSError(
+            f"Ceph monitor dump payload is malformed and could not be parsed: {err}"
+        ) from err
     out = parsed.endpoints()
     if not out:
         raise OSError("Ceph monitor dump did not provide any usable monitor endpoints")
