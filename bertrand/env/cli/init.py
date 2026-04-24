@@ -465,6 +465,7 @@ MANAGED_GIT_HOOKS: tuple[GitHook, ...] = (
 )
 REPO_LOCK_DIR = RUN_DIR / "init"
 REPO_ID_NAMESPACE = uuid.UUID("7b1506f4-4a3f-4b46-94bb-471e0f59d1a0")
+PROTECTED_DISABLE_RESOURCES: frozenset[str] = frozenset({"bertrand", "python"})
 
 
 # TODO: review this checkpoint-less convergence flow up to the end of the git init
@@ -504,6 +505,21 @@ def _cutover_backup_path(target: Path, repo_id: UUIDHex) -> Path:
     return target.parent / f".{target.name}.bertrand.backup.{repo_id}"
 
 
+def _parse_resource_specs(specs: list[str]) -> set[Resource]:
+    parsed: set[Resource] = set()
+    for spec in specs:
+        for component in spec.split(","):
+            name = component.strip()
+            resource = RESOURCE_NAMES.get(name)
+            if resource is None:
+                raise ValueError(
+                    f"unknown resource '{component}'.  Options are:\n"
+                    f"{'\n'.join(f'    {option}' for option in sorted(RESOURCE_NAMES))}"
+                )
+            parsed.add(resource)
+    return parsed
+
+
 @dataclass
 class RepoState:
     """In-memory convergence state shared by repository bootstrap stages.
@@ -518,7 +534,9 @@ class RepoState:
     repo : GitRepository
         Repository handle resolved from the target path.
     worktree : Path
-        Relative worktree path resolved from the target path.
+        Relative worktree path resolved from the target path.  A value of "."
+        indicates repository-level targeting, while non-empty paths target a
+        specific worktree.
     repo_id : UUIDHex
         Stable repository identity used for deterministic volume and mount recovery.
     volume : RepoVolume | None
@@ -573,7 +591,8 @@ async def _ensure_repo_volume(
     state: RepoState,
     *,
     yes: bool,
-    resources: set[Resource],
+    enable: set[Resource],
+    disable: set[Resource],
 ) -> None:
     """Converge repository volume allocation and deterministic claim reuse."""
     loop = asyncio.get_running_loop()
@@ -643,7 +662,8 @@ async def _ensure_repo_credentials(
     state: RepoState,
     *,
     yes: bool,
-    resources: set[Resource],
+    enable: set[Resource],
+    disable: set[Resource],
 ) -> None:
     """Ensure per-repository Ceph credentials exist, in order to allow mounting the
     volume on the host filesystem.
@@ -666,7 +686,8 @@ async def _ensure_host_mount(
     state: RepoState,
     *,
     yes: bool,
-    resources: set[Resource],
+    enable: set[Resource],
+    disable: set[Resource],
 ) -> None:
     """Ensure the repository volume is mounted on the host filesystem at a stable path,
     staging the mount until cutover.
@@ -721,7 +742,8 @@ async def _ensure_bare_worktrees(
     state: RepoState,
     *,
     yes: bool,
-    resources: set[Resource],
+    enable: set[Resource],
+    disable: set[Resource],
 ) -> None:
     """Converge repository to Bertrand's bare+worktree layout.  If we're converting an
     existing repository, then we first mirror all refs into the new repository, and
@@ -737,22 +759,44 @@ async def _ensure_bare_worktrees(
     )
     loop = asyncio.get_running_loop()
     deadline = state.deadline
+    target_branch: str | None = None
+
+    # specific-worktree mode: capture source branch identity before any conversion so
+    # we can remap to canonical converged worktree paths afterwards.
+    if state.worktree != Path("."):
+        source_worktree = state.repo.root / state.worktree
+        match = next(
+            (wt for wt in await state.repo.worktrees() if wt.path == source_worktree),
+            None
+        )
+        if match is None:
+            raise OSError(
+                f"targeted worktree {source_worktree} is not registered in source "
+                f"repository {state.repo.root}"
+            )
+        target_branch = match.branch
+        if target_branch is None:
+            raise OSError(
+                f"targeted worktree {source_worktree} has detached HEAD; please attach "
+                "it to a branch before running `bertrand init`."
+            )
 
     # new repository: initialize a bare history store and create the first worktree
     if not state.repo:  # source repo is uninitialized or missing
-        branch = state.worktree.as_posix()
+        branch = await GitRepository.default_branch()
+        default_worktree = state.mount_alias / branch
         if not mount:  # destination repo is also uninitialized - create initial worktree
             await mount.init(branch=branch, bare=True)
             await mount.create_worktree(
                 branch,
-                target=state.mount_alias / state.worktree,
+                target=default_worktree,
                 create_branch=True,
             )
         elif await mount.is_bare():
             if not any(wt.branch == branch for wt in await mount.worktrees()):
                 await mount.create_worktree(
                     branch,
-                    target=state.mount_alias / state.worktree,
+                    target=default_worktree,
                     create_branch=True,
                 )
             await mount.sync_worktrees()
@@ -789,13 +833,21 @@ async def _ensure_bare_worktrees(
         )
     await mount.sync_worktrees()
     state.repo = mount
+    if target_branch is not None:
+        if not any(wt.branch == target_branch for wt in await mount.worktrees()):
+            raise OSError(
+                f"failed to map targeted source worktree branch {target_branch!r} into "
+                f"converged repository at {mount.root}"
+            )
+        state.worktree = Path(target_branch)
 
 
 async def _ensure_repo_hooks(
     state: RepoState,
     *,
     yes: bool,
-    resources: set[Resource],
+    enable: set[Resource],
+    disable: set[Resource],
 ) -> None:
     """Write the managed git hooks into the repository's .git/hooks directory, if they
     don't already exist or are outdated.
@@ -856,48 +908,99 @@ async def _ensure_repo_hooks(
             )
 
 
-# TODO: rendering config artifacts is complicated, especially if I'm going to add a
-# layered `bertrand init` command, where not providing a repository path bootstraps the
-# host environment, but does not create a new project.  Providing a repository path
-# converges it toward the intended ceph + bare worktree layout, and renders the
-# configured state in all branches at once.  Providing a particular branch worktree
-# converges the repository-level layout, but only renders the configured state in that
-# one worktree, leaving other branches unaffected.
-
-
 async def _render_config_artifacts(
     state: RepoState,
     *,
     yes: bool,
-    resources: set[Resource],
+    enable: set[Resource],
+    disable: set[Resource],
 ) -> None:
-    """Converge rendered configuration artifacts for the current worktree."""
+    """Converge rendered configuration artifacts for targeted worktrees."""
     loop = asyncio.get_running_loop()
+    render_targets: list[Path] = []
 
-    # reconcile with existing configuration (if any)
-    config = await Config.load(  # locate existing in-tree resources
-        state.repo.root / state.worktree,
-        repo=state.repo,
-        timeout=None if state.deadline is None else state.deadline - loop.time()
-    )
-    config.resources.update({r.name: None for r in resources})  # merge any new resources from CLI
-    config.init = Config.Init(
-        repo=state.repo,
-        worktree=state.worktree,
-    )
-    async with config:  # initialize defaults, load overrides, and validate resources
-        await config.sync(tag=None)  # render in-tree resources with validated config
+    # repository-level targeting converges all branch-attached in-repo worktrees;
+    # detached and out-of-tree worktrees are skipped with warnings.
+    if state.worktree == Path("."):
+        for worktree in sorted(await state.repo.worktrees(), key=lambda wt: wt.path.as_posix()):
+            if worktree.branch is None:
+                print(
+                    f"bertrand: skipping detached worktree during repository-wide "
+                    f"render: {worktree.path}",
+                    file=sys.stderr,
+                )
+                continue
+            if not worktree.path.is_relative_to(state.repo.root):
+                print(
+                    f"bertrand: skipping out-of-tree worktree during repository-wide "
+                    f"render: {worktree.path}",
+                    file=sys.stderr,
+                )
+                continue
+            render_targets.append(worktree.path.relative_to(state.repo.root))
+    else:
+        render_targets.append(state.worktree)
+    if not render_targets:
+        raise OSError("repository-wide config render found no eligible branch worktrees")
+
+    # render all targeted worktrees based on existing configuration (if any), then
+    # apply enable/disable deltas before syncing artifacts.
+    for worktree in render_targets:
+        root = state.repo.root / worktree
+        config = await Config.load(
+            root,
+            repo=state.repo,
+            timeout=None if state.deadline is None else state.deadline - loop.time()
+        )
+        config.resources.update({resource.name: None for resource in enable})
+        config.init = Config.Init(
+            repo=state.repo,
+            worktree=worktree,
+        )
+        async with config:
+            for resource in disable:
+                config.resources.pop(resource.name, None)
+                for relative in sorted(resource.paths, key=lambda item: item.as_posix()):
+                    path = root / relative
+                    if not path.exists() and not path.is_symlink():
+                        continue
+                    elif path.is_dir() and not path.is_symlink():
+                        shutil.rmtree(path, ignore_errors=True)
+                    else:
+                        path.unlink(missing_ok=True)
+            await config.sync(tag=None)
 
 
 async def _make_initial_commit(
     state: RepoState,
     *,
     yes: bool,
-    resources: set[Resource],
+    enable: set[Resource],
+    disable: set[Resource],
 ) -> None:
     """Create initial commit when repository is empty and staged diff is non-empty."""
     loop = asyncio.get_running_loop()
-    worktree_path = state.repo.root / state.worktree
+    worktree_path: Path | None = None
+    if state.worktree == Path("."):
+        branch_targets = {
+            wt.branch: wt.path.relative_to(state.repo.root)
+            for wt in await state.repo.worktrees()
+            if wt.branch is not None and wt.path.is_relative_to(state.repo.root)
+        }
+        head = await state.repo.head_branch()
+        if head is not None and head in branch_targets:
+            worktree_path = state.repo.root / branch_targets[head]
+        elif branch_targets:
+            worktree_path = state.repo.root / sorted(
+                branch_targets.values(),
+                key=lambda value: value.as_posix()
+            )[0]
+    else:
+        worktree_path = state.repo.root / state.worktree
+
+    if worktree_path is None:
+        return
+
     head = await run(
         ["git", "rev-parse", "--verify", "HEAD"],
         cwd=worktree_path,
@@ -949,7 +1052,8 @@ async def _finalize(
     state: RepoState,
     *,
     yes: bool,
-    resources: set[Resource],
+    enable: set[Resource],
+    disable: set[Resource],
 ) -> None:
     """Complete any pending path cutover."""
     mount_alias = state.mount_alias
@@ -1116,6 +1220,7 @@ async def bertrand_init(
     *,
     timeout: float | None,
     enable: list[str],
+    disable: list[str],
     yes: bool,
 ) -> None:
     """Initialize host prerequisites and optionally bootstrap an environment root.
@@ -1138,6 +1243,10 @@ async def bertrand_init(
         List of resources to enable at the resolved worktree.  Each component is a
         comma-separated list of resource names or aliases, which are resolved to their
         corresponding, unique `Resource` implementations.
+    disable : list[str]
+        List of resources to disable at the resolved worktree.  Each component is a
+        comma-separated list of resource names or aliases, which are resolved to their
+        corresponding, unique `Resource` implementations.
     yes : bool
         Whether to auto-accept prompts during host bootstrap stages.
 
@@ -1146,12 +1255,14 @@ async def bertrand_init(
     OSError
         If Git is not found, or the project root repository is invalid.
     ValueError
-        If any resource names in `enable` are invalid.
+        If any resource names in `enable`/`disable` are invalid, or if required
+        core resources are disabled.
     """
-    if path is None and enable:
+    if path is None and (enable or disable):
         raise OSError(
-            "Cannot enable resources without a worktree.  Please specify a path to "
-            "initialize the project repository and enable resources within it."
+            "Cannot enable or disable resources without a worktree.  Please specify a "
+            "path to initialize the project repository and configure resources within "
+            "it."
         )
     if timeout is not None and timeout <= 0:
         raise TimeoutError("timed out before checking host bootstrap")
@@ -1193,18 +1304,20 @@ async def bertrand_init(
     if path is None:
         return
 
-    # fail fast if required tools are missing, and validate the resources to enable
-    # at the worktree path
-    resources: set[Resource] = {RESOURCE_NAMES["bertrand"]}
-    for spec in enable:
-        for component in spec.split(","):
-            r = RESOURCE_NAMES.get(component.strip())
-            if r is None:
-                raise ValueError(
-                    f"unknown resource '{component}'.  Options are:\n"
-                    f"{'\n'.join(f'    {name}' for name in sorted(RESOURCE_NAMES))}"
-                )
-            resources.add(r)
+    # fail fast if required tools are missing, and validate resource convergence input
+    enabled: set[Resource] = {RESOURCE_NAMES["bertrand"]}
+    enabled.update(_parse_resource_specs(enable))
+    disabled = _parse_resource_specs(disable)
+    protected = {
+        name
+        for name in PROTECTED_DISABLE_RESOURCES
+        if RESOURCE_NAMES[name] in disabled
+    }
+    if protected:
+        raise ValueError(
+            f"cannot disable required Bertrand resources: {', '.join(sorted(protected))}"
+        )
+    enabled -= disabled
 
     # resolve path to parent git repository and relative worktree
     if not shutil.which("git"):
@@ -1257,4 +1370,4 @@ async def bertrand_init(
         # execute all idempotent convergence stages in sequence, allowing recovery from
         # previous runs
         for stage in REPO_STAGES:
-            await stage(state, yes=yes, resources=resources)
+            await stage(state, yes=yes, enable=enabled, disable=disabled)

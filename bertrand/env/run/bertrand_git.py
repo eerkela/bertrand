@@ -3784,25 +3784,25 @@ class GitRepository:
             will be scanned to find the nearest git repository, and the remaining path
             components will be treated as a relative worktree path within the
             repository.  If no repository is found, then the input path will be
-            treated as an uninitialized repository, and the worktree will reflect the
-            Git installation's default branch (e.g. "master" or "main").  If the
-            path leads to a bare repository, then the worktree will resolve to its
-            attached HEAD worktree, if it has one.
+            treated as an uninitialized repository, and the worktree will be "."
+            (repository-level targeting).  If the path leads to a bare repository,
+            then non-root targets must match a registered worktree root exactly.
 
         Returns
         -------
         tuple[GitRepository, Path]
             A tuple containing the resolved Git repository and the relative worktree
-            path within it, accounting for HEAD extensions and nested bare/non-bare
-            worktree layouts.  Note that the `GitRepository` may be uninitialized if
-            no existing repository was found during resolution.
+            path within it.  The worktree path is "." for repository-level targets,
+            and a non-empty relative path only for explicit worktree targets.  Note
+            that the `GitRepository` may be uninitialized if no existing repository
+            was found during resolution.
 
         Raises
         ------
         OSError
             If the resolved repository is bare and does not support relative paths,
-            the resolved worktree is not contained within the repository, or if the
-            path leads to a bare repository with a detached HEAD.
+            or if a non-root target is not registered as a worktree of the resolved
+            repository.
         """
         repo = await cls.discover(path)
 
@@ -3811,33 +3811,16 @@ class GitRepository:
             if not await cls.supports_relative_paths():
                 raise OSError(GIT_REQUIRE_RELATIVE_PATHS)
             repo = cls(path / ".git")
-            return repo, Path(await cls.default_branch())
+            return repo, Path(".")
 
         # existing bare repository
         if await repo.is_bare():
             if not await cls.supports_relative_paths():
                 raise OSError(GIT_REQUIRE_RELATIVE_PATHS)
             worktree = path.relative_to(repo.root)
-            if not worktree.parts:  # extend to HEAD worktree
-                head = await repo.head_branch()
-                if head is None:
-                    raise OSError(
-                        f"cannot target a bare repository with a detached HEAD: {path}"
-                    )
-                await repo.sync_worktrees()
-                candidate = next(
-                    (wt.path for wt in await repo.worktrees() if wt.branch == head),
-                    None
-                )
-                if candidate is None:
-                    return repo, Path(head)
-                if not candidate.is_relative_to(path):
-                    raise OSError(
-                        f"resolved worktree path '{candidate}' is not contained within "
-                        f"repository: {path}"
-                    )
-                worktree = candidate.relative_to(path)
-            elif not any(wt.path == path for wt in await repo.worktrees()):
+            if not worktree.parts:
+                return repo, Path(".")
+            if not any(wt.path == path for wt in await repo.worktrees()):
                 raise OSError(
                     f"worktree at {worktree} is not registered as a git worktree of "
                     f"bare repository: {repo.root}"
@@ -4170,7 +4153,10 @@ class GitRepository:
         ValueError
             If the default branch could not be determined from git output.
         """
-        branch = await run(["git", "var", "GIT_DEFAULT_BRANCH"], capture_output=True)
+        branch = await run(
+            ["git", "var", "GIT_DEFAULT_BRANCH"],
+            capture_output=True
+        )
         result = branch.stdout.strip()
         if not result:
             raise ValueError("default Git branch name could not be determined")

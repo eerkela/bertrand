@@ -434,18 +434,30 @@ class PyProject(Resource):
             for name, model in config.resources.items()
             if model is not None and name != "python"
         }
-        if tool_models:
-            tool_table = doc.get("tool")
-            if tool_table is None:
-                tool_table = tomlkit.table()
-                doc["tool"] = tool_table
-            elif not isinstance(tool_table, dict):
-                raise OSError("invalid pyproject shape: '[tool]' must be a table")
+        tool_table = doc.get("tool")
+        if tool_table is None and tool_models:
+            tool_table = tomlkit.table()
+            doc["tool"] = tool_table
+        elif tool_table is not None and not isinstance(tool_table, dict):
+            raise OSError("invalid pyproject shape: '[tool]' must be a table")
+
+        if isinstance(tool_table, dict):
+            managed_tools = set(RESOURCE_NAMES) - {"python"}
+            active_tools = set(tool_models)
+
+            # remove stale, Bertrand-managed tables for disabled resources while
+            # preserving unknown user-owned [tool.*] entries.
+            for name in sorted(managed_tools - active_tools):
+                tool_table.pop(name, None)
             for name, model in sorted(tool_models.items()):
                 tool_table[name] = model.model_dump(
                     by_alias=True,
                     exclude_none=True
                 )
+
+            # if no tool tables remain after managed cleanup, drop [tool] entirely.
+            if len(tool_table) == 0 and "tool" in doc:
+                del doc["tool"]
 
         # write back if any changes were made
         rendered = tomlkit.dumps(doc)

@@ -651,7 +651,7 @@ class Config:
 
     repo: GitRepository
     worktree: RelativePath
-    timeout: float
+    timeout: float | None
     resources: dict[ResourceName, BaseModel | None] = field(
         default_factory=lambda: {"bertrand": None}
     )
@@ -675,7 +675,7 @@ class Config:
         worktree: Path,
         *,
         repo: GitRepository | None = None,
-        timeout: float = TIMEOUT
+        timeout: float | None = TIMEOUT
     ) -> Self:
         """Load a worktree configuration by scanning the environment root for known
         resource placements based on their managed paths, and resolving any collisions
@@ -689,9 +689,11 @@ class Config:
             An optional parent git repository containing the worktree, which determines
             the project root for the environment.  If not provided, then it will be
             inferred from `worktree`, which must include a repository as a parent.
-        timeout : float, optional
+        timeout : float | None, optional
             Maximum time to wait for acquiring the worktree lock, in seconds.  If
-            the lock cannot be acquired within this time, a `TimeoutError` is raised.
+            None, then wait indefinitely for lock acquisition.  If a finite timeout is
+            given and the lock cannot be acquired within this time, a `TimeoutError` is
+            raised.
 
         Returns
         -------
@@ -727,7 +729,12 @@ class Config:
                 f"{repo.root}"
             )
 
-        async with Lock(worktree / METADATA_LOCK, timeout=timeout, mode="cluster"):
+        # TODO: infinite lock timeout is actually a pretty good behavior in general,
+        # and may be a better policy than float | None in general.  That might also
+        # simplify some of the logic when it comes to deadline - loop.time() constructs
+
+        lock_timeout = float("inf") if timeout is None else timeout
+        async with Lock(worktree / METADATA_LOCK, timeout=lock_timeout, mode="cluster"):
             self = cls(
                 repo=repo,
                 worktree=worktree.relative_to(repo.root),
