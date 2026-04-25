@@ -5,7 +5,7 @@ from pathlib import Path
 
 from ..config import DEFAULT_TAG
 from ..kube import Environment
-from ..run import TIMEOUT
+from ..run import INFINITY
 
 
 async def bertrand_build(
@@ -47,5 +47,5 @@ async def bertrand_build(
     if tag is None:
         tag = DEFAULT_TAG
 
-    async with await Environment.load(worktree, timeout=TIMEOUT) as env:
+    async with await Environment.load(worktree, timeout=INFINITY) as env:
         await env.build(tag, quiet=quiet)

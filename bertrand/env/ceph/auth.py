@@ -106,7 +106,7 @@ class CephMonitors(BaseModel):
         return tuple(out)
 
 
-async def _get_key(entity: str, *, timeout: float | None) -> str | None:
+async def _get_key(entity: str, *, timeout: float) -> str | None:
     try:
         result = await ceph(
             ["auth", "get-key", entity],
@@ -131,7 +131,7 @@ async def _get_key(entity: str, *, timeout: float | None) -> str | None:
     return key
 
 
-async def _get_monitors(*, timeout: float | None) -> tuple[str, ...]:
+async def _get_monitors(*, timeout: float) -> tuple[str, ...]:
     result = await ceph(
         ["mon", "dump", "-f", "json"],
         timeout=timeout,
@@ -180,7 +180,7 @@ class RepoCredentials:
         repo_id: UUIDHex,
         *,
         ceph_path: PosixPath,
-        timeout: float | None,
+        timeout: float,
     ) -> Self:
         """Ensure per-repo Ceph credentials exist and return fresh auth material.
 
@@ -190,9 +190,9 @@ class RepoCredentials:
             Repository UUID to ensure credentials for.
         ceph_path : PosixPath
             CephFS path prefix to authorize this identity for (for example, `/myrepo`).
-        timeout : float | None
+        timeout : float
             Maximum time to wait for the cluster to be ready and credentials to
-            materialize, in seconds.  If None, wait indefinitely.
+            materialize, in seconds.  If infinite, wait indefinitely.
 
         Returns
         -------
@@ -209,7 +209,7 @@ class RepoCredentials:
         should never occur under normal operation, and if they do, they should fail
         gracefully.
         """
-        if timeout is not None and timeout < 0:
+        if timeout <= 0:
             raise TimeoutError("timeout must be non-negative")
         repo_id = _check_uuid(repo_id)
         if not ceph_path.parts:
@@ -224,24 +224,21 @@ class RepoCredentials:
                 f"Ceph entity must be namespaced as {REPO_ENTITY_NAMESPACE!r}: {entity!r}"
             )
         loop = asyncio.get_running_loop()
-        deadline = None if timeout is None else loop.time() + timeout
+        deadline = loop.time() + timeout
 
         # bootstrap the microceph cluster if it's not already running
-        await start_microceph(timeout=None if deadline is None else deadline - loop.time())
+        await start_microceph(timeout=deadline - loop.time())
 
         # `fs authorize` is idempotent and converges CephX caps for this identity.
         await ceph(
             ["fs", "authorize", REPO_FS_NAME, entity, str(ceph_path), "rw"],
-            timeout=None if deadline is None else deadline - loop.time(),
+            timeout=deadline - loop.time(),
             capture_output=True,
         )
 
         # `fs authorize` should materialize a key for this entity if it didn't already
         # exist.
-        key = await _get_key(
-            entity,
-            timeout=None if deadline is None else deadline - loop.time(),
-        )
+        key = await _get_key(entity, timeout=deadline - loop.time())
         if key is None:
             raise OSError(
                 f"Ceph authorization did not materialize credentials for {entity!r}"
@@ -250,9 +247,7 @@ class RepoCredentials:
         # retrieve current monitor endpoints; this ensures the caller has enough
         # information to confidently connect to and mount the repository using the
         # returned credentials.
-        monitors = await _get_monitors(
-            timeout=None if deadline is None else deadline - loop.time()
-        )
+        monitors = await _get_monitors(timeout=deadline - loop.time())
         return cls(
             repo_id=repo_id,
             user=user,
@@ -266,7 +261,7 @@ class RepoCredentials:
         cls,
         repo_id: UUIDHex,
         *,
-        timeout: float | None,
+        timeout: float,
     ) -> Self | None:
         """Get existing per-repo Ceph credentials without creating new identities.
 
@@ -274,9 +269,9 @@ class RepoCredentials:
         ----------
         repo_id : str
             Repository UUID to get credentials for.
-        timeout : float | None
+        timeout : float
             Maximum time to wait for the cluster to be ready and credentials to
-            materialize, in seconds.  If None, wait indefinitely.
+            materialize, in seconds.  If infinite, wait indefinitely.
 
         Returns
         -------
@@ -284,7 +279,7 @@ class RepoCredentials:
             Fresh credentials for this repository identity, or None if credentials do not
             exist.
         """
-        if timeout is not None and timeout < 0:
+        if timeout <= 0:
             raise TimeoutError("timeout must be non-negative")
 
         repo_id = _check_uuid(repo_id)
@@ -295,23 +290,18 @@ class RepoCredentials:
                 f"Ceph entity must be namespaced as {REPO_ENTITY_NAMESPACE!r}: {entity!r}"
             )
         loop = asyncio.get_running_loop()
-        deadline = None if timeout is None else loop.time() + timeout
+        deadline = loop.time() + timeout
 
         # bootstrap the microceph cluster if it's not already running
-        await start_microceph(timeout=None if deadline is None else deadline - loop.time())
+        await start_microceph(timeout=deadline - loop.time())
 
         # get repository credentials if they exist
-        key = await _get_key(
-            entity,
-            timeout=None if deadline is None else deadline - loop.time(),
-        )
+        key = await _get_key(entity, timeout=deadline - loop.time())
         if key is None:
             return None
 
         # retrieve current monitor endpoints
-        monitors = await _get_monitors(
-            timeout=None if deadline is None else deadline - loop.time()
-        )
+        monitors = await _get_monitors(timeout=deadline - loop.time())
         return cls(
             repo_id=repo_id,
             user=user,
@@ -326,14 +316,14 @@ class RepoCredentials:
     # also trigger each node in the cluster to unmount the volume and delete any local
     # symlinks referencing it, then proceed to delete its credentials.
 
-    async def delete(self, *, timeout: float | None) -> bool:
+    async def delete(self, *, timeout: float) -> bool:
         """Delete per-repo Ceph credentials if they exist.
 
         Parameters
         ----------
-        timeout : float | None
+        timeout : float
             Maximum time to wait for the cluster to be ready and credentials to be deleted,
-            in seconds.  If None, wait indefinitely.
+            in seconds.  If infinite, wait indefinitely.
 
         Returns
         -------
@@ -346,7 +336,7 @@ class RepoCredentials:
         ensure/delete operations for the same `repo_id` may race in Ceph's auth DB.
         Callers should retry and revalidate on transient auth failures.
         """
-        if timeout is not None and timeout < 0:
+        if timeout <= 0:
             raise TimeoutError("timeout must be non-negative")
         repo_id = self.repo_id
         user = f"{REPO_ENTITY_PREFIX}{repo_id}"
@@ -356,14 +346,14 @@ class RepoCredentials:
                 f"Ceph entity must be namespaced as {REPO_ENTITY_NAMESPACE!r}: {entity!r}"
             )
         loop = asyncio.get_running_loop()
-        deadline = None if timeout is None else loop.time() + timeout
+        deadline = loop.time() + timeout
 
         # bootstrap the microceph cluster if it's not already running
-        await start_microceph(timeout=None if deadline is None else deadline - loop.time())
+        await start_microceph(timeout=deadline - loop.time())
 
         result = await ceph(
             ["auth", "del", entity],
-            timeout=None if deadline is None else deadline - loop.time(),
+            timeout=deadline - loop.time(),
             check=False,
             capture_output=True,
         )

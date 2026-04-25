@@ -60,7 +60,7 @@ else:
 # generic utils
 ROOT_DIR = Path(Path(sys.executable).anchor)
 HOST_MOUNTS = ROOT_DIR / "proc" / "self" / "mountinfo"
-TIMEOUT = 30
+INFINITY = float("inf")
 NORMALIZE_ARCH = {
     "x86_64": "amd64",
     "amd64": "amd64",
@@ -344,7 +344,7 @@ def mkdir_private(path: Path) -> None:
 async def _run_no_capture(
     argv: list[str],
     proc: asyncio.subprocess.Process,
-    timeout: float | None,
+    timeout: float,
     input: str | None,
 ) -> CompletedProcess | CommandError | None:
     input_bytes = None if input is None else input.encode(
@@ -354,7 +354,7 @@ async def _run_no_capture(
     try:
         await asyncio.wait_for(
             proc.communicate(input_bytes),
-            timeout=timeout
+            timeout=None if timeout == INFINITY else timeout,
         )
     except TimeoutError as err:
         proc.kill()
@@ -379,7 +379,7 @@ async def _run_no_capture(
 async def _run_capture(
     argv: list[str],
     proc: asyncio.subprocess.Process,
-    timeout: float | None,
+    timeout: float,
     input: str | None,
 ) -> CompletedProcess | CommandError | None:
     input_bytes = None if input is None else input.encode(
@@ -389,7 +389,7 @@ async def _run_capture(
     try:
         stdout_raw, stderr_raw = await asyncio.wait_for(
             proc.communicate(input_bytes),
-            timeout=timeout,
+            timeout=None if timeout == INFINITY else timeout,
         )
     except TimeoutError as err:
         proc.kill()
@@ -458,7 +458,7 @@ async def _write_stdin(dst: asyncio.StreamWriter | None, data: str) -> None:
 async def _run_tee(
     argv: list[str],
     proc: asyncio.subprocess.Process,
-    timeout: float | None,
+    timeout: float,
     input: str | None,
 ) -> CompletedProcess | CommandError | None:
     stdout_lines: list[str] = []
@@ -480,7 +480,10 @@ async def _run_tee(
 
     try:
         try:
-            await asyncio.wait_for(proc.wait(), timeout=timeout)
+            await asyncio.wait_for(
+                proc.wait(),
+                timeout=None if timeout == INFINITY else timeout,
+            )
         except TimeoutError as err:
             proc.kill()
             await proc.wait()
@@ -521,7 +524,7 @@ async def run(
     check: bool = True,
     capture_output: bool | None = False,
     input: str | None = None,
-    timeout: float | None = None,
+    timeout: float = INFINITY,
     attempts: int = 1,
     delay: float = 0.1,    
     cwd: Path | None = None,
@@ -547,12 +550,12 @@ async def run(
         some commands, and is not recommended for interactive use.
     input : str | None, optional
         Input to send to the command's stdin (default is None).
-    timeout : float | None, optional
+    timeout : float, optional
         An optional timeout in seconds to wait for the command to complete before
-        raising a `TimeoutExpired` exception.  Default is None, which means to wait
+        raising a `TimeoutExpired` exception.  Default is infinite, which means to wait
         indefinitely.  If zero or negative, a `TimeoutExpired` exception will be raised
-        immediately.  Note that this does not reset between `attempts`, so the total
-        time spent on retries counts against the timeout.
+        immediately.  Note that this does not reset between `attempts`, so only the
+        overall time spent on retries counts against the timeout.
     attempts : int, optional
         The total number of times to attempt the command.  Defaults to 1, which means
         no retries.  If greater than 1, then any command that exits with a nonzero
@@ -589,18 +592,14 @@ async def run(
         raise ValueError("delay must be non-negative")
 
     # get overall deadline across attempts
-    deadline: float | None
-    if timeout is None:
-        deadline = None
-    elif timeout <= 0.0:
+    if timeout <= 0.0:
         raise TimeoutExpired(cmd=argv, timeout=timeout, output=None, stderr=None)
-    else:
-        deadline = asyncio.get_event_loop().time() + timeout
+    loop = asyncio.get_event_loop()
+    deadline = loop.time() + timeout
 
     # loop until success, deadline is exceeded, or attempts are exhausted
     last_error: CommandError | None = None
     while attempts > 0:
-        result: CompletedProcess | CommandError | None = None
         proc = await asyncio.create_subprocess_exec(
             *argv,
             stdin=asyncio.subprocess.PIPE if input is not None else None,
@@ -610,9 +609,10 @@ async def run(
             env=env,
         )
         if deadline is not None:
-            timeout = deadline - asyncio.get_event_loop().time()
+            timeout = deadline - loop.time()
 
         # capture_output=False -> inherit terminal streams and do not capture output
+        result: CompletedProcess | CommandError | None = None
         if capture_output is False:
             result = await _run_no_capture(
                 argv,
@@ -765,7 +765,7 @@ async def install_packages(
     packages: Sequence[str],
     *,
     assume_yes: bool,
-    timeout: float | None = None,
+    timeout: float,
 ) -> None:
     """Install OS packages with the requested host package manager.
 
@@ -778,11 +778,11 @@ async def install_packages(
     assume_yes : bool
         If True, automatically confirm any prompts for installation or refreshing
         package lists.  Default is False.
-    timeout : float | None, optional
+    timeout : float
         An optional timeout in seconds to wait for each package manager command to
-        complete before raising a `TimeoutExpired` exception.  Default is None, which
-        means to wait indefinitely.  If zero or negative, a `TimeoutExpired` exception
-        will be raised immediately.
+        complete before raising a `TimeoutExpired` exception.  If infinite, wait
+        indefinitely.  If zero or negative, a `TimeoutExpired` exception will be raised
+        immediately.
 
     Raises
     ------
@@ -809,17 +809,15 @@ async def install_packages(
             f"package installation using {package_manager!r} requires root "
             "privileges; sudo not available."
         )
-    deadline: float = 0.0
+    if timeout <= 0.0:
+        raise TimeoutExpired(
+            cmd=[package_manager],
+            timeout=timeout,
+            output=None,
+            stderr="timed out before command could be started"
+        )
     loop = asyncio.get_event_loop()
-    if timeout is not None:
-        if timeout <= 0.0:
-            raise TimeoutExpired(
-                cmd=[package_manager],
-                timeout=timeout,
-                output=None,
-                stderr="timed out before command could be started"
-            )
-        deadline = loop.time() + timeout
+    deadline = loop.time() + timeout
 
     # get package manager spec
     spec = _INSTALL_SPECS.get(package_manager)
@@ -849,7 +847,7 @@ async def install_packages(
         await run(
             sudo(cmd, non_interactive=assume_yes),
             env=env,
-            timeout=None if timeout is None else deadline - loop.time()
+            timeout=deadline - loop.time()
         )
 
     # install requested packages
@@ -860,7 +858,7 @@ async def install_packages(
     await run(
         sudo(cmd, non_interactive=assume_yes),
         env=env,
-        timeout=None if timeout is None else deadline - loop.time()
+        timeout=deadline - loop.time()
     )
 
 
@@ -1151,7 +1149,7 @@ def _state_root_configured(group_gid: int) -> bool:
 
 async def _configure_state_acl(
     *,
-    deadline: float | None,
+    deadline: float,
     assume_yes: bool
 ) -> None:
     loop = asyncio.get_event_loop()
@@ -1169,7 +1167,7 @@ async def _configure_state_acl(
     ):
         await run(
             sudo(cmd, non_interactive=assume_yes),
-            timeout=None if deadline is None else deadline - loop.time()
+            timeout=deadline - loop.time()
         )
 
     # ensure mountpoint directory exists before enabling the managed tmpfs unit
@@ -1185,7 +1183,7 @@ async def _configure_state_acl(
             ],
             non_interactive=assume_yes,
         ),
-        timeout=None if deadline is None else deadline - loop.time(),
+        timeout=deadline - loop.time(),
     )
 
 
@@ -1263,7 +1261,7 @@ async def _configure_run_tmpfs_mount(
     *,
     group_gid: int,
     assume_yes: bool,
-    timeout: float | None,
+    timeout: float,
 ) -> None:
     if not shutil.which("systemctl"):
         raise OSError(
@@ -1271,7 +1269,7 @@ async def _configure_run_tmpfs_mount(
             f"mount at {RUN_DIR}."
         )
     loop = asyncio.get_event_loop()
-    deadline = None if timeout is None else loop.time() + timeout
+    deadline = loop.time() + timeout
 
     # atomically create unit file
     fd: int | None = None
@@ -1297,7 +1295,7 @@ async def _configure_run_tmpfs_mount(
                 ],
                 non_interactive=assume_yes,
             ),
-            timeout=None if deadline is None else deadline - loop.time(),
+            timeout=deadline - loop.time(),
         )
 
     # unconditionally remove temp file
@@ -1317,13 +1315,13 @@ async def _configure_run_tmpfs_mount(
     ):
         await run(
             sudo(cmd, non_interactive=assume_yes),
-            timeout=None if deadline is None else deadline - loop.time(),
+            timeout=deadline - loop.time(),
         )
 
 
 async def ensure_bertrand_group(
     *,
-    timeout: float | None,
+    timeout: float,
     assume_yes: bool,
 ) -> grp.struct_group:
     """Add a shared user group for Bertrand if it doesn't already exist, prompting as
@@ -1331,7 +1329,7 @@ async def ensure_bertrand_group(
 
     Parameters
     ----------
-    timeout : float | None
+    timeout : float
         An optional timeout in seconds to wait for any required system commands to
         complete before raising a `TimeoutExpired` exception.
     assume_yes : bool
@@ -1351,7 +1349,7 @@ async def ensure_bertrand_group(
         If the shared group cannot be created for any other reason.
     """
     loop = asyncio.get_event_loop()
-    deadline = None if timeout is None else loop.time() + timeout
+    deadline = loop.time() + timeout
 
     # fast path
     try:
@@ -1379,7 +1377,7 @@ async def ensure_bertrand_group(
                 non_interactive=assume_yes,
             ),
             capture_output=True,
-            timeout=None if deadline is None else deadline - loop.time(),
+            timeout=deadline - loop.time(),
         )
     except CommandError as err:
         out = f"{err.stdout}\n{err.stderr}".lower().strip()
@@ -1399,7 +1397,7 @@ async def ensure_bertrand_state(
     *,
     user: str,
     assume_yes: bool,
-    timeout: float | None,
+    timeout: float,
 ) -> GroupStatus:
     """Ensure Bertrand's shared host state roots and group access are configured.
 
@@ -1410,7 +1408,7 @@ async def ensure_bertrand_state(
     assume_yes : bool
         Whether to automatically answer yes to all prompts during installation, for
         non-interactive use.
-    timeout : float | None
+    timeout : float
         An optional timeout in seconds to wait for any required system commands to
         complete before raising a `TimeoutExpired` exception.
 
@@ -1433,11 +1431,11 @@ async def ensure_bertrand_state(
     if os.name != "posix":
         raise OSError("Bertrand state bootstrap requires a POSIX host.")
     loop = asyncio.get_event_loop()
-    deadline = None if timeout is None else loop.time() + timeout
+    deadline = loop.time() + timeout
 
     # identify misconfigured root state layout
     group_info = await ensure_bertrand_group(
-        timeout=None if deadline is None else deadline - loop.time(),
+        timeout=deadline - loop.time(),
         assume_yes=assume_yes,
     )
     if (
@@ -1471,13 +1469,13 @@ async def ensure_bertrand_state(
                 ],
                 non_interactive=assume_yes,
             ),
-            timeout=None if deadline is None else deadline - loop.time(),
+            timeout=deadline - loop.time(),
         )
 
         # configure ACLs to allow child paths to inherit group access without needing
         # to be individually configured
         await _configure_state_acl(
-            deadline=None if deadline is None else deadline,
+            deadline=deadline,
             assume_yes=assume_yes,
         )
 
@@ -1485,7 +1483,7 @@ async def ensure_bertrand_state(
         await _configure_run_tmpfs_mount(
             group_gid=group_info.gr_gid,
             assume_yes=assume_yes,
-            timeout=None if deadline is None else deadline - loop.time(),
+            timeout=deadline - loop.time(),
         )
 
     # confirm required layout
@@ -1539,7 +1537,12 @@ async def _install_snap(
         raise PermissionError("Installation declined by user.")
 
     try:
-        await install_packages(package_manager, ["snapd"], assume_yes=assume_yes)
+        await install_packages(
+            package_manager,
+            ["snapd"],
+            assume_yes=assume_yes,
+            timeout=INFINITY,
+        )
     except (CommandError, TimeoutExpired, OSError, ValueError, PermissionError) as err:
         raise OSError(
             f"Bertrand uses a snap-based runtime path for {component}, but failed to "
@@ -1888,7 +1891,7 @@ async def kubectl(
     check: bool = True,
     capture_output: bool | None = False,
     input: str | None = None,
-    timeout: float | None = None,
+    timeout: float = INFINITY,
     attempts: int = 1,
     delay: float = 0.1,
     cwd: Path | None = None,
@@ -1915,12 +1918,12 @@ async def kubectl(
         some commands, and is not recommended for interactive use.
     input : str | None, optional
         Input to send to the command's stdin (default is None).
-    timeout : float | None, optional
+    timeout : float, optional
         An optional timeout in seconds to wait for the command to complete before
-        raising a `TimeoutExpired` exception.  Default is None, which means to wait
+        raising a `TimeoutExpired` exception.  Default is infinite, which means to wait
         indefinitely.  If zero or negative, a `TimeoutExpired` exception will be raised
-        immediately.  Note that this does not reset between `attempts`, so the total
-        time spent on retries counts against the timeout.
+        immediately.  Note that this does not reset between `attempts`, so only the
+        overall time spent on retries counts against the timeout.
     attempts : int, optional
         The total number of times to attempt the command.  Defaults to 1, which means
         no retries.  If greater than 1, then any command that exits with a nonzero
@@ -1971,7 +1974,7 @@ async def ceph(
     check: bool = True,
     capture_output: bool | None = False,
     input: str | None = None,
-    timeout: float | None = None,
+    timeout: float = INFINITY,
     attempts: int = 1,
     delay: float = 0.1,
     cwd: Path | None = None,
@@ -1997,12 +2000,12 @@ async def ceph(
         some commands, and is not recommended for interactive use.
     input : str | None, optional
         Input to send to the command's stdin (default is None).
-    timeout : float | None, optional
+    timeout : float, optional
         An optional timeout in seconds to wait for the command to complete before
-        raising a `TimeoutExpired` exception.  Default is None, which means to wait
+        raising a `TimeoutExpired` exception.  Default is infinite, which means to wait
         indefinitely.  If zero or negative, a `TimeoutExpired` exception will be raised
-        immediately.  Note that this does not reset between `attempts`, so the total
-        time spent on retries counts against the timeout.
+        immediately.  Note that this does not reset between `attempts`, so only the
+        overall time spent on retries counts against the timeout.
     attempts : int, optional
         The total number of times to attempt the command.  Defaults to 1, which means
         no retries.  If greater than 1, then any command that exits with a nonzero
@@ -2053,7 +2056,7 @@ async def buildctl(
     check: bool = True,
     capture_output: bool | None = False,
     input: str | None = None,
-    timeout: float | None = None,
+    timeout: float = INFINITY,
     attempts: int = 1,
     delay: float = 0.1,
     cwd: Path | None = None,
@@ -2081,12 +2084,12 @@ async def buildctl(
         some commands, and is not recommended for interactive use.
     input : str | None, optional
         Input to send to the command's stdin (default is None).
-    timeout : float | None, optional
+    timeout : float, optional
         An optional timeout in seconds to wait for the command to complete before
-        raising a `TimeoutExpired` exception.  Default is None, which means to wait
+        raising a `TimeoutExpired` exception.  Default is infinite, which means to wait
         indefinitely.  If zero or negative, a `TimeoutExpired` exception will be raised
-        immediately.  Note that this does not reset between `attempts`, so the total
-        time spent on retries counts against the timeout.
+        immediately.  Note that this does not reset between `attempts`, so only the
+        overall time spent on retries counts against the timeout.
     attempts : int, optional
         The total number of times to attempt the command.  Defaults to 1, which means
         no retries.  If greater than 1, then any command that exits with a nonzero
@@ -2137,7 +2140,7 @@ async def nerdctl(
     check: bool = True,
     capture_output: bool | None = False,
     input: str | None = None,
-    timeout: float | None = None,
+    timeout: float = INFINITY,
     attempts: int = 1,
     delay: float = 0.1,
     cwd: Path | None = None,
@@ -2163,12 +2166,12 @@ async def nerdctl(
         some commands, and is not recommended for interactive use.
     input : str | None, optional
         Input to send to the command's stdin (default is None).
-    timeout : float | None, optional
+    timeout : float, optional
         An optional timeout in seconds to wait for the command to complete before
-        raising a `TimeoutExpired` exception.  Default is None, which means to wait
+        raising a `TimeoutExpired` exception.  Default is infinite, which means to wait
         indefinitely.  If zero or negative, a `TimeoutExpired` exception will be raised
-        immediately.  Note that this does not reset between `attempts`, so the total
-        time spent on retries counts against the timeout.
+        immediately.  Note that this does not reset between `attempts`, so only the
+        overall time spent on retries counts against the timeout.
     attempts : int, optional
         The total number of times to attempt the command.  Defaults to 1, which means
         no retries.  If greater than 1, then any command that exits with a nonzero
@@ -2221,15 +2224,12 @@ async def nerdctl(
     )
 
 
-# TODO: allow timeout to be None for nerdctl_ids
-
-
 async def nerdctl_ids(
     mode: Literal["container", "image", "volume", "network", "secret"],
     labels: Mapping[str, str],
     *,
     status: Sequence[ContainerState] | None = None,
-    timeout: float = TIMEOUT,
+    timeout: float = INFINITY,
 ) -> list[str]:
     """Retrieve a list of nerdctl container/image/volume IDs that match the given
     labels and status filters, if applicable.
@@ -2371,7 +2371,7 @@ def _buildkit_pid_alive() -> bool:
     return True
 
 
-async def _buildkit_workers_ready(*, timeout: float | None) -> bool:
+async def _buildkit_workers_ready(*, timeout: float) -> bool:
     if not BUILDKIT_SOCKET.exists():
         return False
     return (await buildctl(
@@ -2382,17 +2382,17 @@ async def _buildkit_workers_ready(*, timeout: float | None) -> bool:
     )).returncode == 0
 
 
-async def start_buildkit(*, timeout: float | None) -> None:
+async def start_buildkit(*, timeout: float) -> None:
     """Ensure that the managed BuildKit daemon is running and ready.
 
     Parameters
     ----------
-    timeout : float | None
+    timeout : float
         The maximum time to wait for the BuildKit daemon to become ready in seconds.
         If the daemon is already running, then this function will return immediately
         without waiting.  If the daemon is not running, then this function will attempt
         to start it, and wait until it becomes responsive to `buildctl` commands, or
-        until the timeout is reached.  If None, then this function will wait
+        until the timeout is reached.  If infinite, then this function will wait
         indefinitely for the daemon to become ready.
 
     Raises
@@ -2409,7 +2409,7 @@ async def start_buildkit(*, timeout: float | None) -> None:
     will work normally, and will place the resulting images directly into the microK8s
     image store, under the "bertrand" namespace.
     """
-    if timeout is not None and timeout < 0:
+    if timeout <= 0:
         raise TimeoutError("BuildKit timeout must be non-negative.")
     if not BUILDCTL_BIN.exists() or not BUILDKITD_BIN.exists():
         raise OSError(
@@ -2417,21 +2417,18 @@ async def start_buildkit(*, timeout: float | None) -> None:
             "the pinned toolchain."
         )
     loop = asyncio.get_running_loop()
-    deadline = None if timeout is None else loop.time() + timeout
-    if await _buildkit_workers_ready(  # optimistic, no locking
-        timeout=None if deadline is None else deadline - loop.time()
-    ):
+    deadline = loop.time() + timeout
+    if await _buildkit_workers_ready(timeout=deadline - loop.time()):  # optimistic
         return
 
     # lock to prevent concurrent startups
     async with Lock(
         BUILDKIT_LOCK_FILE,
-        timeout=TIMEOUT if deadline is None else deadline - loop.time(),
+        timeout=deadline - loop.time(),
         mode="local"
     ):
-        if await _buildkit_workers_ready(  # check again after acquiring lock
-            timeout=None if deadline is None else deadline - loop.time()
-        ):
+        # check again after acquiring lock
+        if await _buildkit_workers_ready(timeout=deadline - loop.time()):
             return
 
         # clean up stale buildkit state from previous runs
@@ -2471,7 +2468,7 @@ async def start_buildkit(*, timeout: float | None) -> None:
         timestamp = loop.time()
         while deadline is None or timestamp <= deadline:
             if await _buildkit_workers_ready(
-                timeout=None if deadline is None else deadline - timestamp
+                timeout=deadline - timestamp
             ):
                 return
             if not _buildkit_pid_alive():
@@ -2490,14 +2487,14 @@ async def start_buildkit(*, timeout: float | None) -> None:
     raise OSError(message)
 
 
-async def _microceph_cluster_ready(*, timeout: float | None) -> bool:
+async def _microceph_cluster_ready(*, timeout: float) -> bool:
     loop = asyncio.get_running_loop()
-    deadline = None if timeout is None else loop.time() + timeout
+    deadline = loop.time() + timeout
     result = await run(
         ["microceph", "status"],
         check=False,
         capture_output=True,
-        timeout=None if deadline is None else deadline - loop.time(),
+        timeout=deadline - loop.time(),
     )
     if result.returncode != 0 or not shutil.which("microceph.ceph"):
         return False
@@ -2505,17 +2502,17 @@ async def _microceph_cluster_ready(*, timeout: float | None) -> bool:
         ["microceph.ceph", "status", "--format", "json"],
         check=False,
         capture_output=True,
-        timeout=None if deadline is None else deadline - loop.time(),
+        timeout=deadline - loop.time(),
     )).returncode == 0
 
 
-async def start_microceph(*, timeout: float | None) -> None:
+async def start_microceph(*, timeout: float) -> None:
     """Ensure that a local MicroCeph cluster is bootstrapped and ready.
 
     Parameters
     ----------
-    timeout : float | None
-        Maximum time in seconds to wait for startup/readiness checks.  If None,
+    timeout : float
+        Maximum time in seconds to wait for startup/readiness checks.  If infinite,
         then this function will wait indefinitely until MicroCeph is ready.
 
     Raises
@@ -2525,7 +2522,7 @@ async def start_microceph(*, timeout: float | None) -> None:
     TimeoutError
         If readiness checks do not succeed before `timeout`.
     """
-    if timeout is not None and timeout < 0:
+    if timeout <= 0:
         raise TimeoutError("MicroCeph timeout must be non-negative.")
     if not shutil.which("microceph"):
         raise OSError(
@@ -2533,24 +2530,20 @@ async def start_microceph(*, timeout: float | None) -> None:
             "the managed runtime."
         )
     loop = asyncio.get_running_loop()
-    deadline = None if timeout is None else loop.time() + timeout
+    deadline = loop.time() + timeout
 
     # optimistic: cluster already up (no locking)
-    if await _microceph_cluster_ready(
-        timeout=None if deadline is None else deadline - loop.time()
-    ):
+    if await _microceph_cluster_ready(timeout=deadline - loop.time()):
         return
 
     try:
         async with Lock(
             CEPH_LOCK_FILE,
-            timeout=TIMEOUT if deadline is None else deadline - loop.time(),
+            timeout=deadline - loop.time(),
             mode="local"
         ):
             # defensive: check again after acquiring lock
-            if await _microceph_cluster_ready(
-                timeout=None if deadline is None else deadline - loop.time()
-            ):
+            if await _microceph_cluster_ready(timeout=deadline - loop.time()):
                 return
 
             # bootstrap cluster if not already initialized
@@ -2558,7 +2551,7 @@ async def start_microceph(*, timeout: float | None) -> None:
                 await run(
                     ["microceph", "cluster", "bootstrap"],
                     capture_output=True,
-                    timeout=None if deadline is None else deadline - loop.time(),
+                    timeout=deadline - loop.time(),
                 )
             except CommandError as err:
                 out = f"{err.stdout}\n{err.stderr}".strip().lower()
@@ -2574,7 +2567,7 @@ async def start_microceph(*, timeout: float | None) -> None:
             timestamp = loop.time()
             while deadline is None or timestamp <= deadline:
                 if await _microceph_cluster_ready(
-                    timeout=None if deadline is None else deadline - timestamp
+                    timeout=deadline - timestamp
                 ):
                     return
                 await asyncio.sleep(0.1)
@@ -2595,7 +2588,7 @@ async def start_microceph(*, timeout: float | None) -> None:
         ) from err
 
 
-async def _microk8s_cluster_ready(*, timeout: float | None) -> bool:
+async def _microk8s_cluster_ready(*, timeout: float) -> bool:
     return (await run(
         ["microk8s", "kubectl", "get", "--raw=/readyz"],
         check=False,
@@ -2604,21 +2597,21 @@ async def _microk8s_cluster_ready(*, timeout: float | None) -> bool:
     )).returncode == 0
 
 
-async def _add_bertrand_kube_namespace(*, timeout: float | None) -> None:
+async def _add_bertrand_kube_namespace(*, timeout: float) -> None:
     loop = asyncio.get_running_loop()
-    deadline = None if timeout is None else loop.time() + timeout
+    deadline = loop.time() + timeout
     ready = await kubectl(
         ["get", "namespace", BERTRAND_NAMESPACE, "-o", "name"],
         check=False,
         capture_output=True,
-        timeout=None if deadline is None else deadline - loop.time(),
+        timeout=deadline - loop.time(),
     )
     if ready.returncode != 0:
         try:
             await kubectl(
                 ["create", "namespace", BERTRAND_NAMESPACE],
                 capture_output=True,
-                timeout=None if deadline is None else deadline - loop.time(),
+                timeout=deadline - loop.time(),
             )
         except CommandError as err:
             stdout = err.stdout.strip() if err.stdout else ""
@@ -2629,13 +2622,13 @@ async def _add_bertrand_kube_namespace(*, timeout: float | None) -> None:
             raise err
 
 
-async def start_microk8s(*, timeout: float | None) -> None:
+async def start_microk8s(*, timeout: float) -> None:
     """Ensure that MicroK8s is running and Bertrand's namespace is available.
 
     Parameters
     ----------
-    timeout : float | None
-        Maximum time in seconds to wait for startup/readiness checks.  If None,
+    timeout : float
+        Maximum time in seconds to wait for startup/readiness checks.  If infinite,
         then this function will wait indefinitely until MicroK8s is ready.
 
     Raises
@@ -2646,7 +2639,7 @@ async def start_microk8s(*, timeout: float | None) -> None:
     TimeoutError
         If readiness checks do not succeed before `timeout`.
     """
-    if timeout is not None and timeout < 0:
+    if timeout <= 0:
         raise TimeoutError("MicroK8s timeout must be non-negative.")
     if not shutil.which("microk8s"):
         raise OSError(
@@ -2654,48 +2647,36 @@ async def start_microk8s(*, timeout: float | None) -> None:
             "the managed runtime."
         )
     loop = asyncio.get_running_loop()
-    deadline = None if timeout is None else loop.time() + timeout
+    deadline = loop.time() + timeout
 
     # optimistic: cluster already up (no locking)
-    if await _microk8s_cluster_ready(
-        timeout=None if deadline is None else deadline - loop.time()
-    ):
-        await _add_bertrand_kube_namespace(
-            timeout=None if deadline is None else deadline - loop.time()
-        )
+    if await _microk8s_cluster_ready(timeout=deadline - loop.time()):
+        await _add_bertrand_kube_namespace(timeout=deadline - loop.time())
         return
 
     try:
         async with Lock(
             KUBE_LOCK_FILE,
-            timeout=TIMEOUT if deadline is None else deadline - loop.time(),
+            timeout=deadline - loop.time(),
             mode="local"
         ):
             # defensive: check again after acquiring lock
-            if await _microk8s_cluster_ready(
-                timeout=None if deadline is None else deadline - loop.time()
-            ):
-                await _add_bertrand_kube_namespace(
-                    timeout=None if deadline is None else deadline - loop.time()
-                )
+            if await _microk8s_cluster_ready(timeout=deadline - loop.time()):
+                await _add_bertrand_kube_namespace(timeout=deadline - loop.time())
                 return
 
             # try user-mode startup first
             await run(
                 ["microk8s", "start"],
                 capture_output=True,
-                timeout=None if deadline is None else deadline - loop.time(),
+                timeout=deadline - loop.time(),
             )
 
             # poll API readiness after successful start
             timestamp = loop.time()
             while deadline is None or timestamp <= deadline:
-                if await _microk8s_cluster_ready(
-                    timeout=None if deadline is None else deadline - timestamp
-                ):
-                    await _add_bertrand_kube_namespace(
-                        timeout=None if deadline is None else deadline - loop.time()
-                    )
+                if await _microk8s_cluster_ready(timeout=deadline - timestamp):
+                    await _add_bertrand_kube_namespace(timeout=deadline - loop.time())
                     return
                 await asyncio.sleep(0.1)
                 timestamp = loop.time()
@@ -2715,7 +2696,7 @@ async def start_microk8s(*, timeout: float | None) -> None:
         ) from err
 
 
-async def _ceph_csi_storage_classes(*, timeout: float | None) -> list[str]:
+async def _ceph_csi_storage_classes(*, timeout: float) -> list[str]:
     # get all storage classes available for PVC requests
     try:
         result = await kubectl(
@@ -2765,13 +2746,13 @@ async def _ceph_csi_storage_classes(*, timeout: float | None) -> list[str]:
     return sorted(set(out))
 
 
-async def link_kube_ceph(*, timeout: float | None) -> None:
+async def link_kube_ceph(*, timeout: float) -> None:
     """Converge MicroK8s rook-ceph integration with the local MicroCeph cluster.
 
     Parameters
     ----------
-    timeout : float | None
-        Maximum time in seconds to wait for linkage convergence.  If None, wait
+    timeout : float
+        Maximum time in seconds to wait for linkage convergence.  If infinite, wait
         indefinitely.
 
     Raises
@@ -2782,7 +2763,7 @@ async def link_kube_ceph(*, timeout: float | None) -> None:
     TimeoutError
         If linkage does not converge before the timeout.
     """
-    if timeout is not None and timeout < 0:
+    if timeout <= 0:
         raise TimeoutError("kube-ceph link timeout must be non-negative.")
     if not shutil.which("microk8s"):
         raise OSError(
@@ -2797,30 +2778,24 @@ async def link_kube_ceph(*, timeout: float | None) -> None:
 
     # linking requires both clusters to be up
     loop = asyncio.get_running_loop()
-    deadline = None if timeout is None else loop.time() + timeout
+    deadline = loop.time() + timeout
     async with Lock(
         KUBE_CEPH_LINK_LOCK_FILE,
-        timeout=TIMEOUT if deadline is None else deadline - loop.time(),
+        timeout=deadline - loop.time(),
         mode="local",
     ):
         # recheck cluster preconditions and fast path under lock
-        if not await _microk8s_cluster_ready(
-            timeout=None if deadline is None else deadline - loop.time()
-        ):
+        if not await _microk8s_cluster_ready(timeout=deadline - loop.time()):
             raise OSError(
                 "MicroK8s must be started before linking to MicroCeph.  Run "
                 "`start_microk8s(...)` first."
             )
-        if not await _microceph_cluster_ready(
-            timeout=None if deadline is None else deadline - loop.time()
-        ):
+        if not await _microceph_cluster_ready(timeout=deadline - loop.time()):
             raise OSError(
                 "MicroCeph must be started before linking to MicroK8s.  Run "
                 "`start_microceph(...)` first."
             )
-        if await _ceph_csi_storage_classes(
-            timeout=None if deadline is None else deadline - loop.time()
-        ):
+        if await _ceph_csi_storage_classes(timeout=deadline - loop.time()):
             return  # already linked
 
         # converge rook-ceph addon state
@@ -2828,7 +2803,7 @@ async def link_kube_ceph(*, timeout: float | None) -> None:
             await run(
                 ["microk8s", "enable", "rook-ceph"],
                 capture_output=True,
-                timeout=None if deadline is None else deadline - loop.time(),
+                timeout=deadline - loop.time(),
             )
         except CommandError as err:
             detail = f"{err.stdout}\n{err.stderr}".lower()
@@ -2848,7 +2823,7 @@ async def link_kube_ceph(*, timeout: float | None) -> None:
             await run(
                 ["microk8s", "connect-external-ceph"],
                 capture_output=True,
-                timeout=None if deadline is None else deadline - loop.time(),
+                timeout=deadline - loop.time(),
             )
         except CommandError as err:
             detail = f"{err.stdout}\n{err.stderr}".lower()
@@ -2868,9 +2843,7 @@ async def link_kube_ceph(*, timeout: float | None) -> None:
         # wait for Ceph CSI classes to materialize
         timestamp = loop.time()
         while deadline is None or timestamp <= deadline:
-            if await _ceph_csi_storage_classes(
-                timeout=None if deadline is None else deadline - timestamp
-            ):
+            if await _ceph_csi_storage_classes(timeout=deadline - timestamp):
                 return
             await asyncio.sleep(0.1)
             timestamp = loop.time()
@@ -3250,17 +3223,19 @@ class _ClusterLeaseLock:
             was reached before the lock could be acquired.
         """
         loop = asyncio.get_event_loop()
-        while True:
-            remaining = deadline - loop.time()
-            if remaining <= 0:
-                return False
-            if await self.try_acquire(remaining):
+        timestamp = loop.time()
+        while timestamp <= deadline:
+            if await self.try_acquire(deadline - timestamp):
                 return True
-
-            # wait before retrying
+            timestamp = loop.time()
             await asyncio.sleep(
-                min(LEASE_POLL_SECONDS, max(0.0, deadline - loop.time()))
+                min(LEASE_POLL_SECONDS, max(0.0, deadline - timestamp))
             )
+
+        return False
+
+    # TODO: timeout should be mandatory, and standardized more with respect to the
+    # run helpers, and permit infinite timeout
 
     async def try_acquire(self, timeout: float = LEASE_QUERY_TIMEOUT) -> bool:
         """Attempt to acquire or steal the cluster lease once, without retrying.
@@ -3407,7 +3382,7 @@ class Lock:
         *,
         privileges: int = LOCK_DEFAULT_PRIVILEGES,
     ) -> Lock:
-        if timeout < 0:
+        if timeout <= 0:
             raise TimeoutError(f"could not acquire lock within {timeout} seconds")
         path = path.expanduser().resolve()
         if mode == "local" and (privileges < 0 or privileges > 0o777):
@@ -3887,7 +3862,7 @@ class GitRepository:
         self,
         source: GitRepository,
         *,
-        timeout: float | None,
+        timeout: float,
     ) -> None:
         """Converge this repository from a source using mirror semantics.
 
@@ -3899,8 +3874,9 @@ class GitRepository:
         ----------
         source : GitRepository
             Source repository whose refs/object graph should be mirrored.
-        timeout : float | None
-            Maximum runtime command timeout in seconds. If None, wait indefinitely.
+        timeout : float
+            Maximum runtime command timeout in seconds.  If infinite, wait
+            indefinitely.
 
         Raises
         ------
@@ -3909,14 +3885,14 @@ class GitRepository:
         CommandError
             If clone/fetch commands fail.
         """
-        if timeout is not None and timeout < 0:
+        if timeout <= 0:
             raise TimeoutError("timeout must be non-negative")
         if not source:
             raise OSError(
                 f"cannot mirror from uninitialized source repository: {source.git_dir}"
             )
         loop = asyncio.get_event_loop()
-        deadline = None if timeout is None else loop.time() + timeout
+        deadline = loop.time() + timeout
 
         # if this is a fresh repository, just clone directly to initialize it
         if not self:
@@ -3929,7 +3905,7 @@ class GitRepository:
                     str(self.git_dir),
                 ],
                 capture_output=True,
-                timeout=None if deadline is None else deadline - loop.time(),
+                timeout=deadline - loop.time(),
             )
 
         # otherwise, fetch and mirror all refs to converge with the source repository
@@ -3944,7 +3920,7 @@ class GitRepository:
                     "+refs/*:refs/*",
                 ],
                 capture_output=True,
-                timeout=None if deadline is None else deadline - loop.time(),
+                timeout=deadline - loop.time(),
             )
 
     async def run(
@@ -3954,7 +3930,7 @@ class GitRepository:
         check: bool = True,
         capture_output: bool | None = False,
         input: str | None = None,
-        timeout: float | None = None,
+        timeout: float = INFINITY,
         attempts: int = 1,
         delay: float = 0.1,
         cwd: Path | None = None,
@@ -3980,12 +3956,12 @@ class GitRepository:
             recommended for interactive use.
         input : str | None, optional
             Input to send to the command's stdin (default is None).
-        timeout : float | None, optional
+        timeout : float, optional
             An optional timeout in seconds to wait for the command to complete before
-            raising a `TimeoutExpired` exception.  Default is None, which means to wait
-            indefinitely.  If zero or negative, a `TimeoutExpired` exception will be
-            raised immediately.  Note that this does not reset between `attempts`, so
-            the total time spent on retries counts against the timeout.
+            raising a `TimeoutExpired` exception.  Default is infinite, which means to
+            wait indefinitely.  If zero or negative, a `TimeoutExpired` exception will
+            be raised immediately.  Note that this does not reset between `attempts`,
+            so only the overall time spent on retries counts against the timeout.
         attempts : int, optional
             The total number of times to attempt the command.  Defaults to 1, which
             means no retries.  If greater than 1, then any command that exits with a

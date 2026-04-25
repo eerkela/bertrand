@@ -15,12 +15,13 @@ from ..run import (
     RUN_TMPFS_MOUNT_UNIT_NAME,
     RUN_TMPFS_MOUNT_UNIT_PATH,
     STATE_DIR,
-    TIMEOUT,
     confirm,
     nerdctl,
     nerdctl_ids,
     run,
 )
+
+KILL_AFTER = 30  # seconds to wait after SIGTERM before sending SIGKILL
 
 
 def _pid_alive(pid: int) -> bool:
@@ -37,15 +38,16 @@ def _pid_alive(pid: int) -> bool:
 
 async def _stop_buildkitd() -> None:
     try:
+        loop = asyncio.get_running_loop()
         if BUILDKIT_PID_FILE.exists():
             raw = BUILDKIT_PID_FILE.read_text(encoding="utf-8").strip()
             if raw:
                 pid = int(raw)
                 if _pid_alive(pid):
                     # try to terminate gracefully
-                    deadline = asyncio.get_running_loop().time() + TIMEOUT
+                    deadline = loop.time() + KILL_AFTER
                     os.kill(pid, signal.SIGTERM)
-                    while _pid_alive(pid) and asyncio.get_running_loop().time() < deadline:
+                    while _pid_alive(pid) and loop.time() < deadline:
                         await asyncio.sleep(0.1)
 
                     # kill if still alive

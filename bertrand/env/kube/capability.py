@@ -157,7 +157,7 @@ class Capabilities:
 
     def __post_init__(self) -> None:
         self.env_id = _check_uuid(self.env_id)
-        if self.timeout < 0:
+        if self.timeout <= 0:
             raise TimeoutError("capability timeout must be non-negative")
 
     async def __aenter__(self) -> Self:

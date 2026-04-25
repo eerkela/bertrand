@@ -183,7 +183,7 @@ class CacheVolume:
         tag: str,
         env_id: str,
         *,
-        timeout: float | None,
+        timeout: float,
         storage_class: str,
         size_request: str,
     ) -> None:
@@ -197,8 +197,9 @@ class CacheVolume:
             Active build tag used to resolve requested cache volumes.
         env_id : str
             Canonical environment UUID used for managed PVC labels.
-        timeout : float | None
-            Maximum runtime command timeout in seconds.  If None, wait indefinitely.
+        timeout : float
+            Maximum runtime command timeout in seconds.  If infinite, wait
+            indefinitely.
         storage_class : str
             StorageClass name used for claim creation and validation.
         size_request : str
@@ -225,7 +226,7 @@ class CacheVolume:
         call `start_microk8s()`.
         """
         env_id = _check_uuid(env_id)
-        if timeout is not None and timeout <= 0:
+        if timeout <= 0:
             raise TimeoutError("timeout must be non-negative")
         storage_class = storage_class.strip()
         if not storage_class:
@@ -234,13 +235,13 @@ class CacheVolume:
         if not size_request:
             raise ValueError("size request cannot be empty")
         loop = asyncio.get_running_loop()
-        deadline = None if timeout is None else loop.time() + timeout
+        deadline = loop.time() + timeout
 
         # get PVC storage class and assert that it supports volume expansion for
         # dynamic resizing
         storage = await StorageClass.get(
             storage_class,
-            timeout=None if deadline is None else deadline - loop.time()
+            timeout=deadline - loop.time()
         )
         if storage is None:
             raise OSError(
@@ -258,7 +259,7 @@ class CacheVolume:
             pvc = await PersistentVolumeClaim.get(
                 volume.name,
                 namespace=BERTRAND_NAMESPACE,
-                timeout=None if deadline is None else deadline - loop.time()
+                timeout=deadline - loop.time()
             )
             if pvc is None:  # create a new volume with the requested size
                 pvc = await PersistentVolumeClaim.create({
@@ -282,7 +283,7 @@ class CacheVolume:
                             },
                         },
                     },
-                }, timeout=None if deadline is None else deadline - loop.time())
+                }, timeout=deadline - loop.time())
 
             cls._assert_managed_cache(
                 pvc,
@@ -293,13 +294,10 @@ class CacheVolume:
             )
 
             # try to grow existing volume if necessary
-            await pvc.grow(
-                size_request,
-                timeout=None if deadline is None else deadline - loop.time()
-            )
+            await pvc.grow(size_request, timeout=deadline - loop.time())
 
     @classmethod
-    async def gc(cls, config: Config, env_id: str, *, timeout: float | None) -> None:
+    async def gc(cls, config: Config, env_id: str, *, timeout: float) -> None:
         """Garbage-collect stale labeled cache PVCs for an environment.
 
         Parameters
@@ -308,8 +306,9 @@ class CacheVolume:
             Active configuration context.
         env_id : str
             Canonical environment UUID used to scope labeled cache PVCs.
-        timeout : float | None
-            Maximum runtime command timeout in seconds.  If None, wait indefinitely.
+        timeout : float
+            Maximum runtime command timeout in seconds.  If infinite, wait
+            indefinitely.
 
         Returns
         -------
@@ -331,11 +330,11 @@ class CacheVolume:
         currently referenced by active pods are never deleted.
         """
         env_id = _check_uuid(env_id)
-        if timeout is not None and timeout <= 0:
+        if timeout <= 0:
             raise TimeoutError("timeout must be non-negative")
 
         loop = asyncio.get_running_loop()
-        deadline = None if timeout is None else loop.time() + timeout
+        deadline = loop.time() + timeout
         bertrand = config.get(Bertrand)
         if bertrand is None:
             return
@@ -344,7 +343,7 @@ class CacheVolume:
         actual = (await PersistentVolumeClaim.List.get(
             {BERTRAND_ENV: "1", CACHE_VOLUME_ENV: "1", ENV_ID_ENV: env_id},
             namespace=BERTRAND_NAMESPACE,
-            timeout=None if deadline is None else deadline - loop.time(),
+            timeout=deadline - loop.time(),
         )).items
         if not actual:
             return  # no volumes to clean up
@@ -355,7 +354,7 @@ class CacheVolume:
             for pod in (await Pod.List.get(
                 {BERTRAND_ENV: "1", ENV_ID_ENV: env_id},
                 namespace=BERTRAND_NAMESPACE,
-                timeout=None if deadline is None else deadline - loop.time(),
+                timeout=deadline - loop.time(),
             )).items if (
                 not pod.metadata.deletionTimestamp and
                 pod.status.phase in {"Pending", "Running", "Unknown"}
@@ -387,7 +386,7 @@ class CacheVolume:
                 storage_class=None,
                 require_rwo=False,
             )
-            await pvc.delete(timeout=None if deadline is None else deadline - loop.time())
+            await pvc.delete(timeout=deadline - loop.time())
 
 
 @dataclass(frozen=True)
@@ -464,7 +463,7 @@ class RepoVolume:
         cls,
         repo_id: str,
         *,
-        timeout: float | None,
+        timeout: float,
         size_request: str,
     ) -> Self:
         """Ensure a deterministic, cluster-wide RWX claim exists for one repository
@@ -473,9 +472,11 @@ class RepoVolume:
         Parameters
         ----------
         repo_id : str
-            Stable, caller-provided repository identity used for deterministic claim names.
-        timeout : float | None
-            Maximum runtime command timeout in seconds.  If None, wait indefinitely.
+            Stable, caller-provided repository identity used for deterministic claim
+            names.
+        timeout : float
+            Maximum runtime command timeout in seconds.  If infinite, wait
+            indefinitely.
         size_request : str
             Requested storage quantity for initial creation and resize checks.
 
@@ -495,14 +496,14 @@ class RepoVolume:
             If any kube API call fails.
         """
         repo_id = _check_uuid(repo_id)
-        if timeout is not None and timeout <= 0:
+        if timeout <= 0:
             raise TimeoutError("timeout must be non-negative")
         size_request = size_request.strip()
         if not size_request:
             raise ValueError("size request cannot be empty")
         claim_name = cls._kube_name(repo_id)
         loop = asyncio.get_running_loop()
-        deadline = None if timeout is None else loop.time() + timeout
+        deadline = loop.time() + timeout
 
         # select the preferred CephFS storage class in deterministic order
         storage_class: str | None = None
@@ -510,7 +511,7 @@ class RepoVolume:
         for candidate in REPO_STORAGE_CLASS_PREFERENCES:
             storage = await StorageClass.get(
                 candidate,
-                timeout=None if deadline is None else deadline - loop.time()
+                timeout=deadline - loop.time()
             )
             if storage is not None:
                 storage_class = candidate
@@ -542,7 +543,7 @@ class RepoVolume:
         pvc = await PersistentVolumeClaim.get(
             claim_name,
             namespace=BERTRAND_NAMESPACE,
-            timeout=None if deadline is None else deadline - loop.time(),
+            timeout=deadline - loop.time(),
         )
         if pvc is None:
             pvc = await PersistentVolumeClaim.create({
@@ -566,7 +567,7 @@ class RepoVolume:
                         },
                     },
                 },
-            }, timeout=None if deadline is None else deadline - loop.time())
+            }, timeout=deadline - loop.time())
 
         cls._assert_managed_pvc(
             pvc,
@@ -577,22 +578,20 @@ class RepoVolume:
         )
 
         # try to grow existing volume if necessary
-        await pvc.grow(
-            size_request,
-            timeout=None if deadline is None else deadline - loop.time()
-        )
+        await pvc.grow(size_request, timeout=deadline - loop.time())
         return cls(repo_id=repo_id, pvc=pvc)
 
     @classmethod
-    async def get(cls, repo_id: str | None, *, timeout: float | None) -> list[Self]:
+    async def get(cls, repo_id: str | None, *, timeout: float) -> list[Self]:
         """List repository volumes currently present in the cluster.
 
         Parameters
         ----------
         repo_id : str | None
             If provided, filter the repository volumes by this specific repository ID.
-        timeout : float | None
-            Maximum runtime command timeout in seconds.  If None, wait indefinitely.
+        timeout : float
+            Maximum runtime command timeout in seconds.  If infinite, wait
+            indefinitely.
 
         Returns
         -------
@@ -604,7 +603,7 @@ class RepoVolume:
         if repo_id is not None:
             repo_id = _check_uuid(repo_id)
             labels[REPO_ID_ENV] = repo_id
-        if timeout is not None and timeout <= 0:
+        if timeout <= 0:
             raise TimeoutError("timeout must be non-negative")
 
         # get matching PVCs
@@ -634,27 +633,28 @@ class RepoVolume:
         out.sort(key=lambda m: (m.repo_id, m.pvc.metadata.name))
         return out
 
-    async def delete(self, *, timeout: float | None, force: bool) -> None:
+    async def delete(self, *, timeout: float, force: bool) -> None:
         """Delete this repository volume claim from the cluster.
 
         Parameters
         ----------
-        timeout : float | None
-            Maximum runtime command timeout in seconds.  If None, wait indefinitely.
+        timeout : float
+            Maximum runtime command timeout in seconds.  If infinite, wait
+            indefinitely.
         force : bool
             If True, delete the claim even if it is currently referenced by active pods.
         """
-        if timeout is not None and timeout <= 0:
+        if timeout <= 0:
             raise TimeoutError("timeout must be non-negative")
         loop = asyncio.get_running_loop()
-        deadline = None if timeout is None else loop.time() + timeout
+        deadline = loop.time() + timeout
 
         # check for running pods associated with this pvc, unless overridden
         if not force:
             pods = (await Pod.List.get(
                 {BERTRAND_ENV: "1", REPO_ID_ENV: self.repo_id},
                 namespace=BERTRAND_NAMESPACE,
-                timeout=None if deadline is None else deadline - loop.time(),
+                timeout=deadline - loop.time(),
             )).items
             active = {
                 volume.persistentVolumeClaim.claimName
@@ -672,15 +672,16 @@ class RepoVolume:
                 )
 
         # delete the volume, ignoring race conditions
-        await self.pvc.delete(timeout=None if deadline is None else deadline - loop.time())
+        await self.pvc.delete(timeout=deadline - loop.time())
 
-    async def resolve_ceph_path(self, *, timeout: float | None) -> PosixPath:
+    async def resolve_ceph_path(self, *, timeout: float) -> PosixPath:
         """Resolve this repo claim's CephFS path from its bound PVC/PV metadata.
 
         Parameters
         ----------
-        timeout : float | None
-            Maximum runtime command timeout in seconds.  If None, wait indefinitely.
+        timeout : float
+            Maximum runtime command timeout in seconds.  If infinite, wait
+            indefinitely.
 
         Returns
         -------
@@ -688,7 +689,7 @@ class RepoVolume:
             Absolute path to the claimed CephFS subvolume within the Ceph filesystem,
             as specified in the PV's CSI volume attributes.
         """
-        if timeout is not None and timeout <= 0:
+        if timeout <= 0:
             raise TimeoutError("timeout must be non-negative")
         name = self.pvc.metadata.name
         namespace = self.pvc.metadata.namespace
@@ -702,12 +703,12 @@ class RepoVolume:
 
         # wait until the PV is bound with the expected CSI attributes
         loop = asyncio.get_running_loop()
-        deadline = None if timeout is None else loop.time() + timeout
+        deadline = loop.time() + timeout
         while True:
             pvc = await PersistentVolumeClaim.get(
                 name,
                 namespace=namespace,
-                timeout=None if deadline is None else deadline - loop.time(),
+                timeout=deadline - loop.time(),
             )
             if pvc is None:  # pvc died during resolution
                 raise OSError(
@@ -722,7 +723,7 @@ class RepoVolume:
             # wait until the PV is available
             volume = await PersistentVolume.get(
                 volume_name,
-                timeout=None if deadline is None else deadline - loop.time()
+                timeout=deadline - loop.time()
             )
             if volume is None:
                 await asyncio.sleep(0.1)

@@ -1,6 +1,7 @@
 """TODO"""
 from __future__ import annotations
 
+import asyncio
 import importlib.resources as importlib_resources
 import re
 import string
@@ -32,7 +33,7 @@ from pydantic import (
 
 from ..run import (
     METADATA_LOCK,
-    TIMEOUT,
+    INFINITY,
     GitRepository,
     Lock,
     inside_container,
@@ -651,7 +652,7 @@ class Config:
 
     repo: GitRepository
     worktree: RelativePath
-    timeout: float | None
+    timeout: float
     resources: dict[ResourceName, BaseModel | None] = field(
         default_factory=lambda: {"bertrand": None}
     )
@@ -675,7 +676,7 @@ class Config:
         worktree: Path,
         *,
         repo: GitRepository | None = None,
-        timeout: float | None = TIMEOUT
+        timeout: float = INFINITY,
     ) -> Self:
         """Load a worktree configuration by scanning the environment root for known
         resource placements based on their managed paths, and resolving any collisions
@@ -689,11 +690,10 @@ class Config:
             An optional parent git repository containing the worktree, which determines
             the project root for the environment.  If not provided, then it will be
             inferred from `worktree`, which must include a repository as a parent.
-        timeout : float | None, optional
+        timeout : float, optional
             Maximum time to wait for acquiring the worktree lock, in seconds.  If
-            None, then wait indefinitely for lock acquisition.  If a finite timeout is
-            given and the lock cannot be acquired within this time, a `TimeoutError` is
-            raised.
+            infinite, then wait indefinitely for lock acquisition.  Otherwise, if the
+            lock cannot be acquired within this time, a `TimeoutError` will be raised.
 
         Returns
         -------
@@ -729,16 +729,15 @@ class Config:
                 f"{repo.root}"
             )
 
-        # TODO: infinite lock timeout is actually a pretty good behavior in general,
-        # and may be a better policy than float | None in general.  That might also
-        # simplify some of the logic when it comes to deadline - loop.time() constructs
-
-        lock_timeout = float("inf") if timeout is None else timeout
-        async with Lock(worktree / METADATA_LOCK, timeout=lock_timeout, mode="cluster"):
+        async with Lock(
+            worktree / METADATA_LOCK,
+            timeout=timeout,
+            mode="cluster"
+        ):
             self = cls(
                 repo=repo,
                 worktree=worktree.relative_to(repo.root),
-                timeout=timeout
+                timeout=timeout,
             )
             self.resources.update({
                 r.name: None
@@ -808,7 +807,11 @@ class Config:
 
         old_resources = self.resources.copy()
         try:
-            async with Lock(self.root / METADATA_LOCK, timeout=TIMEOUT, mode="cluster"):
+            async with Lock(
+                self.root / METADATA_LOCK,
+                timeout=self.timeout,
+                mode="cluster"
+            ):
                 # invoke `init()` hooks for all resources to get baseline snapshot
                 snapshot = {} if self.init is None else {
                     r: await RESOURCE_NAMES[r].init(self, self.init)
@@ -983,7 +986,11 @@ class Config:
             raise RuntimeError("sync() artifact rendering requires an active config context")
 
         # invoke render hooks for all resources in deterministic order
-        async with Lock(self.root / METADATA_LOCK, timeout=TIMEOUT, mode="cluster"):
+        async with Lock(
+            self.root / METADATA_LOCK,
+            timeout=self.timeout,
+            mode="cluster"
+        ):
             for name in sorted(self.resources):
                 r = RESOURCE_NAMES[name]
                 try:
@@ -1052,7 +1059,11 @@ class Config:
             sync_cmd.append("--no-editable")  # image build context -> non-editable
 
         # render output artifacts, update lockfile, and invoke PEP517/660 backend
-        async with Lock(self.root / METADATA_LOCK, timeout=TIMEOUT, mode="cluster"):
+        async with Lock(
+            self.root / METADATA_LOCK,
+            timeout=self.timeout,
+            mode="cluster"
+        ):
             await self.sync(tag)  # render artifacts to container filesystem
             await run(["uv", "lock"], cwd=self.root)  # update lockfile
             await run(sync_cmd, cwd=self.root)  # orchestrate build

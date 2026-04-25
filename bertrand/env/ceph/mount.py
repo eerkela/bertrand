@@ -16,7 +16,6 @@ from ..run import (
     REPO_DIR,
     REPO_LOCK_EXT,
     REPO_MOUNT_EXT,
-    TIMEOUT,
     Lock,
     atomic_symlink,
     atomic_write_text,
@@ -256,7 +255,7 @@ class RepoMount:
         self,
         path: Path,
         *,
-        timeout: float | None,
+        timeout: float,
         monitors: Sequence[str],
         ceph_user: str,
         ceph_secretfile: Path,
@@ -271,9 +270,9 @@ class RepoMount:
             stored internally and not meant to be directly accessed by users.  Instead,
             the symlink can can be freely renamed, relocated, or removed without
             affecting the underlying Ceph volume.
-        timeout : float | None
+        timeout : float
             Maximum runtime command timeout in seconds for the entire mount operation,
-            including any necessary setup, validation, and retries.  If None, wait
+            including any necessary setup, validation, and retries.  If infinite, wait
             indefinitely.
         monitors : Sequence[str]
             List of Ceph monitor endpoints to use for mounting.  Each endpoint should
@@ -291,7 +290,7 @@ class RepoMount:
         ceph_path = self.ceph_path
         if os.name != "posix" or platform.system() != "Linux":
             raise OSError("repository mounts are only supported on Linux platforms")
-        if timeout and timeout <= 0:
+        if timeout <= 0:
             raise TimeoutError("timeout must be non-negative")
         path = self._alias_path(path)
         if path.is_symlink() and not self._alias_targets_mount(path, mount_path):
@@ -319,11 +318,11 @@ class RepoMount:
 
         # use a local repository lock to prevent race conditions
         loop = asyncio.get_event_loop()
-        deadline = None if timeout is None else loop.time() + timeout
+        deadline = loop.time() + timeout
         root.mkdir(parents=True, exist_ok=True)
         async with Lock(
             root / REPO_LOCK_EXT,
-            timeout=TIMEOUT if deadline is None else deadline - loop.time(),
+            timeout=deadline - loop.time(),
             mode="local",
         ):
             # get or create the host mount for this repository claim
@@ -347,7 +346,7 @@ class RepoMount:
                         ]
                     ),
                     capture_output=True,
-                    timeout=None if deadline is None else deadline - loop.time(),
+                    timeout=deadline - loop.time(),
                 )
                 mounted = MountInfo.search(mount_path)
                 if mounted is None:
@@ -374,7 +373,7 @@ class RepoMount:
         self,
         path: Path,
         *,
-        timeout: float | None,
+        timeout: float,
         force: bool,
         lazy: bool,
     ) -> bool:
@@ -387,10 +386,10 @@ class RepoMount:
             Absolute path to a symlink produced by `mount()`.  If this is the last
             symlink alias to the underlying mount, the mount will be detached from the
             host.
-        timeout : float | None
+        timeout : float
             Maximum runtime command timeout in seconds for the entire unmount
             operation, including any necessary setup, validation, and retries.  If
-            None, wait indefinitely.
+            infinite, wait indefinitely.
         force : bool
             If True, forcefully unmount the repository volume even if it is currently
             referenced by active processes.  This option is passed directly to the
@@ -414,17 +413,17 @@ class RepoMount:
         mount_path = root / REPO_MOUNT_EXT
         if os.name != "posix" or platform.system() != "Linux":
             raise OSError("repository mounts are only supported on Linux platforms")
-        if timeout is not None and timeout <= 0:
+        if timeout <= 0:
             raise TimeoutError("timeout must be non-negative")
         path = self._alias_path(path)
 
         # use a local repository lock to prevent race conditions
         loop = asyncio.get_event_loop()
-        deadline = None if timeout is None else loop.time() + timeout
+        deadline = loop.time() + timeout
         root.mkdir(parents=True, exist_ok=True)
         async with Lock(
             root / REPO_LOCK_EXT,
-            timeout=TIMEOUT if deadline is None else deadline - loop.time(),
+            timeout=deadline - loop.time(),
             mode="local",
         ):
             # remove symlink
@@ -455,7 +454,7 @@ class RepoMount:
                     sudo(["fuser", "-m", str(mount_path)]),
                     check=False,
                     capture_output=True,
-                    timeout=None if deadline is None else deadline - loop.time(),
+                    timeout=deadline - loop.time(),
                 )
                 if result.returncode == 0:
                     detail = (f"{result.stdout}\n{result.stderr}").strip()
@@ -482,7 +481,7 @@ class RepoMount:
             await run(
                 sudo(cmd),
                 capture_output=True,
-                timeout=None if deadline is None else deadline - loop.time(),
+                timeout=deadline - loop.time(),
             )
             if MountInfo.search(mount_path) is not None:
                 raise OSError(

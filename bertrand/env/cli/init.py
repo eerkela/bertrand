@@ -37,12 +37,12 @@ from ..config.core import (
 from ..kube import DEFAULT_VOLUME_SIZE, RepoVolume
 from ..run import (
     BERTRAND_GROUP,
+    INFINITY,
     METADATA_REPO_ID,
     REPO_DIR,
     REPO_MOUNT_EXT,
     RUN_DIR,
     STATE_DIR,
-    TIMEOUT,
     GitRepository,
     GroupStatus,
     Lock,
@@ -332,6 +332,7 @@ async def _install_prereqs(state: InitState, assume_yes: bool) -> None:
         package_manager=state.package_manager,
         packages=sorted(missing),
         assume_yes=assume_yes,
+        timeout=INFINITY,
     )
 
     # verify all required tools after installation
@@ -352,7 +353,7 @@ async def _bootstrap_state_dir(state: InitState, assume_yes: bool) -> None:
     await ensure_bertrand_state(
         user=state.user,
         assume_yes=assume_yes,
-        timeout=None,
+        timeout=INFINITY,
     )
 
 
@@ -529,8 +530,9 @@ class RepoState:
     target : AbsolutePath
         Absolute repository destination path where the managed mount alias should end
         up.  This is normalized from user input without resolving symlinks.
-    deadline : float | None
-        Absolute monotonic deadline for repository convergence, or None if unbounded.
+    deadline : float
+        Absolute monotonic deadline for repository convergence, or infinite if
+        unbounded.
     repo : GitRepository
         Repository handle resolved from the target path.
     worktree : Path
@@ -556,7 +558,7 @@ class RepoState:
     ceph_path: AbsolutePosixPath | None
     mount_alias: Path | None
     credentials: RepoCredentials | None
-    deadline: float | None
+    deadline: float
 
     def __post_init__(self) -> None:
         self.target = _norm_path(self.target)
@@ -569,7 +571,7 @@ class RepoState:
         root : AbsolutePath
             Repository root path to get the corresponding lock file for.
         timeout : float
-            Timeout for acquiring the lock.
+            Timeout for acquiring the lock.  If infinite, wait indefinitely.
 
         Returns
         -------
@@ -589,10 +591,9 @@ class RepoState:
 
 async def _ensure_repo_volume(
     state: RepoState,
-    *,
-    yes: bool,
     enable: set[Resource],
     disable: set[Resource],
+    yes: bool,
 ) -> None:
     """Converge repository volume allocation and deterministic claim reuse."""
     loop = asyncio.get_running_loop()
@@ -600,7 +601,7 @@ async def _ensure_repo_volume(
     # first, try to recover an existing claim for this deterministic repository ID
     volumes = await RepoVolume.get(
         state.repo_id,
-        timeout=None if state.deadline is None else state.deadline - loop.time()
+        timeout=state.deadline - loop.time()
     )
     claimed: RepoVolume | None = None
     if volumes:
@@ -619,7 +620,7 @@ async def _ensure_repo_volume(
     # case we can safely reuse it
     if claimed is not None:
         ceph_path = await claimed.resolve_ceph_path(
-            timeout=None if state.deadline is None else state.deadline - loop.time()
+            timeout=state.deadline - loop.time()
         )
         hidden_mount = REPO_DIR / state.repo_id / REPO_MOUNT_EXT
         mounted = MountInfo.search(hidden_mount)
@@ -650,20 +651,19 @@ async def _ensure_repo_volume(
     # allocate via create(), then persist in-memory resolved volume state
     state.volume = await RepoVolume.create(
         repo_id=state.repo_id,
-        timeout=None if state.deadline is None else state.deadline - loop.time(),
+        timeout=state.deadline - loop.time(),
         size_request=DEFAULT_VOLUME_SIZE,
     )
     state.ceph_path = await state.volume.resolve_ceph_path(
-        timeout=None if state.deadline is None else state.deadline - loop.time()
+        timeout=state.deadline - loop.time()
     )
 
 
 async def _ensure_repo_credentials(
     state: RepoState,
-    *,
-    yes: bool,
     enable: set[Resource],
     disable: set[Resource],
+    yes: bool,
 ) -> None:
     """Ensure per-repository Ceph credentials exist, in order to allow mounting the
     volume on the host filesystem.
@@ -678,16 +678,15 @@ async def _ensure_repo_credentials(
     state.credentials = await RepoCredentials.create(
         repo_id=state.repo_id,
         ceph_path=ceph_path,
-        timeout=None if state.deadline is None else state.deadline - loop.time(),
+        timeout=state.deadline - loop.time(),
     )
 
 
 async def _ensure_host_mount(
     state: RepoState,
-    *,
-    yes: bool,
     enable: set[Resource],
     disable: set[Resource],
+    yes: bool,
 ) -> None:
     """Ensure the repository volume is mounted on the host filesystem at a stable path,
     staging the mount until cutover.
@@ -722,7 +721,7 @@ async def _ensure_host_mount(
             ceph_path=state.ceph_path
         ).mount(
             mount_alias,
-            timeout=None if state.deadline is None else state.deadline - loop.time(),
+            timeout=state.deadline - loop.time(),
             monitors=state.credentials.monitors,
             ceph_user=state.credentials.user,
             ceph_secretfile=ceph_secretfile,
@@ -740,10 +739,9 @@ async def _ensure_host_mount(
 
 async def _ensure_bare_worktrees(
     state: RepoState,
-    *,
-    yes: bool,
     enable: set[Resource],
     disable: set[Resource],
+    yes: bool,
 ) -> None:
     """Converge repository to Bertrand's bare+worktree layout.  If we're converting an
     existing repository, then we first mirror all refs into the new repository, and
@@ -816,10 +814,7 @@ async def _ensure_bare_worktrees(
                 f"cannot convert repository at {state.repo.root}: worktree has "
                 "uncommitted changes"
             )
-        await mount.mirror_from(
-            state.repo,
-            timeout=None if deadline is None else deadline - loop.time(),
-        )
+        await mount.mirror_from(state.repo, timeout=deadline - loop.time())
 
     # assert mounted directory is well-formed, then sync worktrees
     if not mount:
@@ -844,10 +839,9 @@ async def _ensure_bare_worktrees(
 
 async def _ensure_repo_hooks(
     state: RepoState,
-    *,
-    yes: bool,
     enable: set[Resource],
     disable: set[Resource],
+    yes: bool,
 ) -> None:
     """Write the managed git hooks into the repository's .git/hooks directory, if they
     don't already exist or are outdated.
@@ -910,10 +904,9 @@ async def _ensure_repo_hooks(
 
 async def _render_config_artifacts(
     state: RepoState,
-    *,
-    yes: bool,
     enable: set[Resource],
     disable: set[Resource],
+    yes: bool,
 ) -> None:
     """Converge rendered configuration artifacts for targeted worktrees."""
     loop = asyncio.get_running_loop()
@@ -950,7 +943,7 @@ async def _render_config_artifacts(
         config = await Config.load(
             root,
             repo=state.repo,
-            timeout=None if state.deadline is None else state.deadline - loop.time()
+            timeout=state.deadline - loop.time()
         )
         config.resources.update({resource.name: None for resource in enable})
         config.init = Config.Init(
@@ -973,10 +966,9 @@ async def _render_config_artifacts(
 
 async def _make_initial_commit(
     state: RepoState,
-    *,
-    yes: bool,
     enable: set[Resource],
     disable: set[Resource],
+    yes: bool,
 ) -> None:
     """Create initial commit when repository is empty and staged diff is non-empty."""
     loop = asyncio.get_running_loop()
@@ -1006,7 +998,7 @@ async def _make_initial_commit(
         cwd=worktree_path,
         check=False,
         capture_output=True,
-        timeout=None if state.deadline is None else state.deadline - loop.time(),
+        timeout=state.deadline - loop.time(),
     )
     if head.returncode == 0:
         return  # repository already has commits
@@ -1020,14 +1012,14 @@ async def _make_initial_commit(
         ["git", "add", "-A"],
         cwd=worktree_path,
         capture_output=True,
-        timeout=None if state.deadline is None else state.deadline - loop.time(),
+        timeout=state.deadline - loop.time(),
     )
     staged = await run(
         ["git", "diff", "--cached", "--quiet"],
         cwd=worktree_path,
         check=False,
         capture_output=True,
-        timeout=None if state.deadline is None else state.deadline - loop.time(),
+        timeout=state.deadline - loop.time(),
     )
     if staged.returncode == 0:
         return  # nothing staged after render
@@ -1040,7 +1032,7 @@ async def _make_initial_commit(
         ["git", "commit", "--quiet", "-m", "Initial commit"],
         cwd=worktree_path,
         capture_output=True,
-        timeout=None if state.deadline is None else state.deadline - loop.time(),
+        timeout=state.deadline - loop.time(),
     )
 
 
@@ -1050,10 +1042,9 @@ async def _make_initial_commit(
 
 async def _finalize(
     state: RepoState,
-    *,
-    yes: bool,
     enable: set[Resource],
     disable: set[Resource],
+    yes: bool,
 ) -> None:
     """Complete any pending path cutover."""
     mount_alias = state.mount_alias
@@ -1181,18 +1172,17 @@ async def _finalize(
                 ceph_path=state.ceph_path,
             ).unmount(
                 mount_alias,
-                timeout=None if state.deadline is None else state.deadline - loop.time(),
+                timeout=state.deadline - loop.time(),
                 force=False,
                 lazy=False,
             )
     state.mount_alias = target
 
 
-# TODO: assign fixed signatures to the repository convergence stages, which we
-# can statically verify.
-
-
-REPO_STAGES: tuple[Callable[..., Awaitable[None]], ...] = (
+REPO_STAGES: tuple[Callable[
+    [RepoState, set[Resource], set[Resource], bool],
+    Awaitable[None]
+], ...] = (
     _ensure_repo_volume,
     _ensure_repo_credentials,
     _ensure_host_mount,
@@ -1218,7 +1208,7 @@ REPO_STAGES: tuple[Callable[..., Awaitable[None]], ...] = (
 async def bertrand_init(
     path: Path | None,
     *,
-    timeout: float | None,
+    timeout: float,
     enable: list[str],
     disable: list[str],
     yes: bool,
@@ -1234,11 +1224,11 @@ async def bertrand_init(
         Git repository.  If no repository is found, then a new bare repository will be
         initialized at the indicated path, and an isolated worktree will be created to
         hold its default branch.
-    timeout : float | None
+    timeout : float
         Time (in seconds) to wait for the repository to become available with the
-        expected configuration.  If None, then wait indefinitely.  Note that this does
-        not apply to any host bootstrapping stages, which may require user confirmation,
-        and are only run once per host (not per repository).
+        expected configuration.  If infinite, then wait indefinitely.  Note that this
+        does not apply to any host bootstrapping stages, which may require user
+        confirmation, and are only run once per host (not per repository).
     enable : list[str]
         List of resources to enable at the resolved worktree.  Each component is a
         comma-separated list of resource names or aliases, which are resolved to their
@@ -1260,17 +1250,16 @@ async def bertrand_init(
     """
     if path is None and (enable or disable):
         raise OSError(
-            "Cannot enable or disable resources without a worktree.  Please specify a "
-            "path to initialize the project repository and configure resources within "
-            "it."
+            "Cannot globally enable or disable resources without a worktree.  Please "
+            "specify at least a repository path to configure resources within it."
         )
-    if timeout is not None and timeout <= 0:
+    if timeout <= 0:
         raise TimeoutError("timed out before checking host bootstrap")
 
     # bootstrap host runtime control plane (persistent, system-wide)
     async with Lock(
         INIT_LOCK,
-        timeout=TIMEOUT,
+        timeout=timeout,
         mode="local",
         privileges=INIT_LOCK_MODE
     ):
@@ -1295,10 +1284,10 @@ async def bertrand_init(
 
         # start both clusters if they are not already running, and link them via rook-ceph
         loop = asyncio.get_running_loop()
-        deadline = None if timeout is None else loop.time() + timeout
-        await start_microceph(timeout=None if deadline is None else deadline - loop.time())
-        await start_microk8s(timeout=None if deadline is None else deadline - loop.time())
-        await link_kube_ceph(timeout=None if deadline is None else deadline - loop.time())
+        deadline = loop.time() + timeout
+        await start_microceph(timeout=deadline - loop.time())
+        await start_microk8s(timeout=deadline - loop.time())
+        await link_kube_ceph(timeout=deadline - loop.time())
 
     # if no project root is provided, then we're done
     if path is None:
@@ -1342,10 +1331,7 @@ async def bertrand_init(
         )
 
     # synchronize uniquely for each repository path to limit global init lock contention
-    async with RepoState.lock(
-        repo.root,
-        timeout=TIMEOUT if deadline is None else deadline - loop.time()
-    ):
+    async with RepoState.lock(repo.root, timeout=deadline - loop.time()):
         if repo and await repo.dirty():
             raise OSError(
                 f"repository at {repo.root} has uncommitted changes; please commit or "
@@ -1370,4 +1356,4 @@ async def bertrand_init(
         # execute all idempotent convergence stages in sequence, allowing recovery from
         # previous runs
         for stage in REPO_STAGES:
-            await stage(state, yes=yes, enable=enabled, disable=disabled)
+            await stage(state, enabled, disabled, yes)

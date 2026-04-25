@@ -3,12 +3,13 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import math
 import time
 from datetime import datetime
 from pathlib import Path
 
 from ..kube import Environment
-from ..run import TIMEOUT, TimeoutExpired, atomic_write_text, confirm
+from ..run import INFINITY, TimeoutExpired, atomic_write_text, confirm
 from ..version import __version__
 from ._helper import _recover_spec
 from .build import bertrand_build
@@ -74,7 +75,6 @@ class External:
             self.clean()
 
         # TODO: path arguments should be updated to new workload/tag syntax
-        # TODO: zero timeouts should wait indefinitely?
 
         def version(self) -> None:
             """Add the 'version' query to the parser."""
@@ -89,55 +89,64 @@ class External:
             command = self.commands.add_parser(
                 "init",
                 help=
-                    "Install Bertrand's container engine if it is not already present, "
-                    "and optionally initialize a project at the specified root path "
-                    "(relative or absolute).  If a path is provided, this command "
-                    "treats it as a project root and initializes repository/hook "
-                    "infrastructure there.  If omitted, only host bootstrap steps "
-                    "are performed for CI/container prerequisites.",
+                    "Bootstrap Bertrand host prerequisites and optionally converge a "
+                    "repository/worktree target.",
             )
             command.add_argument(
                 "path",
-                metavar="PROJECT",
+                metavar="REPO[/WORKTREE]",
                 nargs="?",
                 help=
-                    "Project root path.  This may be absolute or relative and must "
-                    "not be a file.  If omitted, only host bootstrap steps are "
-                    "performed.",
+                    "Optional git repository/worktree path.  Omit for host-only "
+                    "cluster bootstrap.  If provided, then the bootstrap will proceed "
+                    "to converge the target repository into the local cluster, moving "
+                    "it into a CephFS volume with a standardized worktree layout.  "
+                    "This may be destructive to untracked files in the repository, "
+                    "and will prompt for confirmation beforehand.",
             )
             command.add_argument(
                 "-y", "--yes",
                 action="store_true",
                 help=
-                    "Skip confirmation prompts when installing the container engine "
-                    "and/or initializing the project.  This is mainly intended for "
-                    "non-interactive use, such as in CI/CD workflows.",
+                    "Auto-accept confirmation prompts during host/bootstrap "
+                    "convergence.  Primarily intended for non-interactive use.",
             )
             command.add_argument(
-                "--profile",
-                choices=("flat", "src"),
-                default=None,
+                "-t", "--timeout",
+                type=float,
+                default=INFINITY,
                 help=
-                    "Layout profile to apply for environment structure and resource "
-                    "placement.  Requires PROJECT.",
+                    "Maximum time in seconds for repository convergence.  Use inf to "
+                    "wait indefinitely.",
             )
             command.add_argument(
-                "--lang",
+                "-e", "--enable",
                 action="append",
-                choices=("python", "cpp"),
-                default=None,
+                default=[],
                 help=
-                    "Language capability to include (repeatable).  Requires PROJECT.  If "
-                    "omitted and PROJECT is new, defaults to python and cpp.",
+                    "Resource names to enable (repeatable).  Each value may be a "
+                    "comma-separated list, and will be deduplicated and validated "
+                    "against the known resource list to enable specific tools within "
+                    "the environment.  If provided, then the `path` argument must "
+                    "point to a repository or worktree target to configure.  "
+                    "Repository paths will target all worktrees within the repository, "
+                    "while worktree paths will only enable resources for that "
+                    "worktree.",
             )
             command.add_argument(
-                "--code",
-                choices=("vscode", "none"),
-                default=None,
+                "-d", "--disable",
+                action="append",
+                default=[],
                 help=
-                    "Editor integration capability to include.  Use 'none' to disable "
-                    "editor capability entirely.  Requires PROJECT.  If omitted and "
-                    "PROJECT is new, defaults to vscode.",
+                    "Resource names to disable (repeatable).  Each value may be a "
+                    "comma-separated list, and will be deduplicated and validated "
+                    "against the known resource list to disable specific tools within "
+                    "the environment.  If provided, then the `path` argument must "
+                    "point to a repository or worktree target to configure.  "
+                    "Repository paths will target all worktrees within the repository, "
+                    "while worktree paths will only disable resources for that "
+                    "worktree.  Disabled resources always take precedence over enabled "
+                    "ones.",
             )
             command.set_defaults(handler=External.init)
 
@@ -491,7 +500,7 @@ class External:
             command.add_argument(
                 "-t", "--timeout",
                 type=int,
-                default=TIMEOUT,
+                default=INFINITY,
                 help=
                     "Maximum duration (in seconds) to wait for this command.  May be "
                     "rounded up to the nearest second depending on the underlying "
@@ -538,7 +547,7 @@ class External:
             command.add_argument(
                 "-t", "--timeout",
                 type=int,
-                default=TIMEOUT,
+                default=INFINITY,
                 help=
                     "Maximum duration (in seconds) to wait for this command.  May be "
                     "rounded up to the nearest second depending on the underlying "
@@ -592,7 +601,7 @@ class External:
             command.add_argument(
                 "-t", "--timeout",
                 type=int,
-                default=TIMEOUT,
+                default=INFINITY,
                 help=
                     "Maximum duration (in seconds) to wait for this command.  May be "
                     "rounded up to the nearest second depending on the underlying "
@@ -647,7 +656,7 @@ class External:
             command.add_argument(
                 "-t", "--timeout",
                 type=int,
-                default=TIMEOUT,
+                default=INFINITY,
                 help=
                     "Maximum duration (in seconds) to wait for this command.  May be "
                     "rounded up to the nearest second depending on the underlying "
@@ -677,7 +686,7 @@ class External:
             command.add_argument(
                 "-t", "--timeout",
                 type=int,
-                default=TIMEOUT,
+                default=INFINITY,
                 help=
                     "Maximum duration (in seconds) to wait for this command.  May be "
                     "rounded up to the nearest second depending on the underlying "
@@ -757,16 +766,11 @@ class External:
         """
         print(__version__)
 
-    # TODO: add in-place profile/capability expansion for existing repositories.
-    # TODO: add optional non-bare -> bare conversion support (and vice versa) in a
-    # future pass.
-
     # TODO: add forward compatility image retirement on registry/environment version
     # changes, and figure out how to reliably provide jinja template values to the
     # `Config.init()` method.  It should also be possible for `bertrand init` to target
-    # existing repositories and/or worktrees, in order to support adding capabilities,
-    # and possibly also converting from non-bare to bare repositories, or flat to src
-    # layouts, etc.
+    # existing repositories and/or worktrees for future migration and orchestration
+    # flows.
 
     @staticmethod
     def init(args: argparse.Namespace) -> None:
@@ -780,50 +784,19 @@ class External:
         Raises
         ------
         OSError
-            If layout options are requested in host-only mode (no path).
+            If timeout is invalid (must be > 0 or inf).
         """
         with asyncio.Runner() as runner:
-            project_root: Path | None = None
-            if args.path is not None:
-                project_root = Path(args.path).expanduser().resolve()
-
-            # host-only init path
-            if project_root is None:
-                if args.profile is not None or args.lang is not None or args.code is not None:
-                    raise OSError(
-                        "init layout options (--profile/--lang/--code) require an "
-                        "project root path"
-                    )
-                runner.run(bertrand_init(
-                    None,
-                    profile=None,
-                    capabilities=None,
-                    yes=args.yes,
-                ))
-                return
-
-            # resolve requested profile/capabilities; defaults for new repositories are
-            # applied in bertrand_init().  Existing repository expansion is deferred.
-            profile = args.profile
-            requested = args.lang is not None or args.code is not None
-            deduped: set[str] | None = None
-            if requested:
-                caps = list(args.lang) if args.lang is not None else ["python", "cpp"]
-                caps.append(args.code if args.code is not None else "vscode")
-                seen: set[str] = set()
-                deduped = set()
-                for cap in caps:
-                    if cap in seen:
-                        continue
-                    seen.add(cap)
-                    deduped.add(cap)
-                if not deduped:
-                    raise OSError("init capabilities must not be empty")
-
+            timeout = args.timeout
+            if math.isnan(timeout) or timeout <= 0:
+                raise OSError(
+                    f"invalid init timeout: {timeout} (must be > 0 seconds or inf)"
+                )
             runner.run(bertrand_init(
-                project_root,
-                profile=profile,
-                capabilities=deduped,
+                None if args.path is None else Path(args.path).expanduser().resolve(),
+                timeout=timeout,
+                enable=args.enable,
+                disable=args.disable,
                 yes=args.yes,
             ))
 
