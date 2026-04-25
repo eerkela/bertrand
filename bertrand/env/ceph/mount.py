@@ -20,6 +20,7 @@ from ..run import (
     atomic_symlink,
     atomic_write_text,
     run,
+    symlink_points_to,
     sudo,
 )
 
@@ -67,6 +68,103 @@ class MountInfo:
     fs_type: str
     source: str
 
+    @classmethod
+    def all(cls) -> list[Self]:
+        """Parse and return mount entries from `/proc/self/mountinfo`.
+
+        Returns
+        -------
+        list[MountInfo]
+            Parsed entries with decoded mountpoint paths.
+        """
+        try:
+            lines = HOST_MOUNTS.read_text(encoding="utf-8").splitlines()
+        except OSError as err:
+            raise OSError(f"failed to inspect host mount table: {err}") from err
+
+        rows: list[Self] = []
+        for line in lines:
+            parts = line.strip().split()
+            # Ignore malformed rows defensively; kernel format should contain enough
+            # fields for mountpoint + post-separator fs/source data.  The "-"
+            # separator splits optional fields from fs/source fields.
+            if len(parts) < 10:
+                continue
+            try:
+                sep = parts.index("-")
+            except ValueError:
+                continue
+            if sep + 2 >= len(parts):
+                continue
+
+            # Field 5 (pre-`-`): mount point; decode mountinfo escapes.
+            mount_point = Path(
+                parts[4]
+                .replace("\\040", " ")
+                .replace("\\011", "\t")
+                .replace("\\012", "\n")
+                .replace("\\134", "\\")
+            )
+
+            # Post-separator fields: filesystem type and mount source.
+            rows.append(
+                cls(
+                    mount_point=mount_point,
+                    fs_type=parts[sep + 1],
+                    source=parts[sep + 2],
+                )
+            )
+        return rows
+
+    @classmethod
+    def under(cls, root: Path) -> list[Path]:
+        """Return mounted paths at or below `root`.
+
+        Parameters
+        ----------
+        root : Path
+            Root path to check for mounted entries at or below.  This is normalized and
+            compared with normalized mount point paths for prefix matching.
+
+        Returns
+        -------
+        list[Path]
+            List of mount point paths that are mounted at or below `root`.
+        """
+        prefix = os.path.normpath(root)
+        matches: list[Path] = []
+        for entry in cls.all():
+            norm = os.path.normpath(entry.mount_point)
+            if norm == prefix or norm.startswith(prefix + os.sep):
+                matches.append(entry.mount_point)
+        return matches
+
+    @classmethod
+    def search(cls, path: Path) -> Self | None:
+        """Check whether `path` points to a recognized host mount entry in
+        `/proc/self/mountinfo`.
+
+        Parameters
+        ----------
+        path : Path
+            Absolute path to check for an exact mount match.
+
+        Returns
+        -------
+        MountInfo | None
+            The matching mount entry when an exact normalized match is found, or None
+            when no match is found (i.e. the path is not currently mounted).
+        """
+        needle = os.path.normpath(path)
+        for entry in cls.all():
+            # require exact normalized mountpoint equality so parent/child paths are
+            # never mistaken for this exact mount target
+            if os.path.normpath(entry.mount_point) == needle:
+                return entry
+
+        # no exact entry means this path is not currently mounted
+        return None
+
     def is_cephfs(self) -> bool:
         """
         Returns
@@ -93,59 +191,6 @@ class MountInfo:
         if not ceph_path.is_absolute():
             ceph_path = PosixPath("/") / ceph_path
         return self.source.endswith(f":{ceph_path}")
-
-    @classmethod
-    def search(cls, path: Path) -> Self | None:
-        # `/proc/self/mountinfo` is the kernel's canonical view of active mounts for
-        # this process, so we parse it directly instead of shelling out.
-        try:
-            lines = HOST_MOUNTS.read_text(encoding="utf-8").splitlines()
-        except OSError as err:
-            raise OSError(f"failed to inspect host mount table: {err}") from err
-
-        needle = os.path.normpath(str(path))
-        for line in lines:
-            parts = line.strip().split()
-            # Ignore malformed rows defensively; kernel format should contain enough
-            # fields for mountpoint + post-separator fs/source data.  The "-" separator
-            # splits optional fields from fs/source fields.
-            if len(parts) < 10:
-                continue
-            try:
-                sep = parts.index("-")
-            except ValueError:
-                continue
-            if sep + 2 >= len(parts):
-                continue
-
-            # Mountpoints are escaped in mountinfo and must be unescaped before
-            # path comparison.
-            mount_point = Path(
-                # Field 5 (pre-`-`): mount point.
-                parts[4]
-                .replace("\\040", " ")
-                .replace("\\011", "\t")
-                .replace("\\012", "\n")
-                .replace("\\134", "\\")
-            )
-
-            # Post-separator fields: filesystem type and mount source device/path.
-            # Field 1 after `-`: filesystem type.
-            fs_type = parts[sep + 1]
-            # Field 2 after `-`: mount source string.
-            source = parts[sep + 2]
-
-            # Require exact normalized mountpoint equality so parent/child paths are
-            # never mistaken for this exact mount target.
-            if os.path.normpath(mount_point) == needle:
-                return cls(
-                    mount_point=mount_point,
-                    fs_type=fs_type,
-                    source=source
-                )
-
-        # No exact entry means this path is not currently mounted.
-        return None
 
 
 @dataclass(frozen=True)
@@ -190,16 +235,6 @@ class RepoMount:
     def _alias_path(path: Path) -> Path:
         return Path(os.path.abspath(str(path.expanduser())))
 
-    @staticmethod
-    def _alias_targets_mount(path: Path, mount_path: Path) -> bool:
-        if not path.is_symlink():
-            return False
-        try:
-            target = path.readlink()
-        except OSError:
-            return False
-        return target.is_absolute() and target == mount_path
-
     def _load_aliases(self) -> set[Path]:
         root = REPO_DIR / self.repo_id
         mount_path = root / REPO_MOUNT_EXT
@@ -233,7 +268,7 @@ class RepoMount:
                     "repository alias index file contains invalid alias path: "
                     f"cannot contain '.' or '..' segments, got {alias}"
                 )
-            if self._alias_targets_mount(alias, mount_path):
+            if symlink_points_to(alias, mount_path):
                 aliases.add(alias)
         return aliases
 
@@ -293,7 +328,7 @@ class RepoMount:
         if timeout <= 0:
             raise TimeoutError("timeout must be non-negative")
         path = self._alias_path(path)
-        if path.is_symlink() and not self._alias_targets_mount(path, mount_path):
+        if path.is_symlink() and not symlink_points_to(path, mount_path):
             raise OSError(
                 f"repository alias path {path!r} already exists and is not a "
                 f"managed symlink to {mount_path!r}"
@@ -357,7 +392,7 @@ class RepoMount:
 
             # validate ceph mount, then write public symlink
             self._assert_ceph_mount(mounted, ceph_path=ceph_path)
-            if path.exists() and not self._alias_targets_mount(path, mount_path):
+            if path.exists() and not symlink_points_to(path, mount_path):
                 raise OSError(
                     f"repository alias path {path!r} already exists and is not a "
                     f"managed symlink to {mount_path!r}"
@@ -427,7 +462,7 @@ class RepoMount:
             mode="local",
         ):
             # remove symlink
-            if not self._alias_targets_mount(path, mount_path):
+            if not symlink_points_to(path, mount_path):
                 raise OSError(
                     f"repository alias path {path!r} must be an existing managed "
                     f"symlink to {mount_path!r}"
@@ -488,5 +523,3 @@ class RepoMount:
                     f"repository hidden mount is still attached after umount: {mount_path}"
                 )
             return True
-
-    # TODO: add snapshotting functionality for repository mounts.

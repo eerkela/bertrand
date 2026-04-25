@@ -23,6 +23,7 @@ import os
 import platform
 import pwd
 import re
+import signal
 import shlex
 import shutil
 import socket
@@ -214,6 +215,31 @@ class User:
             object.__setattr__(self, 'gid', pw.pw_gid)
             object.__setattr__(self, 'name', pw.pw_name)
             object.__setattr__(self, 'home', Path(pw.pw_dir))
+
+
+def symlink_points_to(path: Path, target: Path) -> bool:
+    """Return whether `path` is a symlink to `target`.
+
+    Parameters
+    ----------
+    path : Path
+        Candidate alias path.
+    target : Path
+        Expected hidden mount destination.
+
+    Returns
+    -------
+    bool
+        True when `path` is a symlink whose raw target is absolute and exactly
+        equal to `target`.
+    """
+    try:
+        if path.is_symlink():
+            current = path.readlink()
+            return current.is_absolute() and current == target
+    except OSError:
+        pass
+    return False
 
 
 def atomic_symlink(source: Path, target: Path, private: bool = False) -> None:
@@ -703,6 +729,31 @@ def sudo(argv: list[str], *, non_interactive: bool = False) -> list[str]:
         out.append("-n")
     out.extend(argv)
     return out
+
+
+def pid_alive(pid: int) -> bool:
+    """Check whether a process with the given PID is currently alive on the host
+    system.
+
+    Parameters
+    ----------
+    pid : int
+        The process ID to check.
+
+    Returns
+    -------
+    bool
+        True if a process with the given PID is currently alive, False otherwise.
+    """
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
 
 
 @dataclass(frozen=True)
@@ -2350,25 +2401,21 @@ async def nerdctl_ids(
     return out
 
 
-def _buildkit_pid_alive() -> bool:
-    pid: int | None = None
+def _buildkit_pid() -> int | None:
+    """Read the managed BuildKit daemon PID from disk, if available.
+
+    Returns
+    -------
+    int | None
+        The parsed PID value, or None if the PID file is missing or malformed.
+    """
     try:
         value = BUILDKIT_PID_FILE.read_text(encoding="utf-8").strip()
-        if value:
-            pid = int(value)
+        if not value:
+            return None
+        return int(value)
     except (OSError, ValueError):
-        pass
-    if pid is None:
-        return False
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    except OSError:
-        return False
-    return True
+        return None
 
 
 async def _buildkit_workers_ready(*, timeout: float) -> bool:
@@ -2432,7 +2479,8 @@ async def start_buildkit(*, timeout: float) -> None:
             return
 
         # clean up stale buildkit state from previous runs
-        if not _buildkit_pid_alive():
+        pid: int | None = _buildkit_pid()
+        if pid is None or not pid_alive(pid):
             try:
                 BUILDKIT_PID_FILE.unlink()
             except FileNotFoundError:
@@ -2458,21 +2506,18 @@ async def start_buildkit(*, timeout: float) -> None:
                 stderr=log,
                 start_new_session=True,
             )
+        pid = process.pid
         atomic_write_text(
             BUILDKIT_PID_FILE,
-            f"{process.pid}\n",
+            f"{pid}\n",
             encoding="utf-8",
         )
 
         # wait for buildkitd to become reachable
         timestamp = loop.time()
-        while deadline is None or timestamp <= deadline:
-            if await _buildkit_workers_ready(
-                timeout=deadline - timestamp
-            ):
+        while pid_alive(pid) and timestamp <= deadline:
+            if await _buildkit_workers_ready(timeout=deadline - timestamp):
                 return
-            if not _buildkit_pid_alive():
-                break
             await asyncio.sleep(0.1)
             timestamp = loop.time()
 
@@ -2485,6 +2530,70 @@ async def start_buildkit(*, timeout: float) -> None:
     if detail:
         message += f"\n\nLast buildkitd log lines:\n{detail}"
     raise OSError(message)
+
+
+async def stop_buildkit(*, timeout: float) -> None:
+    """Stop the managed BuildKit daemon if it is running.
+
+    Parameters
+    ----------
+    timeout : float, optional
+        Maximum number of seconds to wait for daemon shutdown.  This includes lock
+        acquisition and process termination.  If infinite, wait indefinitely.
+
+    Raises
+    ------
+    TimeoutError
+        If `timeout` is non-positive.
+    OSError
+        If BuildKit remains alive after SIGTERM/SIGKILL or lock acquisition fails.
+    """
+    if timeout <= 0:
+        raise TimeoutError("BuildKit timeout must be non-negative.")
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+
+    # optimistic no-op for stale/missing PID state.
+    pid = _buildkit_pid()
+    if pid is None or not pid_alive(pid):
+        BUILDKIT_PID_FILE.unlink(missing_ok=True)
+        BUILDKIT_SOCKET.unlink(missing_ok=True)
+        return
+
+    async with Lock(
+        BUILDKIT_LOCK_FILE,
+        timeout=deadline - loop.time(),
+        mode="local"
+    ):
+        pid = _buildkit_pid()
+        if pid is None or not pid_alive(pid):
+            BUILDKIT_PID_FILE.unlink(missing_ok=True)
+            BUILDKIT_SOCKET.unlink(missing_ok=True)
+            return
+
+        # graceful shutdown first
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        while pid_alive(pid) and loop.time() <= deadline:
+            await asyncio.sleep(0.1)
+
+        # forceful shutdown fallback
+        if pid_alive(pid):
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            while pid_alive(pid) and loop.time() <= deadline:
+                await asyncio.sleep(0.1)
+            if pid_alive(pid):
+                raise OSError(
+                    f"failed to stop BuildKit daemon with PID {pid} before timeout"
+                )
+
+        BUILDKIT_PID_FILE.unlink(missing_ok=True)
+        BUILDKIT_SOCKET.unlink(missing_ok=True)
 
 
 async def _microceph_cluster_ready(*, timeout: float) -> bool:
@@ -2565,7 +2674,7 @@ async def start_microceph(*, timeout: float) -> None:
 
             # poll cluster readiness after bootstrap/startup
             timestamp = loop.time()
-            while deadline is None or timestamp <= deadline:
+            while timestamp <= deadline:
                 if await _microceph_cluster_ready(
                     timeout=deadline - timestamp
                 ):
@@ -2674,7 +2783,7 @@ async def start_microk8s(*, timeout: float) -> None:
 
             # poll API readiness after successful start
             timestamp = loop.time()
-            while deadline is None or timestamp <= deadline:
+            while timestamp <= deadline:
                 if await _microk8s_cluster_ready(timeout=deadline - timestamp):
                     await _add_bertrand_kube_namespace(timeout=deadline - loop.time())
                     return
@@ -2842,7 +2951,7 @@ async def link_kube_ceph(*, timeout: float) -> None:
 
         # wait for Ceph CSI classes to materialize
         timestamp = loop.time()
-        while deadline is None or timestamp <= deadline:
+        while timestamp <= deadline:
             if await _ceph_csi_storage_classes(timeout=deadline - timestamp):
                 return
             await asyncio.sleep(0.1)

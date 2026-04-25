@@ -89,9 +89,12 @@ from .bertrand_git import (
     mkdir_private,
     nerdctl,
     nerdctl_ids,
+    pid_alive,
     run,
+    stop_buildkit,
     start_buildkit,
     start_microceph,
     start_microk8s,
+    symlink_points_to,
     sudo,
 )

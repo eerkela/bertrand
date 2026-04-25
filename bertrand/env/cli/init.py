@@ -62,6 +62,7 @@ from ..run import (
     run,
     start_microceph,
     start_microk8s,
+    symlink_points_to,
 )
 
 ##################################
@@ -469,16 +470,6 @@ def _norm_path(path: Path) -> Path:
     return Path(os.path.abspath(path.expanduser()))
 
 
-def _alias_points_to(path: Path, target: Path) -> bool:
-    if not path.is_symlink():
-        return False
-    try:
-        current = path.readlink()
-        return current.is_absolute() and current == target
-    except OSError:
-        return False
-
-
 def _resolve_repo_id(repo: GitRepository) -> UUIDHex:
     repo_id_file = repo.root / METADATA_REPO_ID
     if repo_id_file.is_file():
@@ -489,11 +480,23 @@ def _resolve_repo_id(repo: GitRepository) -> UUIDHex:
     return uuid.uuid5(REPO_ID_NAMESPACE, repo.root.as_posix()).hex
 
 
-def _parse_resource_specs(specs: list[str]) -> set[Resource]:
+def _parse_resource_specs(
+    specs: list[str],
+    *,
+    for_disable: bool,
+) -> set[Resource]:
     parsed: set[Resource] = set()
+    protected = {RESOURCE_NAMES[name] for name in PROTECTED_DISABLE_RESOURCES}
     for spec in specs:
         for component in spec.split(","):
             name = component.strip()
+            if name.lower() == "all":
+                all_resources = set(RESOURCE_NAMES.values())
+                if for_disable:
+                    parsed.update(all_resources - protected)
+                else:
+                    parsed.update(all_resources)
+                continue
             resource = RESOURCE_NAMES.get(name)
             if resource is None:
                 raise ValueError(
@@ -685,7 +688,7 @@ async def _ensure_host_mount(
         state.target.parent / f".{state.target.name}.bertrand.mount.{state.repo_id}"
     )
     target_occupied = state.target.exists() or state.target.is_symlink()
-    if not target_occupied or _alias_points_to(state.target, mount_dir):
+    if not target_occupied or symlink_points_to(state.target, mount_dir):
         mount_alias = state.target
     else:
         mount_alias = staged_alias
@@ -1034,7 +1037,7 @@ async def _finalize(
 
     # already converged: just validate the final alias target.
     if mount_alias == target:
-        if not _alias_points_to(target, hidden_mount):
+        if not symlink_points_to(target, hidden_mount):
             raise OSError(
                 f"cannot finalize repository at {target}: alias path {target} does "
                 f"not target expected mount path {hidden_mount}"
@@ -1044,7 +1047,7 @@ async def _finalize(
     # promotion into place
     elif swap_path.exists() or swap_path.is_symlink():
         if target.exists() or target.is_symlink():
-            if not _alias_points_to(target, hidden_mount):
+            if not symlink_points_to(target, hidden_mount):
                 raise OSError(
                     f"cannot resume repository cutover at {target}: alias path {target} "
                     f"does not target expected mount path {hidden_mount}"
@@ -1055,7 +1058,7 @@ async def _finalize(
                     f"cannot resume repository cutover at {target}: neither staged "
                     "alias nor destination path exists while swap path is present"
                 )
-            if not _alias_points_to(mount_alias, hidden_mount):
+            if not symlink_points_to(mount_alias, hidden_mount):
                 raise OSError(
                     f"cannot resume repository cutover at {target}: alias path "
                     f"{mount_alias} does not target expected mount path {hidden_mount}"
@@ -1069,7 +1072,7 @@ async def _finalize(
                 f"cannot cut over repository at {target}: staged alias does not exist "
                 f"({mount_alias})"
             )
-        if not _alias_points_to(mount_alias, hidden_mount):
+        if not symlink_points_to(mount_alias, hidden_mount):
             raise OSError(
                 f"cannot cut over repository at {target}: alias path {mount_alias} "
                 f"does not target expected mount path {hidden_mount}"
@@ -1099,7 +1102,7 @@ async def _finalize(
                 f"cannot finalize repository cutover at {target}: staged alias does "
                 f"not exist ({mount_alias})"
             )
-        if not _alias_points_to(mount_alias, hidden_mount):
+        if not symlink_points_to(mount_alias, hidden_mount):
             raise OSError(
                 f"cannot finalize repository cutover at {target}: alias path "
                 f"{mount_alias} does not target expected mount path {hidden_mount}"
@@ -1107,7 +1110,7 @@ async def _finalize(
         mount_alias.rename(target)
 
     # final invariant: destination path must be a managed alias to hidden mount
-    if not _alias_points_to(target, hidden_mount):
+    if not symlink_points_to(target, hidden_mount):
         raise OSError(
             f"repository cutover failed for destination path {target}: alias path "
             f"{target} does not target expected mount path {hidden_mount}"
@@ -1130,7 +1133,7 @@ async def _finalize(
     # remove stale staged alias left behind by interrupted swaps once destination is
     # converged to the managed mount alias
     if mount_alias != target and (mount_alias.exists() or mount_alias.is_symlink()):
-        if _alias_points_to(mount_alias, hidden_mount):
+        if symlink_points_to(mount_alias, hidden_mount):
             if state.ceph_path is None:
                 raise OSError(
                     "cannot remove staged repository alias without a resolved Ceph path"
@@ -1149,7 +1152,7 @@ async def _finalize(
         staged_alias != target and
         staged_alias != mount_alias and
         (staged_alias.exists() or staged_alias.is_symlink()) and
-        _alias_points_to(staged_alias, hidden_mount)
+        symlink_points_to(staged_alias, hidden_mount)
     ):
         if state.ceph_path is None:
             raise OSError(
@@ -1298,8 +1301,8 @@ async def bertrand_init(
 
     # fail fast if required tools are missing, and validate resource convergence input
     enabled: set[Resource] = {RESOURCE_NAMES["bertrand"]}
-    enabled.update(_parse_resource_specs(enable))
-    disabled = _parse_resource_specs(disable)
+    enabled.update(_parse_resource_specs(enable, for_disable=False))
+    disabled = _parse_resource_specs(disable, for_disable=True)
     protected = {
         name
         for name in PROTECTED_DISABLE_RESOURCES

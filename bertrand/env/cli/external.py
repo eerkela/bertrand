@@ -126,8 +126,8 @@ class External:
                 help=
                     "Resource names to enable (repeatable).  Each value may be a "
                     "comma-separated list, and will be deduplicated and validated "
-                    "against the known resource list to enable specific tools within "
-                    "the environment.  If provided, then the `path` argument must "
+                    "against the known resource list (or `all`) to enable specific "
+                    "tools within the environment.  If provided, then the `path` argument must "
                     "point to a repository or worktree target to configure.  "
                     "Repository paths will target all worktrees within the repository, "
                     "while worktree paths will only enable resources for that "
@@ -140,8 +140,9 @@ class External:
                 help=
                     "Resource names to disable (repeatable).  Each value may be a "
                     "comma-separated list, and will be deduplicated and validated "
-                    "against the known resource list to disable specific tools within "
-                    "the environment.  If provided, then the `path` argument must "
+                    "against the known resource list (or `all`) to disable specific "
+                    "tools within the environment.  `all` excludes protected core "
+                    "resources.  If provided, then the `path` argument must "
                     "point to a repository or worktree target to configure.  "
                     "Repository paths will target all worktrees within the repository, "
                     "while worktree paths will only disable resources for that "
@@ -742,6 +743,14 @@ class External:
                 help=
                     "Bypass confirmation prompts and proceed with Bertrand runtime "
                     "artifact cleanup.  Use with caution.",
+            )
+            command.add_argument(
+                "-f", "--force",
+                action="store_true",
+                help=
+                    "Continue cleanup when non-fatal teardown steps fail, printing "
+                    "warnings and attempting subsequent cleanup stages.  Strict "
+                    "residual verification still fails if managed artifacts remain.",
             )
             command.set_defaults(handler=External.clean)
 
@@ -1377,18 +1386,13 @@ class External:
         Raises
         ------
         OSError
-            If the user declines the prompt.
+            If cleanup fails to converge.
         """
-        if not confirm(
-            "This will permanently delete Bertrand-managed containers, images, "
-            "volumes, and runtime state from the host system.\nAre you sure you want "
-            "to proceed? [y/N] ",
-            assume_yes=args.yes,
-        ):
-            raise OSError("clean declined by user.")
-
         with asyncio.Runner() as runner:
-            runner.run(bertrand_clean(assume_yes=args.yes))
+            runner.run(bertrand_clean(
+                assume_yes=args.yes,
+                force=args.force,
+            ))
 
     def __call__(self) -> None:
         parser = External.Parser()
