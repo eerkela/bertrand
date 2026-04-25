@@ -766,12 +766,6 @@ class External:
         """
         print(__version__)
 
-    # TODO: add forward compatility image retirement on registry/environment version
-    # changes, and figure out how to reliably provide jinja template values to the
-    # `Config.init()` method.  It should also be possible for `bertrand init` to target
-    # existing repositories and/or worktrees for future migration and orchestration
-    # flows.
-
     @staticmethod
     def init(args: argparse.Namespace) -> None:
         """Execute the `bertrand init` CLI command.

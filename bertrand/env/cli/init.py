@@ -64,10 +64,6 @@ from ..run import (
     start_microk8s,
 )
 
-# pylint: disable=unused-argument, missing-function-docstring, missing-return-doc
-# pylint: disable=bare-except, broad-exception-caught
-
-
 ##################################
 ####    PERSISTENT INSTALL    ####
 ##################################
@@ -469,11 +465,6 @@ REPO_ID_NAMESPACE = uuid.UUID("7b1506f4-4a3f-4b46-94bb-471e0f59d1a0")
 PROTECTED_DISABLE_RESOURCES: frozenset[str] = frozenset({"bertrand", "python"})
 
 
-# TODO: review this checkpoint-less convergence flow up to the end of the git init
-# stages, then try to wire up the final CLI and tackle config rendering and
-# finalization, and then GC for orphaned volumes in the cluster.
-
-
 def _norm_path(path: Path) -> Path:
     return Path(os.path.abspath(path.expanduser()))
 
@@ -496,14 +487,6 @@ def _resolve_repo_id(repo: GitRepository) -> UUIDHex:
         except (OSError, ValueError):
             pass
     return uuid.uuid5(REPO_ID_NAMESPACE, repo.root.as_posix()).hex
-
-
-def _staged_mount_alias(target: Path, repo_id: UUIDHex) -> Path:
-    return target.parent / f".{target.name}.bertrand.mount.{repo_id}"
-
-
-def _cutover_backup_path(target: Path, repo_id: UUIDHex) -> Path:
-    return target.parent / f".{target.name}.bertrand.backup.{repo_id}"
 
 
 def _parse_resource_specs(specs: list[str]) -> set[Resource]:
@@ -698,17 +681,11 @@ async def _ensure_host_mount(
     # get location at which to place the repository symlink, staging changes until the
     # final cutover step to avoid disrupting any source repository
     mount_dir = REPO_DIR / state.repo_id / REPO_MOUNT_EXT
-    staged_alias = _staged_mount_alias(state.target, state.repo_id)
-    backup = _cutover_backup_path(state.target, state.repo_id)
+    staged_alias = (
+        state.target.parent / f".{state.target.name}.bertrand.mount.{state.repo_id}"
+    )
     target_occupied = state.target.exists() or state.target.is_symlink()
-    if backup.exists() or backup.is_symlink():
-        # interrupted cutover where the original target was already moved out of the
-        # way must continue using the deterministic staged alias path.
-        if target_occupied:
-            mount_alias = state.target
-        else:
-            mount_alias = staged_alias
-    elif not target_occupied or _alias_points_to(state.target, mount_dir):
+    if not target_occupied or _alias_points_to(state.target, mount_dir):
         mount_alias = state.target
     else:
         mount_alias = staged_alias
@@ -973,6 +950,9 @@ async def _make_initial_commit(
     """Create initial commit when repository is empty and staged diff is non-empty."""
     loop = asyncio.get_running_loop()
     worktree_path: Path | None = None
+
+    # repository-level target: use the HEAD or first branch-attached worktree for
+    # commit operations
     if state.worktree == Path("."):
         branch_targets = {
             wt.branch: wt.path.relative_to(state.repo.root)
@@ -990,9 +970,11 @@ async def _make_initial_commit(
     else:
         worktree_path = state.repo.root / state.worktree
 
+    # don't commit unless we found a valid worktree path to commit within
     if worktree_path is None:
         return
 
+    # only commit if there are no existing commits
     head = await run(
         ["git", "rev-parse", "--verify", "HEAD"],
         cwd=worktree_path,
@@ -1004,10 +986,10 @@ async def _make_initial_commit(
         return  # repository already has commits
     if head.returncode != 128:
         raise OSError(
-            "failed to determine whether repository already has commits:\n"
-            f"{head.stdout}\n{head.stderr}".strip()
+            f"failed to determine whether repository already has commits:\n{head}"
         )
 
+    # stage changes and only commit if there are differences
     await run(
         ["git", "add", "-A"],
         cwd=worktree_path,
@@ -1024,10 +1006,9 @@ async def _make_initial_commit(
     if staged.returncode == 0:
         return  # nothing staged after render
     if staged.returncode != 1:
-        raise OSError(
-            "failed to inspect staged diff for initial commit:\n"
-            f"{staged.stdout}\n{staged.stderr}".strip()
-        )
+        raise OSError(f"failed to inspect staged diff for initial commit:\n{staged}")
+
+    # make commit
     await run(
         ["git", "commit", "--quiet", "-m", "Initial commit"],
         cwd=worktree_path,
@@ -1036,130 +1017,118 @@ async def _make_initial_commit(
     )
 
 
-# TODO: try to simplify the finalization cutover where possible, because god damn
-# this is a mess.
-
-
 async def _finalize(
     state: RepoState,
     enable: set[Resource],
     disable: set[Resource],
     yes: bool,
 ) -> None:
-    """Complete any pending path cutover."""
+    """Complete any pending path cutover, finishing the repository bootstrap process."""
     mount_alias = state.mount_alias
     if mount_alias is None:
         raise OSError("cannot finalize repository convergence without a mount alias")
-
     target = state.target
-    repo_id = state.repo_id
-    hidden_mount = REPO_DIR / repo_id / REPO_MOUNT_EXT
-    target_exists = target.exists() or target.is_symlink()
-    alias_exists = mount_alias.exists() or mount_alias.is_symlink()
-    needs_cutover = mount_alias != target
-    backup = _cutover_backup_path(target, repo_id)
-    backup_exists = backup.exists() or backup.is_symlink()
+    hidden_mount = REPO_DIR / state.repo_id / REPO_MOUNT_EXT
+    staged_alias = target.parent / f".{target.name}.bertrand.mount.{state.repo_id}"
+    swap_path = target.parent / f".{target.name}.bertrand.swap.{state.repo_id}"
 
-    # perform or resume atomic path cutover at finalize boundary
-    if needs_cutover:
-        if backup_exists:
-            if target_exists:
-                if not _alias_points_to(target, hidden_mount):
-                    raise OSError(
-                        f"cannot resume repository cutover at {target}: backup exists "
-                        "but destination path is not a managed Bertrand alias"
-                    )
-            else:
-                if not alias_exists:
-                    raise OSError(
-                        f"cannot resume repository cutover at {target}: neither staged "
-                        "alias nor destination path exists while backup is present"
-                    )
-                if not _alias_points_to(mount_alias, hidden_mount):
-                    raise OSError(
-                        f"cannot resume repository cutover at {target}: staged alias "
-                        f"{mount_alias} does not target expected mount path {hidden_mount}"
-                    )
-                mount_alias.rename(target)
-                target_exists = True
-                alias_exists = False
-        elif target_exists:
-            if not confirm(
-                "Bertrand needs to atomically replace this path with a managed CephFS "
-                "repository alias to complete conversion. Continue?\n[y/N] ",
-                assume_yes=yes,
-            ):
-                raise PermissionError("repository cutover declined by user")
-            if not alias_exists:
+    # already converged: just validate the final alias target.
+    if mount_alias == target:
+        if not _alias_points_to(target, hidden_mount):
+            raise OSError(
+                f"cannot finalize repository at {target}: alias path {target} does "
+                f"not target expected mount path {hidden_mount}"
+            )
+
+    # interrupted swap: either destination is already converged or staged alias needs
+    # promotion into place
+    elif swap_path.exists() or swap_path.is_symlink():
+        if target.exists() or target.is_symlink():
+            if not _alias_points_to(target, hidden_mount):
                 raise OSError(
-                    f"cannot cut over repository at {target}: staged alias does not exist "
-                    f"({mount_alias})"
-                )
-            if not _alias_points_to(mount_alias, hidden_mount):
-                raise OSError(
-                    f"cannot cut over repository at {target}: staged alias {mount_alias} "
+                    f"cannot resume repository cutover at {target}: alias path {target} "
                     f"does not target expected mount path {hidden_mount}"
                 )
-            if backup.exists() or backup.is_symlink():
-                raise FileExistsError(
-                    f"cannot cut over repository at {target}: backup path already exists "
-                    f"({backup})"
-                )
-            target.rename(backup)
-            try:
-                mount_alias.rename(target)
-            except Exception as err:
-                if (backup.exists() or backup.is_symlink()) and not (
-                    target.exists() or target.is_symlink()
-                ):
-                    backup.rename(target)
-                raise OSError(
-                    f"failed to atomically swap repository path at {target}"
-                ) from err
-            target_exists = True
-            alias_exists = False
         else:
-            if not alias_exists:
+            if not mount_alias.exists() and not mount_alias.is_symlink():
                 raise OSError(
-                    f"cannot finalize repository cutover at {target}: staged alias does "
-                    f"not exist ({mount_alias})"
+                    f"cannot resume repository cutover at {target}: neither staged "
+                    "alias nor destination path exists while swap path is present"
                 )
             if not _alias_points_to(mount_alias, hidden_mount):
                 raise OSError(
-                    f"cannot finalize repository cutover at {target}: staged alias "
+                    f"cannot resume repository cutover at {target}: alias path "
                     f"{mount_alias} does not target expected mount path {hidden_mount}"
                 )
             mount_alias.rename(target)
-            target_exists = True
-            alias_exists = False
 
-        if not target_exists or not _alias_points_to(target, hidden_mount):
+    # destination occupied: two-step atomic swap with rollback
+    elif target.exists() or target.is_symlink():
+        if not mount_alias.exists() and not mount_alias.is_symlink():
             raise OSError(
-                f"repository cutover failed: destination path {target} is not a managed "
-                f"alias to {hidden_mount}"
+                f"cannot cut over repository at {target}: staged alias does not exist "
+                f"({mount_alias})"
             )
-
-    # if an interrupted cutover left a backup behind, clean it up once destination has
-    # converged to the managed alias.
-    if backup.exists() or backup.is_symlink():
-        if not _alias_points_to(target, hidden_mount):
+        if not _alias_points_to(mount_alias, hidden_mount):
             raise OSError(
-                f"cannot remove conversion backup {backup}: destination path {target} "
-                "is not yet converged to managed alias"
+                f"cannot cut over repository at {target}: alias path {mount_alias} "
+                f"does not target expected mount path {hidden_mount}"
             )
+        if not confirm(
+            "Bertrand needs to atomically replace this path with a managed "
+            "CephFS repository alias to complete conversion. Continue?\n[y/N] ",
+            assume_yes=yes,
+        ):
+            raise PermissionError("repository cutover declined by user")
+        target.rename(swap_path)
         try:
-            if backup.is_symlink() or backup.is_file():
-                backup.unlink()
-            elif backup.is_dir():
-                shutil.rmtree(backup)
+            mount_alias.rename(target)
+        except Exception as err:
+            if (
+                (swap_path.exists() or swap_path.is_symlink()) and
+                not target.exists() and
+                not target.is_symlink()
+            ):
+                swap_path.rename(target)
+            raise OSError(f"failed to atomically swap repository path at {target}") from err
+
+    # destination empty: promote staged alias directly
+    else:
+        if not mount_alias.exists() and not mount_alias.is_symlink():
+            raise OSError(
+                f"cannot finalize repository cutover at {target}: staged alias does "
+                f"not exist ({mount_alias})"
+            )
+        if not _alias_points_to(mount_alias, hidden_mount):
+            raise OSError(
+                f"cannot finalize repository cutover at {target}: alias path "
+                f"{mount_alias} does not target expected mount path {hidden_mount}"
+            )
+        mount_alias.rename(target)
+
+    # final invariant: destination path must be a managed alias to hidden mount
+    if not _alias_points_to(target, hidden_mount):
+        raise OSError(
+            f"repository cutover failed for destination path {target}: alias path "
+            f"{target} does not target expected mount path {hidden_mount}"
+        )
+
+    # clean up displaced target after successful cutover (best effort)
+    if swap_path.exists() or swap_path.is_symlink():
+        try:
+            if not swap_path.is_symlink() and swap_path.is_dir():
+                shutil.rmtree(swap_path)
+            else:
+                swap_path.unlink()
         except OSError as err:
             print(
-                f"bertrand: warning: failed to delete conversion backup at {backup}: {err}",
+                f"bertrand: warning: failed to delete conversion swap path at "
+                f"{swap_path}: {err}",
                 file=sys.stderr,
             )
 
-    # remove any stale staged alias left behind by interrupted swaps now that target is
-    # converged to the managed mount alias.
+    # remove stale staged alias left behind by interrupted swaps once destination is
+    # converged to the managed mount alias
     if mount_alias != target and (mount_alias.exists() or mount_alias.is_symlink()):
         if _alias_points_to(mount_alias, hidden_mount):
             if state.ceph_path is None:
@@ -1168,7 +1137,7 @@ async def _finalize(
                 )
             loop = asyncio.get_running_loop()
             await RepoMount(
-                repo_id=repo_id,
+                repo_id=state.repo_id,
                 ceph_path=state.ceph_path,
             ).unmount(
                 mount_alias,
@@ -1176,6 +1145,26 @@ async def _finalize(
                 force=False,
                 lazy=False,
             )
+    if (
+        staged_alias != target and
+        staged_alias != mount_alias and
+        (staged_alias.exists() or staged_alias.is_symlink()) and
+        _alias_points_to(staged_alias, hidden_mount)
+    ):
+        if state.ceph_path is None:
+            raise OSError(
+                "cannot remove staged repository alias without a resolved Ceph path"
+            )
+        loop = asyncio.get_running_loop()
+        await RepoMount(
+            repo_id=state.repo_id,
+            ceph_path=state.ceph_path,
+        ).unmount(
+            staged_alias,
+            timeout=state.deadline - loop.time(),
+            force=False,
+            lazy=False,
+        )
     state.mount_alias = target
 
 
@@ -1197,12 +1186,6 @@ REPO_STAGES: tuple[Callable[
 ###################
 ####    CLI    ####
 ###################
-
-
-# TODO: I should make sure that any user group (microk8s, microceph, bertrand) is
-# not just configured, but active for the current user, and warn consistently, outside
-# of the main init loop, so that it always warns on every init until those privileges
-# are activated.
 
 
 async def bertrand_init(
@@ -1281,6 +1264,26 @@ async def bertrand_init(
             state.stage = stage
             if InitState.backend_trustworthy():
                 state.dump()
+
+        if state.user is None:
+            raise OSError("init state user is missing; rerun `bertrand init`.")
+        for group, purpose in (
+            (BERTRAND_GROUP, "shared Bertrand host-state access"),
+            ("microceph", "MicroCeph CLI/storage access"),
+            ("microk8s", "MicroK8s runtime access"),
+        ):
+            status = GroupStatus.get(state.user, group)
+            if not status.configured:
+                raise OSError(
+                    f"user {state.user!r} is not in {group!r}.  Rerun `bertrand init` "
+                    f"to configure {purpose}."
+                )
+            if not status.active:
+                raise OSError(
+                    f"user {state.user!r} is in {group!r}, but the current session is "
+                    f"not active in that group.  Run `newgrp {group}` or log out and "
+                    "back in, then rerun `bertrand init`."
+                )
 
         # start both clusters if they are not already running, and link them via rook-ceph
         loop = asyncio.get_running_loop()
