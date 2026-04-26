@@ -752,6 +752,14 @@ class External:
                     "warnings and attempting subsequent cleanup stages.  Strict "
                     "residual verification still fails if managed artifacts remain.",
             )
+            command.add_argument(
+                "-t", "--timeout",
+                type=float,
+                default=INFINITY,
+                help=
+                    "Maximum time in seconds for cleanup convergence.  Use inf to "
+                    "wait indefinitely.",
+            )
             command.set_defaults(handler=External.clean)
 
         def __call__(self) -> argparse.Namespace:
@@ -1386,10 +1394,17 @@ class External:
         Raises
         ------
         OSError
-            If cleanup fails to converge.
+            If timeout is invalid (must be > 0 or inf), or cleanup fails to
+            converge.
         """
         with asyncio.Runner() as runner:
+            timeout = args.timeout
+            if math.isnan(timeout) or timeout <= 0:
+                raise OSError(
+                    f"invalid clean timeout: {timeout} (must be > 0 seconds or inf)"
+                )
             runner.run(bertrand_clean(
+                timeout=timeout,
                 assume_yes=args.yes,
                 force=args.force,
             ))

@@ -16,12 +16,13 @@ from ..run import (
     REPO_DIR,
     REPO_LOCK_EXT,
     REPO_MOUNT_EXT,
+    CommandError,
     Lock,
     atomic_symlink,
     atomic_write_text,
     run,
-    symlink_points_to,
     sudo,
+    symlink_points_to,
 )
 
 DEFAULT_REPO_FS_NAME = "ceph"
@@ -117,7 +118,7 @@ class MountInfo:
         return rows
 
     @classmethod
-    def under(cls, root: Path) -> list[Path]:
+    def under(cls, root: Path) -> list[Self]:
         """Return mounted paths at or below `root`.
 
         Parameters
@@ -128,15 +129,15 @@ class MountInfo:
 
         Returns
         -------
-        list[Path]
-            List of mount point paths that are mounted at or below `root`.
+        list[MountInfo]
+            Parsed mount entries that are mounted at or below `root`.
         """
         prefix = os.path.normpath(root)
-        matches: list[Path] = []
+        matches: list[Self] = []
         for entry in cls.all():
             norm = os.path.normpath(entry.mount_point)
             if norm == prefix or norm.startswith(prefix + os.sep):
-                matches.append(entry.mount_point)
+                matches.append(entry)
         return matches
 
     @classmethod
@@ -164,6 +165,56 @@ class MountInfo:
 
         # no exact entry means this path is not currently mounted
         return None
+
+    async def unmount(self, *, timeout: float, force: bool) -> bool:
+        """Detach this mounted entry from the host.
+
+        Parameters
+        ----------
+        timeout : float
+            Maximum runtime command timeout in seconds for this unmount operation.  If
+            infinite, wait indefinitely.
+        force : bool
+            If True, pass `-f` to `umount`.
+
+        Returns
+        -------
+        bool
+            True if this mount was detached, False if it was already detached.
+
+        Raises
+        ------
+        TimeoutError
+            If `timeout` is non-positive.
+        OSError
+            If unmounting fails or the mount remains attached after a successful
+            command.
+        """
+        if os.name != "posix" or platform.system() != "Linux":
+            raise OSError("repository mounts are only supported on Linux platforms")
+        if timeout <= 0:
+            raise TimeoutError("timeout must be non-negative")
+
+        # run `umount` with the same info from the mount table
+        cmd = ["umount"]
+        if force:
+            cmd.append("-f")
+        cmd.append(str(self.mount_point))
+        try:
+            await run(
+                sudo(cmd),
+                capture_output=True,
+                timeout=timeout,
+            )
+        except CommandError as err:
+            if MountInfo.search(self.mount_point) is None:  # stale entry raced with detach
+                return False
+            raise OSError(f"unmount command failed:\n{err}") from err
+
+        # confirm success
+        if MountInfo.search(self.mount_point) is not None:
+            raise OSError(f"failed to unmount volume at {self.mount_point}")
+        return True
 
     def is_cephfs(self) -> bool:
         """
@@ -235,8 +286,31 @@ class RepoMount:
     def _alias_path(path: Path) -> Path:
         return Path(os.path.abspath(str(path.expanduser())))
 
-    def _load_aliases(self) -> set[Path]:
-        root = REPO_DIR / self.repo_id
+    @classmethod
+    def managed_aliases(cls, root: Path) -> set[Path]:
+        """Load active managed alias symlinks for the given repository root.
+
+        Parameters
+        ----------
+        root : Path
+            Repository state root (typically `REPO_DIR / <repo_id>`).
+
+        Returns
+        -------
+        set[Path]
+            Active managed aliases that point directly to this repository's hidden
+            mount path.
+
+        Raises
+        ------
+        OSError
+            If the alias index cannot be read.
+        TypeError
+            If alias index JSON has invalid structure.
+        ValueError
+            If alias entries are not absolute canonical paths.
+        """
+        root = Path(os.path.abspath(str(root.expanduser())))
         mount_path = root / REPO_MOUNT_EXT
         path = root / REPO_ALIASES_EXT
         if not path.exists():
@@ -271,6 +345,9 @@ class RepoMount:
             if symlink_points_to(alias, mount_path):
                 aliases.add(alias)
         return aliases
+
+    def _load_aliases(self) -> set[Path]:
+        return self.managed_aliases(REPO_DIR / self.repo_id)
 
     def _write_aliases(self, aliases: set[Path]) -> None:
         path = REPO_DIR / self.repo_id / REPO_ALIASES_EXT
@@ -410,7 +487,6 @@ class RepoMount:
         *,
         timeout: float,
         force: bool,
-        lazy: bool,
     ) -> bool:
         """Delete an alias symlink and detach the underlying mount if it is the last
         registered alias.
@@ -430,12 +506,6 @@ class RepoMount:
             referenced by active processes.  This option is passed directly to the
             `umount` command as `-f` and should be used with caution, as it can lead to
             data loss if processes are actively reading from or writing to the volume.
-        lazy : bool
-            If True, defer the unmount operation until the mount is no longer busy.
-            This option is passed directly to the `umount` command as `-l` and can be
-            used to avoid errors when the volume is currently in use, but it can lead
-            to resource leaks if the mount is never released by the system, or if it
-            is resurrected before the lazy unmount can take effect.
 
         Returns
         -------
@@ -483,43 +553,7 @@ class RepoMount:
             if aliases:
                 return False  # active aliases still exist
 
-            # check to see if there are any active processes using the mount
-            if not force and not lazy:
-                result = await run(
-                    sudo(["fuser", "-m", str(mount_path)]),
-                    check=False,
-                    capture_output=True,
-                    timeout=deadline - loop.time(),
-                )
-                if result.returncode == 0:
-                    detail = (f"{result.stdout}\n{result.stderr}").strip()
-                    raise OSError("\n".join((
-                        f"cannot remove repository mount at {mount_path} because it is "
-                        "still in use",
-                        detail
-                    )))
-                if result.returncode != 1:
-                    detail = (f"{result.stdout}\n{result.stderr}").strip()
-                    raise OSError("\n".join((
-                        f"failed to determine whether repository mount at {mount_path} "
-                        "is busy",
-                        detail
-                    )))
-
-            # unmount the repository volume
-            cmd = ["umount"]
-            if force:
-                cmd.append("-f")
-            if lazy:
-                cmd.append("-l")
-            cmd.append(str(mount_path))
-            await run(
-                sudo(cmd),
-                capture_output=True,
+            return await mount.unmount(
                 timeout=deadline - loop.time(),
+                force=force,
             )
-            if MountInfo.search(mount_path) is not None:
-                raise OSError(
-                    f"repository hidden mount is still attached after umount: {mount_path}"
-                )
-            return True

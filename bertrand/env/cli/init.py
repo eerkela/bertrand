@@ -1146,7 +1146,6 @@ async def _finalize(
                 mount_alias,
                 timeout=state.deadline - loop.time(),
                 force=False,
-                lazy=False,
             )
     if (
         staged_alias != target and
@@ -1166,7 +1165,6 @@ async def _finalize(
             staged_alias,
             timeout=state.deadline - loop.time(),
             force=False,
-            lazy=False,
         )
     state.mount_alias = target
 
