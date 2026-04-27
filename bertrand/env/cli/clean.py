@@ -40,7 +40,7 @@ class CleanState:
     assume_yes : bool
         Whether interactive confirmations should be auto-accepted.
     force : bool
-        Whether stage errors should be downgraded to warnings for non-strict stages.
+        Whether intermediate stage errors should be downgraded to warnings.
     deadline : float
         Absolute event-loop timestamp when cleanup must finish.
     captured_aliases : set[Path]
@@ -156,8 +156,8 @@ async def _disable_unmount_run_tmpfs(state: CleanState) -> None:
         await run_mount.unmount(timeout=state.deadline - loop.time(), force=True)
 
 
-async def _verify_runtime_residue(state: CleanState) -> None:
-    issues: list[str] = []
+def _runtime_residue(state: CleanState) -> tuple[list[str], list[str]]:
+    """Collect managed runtime residue still visible on the host."""
     residual_mounts = sorted(
         {str(mount.mount_point) for mount in MountInfo.under(REPO_DIR)}
     )
@@ -168,6 +168,26 @@ async def _verify_runtime_residue(state: CleanState) -> None:
         for alias in state.captured_aliases
         if alias.exists() or alias.is_symlink()
     )
+    return residual_mounts, residual_aliases
+
+
+async def _finalize_cleanup(state: CleanState) -> None:
+    """Run terminal cleanup verification and state-directory teardown.
+
+    This stage is always strict, even when `--force` is enabled.  In force mode,
+    it performs one last remediation attempt before enforcing final invariants.
+    """
+    loop = asyncio.get_running_loop()
+    issues: list[str] = []
+
+    # attempt final remediation
+    residual_mounts, residual_aliases = _runtime_residue(state)
+    if (residual_mounts or residual_aliases) and state.force:
+        await _clean_repo_mounts_aliases(state)
+        if loop.time() >= state.deadline:
+            raise TimeoutError("bertrand clean stage 'finalize_cleanup' timed out")
+        await _disable_unmount_run_tmpfs(state)
+        residual_mounts, residual_aliases = _runtime_residue(state)
     if residual_mounts:
         issues.append(
             f"residual mounts remain after cleanup: {', '.join(residual_mounts)}"
@@ -175,60 +195,29 @@ async def _verify_runtime_residue(state: CleanState) -> None:
     if residual_aliases:
         issues.append(
             "residual managed repository aliases remain after cleanup: "
-            + ", ".join(residual_aliases)
+            f"{', '.join(residual_aliases)}"
         )
-    if issues:
-        raise OSError("runtime cleanup did not converge:\n- " + "\n- ".join(issues))
 
-
-async def _remove_state_dir(state: CleanState) -> None:
-    if not STATE_DIR.exists() and not STATE_DIR.is_symlink():
-        return
-    if STATE_DIR.is_symlink() or STATE_DIR.is_file():
-        STATE_DIR.unlink()
-    else:
-        shutil.rmtree(STATE_DIR)
-
-
-async def _verify_post_clean(state: CleanState) -> None:
-    issues: list[str] = []
+    # if mounts and aliases are all clean, remove state directory
+    if not issues and (STATE_DIR.exists() or STATE_DIR.is_symlink()):
+        if STATE_DIR.is_symlink() or STATE_DIR.is_file():
+            STATE_DIR.unlink()
+        else:
+            shutil.rmtree(STATE_DIR)
     if STATE_DIR.exists() or STATE_DIR.is_symlink():
         issues.append(f"state directory still exists after cleanup: {STATE_DIR}")
-    residual_mounts = sorted(
-        {str(mount.mount_point) for mount in MountInfo.under(REPO_DIR)}
-    )
-    if MountInfo.search(RUN_DIR) is not None:
-        residual_mounts.append(str(RUN_DIR))
-    residual_aliases = sorted(
-        str(alias)
-        for alias in state.captured_aliases
-        if alias.exists() or alias.is_symlink()
-    )
-    if residual_mounts:
-        issues.append(
-            f"residual mounts remain after cleanup: {', '.join(residual_mounts)}"
-        )
-    if residual_aliases:
-        issues.append(
-            "residual managed repository aliases remain after cleanup: "
-            + ", ".join(residual_aliases)
-        )
+
+    # raise errors together at the end for a non-zero exit code
     if issues:
-        raise OSError("post-clean verification failed:\n- " + "\n- ".join(issues))
+        raise OSError(f"runtime cleanup did not converge:\n- {'\n- '.join(issues)}")
 
 
-# TODO: review all the steps here and try to remove the strict vs non-strict
-# distinction if possible.
-
-
-CLEAN_STAGES: tuple[tuple[str, Callable[[CleanState], Awaitable[None]], bool], ...] = (
-    ("stop_buildkitd", _stop_buildkitd, False),
-    ("clean_nerdctl_objects", _clean_nerdctl_objects, False),
-    ("clean_repo_mounts_aliases", _clean_repo_mounts_aliases, False),
-    ("disable_unmount_run_tmpfs", _disable_unmount_run_tmpfs, False),
-    ("verify_runtime_residue", _verify_runtime_residue, True),
-    ("remove_state_dir", _remove_state_dir, False),
-    ("verify_post_clean", _verify_post_clean, True),
+CLEAN_STAGES: tuple[tuple[str, Callable[[CleanState], Awaitable[None]]], ...] = (
+    ("stop_buildkitd", _stop_buildkitd),
+    ("clean_nerdctl_objects", _clean_nerdctl_objects),
+    ("clean_repo_mounts_aliases", _clean_repo_mounts_aliases),
+    ("disable_unmount_run_tmpfs", _disable_unmount_run_tmpfs),
+    ("finalize_cleanup", _finalize_cleanup),
 )
 
 
@@ -243,8 +232,8 @@ async def bertrand_clean(*, timeout: float, assume_yes: bool, force: bool) -> No
     assume_yes : bool
         Whether to auto-accept prompts during cleanup.
     force : bool
-        Whether to continue through non-strict stage failures, logging warnings
-        instead of failing immediately.
+        Whether to continue through intermediate stage failures, logging warnings
+        and attempting subsequent stages.
 
     Raises
     ------
@@ -253,11 +242,12 @@ async def bertrand_clean(*, timeout: float, assume_yes: bool, force: bool) -> No
     PermissionError
         If the user lacks root privileges or they decline cleanup.
     OSError
-        If cleanup fails to converge or a strict stage fails.
+        If cleanup fails to converge.
     """
     if timeout <= 0:
         raise TimeoutError("timed out before cleanup started")
 
+    # require root privileges for global cleanup
     if os.geteuid() != 0:
         raise PermissionError(
             "Global Bertrand cleanup requires root privileges.  Re-run this command "
@@ -272,13 +262,14 @@ async def bertrand_clean(*, timeout: float, assume_yes: bool, force: bool) -> No
     ):
         raise PermissionError("Cleanup declined by user.")
 
+    # execute clean convergence stages in sequence
     loop = asyncio.get_running_loop()
     state = CleanState(
         assume_yes=assume_yes,
         force=force,
         deadline=loop.time() + timeout,
     )
-    for name, stage, strict in CLEAN_STAGES:
+    for i, (name, stage) in enumerate(CLEAN_STAGES):
         try:
             if loop.time() >= state.deadline:
                 raise TimeoutError(
@@ -288,10 +279,10 @@ async def bertrand_clean(*, timeout: float, assume_yes: bool, force: bool) -> No
         except asyncio.CancelledError:
             raise
         except Exception as err:
-            if not state.force or strict:
-                raise OSError(f"bertrand clean stage '{name}' failed: {err}") from err
+            if not state.force or i == len(CLEAN_STAGES) - 1:
+                raise OSError(f"bertrand clean stage {name!r} failed: {err}") from err
             print(
-                "bertrand: warning: clean stage "
-                f"'{name}' failed; continuing due to --force: {err}",
+                f"bertrand: warning: clean stage {name!r} failed; continuing due to "
+                f"--force: {err}",
                 file=sys.stderr,
             )
