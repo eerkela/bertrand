@@ -701,7 +701,7 @@ async def _ensure_host_mount(
             ceph_user=state.credentials.user,
             ceph_secretfile=ceph_secretfile,
         )
-    async with mount.aliases(timeout=state.deadline - loop.time()) as aliases:
+    async with mount.aliases(timeout=state.deadline - loop.time(), gc=True) as aliases:
         aliases.link(mount_alias)
 
     # record the repository ID in the newly-mounted volume
@@ -1134,7 +1134,7 @@ async def _finalize(
             loop = asyncio.get_running_loop()
             # Alias-state operations do not need live mount-table lookups.
             mount = MountInfo(mount_point=hidden_mount)
-            async with mount.aliases(timeout=state.deadline - loop.time()) as aliases:
+            async with mount.aliases(timeout=state.deadline - loop.time(), gc=True) as aliases:
                 aliases.unlink(mount_alias)
     if (
         staged_alias != target and
@@ -1145,7 +1145,7 @@ async def _finalize(
         loop = asyncio.get_running_loop()
         # Alias-state operations do not need live mount-table lookups.
         mount = MountInfo(mount_point=hidden_mount)
-        async with mount.aliases(timeout=state.deadline - loop.time()) as aliases:
+        async with mount.aliases(timeout=state.deadline - loop.time(), gc=True) as aliases:
             aliases.unlink(staged_alias)
     state.mount_alias = target
 

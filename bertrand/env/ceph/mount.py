@@ -11,7 +11,16 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path, PosixPath
 from types import TracebackType
-from typing import Self
+from typing import Annotated, Self
+
+from pydantic import (
+    AfterValidator,
+    AwareDatetime,
+    BaseModel,
+    ConfigDict,
+    PositiveInt,
+    ValidationError,
+)
 
 from ..config.core import _check_uuid
 from ..run import (
@@ -49,12 +58,44 @@ REPO_ORPHAN_GC_LOCK_TIMEOUT = 0.25
 REPO_ORPHAN_GC_BUDGET = 2.0
 
 
+def _check_alias_version(value: int) -> int:
+    if value != ALIASES_SCHEMA_VERSION:
+        raise ValueError(
+            "repository alias index file has unsupported schema version "
+            f"{value}; expected {ALIASES_SCHEMA_VERSION}"
+        )
+    return value
+
+
+def _check_alias_path(value: Path) -> Path:
+    if not value.is_absolute():
+        raise ValueError(
+            "repository alias index file contains invalid alias path: expected "
+            f"absolute path, got {value}"
+        )
+    if any(part in (".", "..") for part in value.parts):
+        raise ValueError(
+            "repository alias index file contains invalid alias path: cannot contain "
+            f"'.' or '..' segments, got {value}"
+        )
+    return value
+
+
+def _to_utc(value: datetime) -> datetime:
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise ValueError(
+            "repository alias index file has invalid format: 'last_accessed' must "
+            "include timezone information"
+        )
+    return value.astimezone(UTC)
+
+
 @dataclass(frozen=True)
 class MountInfo:
     """Subset of `/proc/self/mountinfo` fields used by Bertrand mount validation.
 
     This model intentionally captures only the fields needed for host mount
-    convergence and mismatch detection. We do not retain mount IDs, parent IDs,
+    convergence and mismatch detection.  It does not retain mount IDs, parent IDs,
     mount root, mount options, optional propagation fields, or super options.
 
     Attributes
@@ -118,7 +159,7 @@ class MountInfo:
 
     @classmethod
     def local(cls) -> list[Self]:
-        """Parse and return mount entries from `/proc/self/mountinfo`.
+        """Parse and return local mount entries from `/proc/self/mountinfo`.
 
         Returns
         -------
@@ -198,287 +239,6 @@ class MountInfo:
             if abspath(entry.mount_point) == needle:
                 return entry
         return None
-
-    @classmethod
-    def _read_alias_state(
-        cls,
-        root: Path,
-        *,
-        mount_path: Path,
-    ) -> tuple[set[Path], datetime, bool]:
-        """Load active alias metadata for a repository root.
-
-        Parameters
-        ----------
-        root : Path
-            Repository state root (`REPO_DIR / <repo_id>`).
-        mount_path : Path
-            Hidden mount path for strict alias ownership checks.
-
-        Returns
-        -------
-        tuple[set[Path], datetime, bool]
-            `(active_aliases, last_accessed_utc, canonicalized)` where
-            `canonicalized` indicates stale entries were pruned.
-
-        Raises
-        ------
-        OSError
-            If alias metadata cannot be read.
-        TypeError
-            If metadata JSON has invalid structure.
-        ValueError
-            If metadata fields are malformed or unsupported.
-        """
-        root = abspath(root)
-        path = root / REPO_ALIASES_EXT
-        if not path.exists():
-            return set(), datetime.now(UTC), True
-        if not path.is_file():
-            raise FileNotFoundError(f"repository alias index path is not a file: {path}")
-
-        text = path.read_text(encoding="utf-8")
-        data = json.loads(text)
-        if not isinstance(data, dict):
-            raise TypeError(
-                "repository alias index file has invalid format: expected a JSON "
-                f"object, got {type(data).__name__}"
-            )
-
-        expected = {"version", "aliases", "last_accessed"}
-        keys = set(data)
-        if keys != expected:
-            raise TypeError(
-                "repository alias index file has invalid format: expected keys "
-                f"{sorted(expected)}, got {sorted(keys)}"
-            )
-
-        version = data["version"]
-        if not isinstance(version, int):
-            raise TypeError(
-                "repository alias index file has invalid format: 'version' must be an "
-                f"integer, got {type(version).__name__}"
-            )
-        if version != ALIASES_SCHEMA_VERSION:
-            raise ValueError(
-                "repository alias index file has unsupported schema version "
-                f"{version}; expected {ALIASES_SCHEMA_VERSION}"
-            )
-
-        aliases_raw = data["aliases"]
-        if not isinstance(aliases_raw, list):
-            raise TypeError(
-                "repository alias index file has invalid format: 'aliases' must be a "
-                f"list, got {type(aliases_raw).__name__}"
-            )
-
-        last_accessed_raw = data["last_accessed"]
-        if not isinstance(last_accessed_raw, str):
-            raise TypeError(
-                "repository alias index file has invalid format: 'last_accessed' "
-                f"must be an ISO timestamp string, got {type(last_accessed_raw).__name__}"
-            )
-        try:
-            last_accessed = datetime.fromisoformat(last_accessed_raw)
-        except ValueError as err:
-            raise ValueError(
-                "repository alias index file has invalid format: 'last_accessed' "
-                f"must be an ISO timestamp, got {last_accessed_raw!r}"
-            ) from err
-        if last_accessed.tzinfo is None or last_accessed.utcoffset() is None:
-            raise ValueError(
-                "repository alias index file has invalid format: 'last_accessed' "
-                "must include timezone information"
-            )
-        last_accessed = last_accessed.astimezone(UTC)
-
-        declared: set[Path] = set()
-        duplicates = False
-        for item in aliases_raw:
-            if not isinstance(item, str):
-                raise TypeError(
-                    "repository alias index file has invalid format: expected alias "
-                    f"paths as strings, got {type(item).__name__}"
-                )
-            alias = Path(item)
-            if not alias.is_absolute():
-                raise ValueError(
-                    "repository alias index file contains invalid alias path: "
-                    f"expected absolute path, got {alias}"
-                )
-            if any(part in (".", "..") for part in alias.parts):
-                raise ValueError(
-                    "repository alias index file contains invalid alias path: "
-                    f"cannot contain '.' or '..' segments, got {alias}"
-                )
-            if alias in declared:
-                duplicates = True
-            declared.add(alias)
-
-        active = {alias for alias in declared if symlink_points_to(alias, mount_path)}
-        canonicalized = duplicates or active != declared
-        return active, last_accessed, canonicalized
-
-    @classmethod
-    def _write_alias_state(
-        cls,
-        root: Path,
-        aliases: set[Path],
-        *,
-        last_accessed: datetime | None = None,
-    ) -> None:
-        """Write repository alias metadata in canonical format."""
-        root = abspath(root)
-        path = root / REPO_ALIASES_EXT
-
-        if last_accessed is None:
-            last_accessed = datetime.now(UTC)
-        if last_accessed.tzinfo is None or last_accessed.utcoffset() is None:
-            raise ValueError("repository alias metadata timestamp must be timezone-aware")
-        last_accessed = last_accessed.astimezone(UTC)
-
-        for alias in aliases:
-            if not alias.is_absolute():
-                raise ValueError(
-                    "repository alias metadata contains invalid alias path: "
-                    f"expected absolute path, got {alias}"
-                )
-            if any(part in (".", "..") for part in alias.parts):
-                raise ValueError(
-                    "repository alias metadata contains invalid alias path: "
-                    f"cannot contain '.' or '..' segments, got {alias}"
-                )
-
-        text = json.dumps(
-            {
-                "version": ALIASES_SCHEMA_VERSION,
-                "aliases": sorted(str(alias) for alias in aliases),
-                "last_accessed": last_accessed.isoformat(),
-            },
-            sort_keys=True,
-            separators=(",", ":"),
-            ensure_ascii=False,
-            allow_nan=False,
-        )
-        try:
-            atomic_write_text(path, text, encoding="utf-8")
-        except OSError as err:
-            raise OSError(f"failed to write repository alias index file: {err}") from err
-
-    # TODO: review gc, mount/unmount/aliases logic
-
-    @classmethod
-    async def _gc_orphan_mounts(cls, *, timeout: float) -> None:
-        """Best-effort orphan mount garbage collection.
-
-        This opportunistically scans a bounded subset of repository roots and detaches
-        hidden mounts that have no active managed aliases after a grace period.
-        Failures are warning-only and never abort caller convergence.
-        """
-        if timeout <= 0:
-            return
-
-        loop = asyncio.get_event_loop()
-        budget = min(timeout, REPO_ORPHAN_GC_BUDGET)
-        if budget <= 0:
-            return
-        deadline = loop.time() + budget
-
-        try:
-            roots = sorted(
-                (
-                    entry for entry in REPO_DIR.iterdir()
-                    if entry.is_dir() and not entry.is_symlink()
-                ),
-                key=lambda item: item.as_posix(),
-            )
-        except FileNotFoundError:
-            return
-        except OSError as err:
-            print(
-                "bertrand: warning: failed to scan repository roots for orphan "
-                f"mount GC: {err}",
-                file=sys.stderr,
-            )
-            return
-
-        if not roots:
-            return
-
-        now = datetime.now(UTC)
-        slot_seconds = REPO_ORPHAN_GC_SLOT_PERIOD.total_seconds()
-        start = int(now.timestamp() // slot_seconds) % len(roots)
-        count = min(REPO_ORPHAN_GC_BATCH_SIZE, len(roots))
-
-        for offset in range(count):
-            if loop.time() >= deadline:
-                break
-            root = roots[(start + offset) % len(roots)]
-
-            # Use non-blocking lock acquisition so GC always stays bounded.
-            remaining = deadline - loop.time()
-            if remaining <= 0:
-                break
-            lock = Lock(
-                root / REPO_LOCK_EXT,
-                timeout=min(REPO_ORPHAN_GC_LOCK_TIMEOUT, remaining),
-                mode="local",
-            )
-            locked = False
-            try:
-                locked = await lock.try_lock()
-                if not locked:
-                    continue
-
-                mount = MountInfo.search(root / REPO_MOUNT_EXT)
-                if mount is None:
-                    continue
-
-                now = datetime.now(UTC)
-                aliases, last_accessed, canonicalized = cls._read_alias_state(
-                    root,
-                    mount_path=root / REPO_MOUNT_EXT,
-                )
-                if canonicalized:
-                    cls._write_alias_state(root, aliases, last_accessed=now)
-                    last_accessed = now
-
-                if aliases:
-                    continue
-                if now - last_accessed < REPO_ORPHAN_GC_GRACE:
-                    continue
-
-                remaining = deadline - loop.time()
-                if remaining <= 0:
-                    break
-                try:
-                    await mount.unmount(timeout=remaining, force=False)
-                except asyncio.CancelledError:
-                    raise
-                except Exception as err:  # pylint: disable=broad-except
-                    print(
-                        "bertrand: warning: failed to garbage-collect orphan "
-                        f"repository mount {mount.mount_point}: {err}",
-                        file=sys.stderr,
-                    )
-            except asyncio.CancelledError:
-                raise
-            except Exception as err:  # pylint: disable=broad-except
-                print(
-                    "bertrand: warning: failed to process orphan mount GC candidate "
-                    f"{root}: {err}",
-                    file=sys.stderr,
-                )
-            finally:
-                if locked:
-                    try:
-                        await lock.unlock()
-                    except Exception as err:  # pylint: disable=broad-except
-                        print(
-                            "bertrand: warning: failed to release orphan mount GC "
-                            f"lock for {root}: {err}",
-                            file=sys.stderr,
-                        )
 
     @classmethod
     async def mount(
@@ -599,16 +359,6 @@ class MountInfo:
                     f"{mounted.source!r}, expected Ceph source suffix ':{ceph_path}'"
                 )
 
-        try:
-            await cls._gc_orphan_mounts(timeout=deadline - loop.time())
-        except asyncio.CancelledError:
-            raise
-        except Exception as err:  # pylint: disable=broad-except
-            print(
-                f"bertrand: warning: orphan repository mount GC failed: {err}",
-                file=sys.stderr,
-            )
-
         return mounted
 
     async def unmount(self, *, timeout: float, force: bool) -> bool:
@@ -658,6 +408,7 @@ class MountInfo:
             raise OSError(f"failed to unmount volume at {self.mount_point}")
         return True
 
+    @dataclass
     class Aliases:
         """Async context manager for lock-scoped alias state mutation.
 
@@ -666,31 +417,243 @@ class MountInfo:
         aliases : set[Path]
             In-memory managed alias set loaded for the repository when entered.
         """
+        class JSON(BaseModel):
+            """Persistent alias index payload for a single repository mount.
 
-        def __init__(self, mount: MountInfo, *, timeout: float) -> None:
-            if timeout <= 0:
+            Parameters
+            ----------
+            version : int
+                Alias metadata schema version.
+            aliases : list[Path]
+                Declared absolute alias paths.
+            last_accessed : datetime
+                Last alias-state write timestamp.
+            """
+            model_config = ConfigDict(extra="forbid")
+            version: Annotated[PositiveInt, AfterValidator(_check_alias_version)]
+            aliases: list[Annotated[Path, AfterValidator(_check_alias_path)]]
+            last_accessed: Annotated[AwareDatetime, AfterValidator(_to_utc)]
+
+            @classmethod
+            def from_active_aliases(
+                cls,
+                active_aliases: set[Path],
+                *,
+                touched_at: datetime,
+            ) -> Self:
+                """Build canonical alias metadata for active aliases.
+
+                Parameters
+                ----------
+                active_aliases : set[Path]
+                    Managed alias paths that currently point to this mount.
+                touched_at : datetime
+                    Timestamp used for `last_accessed`.
+                """
+                return cls(
+                    version=ALIASES_SCHEMA_VERSION,
+                    aliases=sorted(active_aliases, key=lambda item: item.as_posix()),
+                    last_accessed=touched_at,
+                )
+
+            @classmethod
+            def load(cls, path: Path) -> Self:
+                """Load alias metadata from disk with strict schema validation."""
+                path = abspath(path)
+                if not path.exists():
+                    return cls(
+                        version=ALIASES_SCHEMA_VERSION,
+                        aliases=[],
+                        last_accessed=datetime.now(UTC),
+                    )
+                if not path.is_file():
+                    raise FileNotFoundError(
+                        f"repository alias index path is not a file: {path}"
+                    )
+                try:
+                    text = path.read_text(encoding="utf-8")
+                except OSError as err:
+                    raise OSError(
+                        f"failed to read repository alias index file: {err}"
+                    ) from err
+                try:
+                    return cls.model_validate_json(text)
+                except ValidationError as err:
+                    raise ValueError(
+                        f"repository alias index file has invalid format: {err}"
+                    ) from err
+
+            def dump(self, path: Path) -> None:
+                """Persist alias metadata in canonical JSON format."""
+                path = abspath(path)
+                text = json.dumps(
+                    self.model_dump(mode="json"),
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    ensure_ascii=False,
+                    allow_nan=False,
+                )
+                try:
+                    atomic_write_text(path, text, encoding="utf-8")
+                except OSError as err:
+                    raise OSError(
+                        f"failed to write repository alias index file: {err}"
+                    ) from err
+
+            def active_aliases_for_mount(
+                self,
+                mount_path: Path,
+            ) -> tuple[set[Path], bool]:
+                """Return active aliases and whether canonical rewrite is needed."""
+                mount_path = abspath(mount_path)
+                declared = [abspath(alias) for alias in self.aliases]
+                declared_set = set(declared)
+                active = {
+                    alias for alias in declared_set
+                    if symlink_points_to(alias, mount_path)
+                }
+                canonicalized = (
+                    len(declared) != len(declared_set) or
+                    active != declared_set
+                )
+                return active, canonicalized
+
+        mount: MountInfo
+        timeout: float
+        gc: bool = field(default=True)
+        aliases: set[Path] = field(default_factory=set)
+        _root: Path = field(init=False)
+        _mount_path: Path = field(init=False)
+        _lock: Lock | None = field(default=None)
+        _deadline: float | None = field(default=None)
+        _depth: int = field(default=0)
+
+        def __post_init__(self) -> None:
+            if self.timeout <= 0:
                 raise TimeoutError("timeout must be non-negative")
-            if mount.repo_id is None:
+            if self.mount.repo_id is None:
                 raise OSError(
                     "alias state is only available for repository mounts with a valid "
                     "repository identity"
                 )
-
-            self.mount = mount
-            self.timeout = timeout
-            self.aliases: set[Path] = set()
-            self._root = REPO_DIR / mount.repo_id
+            self._root = REPO_DIR / self.mount.repo_id
             self._mount_path = self._root / REPO_MOUNT_EXT
-            self._lock: Lock | None = None
-            self._deadline: float | None = None
-            self._entered = False
 
-        def _require_entered(self) -> None:
-            if not self._entered:
-                raise RuntimeError(
-                    "MountAliases must be used inside 'async with' before calling "
-                    "link()/unlink()"
+        async def _gc_orphan_mounts(self, *, timeout: float) -> None:
+            """Best-effort orphan mount garbage collection.
+
+            This opportunistically scans a bounded subset of repository roots and detaches
+            hidden mounts that have no active managed aliases after a grace period.
+            Failures are warning-only and never abort caller convergence.
+            """
+            if timeout <= 0:
+                return
+
+            loop = asyncio.get_event_loop()
+            budget = min(timeout, REPO_ORPHAN_GC_BUDGET)
+            if budget <= 0:
+                return
+            deadline = loop.time() + budget
+
+            try:
+                roots = sorted(
+                    (
+                        entry for entry in REPO_DIR.iterdir()
+                        if entry.is_dir() and not entry.is_symlink()
+                    ),
+                    key=lambda item: item.as_posix(),
                 )
+            except FileNotFoundError:
+                return
+            except OSError as err:
+                print(
+                    "bertrand: warning: failed to scan repository roots for orphan "
+                    f"mount GC: {err}",
+                    file=sys.stderr,
+                )
+                return
+
+            if not roots:
+                return
+
+            now = datetime.now(UTC)
+            slot_seconds = REPO_ORPHAN_GC_SLOT_PERIOD.total_seconds()
+            start = int(now.timestamp() // slot_seconds) % len(roots)
+            count = min(REPO_ORPHAN_GC_BATCH_SIZE, len(roots))
+
+            for offset in range(count):
+                if loop.time() >= deadline:
+                    break
+                root = roots[(start + offset) % len(roots)]
+
+                # Use non-blocking lock acquisition so GC always stays bounded.
+                remaining = deadline - loop.time()
+                if remaining <= 0:
+                    break
+                lock = Lock(
+                    root / REPO_LOCK_EXT,
+                    timeout=min(REPO_ORPHAN_GC_LOCK_TIMEOUT, remaining),
+                    mode="local",
+                )
+                locked = False
+                try:
+                    locked = await lock.try_lock()
+                    if not locked:
+                        continue
+
+                    mount = MountInfo.search(root / REPO_MOUNT_EXT)
+                    if mount is None:
+                        continue
+
+                    now = datetime.now(UTC)
+                    state = self.JSON.load(root / REPO_ALIASES_EXT)
+                    aliases, canonicalized = state.active_aliases_for_mount(
+                        root / REPO_MOUNT_EXT
+                    )
+                    last_accessed = state.last_accessed
+                    if canonicalized:
+                        self.JSON.from_active_aliases(
+                            aliases,
+                            touched_at=now,
+                        ).dump(root / REPO_ALIASES_EXT)
+                        last_accessed = now
+
+                    if aliases:
+                        continue
+                    if now - last_accessed < REPO_ORPHAN_GC_GRACE:
+                        continue
+
+                    remaining = deadline - loop.time()
+                    if remaining <= 0:
+                        break
+                    try:
+                        await mount.unmount(timeout=remaining, force=False)
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as err:  # pylint: disable=broad-except
+                        print(
+                            "bertrand: warning: failed to garbage-collect orphan "
+                            f"repository mount {mount.mount_point}: {err}",
+                            file=sys.stderr,
+                        )
+                except asyncio.CancelledError:
+                    raise
+                except Exception as err:  # pylint: disable=broad-except
+                    print(
+                        "bertrand: warning: failed to process orphan mount GC candidate "
+                        f"{root}: {err}",
+                        file=sys.stderr,
+                    )
+                finally:
+                    if locked:
+                        try:
+                            await lock.unlock()
+                        except Exception as err:  # pylint: disable=broad-except
+                            print(
+                                "bertrand: warning: failed to release orphan mount GC "
+                                f"lock for {root}: {err}",
+                                file=sys.stderr,
+                            )
 
         def link(self, path: Path) -> None:
             """Create/update a managed alias symlink in the active alias state.
@@ -707,7 +670,11 @@ class MountInfo:
             RuntimeError
                 If called outside an active context manager block.
             """
-            self._require_entered()
+            if not self._entered:
+                raise RuntimeError(
+                    "MountAliases must be used inside 'async with' before calling "
+                    "link()/unlink()"
+                )
             path = abspath(path)
 
             # Reject unmanaged collisions so alias ownership stays explicit.
@@ -743,7 +710,11 @@ class MountInfo:
             RuntimeError
                 If called outside an active context manager block.
             """
-            self._require_entered()
+            if not self._entered:
+                raise RuntimeError(
+                    "MountAliases must be used inside 'async with' before calling "
+                    "link()/unlink()"
+                )
             path = abspath(path)
 
             removed = False
@@ -772,11 +743,9 @@ class MountInfo:
             self._lock = lock
 
             try:
-                aliases, _, _ = MountInfo._read_alias_state(
-                    self._root,
-                    mount_path=self._mount_path,
-                )
-                self.aliases = set(aliases)
+                root = abspath(self._root)
+                state = self.JSON.load(root / REPO_ALIASES_EXT)
+                self.aliases, _ = state.active_aliases_for_mount(self._mount_path)
                 self._entered = True
                 return self
             except Exception:
@@ -798,11 +767,12 @@ class MountInfo:
             # Always write canonical alias state on exit so stale entries are pruned and
             # last_accessed is touched for GC grace calculations.
             try:
-                MountInfo._write_alias_state(
-                    self._root,
+                root = abspath(self._root)
+                state = self.JSON.from_active_aliases(
                     self.aliases,
-                    last_accessed=datetime.now(UTC),
+                    touched_at=datetime.now(UTC),
                 )
+                state.dump(root / REPO_ALIASES_EXT)
             except Exception as err:  # pylint: disable=broad-except
                 cleanup_error = err
 
@@ -818,19 +788,20 @@ class MountInfo:
                     self._lock = None
                     self._entered = False
 
-            try:
-                loop = asyncio.get_running_loop()
-                remaining = (
-                    0.0 if self._deadline is None else self._deadline - loop.time()
-                )
-                await MountInfo._gc_orphan_mounts(timeout=remaining)
-            except asyncio.CancelledError:
-                raise
-            except Exception as err:  # pylint: disable=broad-except
-                print(
-                    f"bertrand: warning: orphan repository mount GC failed: {err}",
-                    file=sys.stderr,
-                )
+            if self.gc:
+                try:
+                    loop = asyncio.get_running_loop()
+                    remaining = (
+                        0.0 if self._deadline is None else self._deadline - loop.time()
+                    )
+                    await self._gc_orphan_mounts(timeout=remaining)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as err:  # pylint: disable=broad-except
+                    print(
+                        f"bertrand: warning: orphan repository mount GC failed: {err}",
+                        file=sys.stderr,
+                    )
 
             if cleanup_error is not None:
                 if exc_value is None:
@@ -843,13 +814,15 @@ class MountInfo:
 
             return False
 
-    def aliases(self, *, timeout: float) -> Aliases:
+    def aliases(self, *, timeout: float, gc: bool) -> Aliases:
         """Return an async context manager for this repo mount's alias state.
 
         Parameters
         ----------
         timeout : float
             Maximum timeout for lock acquisition and alias convergence.
+        gc : bool, default=True
+            Whether to run orphan-mount garbage collection when the context exits.
 
         Returns
         -------
@@ -863,4 +836,4 @@ class MountInfo:
         TimeoutError
             If `timeout` is non-positive.
         """
-        return self.Aliases(self, timeout=timeout)
+        return self.Aliases(self, timeout=timeout, gc=gc)

@@ -106,7 +106,8 @@ async def _clean_repo_mounts_aliases(state: CleanState) -> None:
         mount = MountInfo.search(mount_path)
         try:
             async with (mount or MountInfo(mount_point=mount_path)).aliases(
-                timeout=state.deadline - loop.time()
+                timeout=state.deadline - loop.time(),
+                gc=False,  # avoid extra alias GC churn
             ) as aliases:
                 state.captured_aliases.update(aliases.aliases)
                 for alias in sorted(aliases.aliases, key=lambda item: item.as_posix()):
