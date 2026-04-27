@@ -23,9 +23,9 @@ import os
 import platform
 import pwd
 import re
-import signal
 import shlex
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -3591,6 +3591,8 @@ class Lock:
 
     async def try_lock(self) -> bool:
         """Attempt to acquire this lock immediately, without waiting on contention.
+        Note that this ignores the lock's timeout, since it is a non-blocking
+        operation.
 
         Returns
         -------
@@ -3633,8 +3635,18 @@ class Lock:
                 self._depth = 0
         return False
 
-    async def unlock(self, *, suppress_backend_errors: bool = False) -> None:
-        """Release this lock once.  Re-entrant lock depth is decremented."""
+    async def unlock(self, *, ignore_errors: bool = False) -> None:
+        """Release this lock once.  Re-entrant lock depth is decremented.
+
+        Parameters
+        ----------
+        ignore_errors : bool
+            If `True`, suppress any exceptions raised by the backend release operation,
+            which may be desirable if the lock is being released in response to an
+            error condition and the caller wishes to preserve the original exception.
+            Defaults to `False`, in which case backend errors will be raised after
+            releasing the lock and clearing lock state.
+        """
         owner = self._get_owner()
         with LOCK_GUARD:
             if self._owner != owner or self._depth < 1:
@@ -3646,7 +3658,7 @@ class Lock:
         try:
             await self._backend.release()
         except Exception as err:  # pylint: disable=broad-except
-            if not suppress_backend_errors:
+            if not ignore_errors:
                 raise err
         finally:
             with LOCK_GUARD:
@@ -3655,7 +3667,7 @@ class Lock:
                 LOCKS.pop(self._key, None)
 
         # report deferred errors, if any
-        if not suppress_backend_errors:
+        if not ignore_errors:
             deferred_error = self._backend.pop_error()
             if deferred_error is not None:
                 raise deferred_error
@@ -3669,7 +3681,7 @@ class Lock:
         exc_value: BaseException | None,
         traceback: TracebackType | None
     ) -> None:
-        await self.unlock(suppress_backend_errors=exc_value is not None)
+        await self.unlock(ignore_errors=exc_value is not None)
 
     def __bool__(self) -> bool:
         with LOCK_GUARD:

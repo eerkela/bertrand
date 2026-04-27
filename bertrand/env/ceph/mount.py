@@ -25,6 +25,7 @@ from pydantic import (
 from ..config.core import _check_uuid
 from ..run import (
     HOST_MOUNTS,
+    INFINITY,
     REPO_ALIASES_EXT,
     REPO_DIR,
     REPO_LOCK_EXT,
@@ -51,10 +52,9 @@ if any("," in opt for opt in DEFAULT_REPO_MOUNT_OPTIONS):
     )
 
 ALIASES_SCHEMA_VERSION = 1
-REPO_ORPHAN_GC_BATCH_SIZE = 16
+REPO_ORPHAN_GC_BATCH_SIZE = 8
 REPO_ORPHAN_GC_GRACE = timedelta(minutes=5)
 REPO_ORPHAN_GC_SLOT_PERIOD = timedelta(minutes=1)
-REPO_ORPHAN_GC_LOCK_TIMEOUT = 0.25
 REPO_ORPHAN_GC_BUDGET = 2.0
 
 
@@ -68,15 +68,10 @@ def _check_alias_version(value: int) -> int:
 
 
 def _check_alias_path(value: Path) -> Path:
-    if not value.is_absolute():
+    if value != abspath(value):
         raise ValueError(
             "repository alias index file contains invalid alias path: expected "
-            f"absolute path, got {value}"
-        )
-    if any(part in (".", "..") for part in value.parts):
-        raise ValueError(
-            "repository alias index file contains invalid alias path: cannot contain "
-            f"'.' or '..' segments, got {value}"
+            f"canonical absolute path, got {value}"
         )
     return value
 
@@ -92,11 +87,8 @@ def _to_utc(value: datetime) -> datetime:
 
 @dataclass(frozen=True)
 class MountInfo:
-    """Subset of `/proc/self/mountinfo` fields used by Bertrand mount validation.
-
-    This model intentionally captures only the fields needed for host mount
-    convergence and mismatch detection.  It does not retain mount IDs, parent IDs,
-    mount root, mount options, optional propagation fields, or super options.
+    """Subset of `/proc/self/mountinfo` used by Bertrand's Ceph repository mounts and
+    their symlink aliases, as well as other utilities that need to inspect host mounts.
 
     Attributes
     ----------
@@ -158,20 +150,20 @@ class MountInfo:
         return PosixPath(suffix)
 
     @classmethod
-    def local(cls) -> list[Self]:
+    def local(cls) -> dict[Path, Self]:
         """Parse and return local mount entries from `/proc/self/mountinfo`.
 
         Returns
         -------
-        list[MountInfo]
-            Parsed entries with decoded mountpoint paths.
+        dict[Path, MountInfo]
+            Parsed entries with decoded mountpoint paths as keys, for fast lookup.
         """
         try:
             lines = HOST_MOUNTS.read_text(encoding="utf-8").splitlines()
         except OSError as err:
             raise OSError(f"failed to inspect host mount table: {err}") from err
 
-        rows: list[Self] = []
+        out: dict[Path, Self] = {}
         for line in lines:
             parts = line.strip().split()
             # ignore malformed rows defensively; kernel format should contain enough
@@ -185,7 +177,7 @@ class MountInfo:
             except ValueError:
                 continue
 
-            rows.append(cls(
+            info = cls(
                 mount_point=abspath(Path(
                     parts[4]
                     .replace("\\040", " ")
@@ -195,11 +187,12 @@ class MountInfo:
                 )),
                 fs_type=parts[sep + 1],
                 source=parts[sep + 2],
-            ))
-        return rows
+            )
+            out[info.mount_point] = info
+        return out
 
     @classmethod
-    def under(cls, root: Path) -> list[Self]:
+    def under(cls, root: Path) -> dict[Path, Self]:
         """Return mounted paths at or below `root`.
 
         Parameters
@@ -209,16 +202,16 @@ class MountInfo:
 
         Returns
         -------
-        list[MountInfo]
-            Parsed mount entries that are mounted at or below `root`.
+        dict[Path, MountInfo]
+            Parsed mount entries that are mounted at or below `root`, with decoded
+            mountpoint paths as keys for fast lookup.
         """
         prefix = abspath(root)
-        matches: list[Self] = []
-        for entry in cls.local():
-            norm = abspath(entry.mount_point)
-            if norm.is_relative_to(prefix):
-                matches.append(entry)
-        return matches
+        out: dict[Path, Self] = {}
+        for entry in cls.local().values():
+            if entry.mount_point.is_relative_to(prefix):
+                out[entry.mount_point] = entry
+        return out
 
     @classmethod
     def search(cls, path: Path) -> Self | None:
@@ -234,11 +227,7 @@ class MountInfo:
         MountInfo | None
             Matching mount entry, or None when `path` is not mounted.
         """
-        needle = abspath(path)
-        for entry in cls.local():
-            if abspath(entry.mount_point) == needle:
-                return entry
-        return None
+        return cls.local().get(abspath(path))
 
     @classmethod
     async def mount(
@@ -435,31 +424,19 @@ class MountInfo:
             last_accessed: Annotated[AwareDatetime, AfterValidator(_to_utc)]
 
             @classmethod
-            def from_active_aliases(
-                cls,
-                active_aliases: set[Path],
-                *,
-                touched_at: datetime,
-            ) -> Self:
-                """Build canonical alias metadata for active aliases.
+            def load(cls, path: Path) -> Self:
+                """Load alias metadata from disk with strict schema validation.
 
                 Parameters
                 ----------
-                active_aliases : set[Path]
-                    Managed alias paths that currently point to this mount.
-                touched_at : datetime
-                    Timestamp used for `last_accessed`.
-                """
-                return cls(
-                    version=ALIASES_SCHEMA_VERSION,
-                    aliases=sorted(active_aliases, key=lambda item: item.as_posix()),
-                    last_accessed=touched_at,
-                )
+                path : Path
+                    Path to load alias metadata from.
 
-            @classmethod
-            def load(cls, path: Path) -> Self:
-                """Load alias metadata from disk with strict schema validation."""
-                path = abspath(path)
+                Returns
+                -------
+                MountInfo.Aliases.JSON
+                    Parsed alias metadata.
+                """
                 if not path.exists():
                     return cls(
                         version=ALIASES_SCHEMA_VERSION,
@@ -484,39 +461,49 @@ class MountInfo:
                     ) from err
 
             def dump(self, path: Path) -> None:
-                """Persist alias metadata in canonical JSON format."""
-                path = abspath(path)
-                text = json.dumps(
-                    self.model_dump(mode="json"),
-                    sort_keys=True,
-                    separators=(",", ":"),
-                    ensure_ascii=False,
-                    allow_nan=False,
-                )
+                """Persist alias metadata to disk in canonical JSON format.
+
+                Parameters
+                ----------
+                path : Path
+                    Path to persist alias metadata to.
+                """
                 try:
-                    atomic_write_text(path, text, encoding="utf-8")
+                    atomic_write_text(
+                        path,
+                        json.dumps(
+                            self.model_dump(mode="json"),
+                            sort_keys=True,
+                            separators=(",", ":"),
+                            ensure_ascii=False,
+                            allow_nan=False,
+                        ),
+                        encoding="utf-8"
+                    )
                 except OSError as err:
                     raise OSError(
                         f"failed to write repository alias index file: {err}"
                     ) from err
 
-            def active_aliases_for_mount(
-                self,
-                mount_path: Path,
-            ) -> tuple[set[Path], bool]:
-                """Return active aliases and whether canonical rewrite is needed."""
-                mount_path = abspath(mount_path)
-                declared = [abspath(alias) for alias in self.aliases]
-                declared_set = set(declared)
-                active = {
-                    alias for alias in declared_set
-                    if symlink_points_to(alias, mount_path)
+            def filter(self, mount: Path) -> set[Path]:
+                """Return the subset of declared aliases that still point to the given
+                mount path, filtering out any stale entries.
+
+                Parameters
+                ----------
+                mount : Path
+                    Mounted path to check alias symlinks against.
+
+                Returns
+                -------
+                set[Path]
+                    Living alias paths that point to the given mount.
+                """
+                mount = mount.expanduser().resolve()
+                return {
+                    alias for alias in self.aliases
+                    if symlink_points_to(alias, mount)
                 }
-                canonicalized = (
-                    len(declared) != len(declared_set) or
-                    active != declared_set
-                )
-                return active, canonicalized
 
         mount: MountInfo
         timeout: float
@@ -525,7 +512,7 @@ class MountInfo:
         _root: Path = field(init=False)
         _mount_path: Path = field(init=False)
         _lock: Lock | None = field(default=None)
-        _deadline: float | None = field(default=None)
+        _deadline: float = field(default=INFINITY)
         _depth: int = field(default=0)
 
         def __post_init__(self) -> None:
@@ -539,129 +526,55 @@ class MountInfo:
             self._root = REPO_DIR / self.mount.repo_id
             self._mount_path = self._root / REPO_MOUNT_EXT
 
-        async def _gc_orphan_mounts(self, *, timeout: float) -> None:
-            """Best-effort orphan mount garbage collection.
-
-            This opportunistically scans a bounded subset of repository roots and detaches
-            hidden mounts that have no active managed aliases after a grace period.
-            Failures are warning-only and never abort caller convergence.
+        async def __aenter__(self) -> Self:
+            """Read the alias registry for this mount, automatically pruning stale
+            entries and synchronizing concurrent mutations.
             """
-            if timeout <= 0:
-                return
+            if self._depth >= 1:
+                self._depth += 1
+                return self  # re-entrant
 
-            loop = asyncio.get_event_loop()
-            budget = min(timeout, REPO_ORPHAN_GC_BUDGET)
-            if budget <= 0:
-                return
-            deadline = loop.time() + budget
+            # hold the repo-local lock for the entire mutation window so alias state is
+            # read/modify/write atomic across concurrent init/clean callers
+            loop = asyncio.get_running_loop()
+            self._deadline = loop.time() + self.timeout
+            self._root.mkdir(parents=True, exist_ok=True)
+            self._lock = Lock(
+                self._root / REPO_LOCK_EXT,
+                timeout=self._deadline - loop.time(),
+                mode="local",
+            )
+            await self._lock.lock()  # block until acquire or deadline
 
+            # load the alias state for this mount from its registry and filter any
+            # stale entries that no longer refer to this mount
             try:
-                roots = sorted(
-                    (
-                        entry for entry in REPO_DIR.iterdir()
-                        if entry.is_dir() and not entry.is_symlink()
-                    ),
-                    key=lambda item: item.as_posix(),
-                )
-            except FileNotFoundError:
-                return
-            except OSError as err:
-                print(
-                    "bertrand: warning: failed to scan repository roots for orphan "
-                    f"mount GC: {err}",
-                    file=sys.stderr,
-                )
-                return
-
-            if not roots:
-                return
-
-            now = datetime.now(UTC)
-            slot_seconds = REPO_ORPHAN_GC_SLOT_PERIOD.total_seconds()
-            start = int(now.timestamp() // slot_seconds) % len(roots)
-            count = min(REPO_ORPHAN_GC_BATCH_SIZE, len(roots))
-
-            for offset in range(count):
-                if loop.time() >= deadline:
-                    break
-                root = roots[(start + offset) % len(roots)]
-
-                # Use non-blocking lock acquisition so GC always stays bounded.
-                remaining = deadline - loop.time()
-                if remaining <= 0:
-                    break
-                lock = Lock(
-                    root / REPO_LOCK_EXT,
-                    timeout=min(REPO_ORPHAN_GC_LOCK_TIMEOUT, remaining),
-                    mode="local",
-                )
-                locked = False
+                aliases = self.JSON.load(self._root / REPO_ALIASES_EXT)
+                self.aliases = aliases.filter(self._mount_path)
+                self._depth = 1
+                return self
+            except Exception:
                 try:
-                    locked = await lock.try_lock()
-                    if not locked:
-                        continue
+                    await self._lock.unlock(ignore_errors=True)
+                except Exception:
+                    pass
+                self._lock = None
+                self._depth = 0
+                raise
 
-                    mount = MountInfo.search(root / REPO_MOUNT_EXT)
-                    if mount is None:
-                        continue
-
-                    now = datetime.now(UTC)
-                    state = self.JSON.load(root / REPO_ALIASES_EXT)
-                    aliases, canonicalized = state.active_aliases_for_mount(
-                        root / REPO_MOUNT_EXT
-                    )
-                    last_accessed = state.last_accessed
-                    if canonicalized:
-                        self.JSON.from_active_aliases(
-                            aliases,
-                            touched_at=now,
-                        ).dump(root / REPO_ALIASES_EXT)
-                        last_accessed = now
-
-                    if aliases:
-                        continue
-                    if now - last_accessed < REPO_ORPHAN_GC_GRACE:
-                        continue
-
-                    remaining = deadline - loop.time()
-                    if remaining <= 0:
-                        break
-                    try:
-                        await mount.unmount(timeout=remaining, force=False)
-                    except asyncio.CancelledError:
-                        raise
-                    except Exception as err:  # pylint: disable=broad-except
-                        print(
-                            "bertrand: warning: failed to garbage-collect orphan "
-                            f"repository mount {mount.mount_point}: {err}",
-                            file=sys.stderr,
-                        )
-                except asyncio.CancelledError:
-                    raise
-                except Exception as err:  # pylint: disable=broad-except
-                    print(
-                        "bertrand: warning: failed to process orphan mount GC candidate "
-                        f"{root}: {err}",
-                        file=sys.stderr,
-                    )
-                finally:
-                    if locked:
-                        try:
-                            await lock.unlock()
-                        except Exception as err:  # pylint: disable=broad-except
-                            print(
-                                "bertrand: warning: failed to release orphan mount GC "
-                                f"lock for {root}: {err}",
-                                file=sys.stderr,
-                            )
-
-        def link(self, path: Path) -> None:
-            """Create/update a managed alias symlink in the active alias state.
+        def link(self, path: Path) -> bool:
+            """Create/update a managed alias symlink to this mount's registry.
 
             Parameters
             ----------
             path : Path
                 Alias path to create or update.
+
+            Returns
+            -------
+            bool
+                True if a new symlink was created, meaning that the alias path was
+                previously unoccupied.  False if it already existed.
 
             Raises
             ------
@@ -670,27 +583,25 @@ class MountInfo:
             RuntimeError
                 If called outside an active context manager block.
             """
-            if not self._entered:
+            if self._depth < 1:
                 raise RuntimeError(
                     "MountAliases must be used inside 'async with' before calling "
                     "link()/unlink()"
                 )
+
+            # avoid collisions with file or directory paths, as well as symlinks that
+            # do not point to the expected mount
             path = abspath(path)
-
-            # Reject unmanaged collisions so alias ownership stays explicit.
-            if path.is_symlink() and not symlink_points_to(path, self._mount_path):
+            missing = not (path.exists() or path.is_symlink())
+            if missing:
+                atomic_symlink(self._mount_path, path)
+            elif not symlink_points_to(path, self._mount_path):
                 raise OSError(
                     f"repository alias path {path!r} already exists and is not a "
                     f"managed symlink to {self._mount_path!r}"
                 )
-            if path.exists() and not symlink_points_to(path, self._mount_path):
-                raise OSError(
-                    f"repository alias path {path!r} already exists and is not a "
-                    f"managed symlink to {self._mount_path!r}"
-                )
-
-            atomic_symlink(self._mount_path, path)
             self.aliases.add(path)
+            return missing
 
         def unlink(self, path: Path) -> bool:
             """Remove a managed alias from the active alias state.
@@ -703,98 +614,162 @@ class MountInfo:
             Returns
             -------
             bool
-                True if a symlink or alias entry was removed, otherwise False.
+                True if `path` corresponds to an active alias entry, in which case its
+                symlink will be removed if it is still valid.  False otherwise
 
             Raises
             ------
             RuntimeError
                 If called outside an active context manager block.
             """
-            if not self._entered:
+            if self._depth < 1:
                 raise RuntimeError(
                     "MountAliases must be used inside 'async with' before calling "
                     "link()/unlink()"
                 )
             path = abspath(path)
+            if path not in self.aliases:
+                return False
 
-            removed = False
-            # Missing aliases are idempotent no-ops by design for robust recovery.
+            # only unlink if the symlink still points to this mount
             if symlink_points_to(path, self._mount_path):
                 path.unlink()
-                removed = True
-            if path in self.aliases:
-                removed = True
             self.aliases.discard(path)
-            return removed
+            return True
 
-        async def __aenter__(self) -> Self:
-            loop = asyncio.get_running_loop()
-            self._deadline = loop.time() + self.timeout
+        async def _gc_orphan_mounts(self, *, timeout: float) -> None:
+            if timeout <= 0:
+                return
+            loop = asyncio.get_event_loop()
+            deadline = loop.time() + min(timeout, REPO_ORPHAN_GC_BUDGET)
 
-            # Hold the repo-local lock for the entire mutation window so alias state is
-            # read/modify/write atomic across concurrent init/clean callers.
-            self._root.mkdir(parents=True, exist_ok=True)
-            lock = Lock(
-                self._root / REPO_LOCK_EXT,
-                timeout=self._deadline - loop.time(),
-                mode="local",
-            )
-            await lock.lock()
-            self._lock = lock
-
+            # collect all repository mount directories in canonical order
             try:
-                root = abspath(self._root)
-                state = self.JSON.load(root / REPO_ALIASES_EXT)
-                self.aliases, _ = state.active_aliases_for_mount(self._mount_path)
-                self._entered = True
-                return self
-            except Exception:
+                roots = sorted(
+                    (
+                        entry for entry in REPO_DIR.iterdir()
+                        if entry.is_dir() and not entry.is_symlink()
+                    ),
+                    key=lambda item: item.as_posix(),
+                )
+                if not roots:
+                    return
+            except FileNotFoundError:
+                return
+            except OSError as err:
+                print(
+                    "bertrand: warning: failed to scan repository roots for orphan "
+                    f"mount GC: {err}",
+                    file=sys.stderr,
+                )
+                return
+
+            # rotate over the roots based on current timestamp to ensure GC covers the
+            # whole set of mounts over time, without any extra state
+            now = datetime.now(UTC)
+            start = (
+                int(now.timestamp() // REPO_ORPHAN_GC_SLOT_PERIOD.total_seconds()) % len(roots)
+            )
+            mounts = MountInfo.local()
+            for offset in range(min(REPO_ORPHAN_GC_BATCH_SIZE, len(roots))):
+                root = roots[(start + offset) % len(roots)]
+                mount = mounts.get(root / REPO_MOUNT_EXT)
+                if mount is None:
+                    continue  # not a recognized mount
+
+                # use non-blocking lock acquisition so GC always stays bounded
+                remaining = deadline - loop.time()
+                if remaining <= 0:
+                    break
+                lock = Lock(root / REPO_LOCK_EXT, timeout=0, mode="local")
+                locked = False
                 try:
-                    await lock.unlock(suppress_backend_errors=True)
-                except Exception:
-                    pass
-                self._lock = None
-                raise
+                    locked = await lock.try_lock()
+                    if not locked:
+                        continue  # opportunistic lock
+
+                    # load and filter stale aliases to check for ownership
+                    now = datetime.now(UTC)
+                    data = self.JSON.load(root / REPO_ALIASES_EXT)
+                    if now - data.last_accessed < REPO_ORPHAN_GC_GRACE:
+                        continue  # still in grace period
+                    aliases = data.filter(root / REPO_MOUNT_EXT)
+                    if aliases:
+                        continue  # has living aliases
+
+                    # unmount elderly orphans
+                    remaining = deadline - loop.time()
+                    if remaining <= 0:
+                        break
+                    try:
+                        await mount.unmount(timeout=remaining, force=False)
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as err:
+                        print(
+                            "bertrand: warning: failed to garbage-collect orphan "
+                            f"repository mount {mount.mount_point}: {err}",
+                            file=sys.stderr,
+                        )
+                except asyncio.CancelledError:
+                    raise
+                except Exception as err:
+                    print(
+                        "bertrand: warning: failed to process orphan mount GC candidate "
+                        f"{root}: {err}",
+                        file=sys.stderr,
+                    )
+                finally:
+                    if locked:  # release opportunistic lock if we acquired it
+                        try:
+                            await lock.unlock()
+                        except Exception as err:
+                            print(
+                                "bertrand: warning: failed to release orphan mount GC "
+                                f"lock for {root}: {err}",
+                                file=sys.stderr,
+                            )
 
         async def __aexit__(
             self,
             exc_type: type[BaseException] | None,
             exc_value: BaseException | None,
             traceback: TracebackType | None,
-        ) -> bool:
-            cleanup_error: Exception | None = None
+        ) -> None:
+            internal_error: Exception | None = None
 
-            # Always write canonical alias state on exit so stale entries are pruned and
-            # last_accessed is touched for GC grace calculations.
+            # always write canonical alias state on exit so stale entries are pruned
+            # and last_accessed is touched for GC grace calculations
             try:
-                root = abspath(self._root)
-                state = self.JSON.from_active_aliases(
-                    self.aliases,
-                    touched_at=datetime.now(UTC),
+                state = self.JSON(
+                    version=ALIASES_SCHEMA_VERSION,
+                    aliases=sorted(self.aliases, key=lambda item: item.as_posix()),
+                    last_accessed=datetime.now(UTC),
                 )
-                state.dump(root / REPO_ALIASES_EXT)
+                state.dump(self._root / REPO_ALIASES_EXT)
             except Exception as err:  # pylint: disable=broad-except
-                cleanup_error = err
+                internal_error = err
 
+            # release this mount's lock to not deadlock during GC
             if self._lock is not None:
                 try:
                     await self._lock.unlock(
-                        suppress_backend_errors=cleanup_error is not None or exc_value is not None
+                        ignore_errors=internal_error is not None or exc_value is not None
                     )
                 except Exception as err:  # pylint: disable=broad-except
-                    if cleanup_error is None:
-                        cleanup_error = err
+                    if internal_error is None:
+                        internal_error = err
                 finally:
                     self._lock = None
-                    self._entered = False
+                    self._depth = 0
 
+            # if GC is enabled, do a bounded scan over a rotating subset of repository
+            # mounts and detach any that are orphaned (i.e. have no living aliases) and
+            # have exceeded the grace period since their last alias state mutation
             if self.gc:
                 try:
                     loop = asyncio.get_running_loop()
-                    remaining = (
-                        0.0 if self._deadline is None else self._deadline - loop.time()
-                    )
-                    await self._gc_orphan_mounts(timeout=remaining)
+                    await self._gc_orphan_mounts(timeout=self._deadline - loop.time())
                 except asyncio.CancelledError:
                     raise
                 except Exception as err:  # pylint: disable=broad-except
@@ -803,26 +778,29 @@ class MountInfo:
                         file=sys.stderr,
                     )
 
-            if cleanup_error is not None:
+            # only raise internal errors if we're not already handling an active
+            # exception, otherwise report them as warnings to preserve the original
+            # error
+            if internal_error is not None:
                 if exc_value is None:
-                    raise cleanup_error
+                    raise internal_error
                 print(
                     "bertrand: warning: failed to flush repository alias state during "
-                    f"error unwinding: {cleanup_error}",
+                    f"error unwinding: {internal_error}",
                     file=sys.stderr,
                 )
 
-            return False
-
     def aliases(self, *, timeout: float, gc: bool) -> Aliases:
-        """Return an async context manager for this repo mount's alias state.
+        """Return an async context manager for this repo mount's symlink aliases.
 
         Parameters
         ----------
         timeout : float
             Maximum timeout for lock acquisition and alias convergence.
-        gc : bool, default=True
+        gc : bool, optional
             Whether to run orphan-mount garbage collection when the context exits.
+            Default is True.  False can be useful in `clean`-like scenarios, where it
+            can avoid redundant work.
 
         Returns
         -------
@@ -833,7 +811,10 @@ class MountInfo:
         ------
         OSError
             If this mount does not correspond to a Bertrand repository.
-        TimeoutError
-            If `timeout` is non-positive.
         """
+        if self.repo_id is None:
+            raise OSError(
+                "alias state is only available for repository mounts with a valid "
+                "repository identity"
+            )
         return self.Aliases(self, timeout=timeout, gc=gc)

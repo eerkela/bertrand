@@ -124,7 +124,7 @@ async def _clean_repo_mounts_aliases(state: CleanState) -> None:
 
     # safety sweep in case metadata was missing or corrupt
     mounts = sorted(
-        MountInfo.under(REPO_DIR),
+        MountInfo.under(REPO_DIR).values(),
         key=lambda item: len(item.mount_point.parts),
         reverse=True,
     )
@@ -160,7 +160,7 @@ async def _disable_unmount_run_tmpfs(state: CleanState) -> None:
 def _runtime_residue(state: CleanState) -> tuple[list[str], list[str]]:
     """Collect managed runtime residue still visible on the host."""
     residual_mounts = sorted(
-        {str(mount.mount_point) for mount in MountInfo.under(REPO_DIR)}
+        str(mount) for mount in MountInfo.under(REPO_DIR)
     )
     if MountInfo.search(RUN_DIR) is not None:
         residual_mounts.append(str(RUN_DIR))
