@@ -24,7 +24,6 @@ from pydantic import BaseModel, ConfigDict, PositiveInt
 from ..ceph import (
     MountInfo,
     RepoCredentials,
-    RepoMount,
 )
 from ..config import RESOURCE_NAMES, Config, Resource
 from ..config.core import (
@@ -47,6 +46,7 @@ from ..run import (
     GroupStatus,
     Lock,
     User,
+    abspath,
     assert_microceph_installed,
     assert_microk8s_installed,
     assert_nerdctl_installed,
@@ -466,10 +466,6 @@ REPO_ID_NAMESPACE = uuid.UUID("7b1506f4-4a3f-4b46-94bb-471e0f59d1a0")
 PROTECTED_DISABLE_RESOURCES: frozenset[str] = frozenset({"bertrand", "python"})
 
 
-def _norm_path(path: Path) -> Path:
-    return Path(os.path.abspath(path.expanduser()))
-
-
 def _resolve_repo_id(repo: GitRepository) -> UUIDHex:
     repo_id_file = repo.root / METADATA_REPO_ID
     if repo_id_file.is_file():
@@ -547,7 +543,7 @@ class RepoState:
     deadline: float
 
     def __post_init__(self) -> None:
-        self.target = _norm_path(self.target)
+        self.target = abspath(self.target)
 
     @classmethod
     def lock(cls, root: Path, timeout: float) -> Lock:
@@ -611,7 +607,8 @@ async def _ensure_repo_volume(
         hidden_mount = REPO_DIR / state.repo_id / REPO_MOUNT_EXT
         mounted = MountInfo.search(hidden_mount)
         if mounted is not None and not (
-            mounted.is_cephfs() and mounted.references_ceph_path(ceph_path)
+            mounted.ceph_path is not None and
+            mounted.ceph_path == ceph_path
         ):
             raise OSError(
                 f"repository hidden mount {hidden_mount!r} is occupied by "
@@ -696,16 +693,16 @@ async def _ensure_host_mount(
     # mount the repository volume at the internal mount directory, then atomically
     # write a relocatable symlink to the target path, subject to staging.
     with state.credentials.secretfile() as ceph_secretfile:
-        await RepoMount(
+        mount = await MountInfo.mount(
             repo_id=state.repo_id,
-            ceph_path=state.ceph_path
-        ).mount(
-            mount_alias,
+            ceph_path=state.ceph_path,
             timeout=state.deadline - loop.time(),
             monitors=state.credentials.monitors,
             ceph_user=state.credentials.user,
             ceph_secretfile=ceph_secretfile,
         )
+    async with mount.aliases(timeout=state.deadline - loop.time()) as aliases:
+        aliases.link(mount_alias)
 
     # record the repository ID in the newly-mounted volume
     atomic_write_text(
@@ -1134,38 +1131,22 @@ async def _finalize(
     # converged to the managed mount alias
     if mount_alias != target and (mount_alias.exists() or mount_alias.is_symlink()):
         if symlink_points_to(mount_alias, hidden_mount):
-            if state.ceph_path is None:
-                raise OSError(
-                    "cannot remove staged repository alias without a resolved Ceph path"
-                )
             loop = asyncio.get_running_loop()
-            await RepoMount(
-                repo_id=state.repo_id,
-                ceph_path=state.ceph_path,
-            ).unmount(
-                mount_alias,
-                timeout=state.deadline - loop.time(),
-                force=False,
-            )
+            # Alias-state operations do not need live mount-table lookups.
+            mount = MountInfo(mount_point=hidden_mount)
+            async with mount.aliases(timeout=state.deadline - loop.time()) as aliases:
+                aliases.unlink(mount_alias)
     if (
         staged_alias != target and
         staged_alias != mount_alias and
         (staged_alias.exists() or staged_alias.is_symlink()) and
         symlink_points_to(staged_alias, hidden_mount)
     ):
-        if state.ceph_path is None:
-            raise OSError(
-                "cannot remove staged repository alias without a resolved Ceph path"
-            )
         loop = asyncio.get_running_loop()
-        await RepoMount(
-            repo_id=state.repo_id,
-            ceph_path=state.ceph_path,
-        ).unmount(
-            staged_alias,
-            timeout=state.deadline - loop.time(),
-            force=False,
-        )
+        # Alias-state operations do not need live mount-table lookups.
+        mount = MountInfo(mount_point=hidden_mount)
+        async with mount.aliases(timeout=state.deadline - loop.time()) as aliases:
+            aliases.unlink(staged_alias)
     state.mount_alias = target
 
 
@@ -1318,7 +1299,7 @@ async def bertrand_init(
             "Bertrand requires 'git' to initialize a project repository, but it "
             "was not found in PATH."
         )
-    raw_path = _norm_path(path)
+    raw_path = abspath(path)
     repo, worktree = await GitRepository.resolve(raw_path.resolve())
     target: Path | None = None
     for candidate in (raw_path, *raw_path.parents):

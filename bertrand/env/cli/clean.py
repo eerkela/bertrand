@@ -13,7 +13,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from ..ceph import MountInfo, RepoMount
+from ..ceph import MountInfo
 from ..run import (
     BERTRAND_ENV,
     NERDCTL_BIN,
@@ -53,15 +53,15 @@ class CleanState:
 
 
 async def _stop_buildkitd(state: CleanState) -> None:
-    loop = asyncio.get_running_loop()
-    await stop_buildkit(timeout=state.deadline - loop.time())
+    await stop_buildkit(timeout=state.deadline - asyncio.get_running_loop().time())
 
 
 async def _clean_nerdctl_objects(state: CleanState) -> None:
     if not NERDCTL_BIN.exists():
         return
 
-    chunk_size = 32  # chunks of 32 to avoid arg limits
+    # delete objects in chunks of 32 to avoid arg limits
+    chunk_size = 32
     cleanup_table: tuple[tuple[str, list[str]], ...] = (
         ("container", ["container", "rm", "-f", "-i"]),
         ("image", ["image", "rm", "-f", "-i"]),
@@ -88,8 +88,8 @@ async def _clean_repo_mounts_aliases(state: CleanState) -> None:
         return
     if not REPO_DIR.is_dir():
         raise OSError(f"repository root is not a directory: {REPO_DIR}")
-    loop = asyncio.get_running_loop()
 
+    # collect all repository mounts on the host system
     repo_roots = sorted(
         (
             entry for entry in REPO_DIR.iterdir()
@@ -98,30 +98,27 @@ async def _clean_repo_mounts_aliases(state: CleanState) -> None:
         key=lambda item: item.as_posix(),
     )
 
+    # for each mount, clear its aliases and then unmount it before deleting the
+    # directory, for proper sequencing
+    loop = asyncio.get_running_loop()
     for repo_root in repo_roots:
         mount_path = repo_root / REPO_MOUNT_EXT
+        mount = MountInfo.search(mount_path)
         try:
-            managed_aliases = RepoMount.managed_aliases(repo_root)
+            async with (mount or MountInfo(mount_point=mount_path)).aliases(
+                timeout=state.deadline - loop.time()
+            ) as aliases:
+                state.captured_aliases.update(aliases.aliases)
+                for alias in sorted(aliases.aliases, key=lambda item: item.as_posix()):
+                    aliases.unlink(alias)
         except (OSError, TypeError, ValueError) as err:
             print(
                 "bertrand: warning: failed to parse repository alias index at "
                 f"{repo_root}: {err}",
                 file=sys.stderr,
             )
-            managed_aliases = set()
-        state.captured_aliases.update(managed_aliases)
-        for alias in sorted(
-            managed_aliases,
-            key=lambda item: item.as_posix(),
-        ):
-            alias.unlink(missing_ok=True)
-
-        mount = MountInfo.search(mount_path)
         if mount is not None:
-            await mount.unmount(
-                timeout=state.deadline - loop.time(),
-                force=True,
-            )
+            await mount.unmount(timeout=state.deadline - loop.time(), force=True)
         shutil.rmtree(repo_root)
 
     # safety sweep in case metadata was missing or corrupt
@@ -131,10 +128,7 @@ async def _clean_repo_mounts_aliases(state: CleanState) -> None:
         reverse=True,
     )
     for mount in mounts:
-        await mount.unmount(
-            timeout=state.deadline - loop.time(),
-            force=True,
-        )
+        await mount.unmount(timeout=state.deadline - loop.time(), force=True)
 
 
 async def _disable_unmount_run_tmpfs(state: CleanState) -> None:
@@ -156,13 +150,10 @@ async def _disable_unmount_run_tmpfs(state: CleanState) -> None:
             timeout=state.deadline - loop.time(),
         )
 
-    # always attempt runtime tmpfs unmount, even without systemd.
+    # always attempt runtime tmpfs unmount, even without systemd
     run_mount = MountInfo.search(RUN_DIR)
     if run_mount is not None:
-        await run_mount.unmount(
-            timeout=state.deadline - loop.time(),
-            force=True,
-        )
+        await run_mount.unmount(timeout=state.deadline - loop.time(), force=True)
 
 
 async def _verify_runtime_residue(state: CleanState) -> None:
@@ -224,6 +215,10 @@ async def _verify_post_clean(state: CleanState) -> None:
         )
     if issues:
         raise OSError("post-clean verification failed:\n- " + "\n- ".join(issues))
+
+
+# TODO: review all the steps here and try to remove the strict vs non-strict
+# distinction if possible.
 
 
 CLEAN_STAGES: tuple[tuple[str, Callable[[CleanState], Awaitable[None]], bool], ...] = (

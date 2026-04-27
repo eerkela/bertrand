@@ -5,11 +5,15 @@ import asyncio
 import json
 import os
 import platform
+import sys
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
 from pathlib import Path, PosixPath
+from types import TracebackType
 from typing import Self
 
+from ..config.core import _check_uuid
 from ..run import (
     HOST_MOUNTS,
     REPO_ALIASES_EXT,
@@ -18,6 +22,7 @@ from ..run import (
     REPO_MOUNT_EXT,
     CommandError,
     Lock,
+    abspath,
     atomic_symlink,
     atomic_write_text,
     run,
@@ -36,12 +41,12 @@ if any("," in opt for opt in DEFAULT_REPO_MOUNT_OPTIONS):
         "internal default repository mount options cannot contain comma separators"
     )
 
-
-# TODO: I also have to cover true garbage collection for stale mounts that have no
-# aliases, separate from just the unmount on last alias removal.  This should
-# periodically scan the mount directory for any such mounts and unmount them, probably
-# in blocks of a fixed size every time we mount a new repository, similar to the
-# current environment registry.
+ALIASES_SCHEMA_VERSION = 1
+REPO_ORPHAN_GC_BATCH_SIZE = 16
+REPO_ORPHAN_GC_GRACE = timedelta(minutes=5)
+REPO_ORPHAN_GC_SLOT_PERIOD = timedelta(minutes=1)
+REPO_ORPHAN_GC_LOCK_TIMEOUT = 0.25
+REPO_ORPHAN_GC_BUDGET = 2.0
 
 
 @dataclass(frozen=True)
@@ -56,21 +61,63 @@ class MountInfo:
     ----------
     mount_point : Path
         Mountpoint path from mountinfo field 5 (pre-`-` section). Kernel escaping
-        is decoded before storage (`\\040`, `\\011`, `\\012`, `\\134`), then this
-        value is compared with normalized exact-path matching.
+        is decoded before storage (`\\040`, `\\011`, `\\012`, `\\134`).
     fs_type : str
-        Filesystem type from the first field after the `-` separator. For Ceph host
-        attachments we expect this to be `"ceph"`.
+        Filesystem type from the first field after the `-` separator.
     source : str
-        Kernel-reported mount source from the second field after `-` (device/export/
-        source path string). Used for idempotency checks and mismatch detection.
+        Kernel-reported mount source from the second field after `-`.
     """
     mount_point: Path
-    fs_type: str
-    source: str
+    fs_type: str = field(default="")
+    source: str = field(default="")
+
+    @property
+    def repo_id(self) -> str | None:
+        """Repository UUID derived from this mount point, when applicable.
+
+        Returns
+        -------
+        str | None
+            UUID for repository hidden mount points that match Bertrand's layout
+            (`<REPO_DIR>/<repo_id>/<REPO_MOUNT_EXT>`), otherwise None.
+        """
+        mount_point = abspath(self.mount_point)
+        try:
+            relative = mount_point.relative_to(REPO_DIR)
+        except ValueError:
+            return None
+        if len(relative.parts) != 2 or relative.parts[1] != REPO_MOUNT_EXT.as_posix():
+            return None
+        try:
+            return _check_uuid(relative.parts[0])
+        except ValueError:
+            return None
+
+    @property
+    def ceph_path(self) -> PosixPath | None:
+        """Best-effort parsed CephFS path suffix from this mount's source.
+
+        Returns
+        -------
+        PosixPath | None
+            Absolute Ceph path when this mount is a parseable kernel Ceph mount,
+            otherwise None.
+        """
+        if self.fs_type.strip().lower() != "ceph":
+            return None
+        source = self.source.strip()
+        if not source:
+            return None
+        _, sep, suffix = source.rpartition(":")
+        if not sep:
+            return None
+        suffix = suffix.strip()
+        if not suffix.startswith("/"):
+            return None
+        return PosixPath(suffix)
 
     @classmethod
-    def all(cls) -> list[Self]:
+    def local(cls) -> list[Self]:
         """Parse and return mount entries from `/proc/self/mountinfo`.
 
         Returns
@@ -86,35 +133,28 @@ class MountInfo:
         rows: list[Self] = []
         for line in lines:
             parts = line.strip().split()
-            # Ignore malformed rows defensively; kernel format should contain enough
-            # fields for mountpoint + post-separator fs/source data.  The "-"
-            # separator splits optional fields from fs/source fields.
-            if len(parts) < 10:
-                continue
+            # ignore malformed rows defensively; kernel format should contain enough
+            # fields for mountpoint + post-separator fs/source data
             try:
+                if len(parts) < 10:
+                    continue
                 sep = parts.index("-")
+                if sep + 2 >= len(parts):
+                    continue
             except ValueError:
                 continue
-            if sep + 2 >= len(parts):
-                continue
 
-            # Field 5 (pre-`-`): mount point; decode mountinfo escapes.
-            mount_point = Path(
-                parts[4]
-                .replace("\\040", " ")
-                .replace("\\011", "\t")
-                .replace("\\012", "\n")
-                .replace("\\134", "\\")
-            )
-
-            # Post-separator fields: filesystem type and mount source.
-            rows.append(
-                cls(
-                    mount_point=mount_point,
-                    fs_type=parts[sep + 1],
-                    source=parts[sep + 2],
-                )
-            )
+            rows.append(cls(
+                mount_point=abspath(Path(
+                    parts[4]
+                    .replace("\\040", " ")
+                    .replace("\\011", "\t")
+                    .replace("\\012", "\n")
+                    .replace("\\134", "\\")
+                )),
+                fs_type=parts[sep + 1],
+                source=parts[sep + 2],
+            ))
         return rows
 
     @classmethod
@@ -124,212 +164,141 @@ class MountInfo:
         Parameters
         ----------
         root : Path
-            Root path to check for mounted entries at or below.  This is normalized and
-            compared with normalized mount point paths for prefix matching.
+            Root path to check for mounted entries at or below.
 
         Returns
         -------
         list[MountInfo]
             Parsed mount entries that are mounted at or below `root`.
         """
-        prefix = os.path.normpath(root)
+        prefix = abspath(root)
         matches: list[Self] = []
-        for entry in cls.all():
-            norm = os.path.normpath(entry.mount_point)
-            if norm == prefix or norm.startswith(prefix + os.sep):
+        for entry in cls.local():
+            norm = abspath(entry.mount_point)
+            if norm.is_relative_to(prefix):
                 matches.append(entry)
         return matches
 
     @classmethod
     def search(cls, path: Path) -> Self | None:
-        """Check whether `path` points to a recognized host mount entry in
-        `/proc/self/mountinfo`.
+        """Return the exact mounted entry for `path`, if present.
 
         Parameters
         ----------
         path : Path
-            Absolute path to check for an exact mount match.
+            Path to check for an exact mountpoint match.
 
         Returns
         -------
         MountInfo | None
-            The matching mount entry when an exact normalized match is found, or None
-            when no match is found (i.e. the path is not currently mounted).
+            Matching mount entry, or None when `path` is not mounted.
         """
-        needle = os.path.normpath(path)
-        for entry in cls.all():
-            # require exact normalized mountpoint equality so parent/child paths are
-            # never mistaken for this exact mount target
-            if os.path.normpath(entry.mount_point) == needle:
+        needle = abspath(path)
+        for entry in cls.local():
+            if abspath(entry.mount_point) == needle:
                 return entry
-
-        # no exact entry means this path is not currently mounted
         return None
 
-    async def unmount(self, *, timeout: float, force: bool) -> bool:
-        """Detach this mounted entry from the host.
-
-        Parameters
-        ----------
-        timeout : float
-            Maximum runtime command timeout in seconds for this unmount operation.  If
-            infinite, wait indefinitely.
-        force : bool
-            If True, pass `-f` to `umount`.
-
-        Returns
-        -------
-        bool
-            True if this mount was detached, False if it was already detached.
-
-        Raises
-        ------
-        TimeoutError
-            If `timeout` is non-positive.
-        OSError
-            If unmounting fails or the mount remains attached after a successful
-            command.
-        """
-        if os.name != "posix" or platform.system() != "Linux":
-            raise OSError("repository mounts are only supported on Linux platforms")
-        if timeout <= 0:
-            raise TimeoutError("timeout must be non-negative")
-
-        # run `umount` with the same info from the mount table
-        cmd = ["umount"]
-        if force:
-            cmd.append("-f")
-        cmd.append(str(self.mount_point))
-        try:
-            await run(
-                sudo(cmd),
-                capture_output=True,
-                timeout=timeout,
-            )
-        except CommandError as err:
-            if MountInfo.search(self.mount_point) is None:  # stale entry raced with detach
-                return False
-            raise OSError(f"unmount command failed:\n{err}") from err
-
-        # confirm success
-        if MountInfo.search(self.mount_point) is not None:
-            raise OSError(f"failed to unmount volume at {self.mount_point}")
-        return True
-
-    def is_cephfs(self) -> bool:
-        """
-        Returns
-        -------
-        bool
-            True when this mount entry is a kernel CephFS mount.
-        """
-        return self.fs_type.strip().lower() == "ceph"
-
-    def references_ceph_path(self, ceph_path: PosixPath) -> bool:
-        """Check whether the target of this mount references the given CephFS path.
-
-        Parameters
-        ----------
-        ceph_path : PosixPath
-            Absolute or relative CephFS path to check for.  If relative, it is resolved
-            against the CephFS root (i.e. treated as if it were prefixed with "/").
-
-        Returns
-        -------
-        bool
-            True if this mount's source references the given CephFS path.
-        """
-        if not ceph_path.is_absolute():
-            ceph_path = PosixPath("/") / ceph_path
-        return self.source.endswith(f":{ceph_path}")
-
-
-@dataclass(frozen=True)
-class RepoMount:
-    """Structured metadata for a CephFS-backed repository mount on the host.
-
-    One of these mounts will be created whenever Bertrand initializes a new project.
-    The resulting mount will be attached to a private directory on the host system,
-    and a symlink to the mounted directory will be placed at the initialized path.
-    The mount itself should point at a single git repository together with one or
-    more worktrees, along with any extra metadata needed to manage the mount itself.
-
-    Attributes
-    ----------
-    repo_id : str
-        Stable repository identity used for deterministic host mount state paths.
-    ceph_path : PosixPath
-        Absolute CephFS path to mount for this repository identity within the Ceph
-        filesystem.
-    """
-    repo_id: str
-    ceph_path: PosixPath
-
-    def _assert_ceph_mount(
-        self,
-        mount: MountInfo,
-        *,
-        ceph_path: PosixPath | None = None
-    ) -> None:
-        if not mount.is_cephfs():
-            raise OSError(
-                f"repository mount target {mount.mount_point!r} is mounted with "
-                f"unsupported filesystem type {mount.fs_type!r}, expected 'ceph'"
-            )
-        if ceph_path is not None and not mount.references_ceph_path(ceph_path):
-            raise OSError(
-                f"repository mount target {mount.mount_point!r} is attached to "
-                f"{mount.source!r}, expected Ceph source suffix ':{ceph_path}'"
-            )
-
-    @staticmethod
-    def _alias_path(path: Path) -> Path:
-        return Path(os.path.abspath(str(path.expanduser())))
-
     @classmethod
-    def managed_aliases(cls, root: Path) -> set[Path]:
-        """Load active managed alias symlinks for the given repository root.
+    def _read_alias_state(
+        cls,
+        root: Path,
+        *,
+        mount_path: Path,
+    ) -> tuple[set[Path], datetime, bool]:
+        """Load active alias metadata for a repository root.
 
         Parameters
         ----------
         root : Path
-            Repository state root (typically `REPO_DIR / <repo_id>`).
+            Repository state root (`REPO_DIR / <repo_id>`).
+        mount_path : Path
+            Hidden mount path for strict alias ownership checks.
 
         Returns
         -------
-        set[Path]
-            Active managed aliases that point directly to this repository's hidden
-            mount path.
+        tuple[set[Path], datetime, bool]
+            `(active_aliases, last_accessed_utc, canonicalized)` where
+            `canonicalized` indicates stale entries were pruned.
 
         Raises
         ------
         OSError
-            If the alias index cannot be read.
+            If alias metadata cannot be read.
         TypeError
-            If alias index JSON has invalid structure.
+            If metadata JSON has invalid structure.
         ValueError
-            If alias entries are not absolute canonical paths.
+            If metadata fields are malformed or unsupported.
         """
-        root = Path(os.path.abspath(str(root.expanduser())))
-        mount_path = root / REPO_MOUNT_EXT
+        root = abspath(root)
         path = root / REPO_ALIASES_EXT
         if not path.exists():
-            return set()
+            return set(), datetime.now(UTC), True
         if not path.is_file():
             raise FileNotFoundError(f"repository alias index path is not a file: {path}")
+
         text = path.read_text(encoding="utf-8")
         data = json.loads(text)
-        if not isinstance(data, list):
+        if not isinstance(data, dict):
             raise TypeError(
-                f"repository alias index file has invalid format: expected a JSON "
-                f"list of alias paths, got {type(data).__name__}"
+                "repository alias index file has invalid format: expected a JSON "
+                f"object, got {type(data).__name__}"
             )
-        aliases = set()
-        for item in data:
+
+        expected = {"version", "aliases", "last_accessed"}
+        keys = set(data)
+        if keys != expected:
+            raise TypeError(
+                "repository alias index file has invalid format: expected keys "
+                f"{sorted(expected)}, got {sorted(keys)}"
+            )
+
+        version = data["version"]
+        if not isinstance(version, int):
+            raise TypeError(
+                "repository alias index file has invalid format: 'version' must be an "
+                f"integer, got {type(version).__name__}"
+            )
+        if version != ALIASES_SCHEMA_VERSION:
+            raise ValueError(
+                "repository alias index file has unsupported schema version "
+                f"{version}; expected {ALIASES_SCHEMA_VERSION}"
+            )
+
+        aliases_raw = data["aliases"]
+        if not isinstance(aliases_raw, list):
+            raise TypeError(
+                "repository alias index file has invalid format: 'aliases' must be a "
+                f"list, got {type(aliases_raw).__name__}"
+            )
+
+        last_accessed_raw = data["last_accessed"]
+        if not isinstance(last_accessed_raw, str):
+            raise TypeError(
+                "repository alias index file has invalid format: 'last_accessed' "
+                f"must be an ISO timestamp string, got {type(last_accessed_raw).__name__}"
+            )
+        try:
+            last_accessed = datetime.fromisoformat(last_accessed_raw)
+        except ValueError as err:
+            raise ValueError(
+                "repository alias index file has invalid format: 'last_accessed' "
+                f"must be an ISO timestamp, got {last_accessed_raw!r}"
+            ) from err
+        if last_accessed.tzinfo is None or last_accessed.utcoffset() is None:
+            raise ValueError(
+                "repository alias index file has invalid format: 'last_accessed' "
+                "must include timezone information"
+            )
+        last_accessed = last_accessed.astimezone(UTC)
+
+        declared: set[Path] = set()
+        duplicates = False
+        for item in aliases_raw:
             if not isinstance(item, str):
                 raise TypeError(
-                    f"repository alias index file has invalid format: expected a JSON "
-                    f"list of alias paths, got an item of type {type(item).__name__}"
+                    "repository alias index file has invalid format: expected alias "
+                    f"paths as strings, got {type(item).__name__}"
                 )
             alias = Path(item)
             if not alias.is_absolute():
@@ -342,74 +311,223 @@ class RepoMount:
                     "repository alias index file contains invalid alias path: "
                     f"cannot contain '.' or '..' segments, got {alias}"
                 )
-            if symlink_points_to(alias, mount_path):
-                aliases.add(alias)
-        return aliases
+            if alias in declared:
+                duplicates = True
+            declared.add(alias)
 
-    def _load_aliases(self) -> set[Path]:
-        return self.managed_aliases(REPO_DIR / self.repo_id)
+        active = {alias for alias in declared if symlink_points_to(alias, mount_path)}
+        canonicalized = duplicates or active != declared
+        return active, last_accessed, canonicalized
 
-    def _write_aliases(self, aliases: set[Path]) -> None:
-        path = REPO_DIR / self.repo_id / REPO_ALIASES_EXT
+    @classmethod
+    def _write_alias_state(
+        cls,
+        root: Path,
+        aliases: set[Path],
+        *,
+        last_accessed: datetime | None = None,
+    ) -> None:
+        """Write repository alias metadata in canonical format."""
+        root = abspath(root)
+        path = root / REPO_ALIASES_EXT
+
+        if last_accessed is None:
+            last_accessed = datetime.now(UTC)
+        if last_accessed.tzinfo is None or last_accessed.utcoffset() is None:
+            raise ValueError("repository alias metadata timestamp must be timezone-aware")
+        last_accessed = last_accessed.astimezone(UTC)
+
+        for alias in aliases:
+            if not alias.is_absolute():
+                raise ValueError(
+                    "repository alias metadata contains invalid alias path: "
+                    f"expected absolute path, got {alias}"
+                )
+            if any(part in (".", "..") for part in alias.parts):
+                raise ValueError(
+                    "repository alias metadata contains invalid alias path: "
+                    f"cannot contain '.' or '..' segments, got {alias}"
+                )
+
+        text = json.dumps(
+            {
+                "version": ALIASES_SCHEMA_VERSION,
+                "aliases": sorted(str(alias) for alias in aliases),
+                "last_accessed": last_accessed.isoformat(),
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+            allow_nan=False,
+        )
         try:
-            text = json.dumps(
-                sorted(str(alias) for alias in aliases),
-                sort_keys=True,
-                separators=(",", ":"),
-                ensure_ascii=False,
-                allow_nan=False,
-            )
             atomic_write_text(path, text, encoding="utf-8")
         except OSError as err:
             raise OSError(f"failed to write repository alias index file: {err}") from err
 
+    # TODO: review gc, mount/unmount/aliases logic
+
+    @classmethod
+    async def _gc_orphan_mounts(cls, *, timeout: float) -> None:
+        """Best-effort orphan mount garbage collection.
+
+        This opportunistically scans a bounded subset of repository roots and detaches
+        hidden mounts that have no active managed aliases after a grace period.
+        Failures are warning-only and never abort caller convergence.
+        """
+        if timeout <= 0:
+            return
+
+        loop = asyncio.get_event_loop()
+        budget = min(timeout, REPO_ORPHAN_GC_BUDGET)
+        if budget <= 0:
+            return
+        deadline = loop.time() + budget
+
+        try:
+            roots = sorted(
+                (
+                    entry for entry in REPO_DIR.iterdir()
+                    if entry.is_dir() and not entry.is_symlink()
+                ),
+                key=lambda item: item.as_posix(),
+            )
+        except FileNotFoundError:
+            return
+        except OSError as err:
+            print(
+                "bertrand: warning: failed to scan repository roots for orphan "
+                f"mount GC: {err}",
+                file=sys.stderr,
+            )
+            return
+
+        if not roots:
+            return
+
+        now = datetime.now(UTC)
+        slot_seconds = REPO_ORPHAN_GC_SLOT_PERIOD.total_seconds()
+        start = int(now.timestamp() // slot_seconds) % len(roots)
+        count = min(REPO_ORPHAN_GC_BATCH_SIZE, len(roots))
+
+        for offset in range(count):
+            if loop.time() >= deadline:
+                break
+            root = roots[(start + offset) % len(roots)]
+
+            # Use non-blocking lock acquisition so GC always stays bounded.
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                break
+            lock = Lock(
+                root / REPO_LOCK_EXT,
+                timeout=min(REPO_ORPHAN_GC_LOCK_TIMEOUT, remaining),
+                mode="local",
+            )
+            locked = False
+            try:
+                locked = await lock.try_lock()
+                if not locked:
+                    continue
+
+                mount = MountInfo.search(root / REPO_MOUNT_EXT)
+                if mount is None:
+                    continue
+
+                now = datetime.now(UTC)
+                aliases, last_accessed, canonicalized = cls._read_alias_state(
+                    root,
+                    mount_path=root / REPO_MOUNT_EXT,
+                )
+                if canonicalized:
+                    cls._write_alias_state(root, aliases, last_accessed=now)
+                    last_accessed = now
+
+                if aliases:
+                    continue
+                if now - last_accessed < REPO_ORPHAN_GC_GRACE:
+                    continue
+
+                remaining = deadline - loop.time()
+                if remaining <= 0:
+                    break
+                try:
+                    await mount.unmount(timeout=remaining, force=False)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as err:  # pylint: disable=broad-except
+                    print(
+                        "bertrand: warning: failed to garbage-collect orphan "
+                        f"repository mount {mount.mount_point}: {err}",
+                        file=sys.stderr,
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception as err:  # pylint: disable=broad-except
+                print(
+                    "bertrand: warning: failed to process orphan mount GC candidate "
+                    f"{root}: {err}",
+                    file=sys.stderr,
+                )
+            finally:
+                if locked:
+                    try:
+                        await lock.unlock()
+                    except Exception as err:  # pylint: disable=broad-except
+                        print(
+                            "bertrand: warning: failed to release orphan mount GC "
+                            f"lock for {root}: {err}",
+                            file=sys.stderr,
+                        )
+
+    @classmethod
     async def mount(
-        self,
-        path: Path,
+        cls,
+        repo_id: str,
         *,
-        timeout: float,
+        ceph_path: PosixPath,
         monitors: Sequence[str],
         ceph_user: str,
         ceph_secretfile: Path,
-    ) -> None:
-        """Ensure this repo mount is mounted to the host and exposed at the given path.
+        timeout: float,
+    ) -> MountInfo:
+        """Ensure a repository hidden mount exists and return its mount entry.
 
         Parameters
         ----------
-        path : Path
-            Absolute path where the repository should be accessible.  A symlink will be
-            created at this path pointing to the actual mount location, which is
-            stored internally and not meant to be directly accessed by users.  Instead,
-            the symlink can can be freely renamed, relocated, or removed without
-            affecting the underlying Ceph volume.
-        timeout : float
-            Maximum runtime command timeout in seconds for the entire mount operation,
-            including any necessary setup, validation, and retries.  If infinite, wait
-            indefinitely.
+        repo_id : str
+            Repository UUID used to derive hidden mount paths.
+        ceph_path : PosixPath
+            Absolute CephFS path to mount for this repository.
         monitors : Sequence[str]
-            List of Ceph monitor endpoints to use for mounting.  Each endpoint should
-            be a valid Ceph monitor address.
+            Ceph monitor endpoints.
         ceph_user : str
-            Ceph user name to use for mounting.  This should correspond to a valid Ceph
-            user with appropriate permissions to access the repository volume.
+            Ceph user used for host mount options.
         ceph_secretfile : Path
-            Path to the Ceph secret file containing the authentication credentials for
-            the specified Ceph user.  This file must exist and be a regular file, and
-            it should have appropriate permissions to ensure security.
+            Existing secret file containing Ceph key material.
+        timeout : float
+            Maximum runtime timeout in seconds for convergence.
+
+        Returns
+        -------
+        MountInfo
+            Mounted hidden entry for this repository.
+
+        Raises
+        ------
+        OSError
+            If mount convergence fails or an incompatible mount already exists.
+        TimeoutError
+            If timeout is non-positive.
         """
-        root = REPO_DIR / self.repo_id
-        mount_path = root / REPO_MOUNT_EXT
-        ceph_path = self.ceph_path
+        repo_id = _check_uuid(repo_id)
+        if not ceph_path.is_absolute():
+            ceph_path = PosixPath("/") / ceph_path
         if os.name != "posix" or platform.system() != "Linux":
             raise OSError("repository mounts are only supported on Linux platforms")
         if timeout <= 0:
             raise TimeoutError("timeout must be non-negative")
-        path = self._alias_path(path)
-        if path.is_symlink() and not symlink_points_to(path, mount_path):
-            raise OSError(
-                f"repository alias path {path!r} already exists and is not a "
-                f"managed symlink to {mount_path!r}"
-            )
+
         ceph_user = ceph_user.strip()
         if not ceph_user:
             raise ValueError("repository Ceph user cannot be empty")
@@ -418,6 +536,7 @@ class RepoMount:
         monitors = [monitor.strip() for monitor in monitors if monitor.strip()]
         if not monitors:
             raise ValueError("repository mount requires at least one Ceph monitor endpoint")
+
         ceph_secretfile = ceph_secretfile.expanduser().resolve()
         if not ceph_secretfile.exists():
             raise FileNotFoundError(
@@ -428,17 +547,18 @@ class RepoMount:
                 f"repository Ceph secret path is not a file: {ceph_secretfile}"
             )
 
-        # use a local repository lock to prevent race conditions
-        loop = asyncio.get_event_loop()
+        root = REPO_DIR / repo_id
+        mount_path = root / REPO_MOUNT_EXT
+        loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
         root.mkdir(parents=True, exist_ok=True)
+
         async with Lock(
             root / REPO_LOCK_EXT,
             timeout=deadline - loop.time(),
             mode="local",
         ):
-            # get or create the host mount for this repository claim
-            mounted = MountInfo.search(mount_path)
+            mounted = cls.search(mount_path)
             if mounted is None:
                 mount_opts = [
                     f"name={ceph_user}",
@@ -460,100 +580,287 @@ class RepoMount:
                     capture_output=True,
                     timeout=deadline - loop.time(),
                 )
-                mounted = MountInfo.search(mount_path)
+                mounted = cls.search(mount_path)
                 if mounted is None:
                     raise OSError(
                         f"repository mount target {mount_path!r} failed to appear in "
                         f"{HOST_MOUNTS} after successful mount subcommand"
                     )
 
-            # validate ceph mount, then write public symlink
-            self._assert_ceph_mount(mounted, ceph_path=ceph_path)
-            if path.exists() and not symlink_points_to(path, mount_path):
+            if not mounted.ceph_path is not None:
                 raise OSError(
-                    f"repository alias path {path!r} already exists and is not a "
-                    f"managed symlink to {mount_path!r}"
+                    f"repository mount target {mounted.mount_point!r} is mounted with "
+                    f"unsupported source {mounted.source!r}, expected parseable Ceph "
+                    "mount"
                 )
-            atomic_symlink(mount_path, path)
+            if ceph_path is not None and mounted.ceph_path != ceph_path:
+                raise OSError(
+                    f"repository mount target {mounted.mount_point!r} is attached to "
+                    f"{mounted.source!r}, expected Ceph source suffix ':{ceph_path}'"
+                )
 
-            # register symlink alias
-            aliases = self._load_aliases()
-            aliases.add(path)
-            self._write_aliases(aliases)
+        try:
+            await cls._gc_orphan_mounts(timeout=deadline - loop.time())
+        except asyncio.CancelledError:
+            raise
+        except Exception as err:  # pylint: disable=broad-except
+            print(
+                f"bertrand: warning: orphan repository mount GC failed: {err}",
+                file=sys.stderr,
+            )
 
-    async def unmount(
-        self,
-        path: Path,
-        *,
-        timeout: float,
-        force: bool,
-    ) -> bool:
-        """Delete an alias symlink and detach the underlying mount if it is the last
-        registered alias.
+        return mounted
+
+    async def unmount(self, *, timeout: float, force: bool) -> bool:
+        """Detach this mounted entry from the host.
 
         Parameters
         ----------
-        path : Path
-            Absolute path to a symlink produced by `mount()`.  If this is the last
-            symlink alias to the underlying mount, the mount will be detached from the
-            host.
         timeout : float
-            Maximum runtime command timeout in seconds for the entire unmount
-            operation, including any necessary setup, validation, and retries.  If
-            infinite, wait indefinitely.
+            Maximum runtime command timeout in seconds for this unmount operation.
         force : bool
-            If True, forcefully unmount the repository volume even if it is currently
-            referenced by active processes.  This option is passed directly to the
-            `umount` command as `-f` and should be used with caution, as it can lead to
-            data loss if processes are actively reading from or writing to the volume.
+            If True, pass `-f` to `umount`.
 
         Returns
         -------
         bool
-            True if the underlying mount was detached from the host as a result of this
-            operation, or False if the mount is still present (e.g. because other
-            aliases still point to it).
+            True if this mount was detached, False if it was already detached.
+
+        Raises
+        ------
+        TimeoutError
+            If `timeout` is non-positive.
+        OSError
+            If unmounting fails or the mount remains attached.
         """
-        root = REPO_DIR / self.repo_id
-        mount_path = root / REPO_MOUNT_EXT
         if os.name != "posix" or platform.system() != "Linux":
             raise OSError("repository mounts are only supported on Linux platforms")
         if timeout <= 0:
             raise TimeoutError("timeout must be non-negative")
-        path = self._alias_path(path)
 
-        # use a local repository lock to prevent race conditions
-        loop = asyncio.get_event_loop()
-        deadline = loop.time() + timeout
-        root.mkdir(parents=True, exist_ok=True)
-        async with Lock(
-            root / REPO_LOCK_EXT,
-            timeout=deadline - loop.time(),
-            mode="local",
-        ):
-            # remove symlink
-            if not symlink_points_to(path, mount_path):
-                raise OSError(
-                    f"repository alias path {path!r} must be an existing managed "
-                    f"symlink to {mount_path!r}"
-                )
-            path.unlink()
-
-            # scan the system's active mount info and confirm it's a valid ceph mount
-            # (best-effort)
-            mount = MountInfo.search(mount_path)
-            if mount is None:
-                return False  # already unmounted
-            self._assert_ceph_mount(mount)
-
-            # remove from the mount's registered aliases, if present
-            aliases = self._load_aliases()
-            aliases.discard(path)
-            self._write_aliases(aliases)
-            if aliases:
-                return False  # active aliases still exist
-
-            return await mount.unmount(
-                timeout=deadline - loop.time(),
-                force=force,
+        cmd = ["umount"]
+        if force:
+            cmd.append("-f")
+        cmd.append(str(self.mount_point))
+        try:
+            await run(
+                sudo(cmd),
+                capture_output=True,
+                timeout=timeout,
             )
+        except CommandError as err:
+            # Treat a stale-entry race as idempotent success.
+            if MountInfo.search(self.mount_point) is None:
+                return False
+            raise OSError(f"unmount command failed:\n{err}") from err
+
+        if MountInfo.search(self.mount_point) is not None:
+            raise OSError(f"failed to unmount volume at {self.mount_point}")
+        return True
+
+    class Aliases:
+        """Async context manager for lock-scoped alias state mutation.
+
+        Attributes
+        ----------
+        aliases : set[Path]
+            In-memory managed alias set loaded for the repository when entered.
+        """
+
+        def __init__(self, mount: MountInfo, *, timeout: float) -> None:
+            if timeout <= 0:
+                raise TimeoutError("timeout must be non-negative")
+            if mount.repo_id is None:
+                raise OSError(
+                    "alias state is only available for repository mounts with a valid "
+                    "repository identity"
+                )
+
+            self.mount = mount
+            self.timeout = timeout
+            self.aliases: set[Path] = set()
+            self._root = REPO_DIR / mount.repo_id
+            self._mount_path = self._root / REPO_MOUNT_EXT
+            self._lock: Lock | None = None
+            self._deadline: float | None = None
+            self._entered = False
+
+        def _require_entered(self) -> None:
+            if not self._entered:
+                raise RuntimeError(
+                    "MountAliases must be used inside 'async with' before calling "
+                    "link()/unlink()"
+                )
+
+        def link(self, path: Path) -> None:
+            """Create/update a managed alias symlink in the active alias state.
+
+            Parameters
+            ----------
+            path : Path
+                Alias path to create or update.
+
+            Raises
+            ------
+            OSError
+                If the path collides with an unmanaged file/symlink.
+            RuntimeError
+                If called outside an active context manager block.
+            """
+            self._require_entered()
+            path = abspath(path)
+
+            # Reject unmanaged collisions so alias ownership stays explicit.
+            if path.is_symlink() and not symlink_points_to(path, self._mount_path):
+                raise OSError(
+                    f"repository alias path {path!r} already exists and is not a "
+                    f"managed symlink to {self._mount_path!r}"
+                )
+            if path.exists() and not symlink_points_to(path, self._mount_path):
+                raise OSError(
+                    f"repository alias path {path!r} already exists and is not a "
+                    f"managed symlink to {self._mount_path!r}"
+                )
+
+            atomic_symlink(self._mount_path, path)
+            self.aliases.add(path)
+
+        def unlink(self, path: Path) -> bool:
+            """Remove a managed alias from the active alias state.
+
+            Parameters
+            ----------
+            path : Path
+                Alias path to remove.
+
+            Returns
+            -------
+            bool
+                True if a symlink or alias entry was removed, otherwise False.
+
+            Raises
+            ------
+            RuntimeError
+                If called outside an active context manager block.
+            """
+            self._require_entered()
+            path = abspath(path)
+
+            removed = False
+            # Missing aliases are idempotent no-ops by design for robust recovery.
+            if symlink_points_to(path, self._mount_path):
+                path.unlink()
+                removed = True
+            if path in self.aliases:
+                removed = True
+            self.aliases.discard(path)
+            return removed
+
+        async def __aenter__(self) -> Self:
+            loop = asyncio.get_running_loop()
+            self._deadline = loop.time() + self.timeout
+
+            # Hold the repo-local lock for the entire mutation window so alias state is
+            # read/modify/write atomic across concurrent init/clean callers.
+            self._root.mkdir(parents=True, exist_ok=True)
+            lock = Lock(
+                self._root / REPO_LOCK_EXT,
+                timeout=self._deadline - loop.time(),
+                mode="local",
+            )
+            await lock.lock()
+            self._lock = lock
+
+            try:
+                aliases, _, _ = MountInfo._read_alias_state(
+                    self._root,
+                    mount_path=self._mount_path,
+                )
+                self.aliases = set(aliases)
+                self._entered = True
+                return self
+            except Exception:
+                try:
+                    await lock.unlock(suppress_backend_errors=True)
+                except Exception:
+                    pass
+                self._lock = None
+                raise
+
+        async def __aexit__(
+            self,
+            exc_type: type[BaseException] | None,
+            exc_value: BaseException | None,
+            traceback: TracebackType | None,
+        ) -> bool:
+            cleanup_error: Exception | None = None
+
+            # Always write canonical alias state on exit so stale entries are pruned and
+            # last_accessed is touched for GC grace calculations.
+            try:
+                MountInfo._write_alias_state(
+                    self._root,
+                    self.aliases,
+                    last_accessed=datetime.now(UTC),
+                )
+            except Exception as err:  # pylint: disable=broad-except
+                cleanup_error = err
+
+            if self._lock is not None:
+                try:
+                    await self._lock.unlock(
+                        suppress_backend_errors=cleanup_error is not None or exc_value is not None
+                    )
+                except Exception as err:  # pylint: disable=broad-except
+                    if cleanup_error is None:
+                        cleanup_error = err
+                finally:
+                    self._lock = None
+                    self._entered = False
+
+            try:
+                loop = asyncio.get_running_loop()
+                remaining = (
+                    0.0 if self._deadline is None else self._deadline - loop.time()
+                )
+                await MountInfo._gc_orphan_mounts(timeout=remaining)
+            except asyncio.CancelledError:
+                raise
+            except Exception as err:  # pylint: disable=broad-except
+                print(
+                    f"bertrand: warning: orphan repository mount GC failed: {err}",
+                    file=sys.stderr,
+                )
+
+            if cleanup_error is not None:
+                if exc_value is None:
+                    raise cleanup_error
+                print(
+                    "bertrand: warning: failed to flush repository alias state during "
+                    f"error unwinding: {cleanup_error}",
+                    file=sys.stderr,
+                )
+
+            return False
+
+    def aliases(self, *, timeout: float) -> Aliases:
+        """Return an async context manager for this repo mount's alias state.
+
+        Parameters
+        ----------
+        timeout : float
+            Maximum timeout for lock acquisition and alias convergence.
+
+        Returns
+        -------
+        MountAliases
+            Async context manager for in-memory alias state mutation.
+
+        Raises
+        ------
+        OSError
+            If this mount does not correspond to a Bertrand repository.
+        TimeoutError
+            If `timeout` is non-positive.
+        """
+        return self.Aliases(self, timeout=timeout)

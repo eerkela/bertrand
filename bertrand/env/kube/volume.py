@@ -747,7 +747,7 @@ class RepoVolume:
                 if not value:
                     continue
                 if not value.startswith("/"):
-                    value = f"/{value}"
+                    return PosixPath("/") / value
                 return PosixPath(value)
             raise OSError(
                 "repository PersistentVolume is missing CephFS path attributes "

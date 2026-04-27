@@ -67,6 +67,7 @@ from .bertrand_git import (
     Scalar,
     TimeoutExpired,
     User,
+    abspath,
     assert_microceph_installed,
     assert_microk8s_installed,
     assert_nerdctl_installed,

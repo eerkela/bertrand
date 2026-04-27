@@ -1,3 +1,3 @@
 """Ceph runtime orchestration primitives for Bertrand."""
 from .auth import RepoCredentials
-from .mount import MountInfo, RepoMount
+from .mount import MountInfo

@@ -217,6 +217,23 @@ class User:
             object.__setattr__(self, 'home', Path(pw.pw_dir))
 
 
+def abspath(path: Path) -> Path:
+    """Normalize a filesystem path by converting it to an absolute path without any
+    `.`, `..`, `~`, or `//` components, but without resolving symlinks.
+
+    Parameters
+    ----------
+    path : Path
+        The path to normalize.
+
+    Returns
+    -------
+    Path
+        The normalized path.
+    """
+    return Path(os.path.abspath(path.expanduser()))
+
+
 def symlink_points_to(path: Path, target: Path) -> bool:
     """Return whether `path` is a symlink to `target`.
 
@@ -3595,18 +3612,26 @@ class Lock:
 
         # slow path: single backend attempt only
         try:
-            return await self._backend.try_acquire()
+            acquired = await self._backend.try_acquire()
         except Exception:
             try:
                 await self._backend.release()
             except Exception:
                 pass
-            raise
-        finally:
             with LOCK_GUARD:
                 if self._owner == owner:
                     self._owner = None
                     self._depth = 0
+            raise
+
+        if acquired:
+            return True
+
+        with LOCK_GUARD:
+            if self._owner == owner:
+                self._owner = None
+                self._depth = 0
+        return False
 
     async def unlock(self, *, suppress_backend_errors: bool = False) -> None:
         """Release this lock once.  Re-entrant lock depth is decremented."""
