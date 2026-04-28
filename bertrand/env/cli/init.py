@@ -476,6 +476,61 @@ def _resolve_repo_id(repo: GitRepository) -> UUIDHex:
     return uuid.uuid5(REPO_ID_NAMESPACE, repo.root.as_posix()).hex
 
 
+async def _resurrect_mount(
+    path: Path,
+    *,
+    timeout: float,
+) -> tuple[UUIDHex, MountInfo] | None:
+    if timeout <= 0:
+        raise TimeoutError("timed out before repository mount resurrection started")
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+
+    # search for managed bertrand symlink alias pointing to a mounted volume
+    repo_id, mount = MountInfo.resolve(path)
+    if repo_id is None:
+        return None
+    if mount is not None:
+        return repo_id, mount
+
+    # managed alias ancestry is authoritative: if the mount is missing, recover it
+    # from cluster state or fail closed to avoid silently drifting ownership
+    volumes = await RepoVolume.get(
+        repo_id,
+        timeout=deadline - loop.time(),
+    )
+    if not volumes:
+        raise OSError(
+            "repository alias ancestry was detected for repository "
+            f"{repo_id}, but no matching cluster claim exists"
+        )
+    if len(volumes) != 1:
+        names = ", ".join(sorted(volume.pvc.metadata.name for volume in volumes))
+        raise OSError(
+            "repository alias ancestry maps to multiple cluster claims and cannot be "
+            f"disambiguated safely for {repo_id!r}: {names}"
+        )
+
+    # resolve Ceph path + credentials for the claim, then regenerate the local mount
+    volume = volumes[0]
+    ceph_path = await volume.resolve_ceph_path(timeout=deadline - loop.time())
+    credentials = await RepoCredentials.create(
+        repo_id=repo_id,
+        ceph_path=ceph_path,
+        timeout=deadline - loop.time(),
+    )
+    with credentials.secretfile() as ceph_secretfile:
+        mount = await MountInfo.mount(
+            repo_id=repo_id,
+            ceph_path=ceph_path,
+            timeout=deadline - loop.time(),
+            monitors=credentials.monitors,
+            ceph_user=credentials.user,
+            ceph_secretfile=ceph_secretfile,
+        )
+    return repo_id, mount
+
+
 def _parse_resource_specs(
     specs: list[str],
     *,
@@ -1300,6 +1355,22 @@ async def bertrand_init(
             "was not found in PATH."
         )
     raw_path = abspath(path)
+
+    # run managed-alias resurrection before git path resolution so repository
+    # discovery sees the recovered hidden mount layout if one was detached
+    resurrected = await _resurrect_mount(
+        raw_path,
+        timeout=deadline - loop.time(),
+    )
+    recovered_repo_id: UUIDHex | None = None
+    if resurrected is not None:
+        recovered_repo_id, _ = resurrected
+
+    # TODO: I think I can avoid a redundant scan of the parent directories by refining
+    # the `_resurrect_mount` hook and related helper in mount.py
+
+    # search for parent Git repository on target path, and then identify the ancestor
+    # symlink that points to it, if any
     repo, worktree = await GitRepository.resolve(raw_path.resolve())
     target: Path | None = None
     for candidate in (raw_path, *raw_path.parents):
@@ -1325,7 +1396,7 @@ async def bertrand_init(
 
         # resolve deterministic repository identity from managed metadata if available,
         # otherwise derive from the canonical repository root.
-        repo_id = _resolve_repo_id(repo)
+        repo_id = recovered_repo_id or _resolve_repo_id(repo)
         state = RepoState(
             repo=repo,
             target=target,

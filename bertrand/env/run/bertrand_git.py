@@ -637,7 +637,7 @@ async def run(
     # get overall deadline across attempts
     if timeout <= 0.0:
         raise TimeoutExpired(cmd=argv, timeout=timeout, output=None, stderr=None)
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout
 
     # loop until success, deadline is exceeded, or attempts are exhausted
@@ -884,7 +884,7 @@ async def install_packages(
             output=None,
             stderr="timed out before command could be started"
         )
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout
 
     # get package manager spec
@@ -1220,7 +1220,7 @@ async def _configure_state_acl(
     deadline: float,
     assume_yes: bool
 ) -> None:
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     if not shutil.which("setfacl") or not shutil.which("getfacl"):
         raise OSError(
             "Strict Bertrand state ACL setup requires `setfacl` and `getfacl`, "
@@ -1336,7 +1336,7 @@ async def _configure_run_tmpfs_mount(
             "Bertrand requires systemd (`systemctl`) to manage the runtime tmpfs "
             f"mount at {RUN_DIR}."
         )
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout
 
     # atomically create unit file
@@ -1416,7 +1416,7 @@ async def ensure_bertrand_group(
     OSError
         If the shared group cannot be created for any other reason.
     """
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout
 
     # fast path
@@ -1498,7 +1498,7 @@ async def ensure_bertrand_state(
     """
     if os.name != "posix":
         raise OSError("Bertrand state bootstrap requires a POSIX host.")
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout
 
     # identify misconfigured root state layout
@@ -2338,7 +2338,7 @@ async def nerdctl_ids(
     SystemExit
         If some other fatal error is encountered.
     """
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout
 
     # form basic command based on mode
@@ -3054,7 +3054,7 @@ class _LocalFileLock:
             `True` if the lock was successfully acquired, or `False` if the deadline
             was reached before the lock could be acquired.
         """
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         while not await self.try_acquire():
             if loop.time() >= deadline:
                 return False
@@ -3348,7 +3348,7 @@ class _ClusterLeaseLock:
             `True` if the lock was successfully acquired, or `False` if the deadline
             was reached before the lock could be acquired.
         """
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         timestamp = loop.time()
         while timestamp <= deadline:
             if await self.try_acquire(deadline - timestamp):
@@ -3556,7 +3556,7 @@ class Lock:
     async def lock(self) -> Self:
         """Acquire this lock, waiting for this lock's timeout if needed."""
         owner = self._get_owner()
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         deadline = loop.time() + self.timeout
 
         # fast-path: same task re-entrancy
@@ -4037,7 +4037,7 @@ class GitRepository:
             raise OSError(
                 f"cannot mirror from uninitialized source repository: {source.git_dir}"
             )
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
 
         # if this is a fresh repository, just clone directly to initialize it

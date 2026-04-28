@@ -474,7 +474,7 @@ class PersistentVolumeClaim(BaseModel):
             namespace = model.namespace
 
         # attempt to create PVC and parse returned payload
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
         try:
             payload = (await kubectl(
@@ -546,7 +546,7 @@ class PersistentVolumeClaim(BaseModel):
             ensure_ascii=False,
         )
 
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
         for attempt in range(PVC_GROW_RETRIES):
             live = await type(self).get(

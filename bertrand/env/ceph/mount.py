@@ -22,7 +22,7 @@ from pydantic import (
     ValidationError,
 )
 
-from ..config.core import _check_uuid
+from ..config.core import UUIDHex, _check_uuid
 from ..run import (
     HOST_MOUNTS,
     INFINITY,
@@ -53,7 +53,7 @@ if any("," in opt for opt in DEFAULT_REPO_MOUNT_OPTIONS):
 
 ALIASES_SCHEMA_VERSION = 1
 REPO_ORPHAN_GC_BATCH_SIZE = 8
-REPO_ORPHAN_GC_GRACE = timedelta(minutes=5)
+REPO_ORPHAN_GC_GRACE = timedelta(minutes=1)
 REPO_ORPHAN_GC_SLOT_PERIOD = timedelta(minutes=1)
 REPO_ORPHAN_GC_BUDGET = 2.0
 
@@ -148,6 +148,69 @@ class MountInfo:
         if not suffix.startswith("/"):
             return None
         return PosixPath(suffix)
+
+    @classmethod
+    def resolve(cls, path: Path) -> tuple[UUIDHex | None, Self | None]:
+        """Resolve managed-alias ancestry for a host path.
+
+        This inspects `path` and its ancestors (deepest-first) to find Bertrand-
+        managed alias symlinks.  Managed ownership is strict: the raw symlink target
+        must be absolute and exactly match Bertrand's hidden mount layout.
+
+        Parameters
+        ----------
+        path : Path
+            Host path to inspect for managed alias ancestry.
+
+        Returns
+        -------
+        tuple[UUIDHex | None, MountInfo | None]
+            `(None, None)` if no managed alias ancestor is present.
+            `(repo_id, None)` if a managed alias ancestor exists but its hidden mount
+            is not currently active.
+            `(repo_id, mount)` if a managed alias ancestor exists and hidden mount is
+            currently active.
+
+        Raises
+        ------
+        OSError
+            If a symlink target points into Bertrand's hidden mount namespace but does
+            not match expected layout or contains an invalid repository UUID.
+        """
+        inspected = abspath(path)
+        for candidate in (inspected, *inspected.parents):
+            if not candidate.is_symlink():
+                continue
+            try:
+                target = candidate.readlink()
+            except OSError as err:
+                raise OSError(
+                    f"failed to inspect managed alias candidate {candidate}: {err}"
+                ) from err
+            if not target.is_absolute():
+                continue
+
+            # raw-target ownership is strict: a managed alias must point directly to
+            # Bertrand's hidden mount namespace without normalization.
+            try:
+                relative = target.relative_to(REPO_DIR)
+            except ValueError:
+                continue
+            if len(relative.parts) != 2 or relative.parts[1] != REPO_MOUNT_EXT.as_posix():
+                raise OSError(
+                    f"repository alias path {candidate} points to malformed managed "
+                    f"target {target}; expected {REPO_DIR}/<repo_id>/{REPO_MOUNT_EXT}"
+                )
+            try:
+                repo_id = _check_uuid(relative.parts[0])
+            except ValueError as err:
+                raise OSError(
+                    f"repository alias path {candidate} points to invalid repository "
+                    f"target {target}: {err}"
+                ) from err
+            return repo_id, cls.search(REPO_DIR / repo_id / REPO_MOUNT_EXT)
+
+        return None, None
 
     @classmethod
     def local(cls) -> dict[Path, Self]:
@@ -640,7 +703,7 @@ class MountInfo:
         async def _gc_orphan_mounts(self, *, timeout: float) -> None:
             if timeout <= 0:
                 return
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             deadline = loop.time() + min(timeout, REPO_ORPHAN_GC_BUDGET)
 
             # collect all repository mount directories in canonical order
@@ -736,10 +799,13 @@ class MountInfo:
             exc_value: BaseException | None,
             traceback: TracebackType | None,
         ) -> None:
-            internal_error: Exception | None = None
+            self._depth -= 1
+            if self._depth > 0:
+                return  # re-entrant
 
             # always write canonical alias state on exit so stale entries are pruned
             # and last_accessed is touched for GC grace calculations
+            internal_error: Exception | None = None
             try:
                 state = self.JSON(
                     version=ALIASES_SCHEMA_VERSION,
@@ -761,7 +827,7 @@ class MountInfo:
                         internal_error = err
                 finally:
                     self._lock = None
-                    self._depth = 0
+            self._depth = 0
 
             # if GC is enabled, do a bounded scan over a rotating subset of repository
             # mounts and detach any that are orphaned (i.e. have no living aliases) and
@@ -797,10 +863,10 @@ class MountInfo:
         ----------
         timeout : float
             Maximum timeout for lock acquisition and alias convergence.
-        gc : bool, optional
+        gc : bool
             Whether to run orphan-mount garbage collection when the context exits.
-            Default is True.  False can be useful in `clean`-like scenarios, where it
-            can avoid redundant work.
+            Usually True, but False can be useful in `clean`-like scenarios, where it
+            can help avoid redundant work.
 
         Returns
         -------
