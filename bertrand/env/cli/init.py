@@ -38,6 +38,7 @@ from ..kube import (
     ensure_cluster_image,
     ensure_cluster_image_store,
     ensure_ceph_capacity_controlplane,
+    ensure_microk8s_kubeconfig,
 )
 from ..run import (
     BERTRAND_GROUP,
@@ -1332,6 +1333,7 @@ async def bertrand_init(
         deadline = loop.time() + timeout
         await start_microceph(timeout=deadline - loop.time())
         await start_microk8s(timeout=deadline - loop.time())
+        await ensure_microk8s_kubeconfig(timeout=deadline - loop.time())
         await link_kube_ceph(timeout=deadline - loop.time())
         await ensure_cluster_image_store(timeout=deadline - loop.time())
         autoscaler_build = ceph_capacity_controlplane_image_build()

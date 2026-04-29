@@ -2036,6 +2036,43 @@ async def kubectl(
     )
 
 
+async def enable_microk8s_addon(name: str, *, timeout: float) -> None:
+    """Enable one MicroK8s addon idempotently.
+
+    Parameters
+    ----------
+    name : str
+        Addon name passed to `microk8s enable`.
+    timeout : float
+        Maximum runtime command timeout in seconds.  If infinite, wait indefinitely.
+
+    Returns
+    -------
+    None
+        This function executes for side effects only.
+
+    Raises
+    ------
+    TimeoutError
+        If `timeout` is non-positive.
+    OSError
+        If addon convergence fails for a reason other than "already enabled".
+    """
+    if timeout <= 0:
+        raise TimeoutError("MicroK8s addon timeout must be non-negative.")
+    try:
+        await run(
+            ["microk8s", "enable", name],
+            capture_output=True,
+            timeout=timeout,
+        )
+    except CommandError as err:
+        detail = f"{err.stdout}\n{err.stderr}".strip().lower()
+        if "already enabled" in detail or "alreadyenabled" in detail:
+            return
+        raise OSError(f"failed to enable MicroK8s addon {name!r}:\n{err}") from err
+
+
 async def ceph(
     argv: list[str],
     *,

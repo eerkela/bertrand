@@ -55,6 +55,7 @@ keywords = [
 dependencies = [
     "conan",
     "jinja2",
+    "kubernetes>=31.0.0,<32.0.0",
     "mcp==1.9.4",
     "numpy",
     "packaging>=24.2",

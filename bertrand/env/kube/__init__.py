@@ -10,12 +10,12 @@ from .capability import (
 )
 from .api import (
     InClusterAPI,
-    KubeMetadata,
     KubeSecret,
     PersistentVolume,
     PersistentVolumeClaim,
     Pod,
     StorageClass,
+    ensure_microk8s_kubeconfig,
     parse_pvc_size,
 )
 from .ceph import (
@@ -65,5 +65,4 @@ from .node import (
     nodes_with_label,
 )
 from .registry import EnvironmentMetadata, Registry
-from .system import enable_addon
 from .volume import DEFAULT_VOLUME_SIZE, CacheVolume, RepoVolume

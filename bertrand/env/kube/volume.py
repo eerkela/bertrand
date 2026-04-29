@@ -166,12 +166,12 @@ class CacheVolume:
                 f"cluster PVC {claim_name!r} has mismatched environment identity label "
                 f"{ENV_ID_ENV!r}: expected {env_id!r}, got {actual_env_id!r}"
             )
-        if storage_class is not None and pvc.spec.storageClassName != storage_class:
+        if storage_class is not None and pvc.spec.storage_class_name != storage_class:
             raise OSError(
                 f"cluster PVC {claim_name!r} uses storage class "
-                f"{pvc.spec.storageClassName!r}, expected {storage_class!r}"
+                f"{pvc.spec.storage_class_name!r}, expected {storage_class!r}"
             )
-        if require_rwo and "ReadWriteOnce" not in pvc.spec.accessModes:
+        if require_rwo and "ReadWriteOnce" not in pvc.spec.access_modes:
             raise OSError(
                 f"cluster PVC {claim_name!r} must include ReadWriteOnce access mode"
             )
@@ -239,16 +239,17 @@ class CacheVolume:
 
         # get PVC storage class and assert that it supports volume expansion for
         # dynamic resizing
-        storage = await StorageClass.get(
-            storage_class,
-            timeout=deadline - loop.time()
+        storage_matches = await StorageClass.query(
+            timeout=deadline - loop.time(),
+            name=storage_class,
         )
-        if storage is None:
+        if not storage_matches:
             raise OSError(
                 f"required {storage_class!r} StorageClass is not available; cache PVC "
                 "provisioning cannot proceed"
             )
-        if not storage.allowVolumeExpansion:
+        storage = storage_matches[0]
+        if not storage.allow_volume_expansion:
             raise OSError(
                 f"{storage_class!r} StorageClass must set 'allowVolumeExpansion=true' "
                 "for Bertrand cache PVC resizing"
@@ -256,11 +257,12 @@ class CacheVolume:
 
         # get/create PVCs for each of this tag's cache volumes
         for volume in await CacheVolume.from_config(config, tag, env_id):
-            pvc = await PersistentVolumeClaim.get(
-                volume.name,
+            matches = await PersistentVolumeClaim.query(
                 namespace=BERTRAND_NAMESPACE,
-                timeout=deadline - loop.time()
+                timeout=deadline - loop.time(),
+                name=volume.name,
             )
+            pvc = matches[0] if matches else None
             if pvc is None:  # create a new volume with the requested size
                 pvc = await PersistentVolumeClaim.create({
                     "apiVersion": "v1",
@@ -340,26 +342,26 @@ class CacheVolume:
             return
 
         # get all PVCs associated with this environment
-        actual = (await PersistentVolumeClaim.List.get(
-            {BERTRAND_ENV: "1", CACHE_VOLUME_ENV: "1", ENV_ID_ENV: env_id},
+        actual = await PersistentVolumeClaim.query(
             namespace=BERTRAND_NAMESPACE,
             timeout=deadline - loop.time(),
-        )).items
+            labels={BERTRAND_ENV: "1", CACHE_VOLUME_ENV: "1", ENV_ID_ENV: env_id},
+        )
         if not actual:
             return  # no volumes to clean up
 
         # get PVCs with active pods
         active = {
-            volume.persistentVolumeClaim.claimName
-            for pod in (await Pod.List.get(
-                {BERTRAND_ENV: "1", ENV_ID_ENV: env_id},
+            volume.persistent_volume_claim.claim_name
+            for pod in await Pod.query(
                 namespace=BERTRAND_NAMESPACE,
                 timeout=deadline - loop.time(),
-            )).items if (
-                not pod.metadata.deletionTimestamp and
+                labels={BERTRAND_ENV: "1", ENV_ID_ENV: env_id},
+            ) if (
+                not pod.metadata.deletion_timestamp and
                 pod.status.phase in {"Pending", "Running", "Unknown"}
             )
-            for volume in pod.spec.volumes if volume.persistentVolumeClaim is not None
+            for volume in pod.spec.volumes if volume.persistent_volume_claim is not None
         }
         active.discard("")
 
@@ -448,12 +450,12 @@ class RepoVolume:
                 f"cluster PVC {claim_name!r} has mismatched repo identity label "
                 f"{REPO_ID_ENV!r}: expected {repo_id!r}, got {actual_repo_id!r}"
             )
-        if storage_class is not None and pvc.spec.storageClassName != storage_class:
+        if storage_class is not None and pvc.spec.storage_class_name != storage_class:
             raise OSError(
                 f"cluster PVC {claim_name!r} uses storage class "
-                f"{pvc.spec.storageClassName!r}, expected {storage_class!r}"
+                f"{pvc.spec.storage_class_name!r}, expected {storage_class!r}"
             )
-        if require_rwx and "ReadWriteMany" not in pvc.spec.accessModes:
+        if require_rwx and "ReadWriteMany" not in pvc.spec.access_modes:
             raise OSError(
                 f"cluster PVC {claim_name!r} must include ReadWriteMany access mode"
             )
@@ -509,11 +511,12 @@ class RepoVolume:
         storage_class: str | None = None
         storage: StorageClass | None = None
         for candidate in REPO_STORAGE_CLASS_PREFERENCES:
-            storage = await StorageClass.get(
-                candidate,
-                timeout=deadline - loop.time()
+            matches = await StorageClass.query(
+                timeout=deadline - loop.time(),
+                name=candidate,
             )
-            if storage is not None:
+            if matches:
+                storage = matches[0]
                 storage_class = candidate
                 break
         if storage_class is None or storage is None:
@@ -524,7 +527,7 @@ class RepoVolume:
             )
 
         # assert that the selected class supports dynamic resizing and CephFS CSI
-        if not storage.allowVolumeExpansion:
+        if not storage.allow_volume_expansion:
             raise OSError(
                 f"storage class {storage_class!r} must set allowVolumeExpansion=true "
                 "for Bertrand repository volume resizing"
@@ -540,11 +543,12 @@ class RepoVolume:
             )
 
         # get existing PVC or create a new one if missing
-        pvc = await PersistentVolumeClaim.get(
-            claim_name,
+        matches = await PersistentVolumeClaim.query(
             namespace=BERTRAND_NAMESPACE,
             timeout=deadline - loop.time(),
+            name=claim_name,
         )
+        pvc = matches[0] if matches else None
         if pvc is None:
             pvc = await PersistentVolumeClaim.create({
                 "apiVersion": "v1",
@@ -607,11 +611,11 @@ class RepoVolume:
             raise TimeoutError("timeout must be non-negative")
 
         # get matching PVCs
-        pvcs = (await PersistentVolumeClaim.List.get(
-            labels,
+        pvcs = await PersistentVolumeClaim.query(
             namespace=BERTRAND_NAMESPACE,
             timeout=timeout,
-        )).items
+            labels=labels,
+        )
         out: list[Self] = []
         for pvc in pvcs:
             repo_id = pvc.metadata.labels.get(REPO_ID_ENV, "")
@@ -651,18 +655,18 @@ class RepoVolume:
 
         # check for running pods associated with this pvc, unless overridden
         if not force:
-            pods = (await Pod.List.get(
-                {BERTRAND_ENV: "1", REPO_ID_ENV: self.repo_id},
+            pods = await Pod.query(
                 namespace=BERTRAND_NAMESPACE,
                 timeout=deadline - loop.time(),
-            )).items
+                labels={BERTRAND_ENV: "1", REPO_ID_ENV: self.repo_id},
+            )
             active = {
-                volume.persistentVolumeClaim.claimName
+                volume.persistent_volume_claim.claim_name
                 for pod in pods if (
-                    not pod.metadata.deletionTimestamp and
+                    not pod.metadata.deletion_timestamp and
                     pod.status.phase in {"Pending", "Running", "Unknown"}
                 )
-                for volume in pod.spec.volumes if volume.persistentVolumeClaim is not None
+                for volume in pod.spec.volumes if volume.persistent_volume_claim is not None
             }
             active.discard("")
             if self.pvc.metadata.name in active:
@@ -705,29 +709,31 @@ class RepoVolume:
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
         while True:
-            pvc = await PersistentVolumeClaim.get(
-                name,
+            matches = await PersistentVolumeClaim.query(
                 namespace=namespace,
                 timeout=deadline - loop.time(),
+                name=name,
             )
+            pvc = matches[0] if matches else None
             if pvc is None:  # pvc died during resolution
                 raise OSError(
                     f"repository claim {name!r} disappeared during Ceph path "
                     "resolution"
                 )
-            volume_name = (pvc.spec.volumeName or "").strip()
+            volume_name = (pvc.spec.volume_name or "").strip()
             if not volume_name:  # volumeName hasn't been populated yet, wait and retry
                 await asyncio.sleep(0.1)
                 continue
 
             # wait until the PV is available
-            volume = await PersistentVolume.get(
-                volume_name,
-                timeout=deadline - loop.time()
+            matches = await PersistentVolume.query(
+                timeout=deadline - loop.time(),
+                name=volume_name,
             )
-            if volume is None:
+            if not matches:
                 await asyncio.sleep(0.1)
                 continue
+            volume = matches[0]
 
             # confirm CSI driver with cephfs backend
             csi = volume.spec.csi
@@ -743,7 +749,7 @@ class RepoVolume:
                     "expected a CephFS driver"
                 )
             for key in ("subvolumePath", "rootPath", "path"):
-                value = csi.volumeAttributes.get(key, "").strip()
+                value = csi.volume_attributes.get(key, "").strip()
                 if not value:
                     continue
                 if not value.startswith("/"):

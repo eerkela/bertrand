@@ -44,6 +44,7 @@ from ..config.core import (
 from ..run import (
     BERTRAND_ENV,
     ENV_ID_ENV,
+    enable_microk8s_addon,
     IMAGE_ID_ENV,
     IMAGE_TAG_ENV,
     INFINITY,
@@ -68,7 +69,6 @@ from .node import (
     list_nodes,
     nodes_with_label,
 )
-from .system import enable_addon
 from .volume import collect_mount_specs, gc_volumes
 
 
@@ -241,7 +241,7 @@ async def ensure_cluster_image_store(*, timeout: float = INFINITY) -> None:
 
     # Cluster-local image distribution requires the MicroK8s registry addon and
     # per-node containerd trust convergence before workloads are rolled out.
-    await enable_addon("registry", timeout=_remaining(deadline))
+    await enable_microk8s_addon("registry", timeout=_remaining(deadline))
     await _ensure_registry_trust(timeout=_remaining(deadline))
     await _ensure_registry_ready_node_label(timeout=_remaining(deadline))
     await _assert_registry_ready_nodes(timeout=_remaining(deadline))

@@ -11,8 +11,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, Self, cast
 
-from pydantic import ValidationError
-
 from ..config.core import KubeName, _check_kube_name, _check_uuid
 from ..run import BERTRAND_NAMESPACE, CACHE_DIR, atomic_write_bytes, kubectl
 from .api import KubeSecret
@@ -326,11 +324,12 @@ class Capabilities:
     ) -> tuple[KubeSecret, CapabilityMetadata] | None:
         # check local secrets first
         expected = CapabilityMetadata(kind=kind, id=id, env_id=self.env_id)
-        secret = await KubeSecret.get(
-            expected.name,
+        matches = await KubeSecret.query(
             namespace=BERTRAND_NAMESPACE,
-            timeout=self.timeout
+            timeout=self.timeout,
+            name=expected.name,
         )
+        secret = matches[0] if matches else None
         if secret is not None:
             if expected != CapabilityMetadata.from_secret(secret):
                 raise OSError(
@@ -341,11 +340,12 @@ class Capabilities:
 
         # fall back to cluster-wide secrets if env-scoped and not found
         expected = CapabilityMetadata(kind=kind, id=id, env_id=None)
-        secret = await KubeSecret.get(
-            expected.name,
+        matches = await KubeSecret.query(
             namespace=BERTRAND_NAMESPACE,
-            timeout=self.timeout
+            timeout=self.timeout,
+            name=expected.name,
         )
+        secret = matches[0] if matches else None
         if secret is not None:
             if expected != CapabilityMetadata.from_secret(secret):
                 raise OSError(
@@ -497,11 +497,12 @@ async def get_capability(
         If a matching Kubernetes Secret is found but has malformed metadata.
     """
     expected = CapabilityMetadata(kind=kind, id=id, env_id=env_id)
-    secret = await KubeSecret.get(
-        expected.name,
+    matches = await KubeSecret.query(
         namespace=BERTRAND_NAMESPACE,
-        timeout=timeout
+        timeout=timeout,
+        name=expected.name,
     )
+    secret = matches[0] if matches else None
     if secret is None:
         return None
     if expected != CapabilityMetadata.from_secret(secret):
@@ -553,11 +554,12 @@ async def put_capability(
     """
     # search for existing secret at indicated scope
     expected = CapabilityMetadata(kind=kind, id=id, env_id=env_id)
-    existing = await KubeSecret.get(
-        expected.name,
+    matches = await KubeSecret.query(
         namespace=BERTRAND_NAMESPACE,
-        timeout=timeout
+        timeout=timeout,
+        name=expected.name,
     )
+    existing = matches[0] if matches else None
     if existing is not None and expected != CapabilityMetadata.from_secret(existing):
         raise OSError(
             f"cluster secret {expected.name!r} metadata does not match requested "
@@ -622,11 +624,12 @@ async def delete_capability(
         If a matching Kubernetes Secret is found but has malformed metadata.
     """
     expected = CapabilityMetadata(kind=kind, id=id, env_id=env_id)
-    existing = await KubeSecret.get(
-        expected.name,
+    matches = await KubeSecret.query(
         namespace=BERTRAND_NAMESPACE,
-        timeout=timeout
+        timeout=timeout,
+        name=expected.name,
     )
+    existing = matches[0] if matches else None
     if existing is None:
         return False
     if expected != CapabilityMetadata.from_secret(existing):
@@ -678,30 +681,18 @@ async def list_capabilities(
     """
     if env_id is not None:
         env_id = _check_uuid(env_id)
-    payload = (await kubectl(
-        [
-            "get",
-            "secret",
-            "-n", BERTRAND_NAMESPACE,
-            "-l", f"{CAPABILITY_MANAGED_V1}=true",
-            "-l", f"{CAPABILITY_KIND_V1}={kind}",
-            "-l", f"{CAPABILITY_ENV_ID_V1}={env_id or 'shared'}",
-            "-o", "json",
-        ],
-        capture_output=True,
+    parsed = await KubeSecret.query(
+        namespace=BERTRAND_NAMESPACE,
         timeout=timeout,
-    )).stdout.strip()
-    if not payload:
-        return []
-
-    try:
-        parsed = KubeSecret.List.model_validate_json(payload)
-    except ValidationError as err:
-        raise OSError("cluster returned malformed capability secret list") from err
-
+        labels={
+            CAPABILITY_MANAGED_V1: "true",
+            CAPABILITY_KIND_V1: kind,
+            CAPABILITY_ENV_ID_V1: env_id or "shared",
+        },
+    )
     out = [
         (secret, CapabilityMetadata.from_secret(secret))
-        for secret in parsed.items
+        for secret in parsed
     ]
     out.sort(key=lambda item: (item[1].kind, item[1].name))
     return out

@@ -79,6 +79,7 @@ from .bertrand_git import (
     ceph,
     confirm,
     ensure_bertrand_state,
+    enable_microk8s_addon,
     inside_container,
     inside_image,
     install_microceph,

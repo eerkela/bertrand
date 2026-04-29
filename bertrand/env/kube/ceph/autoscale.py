@@ -28,6 +28,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Literal
 
+from kubernetes import watch as kube_watch
+from kubernetes.client.rest import ApiException
 from pydantic import BaseModel, ConfigDict, Field, PositiveInt, ValidationError
 
 from ...config.core import KubeName, NonEmpty, Trimmed
@@ -803,15 +805,25 @@ async def _ceph_capacity(*, timeout: float) -> CephCapacitySnapshot:
 
 
 async def _controller_read_autoscaler(api: InClusterAPI, *, timeout: float) -> CephStorageAutoscaler:
-    path = (
-        f"/apis/{AUTOSCALE_GROUP}/{AUTOSCALE_VERSION}/namespaces/"
-        f"{api.namespace}/{AUTOSCALE_AUTOSCALER_PLURAL}/{AUTOSCALE_DEFAULT_NAME}"
+    payload = await api.run(
+        lambda: api.custom.get_namespaced_custom_object(
+            group=AUTOSCALE_GROUP,
+            version=AUTOSCALE_VERSION,
+            namespace=api.namespace,
+            plural=AUTOSCALE_AUTOSCALER_PLURAL,
+            name=AUTOSCALE_DEFAULT_NAME,
+            _request_timeout=None if math.isinf(timeout) else timeout,
+        ),
+        timeout=timeout,
+        context=(
+            f"failed to read {AUTOSCALE_AUTOSCALER_KIND} {AUTOSCALE_DEFAULT_NAME!r} "
+            f"in namespace {api.namespace!r}"
+        ),
     )
-    payload = api.get_json(path, timeout=timeout)
-    if not payload:
+    if payload is None:
         raise OSError(
-            f"autoscaler object {AUTOSCALE_DEFAULT_NAME!r} is missing in namespace "
-            f"{api.namespace!r}"
+            f"{AUTOSCALE_AUTOSCALER_KIND} {AUTOSCALE_DEFAULT_NAME!r} is missing in "
+            f"namespace {api.namespace!r}"
         )
     try:
         return CephStorageAutoscaler.model_validate(payload)
@@ -820,11 +832,20 @@ async def _controller_read_autoscaler(api: InClusterAPI, *, timeout: float) -> C
 
 
 async def _controller_list_actions(api: InClusterAPI, *, timeout: float) -> ActionList:
-    path = (
-        f"/apis/{AUTOSCALE_GROUP}/{AUTOSCALE_VERSION}/namespaces/"
-        f"{api.namespace}/{AUTOSCALE_ACTION_PLURAL}"
+    payload = await api.run(
+        lambda: api.custom.list_namespaced_custom_object(
+            group=AUTOSCALE_GROUP,
+            version=AUTOSCALE_VERSION,
+            namespace=api.namespace,
+            plural=AUTOSCALE_ACTION_PLURAL,
+            _request_timeout=None if math.isinf(timeout) else timeout,
+        ),
+        timeout=timeout,
+        context=(
+            f"failed to list {AUTOSCALE_ACTION_KIND} objects in namespace "
+            f"{api.namespace!r}"
+        ),
     )
-    payload = api.get_json(path, timeout=timeout)
     try:
         return ActionList.model_validate(payload)
     except ValidationError as err:
@@ -832,7 +853,17 @@ async def _controller_list_actions(api: InClusterAPI, *, timeout: float) -> Acti
 
 
 async def _controller_list_nodes(api: InClusterAPI, *, timeout: float) -> NodeList:
-    payload = api.get_json("/api/v1/nodes", timeout=timeout)
+    payload = await api.run(
+        lambda: api.api_client.sanitize_for_serialization(
+            api.core.list_node(
+                _request_timeout=None if math.isinf(timeout) else timeout,
+            )
+        ),
+        timeout=timeout,
+        context="failed to list Kubernetes nodes",
+    )
+    if payload is None:
+        payload = {"items": []}
     return NodeList.parse(payload, context="node list")
 
 
@@ -897,7 +928,6 @@ async def _controller_create_actions(
     actions: list[PlannedAction],
     timeout: float,
 ) -> None:
-    base_path = f"/apis/{AUTOSCALE_GROUP}/{AUTOSCALE_VERSION}/namespaces/{api.namespace}/{AUTOSCALE_ACTION_PLURAL}"
     # NOTE: controller enqueues intent objects instead of mutating disks directly so
     # host-level mutation always runs on the target node with local failure reporting.
     for action in actions:
@@ -917,7 +947,21 @@ async def _controller_create_actions(
             },
             "status": {"phase": "Pending"},
         }
-        api.create(base_path, timeout=timeout, body=manifest)
+        await api.run(
+            lambda manifest=manifest: api.custom.create_namespaced_custom_object(
+                group=AUTOSCALE_GROUP,
+                version=AUTOSCALE_VERSION,
+                namespace=api.namespace,
+                plural=AUTOSCALE_ACTION_PLURAL,
+                body=manifest,
+                _request_timeout=None if math.isinf(timeout) else timeout,
+            ),
+            timeout=timeout,
+            context=(
+                f"failed to create {AUTOSCALE_ACTION_KIND} in namespace "
+                f"{api.namespace!r}"
+            ),
+        )
 
 
 async def _controller_patch_status(
@@ -929,10 +973,6 @@ async def _controller_patch_status(
     error: str,
     timeout: float,
 ) -> None:
-    path = (
-        f"/apis/{AUTOSCALE_GROUP}/{AUTOSCALE_VERSION}/namespaces/{api.namespace}/"
-        f"{AUTOSCALE_AUTOSCALER_PLURAL}/{AUTOSCALE_DEFAULT_NAME}/status"
-    )
     status = {
         "status": {
             "observedGeneration": autoscaler.metadata.generation,
@@ -947,7 +987,22 @@ async def _controller_patch_status(
             "last_error": error,
         }
     }
-    api.patch_status(path, timeout=timeout, status=status)
+    await api.run(
+        lambda: api.custom.patch_namespaced_custom_object_status(
+            group=AUTOSCALE_GROUP,
+            version=AUTOSCALE_VERSION,
+            namespace=api.namespace,
+            plural=AUTOSCALE_AUTOSCALER_PLURAL,
+            name=AUTOSCALE_DEFAULT_NAME,
+            body=status,
+            _request_timeout=None if math.isinf(timeout) else timeout,
+        ),
+        timeout=timeout,
+        context=(
+            f"failed to patch status for {AUTOSCALE_AUTOSCALER_KIND} "
+            f"{AUTOSCALE_DEFAULT_NAME!r}"
+        ),
+    )
 
 
 async def _controller_watch_actions(
@@ -958,47 +1013,59 @@ async def _controller_watch_actions(
 ) -> None:
     if timeout <= 0:
         return
+    timeout_seconds = max(1, int(math.ceil(timeout)))
 
-    path = (
-        f"/apis/{AUTOSCALE_GROUP}/{AUTOSCALE_VERSION}/namespaces/"
-        f"{api.namespace}/{AUTOSCALE_ACTION_PLURAL}"
-    )
-    query = {
-        "watch": "1",
-        "allowWatchBookmarks": "true",
-        "timeoutSeconds": str(max(1, int(math.ceil(timeout)))),
-    }
-    if state.actions_resource_version:
-        query["resourceVersion"] = state.actions_resource_version
+    def _watch() -> str:
+        watcher = kube_watch.Watch()
+        latest_rv = state.actions_resource_version
+        kwargs: dict[str, object] = {
+            "group": AUTOSCALE_GROUP,
+            "version": AUTOSCALE_VERSION,
+            "namespace": api.namespace,
+            "plural": AUTOSCALE_ACTION_PLURAL,
+            "timeout_seconds": timeout_seconds,
+            "_request_timeout": None if math.isinf(timeout) else timeout,
+        }
+        if state.actions_resource_version:
+            kwargs["resource_version"] = state.actions_resource_version
+
+        try:
+            for event in watcher.stream(
+                api.custom.list_namespaced_custom_object,
+                **kwargs,
+            ):
+                obj = event.get("object")
+                if not isinstance(obj, dict):
+                    continue
+                metadata = obj.get("metadata")
+                if not isinstance(metadata, dict):
+                    continue
+                rv = str(metadata.get("resourceVersion", "")).strip()
+                if rv:
+                    latest_rv = rv
+            return latest_rv
+        finally:
+            watcher.stop()
 
     try:
-        status, payload = api._request("GET", path, timeout=timeout, query=query, check=False)
+        latest_rv = await asyncio.wait_for(
+            asyncio.to_thread(_watch),
+            timeout=None if math.isinf(timeout) else timeout,
+        )
+    except asyncio.TimeoutError:
+        return
+    except ApiException as err:
+        if err.status == 410:
+            # NOTE: watch streams can expire between cycles; reset and relist.
+            state.actions_resource_version = ""
+        return
     except OSError:
         return
-
-    if status == 410:
-        # NOTE: watch streams can expire between cycles; controller resets its cursor
-        # and relists during the next reconcile.
-        state.actions_resource_version = ""
-        return
-    if status != 200:
+    except Exception:
         return
 
-    for line in payload.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            event = json.loads(line)
-            obj = event.get("object")
-            if isinstance(obj, dict):
-                metadata = obj.get("metadata", {})
-                if isinstance(metadata, dict):
-                    rv = str(metadata.get("resourceVersion", "")).strip()
-                    if rv:
-                        state.actions_resource_version = rv
-        except json.JSONDecodeError:
-            continue
+    if latest_rv:
+        state.actions_resource_version = latest_rv
 
 
 async def run_ceph_capacity_controller(*, timeout: float = INFINITY) -> None:
@@ -1121,10 +1188,6 @@ async def _agent_patch_action_status(
     started: bool = False,
     finished: bool = False,
 ) -> None:
-    path = (
-        f"/apis/{AUTOSCALE_GROUP}/{AUTOSCALE_VERSION}/namespaces/{api.namespace}/"
-        f"{AUTOSCALE_ACTION_PLURAL}/{action.metadata.name}/status"
-    )
     patch: dict[str, dict[str, str]] = {
         "status": {
             "phase": phase,
@@ -1136,7 +1199,22 @@ async def _agent_patch_action_status(
         patch["status"]["started_at"] = _now_iso()
     if finished:
         patch["status"]["finished_at"] = _now_iso()
-    api.patch_status(path, timeout=timeout, status=patch)
+    await api.run(
+        lambda: api.custom.patch_namespaced_custom_object_status(
+            group=AUTOSCALE_GROUP,
+            version=AUTOSCALE_VERSION,
+            namespace=api.namespace,
+            plural=AUTOSCALE_ACTION_PLURAL,
+            name=action.metadata.name,
+            body=patch,
+            _request_timeout=None if math.isinf(timeout) else timeout,
+        ),
+        timeout=timeout,
+        context=(
+            f"failed to patch status for {AUTOSCALE_ACTION_KIND} "
+            f"{action.metadata.name!r}"
+        ),
+    )
 
 
 async def _agent_execute(action: CephStorageAction, *, timeout: float) -> None:

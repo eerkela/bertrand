@@ -1,29 +1,28 @@
 """Shared Kubernetes API primitives for Bertrand's runtime orchestration.
 
-This module centralizes validated Kubernetes payload models and API access
-utilities used across Bertrand's kube subsystems.
+This module centralizes Kubernetes API access utilities used across Bertrand's
+kube subsystems.
 """
 from __future__ import annotations
 
 import asyncio
 import base64
 import binascii
-import json
 import math
 import os
 import re
-import urllib.error
-import urllib.parse
-import urllib.request
-from dataclasses import dataclass
+from collections.abc import Callable
+from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from typing import Annotated, Self
+from typing import Literal, Self, overload
 
-from pydantic import BaseModel, ConfigDict, Field, StrictStr, ValidationError
+from kubernetes import client as kube_client
+from kubernetes import config as kube_config
+from kubernetes.client.rest import ApiException
 
-from ..config.core import KubeName, NonEmpty, Trimmed
-from ..run import BERTRAND_NAMESPACE, CommandError, JSONValue, kubectl
+from ..config.core import KubeName
+from ..run import BERTRAND_NAMESPACE, STATE_DIR, JSONValue, atomic_write_text, run
 
 PVC_GROW_RETRIES = 4
 QUANTITY_RE = re.compile(r"^([0-9]+(?:\.[0-9]+)?)([A-Za-z]{0,2})$")
@@ -44,31 +43,163 @@ STORAGE_FACTORS: dict[str, Decimal] = {
     "Pi": Decimal(2) ** 50,
     "Ei": Decimal(2) ** 60,
 }
+KUBE_CONFIG_FILE = STATE_DIR / "kubeconfig"
+_HOST_CLIENT: kube_client.ApiClient | None = None
+
+
+def _normalize_timeout(timeout: float) -> float | None:
+    if timeout <= 0:
+        raise TimeoutError("timeout must be non-negative")
+    if math.isinf(timeout):
+        return None
+    return timeout
+
+
+@overload
+async def _run_api[T](
+    fn: Callable[[], T],
+    *,
+    timeout: float,
+    context: str,
+    allow_not_found: Literal[False] = False,
+) -> T: ...
+@overload
+async def _run_api[T](
+    fn: Callable[[], T],
+    *,
+    timeout: float,
+    context: str,
+    allow_not_found: Literal[True],
+) -> T | None: ...
+async def _run_api[T](
+    fn: Callable[[], T],
+    *,
+    timeout: float,
+    context: str,
+    allow_not_found: bool = False,
+) -> T | None:
+    if timeout <= 0:
+        raise TimeoutError(f"{context} timed out before request could start")
+    try:
+        return await asyncio.wait_for(
+            asyncio.to_thread(fn),
+            timeout=None if math.isinf(timeout) else timeout,
+        )
+    except TimeoutError as err:
+        raise TimeoutError(f"{context} timed out after {timeout} seconds") from err
+    except ApiException as err:
+        if allow_not_found and err.status == 404:
+            return None
+        detail = (err.body or err.reason or str(err)).strip()
+        raise OSError(
+            f"{context} failed with kubernetes API status {err.status}: {detail}"
+        ) from err
+
+
+def _host_client() -> kube_client.ApiClient:
+    global _HOST_CLIENT
+    if _HOST_CLIENT is not None:
+        return _HOST_CLIENT
+    if not KUBE_CONFIG_FILE.is_file():
+        raise OSError(
+            f"kubernetes config is missing at {KUBE_CONFIG_FILE}.  Run `bertrand init` "
+            "to converge MicroK8s API access first."
+        )
+    try:
+        _HOST_CLIENT = kube_config.new_client_from_config(config_file=str(KUBE_CONFIG_FILE))
+        return _HOST_CLIENT
+    except Exception as err:
+        raise OSError(
+            f"failed to initialize kubernetes client from {KUBE_CONFIG_FILE}: {err}"
+        ) from err
+
+
+def _label_selector(labels: dict[str, str] | None) -> str | None:
+    """Render Kubernetes label selectors from key-value dictionaries."""
+    if labels is None:
+        return None
+    if not labels:
+        return None
+    return ",".join(f"{k}={v}" for k, v in labels.items())
+
+
+async def ensure_microk8s_kubeconfig(*, timeout: float) -> Path:
+    """Converge Bertrand-managed kubeconfig from the local MicroK8s runtime.
+
+    Parameters
+    ----------
+    timeout : float
+        Maximum runtime budget in seconds.  If infinite, wait indefinitely.
+
+    Returns
+    -------
+    Path
+        The managed kubeconfig path that was converged.
+
+    Raises
+    ------
+    TimeoutError
+        If `timeout` is non-positive or command execution exceeds the budget.
+    OSError
+        If `microk8s config` returns an empty payload.
+    """
+    if timeout <= 0:
+        raise TimeoutError("kubeconfig timeout must be non-negative")
+    result = await run(
+        ["microk8s", "config"],
+        capture_output=True,
+        timeout=timeout,
+    )
+    text = result.stdout.strip()
+    if not text:
+        raise OSError("microk8s config returned an empty kubeconfig payload")
+    payload = text if text.endswith("\n") else f"{text}\n"
+
+    global _HOST_CLIENT
+    if KUBE_CONFIG_FILE.is_file():
+        try:
+            if KUBE_CONFIG_FILE.read_text(encoding="utf-8") == payload:
+                return KUBE_CONFIG_FILE
+        except OSError:
+            pass
+
+    atomic_write_text(
+        KUBE_CONFIG_FILE,
+        payload,
+        encoding="utf-8",
+        private=True,
+    )
+    if _HOST_CLIENT is not None:
+        try:
+            _HOST_CLIENT.close()
+        except Exception:
+            pass
+        _HOST_CLIENT = None
+    return KUBE_CONFIG_FILE
 
 
 @dataclass(frozen=True)
 class InClusterAPI:
-    """Tiny in-cluster Kubernetes API client for controlplane pods.
+    """In-cluster Kubernetes API client for controlplane pods.
 
     This avoids depending on ``kubectl`` inside operator pods and relies only on
     ServiceAccount token credentials.
 
     Attributes
     ----------
-    host : str
-        In-cluster Kubernetes API server URL.
-    token : str
-        ServiceAccount bearer token.
-    ca_file : Path
-        PEM CA bundle path for API server TLS verification.
     namespace : str
         Namespace where namespaced resources should be managed.
+    api_client : kubernetes.client.ApiClient
+        Configured API transport for in-cluster requests.
+    core : kubernetes.client.CoreV1Api
+        Core v1 API surface for typed built-in resources.
+    custom : kubernetes.client.CustomObjectsApi
+        Custom object API surface for CRD interactions.
     """
-
-    host: str
-    token: str
-    ca_file: Path
     namespace: str
+    api_client: kube_client.ApiClient = field(repr=False)
+    core: kube_client.CoreV1Api = field(repr=False)
+    custom: kube_client.CustomObjectsApi = field(repr=False)
 
     @classmethod
     def load(cls) -> Self:
@@ -77,14 +208,13 @@ class InClusterAPI:
         Returns
         -------
         InClusterAPI
-            Ready-to-use API client for Kubernetes HTTPS endpoints.
+            Ready-to-use typed API client handles.
 
         Raises
         ------
         OSError
             If required serviceaccount files or env vars are missing.
         """
-
         service_host = os.environ.get("KUBERNETES_SERVICE_HOST", "").strip()
         service_port = os.environ.get("KUBERNETES_SERVICE_PORT_HTTPS", "443").strip()
         if not service_host:
@@ -100,257 +230,164 @@ class InClusterAPI:
             raise OSError(f"serviceaccount namespace file is missing: {namespace_path}")
         if not ca_path.is_file():
             raise OSError(f"serviceaccount CA file is missing: {ca_path}")
-        return cls(
+
+        token = token_path.read_text(encoding="utf-8").strip()
+        namespace = namespace_path.read_text(encoding="utf-8").strip() or BERTRAND_NAMESPACE
+        configuration = kube_client.Configuration(
             host=f"https://{service_host}:{service_port}",
-            token=token_path.read_text(encoding="utf-8").strip(),
-            ca_file=ca_path,
-            namespace=namespace_path.read_text(encoding="utf-8").strip() or BERTRAND_NAMESPACE,
+            ssl_ca_cert=str(ca_path),
+        )
+        configuration.api_key = {"authorization": token}
+        configuration.api_key_prefix = {"authorization": "Bearer"}
+        configuration.verify_ssl = True
+        api_client = kube_client.ApiClient(configuration=configuration)
+        return cls(
+            namespace=namespace,
+            api_client=api_client,
+            core=kube_client.CoreV1Api(api_client),
+            custom=kube_client.CustomObjectsApi(api_client),
         )
 
-    def _request(
+    @overload
+    async def run[T](
         self,
-        method: str,
-        path: str,
+        fn: Callable[[], T],
         *,
         timeout: float,
-        body: dict | list | None = None,
-        content_type: str | None = None,
-        query: dict[str, str] | None = None,
-        check: bool = True,
-    ) -> tuple[int, str]:
-        if timeout <= 0:
-            raise TimeoutError("in-cluster API request timeout must be non-negative")
-        qs = ""
-        if query:
-            qs = "?" + urllib.parse.urlencode(query)
-        url = f"{self.host}{path}{qs}"
-        headers = {
-            "Authorization": f"Bearer {self.token}",
-            "Accept": "application/json",
-        }
-        data: bytes | None = None
-        if body is not None:
-            if content_type is None:
-                content_type = "application/json"
-            headers["Content-Type"] = content_type
-            data = json.dumps(body).encode("utf-8")
+        context: str,
+        allow_not_found: Literal[False] = False,
+    ) -> T: ...
 
-        request = urllib.request.Request(  # noqa: S310
-            url=url,
-            data=data,
-            headers=headers,
-            method=method,
-        )
-        context = None
-        try:
-            import ssl
-
-            context = ssl.create_default_context(cafile=str(self.ca_file))
-        except Exception:
-            context = None
-
-        request_timeout: float | None
-        if math.isinf(timeout):
-            request_timeout = None
-        else:
-            request_timeout = timeout
-
-        try:
-            with urllib.request.urlopen(  # noqa: S310
-                request,
-                timeout=request_timeout,
-                context=context,
-            ) as response:
-                payload = response.read().decode("utf-8", errors="replace")
-                return int(response.status), payload
-        except urllib.error.HTTPError as err:
-            payload = err.read().decode("utf-8", errors="replace")
-            if not check:
-                return int(err.code), payload
-            raise OSError(
-                f"kubernetes API request failed ({method} {path}): HTTP {err.code}\n{payload}"
-            ) from err
-        except urllib.error.URLError as err:
-            raise OSError(
-                f"kubernetes API request failed ({method} {path}): {err}"
-            ) from err
-
-    def get_json(
+    @overload
+    async def run[T](
         self,
-        path: str,
+        fn: Callable[[], T],
         *,
         timeout: float,
-        query: dict[str, str] | None = None,
-    ) -> dict:
-        """Issue a JSON GET request against in-cluster API."""
+        context: str,
+        allow_not_found: Literal[True],
+    ) -> T | None: ...
 
-        status, payload = self._request(
-            "GET",
-            path,
+    async def run[T](
+        self,
+        fn: Callable[[], T],
+        *,
+        timeout: float,
+        context: str,
+        allow_not_found: bool = False,
+    ) -> T | None:
+        """Run one typed in-cluster API operation with normalized errors."""
+
+        return await _run_api(
+            fn,
             timeout=timeout,
-            query=query,
-            check=False,
-        )
-        if status == 404:
-            return {}
-        if status >= 400:
-            raise OSError(
-                f"kubernetes API request failed (GET {path}): HTTP {status}\n{payload}"
-            )
-        try:
-            return json.loads(payload) if payload.strip() else {}
-        except json.JSONDecodeError as err:
-            raise OSError(f"kubernetes API returned malformed JSON for {path}: {err}") from err
-
-    def patch_status(self, path: str, *, timeout: float, status: dict) -> None:
-        """Patch a status subresource using merge-patch semantics."""
-
-        self._request(
-            "PATCH",
-            path,
-            timeout=timeout,
-            body=status,
-            content_type="application/merge-patch+json",
+            context=context,
+            allow_not_found=allow_not_found,
         )
 
-    def create(self, path: str, *, timeout: float, body: dict) -> None:
-        """Create a namespaced object using POST."""
 
-        self._request("POST", path, timeout=timeout, body=body)
+@dataclass(frozen=True)
+class KubeSecret:
+    """Thin wrapper around one Kubernetes Secret object."""
+    obj: kube_client.V1Secret
 
+    @property
+    def metadata(self) -> kube_client.V1ObjectMeta:
+        return self.obj.metadata or kube_client.V1ObjectMeta()
 
-class KubeMetadata(BaseModel):
-    """Generic metadata subset shared by Kubernetes payload models."""
-    model_config = ConfigDict(extra="ignore")
-    name: Trimmed = ""
-    namespace: Trimmed = ""
-    labels: Annotated[dict[Trimmed, Trimmed], Field(default_factory=dict)]
-    annotations: Annotated[dict[Trimmed, Trimmed], Field(default_factory=dict)]
-    deletionTimestamp: Annotated[Trimmed | None, Field(default=None)]
-
-
-class KubeSecret(BaseModel):
-    """Validated subset of a Kubernetes Secret payload."""
-    model_config = ConfigDict(extra="ignore")
-    metadata: Annotated[KubeMetadata, Field(default_factory=KubeMetadata.model_construct)]
-    data: Annotated[dict[StrictStr, StrictStr], Field(default_factory=dict)]
-
-    class List(BaseModel):
-        """Validated subset of a Kubernetes Secret list payload."""
-        model_config = ConfigDict(extra="ignore")
-        items: Annotated[list[KubeSecret], Field(default_factory=list)]
-
-        @classmethod
-        async def get(
-            cls,
-            labels: dict[str, str],
-            *,
-            namespace: str,
-            timeout: float,
-        ) -> Self:
-            """Load all Kubernetes Secrets and validate their structure.
-
-            Parameters
-            ----------
-            labels : dict[str, str]
-                The labels to filter the Kubernetes Secrets by.
-            namespace : str
-                The namespace to search within.
-            timeout : float
-                The maximum time to wait for the Kubernetes Secrets to be retrieved, in
-                seconds.  If infinite, wait indefinitely.
-
-            Returns
-            -------
-            KubeSecret.List
-                The validated list of Kubernetes Secrets.
-
-            Raises
-            ------
-            CommandError
-                If the `kubectl get` command fails to execute or returns an error.
-            ValueError
-                If the retrieved Kubernetes Secret list payload does not conform to the
-                expected structure, or if the specified Secret is not found in the list.
-            """
-            cmd = ["get", "secret", "-n", namespace]
-            if labels:
-                selector = ",".join(f"{k}={v}" for k, v in labels.items())
-                cmd.extend(["-l", selector])
-            cmd.extend(["-o", "json"])
-            result = await kubectl(
-                cmd,
-                capture_output=True,
-                timeout=timeout
-            )
-            return cls.model_validate_json(result.stdout.strip())
+    @property
+    def data(self) -> dict[str, str]:
+        return self.obj.data or {}
 
     @classmethod
-    async def get(
+    async def query(
         cls,
-        name: KubeName,
         *,
         namespace: str,
-        timeout: float
-    ) -> Self | None:
-        """Load a Kubernetes Secret by name and validate its structure.
+        timeout: float,
+        name: KubeName | None = None,
+        labels: dict[str, str] | None = None,
+    ) -> list[Self]:
+        """Load Kubernetes Secrets and validate their structure.
 
         Parameters
         ----------
-        name : str
-            The name of the Kubernetes Secret, which must be lowercase with `-` and/or
-            `.` separators.
         namespace : str
             The namespace to search within.
         timeout : float
-            The maximum time to wait for the Kubernetes Secret to be retrieved, in
-            seconds.  If indefinite, wait indefinitely.
+            The maximum time to wait for Kubernetes Secret queries in seconds.  If
+            infinite, wait indefinitely.
+        name : str | None, optional
+            Optional Secret name.  When given, this performs an exact name lookup and
+            returns either a one-item list or an empty list.
+        labels : dict[str, str] | None, optional
+            Optional label filters.  Only supported for list lookups.
 
         Returns
         -------
-        KubeSecret | None
-            The validated Kubernetes Secret data, or `None` if the Secret is not found.
+        list[KubeSecret]
+            Validated Kubernetes Secret wrappers.  Name lookups return either one item
+            or an empty list.
+
+        Raises
+        ------
+        ValueError
+            If both `name` and `labels` are provided.
+        TimeoutError
+            If the Kubernetes request exceeds the timeout budget.
+        OSError
+            If the Kubernetes API call fails or returns malformed data.
         """
-        payload = (await kubectl(
-            [
-                "get",
-                "secret",
-                name,
-                "-n", namespace,
-                "-o", "json",
-                "--ignore-not-found=true",
-            ],
-            capture_output=True,
+        if name is not None and labels is not None:
+            raise ValueError("secret query cannot combine both name and labels filters")
+
+        core = kube_client.CoreV1Api(_host_client())
+        if name is not None:
+            payload = await _run_api(
+                lambda: core.read_namespaced_secret(
+                    name=name,
+                    namespace=namespace,
+                    _request_timeout=_normalize_timeout(timeout),
+                ),
+                timeout=timeout,
+                context=(
+                    f"failed to read cluster secret {name!r} in namespace "
+                    f"{namespace!r}"
+                ),
+                allow_not_found=True,
+            )
+            if payload is None:
+                return []
+            return [cls(obj=payload)]
+
+        payload = await _run_api(
+            lambda: core.list_namespaced_secret(
+                namespace=namespace,
+                label_selector=_label_selector(labels),
+                _request_timeout=_normalize_timeout(timeout),
+            ),
             timeout=timeout,
-        )).stdout.strip()
-        if not payload:
-            return None
-        try:
-            return cls.model_validate_json(payload)
-        except ValidationError as err:
-            raise OSError(
-                f"cluster secret {name!r} returned malformed JSON payload"
-            ) from err
+            context=f"failed to list Kubernetes Secrets in namespace {namespace!r}",
+        )
+        return [cls(obj=item) for item in payload.items or []]
 
     def decode(self, name: KubeName) -> bytes:
-        """Decode a base64-encoded value from the validated Kube Secret.
+        """Decode a base64-encoded value from the wrapped Secret payload.
 
         Parameters
         ----------
         name : str
-            The name of the Kubernetes Secret, which must be lowercase with `-` and/or
-            `.` separators.  Used for error messages.
+            Secret name for diagnostic errors.
 
         Returns
         -------
         bytes
-            The decoded value of the specified key, as raw bytes.
+            Decoded payload from `data["value"]`.
 
         Raises
         ------
         OSError
-            If the specified key is not defined in the Secret data, or if the value is
-            not valid base64-encoded data.
+            If required key is missing or invalid base64.
         """
         value = self.data.get("value")
         if value is None:
@@ -366,231 +403,183 @@ class KubeSecret(BaseModel):
             ) from err
 
 
-class StorageClass(BaseModel):
-    """Validated subset of one Kubernetes StorageClass."""
-    model_config = ConfigDict(extra="ignore")
-    metadata: Annotated[KubeMetadata, Field(default_factory=KubeMetadata.model_construct)]
-    provisioner: Annotated[Trimmed, Field(default="")]
-    allowVolumeExpansion: Annotated[bool, Field(default=False)]
+@dataclass(frozen=True)
+class StorageClass:
+    """Thin wrapper around one Kubernetes StorageClass object."""
+    obj: kube_client.V1StorageClass
 
-    class List(BaseModel):
-        """Validated subset of a Kubernetes StorageClass list payload."""
-        model_config = ConfigDict(extra="ignore")
-        items: Annotated[list[StorageClass], Field(default_factory=list)]
+    @property
+    def metadata(self) -> kube_client.V1ObjectMeta:
+        return self.obj.metadata or kube_client.V1ObjectMeta()
 
-        @classmethod
-        async def get(
-            cls,
-            labels: dict[str, str],
-            *,
-            timeout: float,
-        ) -> StorageClass.List:
-            """Load all Kubernetes StorageClasses and validate their structure.
+    @property
+    def provisioner(self) -> str:
+        return self.obj.provisioner or ""
 
-            Parameters
-            ----------
-            labels : dict[str, str]
-                The labels to filter the Kubernetes StorageClasses by.
-            timeout : float
-                The maximum time to wait for the Kubernetes StorageClasses to be
-                retrieved, in seconds.  If indefinite, wait indefinitely.
-
-            Returns
-            -------
-            StorageClass.List
-                The validated list of Kubernetes StorageClasses.
-
-            Raises
-            ------
-            CommandError
-                If the `kubectl get` command fails to execute or returns an error.
-            ValueError
-                If the retrieved Kubernetes StorageClass list payload does not conform to
-                the expected structure, or if the specified StorageClass is not found in
-                the list.
-            """
-            cmd = ["get", "storageclass"]
-            if labels:
-                selector = ",".join(f"{k}={v}" for k, v in labels.items())
-                cmd.extend(["-l", selector])
-            cmd.extend(["-o", "json"])
-            result = await kubectl(
-                cmd,
-                capture_output=True,
-                timeout=timeout
-            )
-            return cls.model_validate_json(result.stdout.strip())
+    @property
+    def allow_volume_expansion(self) -> bool:
+        return bool(self.obj.allow_volume_expansion)
 
     @classmethod
-    async def get(cls, name: KubeName, timeout: float) -> Self | None:
-        """Load a Kubernetes StorageClass by name and validate its structure.
+    async def query(
+        cls,
+        *,
+        timeout: float,
+        name: KubeName | None = None,
+        labels: dict[str, str] | None = None,
+    ) -> list[Self]:
+        """Load Kubernetes StorageClasses and validate their structure.
 
         Parameters
         ----------
-        name : str
-            The name of the Kubernetes StorageClass, which must be lowercase with `-`
-            and/or `.` separators.
         timeout : float
-            The maximum time to wait for the Kubernetes StorageClass to be retrieved, in
-            seconds.  If indefinite, wait indefinitely.
+            The maximum time to wait for Kubernetes StorageClass queries in seconds.
+            If infinite, wait indefinitely.
+        name : str | None, optional
+            Optional StorageClass name.  When given, this performs an exact name lookup
+            and returns either a one-item list or an empty list.
+        labels : dict[str, str] | None, optional
+            Optional label filters.  Only supported for list lookups.
 
         Returns
         -------
-        StorageClass | None
-            The validated Kubernetes StorageClass data, or `None` if the StorageClass is
-            not found.
+        list[StorageClass]
+            Validated Kubernetes StorageClass wrappers.  Name lookups return either one
+            item or an empty list.
 
         Raises
         ------
-        CommandError
-            If the `kubectl get` command fails to execute or returns an error.
         ValueError
-            If the retrieved Kubernetes StorageClass payload does not conform to the
-            expected structure.
+            If both `name` and `labels` are provided.
+        TimeoutError
+            If the Kubernetes request exceeds the timeout budget.
+        OSError
+            If the Kubernetes API call fails or returns malformed data.
         """
-        payload = (await kubectl(
-            [
-                "get",
-                "storageclass",
-                name,
-                "-o", "json",
-                "--ignore-not-found=true",
-            ],
-            capture_output=True,
-            timeout=timeout,
-        )).stdout.strip()
-        if payload:
-            return cls.model_validate_json(payload)
-        return None
-
-
-class PersistentVolumeClaim(BaseModel):
-    """Validated subset of one Kubernetes PersistentVolumeClaim payload."""
-    class Spec(BaseModel):
-        """Validated subset of one PVC spec."""
-        class Resources(BaseModel):
-            """Validated subset of PVC resources."""
-            class Requests(BaseModel):
-                """Validated subset of PVC request resources."""
-                model_config = ConfigDict(extra="ignore")
-                storage: NonEmpty[Trimmed]
-
-            model_config = ConfigDict(extra="ignore")
-            requests: PersistentVolumeClaim.Spec.Resources.Requests
-
-        model_config = ConfigDict(extra="ignore")
-        accessModes: Annotated[list[Trimmed], Field(default_factory=list)]
-        storageClassName: Annotated[Trimmed | None, Field(default=None)]
-        volumeName: Annotated[Trimmed | None, Field(default=None)]
-        resources: PersistentVolumeClaim.Spec.Resources
-
-    model_config = ConfigDict(extra="ignore")
-    metadata: Annotated[KubeMetadata, Field(default_factory=KubeMetadata.model_construct)]
-    spec: PersistentVolumeClaim.Spec
-
-    class List(BaseModel):
-        """Validated subset of a Kubernetes PersistentVolumeClaim list payload."""
-        model_config = ConfigDict(extra="ignore")
-        items: Annotated[list[PersistentVolumeClaim], Field(default_factory=list)]
-
-        @classmethod
-        async def get(
-            cls,
-            labels: dict[str, str],
-            *,
-            namespace: str,
-            timeout: float,
-        ) -> Self:
-            """Load all Kubernetes PersistentVolumeClaims and validate their structure.
-
-            Parameters
-            ----------
-            labels : dict[str, str]
-                A dictionary of label key-value pairs to filter the
-                PersistentVolumeClaims by.  Only PVCs that have all of the specified
-                labels with matching values will be included in the results.
-            namespace : str
-                The namespace to search within.
-            timeout : float
-                The maximum time to wait for the Kubernetes PersistentVolumeClaims to
-                be retrieved, in seconds.  If infinite, wait indefinitely.
-
-            Returns
-            -------
-            PersistentVolumeClaim.List
-                The validated list of Kubernetes PersistentVolumeClaims.
-
-            Raises
-            ------
-            CommandError
-                If the `kubectl get` command fails to execute or returns an error.
-            ValueError
-                If the retrieved Kubernetes PersistentVolumeClaim list payload does not
-                conform to the expected structure, or if the specified
-                PersistentVolumeClaim is not found in the list.
-            """
-            cmd = ["get", "pvc", "-n", namespace]
-            if labels:
-                selector = ",".join(f"{k}={v}" for k, v in labels.items())
-                cmd.extend(["-l", selector])
-            cmd.extend(["-o", "json"])
-            result = await kubectl(
-                cmd,
-                capture_output=True,
-                timeout=timeout
+        if name is not None and labels is not None:
+            raise ValueError(
+                "storage class query cannot combine both name and labels filters"
             )
-            return cls.model_validate_json(result.stdout.strip())
+
+        storage = kube_client.StorageV1Api(_host_client())
+        if name is not None:
+            payload = await _run_api(
+                lambda: storage.read_storage_class(
+                    name=name,
+                    _request_timeout=_normalize_timeout(timeout),
+                ),
+                timeout=timeout,
+                context=f"failed to read StorageClass {name!r}",
+                allow_not_found=True,
+            )
+            if payload is None:
+                return []
+            return [cls(obj=payload)]
+
+        payload = await _run_api(
+            lambda: storage.list_storage_class(
+                label_selector=_label_selector(labels),
+                _request_timeout=_normalize_timeout(timeout),
+            ),
+            timeout=timeout,
+            context="failed to list Kubernetes StorageClasses",
+        )
+        return [cls(obj=item) for item in payload.items or []]
+
+
+@dataclass(frozen=True)
+class PersistentVolumeClaim:
+    """Thin wrapper around one Kubernetes PersistentVolumeClaim object."""
+    obj: kube_client.V1PersistentVolumeClaim
+
+    @property
+    def metadata(self) -> kube_client.V1ObjectMeta:
+        return self.obj.metadata or kube_client.V1ObjectMeta()
+
+    @property
+    def spec(self) -> kube_client.V1PersistentVolumeClaimSpec:
+        return self.obj.spec or kube_client.V1PersistentVolumeClaimSpec()
+
+    @staticmethod
+    def _requested_storage(spec: kube_client.V1PersistentVolumeClaimSpec) -> str:
+        resources = spec.resources or kube_client.V1VolumeResourceRequirements()
+        requests = resources.requests or {}
+        value = str(requests.get("storage") or "").strip()
+        if not value:
+            raise OSError("PVC does not expose a valid storage request quantity")
+        return value
 
     @classmethod
-    async def get(
+    async def query(
         cls,
-        name: KubeName,
         *,
         namespace: str,
         timeout: float,
-    ) -> Self | None:
-        """Load a Kubernetes PersistentVolumeClaim by name and validate its structure.
+        name: KubeName | None = None,
+        labels: dict[str, str] | None = None,
+    ) -> list[Self]:
+        """Load Kubernetes PersistentVolumeClaims and validate their structure.
 
         Parameters
         ----------
-        name : str
-            The name of the Kubernetes PersistentVolumeClaim, which must be lowercase
-            with `-` and/or `.` separators.
         namespace : str
             The namespace to search within.
         timeout : float
-            The maximum time to wait for the Kubernetes PersistentVolumeClaim to be
-            retrieved, in seconds.  If infinite, wait indefinitely.
+            The maximum time to wait for Kubernetes PVC queries in seconds.  If
+            infinite, wait indefinitely.
+        name : str | None, optional
+            Optional PersistentVolumeClaim name.  When given, this performs an exact
+            name lookup and returns either a one-item list or an empty list.
+        labels : dict[str, str] | None, optional
+            Optional label filters.  Only supported for list lookups.
 
         Returns
         -------
-        PersistentVolumeClaim | None
-            The validated Kubernetes PersistentVolumeClaim data, or `None` if the PVC
-            is not found.
+        list[PersistentVolumeClaim]
+            Validated Kubernetes PersistentVolumeClaim wrappers.  Name lookups return
+            either one item or an empty list.
 
         Raises
         ------
-        CommandError
-            If the `kubectl get` command fails to execute or returns an error.
         ValueError
-            If the retrieved Kubernetes PersistentVolumeClaim payload does not conform
-            to the expected structure.
+            If both `name` and `labels` are provided.
+        TimeoutError
+            If the Kubernetes request exceeds the timeout budget.
+        OSError
+            If the Kubernetes API call fails or returns malformed data.
         """
-        payload = (await kubectl(
-            [
-                "get",
-                "pvc",
-                name,
-                "-n", namespace,
-                "-o", "json",
-                "--ignore-not-found=true",
-            ],
-            capture_output=True,
+        if name is not None and labels is not None:
+            raise ValueError("PVC query cannot combine both name and labels filters")
+
+        core = kube_client.CoreV1Api(_host_client())
+        if name is not None:
+            payload = await _run_api(
+                lambda: core.read_namespaced_persistent_volume_claim(
+                    name=name,
+                    namespace=namespace,
+                    _request_timeout=_normalize_timeout(timeout),
+                ),
+                timeout=timeout,
+                context=f"failed to read PVC {name!r} in namespace {namespace!r}",
+                allow_not_found=True,
+            )
+            if payload is None:
+                return []
+            return [cls(obj=payload)]
+
+        payload = await _run_api(
+            lambda: core.list_namespaced_persistent_volume_claim(
+                namespace=namespace,
+                label_selector=_label_selector(labels),
+                _request_timeout=_normalize_timeout(timeout),
+            ),
             timeout=timeout,
-        )).stdout.strip()
-        if payload:
-            return cls.model_validate_json(payload)
-        return None
+            context=(
+                "failed to list Kubernetes PersistentVolumeClaims in namespace "
+                f"{namespace!r}"
+            ),
+        )
+        return [cls(obj=item) for item in payload.items or []]
 
     @classmethod
     async def create(
@@ -599,67 +588,45 @@ class PersistentVolumeClaim(BaseModel):
         *,
         timeout: float,
     ) -> Self:
-        """Create a Kubernetes PersistentVolumeClaim with the specified parameters.
-
-        Parameters
-        ----------
-        data : dict[str, JSONValue]
-            The payload to send to the Kubernetes PersistentVolumeClaim API.
-        timeout : float
-            The maximum time to wait for the Kubernetes PersistentVolumeClaim to be
-            created, in seconds.  If infinite, wait indefinitely.
-
-        Returns
-        -------
-        PersistentVolumeClaim
-            The validated Kubernetes PersistentVolumeClaim data for the newly created PVC.
-
-        Raises
-        ------
-        CommandError
-            If the `kubectl create` command fails to execute or returns an error.
-        ValueError
-            If the retrieved Kubernetes PersistentVolumeClaim payload does not conform
-            to the expected structure.
-        """
+        """Create a Kubernetes PersistentVolumeClaim from a manifest payload."""
         metadata = data.get("metadata")
         name = ""
         namespace = ""
         if isinstance(metadata, dict):
-            model = KubeMetadata.model_validate(metadata)
-            name = model.name
-            namespace = model.namespace
+            name = str(metadata.get("name") or "").strip()
+            namespace = str(metadata.get("namespace") or "").strip()
+        if not namespace:
+            raise OSError("PVC creation payload must define metadata.namespace")
 
-        # attempt to create PVC and parse returned payload
+        core = kube_client.CoreV1Api(_host_client())
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
         try:
-            payload = (await kubectl(
-                ["create", "-o", "json", "-f", "-"],
-                input=json.dumps(data, separators=(",", ":"), ensure_ascii=False),
-                capture_output=True,
+            payload = await _run_api(
+                lambda: core.create_namespaced_persistent_volume_claim(
+                    namespace=namespace,
+                    body=data,
+                    _request_timeout=_normalize_timeout(deadline - loop.time()),
+                ),
                 timeout=deadline - loop.time(),
-            )).stdout.strip()
-            if payload:
-                return cls.model_validate_json(payload)
-        except CommandError as err:
-            detail = f"{err.stdout}\n{err.stderr}".lower()
-            if (
-                "already exists" not in detail and
-                "alreadyexists" not in detail and
-                "conflict" not in detail
-            ):
+                context="failed to create PersistentVolumeClaim",
+            )
+            assert payload is not None
+            return cls(obj=payload)
+        except OSError as err:
+            text = str(err).lower()
+            if "status 409" not in text and "already exists" not in text:
                 raise
 
         # race condition; attempt to retrieve existing PVC
         if name and namespace:
-            created = await cls.get(
-                name,
+            matches = await cls.query(
                 namespace=namespace,
-                timeout=deadline - loop.time()
+                timeout=deadline - loop.time(),
+                name=name,
             )
-            if created is not None:
-                return created
+            if matches:
+                return matches[0]
         raise OSError(
             "kubernetes accepted PVC creation, but no valid PVC payload was returned"
         )
@@ -670,92 +637,84 @@ class PersistentVolumeClaim(BaseModel):
         *,
         timeout: float,
     ) -> None:
-        """Resize the PVC if the current size is smaller than the requested size.
+        """Resize the PVC if current requested storage is below target.
 
         Parameters
         ----------
         requested : str
-            The requested size for the PVC, as a Kubernetes PVC request size string
-            (e.g., "1Gi", "500Mi").
+            Target Kubernetes storage quantity (for example `1Gi`).
         timeout : float
-            The maximum time to wait for the Kubernetes PersistentVolumeClaim to be
-            resized, in seconds.  If infinite, wait indefinitely.
+            Maximum API timeout in seconds.  If infinite, wait indefinitely.
 
         Raises
         ------
-        CommandError
-            If the `kubectl patch` command fails to execute or returns an error during
-            resizing.
+        TimeoutError
+            If any resize request exceeds timeout.
         OSError
-            If the PVC disappears during resize, if metadata is incomplete, or if size
-            convergence could not be confirmed within retry limits.
+            If the PVC disappears or fails to converge after retries.
         """
         new_size = parse_pvc_size(requested)
-        name = self.metadata.name
-        namespace = self.metadata.namespace
+        name = self.metadata.name or ""
+        namespace = self.metadata.namespace or ""
         if not name:
             raise OSError("cannot resize PVC with missing metadata.name")
         if not namespace:
             raise OSError(f"cannot resize PVC {name!r} with missing metadata.namespace")
-        patch = json.dumps(
-            {"spec": {"resources": {"requests": {"storage": requested}}}},
-            separators=(",", ":"),
-            ensure_ascii=False,
-        )
 
+        patch = {"spec": {"resources": {"requests": {"storage": requested}}}}
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
-        for attempt in range(PVC_GROW_RETRIES):
-            live = await type(self).get(
-                name,
-                namespace=namespace,
-                timeout=deadline - loop.time()
-            )
-            if live is None:
-                raise OSError(
-                    f"PVC {name!r} disappeared during resize lifecycle"
-                )
+        core = kube_client.CoreV1Api(_host_client())
 
-            current_size = parse_pvc_size(live.spec.resources.requests.storage)
+        for attempt in range(PVC_GROW_RETRIES):
+            matches = await type(self).query(
+                namespace=namespace,
+                timeout=deadline - loop.time(),
+                name=name,
+            )
+            if not matches:
+                raise OSError(f"PVC {name!r} disappeared during resize lifecycle")
+            live = matches[0]
+
+            current_size = parse_pvc_size(type(self)._requested_storage(live.spec))
             if current_size >= new_size:
                 return
 
             try:
-                await kubectl(
-                    [
-                        "patch",
-                        "pvc",
-                        name,
-                        "-n", namespace,
-                        "--type", "merge",
-                        "-p", patch,
-                    ],
-                    capture_output=True,
+                await _run_api(
+                    lambda: core.patch_namespaced_persistent_volume_claim(
+                        name=name,
+                        namespace=namespace,
+                        body=patch,
+                        _request_timeout=_normalize_timeout(deadline - loop.time()),
+                    ),
                     timeout=deadline - loop.time(),
+                    context=f"failed to patch PVC {name!r} during resize lifecycle",
                 )
-            except CommandError as err:
-                detail = f"{err.stdout}\n{err.stderr}".lower()
-                if "not found" in detail or "notfound" in detail:
+            except OSError as err:
+                detail = str(err).lower()
+                if "status 404" in detail or "not found" in detail:
                     raise OSError(
                         f"PVC {name!r} disappeared during resize lifecycle"
                     ) from err
                 if (
+                    "status 409" in detail or
                     "conflict" in detail or
                     "the object has been modified" in detail
                 ) and attempt + 1 < PVC_GROW_RETRIES:
                     continue
                 raise
 
-            live = await type(self).get(
-                name,
+            matches = await type(self).query(
                 namespace=namespace,
-                timeout=deadline - loop.time()
+                timeout=deadline - loop.time(),
+                name=name,
             )
-            if live is None:
-                raise OSError(
-                    f"PVC {name!r} disappeared during resize lifecycle"
-                )
-            current_size = parse_pvc_size(live.spec.resources.requests.storage)
+            if not matches:
+                raise OSError(f"PVC {name!r} disappeared during resize lifecycle")
+            live = matches[0]
+
+            current_size = parse_pvc_size(type(self)._requested_storage(live.spec))
             if current_size >= new_size:
                 return
             if attempt + 1 < PVC_GROW_RETRIES:
@@ -766,159 +725,186 @@ class PersistentVolumeClaim(BaseModel):
             )
 
     async def delete(self, *, timeout: float) -> None:
-        """Delete the PVC from the cluster.
-
-        Parameters
-        ----------
-        timeout : float
-            The maximum time to wait for the Kubernetes PersistentVolumeClaim to be
-            deleted, in seconds.  If infinite, wait indefinitely.
-
-        Raises
-        ------
-        CommandError
-            If the `kubectl delete` command fails to execute or returns an error during
-            deletion.
-        """
-        await kubectl(
-            [
-                "delete",
-                "pvc",
-                self.metadata.name,
-                "-n", self.metadata.namespace,
-                "--ignore-not-found=true",
-            ],
-            capture_output=True,
+        """Delete the PVC from the cluster."""
+        core = kube_client.CoreV1Api(_host_client())
+        await _run_api(
+            lambda: core.delete_namespaced_persistent_volume_claim(
+                name=self.metadata.name or "",
+                namespace=self.metadata.namespace or "",
+                body=kube_client.V1DeleteOptions(),
+                _request_timeout=_normalize_timeout(timeout),
+            ),
             timeout=timeout,
+            context=f"failed to delete PVC {self.metadata.name!r}",
+            allow_not_found=True,
         )
 
 
-class Pod(BaseModel):
-    """Validated subset of one Kubernetes Pod payload."""
-    class Volume(BaseModel):
-        """Validated subset of one pod volume entry."""
-        class Ref(BaseModel):
-            """Validated subset of one pod PVC reference."""
-            model_config = ConfigDict(extra="ignore")
-            claimName: Trimmed
+@dataclass(frozen=True)
+class Pod:
+    """Thin wrapper around one Kubernetes Pod object."""
+    obj: kube_client.V1Pod
 
-        model_config = ConfigDict(extra="ignore")
-        persistentVolumeClaim: Annotated[Pod.Volume.Ref | None, Field(default=None)]
+    @property
+    def metadata(self) -> kube_client.V1ObjectMeta:
+        return self.obj.metadata or kube_client.V1ObjectMeta()
 
-    class Status(BaseModel):
-        """Validated subset of one pod status payload."""
-        model_config = ConfigDict(extra="ignore")
-        phase: Annotated[Trimmed, Field(default="")]
+    @property
+    def status(self) -> kube_client.V1PodStatus:
+        return self.obj.status or kube_client.V1PodStatus()
 
-    class Spec(BaseModel):
-        """Validated subset of one pod spec."""
-        model_config = ConfigDict(extra="ignore")
-        volumes: Annotated[list[Pod.Volume], Field(default_factory=list)]
-
-    model_config = ConfigDict(extra="ignore")
-    metadata: Annotated[KubeMetadata, Field(default_factory=KubeMetadata.model_construct)]
-    status: Annotated[Pod.Status, Field(default_factory=lambda: Pod.Status.model_construct())]
-    spec: Annotated[Pod.Spec, Field(default_factory=lambda: Pod.Spec.model_construct())]
-
-    class List(BaseModel):
-        """Validated subset of a Kubernetes pod list payload."""
-        model_config = ConfigDict(extra="ignore")
-        items: Annotated[list[Pod], Field(default_factory=list)]
-
-        @classmethod
-        async def get(
-            cls,
-            labels: dict[str, str],
-            *,
-            namespace: str,
-            timeout: float,
-        ) -> Self:
-            """Load all Kubernetes pods and validate their structure.
-
-            Parameters
-            ----------
-            labels : dict[str, str]
-                The labels to filter the Kubernetes pods by.
-            namespace : str
-                The namespace to search within.
-            timeout : float
-                The maximum time to wait for the Kubernetes pods to be retrieved, in
-                seconds.  If infinite, wait indefinitely.
-
-            Returns
-            -------
-            Pod.List
-                The validated list of Kubernetes pods.
-
-            Raises
-            ------
-            CommandError
-                If the `kubectl get` command fails to execute or returns an error.
-            ValueError
-                If the retrieved Kubernetes pod list payload does not conform to the
-                expected structure, or if the specified pod is not found in the list.
-            """
-            cmd = ["get", "pod", "-n", namespace]
-            if labels:
-                selector = ",".join(f"{k}={v}" for k, v in labels.items())
-                cmd.extend(["-l", selector])
-            cmd.extend(["-o", "json"])
-            result = await kubectl(
-                cmd,
-                capture_output=True,
-                timeout=timeout,
-            )
-            return cls.model_validate_json(result.stdout.strip())
-
-
-class PersistentVolume(BaseModel):
-    """Validated subset of one Kubernetes PersistentVolume payload."""
-    class Spec(BaseModel):
-        """Validated subset of one PV spec."""
-        class CSI(BaseModel):
-            """Validated subset of one CSI-backed PV source."""
-            model_config = ConfigDict(extra="ignore")
-            driver: Annotated[Trimmed, Field(default="")]
-            volumeAttributes: Annotated[dict[Trimmed, Trimmed], Field(default_factory=dict)]
-
-        model_config = ConfigDict(extra="ignore")
-        csi: Annotated[PersistentVolume.Spec.CSI | None, Field(default=None)]
-
-    model_config = ConfigDict(extra="ignore")
-    metadata: Annotated[KubeMetadata, Field(default_factory=KubeMetadata.model_construct)]
-    spec: PersistentVolume.Spec
+    @property
+    def spec(self) -> kube_client.V1PodSpec:
+        return self.obj.spec or kube_client.V1PodSpec(containers=[])
 
     @classmethod
-    async def get(cls, name: KubeName, *, timeout: float) -> Self | None:
-        """Load a Kubernetes PersistentVolume by name and validate its structure.
+    async def query(
+        cls,
+        *,
+        namespace: str,
+        timeout: float,
+        name: KubeName | None = None,
+        labels: dict[str, str] | None = None,
+    ) -> list[Self]:
+        """Load Kubernetes Pods and validate their structure.
 
         Parameters
         ----------
-        name : str
-            The name of the Kubernetes PersistentVolume.
+        namespace : str
+            The namespace to search within.
         timeout : float
-            The maximum time to wait for the Kubernetes PersistentVolume to be
-            retrieved, in seconds.  If infinite, wait indefinitely.
+            The maximum time to wait for Kubernetes pod queries in seconds.  If
+            infinite, wait indefinitely.
+        name : str | None, optional
+            Optional pod name.  When given, this performs an exact name lookup and
+            returns either a one-item list or an empty list.
+        labels : dict[str, str] | None, optional
+            Optional label filters.  Only supported for list lookups.
 
         Returns
         -------
-        PersistentVolume | None
-            The validated Kubernetes PersistentVolume data, or `None` if not found.
+        list[Pod]
+            Validated Kubernetes pod wrappers.  Name lookups return either one item or
+            an empty list.
+
+        Raises
+        ------
+        ValueError
+            If both `name` and `labels` are provided.
+        TimeoutError
+            If the Kubernetes request exceeds the timeout budget.
+        OSError
+            If the Kubernetes API call fails or returns malformed data.
         """
-        payload = (await kubectl(
-            [
-                "get",
-                "pv",
-                name,
-                "-o", "json",
-                "--ignore-not-found=true",
-            ],
-            capture_output=True,
+        if name is not None and labels is not None:
+            raise ValueError("pod query cannot combine both name and labels filters")
+
+        core = kube_client.CoreV1Api(_host_client())
+        if name is not None:
+            payload = await _run_api(
+                lambda: core.read_namespaced_pod(
+                    name=name,
+                    namespace=namespace,
+                    _request_timeout=_normalize_timeout(timeout),
+                ),
+                timeout=timeout,
+                context=f"failed to read pod {name!r} in namespace {namespace!r}",
+                allow_not_found=True,
+            )
+            if payload is None:
+                return []
+            return [cls(obj=payload)]
+
+        payload = await _run_api(
+            lambda: core.list_namespaced_pod(
+                namespace=namespace,
+                label_selector=_label_selector(labels),
+                _request_timeout=_normalize_timeout(timeout),
+            ),
             timeout=timeout,
-        )).stdout.strip()
-        if payload:
-            return cls.model_validate_json(payload)
-        return None
+            context=f"failed to list pods in namespace {namespace!r}",
+        )
+        return [cls(obj=item) for item in payload.items or []]
+
+
+@dataclass(frozen=True)
+class PersistentVolume:
+    """Thin wrapper around one Kubernetes PersistentVolume object."""
+    obj: kube_client.V1PersistentVolume
+
+    @property
+    def metadata(self) -> kube_client.V1ObjectMeta:
+        return self.obj.metadata or kube_client.V1ObjectMeta()
+
+    @property
+    def spec(self) -> kube_client.V1PersistentVolumeSpec:
+        return self.obj.spec or kube_client.V1PersistentVolumeSpec()
+
+    @classmethod
+    async def query(
+        cls,
+        *,
+        timeout: float,
+        name: KubeName | None = None,
+        labels: dict[str, str] | None = None,
+    ) -> list[Self]:
+        """Load Kubernetes PersistentVolumes and validate their structure.
+
+        Parameters
+        ----------
+        timeout : float
+            The maximum time to wait for Kubernetes PersistentVolume queries in seconds.
+            If infinite, wait indefinitely.
+        name : str | None, optional
+            Optional PersistentVolume name.  When given, this performs an exact name
+            lookup and returns either a one-item list or an empty list.
+        labels : dict[str, str] | None, optional
+            Optional label filters.  Only supported for list lookups.
+
+        Returns
+        -------
+        list[PersistentVolume]
+            Validated Kubernetes PersistentVolume wrappers.  Name lookups return either
+            one item or an empty list.
+
+        Raises
+        ------
+        ValueError
+            If both `name` and `labels` are provided.
+        TimeoutError
+            If the Kubernetes request exceeds the timeout budget.
+        OSError
+            If the Kubernetes API call fails or returns malformed data.
+        """
+        if name is not None and labels is not None:
+            raise ValueError(
+                "persistent volume query cannot combine both name and labels filters"
+            )
+
+        core = kube_client.CoreV1Api(_host_client())
+        if name is not None:
+            payload = await _run_api(
+                lambda: core.read_persistent_volume(
+                    name=name,
+                    _request_timeout=_normalize_timeout(timeout),
+                ),
+                timeout=timeout,
+                context=f"failed to read PersistentVolume {name!r}",
+                allow_not_found=True,
+            )
+            if payload is None:
+                return []
+            return [cls(obj=payload)]
+
+        payload = await _run_api(
+            lambda: core.list_persistent_volume(
+                label_selector=_label_selector(labels),
+                _request_timeout=_normalize_timeout(timeout),
+            ),
+            timeout=timeout,
+            context="failed to list Kubernetes PersistentVolumes",
+        )
+        return [cls(obj=item) for item in payload.items or []]
 
 
 def parse_pvc_size(value: str) -> Decimal:
