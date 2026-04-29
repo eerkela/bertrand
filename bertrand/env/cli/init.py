@@ -21,10 +21,6 @@ from typing import Literal, Self
 
 from pydantic import BaseModel, ConfigDict, PositiveInt
 
-from ..ceph import (
-    MountInfo,
-    RepoCredentials,
-)
 from ..config import RESOURCE_NAMES, Config, Resource
 from ..config.core import (
     AbsolutePosixPath,
@@ -33,7 +29,16 @@ from ..config.core import (
     UUIDHex,
     _check_uuid,
 )
-from ..kube import DEFAULT_VOLUME_SIZE, RepoVolume
+from ..kube import (
+    DEFAULT_VOLUME_SIZE,
+    MountInfo,
+    RepoCredentials,
+    RepoVolume,
+    ceph_capacity_controlplane_image_build,
+    ensure_cluster_image,
+    ensure_cluster_image_store,
+    ensure_ceph_capacity_controlplane,
+)
 from ..run import (
     BERTRAND_GROUP,
     INFINITY,
@@ -1328,6 +1333,16 @@ async def bertrand_init(
         await start_microceph(timeout=deadline - loop.time())
         await start_microk8s(timeout=deadline - loop.time())
         await link_kube_ceph(timeout=deadline - loop.time())
+        await ensure_cluster_image_store(timeout=deadline - loop.time())
+        autoscaler_build = ceph_capacity_controlplane_image_build()
+        autoscaler_image = await ensure_cluster_image(
+            autoscaler_build,
+            timeout=deadline - loop.time(),
+        )
+        await ensure_ceph_capacity_controlplane(
+            image=autoscaler_image,
+            timeout=deadline - loop.time(),
+        )
 
     # if no project root is provided, then we're done
     if path is None:
@@ -1365,9 +1380,6 @@ async def bertrand_init(
     recovered_repo_id: UUIDHex | None = None
     if resurrected is not None:
         recovered_repo_id, _ = resurrected
-
-    # TODO: I think I can avoid a redundant scan of the parent directories by refining
-    # the `_resurrect_mount` hook and related helper in mount.py
 
     # search for parent Git repository on target path, and then identify the ancestor
     # symlink that points to it, if any

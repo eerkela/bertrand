@@ -18,7 +18,7 @@ from ..run import (
     ENV_ID_ENV,
     REPO_ID_ENV,
 )
-from .helper import PersistentVolume, PersistentVolumeClaim, Pod, StorageClass
+from .api import PersistentVolume, PersistentVolumeClaim, Pod, StorageClass
 
 CACHE_VOLUME_ENV: str = "BERTRAND_CACHE_VOLUME"
 REPO_VOLUME_ENV: str = "BERTRAND_REPO_VOLUME"

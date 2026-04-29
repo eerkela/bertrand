@@ -22,8 +22,8 @@ from pydantic import (
     ValidationError,
 )
 
-from ..config.core import UUIDHex, _check_uuid
-from ..run import (
+from ...config.core import UUIDHex, _check_uuid
+from ...run import (
     HOST_MOUNTS,
     INFINITY,
     REPO_ALIASES_EXT,
@@ -61,8 +61,8 @@ REPO_ORPHAN_GC_BUDGET = 2.0
 def _check_alias_version(value: int) -> int:
     if value != ALIASES_SCHEMA_VERSION:
         raise ValueError(
-            "repository alias index file has unsupported schema version "
-            f"{value}; expected {ALIASES_SCHEMA_VERSION}"
+            f"repository alias index file has unsupported schema version {value}; "
+            f"expected {ALIASES_SCHEMA_VERSION}"
         )
     return value
 

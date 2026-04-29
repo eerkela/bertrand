@@ -15,7 +15,7 @@ from pydantic import ValidationError
 
 from ..config.core import KubeName, _check_kube_name, _check_uuid
 from ..run import BERTRAND_NAMESPACE, CACHE_DIR, atomic_write_bytes, kubectl
-from .helper import KubeSecret
+from .api import KubeSecret
 
 type CapabilityKind = Literal["secret", "ssh", "device"]
 DEVICE_PERMISSIONS = frozenset({"r", "w", "m", "rw", "rm", "wm", "rwm"})

@@ -1,18 +1,29 @@
-"""Shared utility helpers for Bertrand's Kubernetes runtime assembly."""
+"""Shared Kubernetes API primitives for Bertrand's runtime orchestration.
+
+This module centralizes validated Kubernetes payload models and API access
+utilities used across Bertrand's kube subsystems.
+"""
 from __future__ import annotations
 
 import asyncio
 import base64
 import binascii
 import json
+import math
+import os
 import re
+import urllib.error
+import urllib.parse
+import urllib.request
+from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
+from pathlib import Path
 from typing import Annotated, Self
 
 from pydantic import BaseModel, ConfigDict, Field, StrictStr, ValidationError
 
 from ..config.core import KubeName, NonEmpty, Trimmed
-from ..run import CommandError, JSONValue, kubectl, run
+from ..run import BERTRAND_NAMESPACE, CommandError, JSONValue, kubectl
 
 PVC_GROW_RETRIES = 4
 QUANTITY_RE = re.compile(r"^([0-9]+(?:\.[0-9]+)?)([A-Za-z]{0,2})$")
@@ -35,31 +46,177 @@ STORAGE_FACTORS: dict[str, Decimal] = {
 }
 
 
-async def enable_addon(name: str, *, timeout: float) -> None:
-    """Enable a Kubernetes addon by name, if not already enabled.
+@dataclass(frozen=True)
+class InClusterAPI:
+    """Tiny in-cluster Kubernetes API client for controlplane pods.
 
-    Parameters
+    This avoids depending on ``kubectl`` inside operator pods and relies only on
+    ServiceAccount token credentials.
+
+    Attributes
     ----------
-    name : str
-        The name of the addon to enable.
-    timeout : float
-        Maximum runtime command timeout in seconds.  If infinite, wait indefinitely.
-
-    Raises
-    ------
-    CommandError
-        If the addon cannot be enabled.
+    host : str
+        In-cluster Kubernetes API server URL.
+    token : str
+        ServiceAccount bearer token.
+    ca_file : Path
+        PEM CA bundle path for API server TLS verification.
+    namespace : str
+        Namespace where namespaced resources should be managed.
     """
-    try:
-        await run(
-            ["microk8s", "enable", name],
-            capture_output=True,
-            timeout=timeout,
+
+    host: str
+    token: str
+    ca_file: Path
+    namespace: str
+
+    @classmethod
+    def load(cls) -> Self:
+        """Construct an in-cluster API client from ServiceAccount files.
+
+        Returns
+        -------
+        InClusterAPI
+            Ready-to-use API client for Kubernetes HTTPS endpoints.
+
+        Raises
+        ------
+        OSError
+            If required serviceaccount files or env vars are missing.
+        """
+
+        service_host = os.environ.get("KUBERNETES_SERVICE_HOST", "").strip()
+        service_port = os.environ.get("KUBERNETES_SERVICE_PORT_HTTPS", "443").strip()
+        if not service_host:
+            raise OSError(
+                "in-cluster API is unavailable: KUBERNETES_SERVICE_HOST is not set"
+            )
+        token_path = Path("/var/run/secrets/kubernetes.io/serviceaccount/token")
+        namespace_path = Path("/var/run/secrets/kubernetes.io/serviceaccount/namespace")
+        ca_path = Path("/var/run/secrets/kubernetes.io/serviceaccount/ca.crt")
+        if not token_path.is_file():
+            raise OSError(f"serviceaccount token file is missing: {token_path}")
+        if not namespace_path.is_file():
+            raise OSError(f"serviceaccount namespace file is missing: {namespace_path}")
+        if not ca_path.is_file():
+            raise OSError(f"serviceaccount CA file is missing: {ca_path}")
+        return cls(
+            host=f"https://{service_host}:{service_port}",
+            token=token_path.read_text(encoding="utf-8").strip(),
+            ca_file=ca_path,
+            namespace=namespace_path.read_text(encoding="utf-8").strip() or BERTRAND_NAMESPACE,
         )
-    except CommandError as err:
-        detail = f"{err.stdout}\n{err.stderr}".strip().lower()
-        if "already enabled" not in detail and "alreadyenabled" not in detail:
-            raise
+
+    def _request(
+        self,
+        method: str,
+        path: str,
+        *,
+        timeout: float,
+        body: dict | list | None = None,
+        content_type: str | None = None,
+        query: dict[str, str] | None = None,
+        check: bool = True,
+    ) -> tuple[int, str]:
+        if timeout <= 0:
+            raise TimeoutError("in-cluster API request timeout must be non-negative")
+        qs = ""
+        if query:
+            qs = "?" + urllib.parse.urlencode(query)
+        url = f"{self.host}{path}{qs}"
+        headers = {
+            "Authorization": f"Bearer {self.token}",
+            "Accept": "application/json",
+        }
+        data: bytes | None = None
+        if body is not None:
+            if content_type is None:
+                content_type = "application/json"
+            headers["Content-Type"] = content_type
+            data = json.dumps(body).encode("utf-8")
+
+        request = urllib.request.Request(  # noqa: S310
+            url=url,
+            data=data,
+            headers=headers,
+            method=method,
+        )
+        context = None
+        try:
+            import ssl
+
+            context = ssl.create_default_context(cafile=str(self.ca_file))
+        except Exception:
+            context = None
+
+        request_timeout: float | None
+        if math.isinf(timeout):
+            request_timeout = None
+        else:
+            request_timeout = timeout
+
+        try:
+            with urllib.request.urlopen(  # noqa: S310
+                request,
+                timeout=request_timeout,
+                context=context,
+            ) as response:
+                payload = response.read().decode("utf-8", errors="replace")
+                return int(response.status), payload
+        except urllib.error.HTTPError as err:
+            payload = err.read().decode("utf-8", errors="replace")
+            if not check:
+                return int(err.code), payload
+            raise OSError(
+                f"kubernetes API request failed ({method} {path}): HTTP {err.code}\n{payload}"
+            ) from err
+        except urllib.error.URLError as err:
+            raise OSError(
+                f"kubernetes API request failed ({method} {path}): {err}"
+            ) from err
+
+    def get_json(
+        self,
+        path: str,
+        *,
+        timeout: float,
+        query: dict[str, str] | None = None,
+    ) -> dict:
+        """Issue a JSON GET request against in-cluster API."""
+
+        status, payload = self._request(
+            "GET",
+            path,
+            timeout=timeout,
+            query=query,
+            check=False,
+        )
+        if status == 404:
+            return {}
+        if status >= 400:
+            raise OSError(
+                f"kubernetes API request failed (GET {path}): HTTP {status}\n{payload}"
+            )
+        try:
+            return json.loads(payload) if payload.strip() else {}
+        except json.JSONDecodeError as err:
+            raise OSError(f"kubernetes API returned malformed JSON for {path}: {err}") from err
+
+    def patch_status(self, path: str, *, timeout: float, status: dict) -> None:
+        """Patch a status subresource using merge-patch semantics."""
+
+        self._request(
+            "PATCH",
+            path,
+            timeout=timeout,
+            body=status,
+            content_type="application/merge-patch+json",
+        )
+
+    def create(self, path: str, *, timeout: float, body: dict) -> None:
+        """Create a namespaced object using POST."""
+
+        self._request("POST", path, timeout=timeout, body=body)
 
 
 class KubeMetadata(BaseModel):

@@ -8,13 +8,16 @@ runtime inputs (`Config`, `env_id`) needed for image/container materialization.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import re
+import shutil
+import tempfile
 import time
 import uuid
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated
@@ -43,6 +46,7 @@ from ..run import (
     ENV_ID_ENV,
     IMAGE_ID_ENV,
     IMAGE_TAG_ENV,
+    INFINITY,
     METADATA_DIR,
     WORKTREE_MOUNT,
     Scalar,
@@ -50,10 +54,21 @@ from ..run import (
     inside_image,
     nerdctl,
     nerdctl_ids,
+    run,
+    start_buildkit,
+    sudo,
 )
 from ..version import VERSION
 from .container import Container, container_args
 from .network import format_network
+from .node import (
+    CLUSTER_REGISTRY_READY_LABEL,
+    CLUSTER_REGISTRY_READY_VALUE,
+    label_local_node,
+    list_nodes,
+    nodes_with_label,
+)
+from .system import enable_addon
 from .volume import collect_mount_specs, gc_volumes
 
 
@@ -61,6 +76,250 @@ def _to_utc(value: datetime) -> datetime:
     if value.tzinfo is None or value.tzinfo.utcoffset(value) is None:
         raise ValueError(f"'created' must be a valid ISO timestamp: {value}")
     return value.astimezone(UTC)
+
+
+###############################
+####    CLUSTER STORAGE    ####
+###############################
+
+
+# TODO: in general, this should probably be basically just a wrapper around a buildkit
+# daemon hooked up to nerdctl, which targets the cluster-wide registry.  The `Image`
+# abstraction then represents an image reference within that registry, and `config.py`
+# defines the build topology for an `Image.build()` factory method.
+
+
+CLUSTER_REGISTRY_HOSTS = ("localhost:32000", "127.0.0.1:32000")
+CLUSTER_REGISTRY_SERVER = "http://localhost:32000"
+
+
+@dataclass(frozen=True)
+class ClusterImageBuild:
+    """Declarative build contract for one cluster-shared image.
+
+    Attributes
+    ----------
+    image : str
+        Fully-qualified image reference to build/push.
+    dockerfile : str
+        Dockerfile text to write into the ephemeral build context.
+    context_copies : tuple[tuple[Path, Path], ...]
+        Source/target copy specifications for build context assembly.  Source paths
+        are absolute host paths; target paths are relative paths inside the temporary
+        context root.
+    context_prefix : str
+        Prefix for temporary build-context directory names.
+    build_flags : tuple[str, ...]
+        Additional nerdctl build flags inserted before labels and `-t`.
+    build_labels : dict[str, str]
+        Image labels to apply while building.
+    """
+
+    image: OCIImageRef
+    dockerfile: NonEmpty[Trimmed]
+    context_copies: tuple[tuple[Path, Path], ...] = ()
+    context_prefix: NonEmpty[Trimmed] = "bertrand-cluster-image"
+    build_flags: tuple[str, ...] = ("--progress=plain",)
+    build_labels: dict[str, str] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if not self.image.strip():
+            raise ValueError("cluster image reference cannot be empty")
+        if not self.dockerfile.strip():
+            raise ValueError("cluster image Dockerfile cannot be empty")
+        if not self.context_prefix.strip():
+            raise ValueError("cluster image context prefix cannot be empty")
+        for source, target in self.context_copies:
+            if source != source.expanduser().resolve():
+                raise ValueError(
+                    "cluster image context sources must be canonical absolute paths: "
+                    f"{source}"
+                )
+            if target.is_absolute():
+                raise ValueError(
+                    "cluster image context targets must be relative to context root: "
+                    f"{target}"
+                )
+            if any(part in ("", ".", "..") for part in target.parts):
+                raise ValueError(
+                    "cluster image context targets cannot contain '.', '..', or "
+                    f"empty path segments: {target}"
+                )
+
+
+def _remaining(deadline: float) -> float:
+    remaining = deadline - asyncio.get_running_loop().time()
+    if remaining <= 0:
+        raise TimeoutError("timed out while converging cluster image store")
+    return remaining
+
+
+async def _ensure_registry_trust(*, timeout: float) -> None:
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    content = (
+        f"server = \"{CLUSTER_REGISTRY_SERVER}\"\n"
+        f"[host.\"{CLUSTER_REGISTRY_SERVER}\"]\n"
+        "  capabilities = [\"pull\", \"resolve\", \"push\"]\n"
+        "  skip_verify = true\n"
+    )
+    for host in CLUSTER_REGISTRY_HOSTS:
+        trust_dir = Path(f"/var/snap/microk8s/current/args/certs.d/{host}")
+        trust_file = trust_dir / "hosts.toml"
+        if trust_file.is_file():
+            try:
+                if trust_file.read_text(encoding="utf-8") == content:
+                    continue
+            except OSError:
+                pass
+        await run(
+            sudo(["install", "-d", "-m", "0755", str(trust_dir)]),
+            capture_output=True,
+            timeout=_remaining(deadline),
+        )
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as handle:
+            handle.write(content)
+            temp_path = Path(handle.name)
+        try:
+            await run(
+                sudo(["install", "-m", "0644", str(temp_path), str(trust_file)]),
+                capture_output=True,
+                timeout=_remaining(deadline),
+            )
+        finally:
+            temp_path.unlink(missing_ok=True)
+
+
+async def _ensure_registry_ready_node_label(*, timeout: float) -> None:
+    await label_local_node(
+        label=CLUSTER_REGISTRY_READY_LABEL,
+        value=CLUSTER_REGISTRY_READY_VALUE,
+        timeout=timeout,
+    )
+
+
+async def _assert_registry_ready_nodes(*, timeout: float) -> None:
+    nodes = await list_nodes(timeout=timeout)
+    ready = set(
+        nodes_with_label(
+            nodes,
+            label=CLUSTER_REGISTRY_READY_LABEL,
+            value=CLUSTER_REGISTRY_READY_VALUE,
+        )
+    )
+    missing = sorted(
+        node.metadata.name
+        for node in nodes.items
+        if node.metadata.name not in ready
+    )
+    if missing:
+        raise OSError(
+            "cluster image-store rollout blocked: registry trust label is missing on "
+            f"node(s): {', '.join(sorted(missing))}.  Run `bertrand init` on those "
+            "hosts first to converge registry trust and mark them ready."
+        )
+
+
+async def ensure_cluster_image_store(*, timeout: float = INFINITY) -> None:
+    """Converge local and cluster image-store trust prerequisites.
+
+    Parameters
+    ----------
+    timeout : float, optional
+        Maximum runtime budget in seconds.  If infinite, wait indefinitely.
+
+    Returns
+    -------
+    None
+        This function executes for side effects only.
+    """
+
+    if timeout <= 0:
+        raise TimeoutError("timeout must be non-negative")
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+
+    # Cluster-local image distribution requires the MicroK8s registry addon and
+    # per-node containerd trust convergence before workloads are rolled out.
+    await enable_addon("registry", timeout=_remaining(deadline))
+    await _ensure_registry_trust(timeout=_remaining(deadline))
+    await _ensure_registry_ready_node_label(timeout=_remaining(deadline))
+    await _assert_registry_ready_nodes(timeout=_remaining(deadline))
+
+
+async def _cluster_image_exists(image: str, *, timeout: float) -> bool:
+    result = await nerdctl(
+        ["image", "inspect", image],
+        check=False,
+        capture_output=True,
+        timeout=timeout,
+    )
+    return result.returncode == 0
+
+
+def _copy_context_item(source: Path, target: Path) -> None:
+    if not source.exists():
+        raise FileNotFoundError(
+            f"cluster image build context source does not exist: {source}"
+        )
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if source.is_dir():
+        shutil.copytree(source, target)
+    else:
+        shutil.copy2(source, target)
+
+
+async def ensure_cluster_image(
+    build: ClusterImageBuild,
+    *,
+    timeout: float = INFINITY,
+) -> str:
+    """Build and push one cluster-shared image to Bertrand's local registry.
+
+    Parameters
+    ----------
+    build : ClusterImageBuild
+        Declarative build request.
+    timeout : float, optional
+        Maximum runtime budget in seconds.  If infinite, wait indefinitely.
+
+    Returns
+    -------
+    str
+        Published image reference.
+    """
+
+    if timeout <= 0:
+        raise TimeoutError("timeout must be non-negative")
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    await start_buildkit(timeout=_remaining(deadline))
+
+    # We skip local rebuilds when the image already exists, but always push to
+    # converge cluster registry content for the requested tag.
+    if not await _cluster_image_exists(build.image, timeout=_remaining(deadline)):
+        with tempfile.TemporaryDirectory(prefix=f"{build.context_prefix}-") as tmp:
+            context = Path(tmp)
+            for source, target in build.context_copies:
+                _copy_context_item(source, context / target)
+            atomic_write_text(
+                context / "Dockerfile",
+                build.dockerfile,
+                encoding="utf-8",
+            )
+            cmd = ["build", *build.build_flags]
+            for key, value in sorted(build.build_labels.items()):
+                cmd.extend(["--label", f"{key}={value}"])
+            cmd.extend(["-t", build.image, str(context)])
+            await nerdctl(cmd, timeout=_remaining(deadline))
+
+    await nerdctl(["push", build.image], timeout=_remaining(deadline))
+    return build.image
+
+
+############################
+####    BUILD SYSTEM    ####
+############################
 
 
 type ImageId = NonEmpty[NoWhiteSpace]

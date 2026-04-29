@@ -13,7 +13,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from ..ceph import MountInfo
+from ..kube import MountInfo
 from ..run import (
     BERTRAND_ENV,
     NERDCTL_BIN,
