@@ -11,6 +11,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, Self, cast
 
+from kubernetes import client as kube_client
+
 from ..config.core import KubeName, _check_kube_name, _check_uuid
 from ..run import BERTRAND_NAMESPACE, CACHE_DIR, atomic_write_bytes
 from .api import Kube, KubeSecret
@@ -63,29 +65,33 @@ class CapabilityMetadata:
             If the Secret is missing required labels or annotations, or if the labels or
             annotations have invalid values.
         """
-        if secret.metadata.labels.get(CAPABILITY_MANAGED_V1) != "true":
+        metadata = secret.obj.metadata or kube_client.V1ObjectMeta()
+        name = metadata.name or "<unknown>"
+        labels = metadata.labels or {}
+        annotations = metadata.annotations or {}
+        if labels.get(CAPABILITY_MANAGED_V1) != "true":
             raise OSError(
-                f"cluster secret {secret.metadata.name!r} collides with a Bertrand "
+                f"cluster secret {name!r} collides with a Bertrand "
                 "capability name but is unmanaged"
             )
-        kind = secret.metadata.labels.get(CAPABILITY_KIND_V1)
+        kind = labels.get(CAPABILITY_KIND_V1)
         if kind not in ("secret", "ssh", "device"):
             raise OSError(
-                f"cluster secret {secret.metadata.name!r} has missing/invalid "
+                f"cluster secret {name!r} has missing/invalid "
                 f"{CAPABILITY_KIND_V1!r}"
             )
         kind = cast(CapabilityKind, kind)
-        id = secret.metadata.annotations.get(CAPABILITY_ID_V1)
+        id = annotations.get(CAPABILITY_ID_V1)
         if id is None:
             raise OSError(
-                f"cluster secret {secret.metadata.name!r} is missing annotation "
+                f"cluster secret {name!r} is missing annotation "
                 f"{CAPABILITY_ID_V1!r}"
             )
         id = _check_kube_name(id)
-        env_id: str | None = secret.metadata.labels.get(CAPABILITY_ENV_ID_V1)
+        env_id: str | None = labels.get(CAPABILITY_ENV_ID_V1)
         if env_id is None:
             raise OSError(
-                f"cluster secret {secret.metadata.name!r} is missing label "
+                f"cluster secret {name!r} is missing label "
                 f"{CAPABILITY_ENV_ID_V1!r}"
             )
         env_id = None if env_id == "shared" else _check_uuid(env_id)
@@ -453,7 +459,7 @@ class Capabilities:
 
         try:
             flags: list[str] = []
-            with Kube.outside_cluster() as kube:
+            with await Kube.host(timeout=self.timeout) as kube:
                 for id, secret in self._secrets.items():
                     flags.extend(await self._resolve_secret(id, secret, kube=kube))
                 for id, ssh in self._ssh.items():
@@ -505,7 +511,7 @@ async def get_capability(
         If a matching Kubernetes Secret is found but has malformed metadata.
     """
     expected = CapabilityMetadata(kind=kind, id=id, env_id=env_id)
-    with Kube.outside_cluster() as kube:
+    with await Kube.host(timeout=timeout) as kube:
         matches = await KubeSecret.query(
             kube=kube,
             namespace=BERTRAND_NAMESPACE,
@@ -563,7 +569,7 @@ async def put_capability(
         If a matching Kubernetes Secret is found but has malformed metadata.
     """
     expected = CapabilityMetadata(kind=kind, id=id, env_id=env_id)
-    with Kube.outside_cluster() as kube:
+    with await Kube.host(timeout=timeout) as kube:
         # search for existing secret at indicated scope
         matches = await KubeSecret.query(
             kube=kube,
@@ -671,7 +677,7 @@ async def delete_capability(
         If a matching Kubernetes Secret is found but has malformed metadata.
     """
     expected = CapabilityMetadata(kind=kind, id=id, env_id=env_id)
-    with Kube.outside_cluster() as kube:
+    with await Kube.host(timeout=timeout) as kube:
         matches = await KubeSecret.query(
             kube=kube,
             namespace=BERTRAND_NAMESPACE,
@@ -729,7 +735,7 @@ async def list_capabilities(
     """
     if env_id is not None:
         env_id = _check_uuid(env_id)
-    with Kube.outside_cluster() as kube:
+    with await Kube.host(timeout=timeout) as kube:
         parsed = await KubeSecret.query(
             kube=kube,
             namespace=BERTRAND_NAMESPACE,

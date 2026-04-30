@@ -154,7 +154,11 @@ class CacheVolume:
         storage_class: str | None,
         require_rwo: bool,
     ) -> None:
-        labels = pvc.metadata.labels
+        meta = pvc.obj.metadata
+        labels = (meta.labels or {}) if meta is not None else {}
+        spec = pvc.obj.spec
+        storage_class_name = spec.storage_class_name if spec is not None else None
+        access_modes = (spec.access_modes or []) if spec is not None else []
         if labels.get(BERTRAND_ENV) != "1" or labels.get(CACHE_VOLUME_ENV) != "1":
             raise OSError(
                 f"cluster PVC {claim_name!r} has missing required labels "
@@ -166,12 +170,12 @@ class CacheVolume:
                 f"cluster PVC {claim_name!r} has mismatched environment identity label "
                 f"{ENV_ID_ENV!r}: expected {env_id!r}, got {actual_env_id!r}"
             )
-        if storage_class is not None and pvc.spec.storage_class_name != storage_class:
+        if storage_class is not None and storage_class_name != storage_class:
             raise OSError(
                 f"cluster PVC {claim_name!r} uses storage class "
-                f"{pvc.spec.storage_class_name!r}, expected {storage_class!r}"
+                f"{storage_class_name!r}, expected {storage_class!r}"
             )
-        if require_rwo and "ReadWriteOnce" not in pvc.spec.access_modes:
+        if require_rwo and "ReadWriteOnce" not in access_modes:
             raise OSError(
                 f"cluster PVC {claim_name!r} must include ReadWriteOnce access mode"
             )
@@ -236,7 +240,7 @@ class CacheVolume:
             raise ValueError("size request cannot be empty")
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
-        with Kube.outside_cluster() as kube:
+        with await Kube.host(timeout=deadline - loop.time()) as kube:
             # get PVC storage class and assert that it supports volume expansion for
             # dynamic resizing
             storage_matches = await StorageClass.query(
@@ -250,11 +254,16 @@ class CacheVolume:
                     "provisioning cannot proceed"
                 )
             storage = storage_matches[0]
-            if not storage.allow_volume_expansion:
+            if not storage.obj.allow_volume_expansion:
                 raise OSError(
                     f"{storage_class!r} StorageClass must set 'allowVolumeExpansion=true' "
                     "for Bertrand cache PVC resizing"
                 )
+            storage_name = (
+                (storage.obj.metadata.name or "")
+                if storage.obj.metadata is not None
+                else ""
+            )
 
             # get/create PVCs for each of this tag's cache volumes
             for volume in await CacheVolume.from_config(config, tag, env_id):
@@ -280,7 +289,7 @@ class CacheVolume:
                         },
                         "spec": {
                             "accessModes": ["ReadWriteOnce"],
-                            "storageClassName": storage.metadata.name,
+                            "storageClassName": storage_name,
                             "resources": {
                                 "requests": {
                                     "storage": size_request,
@@ -346,7 +355,7 @@ class CacheVolume:
         bertrand = config.get(Bertrand)
         if bertrand is None:
             return
-        with Kube.outside_cluster() as kube:
+        with await Kube.host(timeout=deadline - loop.time()) as kube:
             # get all PVCs associated with this environment
             actual = await PersistentVolumeClaim.query(
                 kube=kube,
@@ -366,10 +375,21 @@ class CacheVolume:
                     timeout=deadline - loop.time(),
                     labels={BERTRAND_ENV: "1", ENV_ID_ENV: env_id},
                 ) if (
-                    not pod.metadata.deletion_timestamp and
-                    pod.status.phase in {"Pending", "Running", "Unknown"}
+                    not (
+                        pod.obj.metadata is not None and
+                        pod.obj.metadata.deletion_timestamp
+                    ) and
+                    (
+                        (pod.obj.status.phase or "")
+                        if pod.obj.status is not None
+                        else ""
+                    ) in {"Pending", "Running", "Unknown"}
                 )
-                for volume in pod.spec.volumes if volume.persistent_volume_claim is not None
+                for volume in (
+                    pod.obj.spec.volumes
+                    if pod.obj.spec is not None and pod.obj.spec.volumes is not None
+                    else []
+                ) if volume.persistent_volume_claim is not None
             }
             active.discard("")
 
@@ -383,15 +403,20 @@ class CacheVolume:
             # delete actual claims whose names are not in the expected and active sets
             stale = [
                 pvc for pvc in actual if (
-                    pvc.metadata.name and
-                    pvc.metadata.name not in expected and
-                    pvc.metadata.name not in active
+                    pvc.obj.metadata is not None and
+                    pvc.obj.metadata.name and
+                    pvc.obj.metadata.name not in expected and
+                    pvc.obj.metadata.name not in active
                 )
             ]
             for pvc in stale:
+                metadata = pvc.obj.metadata
+                if metadata is None or not metadata.name:
+                    continue
+                claim_name = metadata.name
                 cls._assert_managed_cache(
                     pvc,
-                    claim_name=pvc.metadata.name,
+                    claim_name=claim_name,
                     env_id=env_id,
                     storage_class=None,
                     require_rwo=False,
@@ -440,13 +465,17 @@ class RepoVolume:
         storage_class: str | None,
         require_rwx: bool,
     ) -> None:
-        actual_name = pvc.metadata.name
+        meta = pvc.obj.metadata
+        actual_name = meta.name if meta is not None else None
         if actual_name != claim_name:
             raise OSError(
                 f"cluster PVC for repo {repo_id!r} has non-deterministic claim name "
                 f"{actual_name!r}, expected {claim_name!r}"
             )
-        labels = pvc.metadata.labels
+        labels = (meta.labels or {}) if meta is not None else {}
+        spec = pvc.obj.spec
+        storage_class_name = spec.storage_class_name if spec is not None else None
+        access_modes = (spec.access_modes or []) if spec is not None else []
         if labels.get(BERTRAND_ENV) != "1" or labels.get(REPO_VOLUME_ENV) != "1":
             raise OSError(
                 f"cluster PVC {claim_name!r} collides with Bertrand volume claim, but "
@@ -458,12 +487,12 @@ class RepoVolume:
                 f"cluster PVC {claim_name!r} has mismatched repo identity label "
                 f"{REPO_ID_ENV!r}: expected {repo_id!r}, got {actual_repo_id!r}"
             )
-        if storage_class is not None and pvc.spec.storage_class_name != storage_class:
+        if storage_class is not None and storage_class_name != storage_class:
             raise OSError(
                 f"cluster PVC {claim_name!r} uses storage class "
-                f"{pvc.spec.storage_class_name!r}, expected {storage_class!r}"
+                f"{storage_class_name!r}, expected {storage_class!r}"
             )
-        if require_rwx and "ReadWriteMany" not in pvc.spec.access_modes:
+        if require_rwx and "ReadWriteMany" not in access_modes:
             raise OSError(
                 f"cluster PVC {claim_name!r} must include ReadWriteMany access mode"
             )
@@ -514,7 +543,7 @@ class RepoVolume:
         claim_name = cls._kube_name(repo_id)
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
-        with Kube.outside_cluster() as kube:
+        with await Kube.host(timeout=deadline - loop.time()) as kube:
             # select the preferred CephFS storage class in deterministic order
             storage_class: str | None = None
             storage: StorageClass | None = None
@@ -536,16 +565,16 @@ class RepoVolume:
                 )
 
             # assert that the selected class supports dynamic resizing and CephFS CSI
-            if not storage.allow_volume_expansion:
+            if not storage.obj.allow_volume_expansion:
                 raise OSError(
                     f"storage class {storage_class!r} must set allowVolumeExpansion=true "
                     "for Bertrand repository volume resizing"
                 )
-            provisioner = storage.provisioner.lower()
+            provisioner = (storage.obj.provisioner or "").lower()
             if "cephfs" not in provisioner or "csi.ceph.com" not in provisioner:
                 raise OSError(
                     f"storage class {storage_class!r} uses provisioner "
-                    f"{storage.provisioner!r}, but Bertrand repository volumes require a "
+                    f"{storage.obj.provisioner!r}, but Bertrand repository volumes require a "
                     "CephFS CSI provisioner (for example 'rook-ceph.cephfs.csi.ceph.com').  "
                     "Ensure MicroK8s is linked to MicroCeph and that the preferred "
                     "CephFS storage class is configured correctly."
@@ -623,7 +652,7 @@ class RepoVolume:
             labels[REPO_ID_ENV] = repo_id
         if timeout <= 0:
             raise TimeoutError("timeout must be non-negative")
-        with Kube.outside_cluster() as kube:
+        with await Kube.host(timeout=timeout) as kube:
             # get matching PVCs
             pvcs = await PersistentVolumeClaim.query(
                 kube=kube,
@@ -633,10 +662,12 @@ class RepoVolume:
             )
             out: list[Self] = []
             for pvc in pvcs:
-                repo_id = pvc.metadata.labels.get(REPO_ID_ENV, "")
+                meta = pvc.obj.metadata
+                labels = (meta.labels or {}) if meta is not None else {}
+                repo_id = labels.get(REPO_ID_ENV, "")
                 if not repo_id:
                     raise OSError(
-                        f"cluster PVC {pvc.metadata.name!r} is missing label {REPO_ID_ENV!r}"
+                        f"cluster PVC {(meta.name if meta is not None else '')!r} is missing label {REPO_ID_ENV!r}"
                     )
                 repo_id = _check_uuid(repo_id)
                 cls._assert_managed_pvc(
@@ -649,7 +680,10 @@ class RepoVolume:
                 out.append(cls(repo_id=repo_id, pvc=pvc))
 
             # deterministically order the output
-            out.sort(key=lambda m: (m.repo_id, m.pvc.metadata.name))
+            out.sort(key=lambda m: (
+                m.repo_id,
+                (m.pvc.obj.metadata.name if m.pvc.obj.metadata is not None else ""),
+            ))
             return out
 
     async def delete(self, *, timeout: float, force: bool) -> None:
@@ -667,7 +701,7 @@ class RepoVolume:
             raise TimeoutError("timeout must be non-negative")
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
-        with Kube.outside_cluster() as kube:
+        with await Kube.host(timeout=deadline - loop.time()) as kube:
             # check for running pods associated with this pvc, unless overridden
             if not force:
                 pods = await Pod.query(
@@ -679,15 +713,28 @@ class RepoVolume:
                 active = {
                     volume.persistent_volume_claim.claim_name
                     for pod in pods if (
-                        not pod.metadata.deletion_timestamp and
-                        pod.status.phase in {"Pending", "Running", "Unknown"}
+                        not (
+                            pod.obj.metadata is not None and
+                            pod.obj.metadata.deletion_timestamp
+                        ) and
+                        (
+                            (pod.obj.status.phase or "")
+                            if pod.obj.status is not None
+                            else ""
+                        ) in {"Pending", "Running", "Unknown"}
                     )
-                    for volume in pod.spec.volumes if volume.persistent_volume_claim is not None
+                    for volume in (
+                        pod.obj.spec.volumes
+                        if pod.obj.spec is not None and pod.obj.spec.volumes is not None
+                        else []
+                    ) if volume.persistent_volume_claim is not None
                 }
                 active.discard("")
-                if self.pvc.metadata.name in active:
+                meta = self.pvc.obj.metadata
+                name = meta.name if meta is not None else None
+                if name in active:
                     raise OSError(
-                        f"cannot delete repository volume {self.pvc.metadata.name!r} while "
+                        f"cannot delete repository volume {name!r} while "
                         "it is being used by active pods"
                     )
 
@@ -711,8 +758,9 @@ class RepoVolume:
         """
         if timeout <= 0:
             raise TimeoutError("timeout must be non-negative")
-        name = self.pvc.metadata.name
-        namespace = self.pvc.metadata.namespace
+        meta = self.pvc.obj.metadata
+        name = (meta.name or "") if meta is not None else ""
+        namespace = (meta.namespace or "") if meta is not None else ""
         if not name:
             raise OSError("cannot resolve Ceph path for PVC with missing metadata.name")
         if not namespace:
@@ -724,7 +772,7 @@ class RepoVolume:
         # wait until the PV is bound with the expected CSI attributes
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
-        with Kube.outside_cluster() as kube:
+        with await Kube.host(timeout=deadline - loop.time()) as kube:
             while True:
                 matches = await PersistentVolumeClaim.query(
                     kube=kube,
@@ -738,7 +786,12 @@ class RepoVolume:
                         f"repository claim {name!r} disappeared during Ceph path "
                         "resolution"
                     )
-                volume_name = (pvc.spec.volume_name or "").strip()
+                spec = pvc.obj.spec
+                volume_name = (
+                    (spec.volume_name or "").strip()
+                    if spec is not None
+                    else ""
+                )
                 if not volume_name:  # volumeName hasn't been populated yet, wait and retry
                     await asyncio.sleep(0.1)
                     continue
@@ -755,7 +808,8 @@ class RepoVolume:
                 volume = matches[0]
 
                 # confirm CSI driver with cephfs backend
-                csi = volume.spec.csi
+                spec = volume.obj.spec
+                csi = spec.csi if spec is not None else None
                 if csi is None:
                     raise OSError(
                         f"PersistentVolume {volume_name!r} is not CSI-backed and cannot be "

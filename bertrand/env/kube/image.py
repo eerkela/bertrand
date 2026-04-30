@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import platform
 import re
 import shutil
 import tempfile
@@ -62,13 +63,13 @@ from ..run import (
 from ..version import VERSION
 from .container import Container, container_args
 from .network import format_network
-from .api import Kube, label_local_node, list_nodes
-from .node import (
+from .api import (
     CLUSTER_REGISTRY_READY_LABEL,
     CLUSTER_REGISTRY_READY_VALUE,
-    nodes_with_label,
+    Kube,
 )
-from .volume import collect_mount_specs, gc_volumes
+from .node import Node
+from .volume import CacheVolume
 
 
 def _to_utc(value: datetime) -> datetime:
@@ -190,27 +191,67 @@ async def _ensure_registry_trust(*, timeout: float) -> None:
 
 
 async def _ensure_registry_ready_node_label(*, kube: Kube, timeout: float) -> None:
-    await label_local_node(
-        kube=kube,
-        label=CLUSTER_REGISTRY_READY_LABEL,
-        value=CLUSTER_REGISTRY_READY_VALUE,
-        timeout=timeout,
+    nodes = await Node.query(kube=kube, timeout=timeout)
+    if not nodes:
+        raise OSError("cluster image-store rollout blocked: Kubernetes node list is empty")
+
+    hints = {
+        platform.node().strip(),
+        os.uname().nodename.strip() if hasattr(os, "uname") else "",
+        os.environ.get("HOSTNAME", "").strip(),
+    }
+    hints.discard("")
+
+    for node in nodes:
+        # NOTE: we compare multiple identity facets because kube node naming can
+        # differ across runtimes even on the same host.
+        name = node.name
+        hostname = node.hostname
+        addresses = (
+            (address.address or "").strip()
+            for address in ((node.obj.status.addresses or []) if node.obj.status is not None else [])
+        )
+        if (
+            (name and name in hints) or
+            (hostname and hostname in hints) or
+            any(address and address in hints for address in addresses)
+        ):
+            await node.set_label(
+                kube=kube,
+                label=CLUSTER_REGISTRY_READY_LABEL,
+                value=CLUSTER_REGISTRY_READY_VALUE,
+                timeout=timeout,
+            )
+            return
+
+    if len(nodes) == 1:
+        await nodes[0].set_label(
+            kube=kube,
+            label=CLUSTER_REGISTRY_READY_LABEL,
+            value=CLUSTER_REGISTRY_READY_VALUE,
+            timeout=timeout,
+        )
+        return
+
+    names = ", ".join(sorted(node.name for node in nodes if node.name))
+    raise OSError(
+        "unable to map host identity to a unique Kubernetes node name during "
+        f"registry readiness labeling; available nodes: {names}"
     )
 
 
 async def _assert_registry_ready_nodes(*, kube: Kube, timeout: float) -> None:
-    nodes = await list_nodes(kube=kube, timeout=timeout)
-    ready = set(
-        nodes_with_label(
-            nodes,
-            label=CLUSTER_REGISTRY_READY_LABEL,
-            value=CLUSTER_REGISTRY_READY_VALUE,
-        )
-    )
+    nodes = await Node.query(kube=kube, timeout=timeout)
+    ready = {
+        node.name
+        for node in nodes
+        if node.name and
+        node.labels.get(CLUSTER_REGISTRY_READY_LABEL) == CLUSTER_REGISTRY_READY_VALUE
+    }
     missing = sorted(
-        node.metadata.name
-        for node in nodes.items
-        if node.metadata.name not in ready
+        node.name
+        for node in nodes
+        if node.name and node.name not in ready
     )
     if missing:
         raise OSError(
@@ -243,7 +284,7 @@ async def ensure_cluster_image_store(*, timeout: float = INFINITY) -> None:
     # per-node containerd trust convergence before workloads are rolled out.
     await enable_microk8s_addon("registry", timeout=_remaining(deadline))
     await _ensure_registry_trust(timeout=_remaining(deadline))
-    with Kube.outside_cluster() as kube:
+    with await Kube.host(timeout=_remaining(deadline)) as kube:
         await _ensure_registry_ready_node_label(
             kube=kube,
             timeout=_remaining(deadline),
@@ -500,7 +541,7 @@ async def image_args(
         )
 
     try:
-        await gc_volumes(config, env_id)
+        await CacheVolume.gc(config, env_id, timeout=INFINITY)
     except Exception:
         pass
 
@@ -514,8 +555,11 @@ async def image_args(
         containerfile = config.root / METADATA_DIR / "images" / tag / "Containerfile"
         containerfile.parent.mkdir(parents=True, exist_ok=True)
         build_mounts: list[str] = [
-            f"--mount=type=cache,id={volume_name},target={volume_target},sharing=locked"
-            for volume_name, volume_target in await collect_mount_specs(config, tag)
+            (
+                f"--mount=type=cache,id={volume.name},target={volume.target},"
+                "sharing=locked"
+            )
+            for volume in await CacheVolume.from_config(config, tag, env_id)
         ]
         atomic_write_text(
             containerfile,

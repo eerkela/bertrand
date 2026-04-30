@@ -35,9 +35,9 @@ from ..kube import (
     RepoCredentials,
     RepoVolume,
     ceph_capacity_controlplane_image_build,
+    ensure_ceph_capacity_controlplane,
     ensure_cluster_image,
     ensure_cluster_image_store,
-    ensure_ceph_capacity_controlplane,
     ensure_microk8s_kubeconfig,
 )
 from ..run import (

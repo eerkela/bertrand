@@ -9,18 +9,18 @@ from .capability import (
     put_capability,
 )
 from .api import (
+    CLUSTER_REGISTRY_READY_LABEL,
+    CLUSTER_REGISTRY_READY_VALUE,
     Kube,
     KubeSecret,
     PersistentVolume,
     PersistentVolumeClaim,
     Pod,
     StorageClass,
-    assert_nodes_labeled,
     ensure_microk8s_kubeconfig,
-    label_local_node,
-    list_nodes,
     parse_pvc_size,
 )
+from .node import Node
 from .ceph import (
     CephStorageAction,
     CephStorageActionSpec,
@@ -53,16 +53,5 @@ from .image import (
     render_containerfile,
 )
 from .network import format_cpus, format_network
-from .node import (
-    CLUSTER_REGISTRY_READY_LABEL,
-    CLUSTER_REGISTRY_READY_VALUE,
-    Node,
-    NodeAddress,
-    NodeList,
-    NodeMetadata,
-    NodeStatus,
-    local_node_name,
-    nodes_with_label,
-)
 from .registry import EnvironmentMetadata, Registry
 from .volume import DEFAULT_VOLUME_SIZE, CacheVolume, RepoVolume

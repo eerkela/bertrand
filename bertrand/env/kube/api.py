@@ -15,16 +15,17 @@ from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Self
+from urllib.parse import urlparse
 
-from kubernetes import client as kube_client
-from kubernetes import config as kube_config
+import kubernetes
 from kubernetes.client.rest import ApiException
 
 from ..config.core import KubeName
 from ..run import BERTRAND_NAMESPACE, STATE_DIR, JSONValue, atomic_write_text, run
-from .node import NodeList, local_node_name
 
 PVC_GROW_RETRIES = 4
+CLUSTER_REGISTRY_READY_LABEL = "bertrand.dev/registry-ready"
+CLUSTER_REGISTRY_READY_VALUE = "true"
 QUANTITY_RE = re.compile(r"^([0-9]+(?:\.[0-9]+)?)([A-Za-z]{0,2})$")
 STORAGE_FACTORS: dict[str, Decimal] = {
     "": Decimal(1),
@@ -44,6 +45,7 @@ STORAGE_FACTORS: dict[str, Decimal] = {
     "Ei": Decimal(2) ** 60,
 }
 KUBE_CONFIG_FILE = STATE_DIR / "kubeconfig"
+MICROK8S_KUBECONFIG_CONTEXT = "microk8s"
 
 
 def _normalize_timeout(timeout: float) -> float | None:
@@ -61,6 +63,134 @@ def _label_selector(labels: Mapping[str, str] | None) -> str | None:
     if not labels:
         return None
     return ",".join(f"{k}={v}" for k, v in labels.items())
+
+
+def _kubeconfig_identity(payload: str, *, source: str) -> tuple[str, str]:
+    """Extract `(server, certificate-authority-data)` from one kubeconfig payload."""
+    try:
+        raw = kubernetes.config.kube_config.yaml.safe_load(payload)
+    except Exception as err:
+        raise OSError(f"{source} is not valid kubeconfig YAML: {err}") from err
+    if not isinstance(raw, Mapping):
+        raise OSError(f"{source} kubeconfig must deserialize into a mapping")
+
+    current_context = str(raw.get("current-context") or "").strip()
+    if not current_context:
+        raise OSError(f"{source} kubeconfig is missing 'current-context'")
+
+    # NOTE: we lock to MicroK8s' canonical context name so a mismatched config
+    # cannot silently retarget Bertrand to another cluster.
+    if current_context != MICROK8S_KUBECONFIG_CONTEXT:
+        raise OSError(
+            f"{source} kubeconfig must use current-context "
+            f"{MICROK8S_KUBECONFIG_CONTEXT!r}, got {current_context!r}"
+        )
+
+    cluster_name = ""
+    contexts = raw.get("contexts")
+    if not isinstance(contexts, list):
+        raise OSError(f"{source} kubeconfig is missing context list")
+    for entry in contexts:
+        if not isinstance(entry, Mapping):
+            continue
+        if str(entry.get("name") or "").strip() != current_context:
+            continue
+        context = entry.get("context")
+        if isinstance(context, Mapping):
+            cluster_name = str(context.get("cluster") or "").strip()
+            break
+    if not cluster_name:
+        raise OSError(
+            f"{source} kubeconfig has no cluster bound to context {current_context!r}"
+        )
+
+    clusters = raw.get("clusters")
+    if not isinstance(clusters, list):
+        raise OSError(f"{source} kubeconfig is missing cluster list")
+    cluster_payload: Mapping[str, object] | None = None
+    for entry in clusters:
+        if not isinstance(entry, Mapping):
+            continue
+        if str(entry.get("name") or "").strip() != cluster_name:
+            continue
+        cluster = entry.get("cluster")
+        if isinstance(cluster, Mapping):
+            cluster_payload = cluster
+            break
+    if cluster_payload is None:
+        raise OSError(
+            f"{source} kubeconfig has no cluster payload named {cluster_name!r}"
+        )
+
+    server = str(cluster_payload.get("server") or "").strip()
+    if not server:
+        raise OSError(f"{source} kubeconfig is missing cluster.server")
+    parsed = urlparse(server)
+    if parsed.scheme != "https" or not parsed.hostname:
+        raise OSError(
+            f"{source} kubeconfig cluster.server must be a valid HTTPS URL, "
+            f"got {server!r}"
+        )
+
+    ca_data = str(cluster_payload.get("certificate-authority-data") or "").strip()
+    if not ca_data:
+        raise OSError(
+            f"{source} kubeconfig is missing cluster.certificate-authority-data"
+        )
+
+    return server, ca_data
+
+
+async def _microk8s_config_payload(*, timeout: float) -> str:
+    if timeout <= 0:
+        raise TimeoutError("kubeconfig timeout must be non-negative")
+    result = await run(
+        ["microk8s", "config"],
+        capture_output=True,
+        timeout=timeout,
+    )
+    text = result.stdout.strip()
+    if not text:
+        raise OSError("microk8s config returned an empty kubeconfig payload")
+    return text if text.endswith("\n") else f"{text}\n"
+
+
+async def ensure_microk8s_kubeconfig(*, timeout: float) -> Path:
+    """Converge Bertrand-managed kubeconfig from the local MicroK8s runtime.
+
+    Parameters
+    ----------
+    timeout : float
+        Maximum runtime budget in seconds.  If infinite, wait indefinitely.
+
+    Returns
+    -------
+    Path
+        The managed kubeconfig path that was converged.
+
+    Raises
+    ------
+    TimeoutError
+        If `timeout` is non-positive or command execution exceeds the budget.
+    OSError
+        If `microk8s config` returns an empty payload.
+    """
+    payload = await _microk8s_config_payload(timeout=timeout)
+
+    if KUBE_CONFIG_FILE.is_file():
+        try:
+            if KUBE_CONFIG_FILE.read_text(encoding="utf-8") == payload:
+                return KUBE_CONFIG_FILE
+        except OSError:
+            pass
+
+    atomic_write_text(
+        KUBE_CONFIG_FILE,
+        payload,
+        encoding="utf-8",
+        private=True,
+    )
+    return KUBE_CONFIG_FILE
 
 
 @dataclass
@@ -81,16 +211,16 @@ class Kube:
         Storage v1 API surface for StorageClass resources.
     """
     namespace: str
-    client: kube_client.ApiClient = field(repr=False)
-    core: kube_client.CoreV1Api = field(init=False, repr=False)
-    custom: kube_client.CustomObjectsApi = field(init=False, repr=False)
-    storage: kube_client.StorageV1Api = field(init=False, repr=False)
+    client: kubernetes.client.ApiClient = field(repr=False)
+    core: kubernetes.client.CoreV1Api = field(init=False, repr=False)
+    custom: kubernetes.client.CustomObjectsApi = field(init=False, repr=False)
+    storage: kubernetes.client.StorageV1Api = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
         try:
-            self.core = kube_client.CoreV1Api(self.client)
-            self.custom = kube_client.CustomObjectsApi(self.client)
-            self.storage = kube_client.StorageV1Api(self.client)
+            self.core = kubernetes.client.CoreV1Api(self.client)
+            self.custom = kubernetes.client.CustomObjectsApi(self.client)
+            self.storage = kubernetes.client.StorageV1Api(self.client)
         except Exception:
             try:
                 self.client.close()
@@ -122,7 +252,9 @@ class Kube:
         Raises
         ------
         OSError
-            If the kubeconfig is missing or cannot be loaded.
+            If the kubeconfig is missing or cannot be loaded.  This constructor does
+            not run `microk8s config` convergence checks; use :meth:`host` for the
+            strict Bertrand-managed path.
         """
         if not config_file.is_file():
             raise OSError(
@@ -132,7 +264,78 @@ class Kube:
         try:
             return cls(
                 namespace=namespace,
-                client=kube_config.new_client_from_config(
+                client=kubernetes.config.new_client_from_config(
+                    config_file=str(config_file)
+                ),
+            )
+        except Exception as err:
+            raise OSError(
+                f"failed to initialize kubernetes client from {config_file}: {err}"
+            ) from err
+
+    @classmethod
+    async def host(
+        cls,
+        *,
+        timeout: float,
+        namespace: str = BERTRAND_NAMESPACE,
+    ) -> Self:
+        """Build a host-side Kubernetes client with strict local MicroK8s identity proof.
+
+        Parameters
+        ----------
+        timeout : float
+            Maximum runtime budget in seconds.  If infinite, wait indefinitely.
+        namespace : str, optional
+            Default namespace for namespaced operations.
+
+        Returns
+        -------
+        Kube
+            Configured Kubernetes API wrapper.
+
+        Raises
+        ------
+        TimeoutError
+            If convergence/proof exceed the timeout budget.
+        OSError
+            If managed kubeconfig convergence fails, identity proof fails, or API
+            client initialization fails.
+        """
+        if timeout <= 0:
+            raise TimeoutError("kubernetes host-client timeout must be non-negative")
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+
+        # NOTE: we always converge from `microk8s config` first so the managed
+        # kubeconfig cannot drift from the local control-plane identity.
+        config_file = await ensure_microk8s_kubeconfig(timeout=deadline - loop.time())
+        try:
+            managed_payload = config_file.read_text(encoding="utf-8")
+        except OSError as err:
+            raise OSError(
+                f"failed to read managed kubeconfig at {config_file}: {err}"
+            ) from err
+        fresh_payload = await _microk8s_config_payload(timeout=deadline - loop.time())
+
+        managed_server, managed_ca = _kubeconfig_identity(
+            managed_payload,
+            source=f"managed kubeconfig {config_file}",
+        )
+        local_server, local_ca = _kubeconfig_identity(
+            fresh_payload,
+            source="`microk8s config`",
+        )
+        if managed_server != local_server or managed_ca != local_ca:
+            raise OSError(
+                "managed kubeconfig identity does not match local MicroK8s identity; "
+                "run `bertrand init` to reconverge host kube access."
+            )
+
+        try:
+            return cls(
+                namespace=namespace,
+                client=kubernetes.config.new_client_from_config(
                     config_file=str(config_file)
                 ),
             )
@@ -165,9 +368,9 @@ class Kube:
         OSError
             If in-cluster configuration cannot be loaded.
         """
-        configuration = kube_client.Configuration()
+        configuration = kubernetes.client.Configuration()
         try:
-            kube_config.load_incluster_config(client_configuration=configuration)
+            kubernetes.config.load_incluster_config(client_configuration=configuration)
         except Exception as err:
             raise OSError(f"failed to load in-cluster kubernetes configuration: {err}") from err
 
@@ -184,7 +387,7 @@ class Kube:
 
         return cls(
             namespace=str(resolved_namespace),
-            client=kube_client.ApiClient(configuration=configuration),
+            client=kubernetes.client.ApiClient(configuration=configuration),
         )
 
     def __enter__(self) -> Self:
@@ -241,150 +444,10 @@ class Kube:
             ) from err
 
 
-async def ensure_microk8s_kubeconfig(*, timeout: float) -> Path:
-    """Converge Bertrand-managed kubeconfig from the local MicroK8s runtime.
-
-    Parameters
-    ----------
-    timeout : float
-        Maximum runtime budget in seconds.  If infinite, wait indefinitely.
-
-    Returns
-    -------
-    Path
-        The managed kubeconfig path that was converged.
-
-    Raises
-    ------
-    TimeoutError
-        If `timeout` is non-positive or command execution exceeds the budget.
-    OSError
-        If `microk8s config` returns an empty payload.
-    """
-    if timeout <= 0:
-        raise TimeoutError("kubeconfig timeout must be non-negative")
-    result = await run(
-        ["microk8s", "config"],
-        capture_output=True,
-        timeout=timeout,
-    )
-    text = result.stdout.strip()
-    if not text:
-        raise OSError("microk8s config returned an empty kubeconfig payload")
-    payload = text if text.endswith("\n") else f"{text}\n"
-
-    if KUBE_CONFIG_FILE.is_file():
-        try:
-            if KUBE_CONFIG_FILE.read_text(encoding="utf-8") == payload:
-                return KUBE_CONFIG_FILE
-        except OSError:
-            pass
-
-    atomic_write_text(
-        KUBE_CONFIG_FILE,
-        payload,
-        encoding="utf-8",
-        private=True,
-    )
-    return KUBE_CONFIG_FILE
-
-
-async def list_nodes(*, kube: Kube, timeout: float) -> NodeList:
-    """Fetch cluster nodes and validate structure.
-
-    Parameters
-    ----------
-    kube : Kube
-        Active Kubernetes API context.
-    timeout : float
-        Maximum runtime budget in seconds.  If infinite, wait indefinitely.
-
-    Returns
-    -------
-    NodeList
-        Parsed node list payload.
-    """
-    payload = await kube.run(
-        lambda: kube.client.sanitize_for_serialization(
-            kube.core.list_node(_request_timeout=_normalize_timeout(timeout))
-        ),
-        timeout=timeout,
-        context="failed to list Kubernetes nodes",
-    )
-    if payload is None:
-        payload = {"items": []}
-    return NodeList.parse(payload, context="node list")
-
-
-async def label_local_node(
-    *,
-    kube: Kube,
-    label: str,
-    value: str,
-    timeout: float,
-) -> None:
-    """Apply or overwrite one label on the local Kubernetes node.
-
-    Parameters
-    ----------
-    kube : Kube
-        Active Kubernetes API context.
-    label : str
-        Label key to apply.
-    value : str
-        Label value to apply.
-    timeout : float
-        Maximum runtime budget in seconds.  If infinite, wait indefinitely.
-    """
-    local = local_node_name(await list_nodes(kube=kube, timeout=timeout))
-    payload = await kube.run(
-        lambda: kube.core.patch_node(
-            name=local,
-            body={"metadata": {"labels": {label: value}}},
-            _request_timeout=_normalize_timeout(timeout),
-        ),
-        timeout=timeout,
-        context=f"failed to label Kubernetes node {local!r}",
-    )
-    if payload is None:
-        raise OSError(f"unable to label Kubernetes node {local!r}: node not found")
-
-
-async def assert_nodes_labeled(
-    *,
-    kube: Kube,
-    label: str,
-    value: str,
-    timeout: float,
-    context: str,
-) -> None:
-    """Fail closed if any cluster node lacks the expected label value."""
-    nodes = await list_nodes(kube=kube, timeout=timeout)
-    missing = sorted(
-        node.metadata.name
-        for node in nodes.items
-        if node.metadata.labels.get(label) != value
-    )
-    if missing:
-        raise OSError(
-            f"{context}: required node label {label}={value} is missing on node(s): "
-            f"{', '.join(missing)}"
-        )
-
-
 @dataclass(frozen=True)
 class KubeSecret:
     """Thin wrapper around one Kubernetes Secret object."""
-
-    obj: kube_client.V1Secret
-
-    @property
-    def metadata(self) -> kube_client.V1ObjectMeta:
-        return self.obj.metadata or kube_client.V1ObjectMeta()
-
-    @property
-    def data(self) -> dict[str, str]:
-        return self.obj.data or {}
+    obj: kubernetes.client.V1Secret
 
     @classmethod
     async def query(
@@ -446,6 +509,11 @@ class KubeSecret:
             )
             if payload is None:
                 return []
+            if not isinstance(payload, kubernetes.client.V1Secret):
+                raise OSError(
+                    f"malformed Kubernetes Secret payload for {name!r} in "
+                    f"namespace {namespace!r}"
+                )
             return [cls(obj=payload)]
 
         payload = await kube.run(
@@ -459,7 +527,16 @@ class KubeSecret:
         )
         if payload is None:
             return []
-        return [cls(obj=item) for item in payload.items or []]
+        if not isinstance(payload, kubernetes.client.V1SecretList):
+            raise OSError(
+                f"malformed Kubernetes Secret list payload in namespace {namespace!r}"
+            )
+        out: list[Self] = []
+        for item in payload.items or []:
+            if not isinstance(item, kubernetes.client.V1Secret):
+                raise OSError("malformed Kubernetes Secret entry in list payload")
+            out.append(cls(obj=item))
+        return out
 
     def decode(self, name: KubeName) -> bytes:
         """Decode a base64-encoded value from the wrapped Secret payload.
@@ -479,7 +556,7 @@ class KubeSecret:
         OSError
             If required key is missing or invalid base64.
         """
-        value = self.data.get("value")
+        value = (self.obj.data or {}).get("value")
         if value is None:
             raise OSError(
                 f"cluster secret {name!r} does not define required key 'data.value'"
@@ -496,20 +573,7 @@ class KubeSecret:
 @dataclass(frozen=True)
 class StorageClass:
     """Thin wrapper around one Kubernetes StorageClass object."""
-
-    obj: kube_client.V1StorageClass
-
-    @property
-    def metadata(self) -> kube_client.V1ObjectMeta:
-        return self.obj.metadata or kube_client.V1ObjectMeta()
-
-    @property
-    def provisioner(self) -> str:
-        return self.obj.provisioner or ""
-
-    @property
-    def allow_volume_expansion(self) -> bool:
-        return bool(self.obj.allow_volume_expansion)
+    obj: kubernetes.client.V1StorageClass
 
     @classmethod
     async def query(
@@ -566,6 +630,8 @@ class StorageClass:
             )
             if payload is None:
                 return []
+            if not isinstance(payload, kubernetes.client.V1StorageClass):
+                raise OSError(f"malformed Kubernetes StorageClass payload for {name!r}")
             return [cls(obj=payload)]
 
         payload = await kube.run(
@@ -578,26 +644,24 @@ class StorageClass:
         )
         if payload is None:
             return []
-        return [cls(obj=item) for item in payload.items or []]
+        if not isinstance(payload, kubernetes.client.V1StorageClassList):
+            raise OSError("malformed Kubernetes StorageClass list payload")
+        out: list[Self] = []
+        for item in payload.items or []:
+            if not isinstance(item, kubernetes.client.V1StorageClass):
+                raise OSError("malformed Kubernetes StorageClass entry in list payload")
+            out.append(cls(obj=item))
+        return out
 
 
 @dataclass(frozen=True)
 class PersistentVolumeClaim:
     """Thin wrapper around one Kubernetes PersistentVolumeClaim object."""
-
-    obj: kube_client.V1PersistentVolumeClaim
-
-    @property
-    def metadata(self) -> kube_client.V1ObjectMeta:
-        return self.obj.metadata or kube_client.V1ObjectMeta()
-
-    @property
-    def spec(self) -> kube_client.V1PersistentVolumeClaimSpec:
-        return self.obj.spec or kube_client.V1PersistentVolumeClaimSpec()
+    obj: kubernetes.client.V1PersistentVolumeClaim
 
     @staticmethod
-    def _requested_storage(spec: kube_client.V1PersistentVolumeClaimSpec) -> str:
-        resources = spec.resources or kube_client.V1VolumeResourceRequirements()
+    def _requested_storage(spec: kubernetes.client.V1PersistentVolumeClaimSpec) -> str:
+        resources = spec.resources or kubernetes.client.V1VolumeResourceRequirements()
         requests = resources.requests or {}
         value = str(requests.get("storage") or "").strip()
         if not value:
@@ -661,6 +725,11 @@ class PersistentVolumeClaim:
             )
             if payload is None:
                 return []
+            if not isinstance(payload, kubernetes.client.V1PersistentVolumeClaim):
+                raise OSError(
+                    f"malformed Kubernetes PVC payload for {name!r} in namespace "
+                    f"{namespace!r}"
+                )
             return [cls(obj=payload)]
 
         payload = await kube.run(
@@ -677,7 +746,19 @@ class PersistentVolumeClaim:
         )
         if payload is None:
             return []
-        return [cls(obj=item) for item in payload.items or []]
+        if not isinstance(payload, kubernetes.client.V1PersistentVolumeClaimList):
+            raise OSError(
+                "malformed Kubernetes PersistentVolumeClaim list payload in "
+                f"namespace {namespace!r}"
+            )
+        out: list[Self] = []
+        for item in payload.items or []:
+            if not isinstance(item, kubernetes.client.V1PersistentVolumeClaim):
+                raise OSError(
+                    "malformed Kubernetes PersistentVolumeClaim entry in list payload"
+                )
+            out.append(cls(obj=item))
+        return out
 
     @classmethod
     async def create(
@@ -691,9 +772,15 @@ class PersistentVolumeClaim:
         metadata = data.get("metadata")
         name = ""
         namespace = ""
-        if isinstance(metadata, dict):
-            name = str(metadata.get("name") or "").strip()
-            namespace = str(metadata.get("namespace") or "").strip()
+        if isinstance(metadata, Mapping):
+            # NOTE: keep a concrete `dict[str, object]` to avoid type-inference
+            # ambiguity from recursive JSON unions when indexing metadata keys.
+            metadata_fields: dict[str, object] = {}
+            for key, value in metadata.items():
+                if isinstance(key, str):
+                    metadata_fields[key] = value
+            name = str(metadata_fields.get("name") or "").strip()
+            namespace = str(metadata_fields.get("namespace") or "").strip()
         if not namespace:
             raise OSError("PVC creation payload must define metadata.namespace")
 
@@ -709,7 +796,10 @@ class PersistentVolumeClaim:
                 timeout=deadline - loop.time(),
                 context="failed to create PersistentVolumeClaim",
             )
-            assert payload is not None
+            if payload is None:
+                raise OSError("kubernetes returned empty payload during PVC creation")
+            if not isinstance(payload, kubernetes.client.V1PersistentVolumeClaim):
+                raise OSError("malformed Kubernetes payload during PVC creation")
             return cls(obj=payload)
         except OSError as err:
             text = str(err).lower()
@@ -756,8 +846,9 @@ class PersistentVolumeClaim:
             If the PVC disappears or fails to converge after retries.
         """
         new_size = parse_pvc_size(requested)
-        name = self.metadata.name or ""
-        namespace = self.metadata.namespace or ""
+        meta = self.obj.metadata or kubernetes.client.V1ObjectMeta()
+        name = meta.name or ""
+        namespace = meta.namespace or ""
         if not name:
             raise OSError("cannot resize PVC with missing metadata.name")
         if not namespace:
@@ -778,7 +869,8 @@ class PersistentVolumeClaim:
                 raise OSError(f"PVC {name!r} disappeared during resize lifecycle")
             live = matches[0]
 
-            current_size = parse_pvc_size(type(self)._requested_storage(live.spec))
+            live_spec = live.obj.spec or kubernetes.client.V1PersistentVolumeClaimSpec()
+            current_size = parse_pvc_size(type(self)._requested_storage(live_spec))
             if current_size >= new_size:
                 return
 
@@ -817,7 +909,8 @@ class PersistentVolumeClaim:
                 raise OSError(f"PVC {name!r} disappeared during resize lifecycle")
             live = matches[0]
 
-            current_size = parse_pvc_size(type(self)._requested_storage(live.spec))
+            live_spec = live.obj.spec or kubernetes.client.V1PersistentVolumeClaimSpec()
+            current_size = parse_pvc_size(type(self)._requested_storage(live_spec))
             if current_size >= new_size:
                 return
             if attempt + 1 < PVC_GROW_RETRIES:
@@ -829,35 +922,25 @@ class PersistentVolumeClaim:
 
     async def delete(self, *, kube: Kube, timeout: float) -> None:
         """Delete the PVC from the cluster."""
+        meta = self.obj.metadata or kubernetes.client.V1ObjectMeta()
+        name = meta.name or ""
+        namespace = meta.namespace or ""
         await kube.run(
             lambda: kube.core.delete_namespaced_persistent_volume_claim(
-                name=self.metadata.name or "",
-                namespace=self.metadata.namespace or "",
-                body=kube_client.V1DeleteOptions(),
+                name=name,
+                namespace=namespace,
+                body=kubernetes.client.V1DeleteOptions(),
                 _request_timeout=_normalize_timeout(timeout),
             ),
             timeout=timeout,
-            context=f"failed to delete PVC {self.metadata.name!r}",
+            context=f"failed to delete PVC {name!r}",
         )
 
 
 @dataclass(frozen=True)
 class Pod:
     """Thin wrapper around one Kubernetes Pod object."""
-
-    obj: kube_client.V1Pod
-
-    @property
-    def metadata(self) -> kube_client.V1ObjectMeta:
-        return self.obj.metadata or kube_client.V1ObjectMeta()
-
-    @property
-    def status(self) -> kube_client.V1PodStatus:
-        return self.obj.status or kube_client.V1PodStatus()
-
-    @property
-    def spec(self) -> kube_client.V1PodSpec:
-        return self.obj.spec or kube_client.V1PodSpec(containers=[])
+    obj: kubernetes.client.V1Pod
 
     @classmethod
     async def query(
@@ -916,6 +999,11 @@ class Pod:
             )
             if payload is None:
                 return []
+            if not isinstance(payload, kubernetes.client.V1Pod):
+                raise OSError(
+                    f"malformed Kubernetes Pod payload for {name!r} in namespace "
+                    f"{namespace!r}"
+                )
             return [cls(obj=payload)]
 
         payload = await kube.run(
@@ -929,22 +1017,20 @@ class Pod:
         )
         if payload is None:
             return []
-        return [cls(obj=item) for item in payload.items or []]
+        if not isinstance(payload, kubernetes.client.V1PodList):
+            raise OSError(f"malformed Kubernetes Pod list payload in namespace {namespace!r}")
+        out: list[Self] = []
+        for item in payload.items or []:
+            if not isinstance(item, kubernetes.client.V1Pod):
+                raise OSError("malformed Kubernetes Pod entry in list payload")
+            out.append(cls(obj=item))
+        return out
 
 
 @dataclass(frozen=True)
 class PersistentVolume:
     """Thin wrapper around one Kubernetes PersistentVolume object."""
-
-    obj: kube_client.V1PersistentVolume
-
-    @property
-    def metadata(self) -> kube_client.V1ObjectMeta:
-        return self.obj.metadata or kube_client.V1ObjectMeta()
-
-    @property
-    def spec(self) -> kube_client.V1PersistentVolumeSpec:
-        return self.obj.spec or kube_client.V1PersistentVolumeSpec()
+    obj: kubernetes.client.V1PersistentVolume
 
     @classmethod
     async def query(
@@ -1001,6 +1087,8 @@ class PersistentVolume:
             )
             if payload is None:
                 return []
+            if not isinstance(payload, kubernetes.client.V1PersistentVolume):
+                raise OSError(f"malformed Kubernetes PersistentVolume payload for {name!r}")
             return [cls(obj=payload)]
 
         payload = await kube.run(
@@ -1013,7 +1101,14 @@ class PersistentVolume:
         )
         if payload is None:
             return []
-        return [cls(obj=item) for item in payload.items or []]
+        if not isinstance(payload, kubernetes.client.V1PersistentVolumeList):
+            raise OSError("malformed Kubernetes PersistentVolume list payload")
+        out: list[Self] = []
+        for item in payload.items or []:
+            if not isinstance(item, kubernetes.client.V1PersistentVolume):
+                raise OSError("malformed Kubernetes PersistentVolume entry in list payload")
+            out.append(cls(obj=item))
+        return out
 
 
 def parse_pvc_size(value: str) -> Decimal:

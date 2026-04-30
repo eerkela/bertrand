@@ -40,16 +40,15 @@ from ...run import (
     kubectl,
     run,
 )
-from ..api import Kube, list_nodes
+from ..api import (
+    CLUSTER_REGISTRY_READY_LABEL,
+    CLUSTER_REGISTRY_READY_VALUE,
+    Kube,
+)
 from ..image import (
     ClusterImageBuild,
 )
-from ..node import (
-    CLUSTER_REGISTRY_READY_LABEL,
-    CLUSTER_REGISTRY_READY_VALUE,
-    NodeList,
-    nodes_with_label,
-)
+from ..node import Node
 
 AUTOSCALE_GROUP = "ceph.bertrand.dev"
 AUTOSCALE_VERSION = "v1alpha1"
@@ -310,7 +309,13 @@ class ActionList(BaseModel):
 
     model_config = ConfigDict(extra="ignore")
     items: list[CephStorageAction] = Field(default_factory=list)
-    metadata: ObjectMeta = Field(default_factory=ObjectMeta)
+    metadata: ObjectMeta = Field(default_factory=lambda: ObjectMeta(
+        name="",
+        namespace="",
+        generation=0,
+        resourceVersion="",
+        labels={},
+    ))
 
 
 def _now_iso() -> str:
@@ -852,15 +857,16 @@ async def _controller_list_actions(api: Kube, *, timeout: float) -> ActionList:
         raise OSError(f"malformed action list payload: {err}") from err
 
 
-async def _controller_list_nodes(api: Kube, *, timeout: float) -> NodeList:
-    return await list_nodes(kube=api, timeout=timeout)
+async def _controller_list_nodes(api: Kube, *, timeout: float) -> list[Node]:
+    return await Node.query(kube=api, timeout=timeout)
 
 
-def _eligible_nodes(nodes: NodeList) -> list[str]:
-    return nodes_with_label(
-        nodes,
-        label=CLUSTER_REGISTRY_READY_LABEL,
-        value=CLUSTER_REGISTRY_READY_VALUE,
+def _eligible_nodes(nodes: list[Node]) -> list[str]:
+    return sorted(
+        node.name
+        for node in nodes
+        if node.name and
+        node.labels.get(CLUSTER_REGISTRY_READY_LABEL) == CLUSTER_REGISTRY_READY_VALUE
     )
 
 
@@ -1023,6 +1029,8 @@ async def _controller_watch_actions(
                 api.custom.list_namespaced_custom_object,
                 **kwargs,
             ):
+                if not isinstance(event, dict):
+                    continue
                 obj = event.get("object")
                 if not isinstance(obj, dict):
                     continue
