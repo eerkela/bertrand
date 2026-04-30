@@ -9,13 +9,16 @@ from .capability import (
     put_capability,
 )
 from .api import (
-    InClusterAPI,
+    Kube,
     KubeSecret,
     PersistentVolume,
     PersistentVolumeClaim,
     Pod,
     StorageClass,
+    assert_nodes_labeled,
     ensure_microk8s_kubeconfig,
+    label_local_node,
+    list_nodes,
     parse_pvc_size,
 )
 from .ceph import (
@@ -58,9 +61,6 @@ from .node import (
     NodeList,
     NodeMetadata,
     NodeStatus,
-    assert_nodes_labeled,
-    label_local_node,
-    list_nodes,
     local_node_name,
     nodes_with_label,
 )

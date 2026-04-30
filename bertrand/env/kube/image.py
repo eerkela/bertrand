@@ -62,11 +62,10 @@ from ..run import (
 from ..version import VERSION
 from .container import Container, container_args
 from .network import format_network
+from .api import Kube, label_local_node, list_nodes
 from .node import (
     CLUSTER_REGISTRY_READY_LABEL,
     CLUSTER_REGISTRY_READY_VALUE,
-    label_local_node,
-    list_nodes,
     nodes_with_label,
 )
 from .volume import collect_mount_specs, gc_volumes
@@ -190,16 +189,17 @@ async def _ensure_registry_trust(*, timeout: float) -> None:
             temp_path.unlink(missing_ok=True)
 
 
-async def _ensure_registry_ready_node_label(*, timeout: float) -> None:
+async def _ensure_registry_ready_node_label(*, kube: Kube, timeout: float) -> None:
     await label_local_node(
+        kube=kube,
         label=CLUSTER_REGISTRY_READY_LABEL,
         value=CLUSTER_REGISTRY_READY_VALUE,
         timeout=timeout,
     )
 
 
-async def _assert_registry_ready_nodes(*, timeout: float) -> None:
-    nodes = await list_nodes(timeout=timeout)
+async def _assert_registry_ready_nodes(*, kube: Kube, timeout: float) -> None:
+    nodes = await list_nodes(kube=kube, timeout=timeout)
     ready = set(
         nodes_with_label(
             nodes,
@@ -243,8 +243,15 @@ async def ensure_cluster_image_store(*, timeout: float = INFINITY) -> None:
     # per-node containerd trust convergence before workloads are rolled out.
     await enable_microk8s_addon("registry", timeout=_remaining(deadline))
     await _ensure_registry_trust(timeout=_remaining(deadline))
-    await _ensure_registry_ready_node_label(timeout=_remaining(deadline))
-    await _assert_registry_ready_nodes(timeout=_remaining(deadline))
+    with Kube.outside_cluster() as kube:
+        await _ensure_registry_ready_node_label(
+            kube=kube,
+            timeout=_remaining(deadline),
+        )
+        await _assert_registry_ready_nodes(
+            kube=kube,
+            timeout=_remaining(deadline),
+        )
 
 
 async def _cluster_image_exists(image: str, *, timeout: float) -> bool:

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
-import json
+import math
 import shutil
 import sys
 import uuid
@@ -12,8 +12,8 @@ from pathlib import Path
 from typing import Literal, Self, cast
 
 from ..config.core import KubeName, _check_kube_name, _check_uuid
-from ..run import BERTRAND_NAMESPACE, CACHE_DIR, atomic_write_bytes, kubectl
-from .api import KubeSecret
+from ..run import BERTRAND_NAMESPACE, CACHE_DIR, atomic_write_bytes
+from .api import Kube, KubeSecret
 
 type CapabilityKind = Literal["secret", "ssh", "device"]
 DEVICE_PERMISSIONS = frozenset({"r", "w", "m", "rw", "rm", "wm", "rwm"})
@@ -320,11 +320,14 @@ class Capabilities:
     async def _resolve(
         self,
         kind: CapabilityKind,
-        id: KubeName
+        id: KubeName,
+        *,
+        kube: Kube,
     ) -> tuple[KubeSecret, CapabilityMetadata] | None:
         # check local secrets first
         expected = CapabilityMetadata(kind=kind, id=id, env_id=self.env_id)
         matches = await KubeSecret.query(
+            kube=kube,
             namespace=BERTRAND_NAMESPACE,
             timeout=self.timeout,
             name=expected.name,
@@ -341,6 +344,7 @@ class Capabilities:
         # fall back to cluster-wide secrets if env-scoped and not found
         expected = CapabilityMetadata(kind=kind, id=id, env_id=None)
         matches = await KubeSecret.query(
+            kube=kube,
             namespace=BERTRAND_NAMESPACE,
             timeout=self.timeout,
             name=expected.name,
@@ -357,10 +361,11 @@ class Capabilities:
         # missing
         return None
 
-    async def _resolve_secret(self, id: KubeName, request: Secret) -> list[str]:
+    async def _resolve_secret(self, id: KubeName, request: Secret, *, kube: Kube) -> list[str]:
         resolved = await self._resolve(
             kind="secret",
             id=id,
+            kube=kube,
         )
         if resolved is None:
             if request.required:
@@ -377,10 +382,11 @@ class Capabilities:
         target = self._stage_payload("secrets", id, payload)
         return ["--secret", f"id={id},src={target}"]
 
-    async def _resolve_ssh(self, id: KubeName, request: SSH) -> list[str]:
+    async def _resolve_ssh(self, id: KubeName, request: SSH, *, kube: Kube) -> list[str]:
         resolved = await self._resolve(
             kind="ssh",
             id=id,
+            kube=kube,
         )
         if resolved is None:
             if request.required:
@@ -398,10 +404,11 @@ class Capabilities:
         target = self._stage_payload("ssh", id, payload)
         return ["--ssh", f"id={id},src={target}"]
 
-    async def _resolve_device(self, id: KubeName, request: Device) -> list[str]:
+    async def _resolve_device(self, id: KubeName, request: Device, *, kube: Kube) -> list[str]:
         resolved = await self._resolve(
             kind="device",
             id=id,
+            kube=kube,
         )
         if resolved is None:
             if request.required:
@@ -446,12 +453,13 @@ class Capabilities:
 
         try:
             flags: list[str] = []
-            for id, secret in self._secrets.items():
-                flags.extend(await self._resolve_secret(id, secret))
-            for id, ssh in self._ssh.items():
-                flags.extend(await self._resolve_ssh(id, ssh))
-            for id, device in self._devices.items():
-                flags.extend(await self._resolve_device(id, device))
+            with Kube.outside_cluster() as kube:
+                for id, secret in self._secrets.items():
+                    flags.extend(await self._resolve_secret(id, secret, kube=kube))
+                for id, ssh in self._ssh.items():
+                    flags.extend(await self._resolve_ssh(id, ssh, kube=kube))
+                for id, device in self._devices.items():
+                    flags.extend(await self._resolve_device(id, device, kube=kube))
 
             self._finalized = True
             return tuple(flags)
@@ -497,20 +505,22 @@ async def get_capability(
         If a matching Kubernetes Secret is found but has malformed metadata.
     """
     expected = CapabilityMetadata(kind=kind, id=id, env_id=env_id)
-    matches = await KubeSecret.query(
-        namespace=BERTRAND_NAMESPACE,
-        timeout=timeout,
-        name=expected.name,
-    )
-    secret = matches[0] if matches else None
-    if secret is None:
-        return None
-    if expected != CapabilityMetadata.from_secret(secret):
-        raise OSError(
-            f"cluster secret {expected.name!r} metadata does not match requested "
-            f"{expected.kind} capability {expected.id!r}"
+    with Kube.outside_cluster() as kube:
+        matches = await KubeSecret.query(
+            kube=kube,
+            namespace=BERTRAND_NAMESPACE,
+            timeout=timeout,
+            name=expected.name,
         )
-    return secret, expected
+        secret = matches[0] if matches else None
+        if secret is None:
+            return None
+        if expected != CapabilityMetadata.from_secret(secret):
+            raise OSError(
+                f"cluster secret {expected.name!r} metadata does not match requested "
+                f"{expected.kind} capability {expected.id!r}"
+            )
+        return secret, expected
 
 
 async def put_capability(
@@ -552,43 +562,80 @@ async def put_capability(
     OSError
         If a matching Kubernetes Secret is found but has malformed metadata.
     """
-    # search for existing secret at indicated scope
     expected = CapabilityMetadata(kind=kind, id=id, env_id=env_id)
-    matches = await KubeSecret.query(
-        namespace=BERTRAND_NAMESPACE,
-        timeout=timeout,
-        name=expected.name,
-    )
-    existing = matches[0] if matches else None
-    if existing is not None and expected != CapabilityMetadata.from_secret(existing):
-        raise OSError(
-            f"cluster secret {expected.name!r} metadata does not match requested "
-            f"{expected.kind} capability {expected.id!r}"
+    with Kube.outside_cluster() as kube:
+        # search for existing secret at indicated scope
+        matches = await KubeSecret.query(
+            kube=kube,
+            namespace=BERTRAND_NAMESPACE,
+            timeout=timeout,
+            name=expected.name,
         )
+        existing = matches[0] if matches else None
+        if existing is not None and expected != CapabilityMetadata.from_secret(existing):
+            raise OSError(
+                f"cluster secret {expected.name!r} metadata does not match requested "
+                f"{expected.kind} capability {expected.id!r}"
+            )
 
-    # form annotations for updated secret
-    manifest = {
-        "apiVersion": "v1",
-        "kind": "Secret",
-        "metadata": {
-            "name": expected.name,
-            "namespace": BERTRAND_NAMESPACE,
-            "labels": {
-                CAPABILITY_MANAGED_V1: "true",
-                CAPABILITY_KIND_V1: expected.kind,
-                CAPABILITY_ENV_ID_V1: expected.env_id or "shared",
+        # form annotations for updated secret
+        manifest = {
+            "apiVersion": "v1",
+            "kind": "Secret",
+            "metadata": {
+                "name": expected.name,
+                "namespace": BERTRAND_NAMESPACE,
+                "labels": {
+                    CAPABILITY_MANAGED_V1: "true",
+                    CAPABILITY_KIND_V1: expected.kind,
+                    CAPABILITY_ENV_ID_V1: expected.env_id or "shared",
+                },
+                "annotations": {CAPABILITY_ID_V1: expected.id},
             },
-            "annotations": {CAPABILITY_ID_V1: expected.id},
-        },
-        "type": "Opaque",
-        "data": {
-            "value": base64.b64encode(payload).decode("ascii"),
-        },
-    }
+            "type": "Opaque",
+            "data": {
+                "value": base64.b64encode(payload).decode("ascii"),
+            },
+        }
 
-    # apply updated secret manifest
-    await kubectl(["apply", "-f", "-"], input=json.dumps(manifest), timeout=timeout)
-    return expected
+        if existing is None:
+            try:
+                await kube.run(
+                    lambda: kube.core.create_namespaced_secret(
+                        namespace=BERTRAND_NAMESPACE,
+                        body=manifest,
+                        _request_timeout=None if math.isinf(timeout) else timeout,
+                    ),
+                    timeout=timeout,
+                    context=f"failed to create cluster secret {expected.name!r}",
+                )
+            except OSError as err:
+                detail = str(err).lower()
+                if "status 409" not in detail and "already exists" not in detail:
+                    raise
+                await kube.run(
+                    lambda: kube.core.patch_namespaced_secret(
+                        name=expected.name,
+                        namespace=BERTRAND_NAMESPACE,
+                        body=manifest,
+                        _request_timeout=None if math.isinf(timeout) else timeout,
+                    ),
+                    timeout=timeout,
+                    context=f"failed to update cluster secret {expected.name!r}",
+                )
+        else:
+            await kube.run(
+                lambda: kube.core.patch_namespaced_secret(
+                    name=expected.name,
+                    namespace=BERTRAND_NAMESPACE,
+                    body=manifest,
+                    _request_timeout=None if math.isinf(timeout) else timeout,
+                ),
+                timeout=timeout,
+                context=f"failed to update cluster secret {expected.name!r}",
+            )
+
+        return expected
 
 
 async def delete_capability(
@@ -624,31 +671,32 @@ async def delete_capability(
         If a matching Kubernetes Secret is found but has malformed metadata.
     """
     expected = CapabilityMetadata(kind=kind, id=id, env_id=env_id)
-    matches = await KubeSecret.query(
-        namespace=BERTRAND_NAMESPACE,
-        timeout=timeout,
-        name=expected.name,
-    )
-    existing = matches[0] if matches else None
-    if existing is None:
-        return False
-    if expected != CapabilityMetadata.from_secret(existing):
-        raise OSError(
-            f"cluster secret {expected.name!r} metadata does not match requested "
-            f"{expected.kind} capability {expected.id!r}"
+    with Kube.outside_cluster() as kube:
+        matches = await KubeSecret.query(
+            kube=kube,
+            namespace=BERTRAND_NAMESPACE,
+            timeout=timeout,
+            name=expected.name,
         )
+        existing = matches[0] if matches else None
+        if existing is None:
+            return False
+        if expected != CapabilityMetadata.from_secret(existing):
+            raise OSError(
+                f"cluster secret {expected.name!r} metadata does not match requested "
+                f"{expected.kind} capability {expected.id!r}"
+            )
 
-    await kubectl(
-        [
-            "delete",
-            "secret",
-            expected.name,
-            "-n", BERTRAND_NAMESPACE,
-            "--ignore-not-found=true",
-        ],
-        timeout=timeout,
-    )
-    return True
+        await kube.run(
+            lambda: kube.core.delete_namespaced_secret(
+                name=expected.name,
+                namespace=BERTRAND_NAMESPACE,
+                _request_timeout=None if math.isinf(timeout) else timeout,
+            ),
+            timeout=timeout,
+            context=f"failed to delete cluster secret {expected.name!r}",
+        )
+        return True
 
 
 async def list_capabilities(
@@ -681,18 +729,20 @@ async def list_capabilities(
     """
     if env_id is not None:
         env_id = _check_uuid(env_id)
-    parsed = await KubeSecret.query(
-        namespace=BERTRAND_NAMESPACE,
-        timeout=timeout,
-        labels={
-            CAPABILITY_MANAGED_V1: "true",
-            CAPABILITY_KIND_V1: kind,
-            CAPABILITY_ENV_ID_V1: env_id or "shared",
-        },
-    )
-    out = [
-        (secret, CapabilityMetadata.from_secret(secret))
-        for secret in parsed
-    ]
-    out.sort(key=lambda item: (item[1].kind, item[1].name))
-    return out
+    with Kube.outside_cluster() as kube:
+        parsed = await KubeSecret.query(
+            kube=kube,
+            namespace=BERTRAND_NAMESPACE,
+            timeout=timeout,
+            labels={
+                CAPABILITY_MANAGED_V1: "true",
+                CAPABILITY_KIND_V1: kind,
+                CAPABILITY_ENV_ID_V1: env_id or "shared",
+            },
+        )
+        out = [
+            (secret, CapabilityMetadata.from_secret(secret))
+            for secret in parsed
+        ]
+        out.sort(key=lambda item: (item[1].kind, item[1].name))
+        return out

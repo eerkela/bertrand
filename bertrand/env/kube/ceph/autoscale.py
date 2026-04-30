@@ -40,7 +40,7 @@ from ...run import (
     kubectl,
     run,
 )
-from ..api import InClusterAPI
+from ..api import Kube, list_nodes
 from ..image import (
     ClusterImageBuild,
 )
@@ -804,7 +804,7 @@ async def _ceph_capacity(*, timeout: float) -> CephCapacitySnapshot:
     return CephCapacitySnapshot(total_bytes=total, used_bytes=used, used_ratio=used / total)
 
 
-async def _controller_read_autoscaler(api: InClusterAPI, *, timeout: float) -> CephStorageAutoscaler:
+async def _controller_read_autoscaler(api: Kube, *, timeout: float) -> CephStorageAutoscaler:
     payload = await api.run(
         lambda: api.custom.get_namespaced_custom_object(
             group=AUTOSCALE_GROUP,
@@ -831,7 +831,7 @@ async def _controller_read_autoscaler(api: InClusterAPI, *, timeout: float) -> C
         raise OSError(f"malformed autoscaler payload: {err}") from err
 
 
-async def _controller_list_actions(api: InClusterAPI, *, timeout: float) -> ActionList:
+async def _controller_list_actions(api: Kube, *, timeout: float) -> ActionList:
     payload = await api.run(
         lambda: api.custom.list_namespaced_custom_object(
             group=AUTOSCALE_GROUP,
@@ -852,19 +852,8 @@ async def _controller_list_actions(api: InClusterAPI, *, timeout: float) -> Acti
         raise OSError(f"malformed action list payload: {err}") from err
 
 
-async def _controller_list_nodes(api: InClusterAPI, *, timeout: float) -> NodeList:
-    payload = await api.run(
-        lambda: api.api_client.sanitize_for_serialization(
-            api.core.list_node(
-                _request_timeout=None if math.isinf(timeout) else timeout,
-            )
-        ),
-        timeout=timeout,
-        context="failed to list Kubernetes nodes",
-    )
-    if payload is None:
-        payload = {"items": []}
-    return NodeList.parse(payload, context="node list")
+async def _controller_list_nodes(api: Kube, *, timeout: float) -> NodeList:
+    return await list_nodes(kube=api, timeout=timeout)
 
 
 def _eligible_nodes(nodes: NodeList) -> list[str]:
@@ -922,7 +911,7 @@ def _plan_actions(
 
 
 async def _controller_create_actions(
-    api: InClusterAPI,
+    api: Kube,
     *,
     autoscaler: CephStorageAutoscaler,
     actions: list[PlannedAction],
@@ -965,7 +954,7 @@ async def _controller_create_actions(
 
 
 async def _controller_patch_status(
-    api: InClusterAPI,
+    api: Kube,
     *,
     autoscaler: CephStorageAutoscaler,
     capacity: CephCapacitySnapshot | None,
@@ -1006,7 +995,7 @@ async def _controller_patch_status(
 
 
 async def _controller_watch_actions(
-    api: InClusterAPI,
+    api: Kube,
     *,
     state: ControllerState,
     timeout: float,
@@ -1091,78 +1080,77 @@ async def run_ceph_capacity_controller(*, timeout: float = INFINITY) -> None:
         raise TimeoutError("controller timeout must be non-negative")
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout
-    api = InClusterAPI.load()
     state = ControllerState()
-
-    # NOTE: watch+tick hybrid ensures bounded convergence latency while still reacting
-    # quickly to action updates.
-    while True:
-        interval = 30.0
-        try:
-            autoscaler = await _controller_read_autoscaler(api, timeout=_remaining(deadline))
-            interval = float(autoscaler.spec.reconcile_interval_seconds)
-            actions = await _controller_list_actions(api, timeout=_remaining(deadline))
-            nodes = await _controller_list_nodes(api, timeout=_remaining(deadline))
-            capacity = await _ceph_capacity(timeout=_remaining(deadline))
-
-            counts = {phase: 0 for phase in AUTOSCALE_PHASES}
-            for action in actions.items:
-                phase = (action.status.phase if action.status is not None else "Pending")
-                if phase in counts:
-                    counts[phase] += 1
-                rv = action.metadata.resourceVersion.strip()
-                if rv:
-                    state.actions_resource_version = rv
-
-            planned = _plan_actions(
-                autoscaler=autoscaler,
-                capacity=capacity,
-                nodes=_eligible_nodes(nodes),
-                state=state,
-            )
-            if planned:
-                await _controller_create_actions(
-                    api,
-                    autoscaler=autoscaler,
-                    actions=planned,
-                    timeout=_remaining(deadline),
-                )
-                counts["Pending"] += len(planned)
-
-            await _controller_patch_status(
-                api,
-                autoscaler=autoscaler,
-                capacity=capacity,
-                counts=counts,
-                error="",
-                timeout=_remaining(deadline),
-            )
-        except asyncio.CancelledError:
-            raise
-        except Exception as err:  # pylint: disable=broad-exception-caught
-            # fail-closed status updates make malformed managed state visible to
-            # operators instead of silently masking reconciliation drift.
+    with Kube.inside_cluster() as api:
+        # NOTE: watch+tick hybrid ensures bounded convergence latency while still reacting
+        # quickly to action updates.
+        while True:
+            interval = 30.0
             try:
                 autoscaler = await _controller_read_autoscaler(api, timeout=_remaining(deadline))
+                interval = float(autoscaler.spec.reconcile_interval_seconds)
+                actions = await _controller_list_actions(api, timeout=_remaining(deadline))
+                nodes = await _controller_list_nodes(api, timeout=_remaining(deadline))
+                capacity = await _ceph_capacity(timeout=_remaining(deadline))
+
+                counts = {phase: 0 for phase in AUTOSCALE_PHASES}
+                for action in actions.items:
+                    phase = (action.status.phase if action.status is not None else "Pending")
+                    if phase in counts:
+                        counts[phase] += 1
+                    rv = action.metadata.resourceVersion.strip()
+                    if rv:
+                        state.actions_resource_version = rv
+
+                planned = _plan_actions(
+                    autoscaler=autoscaler,
+                    capacity=capacity,
+                    nodes=_eligible_nodes(nodes),
+                    state=state,
+                )
+                if planned:
+                    await _controller_create_actions(
+                        api,
+                        autoscaler=autoscaler,
+                        actions=planned,
+                        timeout=_remaining(deadline),
+                    )
+                    counts["Pending"] += len(planned)
+
                 await _controller_patch_status(
                     api,
                     autoscaler=autoscaler,
-                    capacity=None,
-                    counts={phase: 0 for phase in AUTOSCALE_PHASES},
-                    error=str(err),
+                    capacity=capacity,
+                    counts=counts,
+                    error="",
                     timeout=_remaining(deadline),
                 )
-            except Exception:
-                pass
+            except asyncio.CancelledError:
+                raise
+            except Exception as err:  # pylint: disable=broad-exception-caught
+                # fail-closed status updates make malformed managed state visible to
+                # operators instead of silently masking reconciliation drift.
+                try:
+                    autoscaler = await _controller_read_autoscaler(api, timeout=_remaining(deadline))
+                    await _controller_patch_status(
+                        api,
+                        autoscaler=autoscaler,
+                        capacity=None,
+                        counts={phase: 0 for phase in AUTOSCALE_PHASES},
+                        error=str(err),
+                        timeout=_remaining(deadline),
+                    )
+                except Exception:
+                    pass
 
-        await _controller_watch_actions(
-            api,
-            state=state,
-            timeout=min(interval, _remaining(deadline)),
-        )
+            await _controller_watch_actions(
+                api,
+                state=state,
+                timeout=min(interval, _remaining(deadline)),
+            )
 
 
-async def _agent_list_actions(api: InClusterAPI, *, timeout: float) -> list[CephStorageAction]:
+async def _agent_list_actions(api: Kube, *, timeout: float) -> list[CephStorageAction]:
     actions = await _controller_list_actions(api, timeout=timeout)
     node = os.environ.get("NODE_NAME", "").strip() or platform.node().strip()
 
@@ -1179,7 +1167,7 @@ async def _agent_list_actions(api: InClusterAPI, *, timeout: float) -> list[Ceph
 
 
 async def _agent_patch_action_status(
-    api: InClusterAPI,
+    api: Kube,
     *,
     action: CephStorageAction,
     phase: Literal["Pending", "Running", "Succeeded", "Failed"],
@@ -1244,42 +1232,41 @@ async def run_ceph_capacity_agent(*, timeout: float = INFINITY) -> None:
         raise TimeoutError("agent timeout must be non-negative")
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout
-    api = InClusterAPI.load()
+    with Kube.inside_cluster() as api:
+        while True:
+            pending = await _agent_list_actions(api, timeout=_remaining(deadline))
+            for action in pending:
+                try:
+                    await _agent_patch_action_status(
+                        api,
+                        action=action,
+                        phase="Running",
+                        message="action claimed by node agent",
+                        timeout=_remaining(deadline),
+                        started=True,
+                    )
+                    await _agent_execute(action, timeout=_remaining(deadline))
+                    await _agent_patch_action_status(
+                        api,
+                        action=action,
+                        phase="Succeeded",
+                        message="microceph disk add completed",
+                        timeout=_remaining(deadline),
+                        finished=True,
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception as err:  # pylint: disable=broad-exception-caught
+                    await _agent_patch_action_status(
+                        api,
+                        action=action,
+                        phase="Failed",
+                        message=str(err),
+                        timeout=_remaining(deadline),
+                        finished=True,
+                    )
 
-    while True:
-        pending = await _agent_list_actions(api, timeout=_remaining(deadline))
-        for action in pending:
-            try:
-                await _agent_patch_action_status(
-                    api,
-                    action=action,
-                    phase="Running",
-                    message="action claimed by node agent",
-                    timeout=_remaining(deadline),
-                    started=True,
-                )
-                await _agent_execute(action, timeout=_remaining(deadline))
-                await _agent_patch_action_status(
-                    api,
-                    action=action,
-                    phase="Succeeded",
-                    message="microceph disk add completed",
-                    timeout=_remaining(deadline),
-                    finished=True,
-                )
-            except asyncio.CancelledError:
-                raise
-            except Exception as err:  # pylint: disable=broad-exception-caught
-                await _agent_patch_action_status(
-                    api,
-                    action=action,
-                    phase="Failed",
-                    message=str(err),
-                    timeout=_remaining(deadline),
-                    finished=True,
-                )
-
-        await asyncio.sleep(min(5.0, _remaining(deadline)))
+            await asyncio.sleep(min(5.0, _remaining(deadline)))
 
 
 def main(argv: list[str] | None = None) -> int:

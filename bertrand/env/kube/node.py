@@ -7,8 +7,6 @@ from typing import Self
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from ..run import kubectl
-
 CLUSTER_REGISTRY_READY_LABEL = "bertrand.dev/registry-ready"
 CLUSTER_REGISTRY_READY_VALUE = "true"
 
@@ -51,7 +49,7 @@ class NodeList(BaseModel):
     items: list[Node] = Field(default_factory=list)
 
     @classmethod
-    def parse(cls, payload: str | dict, *, context: str) -> Self:
+    def parse(cls, payload: str | dict[str, object], *, context: str) -> Self:
         """Validate a Kubernetes node list payload.
 
         Parameters
@@ -78,17 +76,6 @@ class NodeList(BaseModel):
             return cls.model_validate(payload)
         except ValidationError as err:
             raise OSError(f"malformed {context} payload: {err}") from err
-
-
-async def list_nodes(*, timeout: float) -> NodeList:
-    """Fetch cluster nodes via kubectl and validate structure."""
-
-    result = await kubectl(
-        ["get", "nodes", "-o", "json"],
-        capture_output=True,
-        timeout=timeout,
-    )
-    return NodeList.parse(result.stdout, context="node list")
 
 
 def local_node_name(nodes: NodeList) -> str:
@@ -121,27 +108,6 @@ def local_node_name(nodes: NodeList) -> str:
     )
 
 
-async def label_local_node(
-    *,
-    label: str,
-    value: str,
-    timeout: float,
-) -> None:
-    """Apply or overwrite one label on the local Kubernetes node."""
-
-    local = local_node_name(await list_nodes(timeout=timeout))
-    await kubectl(
-        [
-            "label",
-            "node",
-            local,
-            f"{label}={value}",
-            "--overwrite",
-        ],
-        timeout=timeout,
-    )
-
-
 def nodes_with_label(nodes: NodeList, *, label: str, value: str) -> list[str]:
     """Return sorted node names that match a required label value."""
 
@@ -150,25 +116,3 @@ def nodes_with_label(nodes: NodeList, *, label: str, value: str) -> list[str]:
         for node in nodes.items
         if node.metadata.labels.get(label) == value
     )
-
-
-async def assert_nodes_labeled(
-    *,
-    label: str,
-    value: str,
-    timeout: float,
-    context: str,
-) -> None:
-    """Fail closed if any cluster node lacks the expected label value."""
-
-    nodes = await list_nodes(timeout=timeout)
-    missing = sorted(
-        node.metadata.name
-        for node in nodes.items
-        if node.metadata.labels.get(label) != value
-    )
-    if missing:
-        raise OSError(
-            f"{context}: required node label {label}={value} is missing on node(s): "
-            f"{', '.join(missing)}"
-        )
