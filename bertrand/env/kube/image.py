@@ -191,7 +191,7 @@ async def _ensure_registry_trust(*, timeout: float) -> None:
 
 
 async def _ensure_registry_ready_node_label(*, kube: Kube, timeout: float) -> None:
-    nodes = await Node.query(kube=kube, timeout=timeout)
+    nodes = await Node.list(kube=kube, timeout=timeout)
     if not nodes:
         raise OSError("cluster image-store rollout blocked: Kubernetes node list is empty")
 
@@ -241,7 +241,7 @@ async def _ensure_registry_ready_node_label(*, kube: Kube, timeout: float) -> No
 
 
 async def _assert_registry_ready_nodes(*, kube: Kube, timeout: float) -> None:
-    nodes = await Node.query(kube=kube, timeout=timeout)
+    nodes = await Node.list(kube=kube, timeout=timeout)
     ready = {
         node.name
         for node in nodes

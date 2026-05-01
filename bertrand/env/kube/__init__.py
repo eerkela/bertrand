@@ -15,12 +15,12 @@ from .api import (
     KubeSecret,
     PersistentVolume,
     PersistentVolumeClaim,
-    Pod,
     StorageClass,
     ensure_microk8s_kubeconfig,
     parse_pvc_size,
 )
 from .node import Node
+from .pod import Pod
 from .ceph import (
     CephStorageAction,
     CephStorageActionSpec,

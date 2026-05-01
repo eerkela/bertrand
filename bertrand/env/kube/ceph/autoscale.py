@@ -811,13 +811,13 @@ async def _ceph_capacity(*, timeout: float) -> CephCapacitySnapshot:
 
 async def _controller_read_autoscaler(api: Kube, *, timeout: float) -> CephStorageAutoscaler:
     payload = await api.run(
-        lambda: api.custom.get_namespaced_custom_object(
+        lambda request_timeout: api.custom.get_namespaced_custom_object(
             group=AUTOSCALE_GROUP,
             version=AUTOSCALE_VERSION,
             namespace=api.namespace,
             plural=AUTOSCALE_AUTOSCALER_PLURAL,
             name=AUTOSCALE_DEFAULT_NAME,
-            _request_timeout=None if math.isinf(timeout) else timeout,
+            _request_timeout=request_timeout,
         ),
         timeout=timeout,
         context=(
@@ -838,12 +838,12 @@ async def _controller_read_autoscaler(api: Kube, *, timeout: float) -> CephStora
 
 async def _controller_list_actions(api: Kube, *, timeout: float) -> ActionList:
     payload = await api.run(
-        lambda: api.custom.list_namespaced_custom_object(
+        lambda request_timeout: api.custom.list_namespaced_custom_object(
             group=AUTOSCALE_GROUP,
             version=AUTOSCALE_VERSION,
             namespace=api.namespace,
             plural=AUTOSCALE_ACTION_PLURAL,
-            _request_timeout=None if math.isinf(timeout) else timeout,
+            _request_timeout=request_timeout,
         ),
         timeout=timeout,
         context=(
@@ -858,7 +858,7 @@ async def _controller_list_actions(api: Kube, *, timeout: float) -> ActionList:
 
 
 async def _controller_list_nodes(api: Kube, *, timeout: float) -> list[Node]:
-    return await Node.query(kube=api, timeout=timeout)
+    return await Node.list(kube=api, timeout=timeout)
 
 
 def _eligible_nodes(nodes: list[Node]) -> list[str]:
@@ -943,13 +943,13 @@ async def _controller_create_actions(
             "status": {"phase": "Pending"},
         }
         await api.run(
-            lambda manifest=manifest: api.custom.create_namespaced_custom_object(
+            lambda request_timeout, manifest=manifest: api.custom.create_namespaced_custom_object(
                 group=AUTOSCALE_GROUP,
                 version=AUTOSCALE_VERSION,
                 namespace=api.namespace,
                 plural=AUTOSCALE_ACTION_PLURAL,
                 body=manifest,
-                _request_timeout=None if math.isinf(timeout) else timeout,
+                _request_timeout=request_timeout,
             ),
             timeout=timeout,
             context=(
@@ -983,14 +983,14 @@ async def _controller_patch_status(
         }
     }
     await api.run(
-        lambda: api.custom.patch_namespaced_custom_object_status(
+        lambda request_timeout: api.custom.patch_namespaced_custom_object_status(
             group=AUTOSCALE_GROUP,
             version=AUTOSCALE_VERSION,
             namespace=api.namespace,
             plural=AUTOSCALE_AUTOSCALER_PLURAL,
             name=AUTOSCALE_DEFAULT_NAME,
             body=status,
-            _request_timeout=None if math.isinf(timeout) else timeout,
+            _request_timeout=request_timeout,
         ),
         timeout=timeout,
         context=(
@@ -1196,14 +1196,14 @@ async def _agent_patch_action_status(
     if finished:
         patch["status"]["finished_at"] = _now_iso()
     await api.run(
-        lambda: api.custom.patch_namespaced_custom_object_status(
+        lambda request_timeout: api.custom.patch_namespaced_custom_object_status(
             group=AUTOSCALE_GROUP,
             version=AUTOSCALE_VERSION,
             namespace=api.namespace,
             plural=AUTOSCALE_ACTION_PLURAL,
             name=action.metadata.name,
             body=patch,
-            _request_timeout=None if math.isinf(timeout) else timeout,
+            _request_timeout=request_timeout,
         ),
         timeout=timeout,
         context=(

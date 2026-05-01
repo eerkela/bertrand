@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import base64
 import hashlib
-import math
 import shutil
 import sys
 import uuid
@@ -332,13 +331,12 @@ class Capabilities:
     ) -> tuple[KubeSecret, CapabilityMetadata] | None:
         # check local secrets first
         expected = CapabilityMetadata(kind=kind, id=id, env_id=self.env_id)
-        matches = await KubeSecret.query(
+        secret = await KubeSecret.get(
             kube=kube,
             namespace=BERTRAND_NAMESPACE,
             timeout=self.timeout,
             name=expected.name,
         )
-        secret = matches[0] if matches else None
         if secret is not None:
             if expected != CapabilityMetadata.from_secret(secret):
                 raise OSError(
@@ -349,13 +347,12 @@ class Capabilities:
 
         # fall back to cluster-wide secrets if env-scoped and not found
         expected = CapabilityMetadata(kind=kind, id=id, env_id=None)
-        matches = await KubeSecret.query(
+        secret = await KubeSecret.get(
             kube=kube,
             namespace=BERTRAND_NAMESPACE,
             timeout=self.timeout,
             name=expected.name,
         )
-        secret = matches[0] if matches else None
         if secret is not None:
             if expected != CapabilityMetadata.from_secret(secret):
                 raise OSError(
@@ -512,13 +509,12 @@ async def get_capability(
     """
     expected = CapabilityMetadata(kind=kind, id=id, env_id=env_id)
     with await Kube.host(timeout=timeout) as kube:
-        matches = await KubeSecret.query(
+        secret = await KubeSecret.get(
             kube=kube,
             namespace=BERTRAND_NAMESPACE,
             timeout=timeout,
             name=expected.name,
         )
-        secret = matches[0] if matches else None
         if secret is None:
             return None
         if expected != CapabilityMetadata.from_secret(secret):
@@ -571,13 +567,12 @@ async def put_capability(
     expected = CapabilityMetadata(kind=kind, id=id, env_id=env_id)
     with await Kube.host(timeout=timeout) as kube:
         # search for existing secret at indicated scope
-        matches = await KubeSecret.query(
+        existing = await KubeSecret.get(
             kube=kube,
             namespace=BERTRAND_NAMESPACE,
             timeout=timeout,
             name=expected.name,
         )
-        existing = matches[0] if matches else None
         if existing is not None and expected != CapabilityMetadata.from_secret(existing):
             raise OSError(
                 f"cluster secret {expected.name!r} metadata does not match requested "
@@ -607,10 +602,10 @@ async def put_capability(
         if existing is None:
             try:
                 await kube.run(
-                    lambda: kube.core.create_namespaced_secret(
+                    lambda request_timeout: kube.core.create_namespaced_secret(
                         namespace=BERTRAND_NAMESPACE,
                         body=manifest,
-                        _request_timeout=None if math.isinf(timeout) else timeout,
+                        _request_timeout=request_timeout,
                     ),
                     timeout=timeout,
                     context=f"failed to create cluster secret {expected.name!r}",
@@ -620,22 +615,22 @@ async def put_capability(
                 if "status 409" not in detail and "already exists" not in detail:
                     raise
                 await kube.run(
-                    lambda: kube.core.patch_namespaced_secret(
+                    lambda request_timeout: kube.core.patch_namespaced_secret(
                         name=expected.name,
                         namespace=BERTRAND_NAMESPACE,
                         body=manifest,
-                        _request_timeout=None if math.isinf(timeout) else timeout,
+                        _request_timeout=request_timeout,
                     ),
                     timeout=timeout,
                     context=f"failed to update cluster secret {expected.name!r}",
                 )
         else:
             await kube.run(
-                lambda: kube.core.patch_namespaced_secret(
+                lambda request_timeout: kube.core.patch_namespaced_secret(
                     name=expected.name,
                     namespace=BERTRAND_NAMESPACE,
                     body=manifest,
-                    _request_timeout=None if math.isinf(timeout) else timeout,
+                    _request_timeout=request_timeout,
                 ),
                 timeout=timeout,
                 context=f"failed to update cluster secret {expected.name!r}",
@@ -678,13 +673,12 @@ async def delete_capability(
     """
     expected = CapabilityMetadata(kind=kind, id=id, env_id=env_id)
     with await Kube.host(timeout=timeout) as kube:
-        matches = await KubeSecret.query(
+        existing = await KubeSecret.get(
             kube=kube,
             namespace=BERTRAND_NAMESPACE,
             timeout=timeout,
             name=expected.name,
         )
-        existing = matches[0] if matches else None
         if existing is None:
             return False
         if expected != CapabilityMetadata.from_secret(existing):
@@ -694,10 +688,10 @@ async def delete_capability(
             )
 
         await kube.run(
-            lambda: kube.core.delete_namespaced_secret(
+            lambda request_timeout: kube.core.delete_namespaced_secret(
                 name=expected.name,
                 namespace=BERTRAND_NAMESPACE,
-                _request_timeout=None if math.isinf(timeout) else timeout,
+                _request_timeout=request_timeout,
             ),
             timeout=timeout,
             context=f"failed to delete cluster secret {expected.name!r}",
@@ -736,7 +730,7 @@ async def list_capabilities(
     if env_id is not None:
         env_id = _check_uuid(env_id)
     with await Kube.host(timeout=timeout) as kube:
-        parsed = await KubeSecret.query(
+        parsed = await KubeSecret.list(
             kube=kube,
             namespace=BERTRAND_NAMESPACE,
             timeout=timeout,

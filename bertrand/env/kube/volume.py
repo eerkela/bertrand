@@ -18,7 +18,8 @@ from ..run import (
     ENV_ID_ENV,
     REPO_ID_ENV,
 )
-from .api import Kube, PersistentVolume, PersistentVolumeClaim, Pod, StorageClass
+from .api import Kube, PersistentVolume, PersistentVolumeClaim, StorageClass
+from .pod import Pod
 
 CACHE_VOLUME_ENV: str = "BERTRAND_CACHE_VOLUME"
 REPO_VOLUME_ENV: str = "BERTRAND_REPO_VOLUME"
@@ -243,17 +244,16 @@ class CacheVolume:
         with await Kube.host(timeout=deadline - loop.time()) as kube:
             # get PVC storage class and assert that it supports volume expansion for
             # dynamic resizing
-            storage_matches = await StorageClass.query(
+            storage = await StorageClass.get(
                 kube=kube,
                 timeout=deadline - loop.time(),
                 name=storage_class,
             )
-            if not storage_matches:
+            if storage is None:
                 raise OSError(
                     f"required {storage_class!r} StorageClass is not available; cache PVC "
                     "provisioning cannot proceed"
                 )
-            storage = storage_matches[0]
             if not storage.obj.allow_volume_expansion:
                 raise OSError(
                     f"{storage_class!r} StorageClass must set 'allowVolumeExpansion=true' "
@@ -267,13 +267,12 @@ class CacheVolume:
 
             # get/create PVCs for each of this tag's cache volumes
             for volume in await CacheVolume.from_config(config, tag, env_id):
-                matches = await PersistentVolumeClaim.query(
+                pvc = await PersistentVolumeClaim.get(
                     kube=kube,
                     namespace=BERTRAND_NAMESPACE,
                     timeout=deadline - loop.time(),
                     name=volume.name,
                 )
-                pvc = matches[0] if matches else None
                 if pvc is None:  # create a new volume with the requested size
                     pvc = await PersistentVolumeClaim.create({
                         "apiVersion": "v1",
@@ -357,7 +356,7 @@ class CacheVolume:
             return
         with await Kube.host(timeout=deadline - loop.time()) as kube:
             # get all PVCs associated with this environment
-            actual = await PersistentVolumeClaim.query(
+            actual = await PersistentVolumeClaim.list(
                 kube=kube,
                 namespace=BERTRAND_NAMESPACE,
                 timeout=deadline - loop.time(),
@@ -368,28 +367,15 @@ class CacheVolume:
 
             # get PVCs with active pods
             active = {
-                volume.persistent_volume_claim.claim_name
-                for pod in await Pod.query(
+                claim_name
+                for pod in await Pod.list(
                     kube=kube,
                     namespace=BERTRAND_NAMESPACE,
                     timeout=deadline - loop.time(),
                     labels={BERTRAND_ENV: "1", ENV_ID_ENV: env_id},
-                ) if (
-                    not (
-                        pod.obj.metadata is not None and
-                        pod.obj.metadata.deletion_timestamp
-                    ) and
-                    (
-                        (pod.obj.status.phase or "")
-                        if pod.obj.status is not None
-                        else ""
-                    ) in {"Pending", "Running", "Unknown"}
                 )
-                for volume in (
-                    pod.obj.spec.volumes
-                    if pod.obj.spec is not None and pod.obj.spec.volumes is not None
-                    else []
-                ) if volume.persistent_volume_claim is not None
+                if pod.is_active
+                for claim_name in pod.persistent_volume_claim_names
             }
             active.discard("")
 
@@ -548,13 +534,12 @@ class RepoVolume:
             storage_class: str | None = None
             storage: StorageClass | None = None
             for candidate in REPO_STORAGE_CLASS_PREFERENCES:
-                matches = await StorageClass.query(
+                storage = await StorageClass.get(
                     kube=kube,
                     timeout=deadline - loop.time(),
                     name=candidate,
                 )
-                if matches:
-                    storage = matches[0]
+                if storage is not None:
                     storage_class = candidate
                     break
             if storage_class is None or storage is None:
@@ -581,13 +566,12 @@ class RepoVolume:
                 )
 
             # get existing PVC or create a new one if missing
-            matches = await PersistentVolumeClaim.query(
+            pvc = await PersistentVolumeClaim.get(
                 kube=kube,
                 namespace=BERTRAND_NAMESPACE,
                 timeout=deadline - loop.time(),
                 name=claim_name,
             )
-            pvc = matches[0] if matches else None
             if pvc is None:
                 pvc = await PersistentVolumeClaim.create({
                     "apiVersion": "v1",
@@ -654,7 +638,7 @@ class RepoVolume:
             raise TimeoutError("timeout must be non-negative")
         with await Kube.host(timeout=timeout) as kube:
             # get matching PVCs
-            pvcs = await PersistentVolumeClaim.query(
+            pvcs = await PersistentVolumeClaim.list(
                 kube=kube,
                 namespace=BERTRAND_NAMESPACE,
                 timeout=timeout,
@@ -667,7 +651,9 @@ class RepoVolume:
                 repo_id = labels.get(REPO_ID_ENV, "")
                 if not repo_id:
                     raise OSError(
-                        f"cluster PVC {(meta.name if meta is not None else '')!r} is missing label {REPO_ID_ENV!r}"
+                        "cluster PVC "
+                        f"{(meta.name if meta is not None else '')!r} is missing "
+                        f"label {REPO_ID_ENV!r}"
                     )
                 repo_id = _check_uuid(repo_id)
                 cls._assert_managed_pvc(
@@ -704,30 +690,17 @@ class RepoVolume:
         with await Kube.host(timeout=deadline - loop.time()) as kube:
             # check for running pods associated with this pvc, unless overridden
             if not force:
-                pods = await Pod.query(
+                pods = await Pod.list(
                     kube=kube,
                     namespace=BERTRAND_NAMESPACE,
                     timeout=deadline - loop.time(),
                     labels={BERTRAND_ENV: "1", REPO_ID_ENV: self.repo_id},
                 )
                 active = {
-                    volume.persistent_volume_claim.claim_name
-                    for pod in pods if (
-                        not (
-                            pod.obj.metadata is not None and
-                            pod.obj.metadata.deletion_timestamp
-                        ) and
-                        (
-                            (pod.obj.status.phase or "")
-                            if pod.obj.status is not None
-                            else ""
-                        ) in {"Pending", "Running", "Unknown"}
-                    )
-                    for volume in (
-                        pod.obj.spec.volumes
-                        if pod.obj.spec is not None and pod.obj.spec.volumes is not None
-                        else []
-                    ) if volume.persistent_volume_claim is not None
+                    claim_name
+                    for pod in pods
+                    if pod.is_active
+                    for claim_name in pod.persistent_volume_claim_names
                 }
                 active.discard("")
                 meta = self.pvc.obj.metadata
@@ -774,13 +747,12 @@ class RepoVolume:
         deadline = loop.time() + timeout
         with await Kube.host(timeout=deadline - loop.time()) as kube:
             while True:
-                matches = await PersistentVolumeClaim.query(
+                pvc = await PersistentVolumeClaim.get(
                     kube=kube,
                     namespace=namespace,
                     timeout=deadline - loop.time(),
                     name=name,
                 )
-                pvc = matches[0] if matches else None
                 if pvc is None:  # pvc died during resolution
                     raise OSError(
                         f"repository claim {name!r} disappeared during Ceph path "
@@ -797,15 +769,14 @@ class RepoVolume:
                     continue
 
                 # wait until the PV is available
-                matches = await PersistentVolume.query(
+                volume = await PersistentVolume.get(
                     kube=kube,
                     timeout=deadline - loop.time(),
                     name=volume_name,
                 )
-                if not matches:
+                if volume is None:
                     await asyncio.sleep(0.1)
                     continue
-                volume = matches[0]
 
                 # confirm CSI driver with cephfs backend
                 spec = volume.obj.spec
