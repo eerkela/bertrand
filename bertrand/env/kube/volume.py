@@ -4,11 +4,17 @@ and caching mechanisms.
 from __future__ import annotations
 
 import asyncio
+import builtins
 import hashlib
 import json
+import re
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
 from pathlib import PosixPath
 from typing import Self
+
+import kubernetes
 
 from ..config import RESOURCE_NAMES, Bertrand, Config, Resource
 from ..config.core import KUBE_SANITIZE_RE, AbsolutePosixPath, KubeName, _check_uuid
@@ -17,14 +23,658 @@ from ..run import (
     BERTRAND_NAMESPACE,
     ENV_ID_ENV,
     REPO_ID_ENV,
+    JSONValue,
 )
-from .api import Kube, PersistentVolume, PersistentVolumeClaim, StorageClass
+from .api import Kube, _label_selector
 from .pod import Pod
 
 CACHE_VOLUME_ENV: str = "BERTRAND_CACHE_VOLUME"
 REPO_VOLUME_ENV: str = "BERTRAND_REPO_VOLUME"
 DEFAULT_VOLUME_SIZE = "16Mi"
 REPO_STORAGE_CLASS_PREFERENCES: tuple[str, ...] = ("cephfs", "rook-cephfs")
+PVC_GROW_RETRIES = 4
+VOLUME_WAIT_POLL_INTERVAL_SECONDS = 0.5
+QUANTITY_RE = re.compile(r"^([0-9]+(?:\.[0-9]+)?)([A-Za-z]{0,2})$")
+STORAGE_FACTORS: dict[str, Decimal] = {
+    "": Decimal(1),
+    "m": Decimal("0.001"),
+    "k": Decimal(10) ** 3,
+    "K": Decimal(10) ** 3,
+    "M": Decimal(10) ** 6,
+    "G": Decimal(10) ** 9,
+    "T": Decimal(10) ** 12,
+    "P": Decimal(10) ** 15,
+    "E": Decimal(10) ** 18,
+    "Ki": Decimal(2) ** 10,
+    "Mi": Decimal(2) ** 20,
+    "Gi": Decimal(2) ** 30,
+    "Ti": Decimal(2) ** 40,
+    "Pi": Decimal(2) ** 50,
+    "Ei": Decimal(2) ** 60,
+}
+EMPTY_MAPPING: Mapping[str, str] = {}
+
+
+@dataclass(frozen=True)
+class StorageClass:
+    """General-purpose wrapper around one Kubernetes StorageClass object."""
+    obj: kubernetes.client.V1StorageClass
+
+    @classmethod
+    async def get(
+        cls,
+        *,
+        kube: Kube,
+        timeout: float,
+        name: KubeName,
+    ) -> Self | None:
+        """Read one Kubernetes StorageClass by name.
+
+        Parameters
+        ----------
+        kube : Kube
+            Active Kubernetes API context.
+        timeout : float
+            Maximum runtime budget in seconds.  If infinite, wait indefinitely.
+        name : str
+            StorageClass name to read.
+
+        Returns
+        -------
+        StorageClass | None
+            Validated wrapper, or `None` if missing.
+        """
+        payload = await kube.run(
+            lambda request_timeout: kube.storage.read_storage_class(
+                name=name,
+                _request_timeout=request_timeout,
+            ),
+            timeout=timeout,
+            context=f"failed to read StorageClass {name!r}",
+        )
+        if payload is None:
+            return None
+        if not isinstance(payload, kubernetes.client.V1StorageClass):
+            raise OSError(f"malformed Kubernetes StorageClass payload for {name!r}")
+        return cls(obj=payload)
+
+    @classmethod
+    async def list(
+        cls,
+        *,
+        kube: Kube,
+        timeout: float,
+        labels: Mapping[str, str] | None = None,
+    ) -> builtins.list[Self]:
+        """List Kubernetes StorageClasses with optional label filtering."""
+        payload = await kube.run(
+            lambda request_timeout: kube.storage.list_storage_class(
+                label_selector=_label_selector(labels),
+                _request_timeout=request_timeout,
+            ),
+            timeout=timeout,
+            context="failed to list Kubernetes StorageClasses",
+        )
+        if payload is None:
+            return []
+        if not isinstance(payload, kubernetes.client.V1StorageClassList):
+            raise OSError("malformed Kubernetes StorageClass list payload")
+        out: builtins.list[Self] = []
+        for item in payload.items or []:
+            if not isinstance(item, kubernetes.client.V1StorageClass):
+                raise OSError("malformed Kubernetes StorageClass entry in list payload")
+            out.append(cls(obj=item))
+        return out
+
+    @property
+    def name(self) -> str:
+        """Return trimmed `metadata.name`, or an empty string when unavailable."""
+        metadata = self.obj.metadata
+        return (metadata.name or "").strip() if metadata is not None else ""
+
+    @property
+    def provisioner(self) -> str:
+        """Return trimmed CSI provisioner name, or an empty string when unavailable."""
+        return (self.obj.provisioner or "").strip()
+
+    @property
+    def allow_volume_expansion(self) -> bool:
+        """Return whether this StorageClass allows dynamic volume expansion."""
+        return bool(self.obj.allow_volume_expansion)
+
+    @property
+    def parameters(self) -> Mapping[str, str]:
+        """Return StorageClass parameters, or an empty mapping when unavailable."""
+        return self.obj.parameters or EMPTY_MAPPING
+
+
+@dataclass(frozen=True)
+class PersistentVolumeClaim:
+    """General-purpose wrapper around one Kubernetes PersistentVolumeClaim object."""
+    obj: kubernetes.client.V1PersistentVolumeClaim
+
+    @staticmethod
+    def _requested_storage(spec: kubernetes.client.V1PersistentVolumeClaimSpec) -> str:
+        resources = spec.resources or kubernetes.client.V1VolumeResourceRequirements()
+        requests = resources.requests or {}
+        value = str(requests.get("storage") or "").strip()
+        if not value:
+            raise OSError("PVC does not expose a valid storage request quantity")
+        return value
+
+    @classmethod
+    async def get(
+        cls,
+        *,
+        kube: Kube,
+        namespace: str,
+        timeout: float,
+        name: KubeName,
+    ) -> Self | None:
+        """Read one Kubernetes PersistentVolumeClaim by name."""
+        payload = await kube.run(
+            lambda request_timeout: kube.core.read_namespaced_persistent_volume_claim(
+                name=name,
+                namespace=namespace,
+                _request_timeout=request_timeout,
+            ),
+            timeout=timeout,
+            context=f"failed to read PVC {name!r} in namespace {namespace!r}",
+        )
+        if payload is None:
+            return None
+        if not isinstance(payload, kubernetes.client.V1PersistentVolumeClaim):
+            raise OSError(
+                f"malformed Kubernetes PVC payload for {name!r} in namespace "
+                f"{namespace!r}"
+            )
+        return cls(obj=payload)
+
+    @classmethod
+    async def list(
+        cls,
+        *,
+        kube: Kube,
+        timeout: float,
+        namespaces: Collection[str] | None = None,
+        labels: Mapping[str, str] | None = None,
+    ) -> builtins.list[Self]:
+        """List Kubernetes PersistentVolumeClaims by namespace and label selectors.
+
+        Parameters
+        ----------
+        kube : Kube
+            Active Kubernetes API context.
+        timeout : float
+            Maximum runtime budget in seconds.  If infinite, wait indefinitely.
+        namespaces : Collection[str] | None, optional
+            Optional namespace filters.  `None` queries all namespaces.  Otherwise,
+            names are normalized (trimmed), deduplicated, and queried individually.
+        labels : Mapping[str, str] | None, optional
+            Optional label filters.
+        """
+        label_selector = _label_selector(labels)
+        payloads: builtins.list[kubernetes.client.V1PersistentVolumeClaimList] = []
+        if namespaces is None:
+            payload = await kube.run(
+                lambda request_timeout: kube.core.list_persistent_volume_claim_for_all_namespaces(
+                    label_selector=label_selector,
+                    _request_timeout=request_timeout,
+                ),
+                timeout=timeout,
+                context="failed to list PVCs across all namespaces",
+            )
+            if payload is not None:
+                payloads.append(payload)
+        else:
+            normalized = {namespace.strip() for namespace in namespaces}
+            normalized.discard("")
+            if not normalized:
+                return []
+            for namespace in sorted(normalized):
+                payload = await kube.run(
+                    lambda request_timeout, namespace=namespace: (
+                        kube.core.list_namespaced_persistent_volume_claim(
+                            namespace=namespace,
+                            label_selector=label_selector,
+                            _request_timeout=request_timeout,
+                        )
+                    ),
+                    timeout=timeout,
+                    context=f"failed to list PVCs in namespace {namespace!r}",
+                )
+                if payload is not None:
+                    payloads.append(payload)
+
+        out: builtins.list[Self] = []
+        for payload in payloads:
+            if not isinstance(payload, kubernetes.client.V1PersistentVolumeClaimList):
+                raise OSError("malformed Kubernetes PersistentVolumeClaim list payload")
+            for item in payload.items or []:
+                if not isinstance(item, kubernetes.client.V1PersistentVolumeClaim):
+                    raise OSError(
+                        "malformed Kubernetes PersistentVolumeClaim entry in list payload"
+                    )
+                out.append(cls(obj=item))
+        return out
+
+    @classmethod
+    async def create(
+        cls,
+        data: dict[str, JSONValue],
+        *,
+        kube: Kube,
+        timeout: float,
+    ) -> Self:
+        """Create a Kubernetes PersistentVolumeClaim from a manifest payload."""
+        metadata = data.get("metadata")
+        name = ""
+        namespace = ""
+        if isinstance(metadata, Mapping):
+            metadata_fields: dict[str, object] = {}
+            for key, value in metadata.items():
+                if isinstance(key, str):
+                    metadata_fields[key] = value
+            name = str(metadata_fields.get("name") or "").strip()
+            namespace = str(metadata_fields.get("namespace") or "").strip()
+        if not namespace:
+            raise OSError("PVC creation payload must define metadata.namespace")
+
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        try:
+            payload = await kube.run(
+                lambda request_timeout: kube.core.create_namespaced_persistent_volume_claim(
+                    namespace=namespace,
+                    body=data,
+                    _request_timeout=request_timeout,
+                ),
+                timeout=deadline - loop.time(),
+                context="failed to create PersistentVolumeClaim",
+            )
+            if payload is None:
+                raise OSError("kubernetes returned empty payload during PVC creation")
+            if not isinstance(payload, kubernetes.client.V1PersistentVolumeClaim):
+                raise OSError("malformed Kubernetes payload during PVC creation")
+            return cls(obj=payload)
+        except OSError as err:
+            text = str(err).lower()
+            if "status 409" not in text and "already exists" not in text:
+                raise
+
+        if name and namespace:
+            existing = await cls.get(
+                kube=kube,
+                namespace=namespace,
+                timeout=deadline - loop.time(),
+                name=name,
+            )
+            if existing is not None:
+                return existing
+        raise OSError(
+            "kubernetes accepted PVC creation, but no valid PVC payload was returned"
+        )
+
+    async def grow(
+        self,
+        requested: str,
+        *,
+        kube: Kube,
+        timeout: float,
+    ) -> None:
+        """Resize the PVC if current requested storage is below target."""
+        new_size = parse_pvc_size(requested)
+        identity = self.identity
+        if identity is None:
+            raise OSError("cannot resize PVC with missing metadata.name/namespace")
+        namespace, name = identity
+        patch = {"spec": {"resources": {"requests": {"storage": requested}}}}
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+
+        for attempt in range(PVC_GROW_RETRIES):
+            live = await type(self).get(
+                kube=kube,
+                namespace=namespace,
+                timeout=deadline - loop.time(),
+                name=name,
+            )
+            if live is None:
+                raise OSError(f"PVC {name!r} disappeared during resize lifecycle")
+            current_size = parse_pvc_size(live.requested_storage)
+            if current_size >= new_size:
+                return
+            try:
+                await kube.run(
+                    lambda request_timeout: kube.core.patch_namespaced_persistent_volume_claim(
+                        name=name,
+                        namespace=namespace,
+                        body=patch,
+                        _request_timeout=request_timeout,
+                    ),
+                    timeout=deadline - loop.time(),
+                    context=f"failed to patch PVC {name!r} during resize lifecycle",
+                )
+            except OSError as err:
+                detail = str(err).lower()
+                if "status 404" in detail or "not found" in detail:
+                    raise OSError(
+                        f"PVC {name!r} disappeared during resize lifecycle"
+                    ) from err
+                if (
+                    "status 409" in detail or
+                    "conflict" in detail or
+                    "the object has been modified" in detail
+                ) and attempt + 1 < PVC_GROW_RETRIES:
+                    continue
+                raise
+
+            live = await type(self).get(
+                kube=kube,
+                namespace=namespace,
+                timeout=deadline - loop.time(),
+                name=name,
+            )
+            if live is None:
+                raise OSError(f"PVC {name!r} disappeared during resize lifecycle")
+            current_size = parse_pvc_size(live.requested_storage)
+            if current_size >= new_size:
+                return
+            if attempt + 1 >= PVC_GROW_RETRIES:
+                raise OSError(
+                    f"PVC {name!r} did not converge to requested size {requested!r} "
+                    f"after {PVC_GROW_RETRIES} attempts"
+                )
+
+    async def delete(self, *, kube: Kube, timeout: float) -> None:
+        """Delete this PVC from the cluster."""
+        identity = self.identity
+        if identity is None:
+            raise OSError("cannot delete PVC with missing metadata.name/namespace")
+        namespace, name = identity
+        await kube.run(
+            lambda request_timeout: kube.core.delete_namespaced_persistent_volume_claim(
+                name=name,
+                namespace=namespace,
+                body=kubernetes.client.V1DeleteOptions(),
+                _request_timeout=request_timeout,
+            ),
+            timeout=timeout,
+            context=f"failed to delete PVC {name!r}",
+        )
+
+    async def refresh(self, *, kube: Kube, timeout: float) -> Self | None:
+        """Re-read this PVC by identity."""
+        identity = self.identity
+        if identity is None:
+            raise OSError("cannot refresh PVC with missing metadata.name/namespace")
+        namespace, name = identity
+        return await type(self).get(
+            kube=kube,
+            namespace=namespace,
+            timeout=timeout,
+            name=name,
+        )
+
+    async def wait_bound(self, *, kube: Kube, timeout: float) -> Self:
+        """Wait until this PVC reaches a bound state."""
+        identity = self.identity
+        if identity is None:
+            raise OSError(
+                "cannot wait for bound state of PVC with missing metadata.name/namespace"
+            )
+        namespace, name = identity
+        if timeout <= 0:
+            raise TimeoutError(f"timed out waiting for PVC {namespace}/{name} binding")
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        while True:
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                raise TimeoutError(
+                    f"timed out waiting for PVC {namespace}/{name} binding"
+                )
+            live = await self.refresh(kube=kube, timeout=remaining)
+            if live is None:
+                raise OSError(f"PVC {name!r} disappeared before binding")
+            if live.is_bound:
+                return live
+            await asyncio.sleep(min(VOLUME_WAIT_POLL_INTERVAL_SECONDS, remaining))
+
+    async def wait_deleted(self, *, kube: Kube, timeout: float) -> None:
+        """Wait until this PVC is deleted."""
+        identity = self.identity
+        if identity is None:
+            raise OSError(
+                "cannot wait for deletion of PVC with missing metadata.name/namespace"
+            )
+        namespace, name = identity
+        if timeout <= 0:
+            raise TimeoutError(f"timed out waiting for PVC {namespace}/{name} deletion")
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        while True:
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                raise TimeoutError(
+                    f"timed out waiting for PVC {namespace}/{name} deletion"
+                )
+            live = await self.refresh(kube=kube, timeout=remaining)
+            if live is None:
+                return
+            await asyncio.sleep(min(VOLUME_WAIT_POLL_INTERVAL_SECONDS, remaining))
+
+    @property
+    def name(self) -> str:
+        """Return trimmed `metadata.name`, or an empty string when unavailable."""
+        metadata = self.obj.metadata
+        return (metadata.name or "").strip() if metadata is not None else ""
+
+    @property
+    def namespace(self) -> str:
+        """Return trimmed `metadata.namespace`, or an empty string when unavailable."""
+        metadata = self.obj.metadata
+        return (metadata.namespace or "").strip() if metadata is not None else ""
+
+    @property
+    def identity(self) -> tuple[str, str] | None:
+        """Return `(namespace, name)` identity when both components are available."""
+        namespace = self.namespace
+        name = self.name
+        if not namespace or not name:
+            return None
+        return namespace, name
+
+    @property
+    def phase(self) -> str:
+        """Return trimmed PVC phase string, or an empty string when unavailable."""
+        status = self.obj.status
+        return (status.phase or "").strip() if status is not None else ""
+
+    @property
+    def is_bound(self) -> bool:
+        """Return whether this PVC phase is `Bound` and has `spec.volume_name`."""
+        return self.phase == "Bound" and bool(self.volume_name)
+
+    @property
+    def volume_name(self) -> str:
+        """Return trimmed `spec.volume_name`, or an empty string when unavailable."""
+        spec = self.obj.spec
+        return (spec.volume_name or "").strip() if spec is not None else ""
+
+    @property
+    def requested_storage(self) -> str:
+        """Return requested storage quantity string from `spec.resources.requests`."""
+        spec = self.obj.spec or kubernetes.client.V1PersistentVolumeClaimSpec()
+        return type(self)._requested_storage(spec)
+
+    @property
+    def storage_class_name(self) -> str:
+        """Return trimmed storage class name, or an empty string when unavailable."""
+        spec = self.obj.spec
+        return (spec.storage_class_name or "").strip() if spec is not None else ""
+
+    @property
+    def access_modes(self) -> tuple[str, ...]:
+        """Return immutable access mode tuple, preserving API order."""
+        spec = self.obj.spec
+        modes = (spec.access_modes or []) if spec is not None else []
+        return tuple(mode.strip() for mode in modes if mode and mode.strip())
+
+
+@dataclass(frozen=True)
+class PersistentVolume:
+    """General-purpose wrapper around one Kubernetes PersistentVolume object."""
+    obj: kubernetes.client.V1PersistentVolume
+
+    @classmethod
+    async def get(
+        cls,
+        *,
+        kube: Kube,
+        timeout: float,
+        name: KubeName,
+    ) -> Self | None:
+        """Read one Kubernetes PersistentVolume by name."""
+        payload = await kube.run(
+            lambda request_timeout: kube.core.read_persistent_volume(
+                name=name,
+                _request_timeout=request_timeout,
+            ),
+            timeout=timeout,
+            context=f"failed to read PersistentVolume {name!r}",
+        )
+        if payload is None:
+            return None
+        if not isinstance(payload, kubernetes.client.V1PersistentVolume):
+            raise OSError(f"malformed Kubernetes PersistentVolume payload for {name!r}")
+        return cls(obj=payload)
+
+    @classmethod
+    async def list(
+        cls,
+        *,
+        kube: Kube,
+        timeout: float,
+        labels: Mapping[str, str] | None = None,
+    ) -> builtins.list[Self]:
+        """List Kubernetes PersistentVolumes with optional label filtering."""
+        payload = await kube.run(
+            lambda request_timeout: kube.core.list_persistent_volume(
+                label_selector=_label_selector(labels),
+                _request_timeout=request_timeout,
+            ),
+            timeout=timeout,
+            context="failed to list Kubernetes PersistentVolumes",
+        )
+        if payload is None:
+            return []
+        if not isinstance(payload, kubernetes.client.V1PersistentVolumeList):
+            raise OSError("malformed Kubernetes PersistentVolume list payload")
+        out: builtins.list[Self] = []
+        for item in payload.items or []:
+            if not isinstance(item, kubernetes.client.V1PersistentVolume):
+                raise OSError("malformed Kubernetes PersistentVolume entry in list payload")
+            out.append(cls(obj=item))
+        return out
+
+    async def refresh(self, *, kube: Kube, timeout: float) -> Self | None:
+        """Re-read this PersistentVolume by name."""
+        name = self.name
+        if not name:
+            raise OSError("cannot refresh PersistentVolume with missing metadata.name")
+        return await type(self).get(kube=kube, timeout=timeout, name=name)
+
+    @classmethod
+    async def wait_present(
+        cls,
+        *,
+        kube: Kube,
+        timeout: float,
+        name: KubeName,
+    ) -> Self:
+        """Wait until a PersistentVolume exists by name."""
+        if timeout <= 0:
+            raise TimeoutError(f"timed out waiting for PersistentVolume {name!r}")
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        while True:
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                raise TimeoutError(f"timed out waiting for PersistentVolume {name!r}")
+            live = await cls.get(kube=kube, timeout=remaining, name=name)
+            if live is not None:
+                return live
+            await asyncio.sleep(min(VOLUME_WAIT_POLL_INTERVAL_SECONDS, remaining))
+
+    @property
+    def name(self) -> str:
+        """Return trimmed `metadata.name`, or an empty string when unavailable."""
+        metadata = self.obj.metadata
+        return (metadata.name or "").strip() if metadata is not None else ""
+
+    @property
+    def phase(self) -> str:
+        """Return trimmed PersistentVolume phase string, or empty string."""
+        status = self.obj.status
+        return (status.phase or "").strip() if status is not None else ""
+
+    @property
+    def claim_identity(self) -> tuple[str, str] | None:
+        """Return `(namespace, claim_name)` from claim ref, or `None` if absent."""
+        spec = self.obj.spec
+        claim_ref = spec.claim_ref if spec is not None else None
+        if claim_ref is None:
+            return None
+        namespace = (claim_ref.namespace or "").strip()
+        claim_name = (claim_ref.name or "").strip()
+        if not namespace or not claim_name:
+            return None
+        return namespace, claim_name
+
+    @property
+    def csi_driver(self) -> str:
+        """Return trimmed CSI driver string, or empty string when unavailable."""
+        spec = self.obj.spec
+        csi = spec.csi if spec is not None else None
+        return (csi.driver or "").strip() if csi is not None else ""
+
+    @property
+    def csi_volume_attributes(self) -> Mapping[str, str]:
+        """Return CSI volume attributes, or an empty mapping when unavailable."""
+        spec = self.obj.spec
+        csi = spec.csi if spec is not None else None
+        return csi.volume_attributes or EMPTY_MAPPING if csi is not None else EMPTY_MAPPING
+
+    @property
+    def ceph_path(self) -> PosixPath | None:
+        """Return CephFS backing path from CSI attributes, or `None` if unavailable."""
+        for key in ("subvolumePath", "rootPath", "path"):
+            value = self.csi_volume_attributes.get(key, "").strip()
+            if not value:
+                continue
+            return PosixPath(value if value.startswith("/") else f"/{value}")
+        return None
+
+
+def parse_pvc_size(value: str) -> Decimal:
+    """Parse a Kubernetes PVC request size string into a Decimal value."""
+    match = QUANTITY_RE.fullmatch(value.strip())
+    if not match:
+        raise ValueError(f"invalid Kubernetes PVC request size: {value!r}")
+    number, suffix = match.groups()
+    factor = STORAGE_FACTORS.get(suffix)
+    if factor is None:
+        raise ValueError(
+            f"invalid Kubernetes memory unit for PVC request: {suffix!r} (options are "
+            f"{', '.join(repr(s) for s in STORAGE_FACTORS)})"
+        )
+    try:
+        return Decimal(number) * factor
+    except (InvalidOperation, ValueError) as err:
+        raise ValueError(
+            f"invalid Kubernetes memory quantity for PVC request: {value!r}"
+        ) from err
 
 
 @dataclass(frozen=True)
@@ -254,16 +904,12 @@ class CacheVolume:
                     f"required {storage_class!r} StorageClass is not available; cache PVC "
                     "provisioning cannot proceed"
                 )
-            if not storage.obj.allow_volume_expansion:
+            if not storage.allow_volume_expansion:
                 raise OSError(
                     f"{storage_class!r} StorageClass must set 'allowVolumeExpansion=true' "
                     "for Bertrand cache PVC resizing"
                 )
-            storage_name = (
-                (storage.obj.metadata.name or "")
-                if storage.obj.metadata is not None
-                else ""
-            )
+            storage_name = storage.name
 
             # get/create PVCs for each of this tag's cache volumes
             for volume in await CacheVolume.from_config(config, tag, env_id):
@@ -358,7 +1004,7 @@ class CacheVolume:
             # get all PVCs associated with this environment
             actual = await PersistentVolumeClaim.list(
                 kube=kube,
-                namespace=BERTRAND_NAMESPACE,
+                namespaces=(BERTRAND_NAMESPACE,),
                 timeout=deadline - loop.time(),
                 labels={BERTRAND_ENV: "1", CACHE_VOLUME_ENV: "1", ENV_ID_ENV: env_id},
             )
@@ -370,7 +1016,7 @@ class CacheVolume:
                 claim_name
                 for pod in await Pod.list(
                     kube=kube,
-                    namespace=BERTRAND_NAMESPACE,
+                    namespaces=(BERTRAND_NAMESPACE,),
                     timeout=deadline - loop.time(),
                     labels={BERTRAND_ENV: "1", ENV_ID_ENV: env_id},
                 )
@@ -550,16 +1196,16 @@ class RepoVolume:
                 )
 
             # assert that the selected class supports dynamic resizing and CephFS CSI
-            if not storage.obj.allow_volume_expansion:
+            if not storage.allow_volume_expansion:
                 raise OSError(
                     f"storage class {storage_class!r} must set allowVolumeExpansion=true "
                     "for Bertrand repository volume resizing"
                 )
-            provisioner = (storage.obj.provisioner or "").lower()
+            provisioner = storage.provisioner.lower()
             if "cephfs" not in provisioner or "csi.ceph.com" not in provisioner:
                 raise OSError(
                     f"storage class {storage_class!r} uses provisioner "
-                    f"{storage.obj.provisioner!r}, but Bertrand repository volumes require a "
+                    f"{storage.provisioner!r}, but Bertrand repository volumes require a "
                     "CephFS CSI provisioner (for example 'rook-ceph.cephfs.csi.ceph.com').  "
                     "Ensure MicroK8s is linked to MicroCeph and that the preferred "
                     "CephFS storage class is configured correctly."
@@ -640,7 +1286,7 @@ class RepoVolume:
             # get matching PVCs
             pvcs = await PersistentVolumeClaim.list(
                 kube=kube,
-                namespace=BERTRAND_NAMESPACE,
+                namespaces=(BERTRAND_NAMESPACE,),
                 timeout=timeout,
                 labels=labels,
             )
@@ -692,7 +1338,7 @@ class RepoVolume:
             if not force:
                 pods = await Pod.list(
                     kube=kube,
-                    namespace=BERTRAND_NAMESPACE,
+                    namespaces=(BERTRAND_NAMESPACE,),
                     timeout=deadline - loop.time(),
                     labels={BERTRAND_ENV: "1", REPO_ID_ENV: self.repo_id},
                 )
@@ -746,61 +1392,34 @@ class RepoVolume:
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
         with await Kube.host(timeout=deadline - loop.time()) as kube:
-            while True:
-                pvc = await PersistentVolumeClaim.get(
-                    kube=kube,
-                    namespace=namespace,
-                    timeout=deadline - loop.time(),
-                    name=name,
-                )
-                if pvc is None:  # pvc died during resolution
-                    raise OSError(
-                        f"repository claim {name!r} disappeared during Ceph path "
-                        "resolution"
-                    )
-                spec = pvc.obj.spec
-                volume_name = (
-                    (spec.volume_name or "").strip()
-                    if spec is not None
-                    else ""
-                )
-                if not volume_name:  # volumeName hasn't been populated yet, wait and retry
-                    await asyncio.sleep(0.1)
-                    continue
+            pvc = await self.pvc.wait_bound(
+                kube=kube,
+                timeout=deadline - loop.time(),
+            )
+            volume_name = pvc.volume_name
+            volume = await PersistentVolume.wait_present(
+                kube=kube,
+                timeout=deadline - loop.time(),
+                name=volume_name,
+            )
 
-                # wait until the PV is available
-                volume = await PersistentVolume.get(
-                    kube=kube,
-                    timeout=deadline - loop.time(),
-                    name=volume_name,
+            # confirm CSI driver with cephfs backend
+            driver = volume.csi_driver
+            if not driver:
+                raise OSError(
+                    f"PersistentVolume {volume_name!r} is not CSI-backed and cannot be "
+                    "mounted as a Ceph repository volume"
                 )
-                if volume is None:
-                    await asyncio.sleep(0.1)
-                    continue
+            if "cephfs" not in driver.lower():
+                raise OSError(
+                    f"PersistentVolume {volume_name!r} uses CSI driver {driver!r}, "
+                    "expected a CephFS driver"
+                )
 
-                # confirm CSI driver with cephfs backend
-                spec = volume.obj.spec
-                csi = spec.csi if spec is not None else None
-                if csi is None:
-                    raise OSError(
-                        f"PersistentVolume {volume_name!r} is not CSI-backed and cannot be "
-                        "mounted as a Ceph repository volume"
-                    )
-                driver = csi.driver.lower()
-                if "cephfs" not in driver:
-                    raise OSError(
-                        f"PersistentVolume {volume_name!r} uses CSI driver {csi.driver!r}, "
-                        "expected a CephFS driver"
-                    )
-                attrs = csi.volume_attributes or {}
-                for key in ("subvolumePath", "rootPath", "path"):
-                    value = attrs.get(key, "").strip()
-                    if not value:
-                        continue
-                    if not value.startswith("/"):
-                        return PosixPath("/") / value
-                    return PosixPath(value)
+            ceph_path = volume.ceph_path
+            if ceph_path is None:
                 raise OSError(
                     "repository PersistentVolume is missing CephFS path attributes "
                     "(expected one of 'subvolumePath', 'rootPath', or 'path')"
                 )
+            return ceph_path

@@ -1,26 +1,10 @@
 """Kubernetes runtime orchestration primitives for Bertrand."""
-from .capability import (
-    Capabilities,
-    CapabilityKind,
-    CapabilityMetadata,
-    delete_capability,
-    get_capability,
-    list_capabilities,
-    put_capability,
-)
 from .api import (
     CLUSTER_REGISTRY_READY_LABEL,
     CLUSTER_REGISTRY_READY_VALUE,
     Kube,
-    KubeSecret,
-    PersistentVolume,
-    PersistentVolumeClaim,
-    StorageClass,
     ensure_microk8s_kubeconfig,
-    parse_pvc_size,
 )
-from .node import Node
-from .pod import Pod
 from .ceph import (
     CephStorageAction,
     CephStorageActionSpec,
@@ -42,6 +26,17 @@ from .container import (
     start_rpc_sidecar,
     stop_rpc_sidecar,
 )
+from .device import (
+    ConfigMap,
+    DeviceCapabilities,
+    DeviceCapabilityMetadata,
+    DevicePermission,
+    build_device_capability_flags,
+    delete_device_capability,
+    get_device_capability,
+    list_device_capabilities,
+    put_device_capability,
+)
 from .environment import Environment
 from .image import (
     ClusterImageBuild,
@@ -53,5 +48,91 @@ from .image import (
     render_containerfile,
 )
 from .network import format_cpus, format_network
+from .node import Node
+from .pod import Pod
 from .registry import EnvironmentMetadata, Registry
-from .volume import DEFAULT_VOLUME_SIZE, CacheVolume, RepoVolume
+from .secret import (
+    Secret,
+    SecretCapabilities,
+    SecretCapabilityKind,
+    SecretCapabilityMetadata,
+    build_secret_capability_flags,
+    cleanup_secret_capability_dir,
+    delete_secret_capability,
+    get_secret_capability,
+    list_secret_capabilities,
+    put_secret_capability,
+)
+from .volume import (
+    DEFAULT_VOLUME_SIZE,
+    CacheVolume,
+    PersistentVolume,
+    PersistentVolumeClaim,
+    RepoVolume,
+    StorageClass,
+    parse_pvc_size,
+)
+
+__all__ = [
+    "CLUSTER_REGISTRY_READY_LABEL",
+    "CLUSTER_REGISTRY_READY_VALUE",
+    "CacheVolume",
+    "CephStorageAction",
+    "CephStorageActionSpec",
+    "CephStorageActionStatus",
+    "CephStorageAutoscaler",
+    "CephStorageAutoscalerSpec",
+    "CephStorageAutoscalerStatus",
+    "ClusterImageBuild",
+    "Container",
+    "ContainerArgs",
+    "ConfigMap",
+    "DEFAULT_VOLUME_SIZE",
+    "DeviceCapabilities",
+    "DeviceCapabilityMetadata",
+    "DevicePermission",
+    "Environment",
+    "EnvironmentMetadata",
+    "Image",
+    "ImageArgs",
+    "Kube",
+    "MountInfo",
+    "Node",
+    "PersistentVolume",
+    "PersistentVolumeClaim",
+    "Pod",
+    "Registry",
+    "RepoCredentials",
+    "RepoVolume",
+    "Secret",
+    "SecretCapabilities",
+    "SecretCapabilityKind",
+    "SecretCapabilityMetadata",
+    "StorageClass",
+    "build_device_capability_flags",
+    "build_secret_capability_flags",
+    "ceph_capacity_controlplane_image_build",
+    "cleanup_secret_capability_dir",
+    "container_args",
+    "delete_device_capability",
+    "delete_secret_capability",
+    "ensure_ceph_capacity_controlplane",
+    "ensure_cluster_image",
+    "ensure_cluster_image_store",
+    "ensure_microk8s_kubeconfig",
+    "format_cpus",
+    "format_network",
+    "get_device_capability",
+    "get_secret_capability",
+    "image_args",
+    "list_device_capabilities",
+    "list_secret_capabilities",
+    "parse_pvc_size",
+    "put_device_capability",
+    "put_secret_capability",
+    "render_containerfile",
+    "run_ceph_capacity_agent",
+    "run_ceph_capacity_controller",
+    "start_rpc_sidecar",
+    "stop_rpc_sidecar",
+]

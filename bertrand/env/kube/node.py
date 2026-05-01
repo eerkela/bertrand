@@ -660,6 +660,11 @@ class Node:
             If the Kubernetes request exceeds the timeout budget.
         OSError
             If this node has no name, or if the API payload is malformed.
+
+        Notes
+        -----
+        Node-scoped pod selection is intentionally owned by `Node.pods()` so
+        `Pod.list()` can remain namespace/label focused.
         """
         node_name = self.name
         if not node_name:

@@ -970,7 +970,7 @@ class Bertrand(Resource):
                     examples=["gpu", "cuda0"],
                     description=
                         "Host-agnostic capability ID for a build-time device "
-                        "capability.  The ID is resolved using a Kubernetes Secret in "
+                        "capability.  The ID is resolved using a Kubernetes ConfigMap in "
                         "the \"bertrand\" namespace, which provides the host device "
                         "endpoint.",
                 )]

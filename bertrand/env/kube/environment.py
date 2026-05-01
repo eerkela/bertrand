@@ -11,17 +11,18 @@ from ..config import Bertrand, Config
 from ..config.core import TOMLKey
 from ..run import (
     ENV_ID_ENV,
+    INFINITY,
     METADATA_DIR,
     METADATA_LOCK,
-    TIMEOUT,
     Lock,
     nerdctl,
     nerdctl_ids,
 )
-from .capability import build_capability_flags, cleanup_capability_dir
 from .container import Container
+from .device import build_device_capability_flags
 from .image import Image, image_args
 from .registry import VERSION, EnvironmentMetadata, Registry, write_metadata
+from .secret import build_secret_capability_flags, cleanup_secret_capability_dir
 
 
 @dataclass
@@ -60,7 +61,7 @@ class Environment:
         worktree: Path,
         *,
         repo=None,
-        timeout: float = TIMEOUT,
+        timeout: float = INFINITY,
     ) -> Self:
         """Load an environment at the given worktree path.
 
@@ -107,7 +108,7 @@ class Environment:
             return self
         except Exception:
             if acquired:
-                await self.lock.unlock(suppress_backend_errors=True)
+                await self.lock.unlock(ignore_errors=True)
             raise
 
     async def __aexit__(
@@ -145,7 +146,7 @@ class Environment:
             await self.config.__aexit__(exc_type, exc_value, traceback)
             if not self.config and (self.config.root / METADATA_DIR).exists():
                 write_metadata(self.config.root, self._json)
-            await self.lock.unlock(suppress_backend_errors=exc_value is not None)
+            await self.lock.unlock(ignore_errors=exc_value is not None)
 
     def __bool__(self) -> bool:
         return bool(self.config)
@@ -253,7 +254,13 @@ class Environment:
             created=datetime.now(UTC),
             image_args=bundle.argv,
         )
-        capability_flags, capability_dir = await build_capability_flags(
+        secret_flags, capability_dir = await build_secret_capability_flags(
+            env_id=self.id,
+            tag=tag,
+            build=build,
+            timeout=self.lock.timeout,
+        )
+        device_flags = await build_device_capability_flags(
             env_id=self.id,
             tag=tag,
             build=build,
@@ -264,7 +271,8 @@ class Environment:
                 [
                     "build",
                     *bundle.argv[:-1],
-                    *capability_flags,
+                    *secret_flags,
+                    *device_flags,
                     bundle.argv[-1],
                 ],
                 cwd=self.config.root,
@@ -287,7 +295,7 @@ class Environment:
                     )
                 raise
         finally:
-            cleanup_capability_dir(capability_dir)
+            cleanup_secret_capability_dir(capability_dir)
 
         if changed:
             self.images[tag] = candidate
