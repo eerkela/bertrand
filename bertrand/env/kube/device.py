@@ -1,11 +1,11 @@
-"""ConfigMap wrappers and device capability resolution for Kubernetes."""
+"""ConfigMap wrappers and device selector resolution for Kubernetes."""
 from __future__ import annotations
 
 import builtins
 import hashlib
 import sys
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Literal, Self
 
 from kubernetes import client as kube_client
@@ -17,7 +17,6 @@ from .api import Kube, _label_selector
 type DevicePermission = Literal["r", "w", "m", "rw", "rm", "wm", "rwm"]
 DEVICE_PERMISSIONS = frozenset({"r", "w", "m", "rw", "rm", "wm", "rwm"})
 CAPABILITY_MANAGED_V1 = "bertrand.dev/capability-managed.v1"
-CAPABILITY_KIND_V1 = "bertrand.dev/capability-kind.v1"
 CAPABILITY_ENV_ID_V1 = "bertrand.dev/capability-env-id.v1"
 CAPABILITY_ID_V1 = "bertrand.dev/capability-id.v1"
 
@@ -25,6 +24,7 @@ CAPABILITY_ID_V1 = "bertrand.dev/capability-id.v1"
 @dataclass(frozen=True)
 class ConfigMap:
     """General-purpose wrapper around one Kubernetes ConfigMap object."""
+
     obj: kube_client.V1ConfigMap
 
     @classmethod
@@ -91,7 +91,7 @@ class ConfigMap:
         return out
 
     @classmethod
-    async def create_or_patch(
+    async def upsert(
         cls,
         *,
         kube: Kube,
@@ -193,70 +193,161 @@ class ConfigMap:
             raise OSError("ConfigMap metadata is missing namespace/name identity")
         return namespace, name
 
+    @classmethod
+    async def build_flags(
+        cls,
+        *,
+        kube: Kube,
+        env_id: str,
+        build: object,
+        timeout: float,
+    ) -> tuple[str, ...]:
+        """Build device flags for one build request."""
+        requests = tuple(getattr(build, "devices", ()))
+        if not requests:
+            return ()
 
-@dataclass(frozen=True)
-class DeviceCapabilityMetadata:
-    """Metadata for one managed ConfigMap-backed device capability."""
-    id: KubeName
-    env_id: str | None
-    name: KubeName = field(init=False, repr=False)
+        validated_env = _check_uuid(env_id)
+        seen: set[KubeName] = set()
+        flags: builtins.list[str] = []
+        for request in requests:
+            id = _check_kube_name(request.id)
+            if id in seen:
+                raise ValueError(f"duplicate device capability ID: {id!r}")
+            seen.add(id)
 
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "id", _check_kube_name(self.id))
-        if self.env_id is not None:
-            object.__setattr__(self, "env_id", _check_uuid(self.env_id))
-        object.__setattr__(self, "name", _kube_config_map_name(
-            id=self.id,
-            env_id=self.env_id,
-        ))
+            permissions = str(request.permissions)
+            if permissions not in DEVICE_PERMISSIONS:
+                raise ValueError(
+                    f"invalid device permissions {permissions!r}; must be a non-empty "
+                    "combination of 'r', 'w', and 'm'"
+                )
+
+            flags.extend(
+                await cls._resolve_flag(
+                    kube=kube,
+                    id=id,
+                    required=request.required,
+                    permissions=permissions,
+                    env_id=validated_env,
+                    timeout=timeout,
+                )
+            )
+
+        return tuple(flags)
 
     @classmethod
-    def from_config_map(cls, config_map: ConfigMap) -> Self:
-        """Parse device capability metadata from a managed ConfigMap."""
+    async def _resolve_flag(
+        cls,
+        *,
+        kube: Kube,
+        id: KubeName,
+        required: bool,
+        permissions: str,
+        env_id: str,
+        timeout: float,
+    ) -> builtins.list[str]:
+        resolved = await cls._resolve(
+            kube=kube,
+            id=id,
+            env_id=env_id,
+            timeout=timeout,
+        )
+        if resolved is None:
+            if required:
+                raise OSError(f"missing required device selector: {id!r}")
+            print(
+                f"bertrand: optional device selector {id!r} was not found; continuing "
+                "without it",
+                file=sys.stderr,
+            )
+            return []
+
+        config_map, name = resolved
+        selector = config_map.value_text(name).strip()
+        if not selector:
+            raise OSError(
+                f"cluster ConfigMap {name!r} key 'data.value' cannot be empty"
+            )
+        return ["--device", f"{selector}:{permissions}"]
+
+    @classmethod
+    async def _resolve(
+        cls,
+        *,
+        kube: Kube,
+        id: KubeName,
+        env_id: str,
+        timeout: float,
+    ) -> tuple[Self, KubeName] | None:
+        # NOTE: env scope takes precedence over shared scope.
+        for scope in (env_id, None):
+            name = _device_name(id=id, env_id=scope)
+            config_map = await cls.get(
+                kube=kube,
+                namespace=BERTRAND_NAMESPACE,
+                timeout=timeout,
+                name=name,
+            )
+            if config_map is None:
+                continue
+            cls._assert_managed(
+                config_map=config_map,
+                expected_name=name,
+                id=id,
+                env_id=scope,
+            )
+            return config_map, name
+        return None
+
+    @classmethod
+    def _assert_managed(
+        cls,
+        *,
+        config_map: Self,
+        expected_name: KubeName,
+        id: KubeName,
+        env_id: str | None,
+    ) -> None:
         metadata = config_map.obj.metadata or kube_client.V1ObjectMeta()
-        name = metadata.name or "<unknown>"
+        name = (metadata.name or "").strip() or expected_name
         labels = metadata.labels or {}
         annotations = metadata.annotations or {}
+
         if labels.get(CAPABILITY_MANAGED_V1) != "true":
             raise OSError(
-                f"cluster ConfigMap {name!r} collides with a Bertrand "
-                "capability name but is unmanaged"
+                f"cluster ConfigMap {name!r} collides with a Bertrand device request "
+                "but is unmanaged"
             )
-        if labels.get(CAPABILITY_KIND_V1) != "device":
+        label_env = labels.get(CAPABILITY_ENV_ID_V1)
+        expected_env = env_id or "shared"
+        if label_env != expected_env:
             raise OSError(
-                f"cluster ConfigMap {name!r} has missing/invalid "
-                f"{CAPABILITY_KIND_V1!r}"
+                f"cluster ConfigMap {name!r} has mismatched {CAPABILITY_ENV_ID_V1!r}: "
+                f"expected {expected_env!r}, got {label_env!r}"
             )
-        id_value = annotations.get(CAPABILITY_ID_V1)
-        if id_value is None:
+        annotation_id = annotations.get(CAPABILITY_ID_V1)
+        if annotation_id is None:
             raise OSError(
-                f"cluster ConfigMap {name!r} is missing annotation "
-                f"{CAPABILITY_ID_V1!r}"
+                f"cluster ConfigMap {name!r} is missing annotation {CAPABILITY_ID_V1!r}"
             )
-        parsed_id = _check_kube_name(id_value)
-        env_id: str | None = labels.get(CAPABILITY_ENV_ID_V1)
-        if env_id is None:
+        if _check_kube_name(annotation_id) != _check_kube_name(id):
             raise OSError(
-                f"cluster ConfigMap {name!r} is missing label "
-                f"{CAPABILITY_ENV_ID_V1!r}"
+                f"cluster ConfigMap {name!r} has mismatched {CAPABILITY_ID_V1!r}: "
+                f"expected {id!r}, got {annotation_id!r}"
             )
-        parsed_env = None if env_id == "shared" else _check_uuid(env_id)
-        return cls(id=parsed_id, env_id=parsed_env)
 
 
-def _kube_config_map_name(
-    id: KubeName,
-    env_id: str | None,
-) -> KubeName:
+def _device_name(id: KubeName, env_id: str | None) -> KubeName:
     id = _check_kube_name(id)
     if env_id is not None:
         env_id = _check_uuid(env_id)
 
     parts: tuple[str, ...]
     if env_id is None:
-        parts = ("shared", "device", id)
+        parts = ("shared", id)
     else:
-        parts = (env_id, "device", id)
+        parts = (env_id, id)
 
     # NOTE: include lengths before each token so hash input boundaries stay unambiguous.
     h = hashlib.sha256()
@@ -266,255 +357,3 @@ def _kube_config_map_name(
         h.update(encoded)
 
     return f"bertrand-device-{h.hexdigest()}"
-
-
-@dataclass
-class DeviceCapabilities:
-    """Builder-style resolver for ConfigMap-backed device capability flags."""
-    @dataclass
-    class DeviceRequest:
-        """A stored device capability request."""
-        required: bool
-        permissions: str
-
-    env_id: str
-    timeout: float
-    _devices: dict[str, DeviceRequest] = field(default_factory=dict, repr=False)
-    _finalized: bool = field(default=False, repr=False)
-
-    def __post_init__(self) -> None:
-        self.env_id = _check_uuid(self.env_id)
-        if self.timeout <= 0:
-            raise TimeoutError("capability timeout must be non-negative")
-
-    def device(
-        self,
-        *,
-        id: KubeName,
-        required: bool,
-        permissions: str,
-    ) -> None:
-        """Register one build device capability request."""
-        if self._finalized:
-            raise RuntimeError("capabilities are already finalized and cannot be modified")
-        id = _check_kube_name(id)
-        if id in self._devices:
-            raise ValueError(f"duplicate device capability ID: {id!r}")
-        if permissions not in DEVICE_PERMISSIONS:
-            raise ValueError(
-                f"invalid device permissions {permissions!r}; must be a non-empty "
-                "combination of 'r', 'w', and 'm'"
-            )
-        self._devices[id] = self.DeviceRequest(required=required, permissions=permissions)
-
-    async def _resolve(
-        self,
-        id: KubeName,
-        *,
-        kube: Kube,
-    ) -> tuple[ConfigMap, DeviceCapabilityMetadata] | None:
-        # NOTE: resolve env scope first, then shared scope, so local overrides win.
-        expected = DeviceCapabilityMetadata(id=id, env_id=self.env_id)
-        config_map = await ConfigMap.get(
-            kube=kube,
-            namespace=BERTRAND_NAMESPACE,
-            timeout=self.timeout,
-            name=expected.name,
-        )
-        if config_map is not None:
-            if expected != DeviceCapabilityMetadata.from_config_map(config_map):
-                raise OSError(
-                    f"environment ConfigMap {expected.name!r} metadata does not match "
-                    f"requested device capability {expected.id!r}"
-                )
-            return config_map, expected
-
-        expected = DeviceCapabilityMetadata(id=id, env_id=None)
-        config_map = await ConfigMap.get(
-            kube=kube,
-            namespace=BERTRAND_NAMESPACE,
-            timeout=self.timeout,
-            name=expected.name,
-        )
-        if config_map is not None:
-            if expected != DeviceCapabilityMetadata.from_config_map(config_map):
-                raise OSError(
-                    f"cluster ConfigMap {expected.name!r} metadata does not match "
-                    f"requested device capability {expected.id!r}"
-                )
-            return config_map, expected
-
-        return None
-
-    async def _resolve_device(
-        self,
-        id: KubeName,
-        request: DeviceRequest,
-        *,
-        kube: Kube,
-    ) -> builtins.list[str]:
-        resolved = await self._resolve(id=id, kube=kube)
-        if resolved is None:
-            if request.required:
-                raise OSError(f"missing required device selector: {id!r}")
-            print(
-                f"bertrand: optional device selector {id!r} was not found; continuing "
-                "without it",
-                file=sys.stderr,
-            )
-            return []
-
-        config_map, meta = resolved
-        selector = config_map.value_text(meta.name).strip()
-        if not selector:
-            raise OSError(
-                f"cluster ConfigMap {meta.name!r} key 'data.value' cannot be empty"
-            )
-        return ["--device", f"{selector}:{request.permissions}"]
-
-    async def finalize(self) -> tuple[str, ...]:
-        """Resolve all registered device requests into CLI flags."""
-        if self._finalized:
-            raise RuntimeError("capabilities are already finalized")
-
-        flags: builtins.list[str] = []
-        with await Kube.host(timeout=self.timeout) as kube:
-            for id, request in self._devices.items():
-                flags.extend(await self._resolve_device(id, request, kube=kube))
-
-        self._finalized = True
-        return tuple(flags)
-
-
-async def build_device_capability_flags(
-    *,
-    env_id: str,
-    tag: object,
-    build: object,
-    timeout: float,
-) -> tuple[str, ...]:
-    """Build device capability CLI flags for one build tag."""
-    del tag  # currently unused, reserved for future diagnostics context.
-
-    requests = tuple(getattr(build, "devices", ()))
-    if not requests:
-        return ()
-
-    resolver = DeviceCapabilities(env_id=env_id, timeout=timeout)
-    for req in requests:
-        resolver.device(id=req.id, required=req.required, permissions=req.permissions)
-    return await resolver.finalize()
-
-
-async def get_device_capability(
-    *,
-    id: KubeName,
-    env_id: str | None,
-    timeout: float,
-) -> tuple[ConfigMap, DeviceCapabilityMetadata] | None:
-    """Read one ConfigMap-backed device capability using explicit scope."""
-    expected = DeviceCapabilityMetadata(id=id, env_id=env_id)
-    with await Kube.host(timeout=timeout) as kube:
-        config_map = await ConfigMap.get(
-            kube=kube,
-            namespace=BERTRAND_NAMESPACE,
-            timeout=timeout,
-            name=expected.name,
-        )
-        if config_map is None:
-            return None
-        if expected != DeviceCapabilityMetadata.from_config_map(config_map):
-            raise OSError(
-                f"cluster ConfigMap {expected.name!r} metadata does not match requested "
-                f"device capability {expected.id!r}"
-            )
-        return config_map, expected
-
-
-async def put_device_capability(
-    *,
-    id: KubeName,
-    env_id: str | None,
-    timeout: float,
-    selector: str,
-) -> DeviceCapabilityMetadata:
-    """Create or update one managed ConfigMap-backed device capability."""
-    expected = DeviceCapabilityMetadata(id=id, env_id=env_id)
-    with await Kube.host(timeout=timeout) as kube:
-        existing = await ConfigMap.get(
-            kube=kube,
-            namespace=BERTRAND_NAMESPACE,
-            timeout=timeout,
-            name=expected.name,
-        )
-        if existing is not None and expected != DeviceCapabilityMetadata.from_config_map(existing):
-            raise OSError(
-                f"cluster ConfigMap {expected.name!r} metadata does not match requested "
-                f"device capability {expected.id!r}"
-            )
-
-        await ConfigMap.create_or_patch(
-            kube=kube,
-            namespace=BERTRAND_NAMESPACE,
-            timeout=timeout,
-            name=expected.name,
-            labels={
-                CAPABILITY_MANAGED_V1: "true",
-                CAPABILITY_KIND_V1: "device",
-                CAPABILITY_ENV_ID_V1: expected.env_id or "shared",
-            },
-            annotations={CAPABILITY_ID_V1: expected.id},
-            value=selector,
-        )
-        return expected
-
-
-async def delete_device_capability(
-    *,
-    id: KubeName,
-    env_id: str | None,
-    timeout: float,
-) -> bool:
-    """Delete one managed ConfigMap-backed device capability."""
-    expected = DeviceCapabilityMetadata(id=id, env_id=env_id)
-    with await Kube.host(timeout=timeout) as kube:
-        existing = await ConfigMap.get(
-            kube=kube,
-            namespace=BERTRAND_NAMESPACE,
-            timeout=timeout,
-            name=expected.name,
-        )
-        if existing is None:
-            return False
-        if expected != DeviceCapabilityMetadata.from_config_map(existing):
-            raise OSError(
-                f"cluster ConfigMap {expected.name!r} metadata does not match requested "
-                f"device capability {expected.id!r}"
-            )
-
-        await existing.delete(kube=kube, timeout=timeout)
-        return True
-
-
-async def list_device_capabilities(
-    *,
-    env_id: str | None,
-    timeout: float,
-) -> builtins.list[tuple[ConfigMap, DeviceCapabilityMetadata]]:
-    """List managed ConfigMap-backed device capability metadata."""
-    if env_id is not None:
-        env_id = _check_uuid(env_id)
-    with await Kube.host(timeout=timeout) as kube:
-        parsed = await ConfigMap.list(
-            kube=kube,
-            namespace=BERTRAND_NAMESPACE,
-            timeout=timeout,
-            labels={
-                CAPABILITY_MANAGED_V1: "true",
-                CAPABILITY_KIND_V1: "device",
-                CAPABILITY_ENV_ID_V1: env_id or "shared",
-            },
-        )
-        out = [(item, DeviceCapabilityMetadata.from_config_map(item)) for item in parsed]
-        out.sort(key=lambda entry: entry[1].name)
-        return out

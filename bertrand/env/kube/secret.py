@@ -1,4 +1,4 @@
-"""Secret wrappers and secret-backed capability resolution for Kubernetes."""
+"""Secret wrappers and secret/SSH build-flag resolution for Kubernetes."""
 from __future__ import annotations
 
 import base64
@@ -9,9 +9,9 @@ import shutil
 import sys
 import uuid
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, Self, cast
+from typing import Self
 
 from kubernetes import client as kube_client
 
@@ -19,10 +19,8 @@ from ..config.core import KubeName, _check_kube_name, _check_uuid
 from ..run import BERTRAND_NAMESPACE, CACHE_DIR, atomic_write_bytes
 from .api import Kube, _label_selector
 
-type SecretCapabilityKind = Literal["secret", "ssh"]
 CAPABILITY_DIR = CACHE_DIR / "capabilities"
 CAPABILITY_MANAGED_V1 = "bertrand.dev/capability-managed.v1"
-CAPABILITY_KIND_V1 = "bertrand.dev/capability-kind.v1"
 CAPABILITY_ENV_ID_V1 = "bertrand.dev/capability-env-id.v1"
 CAPABILITY_ID_V1 = "bertrand.dev/capability-id.v1"
 
@@ -96,7 +94,7 @@ class Secret:
         return out
 
     @classmethod
-    async def create_or_patch(
+    async def upsert(
         cls,
         *,
         kube: Kube,
@@ -181,8 +179,8 @@ class Secret:
             context=f"failed to delete cluster secret {name!r}",
         )
 
-    def decode(self, name: KubeName) -> bytes:
-        """Decode a base64-encoded payload from `data[\"value\"]`."""
+    def value_bytes(self, name: KubeName) -> bytes:
+        """Decode base64 bytes from `data[\"value\"]`."""
         value = (self.obj.data or {}).get("value")
         if value is None:
             raise OSError(
@@ -196,6 +194,15 @@ class Secret:
                 f"'data.value'"
             ) from err
 
+    def value_text(self, name: KubeName) -> str:
+        """Decode UTF-8 text from `data[\"value\"]`."""
+        try:
+            return self.value_bytes(name).decode("utf-8")
+        except UnicodeDecodeError as err:
+            raise OSError(
+                f"cluster secret {name!r} key 'data.value' must decode as UTF-8 text"
+            ) from err
+
     @property
     def identity(self) -> tuple[str, str]:
         """Return `(namespace, name)` identity for this secret."""
@@ -206,403 +213,202 @@ class Secret:
             raise OSError("secret metadata is missing namespace/name identity")
         return namespace, name
 
+    @classmethod
+    async def build_flags(
+        cls,
+        *,
+        kube: Kube,
+        env_id: str,
+        build: object,
+        timeout: float,
+    ) -> tuple[tuple[str, ...], Path | None]:
+        """Build secret and SSH flags for one build request."""
+        secrets = tuple(getattr(build, "secrets", ()))
+        ssh = tuple(getattr(build, "ssh", ()))
+        if not secrets and not ssh:
+            return (), None
 
-@dataclass(frozen=True)
-class SecretCapabilityMetadata:
-    """Metadata for one managed secret-backed capability."""
-    kind: SecretCapabilityKind
-    id: KubeName
-    env_id: str | None
-    name: KubeName = field(init=False, repr=False)
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "id", _check_kube_name(self.id))
-        if self.env_id is not None:
-            object.__setattr__(self, "env_id", _check_uuid(self.env_id))
-        object.__setattr__(self, "name", _kube_secret_name(
-            kind=self.kind,
-            id=self.id,
-            env_id=self.env_id,
-        ))
+        validated_env = _check_uuid(env_id)
+        staged = CAPABILITY_DIR / uuid.uuid4().hex
+        flags: builtins.list[str] = []
+        try:
+            for request in secrets:
+                flags.extend(
+                    await cls._resolve_flag(
+                        kube=kube,
+                        mode="secret",
+                        id=request.id,
+                        required=request.required,
+                        env_id=validated_env,
+                        timeout=timeout,
+                        staged=staged,
+                    )
+                )
+            for request in ssh:
+                flags.extend(
+                    await cls._resolve_flag(
+                        kube=kube,
+                        mode="ssh",
+                        id=request.id,
+                        required=request.required,
+                        env_id=validated_env,
+                        timeout=timeout,
+                        staged=staged,
+                    )
+                )
+            return tuple(flags), staged
+        except Exception:
+            cls.cleanup_staged(staged)
+            raise
 
     @classmethod
-    def from_secret(cls, secret: Secret) -> Self:
-        """Parse capability metadata from a managed secret."""
+    def cleanup_staged(cls, path: Path | None) -> None:
+        """Delete staged payload files, if present."""
+        if path is None:
+            return
+        shutil.rmtree(path, ignore_errors=True)
+
+    @classmethod
+    async def _resolve_flag(
+        cls,
+        *,
+        kube: Kube,
+        mode: str,
+        id: KubeName,
+        required: bool,
+        env_id: str,
+        timeout: float,
+        staged: Path,
+    ) -> builtins.list[str]:
+        resolved = await cls._resolve(
+            kube=kube,
+            id=id,
+            env_id=env_id,
+            timeout=timeout,
+        )
+        if resolved is None:
+            if required:
+                if mode == "secret":
+                    raise OSError(f"missing required secret: {id!r}")
+                raise OSError(f"missing required ssh credential: {id!r}")
+            if mode == "secret":
+                print(
+                    f"bertrand: optional secret {id!r} was not found; continuing "
+                    "without it",
+                    file=sys.stderr,
+                )
+            else:
+                print(
+                    f"bertrand: optional ssh credential {id!r} was not found; "
+                    "continuing without it",
+                    file=sys.stderr,
+                )
+            return []
+
+        secret, name = resolved
+        payload = secret.value_bytes(name)
+        # NOTE: Secrets and SSH now share one storage identity; emit mode only
+        # changes the build flag shape.
+        target = cls._stage_payload(staged, id, payload)
+        if mode == "secret":
+            return ["--secret", f"id={id},src={target}"]
+        return ["--ssh", f"id={id},src={target}"]
+
+    @classmethod
+    async def _resolve(
+        cls,
+        *,
+        kube: Kube,
+        id: KubeName,
+        env_id: str,
+        timeout: float,
+    ) -> tuple[Self, KubeName] | None:
+        # NOTE: env scope takes precedence over shared scope.
+        for scope in (env_id, None):
+            name = _secret_name(id=id, env_id=scope)
+            secret = await cls.get(
+                kube=kube,
+                namespace=BERTRAND_NAMESPACE,
+                timeout=timeout,
+                name=name,
+            )
+            if secret is None:
+                continue
+            cls._assert_managed(
+                secret=secret,
+                expected_name=name,
+                id=id,
+                env_id=scope,
+            )
+            return secret, name
+        return None
+
+    @classmethod
+    def _assert_managed(
+        cls,
+        *,
+        secret: Self,
+        expected_name: KubeName,
+        id: KubeName,
+        env_id: str | None,
+    ) -> None:
         metadata = secret.obj.metadata or kube_client.V1ObjectMeta()
-        name = metadata.name or "<unknown>"
+        name = (metadata.name or "").strip() or expected_name
         labels = metadata.labels or {}
         annotations = metadata.annotations or {}
+
         if labels.get(CAPABILITY_MANAGED_V1) != "true":
             raise OSError(
-                f"cluster secret {name!r} collides with a Bertrand "
-                "capability name but is unmanaged"
+                f"cluster secret {name!r} collides with a Bertrand secret request "
+                "but is unmanaged"
             )
-        kind = labels.get(CAPABILITY_KIND_V1)
-        if kind not in ("secret", "ssh"):
+        label_env = labels.get(CAPABILITY_ENV_ID_V1)
+        expected_env = env_id or "shared"
+        if label_env != expected_env:
             raise OSError(
-                f"cluster secret {name!r} has missing/invalid "
-                f"{CAPABILITY_KIND_V1!r}"
+                f"cluster secret {name!r} has mismatched {CAPABILITY_ENV_ID_V1!r}: "
+                f"expected {expected_env!r}, got {label_env!r}"
             )
-        parsed_kind = cast(SecretCapabilityKind, kind)
-        id_value = annotations.get(CAPABILITY_ID_V1)
-        if id_value is None:
+        annotation_id = annotations.get(CAPABILITY_ID_V1)
+        if annotation_id is None:
             raise OSError(
-                f"cluster secret {name!r} is missing annotation "
-                f"{CAPABILITY_ID_V1!r}"
+                f"cluster secret {name!r} is missing annotation {CAPABILITY_ID_V1!r}"
             )
-        parsed_id = _check_kube_name(id_value)
-        env_id: str | None = labels.get(CAPABILITY_ENV_ID_V1)
-        if env_id is None:
+        if _check_kube_name(annotation_id) != _check_kube_name(id):
             raise OSError(
-                f"cluster secret {name!r} is missing label {CAPABILITY_ENV_ID_V1!r}"
+                f"cluster secret {name!r} has mismatched {CAPABILITY_ID_V1!r}: "
+                f"expected {id!r}, got {annotation_id!r}"
             )
-        parsed_env = None if env_id == "shared" else _check_uuid(env_id)
-        return cls(kind=parsed_kind, id=parsed_id, env_id=parsed_env)
+
+    @staticmethod
+    def _stage_payload(
+        staged: Path,
+        id: KubeName,
+        payload: bytes,
+    ) -> Path:
+        target = staged / "secrets" / id
+        target.parent.mkdir(parents=True, exist_ok=True)
+        atomic_write_bytes(target, payload)
+        target.chmod(0o600)
+        return target
 
 
-def _kube_secret_name(
-    kind: SecretCapabilityKind,
-    id: KubeName,
-    env_id: str | None,
-) -> KubeName:
+def _secret_name(id: KubeName, env_id: str | None) -> KubeName:
     id = _check_kube_name(id)
     if env_id is not None:
         env_id = _check_uuid(env_id)
 
     parts: tuple[str, ...]
     if env_id is None:
-        parts = ("shared", kind, id)
+        parts = ("shared", id)
     else:
-        parts = (env_id, kind, id)
+        parts = (env_id, id)
 
-    # NOTE: include lengths before each token so hash input boundaries stay unambiguous.
-    h = hashlib.sha256()
+    # NOTE: include lengths before each token to keep hash input boundaries explicit.
+    digest = hashlib.sha256()
     for part in parts:
         encoded = part.encode("utf-8")
-        h.update(len(encoded).to_bytes(8, "big"))
-        h.update(encoded)
+        digest.update(len(encoded).to_bytes(8, "big"))
+        digest.update(encoded)
 
-    return f"bertrand-{kind}-{h.hexdigest()}"
-
-
-@dataclass
-class SecretCapabilities:
-    """Builder-style resolver for secret and SSH capability flags."""
-    @dataclass
-    class SecretRequest:
-        """A stored secret capability request."""
-        required: bool
-
-    @dataclass
-    class SSHRequest:
-        """A stored SSH capability request."""
-        required: bool
-
-    env_id: str
-    timeout: float
-    run_id: str = field(default_factory=lambda: uuid.uuid4().hex)
-    _secrets: dict[str, SecretRequest] = field(default_factory=dict, repr=False)
-    _ssh: dict[str, SSHRequest] = field(default_factory=dict, repr=False)
-    _finalized: bool = field(default=False, repr=False)
-
-    def __post_init__(self) -> None:
-        self.env_id = _check_uuid(self.env_id)
-        if self.timeout <= 0:
-            raise TimeoutError("capability timeout must be non-negative")
-
-    @property
-    def path(self) -> Path:
-        """Return the staged payload directory for this resolver instance."""
-        return CAPABILITY_DIR / self.run_id
-
-    def secret(self, *, id: KubeName, required: bool) -> None:
-        """Register one build secret capability request."""
-        if self._finalized:
-            raise RuntimeError("capabilities are already finalized and cannot be modified")
-        id = _check_kube_name(id)
-        if id in self._secrets:
-            raise ValueError(f"duplicate secret capability ID: {id!r}")
-        if id in self._ssh:
-            raise ValueError(
-                f"capability ID {id!r} is already registered as an SSH capability"
-            )
-        self._secrets[id] = self.SecretRequest(required=required)
-
-    def ssh(self, *, id: KubeName, required: bool) -> None:
-        """Register one build SSH capability request."""
-        if self._finalized:
-            raise RuntimeError("capabilities are already finalized and cannot be modified")
-        id = _check_kube_name(id)
-        if id in self._secrets:
-            raise ValueError(
-                f"capability ID {id!r} is already registered as a secret capability"
-            )
-        if id in self._ssh:
-            raise ValueError(f"duplicate SSH capability ID: {id!r}")
-        self._ssh[id] = self.SSHRequest(required=required)
-
-    def _stage_payload(
-        self,
-        kind: Literal["secrets", "ssh"],
-        id: KubeName,
-        payload: bytes,
-    ) -> Path:
-        target = self.path / kind / id
-        target.parent.mkdir(parents=True, exist_ok=True)
-        atomic_write_bytes(target, payload)
-        target.chmod(0o600)
-        return target
-
-    async def _resolve(
-        self,
-        kind: SecretCapabilityKind,
-        id: KubeName,
-        *,
-        kube: Kube,
-    ) -> tuple[Secret, SecretCapabilityMetadata] | None:
-        # NOTE: resolve env scope first, then shared scope, so local overrides win.
-        expected = SecretCapabilityMetadata(kind=kind, id=id, env_id=self.env_id)
-        secret = await Secret.get(
-            kube=kube,
-            namespace=BERTRAND_NAMESPACE,
-            timeout=self.timeout,
-            name=expected.name,
-        )
-        if secret is not None:
-            if expected != SecretCapabilityMetadata.from_secret(secret):
-                raise OSError(
-                    f"environment secret {expected.name!r} metadata does not match "
-                    f"requested {expected.kind} capability {expected.id!r}"
-                )
-            return secret, expected
-
-        expected = SecretCapabilityMetadata(kind=kind, id=id, env_id=None)
-        secret = await Secret.get(
-            kube=kube,
-            namespace=BERTRAND_NAMESPACE,
-            timeout=self.timeout,
-            name=expected.name,
-        )
-        if secret is not None:
-            if expected != SecretCapabilityMetadata.from_secret(secret):
-                raise OSError(
-                    f"cluster secret {expected.name!r} metadata does not match "
-                    f"requested {expected.kind} capability {expected.id!r}"
-                )
-            return secret, expected
-
-        return None
-
-    async def _resolve_secret(
-        self,
-        id: KubeName,
-        request: SecretRequest,
-        *,
-        kube: Kube,
-    ) -> builtins.list[str]:
-        resolved = await self._resolve(kind="secret", id=id, kube=kube)
-        if resolved is None:
-            if request.required:
-                raise OSError(f"missing required secret: {id!r}")
-            print(
-                f"bertrand: optional secret {id!r} was not found; continuing without it",
-                file=sys.stderr,
-            )
-            return []
-
-        data, meta = resolved
-        payload = data.decode(meta.name)
-        target = self._stage_payload("secrets", id, payload)
-        return ["--secret", f"id={id},src={target}"]
-
-    async def _resolve_ssh(
-        self,
-        id: KubeName,
-        request: SSHRequest,
-        *,
-        kube: Kube,
-    ) -> builtins.list[str]:
-        resolved = await self._resolve(kind="ssh", id=id, kube=kube)
-        if resolved is None:
-            if request.required:
-                raise OSError(f"missing required ssh credential: {id!r}")
-            print(
-                f"bertrand: optional ssh credential {id!r} was not found; continuing "
-                "without it",
-                file=sys.stderr,
-            )
-            return []
-
-        data, meta = resolved
-        payload = data.decode(meta.name)
-        target = self._stage_payload("ssh", id, payload)
-        return ["--ssh", f"id={id},src={target}"]
-
-    async def finalize(self) -> tuple[str, ...]:
-        """Resolve all registered requests and stage required payload files."""
-        if self._finalized:
-            raise RuntimeError("capabilities are already finalized")
-
-        try:
-            flags: builtins.list[str] = []
-            with await Kube.host(timeout=self.timeout) as kube:
-                for id, secret in self._secrets.items():
-                    flags.extend(await self._resolve_secret(id, secret, kube=kube))
-                for id, ssh in self._ssh.items():
-                    flags.extend(await self._resolve_ssh(id, ssh, kube=kube))
-
-            self._finalized = True
-            return tuple(flags)
-        except Exception:
-            shutil.rmtree(self.path, ignore_errors=True)
-            raise
-
-
-async def build_secret_capability_flags(
-    *,
-    env_id: str,
-    tag: object,
-    build: object,
-    timeout: float,
-) -> tuple[tuple[str, ...], Path | None]:
-    """Build secret and SSH capability CLI flags for one build tag."""
-    del tag  # currently unused, reserved for future diagnostics context.
-
-    requests_secret = tuple(getattr(build, "secrets", ()))
-    requests_ssh = tuple(getattr(build, "ssh", ()))
-    if not requests_secret and not requests_ssh:
-        return (), None
-
-    resolver = SecretCapabilities(env_id=env_id, timeout=timeout)
-    for req in requests_secret:
-        resolver.secret(id=req.id, required=req.required)
-    for req in requests_ssh:
-        resolver.ssh(id=req.id, required=req.required)
-
-    flags = await resolver.finalize()
-    return flags, resolver.path
-
-
-def cleanup_secret_capability_dir(path: Path | None) -> None:
-    """Delete staged secret capability payload files if present."""
-    if path is None:
-        return
-    shutil.rmtree(path, ignore_errors=True)
-
-
-async def get_secret_capability(
-    *,
-    kind: SecretCapabilityKind,
-    id: KubeName,
-    env_id: str | None,
-    timeout: float,
-) -> tuple[Secret, SecretCapabilityMetadata] | None:
-    """Read one secret-backed capability using explicit scope."""
-    expected = SecretCapabilityMetadata(kind=kind, id=id, env_id=env_id)
-    with await Kube.host(timeout=timeout) as kube:
-        secret = await Secret.get(
-            kube=kube,
-            namespace=BERTRAND_NAMESPACE,
-            timeout=timeout,
-            name=expected.name,
-        )
-        if secret is None:
-            return None
-        if expected != SecretCapabilityMetadata.from_secret(secret):
-            raise OSError(
-                f"cluster secret {expected.name!r} metadata does not match requested "
-                f"{expected.kind} capability {expected.id!r}"
-            )
-        return secret, expected
-
-
-async def put_secret_capability(
-    *,
-    kind: SecretCapabilityKind,
-    id: KubeName,
-    env_id: str | None,
-    timeout: float,
-    payload: bytes,
-) -> SecretCapabilityMetadata:
-    """Create or update one managed secret-backed capability."""
-    expected = SecretCapabilityMetadata(kind=kind, id=id, env_id=env_id)
-    with await Kube.host(timeout=timeout) as kube:
-        existing = await Secret.get(
-            kube=kube,
-            namespace=BERTRAND_NAMESPACE,
-            timeout=timeout,
-            name=expected.name,
-        )
-        if existing is not None and expected != SecretCapabilityMetadata.from_secret(existing):
-            raise OSError(
-                f"cluster secret {expected.name!r} metadata does not match requested "
-                f"{expected.kind} capability {expected.id!r}"
-            )
-
-        await Secret.create_or_patch(
-            kube=kube,
-            namespace=BERTRAND_NAMESPACE,
-            timeout=timeout,
-            name=expected.name,
-            labels={
-                CAPABILITY_MANAGED_V1: "true",
-                CAPABILITY_KIND_V1: expected.kind,
-                CAPABILITY_ENV_ID_V1: expected.env_id or "shared",
-            },
-            annotations={CAPABILITY_ID_V1: expected.id},
-            payload=payload,
-        )
-        return expected
-
-
-async def delete_secret_capability(
-    *,
-    kind: SecretCapabilityKind,
-    id: KubeName,
-    env_id: str | None,
-    timeout: float,
-) -> bool:
-    """Delete one managed secret-backed capability."""
-    expected = SecretCapabilityMetadata(kind=kind, id=id, env_id=env_id)
-    with await Kube.host(timeout=timeout) as kube:
-        existing = await Secret.get(
-            kube=kube,
-            namespace=BERTRAND_NAMESPACE,
-            timeout=timeout,
-            name=expected.name,
-        )
-        if existing is None:
-            return False
-        if expected != SecretCapabilityMetadata.from_secret(existing):
-            raise OSError(
-                f"cluster secret {expected.name!r} metadata does not match requested "
-                f"{expected.kind} capability {expected.id!r}"
-            )
-
-        await existing.delete(kube=kube, timeout=timeout)
-        return True
-
-
-async def list_secret_capabilities(
-    *,
-    kind: SecretCapabilityKind,
-    env_id: str | None,
-    timeout: float,
-) -> builtins.list[tuple[Secret, SecretCapabilityMetadata]]:
-    """List managed secret-backed capability metadata."""
-    if env_id is not None:
-        env_id = _check_uuid(env_id)
-    with await Kube.host(timeout=timeout) as kube:
-        parsed = await Secret.list(
-            kube=kube,
-            namespace=BERTRAND_NAMESPACE,
-            timeout=timeout,
-            labels={
-                CAPABILITY_MANAGED_V1: "true",
-                CAPABILITY_KIND_V1: kind,
-                CAPABILITY_ENV_ID_V1: env_id or "shared",
-            },
-        )
-        out = [(secret, SecretCapabilityMetadata.from_secret(secret)) for secret in parsed]
-        out.sort(key=lambda item: (item[1].kind, item[1].name))
-        return out
+    return f"bertrand-secret-{digest.hexdigest()}"

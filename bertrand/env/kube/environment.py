@@ -18,11 +18,12 @@ from ..run import (
     nerdctl,
     nerdctl_ids,
 )
+from .api import Kube
 from .container import Container
-from .device import build_device_capability_flags
+from .device import ConfigMap
 from .image import Image, image_args
 from .registry import VERSION, EnvironmentMetadata, Registry, write_metadata
-from .secret import build_secret_capability_flags, cleanup_secret_capability_dir
+from .secret import Secret
 
 
 @dataclass
@@ -254,19 +255,21 @@ class Environment:
             created=datetime.now(UTC),
             image_args=bundle.argv,
         )
-        secret_flags, capability_dir = await build_secret_capability_flags(
-            env_id=self.id,
-            tag=tag,
-            build=build,
-            timeout=self.lock.timeout,
-        )
-        device_flags = await build_device_capability_flags(
-            env_id=self.id,
-            tag=tag,
-            build=build,
-            timeout=self.lock.timeout,
-        )
+        capability_dir: Path | None = None
         try:
+            with await Kube.host(timeout=self.lock.timeout) as kube:
+                secret_flags, capability_dir = await Secret.build_flags(
+                    kube=kube,
+                    env_id=self.id,
+                    build=build,
+                    timeout=self.lock.timeout,
+                )
+                device_flags = await ConfigMap.build_flags(
+                    kube=kube,
+                    env_id=self.id,
+                    build=build,
+                    timeout=self.lock.timeout,
+                )
             await nerdctl(
                 [
                     "build",
@@ -295,7 +298,7 @@ class Environment:
                     )
                 raise
         finally:
-            cleanup_secret_capability_dir(capability_dir)
+            Secret.cleanup_staged(capability_dir)
 
         if changed:
             self.images[tag] = candidate
