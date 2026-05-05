@@ -56,9 +56,7 @@ from ..run import (
     inside_image,
     nerdctl,
     nerdctl_ids,
-    run,
     start_buildkit,
-    sudo,
 )
 from ..version import VERSION
 from .api import (
@@ -87,10 +85,6 @@ def _to_utc(value: datetime) -> datetime:
 # This legacy host-side builder will be replaced by one-off BuildKit Jobs once the
 # cluster build path is ready.  The image repository itself now lives in
 # `bertrand.env.kube.build`.
-
-
-CLUSTER_REGISTRY_HOSTS = IMAGES.trust_hosts
-CLUSTER_REGISTRY_SERVER = IMAGES.pull_server
 
 
 @dataclass(frozen=True)
@@ -132,13 +126,11 @@ class ClusterImageBuild:
         for source, target in self.context_copies:
             if source != source.expanduser().resolve():
                 raise ValueError(
-                    "cluster image context sources must be canonical absolute paths: "
-                    f"{source}"
+                    f"cluster image context sources must be canonical absolute paths: {source}"
                 )
             if target.is_absolute():
                 raise ValueError(
-                    "cluster image context targets must be relative to context root: "
-                    f"{target}"
+                    f"cluster image context targets must be relative to context root: {target}"
                 )
             if any(part in ("", ".", "..") for part in target.parts):
                 raise ValueError(
@@ -152,42 +144,6 @@ def _remaining(deadline: float) -> float:
     if remaining <= 0:
         raise TimeoutError("timed out while converging cluster image store")
     return remaining
-
-
-async def _ensure_registry_trust(*, timeout: float) -> None:
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
-    content = (
-        f"server = \"{CLUSTER_REGISTRY_SERVER}\"\n"
-        f"[host.\"{CLUSTER_REGISTRY_SERVER}\"]\n"
-        "  capabilities = [\"pull\", \"resolve\", \"push\"]\n"
-        "  skip_verify = true\n"
-    )
-    for host in CLUSTER_REGISTRY_HOSTS:
-        trust_dir = Path(f"/var/snap/microk8s/current/args/certs.d/{host}")
-        trust_file = trust_dir / "hosts.toml"
-        if trust_file.is_file():
-            try:
-                if trust_file.read_text(encoding="utf-8") == content:
-                    continue
-            except OSError:
-                pass
-        await run(
-            sudo(["install", "-d", "-m", "0755", str(trust_dir)]),
-            capture_output=True,
-            timeout=_remaining(deadline),
-        )
-        with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as handle:
-            handle.write(content)
-            temp_path = Path(handle.name)
-        try:
-            await run(
-                sudo(["install", "-m", "0644", str(temp_path), str(trust_file)]),
-                capture_output=True,
-                timeout=_remaining(deadline),
-            )
-        finally:
-            temp_path.unlink(missing_ok=True)
 
 
 async def _ensure_registry_ready_node_label(*, kube: Kube, timeout: float) -> None:
@@ -282,7 +238,7 @@ async def ensure_cluster_image_store(*, timeout: float = INFINITY) -> None:
     # containerd trust convergence before workloads are rolled out.
     with await Kube.host(timeout=_remaining(deadline)) as kube:
         await IMAGES.ensure(kube, timeout=_remaining(deadline))
-        await IMAGES.ensure_node_trust(timeout=_remaining(deadline))
+        await IMAGES.ensure_trust(timeout=_remaining(deadline))
         await _ensure_registry_ready_node_label(
             kube=kube,
             timeout=_remaining(deadline),
@@ -305,9 +261,7 @@ async def _cluster_image_exists(image: str, *, timeout: float) -> bool:
 
 def _copy_context_item(source: Path, target: Path) -> None:
     if not source.exists():
-        raise FileNotFoundError(
-            f"cluster image build context source does not exist: {source}"
-        )
+        raise FileNotFoundError(f"cluster image build context source does not exist: {source}")
     target.parent.mkdir(parents=True, exist_ok=True)
     if source.is_dir():
         shutil.copytree(source, target)
@@ -476,6 +430,7 @@ async def _resolve_scope(config: Config) -> str:
 @dataclass(frozen=True)
 class ImageArgs:
     """A full argument tail and metadata for `nerdctl build`."""
+
     argv: list[str]
     run_id: str
     image_name: str
@@ -524,19 +479,13 @@ async def image_args(
 
     python = config.get(PyProject)
     if python is None:
-        raise OSError(
-            f"missing 'python' configuration for environment at {config.root}"
-        )
+        raise OSError(f"missing 'python' configuration for environment at {config.root}")
     bertrand = config.get(Bertrand)
     if bertrand is None:
-        raise OSError(
-            f"missing 'bertrand' configuration for environment at {config.root}"
-        )
+        raise OSError(f"missing 'bertrand' configuration for environment at {config.root}")
     build = bertrand.build.get(tag)
     if build is None:
-        raise ValueError(
-            f"unknown build tag '{tag}' for environment at {config.root}"
-        )
+        raise ValueError(f"unknown build tag '{tag}' for environment at {config.root}")
 
     try:
         await CacheVolume.gc(config, env_id, timeout=INFINITY)
@@ -553,10 +502,7 @@ async def image_args(
         containerfile = config.root / METADATA_DIR / "images" / tag / "Containerfile"
         containerfile.parent.mkdir(parents=True, exist_ok=True)
         build_mounts: list[str] = [
-            (
-                f"--mount=type=cache,id={volume.name},target={volume.target},"
-                "sharing=locked"
-            )
+            (f"--mount=type=cache,id={volume.name},target={volume.target},sharing=locked")
             for volume in await CacheVolume.from_config(config, tag, env_id)
         ]
         atomic_write_text(
@@ -620,11 +566,13 @@ class Image(BaseModel):
     image_args : list[str]
         The original `nerdctl build` args used to build the image.
     """
+
     class Inspect(BaseModel):
         """Type hint for `nerdctl image inspect` output.
 
         https://github.com/containerd/nerdctl/blob/main/docs/command-reference.md#whale-nerdctl-image-inspect
         """
+
         model_config = ConfigDict(extra="allow")
         Id: ImageId
         Created: CreatedAt

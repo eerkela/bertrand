@@ -47,6 +47,7 @@ from .container import (
     start_rpc_sidecar,
     stop_rpc_sidecar,
 )
+from .deployment import Deployment
 from .device import (
     ConfigMap,
     DevicePermission,
@@ -70,6 +71,7 @@ from .secret import (
     build_secret_flags,
     cleanup_secret_staged,
 )
+from .service import Service
 from .volume import (
     DEFAULT_VOLUME_SIZE,
     CacheVolume,
@@ -105,6 +107,7 @@ __all__ = [
     "ConfigMap",
     "DEFAULT_VOLUME_SIZE",
     "DevicePermission",
+    "Deployment",
     "Environment",
     "EnvironmentMetadata",
     "Image",
@@ -128,6 +131,7 @@ __all__ = [
     "RepoCredentials",
     "RepoVolume",
     "Secret",
+    "Service",
     "StorageClass",
     "ceph_capacity_controlplane_image_build",
     "build_secret_flags",
