@@ -46,6 +46,8 @@ from .pod import Pod
 from .registry import EnvironmentMetadata, Registry
 from .secret import (
     Secret,
+    build_secret_flags,
+    cleanup_secret_staged,
 )
 from .volume import (
     DEFAULT_VOLUME_SIZE,
@@ -89,6 +91,8 @@ __all__ = [
     "Secret",
     "StorageClass",
     "ceph_capacity_controlplane_image_build",
+    "build_secret_flags",
+    "cleanup_secret_staged",
     "container_args",
     "ensure_ceph_capacity_controlplane",
     "ensure_cluster_image",

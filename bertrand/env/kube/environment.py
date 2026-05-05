@@ -23,7 +23,7 @@ from .container import Container
 from .device import ConfigMap
 from .image import Image, image_args
 from .registry import VERSION, EnvironmentMetadata, Registry, write_metadata
-from .secret import Secret
+from .secret import build_secret_flags, cleanup_secret_staged
 
 
 @dataclass
@@ -258,7 +258,7 @@ class Environment:
         capability_dir: Path | None = None
         try:
             with await Kube.host(timeout=self.lock.timeout) as kube:
-                secret_flags, capability_dir = await Secret.build_flags(
+                secret_flags, capability_dir = await build_secret_flags(
                     kube=kube,
                     env_id=self.id,
                     build=build,
@@ -298,7 +298,7 @@ class Environment:
                     )
                 raise
         finally:
-            Secret.cleanup_staged(capability_dir)
+            cleanup_secret_staged(capability_dir)
 
         if changed:
             self.images[tag] = candidate

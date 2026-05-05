@@ -123,8 +123,7 @@ class Pod:
         label_selector = _label_selector(labels)
         payloads: builtins.list[kubernetes.client.V1PodList] = []
 
-        # NOTE: Node-scoped filtering belongs to `Node.pods()` to keep ownership
-        # boundaries explicit.  `Pod.list()` only handles namespace/label selectors.
+        # search all namespaces
         if namespaces is None:
             payload = await kube.run(
                 lambda request_timeout: kube.core.list_pod_for_all_namespaces(
@@ -136,6 +135,8 @@ class Pod:
             )
             if payload is not None:
                 payloads.append(payload)
+
+        # search specific namespaces
         else:
             normalized = {namespace.strip() for namespace in namespaces}
             normalized.discard("")
@@ -507,10 +508,8 @@ class Pod:
 
         namespace, name = identity
 
-        # NOTE: policy/v1 eviction is preferred over delete because it respects
+        # policy/v1 eviction is preferred over delete because it respects
         # PodDisruptionBudgets and communicates scheduling intent explicitly.
-        # NOTE: we intentionally pass no grace override so workload-level
-        # `terminationGracePeriodSeconds` stays authoritative.
         body = kubernetes.client.V1Eviction(
             api_version="policy/v1",
             kind="Eviction",

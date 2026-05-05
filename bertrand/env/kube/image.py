@@ -45,7 +45,6 @@ from ..config.core import (
 from ..run import (
     BERTRAND_ENV,
     ENV_ID_ENV,
-    enable_microk8s_addon,
     IMAGE_ID_ENV,
     IMAGE_TAG_ENV,
     INFINITY,
@@ -53,6 +52,7 @@ from ..run import (
     WORKTREE_MOUNT,
     Scalar,
     atomic_write_text,
+    enable_microk8s_addon,
     inside_image,
     nerdctl,
     nerdctl_ids,
@@ -61,13 +61,13 @@ from ..run import (
     sudo,
 )
 from ..version import VERSION
-from .container import Container, container_args
-from .network import format_network
 from .api import (
     CLUSTER_REGISTRY_READY_LABEL,
     CLUSTER_REGISTRY_READY_VALUE,
     Kube,
 )
+from .container import Container, container_args
+from .network import format_network
 from .node import Node
 from .volume import CacheVolume
 

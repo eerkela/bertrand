@@ -4,7 +4,7 @@ from __future__ import annotations
 import builtins
 import hashlib
 import sys
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from typing import Literal, Self
 
@@ -21,6 +21,27 @@ CAPABILITY_ENV_ID_V1 = "bertrand.dev/capability-env-id.v1"
 CAPABILITY_ID_V1 = "bertrand.dev/capability-id.v1"
 
 
+def _device_name(id: KubeName, env_id: str | None) -> KubeName:
+    id = _check_kube_name(id)
+    if env_id is not None:
+        env_id = _check_uuid(env_id)
+
+    parts: tuple[str, ...]
+    if env_id is None:
+        parts = ("shared", id)
+    else:
+        parts = (env_id, id)
+
+    # include lengths before each token so hash input boundaries stay unambiguous
+    h = hashlib.sha256()
+    for part in parts:
+        encoded = part.encode("utf-8")
+        h.update(len(encoded).to_bytes(8, "big"))
+        h.update(encoded)
+
+    return f"bertrand-device-{h.hexdigest()}"
+
+
 @dataclass(frozen=True)
 class ConfigMap:
     """General-purpose wrapper around one Kubernetes ConfigMap object."""
@@ -30,13 +51,37 @@ class ConfigMap:
     @classmethod
     async def get(
         cls,
-        *,
         kube: Kube,
+        *,
         namespace: str,
         timeout: float,
         name: KubeName,
     ) -> Self | None:
-        """Read one Kubernetes ConfigMap by name."""
+        """Read one Kubernetes ConfigMap by name.
+
+        Parameters
+        ----------
+        kube : Kube
+            Active Kubernetes API context.
+        namespace : str
+            Namespace that owns the ConfigMap.
+        timeout : float
+            Maximum request budget in seconds. If infinite, wait indefinitely.
+        name : KubeName
+            ConfigMap name to read.
+
+        Returns
+        -------
+        ConfigMap | None
+            Wrapped Kubernetes ConfigMap, or `None` when not found.
+
+        Raises
+        ------
+        TimeoutError
+            If the Kubernetes request exceeds `timeout`.
+        OSError
+            If Kubernetes returns malformed data or the API call fails.
+        """
         payload = await kube.run(
             lambda request_timeout: kube.core.read_namespaced_config_map(
                 name=name,
@@ -61,40 +106,90 @@ class ConfigMap:
     @classmethod
     async def list(
         cls,
-        *,
         kube: Kube,
-        namespace: str,
+        *,
         timeout: float,
+        namespaces: Collection[str] | None = None,
         labels: Mapping[str, str] | None = None,
     ) -> builtins.list[Self]:
-        """List Kubernetes ConfigMaps in one namespace with optional label filtering."""
-        payload = await kube.run(
-            lambda request_timeout: kube.core.list_namespaced_config_map(
-                namespace=namespace,
-                label_selector=_label_selector(labels),
-                _request_timeout=request_timeout,
-            ),
-            timeout=timeout,
-            context=f"failed to list Kubernetes ConfigMaps in namespace {namespace!r}",
-        )
-        if payload is None:
-            return []
-        if not isinstance(payload, kube_client.V1ConfigMapList):
-            raise OSError(
-                f"malformed Kubernetes ConfigMap list payload in namespace {namespace!r}"
+        """List Kubernetes ConfigMaps with optional namespace and label filtering.
+
+        Parameters
+        ----------
+        kube : Kube
+            Active Kubernetes API context.
+        timeout : float
+            Maximum request budget in seconds. If infinite, wait indefinitely.
+        namespaces : Collection[str] | None, optional
+            Optional namespace selector. If `None`, query all namespaces. Otherwise,
+            entries are trimmed, deduplicated, and queried individually.
+        labels : Mapping[str, str] | None, optional
+            Optional label selector key/value pairs.
+
+        Returns
+        -------
+        builtins.list[ConfigMap]
+            Validated ConfigMap wrappers matching the requested filters.
+
+        Raises
+        ------
+        TimeoutError
+            If any Kubernetes request exceeds `timeout`.
+        OSError
+            If Kubernetes returns malformed list/item payloads or a list call fails.
+        """
+        label_selector = _label_selector(labels)
+        payloads: builtins.list[kube_client.V1ConfigMapList] = []
+
+        # search all namespaces
+        if namespaces is None:
+            payload = await kube.run(
+                lambda request_timeout: kube.core.list_config_map_for_all_namespaces(
+                    label_selector=label_selector,
+                    _request_timeout=request_timeout,
+                ),
+                timeout=timeout,
+                context="failed to list cluster ConfigMaps across all namespaces",
             )
+            if payload is not None:
+                payloads.append(payload)
+
+        # search specific namespaces
+        else:
+            normalized = {namespace.strip() for namespace in namespaces}
+            normalized.discard("")
+            if not normalized:
+                return []
+            for namespace in sorted(normalized):
+                payload = await kube.run(
+                    lambda request_timeout, namespace=namespace: (
+                        kube.core.list_namespaced_config_map(
+                            namespace=namespace,
+                            label_selector=label_selector,
+                            _request_timeout=request_timeout,
+                        )
+                    ),
+                    timeout=timeout,
+                    context=f"failed to list cluster ConfigMaps in namespace {namespace!r}",
+                )
+                if payload is not None:
+                    payloads.append(payload)
+
         out: builtins.list[Self] = []
-        for item in payload.items or []:
-            if not isinstance(item, kube_client.V1ConfigMap):
-                raise OSError("malformed Kubernetes ConfigMap entry in list payload")
-            out.append(cls(obj=item))
+        for payload in payloads:
+            if not isinstance(payload, kube_client.V1ConfigMapList):
+                raise OSError("malformed Kubernetes ConfigMap list payload")
+            for item in payload.items or []:
+                if not isinstance(item, kube_client.V1ConfigMap):
+                    raise OSError("malformed Kubernetes ConfigMap entry in list payload")
+                out.append(cls(obj=item))
         return out
 
     @classmethod
     async def upsert(
         cls,
-        *,
         kube: Kube,
+        *,
         namespace: str,
         timeout: float,
         name: KubeName,
@@ -102,7 +197,37 @@ class ConfigMap:
         annotations: Mapping[str, str] | None,
         value: str,
     ) -> Self:
-        """Create or patch one Kubernetes ConfigMap payload."""
+        """Create or patch one Kubernetes ConfigMap payload.
+
+        Parameters
+        ----------
+        kube : Kube
+            Active Kubernetes API context.
+        namespace : str
+            Namespace that owns the ConfigMap.
+        timeout : float
+            Maximum request budget in seconds. If infinite, wait indefinitely.
+        name : KubeName
+            ConfigMap name to create or patch.
+        labels : Mapping[str, str] | None
+            Labels to apply to `metadata.labels`.
+        annotations : Mapping[str, str] | None
+            Annotations to apply to `metadata.annotations`.
+        value : str
+            Text payload stored at `data.value`.
+
+        Returns
+        -------
+        ConfigMap
+            Wrapped created or patched ConfigMap.
+
+        Raises
+        ------
+        TimeoutError
+            If any Kubernetes request exceeds `timeout`.
+        OSError
+            If Kubernetes create/patch fails or returns malformed data.
+        """
         manifest = {
             "apiVersion": "v1",
             "kind": "ConfigMap",
@@ -151,8 +276,49 @@ class ConfigMap:
             )
         return cls(obj=updated)
 
-    async def refresh(self, *, kube: Kube, timeout: float) -> Self | None:
-        """Re-read this ConfigMap by identity."""
+    @property
+    def identity(self) -> tuple[str, str]:
+        """Return canonical `(namespace, name)` identity.
+
+        Returns
+        -------
+        tuple[str, str]
+            Trimmed `(namespace, name)` from `metadata`.
+
+        Raises
+        ------
+        OSError
+            If either namespace or name is missing.
+        """
+        metadata = self.obj.metadata or kube_client.V1ObjectMeta()
+        namespace = (metadata.namespace or "").strip()
+        name = (metadata.name or "").strip()
+        if not namespace or not name:
+            raise OSError("ConfigMap metadata is missing namespace/name identity")
+        return namespace, name
+
+    async def refresh(self, kube: Kube, *, timeout: float) -> Self | None:
+        """Re-read this ConfigMap by identity.
+
+        Parameters
+        ----------
+        kube : Kube
+            Active Kubernetes API context.
+        timeout : float
+            Maximum request budget in seconds. If infinite, wait indefinitely.
+
+        Returns
+        -------
+        ConfigMap | None
+            Latest ConfigMap wrapper if the object still exists, otherwise `None`.
+
+        Raises
+        ------
+        TimeoutError
+            If the Kubernetes request exceeds `timeout`.
+        OSError
+            If identity is malformed, the API request fails, or payload is malformed.
+        """
         namespace, name = self.identity
         return await type(self).get(
             kube=kube,
@@ -161,8 +327,23 @@ class ConfigMap:
             name=name,
         )
 
-    async def delete(self, *, kube: Kube, timeout: float) -> None:
-        """Delete this ConfigMap from the cluster."""
+    async def delete(self, kube: Kube, *, timeout: float) -> None:
+        """Delete this ConfigMap from the cluster.
+
+        Parameters
+        ----------
+        kube : Kube
+            Active Kubernetes API context.
+        timeout : float
+            Maximum request budget in seconds. If infinite, wait indefinitely.
+
+        Raises
+        ------
+        TimeoutError
+            If the Kubernetes request exceeds `timeout`.
+        OSError
+            If identity is malformed or Kubernetes delete fails.
+        """
         namespace, name = self.identity
         await kube.run(
             lambda request_timeout: kube.core.delete_namespaced_config_map(
@@ -175,7 +356,23 @@ class ConfigMap:
         )
 
     def value_text(self, name: KubeName) -> str:
-        """Return text payload from `data[\"value\"]`."""
+        """Read text payload from `data.value`.
+
+        Parameters
+        ----------
+        name : KubeName
+            ConfigMap name used for contextual error messages.
+
+        Returns
+        -------
+        str
+            Text payload stored under `data.value`.
+
+        Raises
+        ------
+        OSError
+            If `data.value` is missing.
+        """
         value = (self.obj.data or {}).get("value")
         if value is None:
             raise OSError(
@@ -183,26 +380,44 @@ class ConfigMap:
             )
         return str(value)
 
-    @property
-    def identity(self) -> tuple[str, str]:
-        """Return `(namespace, name)` identity for this ConfigMap."""
-        metadata = self.obj.metadata or kube_client.V1ObjectMeta()
-        namespace = (metadata.namespace or "").strip()
-        name = (metadata.name or "").strip()
-        if not namespace or not name:
-            raise OSError("ConfigMap metadata is missing namespace/name identity")
-        return namespace, name
-
     @classmethod
     async def build_flags(
         cls,
-        *,
         kube: Kube,
+        *,
         env_id: str,
         build: object,
         timeout: float,
     ) -> tuple[str, ...]:
-        """Build device flags for one build request."""
+        """Build device CLI flags for one build request.
+
+        Parameters
+        ----------
+        kube : Kube
+            Active Kubernetes API context.
+        env_id : str
+            Environment UUID used for env-first then shared fallback lookups.
+        build : object
+            Build configuration object with optional `devices` iterable.
+        timeout : float
+            Maximum request budget in seconds. If infinite, wait indefinitely.
+
+        Returns
+        -------
+        tuple[str, ...]
+            Flattened `--device` CLI args for the configured device requests.
+
+        Raises
+        ------
+        TimeoutError
+            If any Kubernetes request exceeds `timeout`.
+        OSError
+            If a required selector is missing, managed metadata is invalid, or a
+            selector value is empty.
+        ValueError
+            If `env_id` is invalid, a request id is duplicated, or permissions are
+            invalid.
+        """
         requests = tuple(getattr(build, "devices", ()))
         if not requests:
             return ()
@@ -239,8 +454,8 @@ class ConfigMap:
     @classmethod
     async def _resolve_flag(
         cls,
-        *,
         kube: Kube,
+        *,
         id: KubeName,
         required: bool,
         permissions: str,
@@ -274,13 +489,13 @@ class ConfigMap:
     @classmethod
     async def _resolve(
         cls,
-        *,
         kube: Kube,
+        *,
         id: KubeName,
         env_id: str,
         timeout: float,
     ) -> tuple[Self, KubeName] | None:
-        # NOTE: env scope takes precedence over shared scope.
+        # env scope takes precedence over shared scope
         for scope in (env_id, None):
             name = _device_name(id=id, env_id=scope)
             config_map = await cls.get(
@@ -336,24 +551,3 @@ class ConfigMap:
                 f"cluster ConfigMap {name!r} has mismatched {CAPABILITY_ID_V1!r}: "
                 f"expected {id!r}, got {annotation_id!r}"
             )
-
-
-def _device_name(id: KubeName, env_id: str | None) -> KubeName:
-    id = _check_kube_name(id)
-    if env_id is not None:
-        env_id = _check_uuid(env_id)
-
-    parts: tuple[str, ...]
-    if env_id is None:
-        parts = ("shared", id)
-    else:
-        parts = (env_id, id)
-
-    # NOTE: include lengths before each token so hash input boundaries stay unambiguous.
-    h = hashlib.sha256()
-    for part in parts:
-        encoded = part.encode("utf-8")
-        h.update(len(encoded).to_bytes(8, "big"))
-        h.update(encoded)
-
-    return f"bertrand-device-{h.hexdigest()}"
