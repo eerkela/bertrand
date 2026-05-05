@@ -52,6 +52,6 @@
 # ...while explicitly ignoring any files/directories that match these patterns
 /**/.*/
 /venv/
-build/
+/build/
 __pycache__/
 *Zone.Identifier

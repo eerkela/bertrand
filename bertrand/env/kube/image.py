@@ -6,6 +6,7 @@ tracking persistent image metadata used by environment orchestration. It does
 not orchestrate environment lifecycle directly; callers provide the minimal
 runtime inputs (`Config`, `env_id`) needed for image/container materialization.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -52,7 +53,6 @@ from ..run import (
     WORKTREE_MOUNT,
     Scalar,
     atomic_write_text,
-    enable_microk8s_addon,
     inside_image,
     nerdctl,
     nerdctl_ids,
@@ -66,6 +66,7 @@ from .api import (
     CLUSTER_REGISTRY_READY_VALUE,
     Kube,
 )
+from .build import IMAGES
 from .container import Container, container_args
 from .network import format_network
 from .node import Node
@@ -83,14 +84,13 @@ def _to_utc(value: datetime) -> datetime:
 ###############################
 
 
-# TODO: in general, this should probably be basically just a wrapper around a buildkit
-# daemon hooked up to nerdctl, which targets the cluster-wide registry.  The `Image`
-# abstraction then represents an image reference within that registry, and `config.py`
-# defines the build topology for an `Image.build()` factory method.
+# This legacy host-side builder will be replaced by one-off BuildKit Jobs once the
+# cluster build path is ready.  The image repository itself now lives in
+# `bertrand.env.kube.build`.
 
 
-CLUSTER_REGISTRY_HOSTS = ("localhost:32000", "127.0.0.1:32000")
-CLUSTER_REGISTRY_SERVER = "http://localhost:32000"
+CLUSTER_REGISTRY_HOSTS = IMAGES.trust_hosts
+CLUSTER_REGISTRY_SERVER = IMAGES.pull_server
 
 
 @dataclass(frozen=True)
@@ -209,12 +209,14 @@ async def _ensure_registry_ready_node_label(*, kube: Kube, timeout: float) -> No
         hostname = node.hostname
         addresses = (
             (address.address or "").strip()
-            for address in ((node.obj.status.addresses or []) if node.obj.status is not None else [])
+            for address in (
+                (node.obj.status.addresses or []) if node.obj.status is not None else []
+            )
         )
         if (
-            (name and name in hints) or
-            (hostname and hostname in hints) or
-            any(address and address in hints for address in addresses)
+            (name and name in hints)
+            or (hostname and hostname in hints)
+            or any(address and address in hints for address in addresses)
         ):
             await node.set_label(
                 kube=kube,
@@ -245,14 +247,10 @@ async def _assert_registry_ready_nodes(*, kube: Kube, timeout: float) -> None:
     ready = {
         node.name
         for node in nodes
-        if node.name and
-        node.labels.get(CLUSTER_REGISTRY_READY_LABEL) == CLUSTER_REGISTRY_READY_VALUE
+        if node.name
+        and node.labels.get(CLUSTER_REGISTRY_READY_LABEL) == CLUSTER_REGISTRY_READY_VALUE
     }
-    missing = sorted(
-        node.name
-        for node in nodes
-        if node.name and node.name not in ready
-    )
+    missing = sorted(node.name for node in nodes if node.name and node.name not in ready)
     if missing:
         raise OSError(
             "cluster image-store rollout blocked: registry trust label is missing on "
@@ -280,11 +278,11 @@ async def ensure_cluster_image_store(*, timeout: float = INFINITY) -> None:
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout
 
-    # Cluster-local image distribution requires the MicroK8s registry addon and
-    # per-node containerd trust convergence before workloads are rolled out.
-    await enable_microk8s_addon("registry", timeout=_remaining(deadline))
-    await _ensure_registry_trust(timeout=_remaining(deadline))
+    # Cluster-local image distribution uses Bertrand's own registry and per-node
+    # containerd trust convergence before workloads are rolled out.
     with await Kube.host(timeout=_remaining(deadline)) as kube:
+        await IMAGES.ensure(kube, timeout=_remaining(deadline))
+        await IMAGES.ensure_node_trust(timeout=_remaining(deadline))
         await _ensure_registry_ready_node_label(
             kube=kube,
             timeout=_remaining(deadline),

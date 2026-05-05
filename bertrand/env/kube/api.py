@@ -173,6 +173,8 @@ class Kube:
         Underlying Kubernetes API transport instance.
     core : kubernetes.client.CoreV1Api
         Core v1 API surface for typed built-in resources.
+    apps : kubernetes.client.AppsV1Api
+        Apps v1 API surface for Deployments and related workload resources.
     custom : kubernetes.client.CustomObjectsApi
         Custom object API surface for CRD interactions.
     storage : kubernetes.client.StorageV1Api
@@ -181,12 +183,14 @@ class Kube:
     namespace: str
     client: kubernetes.client.ApiClient = field(repr=False)
     core: kubernetes.client.CoreV1Api = field(init=False, repr=False)
+    apps: kubernetes.client.AppsV1Api = field(init=False, repr=False)
     custom: kubernetes.client.CustomObjectsApi = field(init=False, repr=False)
     storage: kubernetes.client.StorageV1Api = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
         try:
             self.core = kubernetes.client.CoreV1Api(self.client)
+            self.apps = kubernetes.client.AppsV1Api(self.client)
             self.custom = kubernetes.client.CustomObjectsApi(self.client)
             self.storage = kubernetes.client.StorageV1Api(self.client)
         except Exception:
