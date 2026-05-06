@@ -3,14 +3,15 @@
 This module centralizes Kubernetes API access utilities used across Bertrand's
 kube subsystems.
 """
+
 from __future__ import annotations
 
 import asyncio
 import math
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Self
+from typing import Literal, Self
 from urllib.parse import urlparse
 
 import kubernetes
@@ -68,9 +69,7 @@ def _kubeconfig_identity(payload: str, *, source: str) -> tuple[str, str]:
             cluster_name = str(context.get("cluster") or "").strip()
             break
     if not cluster_name:
-        raise OSError(
-            f"{source} kubeconfig has no cluster bound to context {current_context!r}"
-        )
+        raise OSError(f"{source} kubeconfig has no cluster bound to context {current_context!r}")
 
     clusters = raw.get("clusters")
     if not isinstance(clusters, list):
@@ -86,9 +85,7 @@ def _kubeconfig_identity(payload: str, *, source: str) -> tuple[str, str]:
             cluster_payload = cluster
             break
     if cluster_payload is None:
-        raise OSError(
-            f"{source} kubeconfig has no cluster payload named {cluster_name!r}"
-        )
+        raise OSError(f"{source} kubeconfig has no cluster payload named {cluster_name!r}")
 
     server = str(cluster_payload.get("server") or "").strip()
     if not server:
@@ -96,15 +93,12 @@ def _kubeconfig_identity(payload: str, *, source: str) -> tuple[str, str]:
     parsed = urlparse(server)
     if parsed.scheme != "https" or not parsed.hostname:
         raise OSError(
-            f"{source} kubeconfig cluster.server must be a valid HTTPS URL, "
-            f"got {server!r}"
+            f"{source} kubeconfig cluster.server must be a valid HTTPS URL, got {server!r}"
         )
 
     ca_data = str(cluster_payload.get("certificate-authority-data") or "").strip()
     if not ca_data:
-        raise OSError(
-            f"{source} kubeconfig is missing cluster.certificate-authority-data"
-        )
+        raise OSError(f"{source} kubeconfig is missing cluster.certificate-authority-data")
 
     return server, ca_data
 
@@ -180,6 +174,7 @@ class Kube:
     storage : kubernetes.client.StorageV1Api
         Storage v1 API surface for StorageClass resources.
     """
+
     namespace: str
     client: kubernetes.client.ApiClient = field(repr=False)
     core: kubernetes.client.CoreV1Api = field(init=False, repr=False)
@@ -236,9 +231,7 @@ class Kube:
         try:
             return cls(
                 namespace=namespace,
-                client=kubernetes.config.new_client_from_config(
-                    config_file=str(config_file)
-                ),
+                client=kubernetes.config.new_client_from_config(config_file=str(config_file)),
             )
         except Exception as err:
             raise OSError(
@@ -285,9 +278,7 @@ class Kube:
         try:
             managed_payload = config_file.read_text(encoding="utf-8")
         except OSError as err:
-            raise OSError(
-                f"failed to read managed kubeconfig at {config_file}: {err}"
-            ) from err
+            raise OSError(f"failed to read managed kubeconfig at {config_file}: {err}") from err
         fresh_payload = await _microk8s_config_payload(timeout=deadline - loop.time())
 
         managed_server, managed_ca = _kubeconfig_identity(
@@ -307,9 +298,7 @@ class Kube:
         try:
             return cls(
                 namespace=namespace,
-                client=kubernetes.config.new_client_from_config(
-                    config_file=str(config_file)
-                ),
+                client=kubernetes.config.new_client_from_config(config_file=str(config_file)),
             )
         except Exception as err:
             raise OSError(
@@ -416,3 +405,237 @@ class Kube:
             raise OSError(
                 f"{context} failed with kubernetes API status {err.status}: {detail}"
             ) from err
+
+
+type PortProtocol = Literal["TCP", "UDP", "SCTP"]
+
+
+@dataclass(frozen=True)
+class ServicePortSpec:
+    """Intent-level Kubernetes Service port specification."""
+
+    name: str
+    port: int
+    target_port: int | str
+    protocol: PortProtocol = "TCP"
+    node_port: int | None = None
+
+    def manifest(self) -> dict[str, object]:
+        """Render this port as a Kubernetes Service port manifest."""
+        payload: dict[str, object] = {
+            "name": self.name,
+            "port": self.port,
+            "targetPort": self.target_port,
+            "protocol": self.protocol,
+        }
+        if self.node_port is not None:
+            payload["nodePort"] = self.node_port
+        return payload
+
+
+@dataclass(frozen=True)
+class ContainerPortSpec:
+    """Intent-level Kubernetes container port specification."""
+
+    name: str
+    container_port: int
+    protocol: PortProtocol = "TCP"
+
+    def manifest(self) -> dict[str, object]:
+        """Render this port as a Kubernetes container port manifest."""
+        return {
+            "name": self.name,
+            "containerPort": self.container_port,
+            "protocol": self.protocol,
+        }
+
+
+@dataclass(frozen=True)
+class EnvVarSpec:
+    """Intent-level Kubernetes container environment variable."""
+
+    name: str
+    value: str
+
+    def manifest(self) -> dict[str, object]:
+        """Render this environment variable as a Kubernetes manifest."""
+        return {"name": self.name, "value": self.value}
+
+
+@dataclass(frozen=True)
+class VolumeMountSpec:
+    """Intent-level Kubernetes container volume mount."""
+
+    name: str
+    mount_path: str
+    read_only: bool | None = None
+
+    def manifest(self) -> dict[str, object]:
+        """Render this mount as a Kubernetes volume mount manifest."""
+        payload: dict[str, object] = {
+            "name": self.name,
+            "mountPath": self.mount_path,
+        }
+        if self.read_only is not None:
+            payload["readOnly"] = self.read_only
+        return payload
+
+
+@dataclass(frozen=True)
+class ProbeSpec:
+    """Intent-level Kubernetes container health probe."""
+
+    handler: Mapping[str, object]
+    initial_delay_seconds: int | None = None
+    period_seconds: int | None = None
+    failure_threshold: int | None = None
+
+    @classmethod
+    def tcp(
+        cls,
+        *,
+        port: int | str,
+        initial_delay_seconds: int | None = None,
+        period_seconds: int | None = None,
+        failure_threshold: int | None = None,
+    ) -> Self:
+        """Create a TCP socket probe."""
+        return cls(
+            handler={"tcpSocket": {"port": port}},
+            initial_delay_seconds=initial_delay_seconds,
+            period_seconds=period_seconds,
+            failure_threshold=failure_threshold,
+        )
+
+    @classmethod
+    def http(
+        cls,
+        *,
+        path: str,
+        port: int | str,
+        initial_delay_seconds: int | None = None,
+        period_seconds: int | None = None,
+        failure_threshold: int | None = None,
+    ) -> Self:
+        """Create an HTTP GET probe."""
+        return cls(
+            handler={"httpGet": {"path": path, "port": port}},
+            initial_delay_seconds=initial_delay_seconds,
+            period_seconds=period_seconds,
+            failure_threshold=failure_threshold,
+        )
+
+    def manifest(self) -> dict[str, object]:
+        """Render this probe as a Kubernetes manifest."""
+        payload = dict(self.handler)
+        if self.initial_delay_seconds is not None:
+            payload["initialDelaySeconds"] = self.initial_delay_seconds
+        if self.period_seconds is not None:
+            payload["periodSeconds"] = self.period_seconds
+        if self.failure_threshold is not None:
+            payload["failureThreshold"] = self.failure_threshold
+        return payload
+
+
+@dataclass(frozen=True)
+class ContainerSpec:
+    """Intent-level Kubernetes container specification."""
+
+    name: str
+    image: str
+    image_pull_policy: str | None = None
+    command: Sequence[str] | None = None
+    args: Sequence[str] | None = None
+    ports: Collection[ContainerPortSpec] = ()
+    env: Collection[EnvVarSpec] = ()
+    readiness_probe: ProbeSpec | None = None
+    liveness_probe: ProbeSpec | None = None
+    volume_mounts: Collection[VolumeMountSpec] = ()
+    security_context: Mapping[str, object] | None = None
+
+    def manifest(self) -> dict[str, object]:
+        """Render this container as a Kubernetes manifest."""
+        payload: dict[str, object] = {
+            "name": self.name,
+            "image": self.image,
+        }
+        if self.image_pull_policy is not None:
+            payload["imagePullPolicy"] = self.image_pull_policy
+        if self.command is not None:
+            payload["command"] = list(self.command)
+        if self.args is not None:
+            payload["args"] = list(self.args)
+        if self.ports:
+            payload["ports"] = [port.manifest() for port in self.ports]
+        if self.env:
+            payload["env"] = [var.manifest() for var in self.env]
+        if self.readiness_probe is not None:
+            payload["readinessProbe"] = self.readiness_probe.manifest()
+        if self.liveness_probe is not None:
+            payload["livenessProbe"] = self.liveness_probe.manifest()
+        if self.volume_mounts:
+            payload["volumeMounts"] = [mount.manifest() for mount in self.volume_mounts]
+        if self.security_context is not None:
+            payload["securityContext"] = dict(self.security_context)
+        return payload
+
+
+@dataclass(frozen=True)
+class VolumeSpec:
+    """Intent-level Kubernetes pod volume specification."""
+
+    name: str
+    empty_dir_config: Mapping[str, object] | None = None
+    config_map_name: str | None = None
+    config_map_optional: bool | None = None
+    persistent_volume_claim: str | None = None
+
+    @classmethod
+    def empty_dir(
+        cls,
+        name: str,
+        config: Mapping[str, object] | None = None,
+    ) -> Self:
+        """Create an `emptyDir` volume specification."""
+        return cls(name=name, empty_dir_config=dict(config or {}))
+
+    @classmethod
+    def config_map(
+        cls,
+        name: str,
+        *,
+        config_map_name: str,
+        optional: bool | None = None,
+    ) -> Self:
+        """Create a ConfigMap-backed volume specification."""
+        return cls(name=name, config_map_name=config_map_name, config_map_optional=optional)
+
+    @classmethod
+    def pvc(cls, name: str, *, claim_name: str) -> Self:
+        """Create a PVC-backed volume specification."""
+        return cls(name=name, persistent_volume_claim=claim_name)
+
+    def manifest(self) -> dict[str, object]:
+        """Render this volume as a Kubernetes manifest."""
+        kinds = sum(
+            value is not None
+            for value in (
+                self.empty_dir_config,
+                self.config_map_name,
+                self.persistent_volume_claim,
+            )
+        )
+        if kinds != 1:
+            raise ValueError("Kubernetes volume must define exactly one source")
+
+        payload: dict[str, object] = {"name": self.name}
+        if self.empty_dir_config is not None:
+            payload["emptyDir"] = dict(self.empty_dir_config)
+        elif self.config_map_name is not None:
+            config_map: dict[str, object] = {"name": self.config_map_name}
+            if self.config_map_optional is not None:
+                config_map["optional"] = self.config_map_optional
+            payload["configMap"] = config_map
+        elif self.persistent_volume_claim is not None:
+            payload["persistentVolumeClaim"] = {"claimName": self.persistent_volume_claim}
+        return payload

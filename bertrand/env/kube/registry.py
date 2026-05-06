@@ -1,4 +1,5 @@
 """Environment registry and metadata persistence for Bertrand runtime."""
+
 from __future__ import annotations
 
 import json as json_parser
@@ -19,15 +20,15 @@ from ..config.core import AbsolutePath, TOMLKey, UUIDHex
 from ..run import (
     ENV_ID_ENV,
     IMAGE_ID_ENV,
+    INFINITY,
     METADATA_FILE,
     METADATA_LOCK,
     STATE_DIR,
-    TIMEOUT,
     Lock,
     atomic_write_text,
     nerdctl_ids,
 )
-from .container import Container
+from .container_old import Container
 from .image import Image
 
 REGISTRY_FILE = STATE_DIR / "registry.json"
@@ -35,14 +36,15 @@ REGISTRY_LOCK = STATE_DIR / "registry.lock"
 REGISTRY_PURGE_BATCH: int = 16
 REGISTRY_PURGE_EVERY: int = 64
 VERSION: int = 1
+TIMEOUT = INFINITY
 
 
-# TODO: restore inline comments, which were deleted after reorganization.
+# NOTE: restore inline comments, which were deleted after reorganization.
 # -> Also, these utilities should probably go in `environment.py`, which is the only
 # place they are meant to be used.
 
 
-# TODO(eerkela): Refactor registry for repo-alias attachments over hidden Ceph mounts.
+# NOTE(eerkela): Refactor registry for repo-alias attachments over hidden Ceph mounts.
 #
 # Motivation:
 # Registry currently treats absolute path as canonical environment location. With hidden
@@ -94,10 +96,12 @@ class EnvironmentMetadata(BaseModel):
     retired : list[RetiredImage]
         Images pending garbage collection after rebuild/removal events.
     """
+
     class RetiredImage(BaseModel):
         """An entry in the retired images list, which allows garbage collection for
         outdated images that may still have running containers.
         """
+
         model_config = ConfigDict(extra="forbid")
         force: bool
         image: Image
@@ -185,6 +189,7 @@ class Registry(BaseModel):
         Cursor used to scan environment IDs in deterministic batches during stale
         entry purges.
     """
+
     model_config = ConfigDict(extra="forbid")
     host: UUIDHex
     environments: dict[UUIDHex, AbsolutePath]
@@ -308,13 +313,16 @@ class Registry(BaseModel):
                     "host": self.host,
                     "ops_since_purge": self.ops_since_purge,
                     "purge_cursor": self.purge_cursor,
-                    "environments": {env_id: str(root) for env_id, root in sorted(
-                        self.environments.items(),
-                        key=lambda item: item[0]
-                    )},
+                    "environments": {
+                        env_id: str(root)
+                        for env_id, root in sorted(
+                            self.environments.items(), key=lambda item: item[0]
+                        )
+                    },
                 },
                 separators=(",", ":"),
-            ) + "\n",
+            )
+            + "\n",
             encoding="utf-8",
         )
 

@@ -3,7 +3,14 @@
 from .api import (
     CLUSTER_REGISTRY_READY_LABEL,
     CLUSTER_REGISTRY_READY_VALUE,
+    ContainerPortSpec,
+    ContainerSpec,
+    EnvVarSpec,
     Kube,
+    ProbeSpec,
+    ServicePortSpec,
+    VolumeMountSpec,
+    VolumeSpec,
     ensure_microk8s_kubeconfig,
 )
 from .build import (
@@ -40,8 +47,10 @@ from .ceph import (
     run_ceph_capacity_agent,
     run_ceph_capacity_controller,
 )
-from .container import (
-    Container,
+from .container_old import (
+    Container as RuntimeContainer,
+)
+from .container_old import (
     ContainerArgs,
     container_args,
     start_rpc_sidecar,
@@ -102,12 +111,14 @@ __all__ = [
     "CephStorageAutoscalerSpec",
     "CephStorageAutoscalerStatus",
     "ClusterImageBuild",
-    "Container",
     "ContainerArgs",
+    "ContainerPortSpec",
+    "ContainerSpec",
     "ConfigMap",
     "DEFAULT_VOLUME_SIZE",
     "DevicePermission",
     "Deployment",
+    "EnvVarSpec",
     "Environment",
     "EnvironmentMetadata",
     "Image",
@@ -127,12 +138,17 @@ __all__ = [
     "PersistentVolume",
     "PersistentVolumeClaim",
     "Pod",
+    "ProbeSpec",
     "Registry",
     "RepoCredentials",
     "RepoVolume",
+    "RuntimeContainer",
     "Secret",
     "Service",
+    "ServicePortSpec",
     "StorageClass",
+    "VolumeMountSpec",
+    "VolumeSpec",
     "ceph_capacity_controlplane_image_build",
     "build_secret_flags",
     "cleanup_secret_staged",

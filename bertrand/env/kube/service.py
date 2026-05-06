@@ -11,10 +11,9 @@ from typing import Literal, Self, cast
 
 import kubernetes
 
-from .api import Kube, _label_selector
+from .api import Kube, ServicePortSpec, _label_selector
 
 SERVICE_WAIT_INTERVAL = 0.5
-type ServiceProtocol = Literal["TCP", "UDP", "SCTP"]
 type ServiceType = Literal["ClusterIP", "NodePort", "LoadBalancer", "ExternalName"]
 
 
@@ -163,55 +162,13 @@ class Service:
                 out.append(cls(obj=item))
         return out
 
-    @dataclass(frozen=True)
-    class Port:
-        """Intent-level Service port specification.
-
-        Parameters
-        ----------
-        name : str
-            Stable port name exposed in the Service spec.
-        port : int
-            Service port exposed by the cluster.
-        target_port : int | str
-            Pod target port, either by numeric port or named container port.
-        protocol : {"TCP", "UDP", "SCTP"}, optional
-            Network protocol for this Service port.
-        node_port : int | None, optional
-            Fixed node port to request for NodePort or LoadBalancer Services.
-        """
-
-        name: str
-        port: int
-        target_port: int | str
-        protocol: ServiceProtocol = "TCP"
-        node_port: int | None = None
-
-        def manifest(self) -> dict[str, object]:
-            """Render this port as a Kubernetes Service port manifest.
-
-            Returns
-            -------
-            dict[str, object]
-                Kubernetes `ServicePort` manifest fragment.
-            """
-            payload: dict[str, object] = {
-                "name": self.name,
-                "port": self.port,
-                "targetPort": self.target_port,
-                "protocol": self.protocol,
-            }
-            if self.node_port is not None:
-                payload["nodePort"] = self.node_port
-            return payload
-
     @staticmethod
     def _manifest(
         *,
         namespace: str,
         name: str,
         selector: Mapping[str, str],
-        ports: Collection[Service.Port],
+        ports: Collection[ServicePortSpec],
         labels: Mapping[str, str] | None,
         annotations: Mapping[str, str] | None,
         service_type: ServiceType,
@@ -240,7 +197,7 @@ class Service:
         namespace: str,
         name: str,
         selector: Mapping[str, str],
-        ports: Collection[Service.Port],
+        ports: Collection[ServicePortSpec],
         timeout: float,
         labels: Mapping[str, str] | None = None,
         annotations: Mapping[str, str] | None = None,
@@ -258,7 +215,7 @@ class Service:
             Service name to create or patch.
         selector : Mapping[str, str]
             Pod label selector for the Service.
-        ports : Collection[Service.Port]
+        ports : Collection[ServicePortSpec]
             Ports exposed by the Service.
         timeout : float
             Maximum request budget in seconds. If infinite, wait indefinitely.

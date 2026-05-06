@@ -8,15 +8,16 @@ import asyncio
 from dataclasses import dataclass
 
 from ...run import BERTRAND_NAMESPACE, INFINITY
-from ..api import Kube
-from ..deployment import (
-    Container,
-    ContainerPort,
-    Deployment,
-    Probe,
-    Volume,
-    VolumeMount,
+from ..api import (
+    ContainerPortSpec,
+    ContainerSpec,
+    Kube,
+    ProbeSpec,
+    ServicePortSpec,
+    VolumeMountSpec,
+    VolumeSpec,
 )
+from ..deployment import Deployment
 from ..service import Service
 
 BUILDKIT_NAME = "bertrand-buildkit"
@@ -50,6 +51,7 @@ class BuildKit:
     addr : str
         BuildKit client address, suitable for `buildctl --addr` or `BUILDKIT_HOST`.
     """
+
     namespace: str
     service: str
     port: int
@@ -112,7 +114,7 @@ class BuildKit:
             labels=self.labels,
             selector=self.selector,
             ports=[
-                Service.Port(
+                ServicePortSpec(
                     name="grpc",
                     port=self.port,
                     target_port=self.port,
@@ -127,7 +129,7 @@ class BuildKit:
             labels=self.labels,
             selector=self.selector,
             containers=[
-                Container(
+                ContainerSpec(
                     name="buildkitd",
                     image=BUILDKIT_IMAGE,
                     image_pull_policy="IfNotPresent",
@@ -142,7 +144,7 @@ class BuildKit:
                         )
                     ],
                     ports=[
-                        ContainerPort(
+                        ContainerPortSpec(
                             name="grpc",
                             container_port=self.port,
                         )
@@ -151,23 +153,23 @@ class BuildKit:
                         "privileged": True,
                         "runAsUser": 0,
                     },
-                    readiness_probe=Probe.tcp(
+                    readiness_probe=ProbeSpec.tcp(
                         port=self.port,
                         period_seconds=2,
                         failure_threshold=30,
                     ),
-                    liveness_probe=Probe.tcp(
+                    liveness_probe=ProbeSpec.tcp(
                         port=self.port,
                         initial_delay_seconds=10,
                         period_seconds=10,
                         failure_threshold=3,
                     ),
                     volume_mounts=[
-                        VolumeMount(
+                        VolumeMountSpec(
                             name=BUILDKIT_CACHE_VOLUME,
                             mount_path=BUILDKIT_CACHE_MOUNT,
                         ),
-                        VolumeMount(
+                        VolumeMountSpec(
                             name=BUILDKIT_CONFIG_VOLUME,
                             mount_path=BUILDKIT_CONFIG_DIR,
                             read_only=True,
@@ -176,8 +178,8 @@ class BuildKit:
                 )
             ],
             volumes=[
-                Volume.empty_dir(BUILDKIT_CACHE_VOLUME),
-                Volume.config_map(
+                VolumeSpec.empty_dir(BUILDKIT_CACHE_VOLUME),
+                VolumeSpec.config_map(
                     BUILDKIT_CONFIG_VOLUME,
                     config_map_name=BUILDKIT_CONFIG_NAME,
                     optional=True,

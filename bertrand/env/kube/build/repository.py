@@ -18,16 +18,17 @@ from ...run import (
     run,
     sudo,
 )
-from ..api import Kube
-from ..deployment import (
-    Container,
-    ContainerPort,
-    Deployment,
-    EnvVar,
-    Probe,
-    Volume,
-    VolumeMount,
+from ..api import (
+    ContainerPortSpec,
+    ContainerSpec,
+    EnvVarSpec,
+    Kube,
+    ProbeSpec,
+    ServicePortSpec,
+    VolumeMountSpec,
+    VolumeSpec,
 )
+from ..deployment import Deployment
 from ..service import Service
 from ..volume import PersistentVolumeClaim, StorageClass
 from .daemon import (
@@ -356,7 +357,7 @@ class ImageRepository:
             selector=self.selector,
             service_type="NodePort",
             ports=[
-                Service.Port(
+                ServicePortSpec(
                     name="registry",
                     port=self.port,
                     target_port=self.port,
@@ -373,29 +374,29 @@ class ImageRepository:
             labels=self.labels,
             selector=self.selector,
             containers=[
-                Container(
+                ContainerSpec(
                     name="registry",
                     image=IMAGE_REPOSITORY_IMAGE,
                     image_pull_policy="IfNotPresent",
                     ports=[
-                        ContainerPort(
+                        ContainerPortSpec(
                             name="registry",
                             container_port=self.port,
                         )
                     ],
                     env=[
-                        EnvVar(
+                        EnvVarSpec(
                             name="REGISTRY_HTTP_ADDR",
                             value=f"0.0.0.0:{self.port}",
                         )
                     ],
-                    readiness_probe=Probe.http(
+                    readiness_probe=ProbeSpec.http(
                         path="/v2/",
                         port=self.port,
                         period_seconds=2,
                         failure_threshold=30,
                     ),
-                    liveness_probe=Probe.http(
+                    liveness_probe=ProbeSpec.http(
                         path="/v2/",
                         port=self.port,
                         initial_delay_seconds=10,
@@ -403,7 +404,7 @@ class ImageRepository:
                         failure_threshold=3,
                     ),
                     volume_mounts=[
-                        VolumeMount(
+                        VolumeMountSpec(
                             name=IMAGE_REPOSITORY_VOLUME,
                             mount_path=IMAGE_REPOSITORY_MOUNT,
                         )
@@ -411,7 +412,7 @@ class ImageRepository:
                 )
             ],
             volumes=[
-                Volume.pvc(
+                VolumeSpec.pvc(
                     IMAGE_REPOSITORY_VOLUME,
                     claim_name=self.service,
                 )

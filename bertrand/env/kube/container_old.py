@@ -8,6 +8,7 @@ responsible for:
 2. Assembling `nerdctl container create` arguments from validated config.
 3. Managing RPC sidecar startup/shutdown for interactive workflows.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -35,7 +36,7 @@ from pydantic import (
 
 from ..config import Bertrand, Config
 from ..config.core import AbsolutePath, NonEmpty, NoWhiteSpace, TOMLKey, Trimmed
-from ..rpc import RPC_TIMEOUT
+from ..rpc.listener import RPC_TIMEOUT
 from ..run import (
     BERTRAND_ENV,
     CONTAINER_ID_ENV,
@@ -45,6 +46,7 @@ from ..run import (
     ENV_ID_ENV,
     IMAGE_ID_ENV,
     IMAGE_TAG_ENV,
+    INFINITY,
     METADATA_DIR,
     PROJECT_ENV,
     PROJECT_MOUNT,
@@ -85,12 +87,14 @@ class Container(BaseModel):
 
     https://github.com/containerd/nerdctl/blob/main/docs/command-reference.md#whale-nerdctl-inspect
     """
+
     model_config = ConfigDict(extra="allow")
     Id: ContainerId
     Created: CreatedAt
 
     class _State(BaseModel, total=False):
         """Type hint for container state information."""
+
         model_config = ConfigDict(extra="allow")
         Status: ContainerState
         OOMKilled: bool
@@ -99,6 +103,7 @@ class Container(BaseModel):
 
     class _Config(BaseModel, total=False):
         """Type hint for container configuration details."""
+
         model_config = ConfigDict(extra="allow")
         Labels: Annotated[dict[str, str], Field(default_factory=dict)]
 
@@ -109,6 +114,7 @@ class Container(BaseModel):
 
     class _Mounts(BaseModel, total=False):
         """Type hint for container mount information."""
+
         model_config = ConfigDict(extra="allow")
         Type: Literal["bind", "volume", "tmpfs", "npipe"]
         Source: AbsolutePath
@@ -196,11 +202,7 @@ class Container(BaseModel):
         if not value:
             return None
         path = Path(value)
-        if (
-            path.is_absolute() or
-            not path.parts or
-            any(part in (".", "..") for part in path.parts)
-        ):
+        if path.is_absolute() or not path.parts or any(part in (".", "..") for part in path.parts):
             return None
         try:
             candidate = (worktree / path).resolve()
@@ -261,7 +263,8 @@ class Container(BaseModel):
             "--depend",  # remove dependent containers
             "-v",  # remove anonymous volumes
             "-i",  # ignore missing containers
-            "-t", str(int(math.ceil(timeout))),
+            "-t",
+            str(int(math.ceil(timeout))),
         ]
         if force:
             cmd.append("-f")
@@ -298,7 +301,7 @@ class Container(BaseModel):
         cmd.append(self.Id)
         await nerdctl(
             cmd,
-            timeout=timeout,
+            timeout=INFINITY if timeout is None else timeout,
             capture_output=quiet,
         )
 
@@ -317,17 +320,9 @@ def _render_bootstrap_script(
             f"TARGET_WORKTREE={shlex.quote(str(container_worktree))}",
             f"TARGET_RUNTIME={shlex.quote(str(container_runtime))}",
             f"rm -rf {shlex.quote(str(WORKTREE_MOUNT))}",
-            (
-                "ln -s "
-                "\"$TARGET_WORKTREE\" "
-                f"{shlex.quote(str(WORKTREE_MOUNT))}"
-            ),
+            (f"ln -s \"$TARGET_WORKTREE\" {shlex.quote(str(WORKTREE_MOUNT))}"),
             f"rm -rf {shlex.quote(str(CONTAINER_RUNTIME_MOUNT))}",
-            (
-                "ln -s "
-                "\"$TARGET_RUNTIME\" "
-                f"{shlex.quote(str(CONTAINER_RUNTIME_MOUNT))}"
-            ),
+            (f"ln -s \"$TARGET_RUNTIME\" {shlex.quote(str(CONTAINER_RUNTIME_MOUNT))}"),
             "if command -v git >/dev/null 2>&1; then",
             (
                 "    git config --global --add safe.directory "
@@ -353,6 +348,7 @@ def _render_bootstrap_script(
 @dataclass(frozen=True)
 class ContainerArgs:
     """A full argument tail and metadata for `nerdctl container create`."""
+
     argv: list[str]
     run_id: str
     runtime_dir: Path
@@ -402,14 +398,10 @@ async def container_args(
 
     bertrand = config.get(Bertrand)
     if bertrand is None:
-        raise TypeError(
-            f"missing 'bertrand' configuration for environment at {config.root}"
-        )
+        raise TypeError(f"missing 'bertrand' configuration for environment at {config.root}")
     workload = bertrand.workload.get(tag)
     if workload is None:
-        raise ValueError(
-            f"unknown workload tag '{tag}' for environment at {config.root}"
-        )
+        raise ValueError(f"unknown workload tag '{tag}' for environment at {config.root}")
     if cmd:
         _cmd: list[str] = []
         for part in cmd:
@@ -574,18 +566,14 @@ async def start_rpc_sidecar(
             stderr=asyncio.subprocess.DEVNULL,
         )
         while True:
-            socket_ready = (
-                host_socket.exists() and
-                stat.S_ISSOCK(host_socket.lstat().st_mode)
-            )
+            socket_ready = host_socket.exists() and stat.S_ISSOCK(host_socket.lstat().st_mode)
             if socket_ready:
                 return sidecar
             if sidecar.returncode is not None:
                 raise OSError(f"bertrand-rpc exited early with code {sidecar.returncode}")
             if time.monotonic() >= deadline:
                 raise TimeoutError(
-                    "timed out waiting for bertrand-rpc sidecar readiness "
-                    f"(socket={host_socket})"
+                    f"timed out waiting for bertrand-rpc sidecar readiness (socket={host_socket})"
                 )
             await asyncio.sleep(0.1)
     except Exception as err:

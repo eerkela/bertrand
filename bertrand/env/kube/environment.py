@@ -1,4 +1,5 @@
 """Environment lifecycle orchestration for Bertrand's Kubernetes runtime."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -19,7 +20,7 @@ from ..run import (
     nerdctl_ids,
 )
 from .api import Kube
-from .container import Container
+from .container_old import Container
 from .device import ConfigMap
 from .image import Image, image_args
 from .registry import VERSION, EnvironmentMetadata, Registry, write_metadata
@@ -43,6 +44,7 @@ class Environment:
     lock : Lock
         The environment lock used to synchronize metadata access.
     """
+
     config: Config
     lock: Lock = field(repr=False)
     _json: EnvironmentMetadata = field(
@@ -233,19 +235,14 @@ class Environment:
         """
         if not self.config:
             raise OSError(
-                "environment must be acquired as a context manager before accessing "
-                "configuration"
+                "environment must be acquired as a context manager before accessing configuration"
             )
         bertrand = self.config.get(Bertrand)
         if bertrand is None:
-            raise OSError(
-                f"missing 'bertrand' configuration for environment at {self.config.root}"
-            )
+            raise OSError(f"missing 'bertrand' configuration for environment at {self.config.root}")
         build = bertrand.build.get(tag)
         if build is None:
-            raise ValueError(
-                f"unknown build tag '{tag}' for environment at {self.config.root}"
-            )
+            raise ValueError(f"unknown build tag '{tag}' for environment at {self.config.root}")
 
         bundle = await image_args(self.config, env_id=self.id, tag=tag)
         candidate = Image.model_construct(

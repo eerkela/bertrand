@@ -1,6 +1,7 @@
 """Persistent Volume Claim (PVC) requests for Bertrand's environment bootstrapping
 and caching mechanisms.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -58,6 +59,7 @@ EMPTY_MAPPING: Mapping[str, str] = {}
 @dataclass(frozen=True)
 class StorageClass:
     """General-purpose wrapper around one Kubernetes StorageClass object."""
+
     obj: kubernetes.client.V1StorageClass
 
     @classmethod
@@ -151,6 +153,7 @@ class StorageClass:
 @dataclass(frozen=True)
 class PersistentVolumeClaim:
     """General-purpose wrapper around one Kubernetes PersistentVolumeClaim object."""
+
     obj: kubernetes.client.V1PersistentVolumeClaim
 
     @staticmethod
@@ -185,8 +188,7 @@ class PersistentVolumeClaim:
             return None
         if not isinstance(payload, kubernetes.client.V1PersistentVolumeClaim):
             raise OSError(
-                f"malformed Kubernetes PVC payload for {name!r} in namespace "
-                f"{namespace!r}"
+                f"malformed Kubernetes PVC payload for {name!r} in namespace {namespace!r}"
             )
         return cls(obj=payload)
 
@@ -311,9 +313,7 @@ class PersistentVolumeClaim:
             )
             if existing is not None:
                 return existing
-        raise OSError(
-            "kubernetes accepted PVC creation, but no valid PVC payload was returned"
-        )
+        raise OSError("kubernetes accepted PVC creation, but no valid PVC payload was returned")
 
     async def grow(
         self,
@@ -358,13 +358,11 @@ class PersistentVolumeClaim:
             except OSError as err:
                 detail = str(err).lower()
                 if "status 404" in detail or "not found" in detail:
-                    raise OSError(
-                        f"PVC {name!r} disappeared during resize lifecycle"
-                    ) from err
+                    raise OSError(f"PVC {name!r} disappeared during resize lifecycle") from err
                 if (
-                    "status 409" in detail or
-                    "conflict" in detail or
-                    "the object has been modified" in detail
+                    "status 409" in detail
+                    or "conflict" in detail
+                    or "the object has been modified" in detail
                 ) and attempt + 1 < PVC_GROW_RETRIES:
                     continue
                 raise
@@ -420,9 +418,7 @@ class PersistentVolumeClaim:
         """Wait until this PVC reaches a bound state."""
         identity = self.identity
         if identity is None:
-            raise OSError(
-                "cannot wait for bound state of PVC with missing metadata.name/namespace"
-            )
+            raise OSError("cannot wait for bound state of PVC with missing metadata.name/namespace")
         namespace, name = identity
         if timeout <= 0:
             raise TimeoutError(f"timed out waiting for PVC {namespace}/{name} binding")
@@ -431,9 +427,7 @@ class PersistentVolumeClaim:
         while True:
             remaining = deadline - loop.time()
             if remaining <= 0:
-                raise TimeoutError(
-                    f"timed out waiting for PVC {namespace}/{name} binding"
-                )
+                raise TimeoutError(f"timed out waiting for PVC {namespace}/{name} binding")
             live = await self.refresh(kube=kube, timeout=remaining)
             if live is None:
                 raise OSError(f"PVC {name!r} disappeared before binding")
@@ -445,9 +439,7 @@ class PersistentVolumeClaim:
         """Wait until this PVC is deleted."""
         identity = self.identity
         if identity is None:
-            raise OSError(
-                "cannot wait for deletion of PVC with missing metadata.name/namespace"
-            )
+            raise OSError("cannot wait for deletion of PVC with missing metadata.name/namespace")
         namespace, name = identity
         if timeout <= 0:
             raise TimeoutError(f"timed out waiting for PVC {namespace}/{name} deletion")
@@ -456,9 +448,7 @@ class PersistentVolumeClaim:
         while True:
             remaining = deadline - loop.time()
             if remaining <= 0:
-                raise TimeoutError(
-                    f"timed out waiting for PVC {namespace}/{name} deletion"
-                )
+                raise TimeoutError(f"timed out waiting for PVC {namespace}/{name} deletion")
             live = await self.refresh(kube=kube, timeout=remaining)
             if live is None:
                 return
@@ -525,6 +515,7 @@ class PersistentVolumeClaim:
 @dataclass(frozen=True)
 class PersistentVolume:
     """General-purpose wrapper around one Kubernetes PersistentVolume object."""
+
     obj: kubernetes.client.V1PersistentVolume
 
     @classmethod
@@ -672,14 +663,13 @@ def parse_pvc_size(value: str) -> Decimal:
     try:
         return Decimal(number) * factor
     except (InvalidOperation, ValueError) as err:
-        raise ValueError(
-            f"invalid Kubernetes memory quantity for PVC request: {value!r}"
-        ) from err
+        raise ValueError(f"invalid Kubernetes memory quantity for PVC request: {value!r}") from err
 
 
 @dataclass(frozen=True)
 class CacheVolume:
     """Structured metadata for a cache volume declaration from a resource."""
+
     name: KubeName
     target: AbsolutePosixPath
 
@@ -728,8 +718,7 @@ class CacheVolume:
                 declared = await resource.volumes(config, tag)
             except Exception as err:
                 raise OSError(
-                    f"failed to resolve cache volumes for resource '{resource.name}': "
-                    f"{err}"
+                    f"failed to resolve cache volumes for resource '{resource.name}': {err}"
                 ) from err
             if not isinstance(declared, list):
                 raise OSError(
@@ -747,8 +736,7 @@ class CacheVolume:
                 target = raw.target
                 if not target.is_absolute():
                     raise OSError(
-                        f"resource '{resource.name}' mount target must be absolute: "
-                        f"{target}"
+                        f"resource '{resource.name}' mount target must be absolute: {target}"
                     )
                 if any(part in (".", "..") for part in target.parts):
                     raise OSError(
@@ -777,9 +765,7 @@ class CacheVolume:
                         ensure_ascii=False,
                         allow_nan=False,
                     )
-                    digest = hashlib.sha256(
-                        text.encode("utf-8")
-                    ).hexdigest()
+                    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
                 except (TypeError, ValueError) as err:
                     raise OSError(
                         f"resource '{resource.name}' mount '{target_key}' has invalid "
@@ -827,9 +813,7 @@ class CacheVolume:
                 f"{storage_class_name!r}, expected {storage_class!r}"
             )
         if require_rwo and "ReadWriteOnce" not in access_modes:
-            raise OSError(
-                f"cluster PVC {claim_name!r} must include ReadWriteOnce access mode"
-            )
+            raise OSError(f"cluster PVC {claim_name!r} must include ReadWriteOnce access mode")
 
     @classmethod
     async def ensure(
@@ -920,28 +904,32 @@ class CacheVolume:
                     name=volume.name,
                 )
                 if pvc is None:  # create a new volume with the requested size
-                    pvc = await PersistentVolumeClaim.create({
-                        "apiVersion": "v1",
-                        "kind": "PersistentVolumeClaim",
-                        "metadata": {
-                            "name": volume.name,
-                            "namespace": BERTRAND_NAMESPACE,
-                            "labels": {
-                                BERTRAND_ENV: "1",
-                                CACHE_VOLUME_ENV: "1",
-                                ENV_ID_ENV: env_id,
+                    pvc = await PersistentVolumeClaim.create(
+                        {
+                            "apiVersion": "v1",
+                            "kind": "PersistentVolumeClaim",
+                            "metadata": {
+                                "name": volume.name,
+                                "namespace": BERTRAND_NAMESPACE,
+                                "labels": {
+                                    BERTRAND_ENV: "1",
+                                    CACHE_VOLUME_ENV: "1",
+                                    ENV_ID_ENV: env_id,
+                                },
                             },
-                        },
-                        "spec": {
-                            "accessModes": ["ReadWriteOnce"],
-                            "storageClassName": storage_name,
-                            "resources": {
-                                "requests": {
-                                    "storage": size_request,
+                            "spec": {
+                                "accessModes": ["ReadWriteOnce"],
+                                "storageClassName": storage_name,
+                                "resources": {
+                                    "requests": {
+                                        "storage": size_request,
+                                    },
                                 },
                             },
                         },
-                    }, kube=kube, timeout=deadline - loop.time())
+                        kube=kube,
+                        timeout=deadline - loop.time(),
+                    )
 
                 cls._assert_managed_cache(
                     pvc,
@@ -1034,11 +1022,13 @@ class CacheVolume:
 
             # delete actual claims whose names are not in the expected and active sets
             stale = [
-                pvc for pvc in actual if (
-                    pvc.obj.metadata is not None and
-                    pvc.obj.metadata.name and
-                    pvc.obj.metadata.name not in expected and
-                    pvc.obj.metadata.name not in active
+                pvc
+                for pvc in actual
+                if (
+                    pvc.obj.metadata is not None
+                    and pvc.obj.metadata.name
+                    and pvc.obj.metadata.name not in expected
+                    and pvc.obj.metadata.name not in active
                 )
             ]
             for pvc in stale:
@@ -1054,6 +1044,14 @@ class CacheVolume:
                     require_rwo=False,
                 )
                 await pvc.delete(kube=kube, timeout=deadline - loop.time())
+
+
+async def format_volumes(config: Config, tag: str, env_id: str) -> list[str]:
+    """Render legacy `nerdctl` volume flags for configured cache volumes."""
+    flags: list[str] = []
+    for volume in await CacheVolume.from_config(config, tag, env_id):
+        flags.extend(["-v", f"{volume.name}:{volume.target.as_posix()}"])
+    return flags
 
 
 @dataclass(frozen=True)
@@ -1076,6 +1074,7 @@ class RepoVolume:
         Kubernetes PVC object representing the claim for this repository volume in the
         cluster.
     """
+
     repo_id: str
     pvc: PersistentVolumeClaim
 
@@ -1125,9 +1124,7 @@ class RepoVolume:
                 f"{storage_class_name!r}, expected {storage_class!r}"
             )
         if require_rwx and "ReadWriteMany" not in access_modes:
-            raise OSError(
-                f"cluster PVC {claim_name!r} must include ReadWriteMany access mode"
-            )
+            raise OSError(f"cluster PVC {claim_name!r} must include ReadWriteMany access mode")
 
     @classmethod
     async def create(
@@ -1219,28 +1216,32 @@ class RepoVolume:
                 name=claim_name,
             )
             if pvc is None:
-                pvc = await PersistentVolumeClaim.create({
-                    "apiVersion": "v1",
-                    "kind": "PersistentVolumeClaim",
-                    "metadata": {
-                        "name": claim_name,
-                        "namespace": BERTRAND_NAMESPACE,
-                        "labels": {
-                            BERTRAND_ENV: "1",
-                            REPO_VOLUME_ENV: "1",
-                            REPO_ID_ENV: repo_id,
+                pvc = await PersistentVolumeClaim.create(
+                    {
+                        "apiVersion": "v1",
+                        "kind": "PersistentVolumeClaim",
+                        "metadata": {
+                            "name": claim_name,
+                            "namespace": BERTRAND_NAMESPACE,
+                            "labels": {
+                                BERTRAND_ENV: "1",
+                                REPO_VOLUME_ENV: "1",
+                                REPO_ID_ENV: repo_id,
+                            },
                         },
-                    },
-                    "spec": {
-                        "accessModes": ["ReadWriteMany"],
-                        "storageClassName": storage_class,
-                        "resources": {
-                            "requests": {
-                                "storage": size_request,
+                        "spec": {
+                            "accessModes": ["ReadWriteMany"],
+                            "storageClassName": storage_class,
+                            "resources": {
+                                "requests": {
+                                    "storage": size_request,
+                                },
                             },
                         },
                     },
-                }, kube=kube, timeout=deadline - loop.time())
+                    kube=kube,
+                    timeout=deadline - loop.time(),
+                )
 
             cls._assert_managed_pvc(
                 pvc,
@@ -1312,10 +1313,12 @@ class RepoVolume:
                 out.append(cls(repo_id=repo_id, pvc=pvc))
 
             # deterministically order the output
-            out.sort(key=lambda m: (
-                m.repo_id,
-                (m.pvc.obj.metadata.name if m.pvc.obj.metadata is not None else ""),
-            ))
+            out.sort(
+                key=lambda m: (
+                    m.repo_id,
+                    (m.pvc.obj.metadata.name if m.pvc.obj.metadata is not None else ""),
+                )
+            )
             return out
 
     async def delete(self, *, timeout: float, force: bool) -> None:
@@ -1384,8 +1387,7 @@ class RepoVolume:
             raise OSError("cannot resolve Ceph path for PVC with missing metadata.name")
         if not namespace:
             raise OSError(
-                f"cannot resolve Ceph path for PVC {name!r} with missing "
-                "metadata.namespace"
+                f"cannot resolve Ceph path for PVC {name!r} with missing metadata.namespace"
             )
 
         # wait until the PV is bound with the expected CSI attributes

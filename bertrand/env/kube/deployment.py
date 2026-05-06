@@ -4,232 +4,16 @@ from __future__ import annotations
 
 import asyncio
 import builtins
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Literal, Self, cast
+from typing import Self
 
 import kubernetes
 
-from .api import Kube, _label_selector
+from .api import ContainerSpec, Kube, VolumeSpec, _label_selector
 
 DEPLOYMENT_WAIT_POLL_INTERVAL_SECONDS = 0.5
-type ContainerPortProtocol = Literal["TCP", "UDP", "SCTP"]
-type ProbePort = int | str
-
-
-def _manifest_identity(manifest: Mapping[str, object]) -> tuple[str, str]:
-    metadata = manifest.get("metadata")
-    if not isinstance(metadata, dict):
-        raise OSError("Deployment manifest must define metadata")
-    metadata = cast("dict[object, object]", metadata)
-    namespace = str(metadata.get("namespace") or "").strip()
-    name = str(metadata.get("name") or "").strip()
-    if not namespace or not name:
-        raise OSError("Deployment manifest must define metadata.namespace and metadata.name")
-    return namespace, name
-
-
-@dataclass(frozen=True)
-class ContainerPort:
-    """Intent-level container port specification."""
-    name: str
-    container_port: int
-    protocol: ContainerPortProtocol = "TCP"
-
-    def manifest(self) -> dict[str, object]:
-        """Render this port as a Kubernetes container port manifest."""
-        return {
-            "name": self.name,
-            "containerPort": self.container_port,
-            "protocol": self.protocol,
-        }
-
-
-@dataclass(frozen=True)
-class EnvVar:
-    """Intent-level container environment variable."""
-    name: str
-    value: str
-
-    def manifest(self) -> dict[str, object]:
-        """Render this environment variable as a Kubernetes manifest."""
-        return {"name": self.name, "value": self.value}
-
-
-@dataclass(frozen=True)
-class VolumeMount:
-    """Intent-level container volume mount."""
-    name: str
-    mount_path: str
-    read_only: bool | None = None
-
-    def manifest(self) -> dict[str, object]:
-        """Render this mount as a Kubernetes volume mount manifest."""
-        payload: dict[str, object] = {
-            "name": self.name,
-            "mountPath": self.mount_path,
-        }
-        if self.read_only is not None:
-            payload["readOnly"] = self.read_only
-        return payload
-
-
-@dataclass(frozen=True)
-class Volume:
-    """Intent-level pod volume."""
-    name: str
-    empty_dir_config: Mapping[str, object] | None = None
-    config_map_name: str | None = None
-    config_map_optional: bool | None = None
-    persistent_volume_claim: str | None = None
-
-    @classmethod
-    def empty_dir(
-        cls,
-        name: str,
-        config: Mapping[str, object] | None = None,
-    ) -> Self:
-        """Create an `emptyDir` volume specification."""
-        return cls(name=name, empty_dir_config=dict(config or {}))
-
-    @classmethod
-    def config_map(
-        cls,
-        name: str,
-        *,
-        config_map_name: str,
-        optional: bool | None = None,
-    ) -> Self:
-        """Create a ConfigMap-backed volume specification."""
-        return cls(name=name, config_map_name=config_map_name, config_map_optional=optional)
-
-    @classmethod
-    def pvc(cls, name: str, *, claim_name: str) -> Self:
-        """Create a PVC-backed volume specification."""
-        return cls(name=name, persistent_volume_claim=claim_name)
-
-    def manifest(self) -> dict[str, object]:
-        """Render this volume as a Kubernetes manifest."""
-        kinds = sum(
-            value is not None
-            for value in (
-                self.empty_dir_config,
-                self.config_map_name,
-                self.persistent_volume_claim,
-            )
-        )
-        if kinds != 1:
-            raise ValueError("Deployment volume must define exactly one source")
-
-        payload: dict[str, object] = {"name": self.name}
-        if self.empty_dir_config is not None:
-            payload["emptyDir"] = dict(self.empty_dir_config)
-        elif self.config_map_name is not None:
-            config_map: dict[str, object] = {"name": self.config_map_name}
-            if self.config_map_optional is not None:
-                config_map["optional"] = self.config_map_optional
-            payload["configMap"] = config_map
-        elif self.persistent_volume_claim is not None:
-            payload["persistentVolumeClaim"] = {"claimName": self.persistent_volume_claim}
-        return payload
-
-
-@dataclass(frozen=True)
-class Probe:
-    """Intent-level container health probe."""
-    handler: Mapping[str, object]
-    initial_delay_seconds: int | None = None
-    period_seconds: int | None = None
-    failure_threshold: int | None = None
-
-    @classmethod
-    def tcp(
-        cls,
-        *,
-        port: ProbePort,
-        initial_delay_seconds: int | None = None,
-        period_seconds: int | None = None,
-        failure_threshold: int | None = None,
-    ) -> Self:
-        """Create a TCP socket probe."""
-        return cls(
-            handler={"tcpSocket": {"port": port}},
-            initial_delay_seconds=initial_delay_seconds,
-            period_seconds=period_seconds,
-            failure_threshold=failure_threshold,
-        )
-
-    @classmethod
-    def http(
-        cls,
-        *,
-        path: str,
-        port: ProbePort,
-        initial_delay_seconds: int | None = None,
-        period_seconds: int | None = None,
-        failure_threshold: int | None = None,
-    ) -> Self:
-        """Create an HTTP GET probe."""
-        return cls(
-            handler={"httpGet": {"path": path, "port": port}},
-            initial_delay_seconds=initial_delay_seconds,
-            period_seconds=period_seconds,
-            failure_threshold=failure_threshold,
-        )
-
-    def manifest(self) -> dict[str, object]:
-        """Render this probe as a Kubernetes manifest."""
-        payload = dict(self.handler)
-        if self.initial_delay_seconds is not None:
-            payload["initialDelaySeconds"] = self.initial_delay_seconds
-        if self.period_seconds is not None:
-            payload["periodSeconds"] = self.period_seconds
-        if self.failure_threshold is not None:
-            payload["failureThreshold"] = self.failure_threshold
-        return payload
-
-
-@dataclass(frozen=True)
-class Container:
-    """Intent-level Deployment container specification."""
-    name: str
-    image: str
-    image_pull_policy: str | None = None
-    command: Sequence[str] | None = None
-    args: Sequence[str] | None = None
-    ports: Collection[ContainerPort] = ()
-    env: Collection[EnvVar] = ()
-    readiness_probe: Probe | None = None
-    liveness_probe: Probe | None = None
-    volume_mounts: Collection[VolumeMount] = ()
-    security_context: Mapping[str, object] | None = None
-
-    def manifest(self) -> dict[str, object]:
-        """Render this container as a Kubernetes manifest."""
-        payload: dict[str, object] = {
-            "name": self.name,
-            "image": self.image,
-        }
-        if self.image_pull_policy is not None:
-            payload["imagePullPolicy"] = self.image_pull_policy
-        if self.command is not None:
-            payload["command"] = list(self.command)
-        if self.args is not None:
-            payload["args"] = list(self.args)
-        if self.ports:
-            payload["ports"] = [port.manifest() for port in self.ports]
-        if self.env:
-            payload["env"] = [var.manifest() for var in self.env]
-        if self.readiness_probe is not None:
-            payload["readinessProbe"] = self.readiness_probe.manifest()
-        if self.liveness_probe is not None:
-            payload["livenessProbe"] = self.liveness_probe.manifest()
-        if self.volume_mounts:
-            payload["volumeMounts"] = [mount.manifest() for mount in self.volume_mounts]
-        if self.security_context is not None:
-            payload["securityContext"] = dict(self.security_context)
-        return payload
 
 
 @dataclass(frozen=True)
@@ -237,42 +21,6 @@ class Deployment:
     """General-purpose wrapper around one Kubernetes Deployment object."""
 
     obj: kubernetes.client.V1Deployment
-
-    @staticmethod
-    def _manifest(
-        *,
-        namespace: str,
-        name: str,
-        labels: Mapping[str, str],
-        selector: Mapping[str, str],
-        containers: Collection[Container],
-        volumes: Collection[Volume],
-        replicas: int,
-        automount_service_account_token: bool,
-        annotations: Mapping[str, str] | None,
-    ) -> dict[str, object]:
-        return {
-            "apiVersion": "apps/v1",
-            "kind": "Deployment",
-            "metadata": {
-                "name": name,
-                "namespace": namespace,
-                "labels": dict(labels),
-                "annotations": dict(annotations or {}),
-            },
-            "spec": {
-                "replicas": replicas,
-                "selector": {"matchLabels": dict(selector)},
-                "template": {
-                    "metadata": {"labels": dict(labels)},
-                    "spec": {
-                        "automountServiceAccountToken": automount_service_account_token,
-                        "containers": [container.manifest() for container in containers],
-                        "volumes": [volume.manifest() for volume in volumes],
-                    },
-                },
-            },
-        }
 
     @classmethod
     async def get(
@@ -355,6 +103,42 @@ class Deployment:
                 out.append(cls(obj=item))
         return out
 
+    @staticmethod
+    def _manifest(
+        *,
+        namespace: str,
+        name: str,
+        labels: Mapping[str, str],
+        selector: Mapping[str, str],
+        containers: Collection[ContainerSpec],
+        volumes: Collection[VolumeSpec],
+        replicas: int,
+        automount_service_account_token: bool,
+        annotations: Mapping[str, str] | None,
+    ) -> dict[str, object]:
+        return {
+            "apiVersion": "apps/v1",
+            "kind": "Deployment",
+            "metadata": {
+                "name": name,
+                "namespace": namespace,
+                "labels": dict(labels),
+                "annotations": dict(annotations or {}),
+            },
+            "spec": {
+                "replicas": replicas,
+                "selector": {"matchLabels": dict(selector)},
+                "template": {
+                    "metadata": {"labels": dict(labels)},
+                    "spec": {
+                        "automountServiceAccountToken": automount_service_account_token,
+                        "containers": [container.manifest() for container in containers],
+                        "volumes": [volume.manifest() for volume in volumes],
+                    },
+                },
+            },
+        }
+
     @classmethod
     async def upsert(
         cls,
@@ -364,40 +148,31 @@ class Deployment:
         name: str,
         labels: Mapping[str, str],
         selector: Mapping[str, str],
-        containers: Collection[Container],
-        volumes: Collection[Volume],
+        containers: Collection[ContainerSpec],
+        volumes: Collection[VolumeSpec],
         timeout: float,
         replicas: int = 1,
         automount_service_account_token: bool = False,
         annotations: Mapping[str, str] | None = None,
     ) -> Self:
         """Create or patch one Kubernetes Deployment from intent-level fields."""
-        return await cls.upsert_manifest(
-            kube,
-            manifest=cls._manifest(
-                namespace=namespace,
-                name=name,
-                labels=labels,
-                selector=selector,
-                containers=containers,
-                volumes=volumes,
-                replicas=replicas,
-                automount_service_account_token=automount_service_account_token,
-                annotations=annotations,
-            ),
-            timeout=timeout,
+        namespace = namespace.strip()
+        name = name.strip()
+        if not namespace or not name:
+            raise OSError("Deployment upsert requires non-empty namespace and name")
+
+        manifest = cls._manifest(
+            namespace=namespace,
+            name=name,
+            labels=labels,
+            selector=selector,
+            containers=containers,
+            volumes=volumes,
+            replicas=replicas,
+            automount_service_account_token=automount_service_account_token,
+            annotations=annotations,
         )
 
-    @classmethod
-    async def upsert_manifest(
-        cls,
-        kube: Kube,
-        *,
-        manifest: Mapping[str, object],
-        timeout: float,
-    ) -> Self:
-        """Create or patch one Kubernetes Deployment manifest."""
-        namespace, name = _manifest_identity(manifest)
         try:
             created = await kube.run(
                 lambda request_timeout: kube.apps.create_namespaced_deployment(
