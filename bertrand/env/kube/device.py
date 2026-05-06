@@ -1,18 +1,18 @@
 """ConfigMap wrappers and device selector resolution for Kubernetes."""
+
 from __future__ import annotations
 
 import builtins
 import hashlib
 import sys
-from collections.abc import Collection, Mapping
-from dataclasses import dataclass
 from typing import Literal, Self
 
 from kubernetes import client as kube_client
 
 from ..config.core import KubeName, _check_kube_name, _check_uuid
 from ..run import BERTRAND_NAMESPACE
-from .api import Kube, _label_selector
+from .api import Kube
+from .configmap import ConfigMap
 
 type DevicePermission = Literal["r", "w", "m", "rw", "rm", "wm", "rwm"]
 DEVICE_PERMISSIONS = frozenset({"r", "w", "m", "rw", "rm", "wm", "rwm"})
@@ -42,318 +42,15 @@ def _device_name(id: KubeName, env_id: str | None) -> KubeName:
     return f"bertrand-device-{h.hexdigest()}"
 
 
-@dataclass(frozen=True)
-class ConfigMap:
-    """General-purpose wrapper around one Kubernetes ConfigMap object."""
+class DeviceConfigMap(ConfigMap):
+    """ConfigMap wrapper with Bertrand device selector helpers.
 
-    obj: kube_client.V1ConfigMap
-
-    @classmethod
-    async def get(
-        cls,
-        kube: Kube,
-        *,
-        namespace: str,
-        timeout: float,
-        name: KubeName,
-    ) -> Self | None:
-        """Read one Kubernetes ConfigMap by name.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        namespace : str
-            Namespace that owns the ConfigMap.
-        timeout : float
-            Maximum request budget in seconds. If infinite, wait indefinitely.
-        name : KubeName
-            ConfigMap name to read.
-
-        Returns
-        -------
-        ConfigMap | None
-            Wrapped Kubernetes ConfigMap, or `None` when not found.
-
-        Raises
-        ------
-        TimeoutError
-            If the Kubernetes request exceeds `timeout`.
-        OSError
-            If Kubernetes returns malformed data or the API call fails.
-        """
-        payload = await kube.run(
-            lambda request_timeout: kube.core.read_namespaced_config_map(
-                name=name,
-                namespace=namespace,
-                _request_timeout=request_timeout,
-            ),
-            timeout=timeout,
-            context=(
-                f"failed to read cluster ConfigMap {name!r} in namespace "
-                f"{namespace!r}"
-            ),
-        )
-        if payload is None:
-            return None
-        if not isinstance(payload, kube_client.V1ConfigMap):
-            raise OSError(
-                f"malformed Kubernetes ConfigMap payload for {name!r} in "
-                f"namespace {namespace!r}"
-            )
-        return cls(obj=payload)
-
-    @classmethod
-    async def list(
-        cls,
-        kube: Kube,
-        *,
-        timeout: float,
-        namespaces: Collection[str] | None = None,
-        labels: Mapping[str, str] | None = None,
-    ) -> builtins.list[Self]:
-        """List Kubernetes ConfigMaps with optional namespace and label filtering.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        timeout : float
-            Maximum request budget in seconds. If infinite, wait indefinitely.
-        namespaces : Collection[str] | None, optional
-            Optional namespace selector. If `None`, query all namespaces. Otherwise,
-            entries are trimmed, deduplicated, and queried individually.
-        labels : Mapping[str, str] | None, optional
-            Optional label selector key/value pairs.
-
-        Returns
-        -------
-        builtins.list[ConfigMap]
-            Validated ConfigMap wrappers matching the requested filters.
-
-        Raises
-        ------
-        TimeoutError
-            If any Kubernetes request exceeds `timeout`.
-        OSError
-            If Kubernetes returns malformed list/item payloads or a list call fails.
-        """
-        label_selector = _label_selector(labels)
-        payloads: builtins.list[kube_client.V1ConfigMapList] = []
-
-        # search all namespaces
-        if namespaces is None:
-            payload = await kube.run(
-                lambda request_timeout: kube.core.list_config_map_for_all_namespaces(
-                    label_selector=label_selector,
-                    _request_timeout=request_timeout,
-                ),
-                timeout=timeout,
-                context="failed to list cluster ConfigMaps across all namespaces",
-            )
-            if payload is not None:
-                payloads.append(payload)
-
-        # search specific namespaces
-        else:
-            normalized = {namespace.strip() for namespace in namespaces}
-            normalized.discard("")
-            if not normalized:
-                return []
-            for namespace in sorted(normalized):
-                payload = await kube.run(
-                    lambda request_timeout, namespace=namespace: (
-                        kube.core.list_namespaced_config_map(
-                            namespace=namespace,
-                            label_selector=label_selector,
-                            _request_timeout=request_timeout,
-                        )
-                    ),
-                    timeout=timeout,
-                    context=f"failed to list cluster ConfigMaps in namespace {namespace!r}",
-                )
-                if payload is not None:
-                    payloads.append(payload)
-
-        out: builtins.list[Self] = []
-        for payload in payloads:
-            if not isinstance(payload, kube_client.V1ConfigMapList):
-                raise OSError("malformed Kubernetes ConfigMap list payload")
-            for item in payload.items or []:
-                if not isinstance(item, kube_client.V1ConfigMap):
-                    raise OSError("malformed Kubernetes ConfigMap entry in list payload")
-                out.append(cls(obj=item))
-        return out
-
-    @classmethod
-    async def upsert(
-        cls,
-        kube: Kube,
-        *,
-        namespace: str,
-        timeout: float,
-        name: KubeName,
-        labels: Mapping[str, str] | None,
-        annotations: Mapping[str, str] | None,
-        value: str,
-    ) -> Self:
-        """Create or patch one Kubernetes ConfigMap payload.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        namespace : str
-            Namespace that owns the ConfigMap.
-        timeout : float
-            Maximum request budget in seconds. If infinite, wait indefinitely.
-        name : KubeName
-            ConfigMap name to create or patch.
-        labels : Mapping[str, str] | None
-            Labels to apply to `metadata.labels`.
-        annotations : Mapping[str, str] | None
-            Annotations to apply to `metadata.annotations`.
-        value : str
-            Text payload stored at `data.value`.
-
-        Returns
-        -------
-        ConfigMap
-            Wrapped created or patched ConfigMap.
-
-        Raises
-        ------
-        TimeoutError
-            If any Kubernetes request exceeds `timeout`.
-        OSError
-            If Kubernetes create/patch fails or returns malformed data.
-        """
-        manifest = {
-            "apiVersion": "v1",
-            "kind": "ConfigMap",
-            "metadata": {
-                "name": name,
-                "namespace": namespace,
-                "labels": dict(labels or {}),
-                "annotations": dict(annotations or {}),
-            },
-            "data": {"value": value},
-        }
-
-        try:
-            created = await kube.run(
-                lambda request_timeout: kube.core.create_namespaced_config_map(
-                    namespace=namespace,
-                    body=manifest,
-                    _request_timeout=request_timeout,
-                ),
-                timeout=timeout,
-                context=f"failed to create cluster ConfigMap {name!r}",
-            )
-            if not isinstance(created, kube_client.V1ConfigMap):
-                raise OSError(
-                    f"malformed Kubernetes ConfigMap payload while creating {name!r}"
-                )
-            return cls(obj=created)
-        except OSError as err:
-            detail = str(err).lower()
-            if "status 409" not in detail and "already exists" not in detail:
-                raise
-
-        updated = await kube.run(
-            lambda request_timeout: kube.core.patch_namespaced_config_map(
-                name=name,
-                namespace=namespace,
-                body=manifest,
-                _request_timeout=request_timeout,
-            ),
-            timeout=timeout,
-            context=f"failed to update cluster ConfigMap {name!r}",
-        )
-        if not isinstance(updated, kube_client.V1ConfigMap):
-            raise OSError(
-                f"malformed Kubernetes ConfigMap payload while updating {name!r}"
-            )
-        return cls(obj=updated)
-
-    @property
-    def identity(self) -> tuple[str, str]:
-        """Return canonical `(namespace, name)` identity.
-
-        Returns
-        -------
-        tuple[str, str]
-            Trimmed `(namespace, name)` from `metadata`.
-
-        Raises
-        ------
-        OSError
-            If either namespace or name is missing.
-        """
-        metadata = self.obj.metadata or kube_client.V1ObjectMeta()
-        namespace = (metadata.namespace or "").strip()
-        name = (metadata.name or "").strip()
-        if not namespace or not name:
-            raise OSError("ConfigMap metadata is missing namespace/name identity")
-        return namespace, name
-
-    async def refresh(self, kube: Kube, *, timeout: float) -> Self | None:
-        """Re-read this ConfigMap by identity.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        timeout : float
-            Maximum request budget in seconds. If infinite, wait indefinitely.
-
-        Returns
-        -------
-        ConfigMap | None
-            Latest ConfigMap wrapper if the object still exists, otherwise `None`.
-
-        Raises
-        ------
-        TimeoutError
-            If the Kubernetes request exceeds `timeout`.
-        OSError
-            If identity is malformed, the API request fails, or payload is malformed.
-        """
-        namespace, name = self.identity
-        return await type(self).get(
-            kube=kube,
-            namespace=namespace,
-            timeout=timeout,
-            name=name,
-        )
-
-    async def delete(self, kube: Kube, *, timeout: float) -> None:
-        """Delete this ConfigMap from the cluster.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        timeout : float
-            Maximum request budget in seconds. If infinite, wait indefinitely.
-
-        Raises
-        ------
-        TimeoutError
-            If the Kubernetes request exceeds `timeout`.
-        OSError
-            If identity is malformed or Kubernetes delete fails.
-        """
-        namespace, name = self.identity
-        await kube.run(
-            lambda request_timeout: kube.core.delete_namespaced_config_map(
-                name=name,
-                namespace=namespace,
-                _request_timeout=request_timeout,
-            ),
-            timeout=timeout,
-            context=f"failed to delete cluster ConfigMap {name!r}",
-        )
+    Notes
+    -----
+    Device selectors are stored in managed ConfigMaps and resolved into build
+    command flags. The generic ConfigMap API behavior is inherited from
+    :class:`bertrand.env.kube.configmap.ConfigMap`.
+    """
 
     def value_text(self, name: KubeName) -> str:
         """Read text payload from `data.value`.
@@ -375,9 +72,7 @@ class ConfigMap:
         """
         value = (self.obj.data or {}).get("value")
         if value is None:
-            raise OSError(
-                f"cluster ConfigMap {name!r} does not define required key 'data.value'"
-            )
+            raise OSError(f"cluster ConfigMap {name!r} does not define required key 'data.value'")
         return str(value)
 
     @classmethod
@@ -472,8 +167,7 @@ class ConfigMap:
             if required:
                 raise OSError(f"missing required device selector: {id!r}")
             print(
-                f"bertrand: optional device selector {id!r} was not found; continuing "
-                "without it",
+                f"bertrand: optional device selector {id!r} was not found; continuing without it",
                 file=sys.stderr,
             )
             return []
@@ -481,9 +175,7 @@ class ConfigMap:
         config_map, name = resolved
         selector = config_map.value_text(name).strip()
         if not selector:
-            raise OSError(
-                f"cluster ConfigMap {name!r} key 'data.value' cannot be empty"
-            )
+            raise OSError(f"cluster ConfigMap {name!r} key 'data.value' cannot be empty")
         return ["--device", f"{selector}:{permissions}"]
 
     @classmethod
@@ -543,9 +235,7 @@ class ConfigMap:
             )
         annotation_id = annotations.get(CAPABILITY_ID_V1)
         if annotation_id is None:
-            raise OSError(
-                f"cluster ConfigMap {name!r} is missing annotation {CAPABILITY_ID_V1!r}"
-            )
+            raise OSError(f"cluster ConfigMap {name!r} is missing annotation {CAPABILITY_ID_V1!r}")
         if _check_kube_name(annotation_id) != _check_kube_name(id):
             raise OSError(
                 f"cluster ConfigMap {name!r} has mismatched {CAPABILITY_ID_V1!r}: "

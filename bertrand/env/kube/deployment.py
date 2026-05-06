@@ -18,7 +18,18 @@ DEPLOYMENT_WAIT_POLL_INTERVAL_SECONDS = 0.5
 
 @dataclass(frozen=True)
 class Deployment:
-    """General-purpose wrapper around one Kubernetes Deployment object."""
+    """General-purpose wrapper around one Kubernetes Deployment object.
+
+    Parameters
+    ----------
+    obj : kubernetes.client.V1Deployment
+        Typed Kubernetes Deployment payload returned by the cluster API.
+
+    Notes
+    -----
+    The convergence API accepts intent-level fields and keeps raw Kubernetes
+    manifests as an internal implementation detail.
+    """
 
     obj: kubernetes.client.V1Deployment
 
@@ -31,7 +42,31 @@ class Deployment:
         timeout: float,
         name: str,
     ) -> Self | None:
-        """Read one Kubernetes Deployment by name."""
+        """Read one Kubernetes Deployment by name.
+
+        Parameters
+        ----------
+        kube : Kube
+            Active Kubernetes API context.
+        namespace : str
+            Namespace that owns the Deployment.
+        timeout : float
+            Maximum request budget in seconds. If infinite, wait indefinitely.
+        name : str
+            Deployment name to read.
+
+        Returns
+        -------
+        Deployment | None
+            Wrapped Kubernetes Deployment, or `None` if it does not exist.
+
+        Raises
+        ------
+        TimeoutError
+            If the Kubernetes request exceeds `timeout`.
+        OSError
+            If Kubernetes returns malformed data or the API call fails.
+        """
         payload = await kube.run(
             lambda request_timeout: kube.apps.read_namespaced_deployment(
                 name=name,
@@ -58,7 +93,32 @@ class Deployment:
         namespaces: Collection[str] | None = None,
         labels: Mapping[str, str] | None = None,
     ) -> builtins.list[Self]:
-        """List Kubernetes Deployments with optional namespace and label filtering."""
+        """List Kubernetes Deployments with optional namespace and label filtering.
+
+        Parameters
+        ----------
+        kube : Kube
+            Active Kubernetes API context.
+        timeout : float
+            Maximum request budget in seconds. If infinite, wait indefinitely.
+        namespaces : Collection[str] | None, optional
+            Optional namespace filters. `None` queries all namespaces. Otherwise,
+            entries are trimmed, deduplicated, and queried individually.
+        labels : Mapping[str, str] | None, optional
+            Optional label selector key/value pairs.
+
+        Returns
+        -------
+        list[Deployment]
+            Wrapped Kubernetes Deployments matching the requested filters.
+
+        Raises
+        ------
+        TimeoutError
+            If any Kubernetes request exceeds `timeout`.
+        OSError
+            If Kubernetes returns malformed data or a list call fails.
+        """
         label_selector = _label_selector(labels)
         payloads: builtins.list[kubernetes.client.V1DeploymentList] = []
 
@@ -155,7 +215,45 @@ class Deployment:
         automount_service_account_token: bool = False,
         annotations: Mapping[str, str] | None = None,
     ) -> Self:
-        """Create or patch one Kubernetes Deployment from intent-level fields."""
+        """Create or patch one Kubernetes Deployment from intent-level fields.
+
+        Parameters
+        ----------
+        kube : Kube
+            Active Kubernetes API context.
+        namespace : str
+            Namespace that owns the Deployment.
+        name : str
+            Deployment name to create or patch.
+        labels : Mapping[str, str]
+            Labels to apply to the Deployment and pod template.
+        selector : Mapping[str, str]
+            Immutable pod selector labels for the Deployment.
+        containers : Collection[ContainerSpec]
+            Pod containers to render into the Deployment template.
+        volumes : Collection[VolumeSpec]
+            Pod volumes to render into the Deployment template.
+        timeout : float
+            Maximum request budget in seconds. If infinite, wait indefinitely.
+        replicas : int, optional
+            Desired replica count.
+        automount_service_account_token : bool, optional
+            Whether pods should automount the default service-account token.
+        annotations : Mapping[str, str] | None, optional
+            Annotations to apply to `metadata.annotations`.
+
+        Returns
+        -------
+        Deployment
+            Wrapped created or patched Deployment.
+
+        Raises
+        ------
+        TimeoutError
+            If any Kubernetes request exceeds `timeout`.
+        OSError
+            If Kubernetes create/patch fails or returns malformed data.
+        """
         namespace = namespace.strip()
         name = name.strip()
         if not namespace or not name:
@@ -318,7 +416,28 @@ class Deployment:
         return MappingProxyType(labels)
 
     async def refresh(self, kube: Kube, *, timeout: float) -> Self | None:
-        """Re-read this Deployment by identity."""
+        """Re-read this Deployment by identity.
+
+        Parameters
+        ----------
+        kube : Kube
+            Active Kubernetes API context.
+        timeout : float
+            Maximum request budget in seconds. If infinite, wait indefinitely.
+
+        Returns
+        -------
+        Deployment | None
+            Fresh wrapper for the same Deployment, or `None` if it no longer exists.
+
+        Raises
+        ------
+        OSError
+            If this wrapper does not contain enough metadata to identify the
+            Deployment, or if Kubernetes returns malformed data.
+        TimeoutError
+            If the Kubernetes request exceeds `timeout`.
+        """
         identity = self.identity
         if identity is None:
             raise OSError("cannot refresh Deployment with missing metadata.name/namespace")
@@ -331,7 +450,24 @@ class Deployment:
         )
 
     async def delete(self, kube: Kube, *, timeout: float) -> None:
-        """Delete this Deployment from the cluster."""
+        """Delete this Deployment from the cluster.
+
+        Parameters
+        ----------
+        kube : Kube
+            Active Kubernetes API context.
+        timeout : float
+            Maximum request budget in seconds. If infinite, wait indefinitely.
+
+        Raises
+        ------
+        OSError
+            If this wrapper does not contain enough metadata to identify the
+            Deployment, if the delete request fails, or if Kubernetes returns
+            malformed data.
+        TimeoutError
+            If the Kubernetes request exceeds `timeout`.
+        """
         identity = self.identity
         if identity is None:
             raise OSError("cannot delete Deployment with missing metadata.name/namespace")
@@ -352,7 +488,23 @@ class Deployment:
             )
 
     async def wait_deleted(self, kube: Kube, *, timeout: float) -> None:
-        """Wait until this Deployment is deleted from the cluster."""
+        """Wait until this Deployment is deleted from the cluster.
+
+        Parameters
+        ----------
+        kube : Kube
+            Active Kubernetes API context.
+        timeout : float
+            Maximum wait time in seconds. Must be positive.
+
+        Raises
+        ------
+        OSError
+            If this wrapper does not contain enough metadata to identify the
+            Deployment, or if a refresh request returns malformed data.
+        TimeoutError
+            If the Deployment still exists when `timeout` expires.
+        """
         identity = self.identity
         if identity is None:
             raise OSError("cannot wait for Deployment deletion with missing identity")
@@ -377,7 +529,31 @@ class Deployment:
         timeout: float,
         minimum: int = 1,
     ) -> Self:
-        """Wait until this Deployment has at least `minimum` available replicas."""
+        """Wait until this Deployment has at least `minimum` available replicas.
+
+        Parameters
+        ----------
+        kube : Kube
+            Active Kubernetes API context.
+        timeout : float
+            Maximum wait time in seconds. Must be positive.
+        minimum : int, optional
+            Minimum acceptable `status.availableReplicas` value.
+
+        Returns
+        -------
+        Deployment
+            Fresh wrapper whose available replica count satisfies `minimum`.
+
+        Raises
+        ------
+        ValueError
+            If `minimum` is less than one.
+        OSError
+            If this wrapper is missing identity or the Deployment disappears.
+        TimeoutError
+            If the Deployment does not become available before `timeout`.
+        """
         if minimum < 1:
             raise ValueError("minimum available Deployment replicas must be positive")
         identity = self.identity
@@ -406,7 +582,32 @@ class Deployment:
             await asyncio.sleep(min(DEPLOYMENT_WAIT_POLL_INTERVAL_SECONDS, remaining))
 
     async def scale(self, kube: Kube, *, replicas: int, timeout: float) -> Self:
-        """Patch this Deployment's desired replica count."""
+        """Patch this Deployment's desired replica count.
+
+        Parameters
+        ----------
+        kube : Kube
+            Active Kubernetes API context.
+        replicas : int
+            Desired replica count. Must be non-negative.
+        timeout : float
+            Maximum request budget in seconds. If infinite, wait indefinitely.
+
+        Returns
+        -------
+        Deployment
+            Fresh wrapper after the scale patch is accepted.
+
+        Raises
+        ------
+        ValueError
+            If `replicas` is negative.
+        OSError
+            If this wrapper is missing identity, Kubernetes rejects the patch, or
+            the Deployment disappears during refresh.
+        TimeoutError
+            If the Kubernetes request exceeds `timeout`.
+        """
         if replicas < 0:
             raise ValueError("Deployment replicas cannot be negative")
         identity = self.identity

@@ -47,6 +47,7 @@ from .ceph import (
     run_ceph_capacity_agent,
     run_ceph_capacity_controller,
 )
+from .configmap import ConfigMap
 from .container_old import (
     Container as RuntimeContainer,
 )
@@ -58,7 +59,7 @@ from .container_old import (
 )
 from .deployment import Deployment
 from .device import (
-    ConfigMap,
+    DeviceConfigMap,
     DevicePermission,
 )
 from .environment import Environment
@@ -117,6 +118,7 @@ __all__ = [
     "ConfigMap",
     "DEFAULT_VOLUME_SIZE",
     "DevicePermission",
+    "DeviceConfigMap",
     "Deployment",
     "EnvVarSpec",
     "Environment",

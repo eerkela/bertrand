@@ -21,7 +21,7 @@ from ..run import (
 )
 from .api import Kube
 from .container_old import Container
-from .device import ConfigMap
+from .device import DeviceConfigMap
 from .image import Image, image_args
 from .registry import VERSION, EnvironmentMetadata, Registry, write_metadata
 from .secret import build_secret_flags, cleanup_secret_staged
@@ -261,7 +261,7 @@ class Environment:
                     build=build,
                     timeout=self.lock.timeout,
                 )
-                device_flags = await ConfigMap.build_flags(
+                device_flags = await DeviceConfigMap.build_flags(
                     kube=kube,
                     env_id=self.id,
                     build=build,

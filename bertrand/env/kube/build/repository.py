@@ -8,13 +8,10 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-import kubernetes
-
 from ...run import (
     BERTRAND_ENV,
     BERTRAND_NAMESPACE,
     INFINITY,
-    JSONValue,
     run,
     sudo,
 )
@@ -28,9 +25,10 @@ from ..api import (
     VolumeMountSpec,
     VolumeSpec,
 )
+from ..configmap import ConfigMap
 from ..deployment import Deployment
 from ..service import Service
-from ..volume import PersistentVolumeClaim, StorageClass
+from ..volume import CEPHFS_STORAGE_CLASS_PREFERENCES, PersistentVolumeClaim, StorageClass
 from .daemon import (
     BUILDKIT_CONFIG_KEY,
     BUILDKIT_CONFIG_NAME,
@@ -49,7 +47,6 @@ IMAGE_REPOSITORY_MOUNT = "/var/lib/registry"
 IMAGE_REPOSITORY_VOLUME = "registry-state"
 IMAGE_REPOSITORY_LABEL = "bertrand.dev/image-repository"
 IMAGE_REPOSITORY_LABEL_VALUE = "v1"
-IMAGE_REPOSITORY_STORAGE_CLASS_PREFERENCES: tuple[str, ...] = ("cephfs", "rook-cephfs")
 IMAGE_REF_COMPONENT_RE = re.compile(r"^[a-z0-9]+(?:(?:[._]|__|[-]*)[a-z0-9]+)*$")
 IMAGE_TAG_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$")
 
@@ -186,145 +183,6 @@ class ImageRepository:
                     timeout=deadline - loop.time(),
                 )
 
-    def _pvc_manifest(self, *, storage_class: str) -> dict[str, JSONValue]:
-        return {
-            "apiVersion": "v1",
-            "kind": "PersistentVolumeClaim",
-            "metadata": {
-                "name": self.service,
-                "namespace": self.namespace,
-                "labels": self.labels,
-            },
-            "spec": {
-                "accessModes": ["ReadWriteMany"],
-                "storageClassName": storage_class,
-                "resources": {
-                    "requests": {
-                        "storage": self.storage_request,
-                    },
-                },
-            },
-        }
-
-    def _buildkit_config_manifest(self) -> dict[str, JSONValue]:
-        return {
-            "apiVersion": "v1",
-            "kind": "ConfigMap",
-            "metadata": {
-                "name": BUILDKIT_CONFIG_NAME,
-                "namespace": self.namespace,
-                "labels": self.labels,
-            },
-            "data": {
-                BUILDKIT_CONFIG_KEY: (
-                    f"[registry.\"{self.pull_host}\"]\n"
-                    f"  mirrors = [\"{self.service_addr}\"]\n"
-                    "  http = true\n"
-                    "  insecure = true\n"
-                ),
-            },
-        }
-
-    async def _upsert_pvc(self, kube: Kube, *, timeout: float) -> PersistentVolumeClaim:
-        # select storage class for the registry PVC
-        storage_class: str | None = None
-        for candidate in IMAGE_REPOSITORY_STORAGE_CLASS_PREFERENCES:
-            storage = await StorageClass.get(
-                kube=kube,
-                timeout=timeout,
-                name=candidate,
-            )
-            if storage is None:
-                continue
-            if not storage.allow_volume_expansion:
-                raise OSError(
-                    f"storage class {candidate!r} must set "
-                    "allowVolumeExpansion=true for registry storage"
-                )
-            provisioner = storage.provisioner.lower()
-            if "cephfs" not in provisioner or "csi.ceph.com" not in provisioner:
-                raise OSError(
-                    f"storage class {candidate!r} uses provisioner "
-                    f"{storage.provisioner!r}, but Bertrand registry storage "
-                    "requires a CephFS CSI provisioner"
-                )
-            storage_class = candidate
-            break
-        if storage_class is None:
-            preferred = ", ".join(repr(name) for name in IMAGE_REPOSITORY_STORAGE_CLASS_PREFERENCES)
-            raise OSError(
-                "required CephFS storage class is not available for registry storage; "
-                f"expected one of {preferred}.  Ensure MicroK8s is linked to MicroCeph."
-            )
-
-        # create or update the registry PVC
-        manifest = self._pvc_manifest(storage_class=storage_class)
-        pvc = await PersistentVolumeClaim.get(
-            kube=kube,
-            namespace=self.namespace,
-            timeout=timeout,
-            name=self.service,
-        )
-        if pvc is None:
-            pvc = await PersistentVolumeClaim.create(
-                manifest,
-                kube=kube,
-                timeout=timeout,
-            )
-        if pvc.storage_class_name != storage_class:
-            raise OSError(
-                f"registry PVC {self.namespace}/{self.service} uses storage class "
-                f"{pvc.storage_class_name!r}, expected {storage_class!r}"
-            )
-        if "ReadWriteMany" not in pvc.access_modes:
-            raise OSError(f"registry PVC {self.namespace}/{self.service} must use ReadWriteMany")
-
-        # wait for the PVC to be bound and resized if necessary
-        await pvc.grow(self.storage_request, kube=kube, timeout=timeout)
-        live = await pvc.refresh(kube=kube, timeout=timeout)
-        if live is None:
-            raise OSError(f"registry PVC {self.namespace}/{self.service} disappeared")
-        return live
-
-    async def _upsert_buildkit_config(
-        self,
-        kube: Kube,
-        *,
-        timeout: float,
-    ) -> kubernetes.client.V1ConfigMap:
-        manifest = self._buildkit_config_manifest()
-        try:
-            created = await kube.run(
-                lambda request_timeout: kube.core.create_namespaced_config_map(
-                    namespace=self.namespace,
-                    body=manifest,
-                    _request_timeout=request_timeout,
-                ),
-                timeout=timeout,
-                context=f"failed to create BuildKit registry config {BUILDKIT_CONFIG_NAME!r}",
-            )
-            if not isinstance(created, kubernetes.client.V1ConfigMap):
-                raise OSError("malformed Kubernetes ConfigMap payload during registry create")
-            return created
-        except OSError as err:
-            detail = str(err).lower()
-            if not ("status 409" in detail or "already exists" in detail):
-                raise
-
-        patched = await kube.run(
-            lambda request_timeout: kube.core.patch_namespaced_config_map(
-                name=BUILDKIT_CONFIG_NAME,
-                namespace=self.namespace,
-                body=manifest,
-                _request_timeout=request_timeout,
-            ),
-            timeout=timeout,
-            context=f"failed to patch BuildKit registry config {BUILDKIT_CONFIG_NAME!r}",
-        )
-        if not isinstance(patched, kubernetes.client.V1ConfigMap):
-            raise OSError("malformed Kubernetes ConfigMap payload during registry patch")
-        return patched
-
     async def ensure(self, kube: Kube, *, timeout: float = INFINITY) -> None:
         """Converge Bertrand's OCI image repository resources.
 
@@ -348,7 +206,36 @@ class ImageRepository:
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
 
-        await self._upsert_pvc(kube, timeout=deadline - loop.time())
+        storage = await StorageClass.select(
+            kube=kube,
+            timeout=deadline - loop.time(),
+            preferences=CEPHFS_STORAGE_CLASS_PREFERENCES,
+            require_expansion=True,
+        )
+        if not storage.is_cephfs:
+            raise OSError(
+                f"storage class {storage.name!r} uses provisioner "
+                f"{storage.provisioner!r}, but Bertrand registry storage requires "
+                "a CephFS CSI provisioner"
+            )
+        pvc = await PersistentVolumeClaim.upsert(
+            kube=kube,
+            namespace=self.namespace,
+            name=self.service,
+            access_modes=("ReadWriteMany",),
+            storage_class=storage.name,
+            storage_request=self.storage_request,
+            labels=self.labels,
+            timeout=deadline - loop.time(),
+        )
+        if pvc.storage_class_name != storage.name:
+            raise OSError(
+                f"registry PVC {self.namespace}/{self.service} uses storage class "
+                f"{pvc.storage_class_name!r}, expected {storage.name!r}"
+            )
+        if "ReadWriteMany" not in pvc.access_modes:
+            raise OSError(f"registry PVC {self.namespace}/{self.service} must use ReadWriteMany")
+
         await Service.upsert(
             kube,
             namespace=self.namespace,
@@ -366,7 +253,21 @@ class ImageRepository:
             ],
             timeout=deadline - loop.time(),
         )
-        await self._upsert_buildkit_config(kube, timeout=deadline - loop.time())
+        await ConfigMap.upsert(
+            kube,
+            namespace=self.namespace,
+            name=BUILDKIT_CONFIG_NAME,
+            labels=self.labels,
+            data={
+                BUILDKIT_CONFIG_KEY: (
+                    f"[registry.\"{self.pull_host}\"]\n"
+                    f"  mirrors = [\"{self.service_addr}\"]\n"
+                    "  http = true\n"
+                    "  insecure = true\n"
+                ),
+            },
+            timeout=deadline - loop.time(),
+        )
         deployment = await Deployment.upsert(
             kube,
             namespace=self.namespace,
