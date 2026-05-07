@@ -1,6 +1,7 @@
 """Bootstrap Bertrand's host runtime, then generate and/or configure a new project
 repository, if requested.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -30,16 +31,13 @@ from ..config.core import (
     _check_uuid,
 )
 from ..kube import (
-    DEFAULT_VOLUME_SIZE,
     MountInfo,
     RepoCredentials,
-    RepoVolume,
     ceph_capacity_controlplane_image_build,
     ensure_ceph_capacity_controlplane,
-    ensure_cluster_image,
-    ensure_cluster_image_store,
     ensure_microk8s_kubeconfig,
 )
+from ..kube.ceph import DEFAULT_VOLUME_SIZE, RepoVolume
 from ..run import (
     BERTRAND_GROUP,
     INFINITY,
@@ -156,6 +154,7 @@ type InitStage = Literal[
 
 class InitState(BaseModel):
     """Persistent state for host bootstrap progression in `bertrand init`."""
+
     model_config = ConfigDict(extra="forbid")
     version: PositiveInt
     stage: InitStage = "fresh"
@@ -177,10 +176,10 @@ class InitState(BaseModel):
             True if the backend is trustworthy and can be reused, False otherwise.
         """
         if (
-            not shutil.which("setfacl") or
-            not shutil.which("getfacl") or
-            not STATE_DIR.is_dir() or
-            STATE_DIR.is_symlink()
+            not shutil.which("setfacl")
+            or not shutil.which("getfacl")
+            or not STATE_DIR.is_dir()
+            or STATE_DIR.is_symlink()
         ):
             return False
         try:
@@ -189,9 +188,9 @@ class InitState(BaseModel):
         except (KeyError, OSError):
             return False
         if (
-            stat_info.st_uid != 0 or
-            stat_info.st_gid != group_info.gr_gid or
-            (stat_info.st_mode & 0o7777) != 0o2770
+            stat_info.st_uid != 0
+            or stat_info.st_gid != group_info.gr_gid
+            or (stat_info.st_mode & 0o7777) != 0o2770
         ):
             return False
         result = subprocess.run(
@@ -305,8 +304,7 @@ async def _install_prereqs(state: InitState, assume_yes: bool) -> None:
     packages = INIT_PREREQS.get(state.package_manager)
     if packages is None:
         raise OSError(
-            f"Unsupported package manager for prerequisite installation: "
-            f"{state.package_manager!r}"
+            f"Unsupported package manager for prerequisite installation: {state.package_manager!r}"
         )
 
     # detect missing required bootstrap tools
@@ -340,8 +338,7 @@ async def _install_prereqs(state: InitState, assume_yes: bool) -> None:
 
     # verify all required tools after installation
     unresolved: list[str] = [
-        name for name, cmd in INIT_CHECK_PREREQS
-        if not any(shutil.which(c) for c in cmd)
+        name for name, cmd in INIT_CHECK_PREREQS if not any(shutil.which(c) for c in cmd)
     ]
     if unresolved:
         raise OSError(
@@ -450,6 +447,7 @@ class GitHook:
     executable : bool
         Whether the installed hook should have executable permissions set.
     """
+
     source: Path
     destination: Path
     executable: bool
@@ -511,7 +509,7 @@ async def _resurrect_mount(
             f"{repo_id}, but no matching cluster claim exists"
         )
     if len(volumes) != 1:
-        names = ", ".join(sorted(volume.pvc.metadata.name for volume in volumes))
+        names = ", ".join(sorted(volume.pvc.name for volume in volumes))
         raise OSError(
             "repository alias ancestry maps to multiple cluster claims and cannot be "
             f"disambiguated safely for {repo_id!r}: {names}"
@@ -593,6 +591,7 @@ class RepoState:
     credentials : RepoCredentials | None
         Repository-scoped Ceph credentials for host mounting.
     """
+
     repo: GitRepository
     target: Path
     worktree: Path
@@ -642,16 +641,13 @@ async def _ensure_repo_volume(
     loop = asyncio.get_running_loop()
 
     # first, try to recover an existing claim for this deterministic repository ID
-    volumes = await RepoVolume.get(
-        state.repo_id,
-        timeout=state.deadline - loop.time()
-    )
+    volumes = await RepoVolume.get(state.repo_id, timeout=state.deadline - loop.time())
     claimed: RepoVolume | None = None
     if volumes:
         # deterministic claim naming should leave exactly one candidate claim for the
         # repository identity
         if len(volumes) != 1:
-            names = ", ".join(sorted(volume.pvc.metadata.name for volume in volumes))
+            names = ", ".join(sorted(volume.pvc.name for volume in volumes))
             raise OSError(
                 "repository identity maps to multiple cluster claims and cannot be "
                 f"disambiguated safely for {state.repo_id!r}: {names}"
@@ -662,14 +658,11 @@ async def _ensure_repo_volume(
     # either unoccupied or maps to the expected Ceph path for this repository, in which
     # case we can safely reuse it
     if claimed is not None:
-        ceph_path = await claimed.resolve_ceph_path(
-            timeout=state.deadline - loop.time()
-        )
+        ceph_path = await claimed.resolve_ceph_path(timeout=state.deadline - loop.time())
         hidden_mount = REPO_DIR / state.repo_id / REPO_MOUNT_EXT
         mounted = MountInfo.search(hidden_mount)
         if mounted is not None and not (
-            mounted.ceph_path is not None and
-            mounted.ceph_path == ceph_path
+            mounted.ceph_path is not None and mounted.ceph_path == ceph_path
         ):
             raise OSError(
                 f"repository hidden mount {hidden_mount!r} is occupied by "
@@ -698,9 +691,7 @@ async def _ensure_repo_volume(
         timeout=state.deadline - loop.time(),
         size_request=DEFAULT_VOLUME_SIZE,
     )
-    state.ceph_path = await state.volume.resolve_ceph_path(
-        timeout=state.deadline - loop.time()
-    )
+    state.ceph_path = await state.volume.resolve_ceph_path(timeout=state.deadline - loop.time())
 
 
 async def _ensure_repo_credentials(
@@ -742,9 +733,7 @@ async def _ensure_host_mount(
     # get location at which to place the repository symlink, staging changes until the
     # final cutover step to avoid disrupting any source repository
     mount_dir = REPO_DIR / state.repo_id / REPO_MOUNT_EXT
-    staged_alias = (
-        state.target.parent / f".{state.target.name}.bertrand.mount.{state.repo_id}"
-    )
+    staged_alias = state.target.parent / f".{state.target.name}.bertrand.mount.{state.repo_id}"
     target_occupied = state.target.exists() or state.target.is_symlink()
     if not target_occupied or symlink_points_to(state.target, mount_dir):
         mount_alias = state.target
@@ -790,9 +779,7 @@ async def _ensure_bare_worktrees(
     """
     if state.mount_alias is None:
         raise OSError("bare-worktree convergence requires a mounted repository alias")
-    mount = GitRepository(
-        REPO_DIR / state.repo_id / REPO_MOUNT_EXT / ".git"
-    )
+    mount = GitRepository(REPO_DIR / state.repo_id / REPO_MOUNT_EXT / ".git")
     loop = asyncio.get_running_loop()
     deadline = state.deadline
     target_branch: str | None = None
@@ -802,8 +789,7 @@ async def _ensure_bare_worktrees(
     if state.worktree != Path("."):
         source_worktree = state.repo.root / state.worktree
         match = next(
-            (wt for wt in await state.repo.worktrees() if wt.path == source_worktree),
-            None
+            (wt for wt in await state.repo.worktrees() if wt.path == source_worktree), None
         )
         if match is None:
             raise OSError(
@@ -837,10 +823,7 @@ async def _ensure_bare_worktrees(
                 )
             await mount.sync_worktrees()
         else:
-            raise OSError(
-                f"managed destination repository at {state.mount_alias} "
-                "must be bare"
-            )
+            raise OSError(f"managed destination repository at {state.mount_alias} must be bare")
         state.repo = mount
         return
 
@@ -849,21 +832,15 @@ async def _ensure_bare_worktrees(
     if state.repo != mount:
         if await state.repo.dirty():
             raise OSError(
-                f"cannot convert repository at {state.repo.root}: worktree has "
-                "uncommitted changes"
+                f"cannot convert repository at {state.repo.root}: worktree has uncommitted changes"
             )
         await mount.mirror_from(state.repo, timeout=deadline - loop.time())
 
     # assert mounted directory is well-formed, then sync worktrees
     if not mount:
-        raise OSError(
-            "managed destination repository does not exist at "
-            f"{state.mount_alias}"
-        )
+        raise OSError(f"managed destination repository does not exist at {state.mount_alias}")
     if not await mount.is_bare():
-        raise OSError(
-            f"managed destination repository at {state.mount_alias} must be bare"
-        )
+        raise OSError(f"managed destination repository at {state.mount_alias} must be bare")
     await mount.sync_worktrees()
     state.repo = mount
     if target_branch is not None:
@@ -895,32 +872,31 @@ async def _ensure_repo_hooks(
             if hook.executable:
                 expected.append("#!/usr/bin/env python3")
             expected.append(marker)
-            hook_text = importlib_resources.files("bertrand.env").joinpath(
-                "run",
-                hook.source,
-            ).read_text(encoding="utf-8")
-            if hook_text.splitlines()[:len(expected)] != expected:
-                raise ValueError(
-                    f"packaged {hook.source} must start with:\n{'\n'.join(expected)}"
+            hook_text = (
+                importlib_resources.files("bertrand.env")
+                .joinpath(
+                    "run",
+                    hook.source,
                 )
+                .read_text(encoding="utf-8")
+            )
+            if hook_text.splitlines()[: len(expected)] != expected:
+                raise ValueError(f"packaged {hook.source} must start with:\n{'\n'.join(expected)}")
 
             # do not clobber non-managed hooks
             stage = f"resolve existing git hook at '{hook.destination}'"
-            target = await state.repo.git_path(
-                hook.destination,
-                cwd=state.repo.root
-            )
+            target = await state.repo.git_path(hook.destination, cwd=state.repo.root)
             if target.exists():
                 if not target.is_file():
                     raise FileNotFoundError(f"git hook path is not a file: {target}")
                 existing = target.read_text(encoding="utf-8")
                 if existing == hook_text:
                     continue
-                if existing.splitlines()[:len(expected)] != expected:
+                if existing.splitlines()[: len(expected)] != expected:
                     print(
                         f"existing git hook at {target} is not managed by Bertrand; "
                         f"skipping to avoid clobbering user-managed hook.",
-                        file=sys.stderr
+                        file=sys.stderr,
                     )
                     continue
 
@@ -934,10 +910,7 @@ async def _ensure_repo_hooks(
                 except OSError:
                     pass
         except Exception as err:
-            print(
-                f"bertrand: failed to {stage} in {state.repo.root}\n{err}",
-                file=sys.stderr
-            )
+            print(f"bertrand: failed to {stage} in {state.repo.root}\n{err}", file=sys.stderr)
 
 
 async def _render_config_artifacts(
@@ -978,11 +951,7 @@ async def _render_config_artifacts(
     # apply enable/disable deltas before syncing artifacts.
     for worktree in render_targets:
         root = state.repo.root / worktree
-        config = await Config.load(
-            root,
-            repo=state.repo,
-            timeout=state.deadline - loop.time()
-        )
+        config = await Config.load(root, repo=state.repo, timeout=state.deadline - loop.time())
         config.resources.update({resource.name: None for resource in enable})
         config.init = Config.Init(
             repo=state.repo,
@@ -1024,10 +993,10 @@ async def _make_initial_commit(
         if head is not None and head in branch_targets:
             worktree_path = state.repo.root / branch_targets[head]
         elif branch_targets:
-            worktree_path = state.repo.root / sorted(
-                branch_targets.values(),
-                key=lambda value: value.as_posix()
-            )[0]
+            worktree_path = (
+                state.repo.root
+                / sorted(branch_targets.values(), key=lambda value: value.as_posix())[0]
+            )
     else:
         worktree_path = state.repo.root / state.worktree
 
@@ -1046,9 +1015,7 @@ async def _make_initial_commit(
     if head.returncode == 0:
         return  # repository already has commits
     if head.returncode != 128:
-        raise OSError(
-            f"failed to determine whether repository already has commits:\n{head}"
-        )
+        raise OSError(f"failed to determine whether repository already has commits:\n{head}")
 
     # stage changes and only commit if there are differences
     await run(
@@ -1146,9 +1113,9 @@ async def _finalize(
             mount_alias.rename(target)
         except Exception as err:
             if (
-                (swap_path.exists() or swap_path.is_symlink()) and
-                not target.exists() and
-                not target.is_symlink()
+                (swap_path.exists() or swap_path.is_symlink())
+                and not target.exists()
+                and not target.is_symlink()
             ):
                 swap_path.rename(target)
             raise OSError(f"failed to atomically swap repository path at {target}") from err
@@ -1183,8 +1150,7 @@ async def _finalize(
                 swap_path.unlink()
         except OSError as err:
             print(
-                f"bertrand: warning: failed to delete conversion swap path at "
-                f"{swap_path}: {err}",
+                f"bertrand: warning: failed to delete conversion swap path at {swap_path}: {err}",
                 file=sys.stderr,
             )
 
@@ -1198,10 +1164,10 @@ async def _finalize(
             async with mount.aliases(timeout=state.deadline - loop.time(), gc=True) as aliases:
                 aliases.unlink(mount_alias)
     if (
-        staged_alias != target and
-        staged_alias != mount_alias and
-        (staged_alias.exists() or staged_alias.is_symlink()) and
-        symlink_points_to(staged_alias, hidden_mount)
+        staged_alias != target
+        and staged_alias != mount_alias
+        and (staged_alias.exists() or staged_alias.is_symlink())
+        and symlink_points_to(staged_alias, hidden_mount)
     ):
         loop = asyncio.get_running_loop()
         # Alias-state operations do not need live mount-table lookups.
@@ -1211,10 +1177,9 @@ async def _finalize(
     state.mount_alias = target
 
 
-REPO_STAGES: tuple[Callable[
-    [RepoState, set[Resource], set[Resource], bool],
-    Awaitable[None]
-], ...] = (
+REPO_STAGES: tuple[
+    Callable[[RepoState, set[Resource], set[Resource], bool], Awaitable[None]], ...
+] = (
     _ensure_repo_volume,
     _ensure_repo_credentials,
     _ensure_host_mount,
@@ -1283,17 +1248,9 @@ async def bertrand_init(
         raise TimeoutError("timed out before checking host bootstrap")
 
     # bootstrap host runtime control plane (persistent, system-wide)
-    async with Lock(
-        INIT_LOCK,
-        timeout=timeout,
-        mode="local",
-        privileges=INIT_LOCK_MODE
-    ):
+    async with Lock(INIT_LOCK, timeout=timeout, mode="local", privileges=INIT_LOCK_MODE):
         state = InitState.load()
-        index = next(
-            (i for i, (stage, _) in enumerate(INIT_STAGES) if stage == state.stage),
-            0
-        )
+        index = next((i for i, (stage, _) in enumerate(INIT_STAGES) if stage == state.stage), 0)
         if index == len(INIT_STAGES) - 1:
             try:
                 await _assert_installed(state, yes)
@@ -1335,10 +1292,24 @@ async def bertrand_init(
         await start_microk8s(timeout=deadline - loop.time())
         await ensure_microk8s_kubeconfig(timeout=deadline - loop.time())
         await link_kube_ceph(timeout=deadline - loop.time())
+        from ..kube.image import (
+            ClusterImageBuild,
+            ensure_cluster_image,
+            ensure_cluster_image_store,
+        )
+
         await ensure_cluster_image_store(timeout=deadline - loop.time())
         autoscaler_build = ceph_capacity_controlplane_image_build()
+        legacy_build = ClusterImageBuild(
+            image=autoscaler_build.image,
+            dockerfile=autoscaler_build.dockerfile,
+            context_copies=autoscaler_build.context_copies,
+            context_prefix=autoscaler_build.context_prefix,
+            build_flags=autoscaler_build.build_flags,
+            build_labels=autoscaler_build.build_labels,
+        )
         autoscaler_image = await ensure_cluster_image(
-            autoscaler_build,
+            legacy_build,
             timeout=deadline - loop.time(),
         )
         await ensure_ceph_capacity_controlplane(
@@ -1354,11 +1325,7 @@ async def bertrand_init(
     enabled: set[Resource] = {RESOURCE_NAMES["bertrand"]}
     enabled.update(_parse_resource_specs(enable, for_disable=False))
     disabled = _parse_resource_specs(disable, for_disable=True)
-    protected = {
-        name
-        for name in PROTECTED_DISABLE_RESOURCES
-        if RESOURCE_NAMES[name] in disabled
-    }
+    protected = {name for name in PROTECTED_DISABLE_RESOURCES if RESOURCE_NAMES[name] in disabled}
     if protected:
         raise ValueError(
             f"cannot disable required Bertrand resources: {', '.join(sorted(protected))}"

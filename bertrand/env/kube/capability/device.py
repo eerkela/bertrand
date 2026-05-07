@@ -9,10 +9,10 @@ from typing import Literal, Self
 
 from kubernetes import client as kube_client
 
-from ..config.core import KubeName, _check_kube_name, _check_uuid
-from ..run import BERTRAND_NAMESPACE
-from .api import Kube
-from .configmap import ConfigMap
+from ...config.core import KubeName, _check_kube_name, _check_uuid
+from ...run import BERTRAND_NAMESPACE
+from ..api import Kube
+from ..configmap import ConfigMap
 
 type DevicePermission = Literal["r", "w", "m", "rw", "rm", "wm", "rwm"]
 DEVICE_PERMISSIONS = frozenset({"r", "w", "m", "rw", "rm", "wm", "rwm"})

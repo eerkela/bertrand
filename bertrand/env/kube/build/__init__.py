@@ -1,5 +1,6 @@
 """Kubernetes build-runtime primitives for Bertrand."""
 
+from .cache import CacheVolume, format_volumes
 from .daemon import (
     BUILDKIT,
     BUILDKIT_ADDR,
@@ -33,6 +34,7 @@ __all__ = [
     "BUILDKIT_NAME",
     "BUILDKIT_PORT",
     "BuildKit",
+    "CacheVolume",
     "IMAGES",
     "IMAGE_REPOSITORY_IMAGE",
     "IMAGE_REPOSITORY_NAME",
@@ -42,4 +44,5 @@ __all__ = [
     "IMAGE_REPOSITORY_SERVICE_ADDR",
     "IMAGE_REPOSITORY_SIZE",
     "ImageRepository",
+    "format_volumes",
 ]

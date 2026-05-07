@@ -1,4 +1,5 @@
 """Wrappers for the Kubernetes Node API and related operations."""
+
 from __future__ import annotations
 
 import asyncio
@@ -14,11 +15,13 @@ from ..config.core import KubeName
 from .api import Kube, _label_selector
 from .pod import Pod
 
-NODE_SYSTEM_NAMESPACES = frozenset({
-    "kube-system",
-    "kube-public",
-    "kube-node-lease",
-})
+NODE_SYSTEM_NAMESPACES = frozenset(
+    {
+        "kube-system",
+        "kube-public",
+        "kube-node-lease",
+    }
+)
 NODE_DRAIN_POLL_INTERVAL_SECONDS = 0.5
 NODE_TAINT_KEY_NOT_READY = "node.kubernetes.io/not-ready"
 NODE_TAINT_KEY_UNREACHABLE = "node.kubernetes.io/unreachable"
@@ -38,6 +41,7 @@ class Node:
     mutation operations so downstream modules can avoid reimplementing Kubernetes
     node-shape parsing.
     """
+
     obj: kubernetes.client.V1Node
 
     @classmethod
@@ -248,8 +252,8 @@ class Node:
         """
         labels = self.labels
         return (
-            "node-role.kubernetes.io/control-plane" in labels or
-            "node-role.kubernetes.io/master" in labels
+            "node-role.kubernetes.io/control-plane" in labels
+            or "node-role.kubernetes.io/master" in labels
         )
 
     @property
@@ -548,15 +552,11 @@ class Node:
                 if replaced:
                     continue
                 replaced = True
-                normalized.append(
-                    kubernetes.client.V1Taint(key=key, effect=effect, value=value)
-                )
+                normalized.append(kubernetes.client.V1Taint(key=key, effect=effect, value=value))
                 continue
             normalized.append(taint)
         if not replaced:
-            normalized.append(
-                kubernetes.client.V1Taint(key=key, effect=effect, value=value)
-            )
+            normalized.append(kubernetes.client.V1Taint(key=key, effect=effect, value=value))
         payload = [
             {
                 "key": (taint.key or ""),
@@ -570,9 +570,7 @@ class Node:
             kube=kube,
             body={"spec": {"taints": payload}},
             timeout=timeout,
-            context=(
-                f"failed to set taint {key!r}/{effect!r} on Kubernetes node {self!r}"
-            ),
+            context=(f"failed to set taint {key!r}/{effect!r} on Kubernetes node {self!r}"),
         )
 
     async def remove_taint(
@@ -610,10 +608,7 @@ class Node:
                 **({"value": taint.value} if taint.value else {}),
             }
             for taint in self.taints
-            if not (
-                (taint.key or "") == key and
-                (effect is None or (taint.effect or "") == effect)
-            )
+            if not ((taint.key or "") == key and (effect is None or (taint.effect or "") == effect))
             if (taint.key or "").strip() and (taint.effect or "").strip()
         ]
         await self._patch(
@@ -621,8 +616,7 @@ class Node:
             body={"spec": {"taints": payload}},
             timeout=timeout,
             context=(
-                f"failed to remove taint {key!r}/{effect or '*'} on Kubernetes node "
-                f"{self.name!r}"
+                f"failed to remove taint {key!r}/{effect or '*'} on Kubernetes node {self.name!r}"
             ),
         )
 
@@ -711,14 +705,11 @@ class Node:
         out: builtins.list[Pod] = []
         for payload in payloads:
             if not isinstance(payload, kubernetes.client.V1PodList):
-                raise OSError(
-                    f"malformed pod list payload for Kubernetes node {node_name!r}"
-                )
+                raise OSError(f"malformed pod list payload for Kubernetes node {node_name!r}")
             for item in payload.items or []:
                 if not isinstance(item, kubernetes.client.V1Pod):
                     raise OSError(
-                        f"malformed pod entry while listing Kubernetes node "
-                        f"{node_name!r}"
+                        f"malformed pod entry while listing Kubernetes node {node_name!r}"
                     )
                 out.append(Pod(obj=item))
         return out
@@ -777,10 +768,7 @@ class Node:
 
             # DaemonSet pods are always skipped because they are managed to run
             # per-node; drain should not treat them as evictable workload pods
-            if pod.is_daemonset_controlled or (
-                namespace in NODE_SYSTEM_NAMESPACES and
-                not force
-            ):
+            if pod.is_daemonset_controlled or (namespace in NODE_SYSTEM_NAMESPACES and not force):
                 continue
             if pod.uses_emptydir and not force:
                 blocked.append(
@@ -788,9 +776,7 @@ class Node:
                 )
                 continue
             if not pod.has_supported_controller() and not force:
-                blocked.append(
-                    f"{namespace}/{name}: unmanaged pod (set force=True to allow)"
-                )
+                blocked.append(f"{namespace}/{name}: unmanaged pod (set force=True to allow)")
                 continue
             candidates.append(pod)
         if blocked:
@@ -824,9 +810,7 @@ class Node:
                             f"timed out waiting for PDB eviction budget while draining "
                             f"node {self.name!r}"
                         ) from err
-                    await asyncio.sleep(
-                        min(NODE_DRAIN_POLL_INTERVAL_SECONDS, remaining)
-                    )
+                    await asyncio.sleep(min(NODE_DRAIN_POLL_INTERVAL_SECONDS, remaining))
 
         # eviction admission does not guarantee immediate termination, so we poll
         # node-local pod state until every targeted pod disappears
@@ -835,9 +819,9 @@ class Node:
             if remaining <= 0:
                 raise TimeoutError(
                     f"timed out waiting for pod eviction convergence on node "
-                    f"{self.name!r}; remaining: {', '.join(
-                        f'{namespace}/{name}' for namespace, name in sorted(pending)
-                    )}"
+                    f"{self.name!r}; remaining: {
+                        ', '.join(f'{namespace}/{name}' for namespace, name in sorted(pending))
+                    }"
                 )
             live: set[tuple[str, str]] = set()
             for pod in await self.pods(kube=kube, timeout=remaining):
@@ -848,6 +832,4 @@ class Node:
             if pending:
                 # eviction admission is asynchronous, so we poll until all targeted
                 # pods terminate or timeout
-                await asyncio.sleep(
-                    min(NODE_DRAIN_POLL_INTERVAL_SECONDS, deadline - loop.time())
-                )
+                await asyncio.sleep(min(NODE_DRAIN_POLL_INTERVAL_SECONDS, deadline - loop.time()))

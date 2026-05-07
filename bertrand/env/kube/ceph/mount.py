@@ -1,4 +1,5 @@
 """Host-side Ceph repository mount lifecycle utilities."""
+
 from __future__ import annotations
 
 import asyncio
@@ -47,9 +48,7 @@ if "," in DEFAULT_REPO_FS_NAME:
     raise ValueError("internal default repository Ceph fs_name cannot contain commas")
 DEFAULT_REPO_MOUNT_OPTIONS: tuple[str, ...] = ()
 if any("," in opt for opt in DEFAULT_REPO_MOUNT_OPTIONS):
-    raise ValueError(
-        "internal default repository mount options cannot contain comma separators"
-    )
+    raise ValueError("internal default repository mount options cannot contain comma separators")
 
 ALIASES_SCHEMA_VERSION = 1
 REPO_ORPHAN_GC_BATCH_SIZE = 8
@@ -100,6 +99,7 @@ class MountInfo:
     source : str
         Kernel-reported mount source from the second field after `-`.
     """
+
     mount_point: Path
     fs_type: str = field(default="")
     source: str = field(default="")
@@ -241,13 +241,15 @@ class MountInfo:
                 continue
 
             info = cls(
-                mount_point=abspath(Path(
-                    parts[4]
-                    .replace("\\040", " ")
-                    .replace("\\011", "\t")
-                    .replace("\\012", "\n")
-                    .replace("\\134", "\\")
-                )),
+                mount_point=abspath(
+                    Path(
+                        parts[4]
+                        .replace("\\040", " ")
+                        .replace("\\011", "\t")
+                        .replace("\\012", "\n")
+                        .replace("\\134", "\\")
+                    )
+                ),
                 fs_type=parts[sep + 1],
                 source=parts[sep + 2],
             )
@@ -355,9 +357,7 @@ class MountInfo:
                 f"repository Ceph secret file does not exist: {ceph_secretfile}"
             )
         if not ceph_secretfile.is_file():
-            raise FileNotFoundError(
-                f"repository Ceph secret path is not a file: {ceph_secretfile}"
-            )
+            raise FileNotFoundError(f"repository Ceph secret path is not a file: {ceph_secretfile}")
 
         root = REPO_DIR / repo_id
         mount_path = root / REPO_MOUNT_EXT
@@ -383,10 +383,12 @@ class MountInfo:
                     sudo(
                         [
                             "mount",
-                            "-t", "ceph",
+                            "-t",
+                            "ceph",
                             f"{','.join(monitors)}:{ceph_path}",
                             str(mount_path),
-                            "-o", ",".join(mount_opts),
+                            "-o",
+                            ",".join(mount_opts),
                         ]
                     ),
                     capture_output=True,
@@ -469,6 +471,7 @@ class MountInfo:
         aliases : set[Path]
             In-memory managed alias set loaded for the repository when entered.
         """
+
         class JSON(BaseModel):
             """Persistent alias index payload for a single repository mount.
 
@@ -481,6 +484,7 @@ class MountInfo:
             last_accessed : datetime
                 Last alias-state write timestamp.
             """
+
             model_config = ConfigDict(extra="forbid")
             version: Annotated[PositiveInt, AfterValidator(_check_alias_version)]
             aliases: list[Annotated[Path, AfterValidator(_check_alias_path)]]
@@ -507,15 +511,11 @@ class MountInfo:
                         last_accessed=datetime.now(UTC),
                     )
                 if not path.is_file():
-                    raise FileNotFoundError(
-                        f"repository alias index path is not a file: {path}"
-                    )
+                    raise FileNotFoundError(f"repository alias index path is not a file: {path}")
                 try:
                     text = path.read_text(encoding="utf-8")
                 except OSError as err:
-                    raise OSError(
-                        f"failed to read repository alias index file: {err}"
-                    ) from err
+                    raise OSError(f"failed to read repository alias index file: {err}") from err
                 try:
                     return cls.model_validate_json(text)
                 except ValidationError as err:
@@ -541,12 +541,10 @@ class MountInfo:
                             ensure_ascii=False,
                             allow_nan=False,
                         ),
-                        encoding="utf-8"
+                        encoding="utf-8",
                     )
                 except OSError as err:
-                    raise OSError(
-                        f"failed to write repository alias index file: {err}"
-                    ) from err
+                    raise OSError(f"failed to write repository alias index file: {err}") from err
 
             def filter(self, mount: Path) -> set[Path]:
                 """Return the subset of declared aliases that still point to the given
@@ -563,10 +561,7 @@ class MountInfo:
                     Living alias paths that point to the given mount.
                 """
                 mount = mount.expanduser().resolve()
-                return {
-                    alias for alias in self.aliases
-                    if symlink_points_to(alias, mount)
-                }
+                return {alias for alias in self.aliases if symlink_points_to(alias, mount)}
 
         mount: MountInfo
         timeout: float
@@ -648,8 +643,7 @@ class MountInfo:
             """
             if self._depth < 1:
                 raise RuntimeError(
-                    "MountAliases must be used inside 'async with' before calling "
-                    "link()/unlink()"
+                    "MountAliases must be used inside 'async with' before calling link()/unlink()"
                 )
 
             # avoid collisions with file or directory paths, as well as symlinks that
@@ -687,8 +681,7 @@ class MountInfo:
             """
             if self._depth < 1:
                 raise RuntimeError(
-                    "MountAliases must be used inside 'async with' before calling "
-                    "link()/unlink()"
+                    "MountAliases must be used inside 'async with' before calling link()/unlink()"
                 )
             path = abspath(path)
             if path not in self.aliases:
@@ -710,7 +703,8 @@ class MountInfo:
             try:
                 roots = sorted(
                     (
-                        entry for entry in REPO_DIR.iterdir()
+                        entry
+                        for entry in REPO_DIR.iterdir()
                         if entry.is_dir() and not entry.is_symlink()
                     ),
                     key=lambda item: item.as_posix(),
@@ -730,9 +724,7 @@ class MountInfo:
             # rotate over the roots based on current timestamp to ensure GC covers the
             # whole set of mounts over time, without any extra state
             now = datetime.now(UTC)
-            start = (
-                int(now.timestamp() // REPO_ORPHAN_GC_SLOT_PERIOD.total_seconds()) % len(roots)
-            )
+            start = int(now.timestamp() // REPO_ORPHAN_GC_SLOT_PERIOD.total_seconds()) % len(roots)
             mounts = MountInfo.local()
             for offset in range(min(REPO_ORPHAN_GC_BATCH_SIZE, len(roots))):
                 root = roots[(start + offset) % len(roots)]

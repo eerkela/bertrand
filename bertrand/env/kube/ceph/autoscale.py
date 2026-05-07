@@ -11,6 +11,7 @@ Notes
 This is intentionally a v1 surface: it only grows capacity, and never shrinks or
 rebalances existing OSD devices.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -23,7 +24,7 @@ import shutil
 import subprocess
 import sys
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Literal
@@ -44,9 +45,6 @@ from ..api import (
     CLUSTER_REGISTRY_READY_LABEL,
     CLUSTER_REGISTRY_READY_VALUE,
     Kube,
-)
-from ..image import (
-    ClusterImageBuild,
 )
 from ..node import Node
 
@@ -72,6 +70,18 @@ AUTOSCALE_PHASES = ("Pending", "Running", "Succeeded", "Failed")
 type Watermark = Annotated[float, Field(gt=0.0, lt=1.0)]
 type LoopSize = Annotated[str, Field(pattern=AUTOSCALE_LOOP_SIZE_RE)]
 type LoopSpec = Annotated[str, Field(pattern=AUTOSCALE_LOOP_SPEC_RE)]
+
+
+@dataclass(frozen=True)
+class ClusterImageBuild:
+    """Declarative build contract for one cluster-shared image."""
+
+    image: str
+    dockerfile: str
+    context_copies: tuple[tuple[Path, Path], ...] = ()
+    context_prefix: str = "bertrand-cluster-image"
+    build_flags: tuple[str, ...] = ("--progress=plain",)
+    build_labels: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -309,13 +319,15 @@ class ActionList(BaseModel):
 
     model_config = ConfigDict(extra="ignore")
     items: list[CephStorageAction] = Field(default_factory=list)
-    metadata: ObjectMeta = Field(default_factory=lambda: ObjectMeta(
-        name="",
-        namespace="",
-        generation=0,
-        resourceVersion="",
-        labels={},
-    ))
+    metadata: ObjectMeta = Field(
+        default_factory=lambda: ObjectMeta(
+            name="",
+            namespace="",
+            generation=0,
+            resourceVersion="",
+            labels={},
+        )
+    )
 
 
 def _now_iso() -> str:
@@ -365,70 +377,72 @@ def _autoscaler_crd_manifest() -> dict:
                 "kind": AUTOSCALE_AUTOSCALER_KIND,
                 "shortNames": ["csa"],
             },
-            "versions": [{
-                "name": AUTOSCALE_VERSION,
-                "served": True,
-                "storage": True,
-                "schema": {
-                    "openAPIV3Schema": {
-                        "type": "object",
-                        "properties": {
-                            "spec": {
-                                "type": "object",
-                                "properties": {
-                                    "enabled": {"type": "boolean", "default": True},
-                                    "high_watermark": {
-                                        "type": "number",
-                                        "minimum": 0,
-                                        "maximum": 1,
-                                        "default": 0.75,
-                                    },
-                                    "target_watermark": {
-                                        "type": "number",
-                                        "minimum": 0,
-                                        "maximum": 1,
-                                        "default": 0.65,
-                                    },
-                                    "loop_size": {
-                                        "type": "string",
-                                        "pattern": AUTOSCALE_LOOP_SIZE_RE,
-                                        "default": "4G",
-                                    },
-                                    "max_actions_per_reconcile": {
-                                        "type": "integer",
-                                        "minimum": 1,
-                                        "default": 3,
-                                    },
-                                    "reconcile_interval_seconds": {
-                                        "type": "integer",
-                                        "minimum": 1,
-                                        "default": 30,
+            "versions": [
+                {
+                    "name": AUTOSCALE_VERSION,
+                    "served": True,
+                    "storage": True,
+                    "schema": {
+                        "openAPIV3Schema": {
+                            "type": "object",
+                            "properties": {
+                                "spec": {
+                                    "type": "object",
+                                    "properties": {
+                                        "enabled": {"type": "boolean", "default": True},
+                                        "high_watermark": {
+                                            "type": "number",
+                                            "minimum": 0,
+                                            "maximum": 1,
+                                            "default": 0.75,
+                                        },
+                                        "target_watermark": {
+                                            "type": "number",
+                                            "minimum": 0,
+                                            "maximum": 1,
+                                            "default": 0.65,
+                                        },
+                                        "loop_size": {
+                                            "type": "string",
+                                            "pattern": AUTOSCALE_LOOP_SIZE_RE,
+                                            "default": "4G",
+                                        },
+                                        "max_actions_per_reconcile": {
+                                            "type": "integer",
+                                            "minimum": 1,
+                                            "default": 3,
+                                        },
+                                        "reconcile_interval_seconds": {
+                                            "type": "integer",
+                                            "minimum": 1,
+                                            "default": 30,
+                                        },
                                     },
                                 },
-                            },
-                            "status": {
-                                "type": "object",
-                                "properties": {
-                                    "observedGeneration": {"type": "integer"},
-                                    "total_bytes": {"type": "integer"},
-                                    "used_bytes": {"type": "integer"},
-                                    "used_ratio": {"type": "number"},
-                                    "pending_actions": {"type": "integer"},
-                                    "running_actions": {"type": "integer"},
-                                    "succeeded_actions": {"type": "integer"},
-                                    "failed_actions": {"type": "integer"},
-                                    "last_reconciled_at": {
-                                        "type": "string",
-                                        "format": "date-time",
+                                "status": {
+                                    "type": "object",
+                                    "properties": {
+                                        "observedGeneration": {"type": "integer"},
+                                        "total_bytes": {"type": "integer"},
+                                        "used_bytes": {"type": "integer"},
+                                        "used_ratio": {"type": "number"},
+                                        "pending_actions": {"type": "integer"},
+                                        "running_actions": {"type": "integer"},
+                                        "succeeded_actions": {"type": "integer"},
+                                        "failed_actions": {"type": "integer"},
+                                        "last_reconciled_at": {
+                                            "type": "string",
+                                            "format": "date-time",
+                                        },
+                                        "last_error": {"type": "string"},
                                     },
-                                    "last_error": {"type": "string"},
                                 },
                             },
                         },
                     },
-                },
-                "subresources": {"status": {}},
-            }],
+                    "subresources": {"status": {}},
+                }
+            ],
         },
     }
 
@@ -447,42 +461,49 @@ def _action_crd_manifest() -> dict:
                 "kind": AUTOSCALE_ACTION_KIND,
                 "shortNames": ["csact"],
             },
-            "versions": [{
-                "name": AUTOSCALE_VERSION,
-                "served": True,
-                "storage": True,
-                "schema": {
-                    "openAPIV3Schema": {
-                        "type": "object",
-                        "properties": {
-                            "spec": {
-                                "type": "object",
-                                "required": ["repo_generation", "node_name", "loop_spec", "reason"],
-                                "properties": {
-                                    "repo_generation": {"type": "integer", "minimum": 0},
-                                    "node_name": {"type": "string", "minLength": 1},
-                                    "loop_spec": {
-                                        "type": "string",
-                                        "pattern": AUTOSCALE_LOOP_SPEC_RE,
+            "versions": [
+                {
+                    "name": AUTOSCALE_VERSION,
+                    "served": True,
+                    "storage": True,
+                    "schema": {
+                        "openAPIV3Schema": {
+                            "type": "object",
+                            "properties": {
+                                "spec": {
+                                    "type": "object",
+                                    "required": [
+                                        "repo_generation",
+                                        "node_name",
+                                        "loop_spec",
+                                        "reason",
+                                    ],
+                                    "properties": {
+                                        "repo_generation": {"type": "integer", "minimum": 0},
+                                        "node_name": {"type": "string", "minLength": 1},
+                                        "loop_spec": {
+                                            "type": "string",
+                                            "pattern": AUTOSCALE_LOOP_SPEC_RE,
+                                        },
+                                        "reason": {"type": "string", "minLength": 1},
                                     },
-                                    "reason": {"type": "string", "minLength": 1},
                                 },
-                            },
-                            "status": {
-                                "type": "object",
-                                "properties": {
-                                    "phase": {"type": "string", "enum": list(AUTOSCALE_PHASES)},
-                                    "started_at": {"type": "string", "format": "date-time"},
-                                    "finished_at": {"type": "string", "format": "date-time"},
-                                    "message": {"type": "string"},
-                                    "worker_node": {"type": "string"},
+                                "status": {
+                                    "type": "object",
+                                    "properties": {
+                                        "phase": {"type": "string", "enum": list(AUTOSCALE_PHASES)},
+                                        "started_at": {"type": "string", "format": "date-time"},
+                                        "finished_at": {"type": "string", "format": "date-time"},
+                                        "message": {"type": "string"},
+                                        "worker_node": {"type": "string"},
+                                    },
                                 },
                             },
                         },
                     },
-                },
-                "subresources": {"status": {}},
-            }],
+                    "subresources": {"status": {}},
+                }
+            ],
         },
     }
 
@@ -543,11 +564,13 @@ def _cluster_role_binding_manifest() -> dict:
             "kind": "ClusterRole",
             "name": AUTOSCALE_SERVICE_ACCOUNT,
         },
-        "subjects": [{
-            "kind": "ServiceAccount",
-            "name": AUTOSCALE_SERVICE_ACCOUNT,
-            "namespace": BERTRAND_NAMESPACE,
-        }],
+        "subjects": [
+            {
+                "kind": "ServiceAccount",
+                "name": AUTOSCALE_SERVICE_ACCOUNT,
+                "namespace": BERTRAND_NAMESPACE,
+            }
+        ],
     }
 
 
@@ -576,28 +599,36 @@ def _controller_manifest(image: str) -> dict:
                         CLUSTER_REGISTRY_READY_LABEL: CLUSTER_REGISTRY_READY_VALUE,
                     },
                     "hostPID": True,
-                    "containers": [{
-                        "name": "controller",
-                        "image": image,
-                        "imagePullPolicy": "Always",
-                        "args": ["controller"],
-                        "env": [{
-                            "name": "NODE_NAME",
-                            "valueFrom": {"fieldRef": {"fieldPath": "spec.nodeName"}},
-                        }],
-                        "securityContext": {
-                            "privileged": True,
-                            "runAsUser": 0,
-                        },
-                        "volumeMounts": [{
+                    "containers": [
+                        {
+                            "name": "controller",
+                            "image": image,
+                            "imagePullPolicy": "Always",
+                            "args": ["controller"],
+                            "env": [
+                                {
+                                    "name": "NODE_NAME",
+                                    "valueFrom": {"fieldRef": {"fieldPath": "spec.nodeName"}},
+                                }
+                            ],
+                            "securityContext": {
+                                "privileged": True,
+                                "runAsUser": 0,
+                            },
+                            "volumeMounts": [
+                                {
+                                    "name": "host-root",
+                                    "mountPath": "/host",
+                                }
+                            ],
+                        }
+                    ],
+                    "volumes": [
+                        {
                             "name": "host-root",
-                            "mountPath": "/host",
-                        }],
-                    }],
-                    "volumes": [{
-                        "name": "host-root",
-                        "hostPath": {"path": "/", "type": "Directory"},
-                    }],
+                            "hostPath": {"path": "/", "type": "Directory"},
+                        }
+                    ],
                 },
             },
         },
@@ -628,28 +659,36 @@ def _agent_manifest(image: str) -> dict:
                         CLUSTER_REGISTRY_READY_LABEL: CLUSTER_REGISTRY_READY_VALUE,
                     },
                     "hostPID": True,
-                    "containers": [{
-                        "name": "agent",
-                        "image": image,
-                        "imagePullPolicy": "Always",
-                        "args": ["agent"],
-                        "env": [{
-                            "name": "NODE_NAME",
-                            "valueFrom": {"fieldRef": {"fieldPath": "spec.nodeName"}},
-                        }],
-                        "securityContext": {
-                            "privileged": True,
-                            "runAsUser": 0,
-                        },
-                        "volumeMounts": [{
+                    "containers": [
+                        {
+                            "name": "agent",
+                            "image": image,
+                            "imagePullPolicy": "Always",
+                            "args": ["agent"],
+                            "env": [
+                                {
+                                    "name": "NODE_NAME",
+                                    "valueFrom": {"fieldRef": {"fieldPath": "spec.nodeName"}},
+                                }
+                            ],
+                            "securityContext": {
+                                "privileged": True,
+                                "runAsUser": 0,
+                            },
+                            "volumeMounts": [
+                                {
+                                    "name": "host-root",
+                                    "mountPath": "/host",
+                                }
+                            ],
+                        }
+                    ],
+                    "volumes": [
+                        {
                             "name": "host-root",
-                            "mountPath": "/host",
-                        }],
-                    }],
-                    "volumes": [{
-                        "name": "host-root",
-                        "hostPath": {"path": "/", "type": "Directory"},
-                    }],
+                            "hostPath": {"path": "/", "type": "Directory"},
+                        }
+                    ],
                 },
             },
         },
@@ -759,7 +798,11 @@ async def ensure_ceph_capacity_controlplane(*, image: str, timeout: float) -> No
         await _apply_manifest(manifest, timeout=_remaining(deadline))
 
 
-async def _host_ceph_command(argv: list[str], *, timeout: float) -> subprocess.CompletedProcess[str]:
+async def _host_ceph_command(
+    argv: list[str],
+    *,
+    timeout: float,
+) -> subprocess.CompletedProcess[str]:
     if timeout <= 0:
         raise TimeoutError("timeout must be non-negative")
 
@@ -791,11 +834,7 @@ async def _ceph_capacity(*, timeout: float) -> CephCapacitySnapshot:
     # NOTE: ceph JSON keys changed across releases; we accept modern fields first and
     # then legacy-compatible fallbacks.
     stats = payload.get("stats", {}) if isinstance(payload, dict) else {}
-    total = int(
-        stats.get("total_bytes")
-        or stats.get("total_space")
-        or 0
-    )
+    total = int(stats.get("total_bytes") or stats.get("total_space") or 0)
     used = int(
         stats.get("total_used_bytes")
         or stats.get("total_used_raw_bytes")
@@ -846,10 +885,7 @@ async def _controller_list_actions(api: Kube, *, timeout: float) -> ActionList:
             _request_timeout=request_timeout,
         ),
         timeout=timeout,
-        context=(
-            f"failed to list {AUTOSCALE_ACTION_KIND} objects in namespace "
-            f"{api.namespace!r}"
-        ),
+        context=(f"failed to list {AUTOSCALE_ACTION_KIND} objects in namespace {api.namespace!r}"),
     )
     try:
         return ActionList.model_validate(payload)
@@ -865,8 +901,8 @@ def _eligible_nodes(nodes: list[Node]) -> list[str]:
     return sorted(
         node.name
         for node in nodes
-        if node.name and
-        node.labels.get(CLUSTER_REGISTRY_READY_LABEL) == CLUSTER_REGISTRY_READY_VALUE
+        if node.name
+        and node.labels.get(CLUSTER_REGISTRY_READY_LABEL) == CLUSTER_REGISTRY_READY_VALUE
     )
 
 
@@ -904,14 +940,16 @@ def _plan_actions(
     planned: list[PlannedAction] = []
     for index in range(count):
         node = nodes[(state.round_robin_offset + index) % len(nodes)]
-        planned.append(PlannedAction(
-            node_name=node,
-            loop_spec=f"loop,{spec.loop_size},1",
-            reason=(
-                "cluster usage "
-                f"{capacity.used_ratio:.2%} >= high watermark {spec.high_watermark:.2%}"
-            ),
-        ))
+        planned.append(
+            PlannedAction(
+                node_name=node,
+                loop_spec=f"loop,{spec.loop_size},1",
+                reason=(
+                    "cluster usage "
+                    f"{capacity.used_ratio:.2%} >= high watermark {spec.high_watermark:.2%}"
+                ),
+            )
+        )
     state.round_robin_offset = (state.round_robin_offset + count) % len(nodes)
     return planned
 
@@ -952,10 +990,7 @@ async def _controller_create_actions(
                 _request_timeout=request_timeout,
             ),
             timeout=timeout,
-            context=(
-                f"failed to create {AUTOSCALE_ACTION_KIND} in namespace "
-                f"{api.namespace!r}"
-            ),
+            context=(f"failed to create {AUTOSCALE_ACTION_KIND} in namespace {api.namespace!r}"),
         )
 
 
@@ -994,8 +1029,7 @@ async def _controller_patch_status(
         ),
         timeout=timeout,
         context=(
-            f"failed to patch status for {AUTOSCALE_AUTOSCALER_KIND} "
-            f"{AUTOSCALE_DEFAULT_NAME!r}"
+            f"failed to patch status for {AUTOSCALE_AUTOSCALER_KIND} {AUTOSCALE_DEFAULT_NAME!r}"
         ),
     )
 
@@ -1049,7 +1083,7 @@ async def _controller_watch_actions(
             asyncio.to_thread(_watch),
             timeout=None if math.isinf(timeout) else timeout,
         )
-    except asyncio.TimeoutError:
+    except TimeoutError:
         return
     except ApiException as err:
         if err.status == 410:
@@ -1103,7 +1137,7 @@ async def run_ceph_capacity_controller(*, timeout: float = INFINITY) -> None:
 
                 counts = {phase: 0 for phase in AUTOSCALE_PHASES}
                 for action in actions.items:
-                    phase = (action.status.phase if action.status is not None else "Pending")
+                    phase = action.status.phase if action.status is not None else "Pending"
                     if phase in counts:
                         counts[phase] += 1
                     rv = action.metadata.resourceVersion.strip()
@@ -1139,7 +1173,10 @@ async def run_ceph_capacity_controller(*, timeout: float = INFINITY) -> None:
                 # fail-closed status updates make malformed managed state visible to
                 # operators instead of silently masking reconciliation drift.
                 try:
-                    autoscaler = await _controller_read_autoscaler(api, timeout=_remaining(deadline))
+                    autoscaler = await _controller_read_autoscaler(
+                        api,
+                        timeout=_remaining(deadline),
+                    )
                     await _controller_patch_status(
                         api,
                         autoscaler=autoscaler,
@@ -1206,10 +1243,7 @@ async def _agent_patch_action_status(
             _request_timeout=request_timeout,
         ),
         timeout=timeout,
-        context=(
-            f"failed to patch status for {AUTOSCALE_ACTION_KIND} "
-            f"{action.metadata.name!r}"
-        ),
+        context=(f"failed to patch status for {AUTOSCALE_ACTION_KIND} {action.metadata.name!r}"),
     )
 
 

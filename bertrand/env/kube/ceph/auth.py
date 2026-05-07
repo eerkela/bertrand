@@ -1,4 +1,5 @@
 """Ceph credential lifecycle utilities for Bertrand-managed repository volumes."""
+
 from __future__ import annotations
 
 import asyncio
@@ -24,19 +25,23 @@ MON_ENDPOINT_RE = re.compile(r"^(?:v[12]:)?(?P<addr>.+)$")
 
 class CephMonitors(BaseModel):
     """Validated subset of `ceph mon dump -f json` payload."""
+
     class Mon(BaseModel):
         """Validated subset of one monitor entry."""
+
         class PublicAddrs(BaseModel):
             """Validated subset of monitor public address entries."""
+
             class AddrVec(BaseModel):
                 """Validated subset of one monitor address vector entry."""
+
                 model_config = ConfigDict(extra="ignore")
                 addr: Annotated[str, Field(default="")]
 
             model_config = ConfigDict(extra="ignore")
-            addrvec: Annotated[list[CephMonitors.Mon.PublicAddrs.AddrVec], Field(
-                default_factory=list
-            )]
+            addrvec: Annotated[
+                list[CephMonitors.Mon.PublicAddrs.AddrVec], Field(default_factory=list)
+            ]
 
         model_config = ConfigDict(extra="ignore")
         addr: Annotated[str, Field(default="")]
@@ -54,7 +59,7 @@ class CephMonitors(BaseModel):
             end = value.rfind("]")
             if end < 1 or end + 2 > len(value) or value[end + 1] != ":":
                 return False
-            return value[end + 2:].isdigit()
+            return value[end + 2 :].isdigit()
 
         if value.count(":") != 1:
             return False
@@ -116,10 +121,10 @@ async def _get_key(entity: str, *, timeout: float) -> str | None:
     except CommandError as err:
         detail = f"{err.stdout}\n{err.stderr}".lower()
         if (
-            "not found" in detail or
-            "does not exist" in detail or
-            "enoent" in detail or
-            "error enoent" in detail
+            "not found" in detail
+            or "does not exist" in detail
+            or "enoent" in detail
+            or "error enoent" in detail
         ):
             return None
         # NOTE: we intentionally do not re-raise or print the error here, since it
@@ -168,6 +173,7 @@ class RepoCredentials:
     monitors : tuple[str, ...]
         Ordered Ceph monitor endpoints in `host:port` format.
     """
+
     repo_id: UUIDHex
     user: str
     entity: str
@@ -240,9 +246,7 @@ class RepoCredentials:
         # exist.
         key = await _get_key(entity, timeout=deadline - loop.time())
         if key is None:
-            raise OSError(
-                f"Ceph authorization did not materialize credentials for {entity!r}"
-            )
+            raise OSError(f"Ceph authorization did not materialize credentials for {entity!r}")
 
         # retrieve current monitor endpoints; this ensures the caller has enough
         # information to confidently connect to and mount the repository using the
@@ -310,11 +314,9 @@ class RepoCredentials:
             monitors=monitors,
         )
 
-    # TODO: deleting the credentials for a volume should only occur after deleting the
-    # volume itself, which can only occur when there are zero active pods referencing it,
-    # and the user explicitly deletes that volume via the CLI.  When that occurs, I should
-    # also trigger each node in the cluster to unmount the volume and delete any local
-    # symlinks referencing it, then proceed to delete its credentials.
+    # Credential deletion is intentionally conservative: it should only run after the
+    # volume itself is gone, no active pods reference it, and local mounts/symlinks have
+    # been reconciled away.
 
     async def delete(self, *, timeout: float) -> bool:
         """Delete per-repo Ceph credentials if they exist.
@@ -361,10 +363,10 @@ class RepoCredentials:
             return True
         detail = f"{result.stdout}\n{result.stderr}".lower()
         if (
-            "not found" in detail or
-            "does not exist" in detail or
-            "enoent" in detail or
-            "error enoent" in detail
+            "not found" in detail
+            or "does not exist" in detail
+            or "enoent" in detail
+            or "error enoent" in detail
         ):
             return False
         # NOTE: we intentionally do not print the error here, since it could possibly

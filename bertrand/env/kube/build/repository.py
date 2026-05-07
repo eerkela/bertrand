@@ -25,10 +25,11 @@ from ..api import (
     VolumeMountSpec,
     VolumeSpec,
 )
+from ..ceph import CEPHFS_STORAGE_CLASS_PREFERENCES
 from ..configmap import ConfigMap
 from ..deployment import Deployment
 from ..service import Service
-from ..volume import CEPHFS_STORAGE_CLASS_PREFERENCES, PersistentVolumeClaim, StorageClass
+from ..volume import PersistentVolumeClaim, StorageClass
 from .daemon import (
     BUILDKIT_CONFIG_KEY,
     BUILDKIT_CONFIG_NAME,

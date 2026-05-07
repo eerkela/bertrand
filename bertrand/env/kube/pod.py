@@ -1,4 +1,5 @@
 """Wrappers for the Kubernetes Pod API and related pod-scoped operations."""
+
 from __future__ import annotations
 
 import asyncio
@@ -14,13 +15,15 @@ from ..config.core import KubeName
 from .api import Kube, _label_selector
 
 POD_MIRROR_ANNOTATION = "kubernetes.io/config.mirror"
-POD_SUPPORTED_CONTROLLER_KINDS = frozenset({
-    "ReplicationController",
-    "ReplicaSet",
-    "StatefulSet",
-    "DaemonSet",
-    "Job",
-})
+POD_SUPPORTED_CONTROLLER_KINDS = frozenset(
+    {
+        "ReplicationController",
+        "ReplicaSet",
+        "StatefulSet",
+        "DaemonSet",
+        "Job",
+    }
+)
 POD_ACTIVE_PHASES = frozenset({"Pending", "Running", "Unknown"})
 POD_TERMINAL_PHASES = frozenset({"Succeeded", "Failed"})
 POD_WAIT_POLL_INTERVAL_SECONDS = 0.5
@@ -29,6 +32,7 @@ POD_WAIT_POLL_INTERVAL_SECONDS = 0.5
 @dataclass(frozen=True)
 class Pod:
     """General-purpose wrapper around one Kubernetes Pod object."""
+
     obj: kubernetes.client.V1Pod
 
     @classmethod
@@ -79,8 +83,7 @@ class Pod:
             return None
         if not isinstance(payload, kubernetes.client.V1Pod):
             raise OSError(
-                f"malformed Kubernetes Pod payload for {name!r} in namespace "
-                f"{namespace!r}"
+                f"malformed Kubernetes Pod payload for {name!r} in namespace {namespace!r}"
             )
         return cls(obj=payload)
 
@@ -411,9 +414,7 @@ class Pod:
         """
         identity = self.identity
         if identity is None:
-            raise OSError(
-                "cannot wait for deletion of pod with missing metadata.name/namespace"
-            )
+            raise OSError("cannot wait for deletion of pod with missing metadata.name/namespace")
         namespace, name = identity
         if timeout <= 0:
             raise TimeoutError(f"timed out waiting for pod {namespace}/{name} deletion")
@@ -422,9 +423,7 @@ class Pod:
         while True:
             remaining = deadline - loop.time()
             if remaining <= 0:
-                raise TimeoutError(
-                    f"timed out waiting for pod {namespace}/{name} deletion"
-                )
+                raise TimeoutError(f"timed out waiting for pod {namespace}/{name} deletion")
             live = await self.refresh(kube, timeout=remaining)
             if live is None:
                 return
@@ -460,17 +459,13 @@ class Pod:
             )
         namespace, name = identity
         if timeout <= 0:
-            raise TimeoutError(
-                f"timed out waiting for pod {namespace}/{name} terminal phase"
-            )
+            raise TimeoutError(f"timed out waiting for pod {namespace}/{name} terminal phase")
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
         while True:
             remaining = deadline - loop.time()
             if remaining <= 0:
-                raise TimeoutError(
-                    f"timed out waiting for pod {namespace}/{name} terminal phase"
-                )
+                raise TimeoutError(f"timed out waiting for pod {namespace}/{name} terminal phase")
             live = await self.refresh(kube, timeout=remaining)
             if live is None:
                 raise OSError(
@@ -563,6 +558,4 @@ class Pod:
             payload,
             kubernetes.client.V1Status,
         ):
-            raise OSError(
-                f"malformed Kubernetes response while deleting pod {namespace}/{name}"
-            )
+            raise OSError(f"malformed Kubernetes response while deleting pod {namespace}/{name}")
