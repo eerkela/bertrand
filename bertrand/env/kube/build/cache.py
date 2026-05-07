@@ -127,11 +127,9 @@ class CacheVolume:
         storage_class: str | None,
         require_rwo: bool,
     ) -> None:
-        meta = pvc.obj.metadata
-        labels = (meta.labels or {}) if meta is not None else {}
-        spec = pvc.obj.spec
-        storage_class_name = spec.storage_class_name if spec is not None else None
-        access_modes = (spec.access_modes or []) if spec is not None else []
+        labels = pvc.labels
+        storage_class_name = pvc.storage_class_name
+        access_modes = pvc.access_modes
         if labels.get(BERTRAND_ENV) != "1" or labels.get(CACHE_VOLUME_ENV) != "1":
             raise OSError(
                 f"cluster PVC {claim_name!r} has missing required labels "
@@ -250,18 +248,12 @@ class CacheVolume:
             stale = [
                 pvc
                 for pvc in actual
-                if (
-                    pvc.obj.metadata is not None
-                    and pvc.obj.metadata.name
-                    and pvc.obj.metadata.name not in expected
-                    and pvc.obj.metadata.name not in active
-                )
+                if pvc.name and pvc.name not in expected and pvc.name not in active
             ]
             for pvc in stale:
-                metadata = pvc.obj.metadata
-                if metadata is None or not metadata.name:
+                claim_name = pvc.name
+                if not claim_name:
                     continue
-                claim_name = metadata.name
                 cls._assert_managed_cache(
                     pvc,
                     claim_name=claim_name,

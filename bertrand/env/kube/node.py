@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import builtins
+import os
+import platform
 from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
@@ -141,6 +143,59 @@ class Node:
             out.append(cls(obj=item))
         return out
 
+    @classmethod
+    async def local(cls, kube: Kube, *, timeout: float) -> Self:
+        """Resolve the Kubernetes Node for the current host.
+
+        Parameters
+        ----------
+        kube : Kube
+            Active Kubernetes API context.
+        timeout : float
+            Maximum request budget in seconds. If infinite, wait indefinitely.
+
+        Returns
+        -------
+        Node
+            Kubernetes node wrapper matching the current host identity.
+
+        Raises
+        ------
+        TimeoutError
+            If the node list request exceeds `timeout`.
+        OSError
+            If no node can be matched, the matched node has no name, or multiple
+            nodes make host identity ambiguous.
+        """
+        nodes = await cls.list(kube=kube, timeout=timeout)
+        if not nodes:
+            raise OSError("Kubernetes node list is empty")
+
+        hints = {
+            platform.node().strip(),
+            os.uname().nodename.strip() if hasattr(os, "uname") else "",
+            os.environ.get("HOSTNAME", "").strip(),
+        }
+        hints.discard("")
+
+        for node in nodes:
+            if node.matches_identity(hints):
+                if not node.name:
+                    raise OSError("matched local Kubernetes node is missing metadata.name")
+                return node
+
+        if len(nodes) == 1:
+            node = nodes[0]
+            if not node.name:
+                raise OSError("single Kubernetes node is missing metadata.name")
+            return node
+
+        names = ", ".join(sorted(node.name for node in nodes if node.name))
+        raise OSError(
+            "unable to map host identity to a unique Kubernetes node name; "
+            f"available nodes: {names}"
+        )
+
     @property
     def name(self) -> str:
         """
@@ -190,6 +245,51 @@ class Node:
             Value of `kubernetes.io/hostname`, or an empty string when missing.
         """
         return self.labels.get("kubernetes.io/hostname", "").strip()
+
+    @property
+    def addresses(self) -> tuple[str, ...]:
+        """
+        Returns
+        -------
+        tuple[str, ...]
+            All non-empty reported node addresses in Kubernetes API order.
+        """
+        status = self.obj.status
+        out: builtins.list[str] = []
+        for address in (status.addresses or []) if status is not None else []:
+            value = (address.address or "").strip()
+            if value:
+                out.append(value)
+        return tuple(out)
+
+    @property
+    def identity_values(self) -> frozenset[str]:
+        """
+        Returns
+        -------
+        frozenset[str]
+            Non-empty identity values that can refer to this node, including
+            `metadata.name`, the Kubernetes hostname label, and reported addresses.
+        """
+        values = {self.name, self.hostname, *self.addresses}
+        values.discard("")
+        return frozenset(values)
+
+    def matches_identity(self, hints: Collection[str]) -> bool:
+        """Check whether this node matches any host identity hint.
+
+        Parameters
+        ----------
+        hints : Collection[str]
+            Candidate host identity strings such as hostnames or IP addresses.
+
+        Returns
+        -------
+        bool
+            `True` when any non-empty hint matches this node's identity values.
+        """
+        normalized = {hint.strip() for hint in hints if hint and hint.strip()}
+        return bool(normalized & self.identity_values)
 
     @property
     def internal_ips(self) -> tuple[str, ...]:

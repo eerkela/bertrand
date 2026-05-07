@@ -7,6 +7,7 @@ import binascii
 import builtins
 from collections.abc import Collection, Mapping
 from dataclasses import dataclass
+from types import MappingProxyType
 from typing import Self
 
 from kubernetes import client as kube_client
@@ -279,6 +280,35 @@ class Secret:
         if not name:
             raise OSError("secret metadata is missing name")
         return name
+
+    @property
+    def labels(self) -> Mapping[str, str]:
+        """Return this secret's labels.
+
+        Returns
+        -------
+        Mapping[str, str]
+            Read-only view of `metadata.labels`, or an empty mapping when unavailable.
+        """
+        metadata = self.obj.metadata
+        if metadata is None or metadata.labels is None:
+            return MappingProxyType({})
+        return MappingProxyType(metadata.labels)
+
+    @property
+    def annotations(self) -> Mapping[str, str]:
+        """Return this secret's annotations.
+
+        Returns
+        -------
+        Mapping[str, str]
+            Read-only view of `metadata.annotations`, or an empty mapping when
+            unavailable.
+        """
+        metadata = self.obj.metadata
+        if metadata is None or metadata.annotations is None:
+            return MappingProxyType({})
+        return MappingProxyType(metadata.annotations)
 
     @property
     def value(self) -> bytes:

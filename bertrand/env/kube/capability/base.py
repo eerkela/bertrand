@@ -14,8 +14,6 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Literal, Self, cast
 
-from kubernetes import client as kube_client
-
 from ...config.core import KubeName, _check_kube_name, _check_uuid
 from ...run import BERTRAND_NAMESPACE
 from ..api import Kube
@@ -505,10 +503,14 @@ class Capability:
 
     @classmethod
     def _from_secret(cls, *, secret: Secret, expected: CapabilityRef | None = None) -> Self:
-        metadata = secret.obj.metadata or kube_client.V1ObjectMeta()
-        name = (metadata.name or "").strip() or (expected.name if expected is not None else "")
-        labels = metadata.labels or {}
-        annotations = metadata.annotations or {}
+        try:
+            name = secret.name
+        except OSError:
+            if expected is None:
+                raise
+            name = expected.name
+        labels = secret.labels
+        annotations = secret.annotations
 
         if labels.get(CAPABILITY_MANAGED_V1) != "true":
             raise OSError(

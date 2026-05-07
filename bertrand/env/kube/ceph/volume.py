@@ -52,17 +52,15 @@ class RepoVolume:
         storage_class: str | None,
         require_rwx: bool,
     ) -> None:
-        meta = pvc.obj.metadata
-        actual_name = meta.name if meta is not None else None
+        actual_name = pvc.name
         if actual_name != claim_name:
             raise OSError(
                 f"cluster PVC for repo {repo_id!r} has non-deterministic claim name "
                 f"{actual_name!r}, expected {claim_name!r}"
             )
-        labels = (meta.labels or {}) if meta is not None else {}
-        spec = pvc.obj.spec
-        storage_class_name = spec.storage_class_name if spec is not None else None
-        access_modes = (spec.access_modes or []) if spec is not None else []
+        labels = pvc.labels
+        storage_class_name = pvc.storage_class_name
+        access_modes = pvc.access_modes
         if labels.get(BERTRAND_ENV) != "1" or labels.get(REPO_VOLUME_ENV) != "1":
             raise OSError(
                 f"cluster PVC {claim_name!r} collides with Bertrand volume claim, but "
@@ -158,15 +156,10 @@ class RepoVolume:
             )
             out: list[Self] = []
             for pvc in pvcs:
-                meta = pvc.obj.metadata
-                labels = (meta.labels or {}) if meta is not None else {}
+                labels = pvc.labels
                 repo_id = labels.get(REPO_ID_ENV, "")
                 if not repo_id:
-                    raise OSError(
-                        "cluster PVC "
-                        f"{(meta.name if meta is not None else '')!r} is missing "
-                        f"label {REPO_ID_ENV!r}"
-                    )
+                    raise OSError(f"cluster PVC {pvc.name!r} is missing label {REPO_ID_ENV!r}")
                 repo_id = _check_uuid(repo_id)
                 cls._assert_managed_pvc(
                     pvc,
@@ -180,7 +173,7 @@ class RepoVolume:
             out.sort(
                 key=lambda m: (
                     m.repo_id,
-                    (m.pvc.obj.metadata.name if m.pvc.obj.metadata is not None else ""),
+                    m.pvc.name,
                 )
             )
             return out
@@ -206,8 +199,7 @@ class RepoVolume:
                     for claim_name in pod.persistent_volume_claim_names
                 }
                 active.discard("")
-                meta = self.pvc.obj.metadata
-                name = meta.name if meta is not None else None
+                name = self.pvc.name
                 if name in active:
                     raise OSError(
                         f"cannot delete repository volume {name!r} while "
@@ -220,9 +212,8 @@ class RepoVolume:
         """Resolve this repo claim's CephFS path from bound PVC/PV metadata."""
         if timeout <= 0:
             raise TimeoutError("timeout must be non-negative")
-        meta = self.pvc.obj.metadata
-        name = (meta.name or "") if meta is not None else ""
-        namespace = (meta.namespace or "") if meta is not None else ""
+        name = self.pvc.name
+        namespace = self.pvc.namespace
         if not name:
             raise OSError("cannot resolve Ceph path for PVC with missing metadata.name")
         if not namespace:

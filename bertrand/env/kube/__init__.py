@@ -14,6 +14,11 @@ from .api import (
     ensure_microk8s_kubeconfig,
 )
 from .build import (
+    BUILD_JOB_CONTEXT_MOUNT,
+    BUILD_JOB_CONTEXT_VOLUME,
+    BUILD_JOB_LABEL,
+    BUILD_JOB_LABEL_VALUE,
+    BUILD_JOB_TTL_SECONDS,
     BUILDKIT,
     BUILDKIT_ADDR,
     BUILDKIT_CONFIG_FILE,
@@ -31,6 +36,7 @@ from .build import (
     IMAGE_REPOSITORY_SIZE,
     IMAGES,
     BuildKit,
+    BuildKitImageBuild,
     CacheVolume,
     ImageRepository,
 )
@@ -62,6 +68,7 @@ from .ceph import (
 )
 from .config_map import ConfigMap
 from .deployment import Deployment
+from .job import Job
 from .node import Node
 from .pod import Pod
 from .secret import Secret
@@ -84,7 +91,13 @@ __all__ = [
     "BUILDKIT_IMAGE",
     "BUILDKIT_NAME",
     "BUILDKIT_PORT",
+    "BUILD_JOB_CONTEXT_MOUNT",
+    "BUILD_JOB_CONTEXT_VOLUME",
+    "BUILD_JOB_LABEL",
+    "BUILD_JOB_LABEL_VALUE",
+    "BUILD_JOB_TTL_SECONDS",
     "BuildKit",
+    "BuildKitImageBuild",
     "CacheVolume",
     "Capability",
     "CapabilityKind",
@@ -112,6 +125,7 @@ __all__ = [
     "IMAGE_REPOSITORY_PULL_HOST",
     "IMAGE_REPOSITORY_SERVICE_ADDR",
     "IMAGE_REPOSITORY_SIZE",
+    "Job",
     "Kube",
     "MountInfo",
     "Node",

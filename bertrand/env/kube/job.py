@@ -1,0 +1,561 @@
+"""Wrappers for the Kubernetes Job API and related execution operations."""
+
+from __future__ import annotations
+
+import asyncio
+import builtins
+from collections.abc import Collection, Mapping
+from dataclasses import dataclass
+from datetime import datetime
+from types import MappingProxyType
+from typing import Literal, Self
+
+import kubernetes
+
+from .api import ContainerSpec, Kube, VolumeSpec, _label_selector
+
+JOB_WAIT_POLL_INTERVAL_SECONDS = 0.5
+type RestartPolicy = Literal["Never", "OnFailure"]
+
+
+@dataclass(frozen=True)
+class Job:
+    """General-purpose wrapper around one Kubernetes Job object.
+
+    Parameters
+    ----------
+    obj : kubernetes.client.V1Job
+        Typed Kubernetes Job payload returned by the cluster API.
+
+    Notes
+    -----
+    Jobs are one-off execution records. The public API intentionally exposes
+    `create()` instead of `upsert()` because Job pod templates are effectively
+    immutable once submitted.
+    """
+
+    obj: kubernetes.client.V1Job
+
+    @classmethod
+    async def get(
+        cls,
+        kube: Kube,
+        *,
+        namespace: str,
+        name: str,
+        timeout: float,
+    ) -> Self | None:
+        """Read one Kubernetes Job by name.
+
+        Parameters
+        ----------
+        kube : Kube
+            Active Kubernetes API context.
+        namespace : str
+            Namespace that owns the Job.
+        name : str
+            Job name to read.
+        timeout : float
+            Maximum request budget in seconds. If infinite, wait indefinitely.
+
+        Returns
+        -------
+        Job | None
+            Wrapped Kubernetes Job, or `None` if it does not exist.
+
+        Raises
+        ------
+        TimeoutError
+            If the Kubernetes request exceeds `timeout`.
+        OSError
+            If Kubernetes returns malformed data or the API call fails.
+        """
+        payload = await kube.run(
+            lambda request_timeout: kube.batch.read_namespaced_job(
+                name=name,
+                namespace=namespace,
+                _request_timeout=request_timeout,
+            ),
+            timeout=timeout,
+            context=f"failed to read Job {name!r} in namespace {namespace!r}",
+        )
+        if payload is None:
+            return None
+        if not isinstance(payload, kubernetes.client.V1Job):
+            raise OSError(
+                f"malformed Kubernetes Job payload for {name!r} in namespace {namespace!r}"
+            )
+        return cls(obj=payload)
+
+    @classmethod
+    async def list(
+        cls,
+        kube: Kube,
+        *,
+        timeout: float,
+        namespaces: Collection[str] | None = None,
+        labels: Mapping[str, str] | None = None,
+    ) -> builtins.list[Self]:
+        """List Kubernetes Jobs with optional namespace and label filtering.
+
+        Parameters
+        ----------
+        kube : Kube
+            Active Kubernetes API context.
+        timeout : float
+            Maximum request budget in seconds. If infinite, wait indefinitely.
+        namespaces : Collection[str] | None, optional
+            Optional namespace filters. `None` queries all namespaces. Otherwise,
+            entries are trimmed, deduplicated, and queried individually.
+        labels : Mapping[str, str] | None, optional
+            Optional label selector key/value pairs.
+
+        Returns
+        -------
+        list[Job]
+            Wrapped Kubernetes Jobs matching the requested filters.
+
+        Raises
+        ------
+        TimeoutError
+            If any Kubernetes request exceeds `timeout`.
+        OSError
+            If Kubernetes returns malformed data or a list call fails.
+        """
+        label_selector = _label_selector(labels)
+        payloads: builtins.list[kubernetes.client.V1JobList] = []
+
+        if namespaces is None:
+            payload = await kube.run(
+                lambda request_timeout: kube.batch.list_job_for_all_namespaces(
+                    label_selector=label_selector,
+                    _request_timeout=request_timeout,
+                ),
+                timeout=timeout,
+                context="failed to list Jobs across all namespaces",
+            )
+            if payload is not None:
+                payloads.append(payload)
+        else:
+            normalized = {namespace.strip() for namespace in namespaces}
+            normalized.discard("")
+            if not normalized:
+                return []
+            for namespace in sorted(normalized):
+                payload = await kube.run(
+                    lambda request_timeout, namespace=namespace: kube.batch.list_namespaced_job(
+                        namespace=namespace,
+                        label_selector=label_selector,
+                        _request_timeout=request_timeout,
+                    ),
+                    timeout=timeout,
+                    context=f"failed to list Jobs in namespace {namespace!r}",
+                )
+                if payload is not None:
+                    payloads.append(payload)
+
+        out: builtins.list[Self] = []
+        for payload in payloads:
+            if not isinstance(payload, kubernetes.client.V1JobList):
+                raise OSError("malformed Kubernetes Job list payload")
+            for item in payload.items or []:
+                if not isinstance(item, kubernetes.client.V1Job):
+                    raise OSError("malformed Kubernetes Job entry in list payload")
+                out.append(cls(obj=item))
+        return out
+
+    @staticmethod
+    def _manifest(
+        *,
+        namespace: str,
+        name: str,
+        labels: Mapping[str, str],
+        containers: Collection[ContainerSpec],
+        volumes: Collection[VolumeSpec],
+        restart_policy: RestartPolicy,
+        backoff_limit: int,
+        ttl_seconds_after_finished: int | None,
+        automount_service_account_token: bool,
+        annotations: Mapping[str, str] | None,
+        node_selector: Mapping[str, str] | None,
+        node_name: str | None,
+    ) -> dict[str, object]:
+        template_spec: dict[str, object] = {
+            "automountServiceAccountToken": automount_service_account_token,
+            "restartPolicy": restart_policy,
+            "containers": [container.manifest() for container in containers],
+            "volumes": [volume.manifest() for volume in volumes],
+        }
+        if node_selector:
+            template_spec["nodeSelector"] = dict(node_selector)
+        if node_name is not None:
+            template_spec["nodeName"] = node_name
+
+        spec: dict[str, object] = {
+            "backoffLimit": backoff_limit,
+            "template": {
+                "metadata": {"labels": dict(labels)},
+                "spec": template_spec,
+            },
+        }
+        if ttl_seconds_after_finished is not None:
+            spec["ttlSecondsAfterFinished"] = ttl_seconds_after_finished
+
+        return {
+            "apiVersion": "batch/v1",
+            "kind": "Job",
+            "metadata": {
+                "name": name,
+                "namespace": namespace,
+                "labels": dict(labels),
+                "annotations": dict(annotations or {}),
+            },
+            "spec": spec,
+        }
+
+    @classmethod
+    async def create(
+        cls,
+        kube: Kube,
+        *,
+        namespace: str,
+        name: str,
+        labels: Mapping[str, str],
+        containers: Collection[ContainerSpec],
+        volumes: Collection[VolumeSpec],
+        timeout: float,
+        restart_policy: RestartPolicy = "Never",
+        backoff_limit: int = 0,
+        ttl_seconds_after_finished: int | None = 3600,
+        automount_service_account_token: bool = False,
+        annotations: Mapping[str, str] | None = None,
+        node_selector: Mapping[str, str] | None = None,
+        node_name: str | None = None,
+    ) -> Self:
+        """Create one Kubernetes Job from intent-level fields.
+
+        Parameters
+        ----------
+        kube : Kube
+            Active Kubernetes API context.
+        namespace : str
+            Namespace that owns the Job.
+        name : str
+            Job name to create.
+        labels : Mapping[str, str]
+            Labels to apply to the Job and pod template.
+        containers : Collection[ContainerSpec]
+            Pod containers to render into the Job template.
+        volumes : Collection[VolumeSpec]
+            Pod volumes to render into the Job template.
+        timeout : float
+            Maximum request budget in seconds. If infinite, wait indefinitely.
+        restart_policy : {"Never", "OnFailure"}, optional
+            Pod restart policy.
+        backoff_limit : int, optional
+            Kubernetes Job retry limit.
+        ttl_seconds_after_finished : int | None, optional
+            Optional TTL controller retention period for finished Jobs.
+        automount_service_account_token : bool, optional
+            Whether pods should automount the default service-account token.
+        annotations : Mapping[str, str] | None, optional
+            Annotations to apply to `metadata.annotations`.
+        node_selector : Mapping[str, str] | None, optional
+            Optional pod node selector.
+        node_name : str | None, optional
+            Optional exact node name for host-local execution.
+
+        Returns
+        -------
+        Job
+            Wrapped created Job.
+
+        Raises
+        ------
+        TimeoutError
+            If the Kubernetes request exceeds `timeout`.
+        OSError
+            If Kubernetes create fails or returns malformed data.
+        ValueError
+            If retry or TTL settings are invalid.
+        """
+        namespace = namespace.strip()
+        name = name.strip()
+        if not namespace or not name:
+            raise OSError("Job create requires non-empty namespace and name")
+        if backoff_limit < 0:
+            raise ValueError("Job backoff limit cannot be negative")
+        if ttl_seconds_after_finished is not None and ttl_seconds_after_finished < 0:
+            raise ValueError("Job TTL cannot be negative")
+
+        manifest = cls._manifest(
+            namespace=namespace,
+            name=name,
+            labels=labels,
+            containers=containers,
+            volumes=volumes,
+            restart_policy=restart_policy,
+            backoff_limit=backoff_limit,
+            ttl_seconds_after_finished=ttl_seconds_after_finished,
+            automount_service_account_token=automount_service_account_token,
+            annotations=annotations,
+            node_selector=node_selector,
+            node_name=node_name,
+        )
+        created = await kube.run(
+            lambda request_timeout: kube.batch.create_namespaced_job(
+                namespace=namespace,
+                body=manifest,
+                _request_timeout=request_timeout,
+            ),
+            timeout=timeout,
+            context=f"failed to create Job {namespace}/{name}",
+        )
+        if not isinstance(created, kubernetes.client.V1Job):
+            raise OSError(f"malformed Kubernetes Job payload while creating {name!r}")
+        return cls(obj=created)
+
+    @property
+    def name(self) -> str:
+        """
+        Returns
+        -------
+        str
+            Trimmed `metadata.name`, or an empty string when unavailable.
+        """
+        metadata = self.obj.metadata
+        return (metadata.name or "").strip() if metadata is not None else ""
+
+    @property
+    def namespace(self) -> str:
+        """
+        Returns
+        -------
+        str
+            Trimmed `metadata.namespace`, or an empty string when unavailable.
+        """
+        metadata = self.obj.metadata
+        return (metadata.namespace or "").strip() if metadata is not None else ""
+
+    @property
+    def labels(self) -> Mapping[str, str]:
+        """
+        Returns
+        -------
+        Mapping[str, str]
+            Read-only view of `metadata.labels`, or an empty mapping when unavailable.
+        """
+        metadata = self.obj.metadata
+        if metadata is None or metadata.labels is None:
+            return MappingProxyType({})
+        return MappingProxyType(metadata.labels)
+
+    @property
+    def active(self) -> int:
+        """
+        Returns
+        -------
+        int
+            Active pod count, or zero when unavailable.
+        """
+        status = self.obj.status
+        return int(status.active or 0) if status is not None else 0
+
+    @property
+    def succeeded(self) -> int:
+        """
+        Returns
+        -------
+        int
+            Succeeded pod count, or zero when unavailable.
+        """
+        status = self.obj.status
+        return int(status.succeeded or 0) if status is not None else 0
+
+    @property
+    def failed(self) -> int:
+        """
+        Returns
+        -------
+        int
+            Failed pod count, or zero when unavailable.
+        """
+        status = self.obj.status
+        return int(status.failed or 0) if status is not None else 0
+
+    @property
+    def completion_time(self) -> datetime | None:
+        """
+        Returns
+        -------
+        datetime | None
+            Job completion timestamp, if reported by Kubernetes.
+        """
+        status = self.obj.status
+        return status.completion_time if status is not None else None
+
+    @property
+    def failed_condition(self) -> str | None:
+        """
+        Returns
+        -------
+        str | None
+            Failure condition message or reason, if the Job has failed.
+        """
+        status = self.obj.status
+        for condition in (status.conditions or []) if status is not None else []:
+            if condition.type == "Failed" and condition.status == "True":
+                return condition.message or condition.reason or "Job failed"
+        return None
+
+    async def refresh(self, kube: Kube, *, timeout: float) -> Self | None:
+        """Re-read this Job by identity.
+
+        Parameters
+        ----------
+        kube : Kube
+            Active Kubernetes API context.
+        timeout : float
+            Maximum request budget in seconds. If infinite, wait indefinitely.
+
+        Returns
+        -------
+        Job | None
+            Fresh wrapper for the same Job, or `None` if it no longer exists.
+
+        Raises
+        ------
+        OSError
+            If this wrapper does not contain enough metadata to identify the Job,
+            or if Kubernetes returns malformed data.
+        TimeoutError
+            If the Kubernetes request exceeds `timeout`.
+        """
+        namespace = self.namespace
+        name = self.name
+        if not namespace or not name:
+            raise OSError("cannot refresh Job with missing metadata.name/namespace")
+        return await type(self).get(
+            kube,
+            namespace=namespace,
+            name=name,
+            timeout=timeout,
+        )
+
+    async def delete(self, kube: Kube, *, timeout: float) -> None:
+        """Delete this Job from the cluster.
+
+        Parameters
+        ----------
+        kube : Kube
+            Active Kubernetes API context.
+        timeout : float
+            Maximum request budget in seconds. If infinite, wait indefinitely.
+
+        Raises
+        ------
+        OSError
+            If this wrapper is missing identity, the delete request fails, or
+            Kubernetes returns malformed data.
+        TimeoutError
+            If the Kubernetes request exceeds `timeout`.
+        """
+        namespace = self.namespace
+        name = self.name
+        if not namespace or not name:
+            raise OSError("cannot delete Job with missing metadata.name/namespace")
+        payload = await kube.run(
+            lambda request_timeout: kube.batch.delete_namespaced_job(
+                name=name,
+                namespace=namespace,
+                body=kubernetes.client.V1DeleteOptions(propagation_policy="Background"),
+                _request_timeout=request_timeout,
+            ),
+            timeout=timeout,
+            context=f"failed to delete Job {namespace}/{name}",
+        )
+        if payload is not None and not isinstance(payload, kubernetes.client.V1Status):
+            raise OSError(f"malformed Kubernetes response while deleting Job {namespace}/{name}")
+
+    async def wait_deleted(self, kube: Kube, *, timeout: float) -> None:
+        """Wait until this Job is deleted from the cluster.
+
+        Parameters
+        ----------
+        kube : Kube
+            Active Kubernetes API context.
+        timeout : float
+            Maximum wait time in seconds. Must be positive.
+
+        Raises
+        ------
+        OSError
+            If this wrapper does not contain enough metadata to identify the Job,
+            or if a refresh request returns malformed data.
+        TimeoutError
+            If the Job still exists when `timeout` expires.
+        """
+        namespace = self.namespace
+        name = self.name
+        if not namespace or not name:
+            raise OSError("cannot wait for Job deletion with missing identity")
+        if timeout <= 0:
+            raise TimeoutError(f"timed out waiting for Job {namespace}/{name} deletion")
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        while True:
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                raise TimeoutError(f"timed out waiting for Job {namespace}/{name} deletion")
+            live = await self.refresh(kube, timeout=remaining)
+            if live is None:
+                return
+            await asyncio.sleep(min(JOB_WAIT_POLL_INTERVAL_SECONDS, remaining))
+
+    async def wait_complete(self, kube: Kube, *, timeout: float) -> Self:
+        """Wait until this Job succeeds or fails.
+
+        Parameters
+        ----------
+        kube : Kube
+            Active Kubernetes API context.
+        timeout : float
+            Maximum wait time in seconds. Must be positive.
+
+        Returns
+        -------
+        Job
+            Fresh wrapper whose status reports at least one succeeded pod.
+
+        Raises
+        ------
+        OSError
+            If this wrapper is missing identity, the Job disappears, or the Job
+            reports a terminal failure condition.
+        TimeoutError
+            If the Job does not complete before `timeout`.
+        """
+        namespace = self.namespace
+        name = self.name
+        if not namespace or not name:
+            raise OSError("cannot wait for Job completion with missing identity")
+        if timeout <= 0:
+            raise TimeoutError(f"timed out waiting for Job {namespace}/{name} completion")
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        current: Self = self
+        while True:
+            if current.succeeded > 0:
+                return current
+            failed_condition = current.failed_condition
+            if failed_condition is not None:
+                raise OSError(f"Job {namespace}/{name} failed: {failed_condition}")
+
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                raise TimeoutError(f"timed out waiting for Job {namespace}/{name} completion")
+            await asyncio.sleep(min(JOB_WAIT_POLL_INTERVAL_SECONDS, remaining))
+            refreshed = await current.refresh(kube, timeout=deadline - loop.time())
+            if refreshed is None:
+                raise OSError(f"Job {namespace}/{name} disappeared while waiting for completion")
+            current = refreshed

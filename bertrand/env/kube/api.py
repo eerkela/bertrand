@@ -171,6 +171,8 @@ class Kube:
         Apps v1 API surface for Deployments and related workload resources.
     custom : kubernetes.client.CustomObjectsApi
         Custom object API surface for CRD interactions.
+    batch : kubernetes.client.BatchV1Api
+        Batch v1 API surface for Jobs and related execution resources.
     storage : kubernetes.client.StorageV1Api
         Storage v1 API surface for StorageClass resources.
     """
@@ -180,6 +182,7 @@ class Kube:
     core: kubernetes.client.CoreV1Api = field(init=False, repr=False)
     apps: kubernetes.client.AppsV1Api = field(init=False, repr=False)
     custom: kubernetes.client.CustomObjectsApi = field(init=False, repr=False)
+    batch: kubernetes.client.BatchV1Api = field(init=False, repr=False)
     storage: kubernetes.client.StorageV1Api = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -187,6 +190,7 @@ class Kube:
             self.core = kubernetes.client.CoreV1Api(self.client)
             self.apps = kubernetes.client.AppsV1Api(self.client)
             self.custom = kubernetes.client.CustomObjectsApi(self.client)
+            self.batch = kubernetes.client.BatchV1Api(self.client)
             self.storage = kubernetes.client.StorageV1Api(self.client)
         except Exception:
             try:
@@ -589,6 +593,8 @@ class VolumeSpec:
     config_map_name: str | None = None
     config_map_optional: bool | None = None
     persistent_volume_claim: str | None = None
+    host_path_path: str | None = None
+    host_path_type: str | None = None
 
     @classmethod
     def empty_dir(
@@ -615,6 +621,17 @@ class VolumeSpec:
         """Create a PVC-backed volume specification."""
         return cls(name=name, persistent_volume_claim=claim_name)
 
+    @classmethod
+    def host_path(
+        cls,
+        name: str,
+        *,
+        path: str | Path,
+        host_path_type: str | None = None,
+    ) -> Self:
+        """Create a hostPath-backed volume specification."""
+        return cls(name=name, host_path_path=str(path), host_path_type=host_path_type)
+
     def manifest(self) -> dict[str, object]:
         """Render this volume as a Kubernetes manifest."""
         kinds = sum(
@@ -623,6 +640,7 @@ class VolumeSpec:
                 self.empty_dir_config,
                 self.config_map_name,
                 self.persistent_volume_claim,
+                self.host_path_path,
             )
         )
         if kinds != 1:
@@ -638,4 +656,9 @@ class VolumeSpec:
             payload["configMap"] = config_map
         elif self.persistent_volume_claim is not None:
             payload["persistentVolumeClaim"] = {"claimName": self.persistent_volume_claim}
+        elif self.host_path_path is not None:
+            host_path: dict[str, object] = {"path": self.host_path_path}
+            if self.host_path_type is not None:
+                host_path["type"] = self.host_path_type
+            payload["hostPath"] = host_path
         return payload
