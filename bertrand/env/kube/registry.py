@@ -28,7 +28,7 @@ from ..run import (
     atomic_write_text,
     nerdctl_ids,
 )
-from .container_old import Container
+from .container import Container
 from .image import Image
 
 REGISTRY_FILE = STATE_DIR / "registry.json"

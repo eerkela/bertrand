@@ -1,61 +1,20 @@
-"""Secret and SSH build-flag resolution for Kubernetes capabilities."""
+"""Build-time secret and SSH helpers for Secret-backed capabilities."""
 
 from __future__ import annotations
 
 import builtins
-import hashlib
 import shutil
 import sys
 import uuid
 from pathlib import Path
 from typing import Literal
 
-from kubernetes import client as kube_client
-
 from ...config.core import KubeName, _check_kube_name, _check_uuid
-from ...run import BERTRAND_NAMESPACE, CACHE_DIR, atomic_write_bytes
+from ...run import CACHE_DIR, atomic_write_bytes
 from ..api import Kube
-from ..secret import Secret
+from .base import Capability
 
 CAPABILITY_DIR = CACHE_DIR / "capabilities"
-CAPABILITY_MANAGED_V1 = "bertrand.dev/capability-managed.v1"
-CAPABILITY_ENV_ID_V1 = "bertrand.dev/capability-env-id.v1"
-CAPABILITY_ID_V1 = "bertrand.dev/capability-id.v1"
-
-
-def _secret_name(id: KubeName, env_id: str | None) -> KubeName:
-    id = _check_kube_name(id)
-    if env_id is not None:
-        env_id = _check_uuid(env_id)
-
-    parts: tuple[str, ...]
-    if env_id is None:
-        parts = ("shared", id)
-    else:
-        parts = (env_id, id)
-
-    # include lengths before each token to keep hash input boundaries explicit
-    digest = hashlib.sha256()
-    for part in parts:
-        encoded = part.encode("utf-8")
-        digest.update(len(encoded).to_bytes(8, "big"))
-        digest.update(encoded)
-
-    return f"bertrand-secret-{digest.hexdigest()}"
-
-
-def _build_flag(
-    secret: Secret,
-    *,
-    mode: Literal["secret", "ssh"],
-    id: KubeName,
-    staged_dir: Path,
-) -> tuple[str, str]:
-    validated_id = _check_kube_name(id)
-    target = _stage_secret_payload(staged=staged_dir, id=validated_id, payload=secret.value)
-    if mode == "secret":
-        return "--secret", f"id={validated_id},src={target}"
-    return "--ssh", f"id={validated_id},src={target}"
 
 
 async def build_secret_flags(
@@ -82,17 +41,17 @@ async def build_secret_flags(
     -------
     tuple[tuple[str, ...], Path | None]
         A tuple containing emitted CLI args and the staged payload directory.
-        If no secret/ssh requests exist, returns `((), None)`.
+        If no secret or SSH requests exist, returns `((), None)`.
 
     Raises
     ------
     TimeoutError
         If any Kubernetes request exceeds `timeout`.
     OSError
-        If required secrets are missing, managed metadata is invalid, or payloads
-        are malformed.
+        If required capabilities are missing, managed metadata is invalid, or
+        payload staging fails.
     ValueError
-        If `env_id` is not a valid UUID.
+        If `env_id` or a capability ID is invalid.
     """
     secrets = tuple(getattr(build, "secrets", ()))
     ssh = tuple(getattr(build, "ssh", ()))
@@ -162,91 +121,41 @@ async def _resolve_build_flag(
     timeout: float,
     staged: Path,
 ) -> builtins.list[str]:
-    secret = await _resolve_secret(
-        kube=kube,
-        id=id,
+    validated_id = _check_kube_name(id)
+    capability = await Capability.resolve(
+        kube,
+        kind=mode,
+        id=validated_id,
         env_id=env_id,
+        required=False,
         timeout=timeout,
     )
-    if secret is None:
+    if capability is None:
         if required:
             if mode == "secret":
-                raise OSError(f"missing required secret: {id!r}")
-            raise OSError(f"missing required ssh credential: {id!r}")
+                raise OSError(f"missing required secret: {validated_id!r}")
+            raise OSError(f"missing required ssh credential: {validated_id!r}")
         if mode == "secret":
             print(
-                f"bertrand: optional secret {id!r} was not found; continuing without it",
+                f"bertrand: optional secret {validated_id!r} was not found; continuing without it",
                 file=sys.stderr,
             )
         else:
             print(
-                f"bertrand: optional ssh credential {id!r} was not found; continuing without it",
+                f"bertrand: optional ssh credential {validated_id!r} was not found; "
+                "continuing without it",
                 file=sys.stderr,
             )
         return []
 
-    return builtins.list(_build_flag(secret, mode=mode, id=id, staged_dir=staged))
-
-
-async def _resolve_secret(
-    kube: Kube,
-    *,
-    id: KubeName,
-    env_id: str,
-    timeout: float,
-) -> Secret | None:
-    # env scope takes precedence over shared scope
-    for scope in (env_id, None):
-        name = _secret_name(id=id, env_id=scope)
-        secret = await Secret.get(
-            kube=kube,
-            namespace=BERTRAND_NAMESPACE,
-            timeout=timeout,
-            name=name,
-        )
-        if secret is None:
-            continue
-        _assert_managed_secret(
-            secret=secret,
-            expected_name=name,
-            id=id,
-            env_id=scope,
-        )
-        return secret
-    return None
-
-
-def _assert_managed_secret(
-    *,
-    secret: Secret,
-    expected_name: KubeName,
-    id: KubeName,
-    env_id: str | None,
-) -> None:
-    metadata = secret.obj.metadata or kube_client.V1ObjectMeta()
-    name = (metadata.name or "").strip() or expected_name
-    labels = metadata.labels or {}
-    annotations = metadata.annotations or {}
-
-    if labels.get(CAPABILITY_MANAGED_V1) != "true":
-        raise OSError(
-            f"cluster secret {name!r} collides with a Bertrand secret request but is unmanaged"
-        )
-    label_env = labels.get(CAPABILITY_ENV_ID_V1)
-    expected_env = env_id or "shared"
-    if label_env != expected_env:
-        raise OSError(
-            f"cluster secret {name!r} has mismatched {CAPABILITY_ENV_ID_V1!r}: "
-            f"expected {expected_env!r}, got {label_env!r}"
-        )
-    annotation_id = annotations.get(CAPABILITY_ID_V1)
-    if annotation_id is None:
-        raise OSError(f"cluster secret {name!r} is missing annotation {CAPABILITY_ID_V1!r}")
-    if _check_kube_name(annotation_id) != _check_kube_name(id):
-        raise OSError(
-            f"cluster secret {name!r} has mismatched {CAPABILITY_ID_V1!r}: "
-            f"expected {id!r}, got {annotation_id!r}"
-        )
+    target = _stage_secret_payload(
+        staged=staged,
+        id=validated_id,
+        payload=capability.payload,
+    )
+    if mode == "secret":
+        return ["--secret", f"id={validated_id},src={target}"]
+    return ["--ssh", f"id={validated_id},src={target}"]
 
 
 def _stage_secret_payload(

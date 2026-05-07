@@ -20,7 +20,7 @@ from ..run import (
     nerdctl_ids,
 )
 from .api import Kube
-from .container_old import Container
+from .container import Container
 from .device import DeviceConfigMap
 from .image import Image, image_args
 from .registry import VERSION, EnvironmentMetadata, Registry, write_metadata

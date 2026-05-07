@@ -35,8 +35,12 @@ from .build import (
     ImageRepository,
 )
 from .capability import (
-    DeviceConfigMap,
+    Capability,
+    CapabilityKind,
+    CapabilityRef,
+    CapabilityScope,
     DevicePermission,
+    build_device_flags,
     build_secret_flags,
     cleanup_secret_staged,
 )
@@ -56,7 +60,7 @@ from .ceph import (
     run_ceph_capacity_agent,
     run_ceph_capacity_controller,
 )
-from .configmap import ConfigMap
+from .config_map import ConfigMap
 from .deployment import Deployment
 from .node import Node
 from .pod import Pod
@@ -82,6 +86,10 @@ __all__ = [
     "BUILDKIT_PORT",
     "BuildKit",
     "CacheVolume",
+    "Capability",
+    "CapabilityKind",
+    "CapabilityRef",
+    "CapabilityScope",
     "CephStorageAction",
     "CephStorageActionSpec",
     "CephStorageActionStatus",
@@ -93,7 +101,6 @@ __all__ = [
     "ConfigMap",
     "DEFAULT_VOLUME_SIZE",
     "DevicePermission",
-    "DeviceConfigMap",
     "Deployment",
     "EnvVarSpec",
     "ImageRepository",
@@ -121,6 +128,7 @@ __all__ = [
     "VolumeMountSpec",
     "VolumeSpec",
     "ceph_capacity_controlplane_image_build",
+    "build_device_flags",
     "build_secret_flags",
     "cleanup_secret_staged",
     "ensure_ceph_capacity_controlplane",

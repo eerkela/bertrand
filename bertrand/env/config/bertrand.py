@@ -970,9 +970,9 @@ class Bertrand(Resource):
                     examples=["gpu", "cuda0"],
                     description=
                         "Host-agnostic capability ID for a build-time device "
-                        "capability.  The ID is resolved using a Kubernetes ConfigMap in "
+                        "capability.  The ID is resolved using a Kubernetes Secret in "
                         "the \"bertrand\" namespace, which provides the host device "
-                        "endpoint.",
+                        "endpoint without exposing it through project configuration.",
                 )]
                 required: Annotated[bool, Field(
                     default=True,

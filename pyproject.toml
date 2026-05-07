@@ -182,6 +182,11 @@ unused-ignore-comment = "warn"
 [tool.ty.terminal]
 error-on-warning = false
 
+[tool.pyright]
+pythonVersion = "3.12"
+venvPath = "."
+venv = "venv"
+
 # Temporary legacy settings during mypy -> ty transition.
 [tool.mypy]
 allow_untyped_globals = false        # force globals to be typed
