@@ -11,7 +11,7 @@ from typing import Self
 
 import kubernetes
 
-from .api import ContainerSpec, Kube, VolumeSpec, _label_selector
+from .api import ContainerSpec, Kube, VolumeSpec, _label_selector, _pod_template_manifest
 
 DEPLOYMENT_WAIT_POLL_INTERVAL_SECONDS = 0.5
 
@@ -175,7 +175,12 @@ class Deployment:
         replicas: int,
         automount_service_account_token: bool,
         annotations: Mapping[str, str] | None,
+        service_account_name: str | None,
+        node_selector: Mapping[str, str] | None,
+        host_pid: bool | None,
     ) -> dict[str, object]:
+        template_labels = dict(labels)
+        template_labels.update(selector)
         return {
             "apiVersion": "apps/v1",
             "kind": "Deployment",
@@ -188,14 +193,15 @@ class Deployment:
             "spec": {
                 "replicas": replicas,
                 "selector": {"matchLabels": dict(selector)},
-                "template": {
-                    "metadata": {"labels": dict(labels)},
-                    "spec": {
-                        "automountServiceAccountToken": automount_service_account_token,
-                        "containers": [container.manifest() for container in containers],
-                        "volumes": [volume.manifest() for volume in volumes],
-                    },
-                },
+                "template": _pod_template_manifest(
+                    labels=template_labels,
+                    containers=containers,
+                    volumes=volumes,
+                    automount_service_account_token=automount_service_account_token,
+                    service_account_name=service_account_name,
+                    node_selector=node_selector,
+                    host_pid=host_pid,
+                ),
             },
         }
 
@@ -214,6 +220,9 @@ class Deployment:
         replicas: int = 1,
         automount_service_account_token: bool = False,
         annotations: Mapping[str, str] | None = None,
+        service_account_name: str | None = None,
+        node_selector: Mapping[str, str] | None = None,
+        host_pid: bool | None = None,
     ) -> Self:
         """Create or patch one Kubernetes Deployment from intent-level fields.
 
@@ -241,6 +250,12 @@ class Deployment:
             Whether pods should automount the default service-account token.
         annotations : Mapping[str, str] | None, optional
             Annotations to apply to `metadata.annotations`.
+        service_account_name : str | None, optional
+            Optional pod service account name.
+        node_selector : Mapping[str, str] | None, optional
+            Optional pod node selector.
+        host_pid : bool | None, optional
+            Optional pod `hostPID` value.
 
         Returns
         -------
@@ -269,6 +284,9 @@ class Deployment:
             replicas=replicas,
             automount_service_account_token=automount_service_account_token,
             annotations=annotations,
+            service_account_name=service_account_name,
+            node_selector=node_selector,
+            host_pid=host_pid,
         )
 
         try:

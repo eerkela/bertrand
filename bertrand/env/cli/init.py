@@ -35,7 +35,6 @@ from ..kube import (
     CLUSTER_REGISTRY_READY_LABEL,
     CLUSTER_REGISTRY_READY_VALUE,
     IMAGES,
-    BuildKitImageBuild,
     Kube,
     MountInfo,
     Node,
@@ -1343,14 +1342,7 @@ async def bertrand_init(
         with await Kube.host(timeout=deadline - loop.time()) as kube:
             await _converge_build_runtime(kube, timeout=deadline - loop.time())
             autoscaler_build = ceph_capacity_controlplane_image_build()
-            image_build = BuildKitImageBuild(
-                image=autoscaler_build.image,
-                dockerfile=autoscaler_build.dockerfile,
-                context_copies=autoscaler_build.context_copies,
-                context_prefix=autoscaler_build.context_prefix,
-                build_labels=autoscaler_build.build_labels,
-            )
-            autoscaler_image = await image_build.publish(
+            autoscaler_image = await autoscaler_build.publish(
                 kube,
                 timeout=deadline - loop.time(),
             )

@@ -173,6 +173,10 @@ class Kube:
         Custom object API surface for CRD interactions.
     batch : kubernetes.client.BatchV1Api
         Batch v1 API surface for Jobs and related execution resources.
+    apiextensions : kubernetes.client.ApiextensionsV1Api
+        API extensions v1 surface for CRDs.
+    rbac : kubernetes.client.RbacAuthorizationV1Api
+        RBAC authorization v1 API surface.
     storage : kubernetes.client.StorageV1Api
         Storage v1 API surface for StorageClass resources.
     """
@@ -183,6 +187,8 @@ class Kube:
     apps: kubernetes.client.AppsV1Api = field(init=False, repr=False)
     custom: kubernetes.client.CustomObjectsApi = field(init=False, repr=False)
     batch: kubernetes.client.BatchV1Api = field(init=False, repr=False)
+    apiextensions: kubernetes.client.ApiextensionsV1Api = field(init=False, repr=False)
+    rbac: kubernetes.client.RbacAuthorizationV1Api = field(init=False, repr=False)
     storage: kubernetes.client.StorageV1Api = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -191,6 +197,8 @@ class Kube:
             self.apps = kubernetes.client.AppsV1Api(self.client)
             self.custom = kubernetes.client.CustomObjectsApi(self.client)
             self.batch = kubernetes.client.BatchV1Api(self.client)
+            self.apiextensions = kubernetes.client.ApiextensionsV1Api(self.client)
+            self.rbac = kubernetes.client.RbacAuthorizationV1Api(self.client)
             self.storage = kubernetes.client.StorageV1Api(self.client)
         except Exception:
             try:
@@ -459,11 +467,25 @@ class EnvVarSpec:
     """Intent-level Kubernetes container environment variable."""
 
     name: str
-    value: str
+    value: str | None = None
+    field_path: str | None = None
+
+    @classmethod
+    def field_ref(cls, name: str, *, field_path: str) -> Self:
+        """Create an environment variable from a Kubernetes field reference."""
+        return cls(name=name, field_path=field_path)
 
     def manifest(self) -> dict[str, object]:
         """Render this environment variable as a Kubernetes manifest."""
-        return {"name": self.name, "value": self.value}
+        sources = sum(value is not None for value in (self.value, self.field_path))
+        if sources != 1:
+            raise ValueError("environment variable must define exactly one source")
+        payload: dict[str, object] = {"name": self.name}
+        if self.value is not None:
+            payload["value"] = self.value
+        elif self.field_path is not None:
+            payload["valueFrom"] = {"fieldRef": {"fieldPath": self.field_path}}
+        return payload
 
 
 @dataclass(frozen=True)
@@ -662,3 +684,32 @@ class VolumeSpec:
                 host_path["type"] = self.host_path_type
             payload["hostPath"] = host_path
         return payload
+
+
+def _pod_template_manifest(
+    *,
+    labels: Mapping[str, str],
+    containers: Collection[ContainerSpec],
+    volumes: Collection[VolumeSpec],
+    automount_service_account_token: bool,
+    service_account_name: str | None = None,
+    node_selector: Mapping[str, str] | None = None,
+    host_pid: bool | None = None,
+) -> dict[str, object]:
+    spec: dict[str, object] = {
+        "automountServiceAccountToken": automount_service_account_token,
+        "containers": [container.manifest() for container in containers],
+        "volumes": [volume.manifest() for volume in volumes],
+    }
+    if service_account_name is not None:
+        service_account_name = service_account_name.strip()
+        if service_account_name:
+            spec["serviceAccountName"] = service_account_name
+    if node_selector:
+        spec["nodeSelector"] = dict(node_selector)
+    if host_pid is not None:
+        spec["hostPID"] = host_pid
+    return {
+        "metadata": {"labels": dict(labels)},
+        "spec": spec,
+    }

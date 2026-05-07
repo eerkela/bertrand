@@ -1,719 +1,337 @@
-"""Ceph capacity controlplane for Bertrand-managed MicroCeph clusters.
-
-This module defines a minimal grow-only storage autoscaler that:
-
-1. publishes CRDs for autoscaler policy and node-scoped actions,
-2. deploys a controller + daemonset agent pair into Kubernetes,
-3. reconciles loop-backed OSD growth when Ceph usage crosses a threshold.
-
-Notes
------
-This is intentionally a v1 surface: it only grows capacity, and never shrinks or
-rebalances existing OSD devices.
-"""
+"""Ceph capacity autoscaler policy and runtime loops."""
 
 from __future__ import annotations
 
 import asyncio
 import hashlib
-import json
 import math
-import os
-import platform
-import shutil
-import subprocess
+import re
 import sys
-import uuid
-from dataclasses import dataclass, field
+from collections.abc import Collection, Mapping
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Any, Literal, cast
 
-from kubernetes import watch as kube_watch
-from kubernetes.client.rest import ApiException
-from pydantic import BaseModel, ConfigDict, Field, PositiveInt, ValidationError
-
-from ...config.core import KubeName, NonEmpty, Trimmed
-from ...run import (
-    BERTRAND_ENV,
-    BERTRAND_NAMESPACE,
-    INFINITY,
-    kubectl,
-    run,
+from ...run import BERTRAND_ENV, INFINITY
+from ..api import Kube
+from ..build import IMAGES, BuildKitImageBuild
+from .autoscale_kube import (
+    AUTOSCALE_ACTION_KIND,
+    AUTOSCALE_DEFAULT_NAME,
+    AUTOSCALE_LOOP_SIZE_RE,
+    AUTOSCALE_LOOP_SPEC_RE,
+    AUTOSCALE_PHASES,
+    DEFAULT_AUTOSCALER_SPEC,
+    RESOURCES,
 )
-from ..api import (
-    CLUSTER_REGISTRY_READY_LABEL,
-    CLUSTER_REGISTRY_READY_VALUE,
-    Kube,
-)
-from ..node import Node
+from .microceph import CephCapacitySnapshot, add_loop_osd, ceph_df, host_free_bytes
 
-AUTOSCALE_GROUP = "ceph.bertrand.dev"
-AUTOSCALE_VERSION = "v1alpha1"
-AUTOSCALE_AUTOSCALER_KIND = "CephStorageAutoscaler"
-AUTOSCALE_AUTOSCALER_PLURAL = "cephstorageautoscalers"
-AUTOSCALE_ACTION_KIND = "CephStorageAction"
-AUTOSCALE_ACTION_PLURAL = "cephstorageactions"
-AUTOSCALE_DEFAULT_NAME = "default"
-AUTOSCALE_SERVICE_ACCOUNT = "bertrand-ceph-autoscaler"
-AUTOSCALE_CONTROLLER_NAME = "bertrand-ceph-autoscaler"
-AUTOSCALE_AGENT_NAME = "bertrand-ceph-autoscaler-agent"
-AUTOSCALE_LABEL = "bertrand.dev/ceph-autoscaler"
-AUTOSCALE_LABEL_VALUE = "v1"
-AUTOSCALE_IMAGE_REPO = "localhost:32000/bertrand/ceph-autoscaler"
 AUTOSCALE_IMAGE_CONTEXT_PREFIX = "bertrand-ceph-autoscaler"
-AUTOSCALE_LOOP_SIZE_RE = r"^[1-9][0-9]*[MGT]$"
-AUTOSCALE_LOOP_SPEC_RE = r"^loop,[1-9][0-9]*[MGT],[1-9][0-9]*$"
-AUTOSCALE_PHASES = ("Pending", "Running", "Succeeded", "Failed")
+AUTOSCALE_NODE_REPORT_MAX_AGE_SECONDS = 120
 
-
-type Watermark = Annotated[float, Field(gt=0.0, lt=1.0)]
-type LoopSize = Annotated[str, Field(pattern=AUTOSCALE_LOOP_SIZE_RE)]
-type LoopSpec = Annotated[str, Field(pattern=AUTOSCALE_LOOP_SPEC_RE)]
-
-
-@dataclass(frozen=True)
-class ClusterImageBuild:
-    """Declarative build contract for one cluster-shared image."""
-
-    image: str
-    dockerfile: str
-    context_copies: tuple[tuple[Path, Path], ...] = ()
-    context_prefix: str = "bertrand-cluster-image"
-    build_flags: tuple[str, ...] = ("--progress=plain",)
-    build_labels: dict[str, str] = field(default_factory=dict)
-
-
-@dataclass(frozen=True)
-class CephCapacitySnapshot:
-    """Raw Ceph capacity snapshot used by autoscaler reconciliation.
-
-    Attributes
-    ----------
-    total_bytes : int
-        Total raw cluster capacity in bytes.
-    used_bytes : int
-        Currently used raw cluster capacity in bytes.
-    used_ratio : float
-        Used/total ratio in [0, 1].
-    """
-
-    total_bytes: int
-    used_bytes: int
-    used_ratio: float
-
-
-@dataclass(frozen=True)
-class PlannedAction:
-    """One planned growth action produced by controller reconciliation.
-
-    Attributes
-    ----------
-    node_name : str
-        Kubernetes node name where this action should run.
-    loop_spec : str
-        MicroCeph `disk add` loop-file spec (for example `loop,4G,1`).
-    reason : str
-        Human-readable rationale for enqueueing this action.
-    """
-
-    node_name: KubeName
-    loop_spec: LoopSpec
-    reason: NonEmpty[Trimmed]
+type ActionPhase = Literal["Pending", "Running", "Succeeded", "Failed"]
 
 
 @dataclass
 class ControllerState:
-    """Mutable controller loop state for watch+tick reconciliation.
+    """Mutable controller loop state for deterministic action distribution."""
 
-    Attributes
-    ----------
-    actions_resource_version : str
-        Last observed resourceVersion for action watch resumptions.
-    round_robin_offset : int
-        Monotonic node selection cursor for deterministic load distribution.
-    """
-
-    actions_resource_version: str = ""
     round_robin_offset: int = 0
 
 
-class ObjectMeta(BaseModel):
-    """Validated subset of Kubernetes object metadata."""
-
-    model_config = ConfigDict(extra="ignore")
-    name: Annotated[str, Field(default="")]
-    namespace: Annotated[str, Field(default="")]
-    generation: Annotated[int, Field(default=0)]
-    resourceVersion: Annotated[str, Field(default="")]
-    labels: Annotated[dict[str, str], Field(default_factory=dict)]
-
-
-class CephStorageAutoscalerSpec(BaseModel):
-    """Policy contract for autoscaler behavior.
+@dataclass(frozen=True)
+class AutoscalerPolicy:
+    """Autoscaler policy parsed from the singleton custom resource.
 
     Parameters
     ----------
-    enabled : bool, optional
-        Whether controller reconcile should enqueue growth actions.
-    high_watermark : float, optional
-        Utilization ratio at or above which growth should trigger.
-    target_watermark : float, optional
-        Utilization ratio to target after adding new loop-backed OSDs.
-    loop_size : str, optional
-        Loop-file size suffix passed to MicroCeph (`M`, `G`, or `T` units).
-    max_actions_per_reconcile : int, optional
-        Hard cap on number of actions generated in one reconcile cycle.
-    reconcile_interval_seconds : int, optional
-        Tick interval between reconciliations.
+    name : str
+        Kubernetes object name.
+    generation : int
+        Kubernetes metadata generation for status observation.
+    enabled : bool
+        Whether controller planning should create new growth actions.
+    high_watermark : float
+        Used-capacity ratio that triggers growth.
+    target_watermark : float
+        Used-capacity ratio the controller tries to move toward.
+    loop_size : str
+        MicroCeph loop OSD size such as `"4G"`.
+    max_actions_per_reconcile : int
+        Maximum new actions allowed per reconcile pass, after in-flight actions.
+    reconcile_interval_seconds : int
+        Controller loop sleep interval.
     """
 
-    model_config = ConfigDict(extra="forbid")
-    enabled: bool = True
-    high_watermark: Watermark = 0.75
-    target_watermark: Watermark = 0.65
-    loop_size: LoopSize = "4G"
-    max_actions_per_reconcile: PositiveInt = 3
-    reconcile_interval_seconds: PositiveInt = 30
+    name: str
+    generation: int
+    enabled: bool
+    high_watermark: float
+    target_watermark: float
+    loop_size: str
+    max_actions_per_reconcile: int
+    reconcile_interval_seconds: int
 
 
-class CephStorageAutoscalerStatus(BaseModel):
-    """Observed status emitted by controller reconcile cycles.
+@dataclass(frozen=True)
+class StorageActionStatus:
+    """Observed lifecycle state for one node-scoped autoscaler action."""
 
-    Attributes
-    ----------
-    observedGeneration : int | None
-        Most recent autoscaler generation processed by controller loop.
-    total_bytes : int | None
-        Last observed Ceph raw capacity in bytes.
-    used_bytes : int | None
-        Last observed Ceph used raw bytes.
-    used_ratio : float | None
-        Last observed used/total ratio in [0, 1].
-    pending_actions : int
-        Number of queued `CephStorageAction` objects in `Pending` phase.
-    running_actions : int
-        Number of queued `CephStorageAction` objects in `Running` phase.
-    succeeded_actions : int
-        Number of queued `CephStorageAction` objects in `Succeeded` phase.
-    failed_actions : int
-        Number of queued `CephStorageAction` objects in `Failed` phase.
-    last_reconciled_at : datetime | None
-        Timestamp of the last controller reconcile completion.
-    last_error : str
-        Last reconciliation error message, if any.
-    """
-
-    model_config = ConfigDict(extra="forbid")
-    observedGeneration: Annotated[int | None, Field(default=None)] = None
-    total_bytes: Annotated[int | None, Field(default=None)] = None
-    used_bytes: Annotated[int | None, Field(default=None)] = None
-    used_ratio: Annotated[float | None, Field(default=None)] = None
-    pending_actions: Annotated[int, Field(default=0, ge=0)] = 0
-    running_actions: Annotated[int, Field(default=0, ge=0)] = 0
-    succeeded_actions: Annotated[int, Field(default=0, ge=0)] = 0
-    failed_actions: Annotated[int, Field(default=0, ge=0)] = 0
-    last_reconciled_at: Annotated[datetime | None, Field(default=None)] = None
-    last_error: Annotated[str, Field(default="")] = ""
-
-
-class CephStorageAutoscaler(BaseModel):
-    """Validated payload for `CephStorageAutoscaler` custom resources.
-
-    Attributes
-    ----------
-    apiVersion : str
-        Kubernetes API version string for this custom resource.
-    kind : Literal[\"CephStorageAutoscaler\"]
-        Kubernetes kind identifier for this custom resource.
-    metadata : ObjectMeta
-        Kubernetes object metadata subset.
-    spec : CephStorageAutoscalerSpec
-        Desired autoscaling policy.
-    status : CephStorageAutoscalerStatus | None
-        Observed controller status for this policy object.
-    """
-
-    model_config = ConfigDict(extra="forbid")
-    apiVersion: str
-    kind: Literal["CephStorageAutoscaler"]
-    metadata: ObjectMeta
-    spec: CephStorageAutoscalerSpec = Field(default_factory=CephStorageAutoscalerSpec)
-    status: CephStorageAutoscalerStatus | None = None
-
-
-class CephStorageActionSpec(BaseModel):
-    """Desired node-side execution contract for one growth action.
-
-    Attributes
-    ----------
-    repo_generation : int
-        Controller generation marker copied from autoscaler at enqueue time.
-    node_name : str
-        Target Kubernetes node name where this action should run.
-    loop_spec : str
-        MicroCeph loop specification passed to `microceph disk add`.
-    reason : str
-        Human-readable enqueue reason from controller reconciliation.
-    """
-
-    model_config = ConfigDict(extra="forbid")
-    repo_generation: Annotated[int, Field(ge=0)]
-    node_name: KubeName
-    loop_spec: LoopSpec
-    reason: NonEmpty[Trimmed]
-
-
-class CephStorageActionStatus(BaseModel):
-    """Observed lifecycle state for one `CephStorageAction` object.
-
-    Attributes
-    ----------
-    phase : Literal[\"Pending\", \"Running\", \"Succeeded\", \"Failed\"]
-        Current action lifecycle phase.
-    started_at : datetime | None
-        Timestamp when a node agent claimed this action.
-    finished_at : datetime | None
-        Timestamp when action reached terminal phase.
-    message : str
-        Node-agent diagnostic message.
-    worker_node : str
-        Node name that processed this action.
-    """
-
-    model_config = ConfigDict(extra="forbid")
-    phase: Literal["Pending", "Running", "Succeeded", "Failed"] = "Pending"
+    phase: ActionPhase = "Pending"
     started_at: datetime | None = None
     finished_at: datetime | None = None
     message: str = ""
     worker_node: str = ""
 
 
-class CephStorageAction(BaseModel):
-    """Validated payload for `CephStorageAction` custom resources.
+@dataclass(frozen=True)
+class StorageAction:
+    """Node-scoped MicroCeph growth action parsed from a custom resource."""
 
-    Attributes
-    ----------
-    apiVersion : str
-        Kubernetes API version string for this custom resource.
-    kind : Literal[\"CephStorageAction\"]
-        Kubernetes kind identifier for this custom resource.
-    metadata : ObjectMeta
-        Kubernetes object metadata subset.
-    spec : CephStorageActionSpec
-        Desired node-side execution contract.
-    status : CephStorageActionStatus | None
-        Observed node-agent execution state.
-    """
-
-    model_config = ConfigDict(extra="forbid")
-    apiVersion: str
-    kind: Literal["CephStorageAction"]
-    metadata: ObjectMeta
-    spec: CephStorageActionSpec
-    status: CephStorageActionStatus | None = None
+    name: str
+    policy_generation: int
+    node_name: str
+    loop_spec: str
+    reason: str
+    status: StorageActionStatus
 
 
-class ActionList(BaseModel):
-    """Validated subset of action list payload."""
+@dataclass(frozen=True)
+class StorageNodeReport:
+    """Latest host-local capacity report emitted by one node agent."""
 
-    model_config = ConfigDict(extra="ignore")
-    items: list[CephStorageAction] = Field(default_factory=list)
-    metadata: ObjectMeta = Field(
-        default_factory=lambda: ObjectMeta(
-            name="",
-            namespace="",
-            generation=0,
-            resourceVersion="",
-            labels={},
-        )
-    )
+    name: str
+    node_name: str
+    free_bytes: int
+    path: str
+    heartbeat_at: datetime | None
+    last_error: str = ""
+
+
+@dataclass(frozen=True)
+class PlannedAction:
+    """One node-scoped MicroCeph growth action selected by policy planning."""
+
+    node_name: str
+    loop_spec: str
+    reason: str
+
+    def spec(self) -> dict[str, object]:
+        """Render this planned action as custom-resource spec fields."""
+        return {
+            "node_name": self.node_name,
+            "loop_spec": self.loop_spec,
+            "reason": self.reason,
+        }
+
+
+def _now() -> datetime:
+    return datetime.now(UTC)
 
 
 def _now_iso() -> str:
-    return datetime.now(UTC).isoformat()
+    return _now().isoformat()
 
 
 def _remaining(deadline: float) -> float:
     remaining = deadline - asyncio.get_running_loop().time()
     if remaining <= 0:
-        raise TimeoutError("timed out while converging Ceph autoscaler controlplane")
+        raise TimeoutError("timed out while reconciling Ceph autoscaler")
     return remaining
+
+
+def _as_mapping(value: object, context: str) -> Mapping[str, Any]:
+    if not isinstance(value, Mapping):
+        raise OSError(f"malformed {context}: expected object")
+    return cast("Mapping[str, Any]", value)
+
+
+def _object_section(obj: Mapping[str, Any], key: str) -> Mapping[str, Any]:
+    value = obj.get(key, {})
+    if value is None:
+        return {}
+    return _as_mapping(value, key)
+
+
+def _string(value: object, *, default: str = "") -> str:
+    if value is None:
+        return default
+    return str(value).strip()
+
+
+def _integer(value: object, *, default: int = 0, minimum: int | None = None) -> int:
+    if value is None:
+        out = default
+    elif isinstance(value, bool):
+        raise OSError(f"expected integer, got {value!r}")
+    elif isinstance(value, int):
+        out = value
+    elif isinstance(value, str):
+        out = int(value)
+    else:
+        out = int(cast("Any", value))
+    if minimum is not None and out < minimum:
+        raise OSError(f"expected integer >= {minimum}, got {out}")
+    return out
+
+
+def _number(value: object, *, default: float) -> float:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        raise OSError(f"expected number, got {value!r}")
+    if isinstance(value, int | float | str):
+        return float(value)
+    return float(cast("Any", value))
+
+
+def _boolean(value: object, *, default: bool) -> bool:
+    if value is None:
+        return default
+    if not isinstance(value, bool):
+        raise OSError(f"expected boolean, got {value!r}")
+    return value
+
+
+def _timestamp(value: object) -> datetime | None:
+    text = _string(value)
+    if not text:
+        return None
+    parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
+
+
+def _metadata(obj: Mapping[str, Any]) -> Mapping[str, Any]:
+    return _object_section(obj, "metadata")
+
+
+def _spec(obj: Mapping[str, Any]) -> Mapping[str, Any]:
+    return _object_section(obj, "spec")
+
+
+def _status(obj: Mapping[str, Any]) -> Mapping[str, Any]:
+    return _object_section(obj, "status")
+
+
+def _parse_policy(obj: Mapping[str, Any]) -> AutoscalerPolicy:
+    metadata = _metadata(obj)
+    spec = dict(DEFAULT_AUTOSCALER_SPEC)
+    spec.update(_spec(obj))
+    name = _string(metadata.get("name")) or AUTOSCALE_DEFAULT_NAME
+    loop_size = _string(spec.get("loop_size"), default="4G").upper()
+    if not re.fullmatch(AUTOSCALE_LOOP_SIZE_RE, loop_size):
+        raise OSError(f"invalid autoscaler loop_size: {loop_size!r}")
+    high_watermark = _number(spec.get("high_watermark"), default=0.75)
+    target_watermark = _number(spec.get("target_watermark"), default=0.65)
+    if not 0.0 < high_watermark < 1.0:
+        raise OSError(f"invalid autoscaler high_watermark: {high_watermark!r}")
+    if not 0.0 < target_watermark < 1.0:
+        raise OSError(f"invalid autoscaler target_watermark: {target_watermark!r}")
+    return AutoscalerPolicy(
+        name=name,
+        generation=_integer(metadata.get("generation"), minimum=0),
+        enabled=_boolean(spec.get("enabled"), default=True),
+        high_watermark=high_watermark,
+        target_watermark=target_watermark,
+        loop_size=loop_size,
+        max_actions_per_reconcile=_integer(
+            spec.get("max_actions_per_reconcile"),
+            default=3,
+            minimum=1,
+        ),
+        reconcile_interval_seconds=_integer(
+            spec.get("reconcile_interval_seconds"),
+            default=30,
+            minimum=1,
+        ),
+    )
+
+
+def _parse_action_status(obj: Mapping[str, Any]) -> StorageActionStatus:
+    status = _status(obj)
+    phase = _string(status.get("phase"), default="Pending")
+    if phase not in AUTOSCALE_PHASES:
+        raise OSError(f"invalid {AUTOSCALE_ACTION_KIND} phase: {phase!r}")
+    return StorageActionStatus(
+        phase=cast("ActionPhase", phase),
+        started_at=_timestamp(status.get("started_at")),
+        finished_at=_timestamp(status.get("finished_at")),
+        message=_string(status.get("message")),
+        worker_node=_string(status.get("worker_node")),
+    )
+
+
+def _parse_action(obj: Mapping[str, Any]) -> StorageAction:
+    metadata = _metadata(obj)
+    spec = _spec(obj)
+    name = _string(metadata.get("name"))
+    if not name:
+        raise OSError("malformed autoscaler action: missing metadata.name")
+    loop_spec = _string(spec.get("loop_spec"))
+    if not re.fullmatch(AUTOSCALE_LOOP_SPEC_RE, loop_spec):
+        raise OSError(f"invalid autoscaler action loop_spec: {loop_spec!r}")
+    node_name = _string(spec.get("node_name"))
+    reason = _string(spec.get("reason"))
+    if not node_name:
+        raise OSError("malformed autoscaler action: missing spec.node_name")
+    if not reason:
+        raise OSError("malformed autoscaler action: missing spec.reason")
+    return StorageAction(
+        name=name,
+        policy_generation=_integer(
+            spec.get("policy_generation", spec.get("repo_generation")),
+            minimum=0,
+        ),
+        node_name=node_name,
+        loop_spec=loop_spec,
+        reason=reason,
+        status=_parse_action_status(obj),
+    )
+
+
+def _parse_node_report(obj: Mapping[str, Any]) -> StorageNodeReport:
+    metadata = _metadata(obj)
+    spec = _spec(obj)
+    status = _status(obj)
+    node_name = _string(spec.get("node_name"))
+    if not node_name:
+        raise OSError("malformed autoscaler node report: missing spec.node_name")
+    return StorageNodeReport(
+        name=_string(metadata.get("name")) or node_name,
+        node_name=node_name,
+        free_bytes=_integer(status.get("free_bytes"), minimum=0),
+        path=_string(status.get("path")),
+        heartbeat_at=_timestamp(status.get("heartbeat_at")),
+        last_error=_string(status.get("last_error")),
+    )
 
 
 def _parse_loop_size_bytes(size: str) -> int:
     size = size.strip().upper()
     if len(size) < 2:
         raise ValueError(f"invalid loop size: {size!r}")
-    unit = size[-1]
     number = int(size[:-1])
-    if number <= 0:
-        raise ValueError(f"invalid loop size: {size!r}")
+    unit = size[-1]
     scale = {"M": 2**20, "G": 2**30, "T": 2**40}.get(unit)
-    if scale is None:
-        raise ValueError(f"invalid loop size unit in {size!r}; expected M/G/T")
+    if number <= 0 or scale is None:
+        raise ValueError(f"invalid loop size: {size!r}")
     return number * scale
 
 
 def _autoscaler_image_ref() -> str:
-    # NOTE: deterministic image tags avoid unnecessary churn when init runs
-    # repeatedly on the same code revision.
-    this_file = Path(__file__).resolve()
-    digest = hashlib.sha256(this_file.read_bytes()).hexdigest()[:12]
-    return f"{AUTOSCALE_IMAGE_REPO}:v1-{digest}"
-
-
-def _autoscaler_crd_manifest() -> dict:
-    return {
-        "apiVersion": "apiextensions.k8s.io/v1",
-        "kind": "CustomResourceDefinition",
-        "metadata": {"name": f"{AUTOSCALE_AUTOSCALER_PLURAL}.{AUTOSCALE_GROUP}"},
-        "spec": {
-            "group": AUTOSCALE_GROUP,
-            "scope": "Namespaced",
-            "names": {
-                "plural": AUTOSCALE_AUTOSCALER_PLURAL,
-                "singular": "cephstorageautoscaler",
-                "kind": AUTOSCALE_AUTOSCALER_KIND,
-                "shortNames": ["csa"],
-            },
-            "versions": [
-                {
-                    "name": AUTOSCALE_VERSION,
-                    "served": True,
-                    "storage": True,
-                    "schema": {
-                        "openAPIV3Schema": {
-                            "type": "object",
-                            "properties": {
-                                "spec": {
-                                    "type": "object",
-                                    "properties": {
-                                        "enabled": {"type": "boolean", "default": True},
-                                        "high_watermark": {
-                                            "type": "number",
-                                            "minimum": 0,
-                                            "maximum": 1,
-                                            "default": 0.75,
-                                        },
-                                        "target_watermark": {
-                                            "type": "number",
-                                            "minimum": 0,
-                                            "maximum": 1,
-                                            "default": 0.65,
-                                        },
-                                        "loop_size": {
-                                            "type": "string",
-                                            "pattern": AUTOSCALE_LOOP_SIZE_RE,
-                                            "default": "4G",
-                                        },
-                                        "max_actions_per_reconcile": {
-                                            "type": "integer",
-                                            "minimum": 1,
-                                            "default": 3,
-                                        },
-                                        "reconcile_interval_seconds": {
-                                            "type": "integer",
-                                            "minimum": 1,
-                                            "default": 30,
-                                        },
-                                    },
-                                },
-                                "status": {
-                                    "type": "object",
-                                    "properties": {
-                                        "observedGeneration": {"type": "integer"},
-                                        "total_bytes": {"type": "integer"},
-                                        "used_bytes": {"type": "integer"},
-                                        "used_ratio": {"type": "number"},
-                                        "pending_actions": {"type": "integer"},
-                                        "running_actions": {"type": "integer"},
-                                        "succeeded_actions": {"type": "integer"},
-                                        "failed_actions": {"type": "integer"},
-                                        "last_reconciled_at": {
-                                            "type": "string",
-                                            "format": "date-time",
-                                        },
-                                        "last_error": {"type": "string"},
-                                    },
-                                },
-                            },
-                        },
-                    },
-                    "subresources": {"status": {}},
-                }
-            ],
-        },
-    }
-
-
-def _action_crd_manifest() -> dict:
-    return {
-        "apiVersion": "apiextensions.k8s.io/v1",
-        "kind": "CustomResourceDefinition",
-        "metadata": {"name": f"{AUTOSCALE_ACTION_PLURAL}.{AUTOSCALE_GROUP}"},
-        "spec": {
-            "group": AUTOSCALE_GROUP,
-            "scope": "Namespaced",
-            "names": {
-                "plural": AUTOSCALE_ACTION_PLURAL,
-                "singular": "cephstorageaction",
-                "kind": AUTOSCALE_ACTION_KIND,
-                "shortNames": ["csact"],
-            },
-            "versions": [
-                {
-                    "name": AUTOSCALE_VERSION,
-                    "served": True,
-                    "storage": True,
-                    "schema": {
-                        "openAPIV3Schema": {
-                            "type": "object",
-                            "properties": {
-                                "spec": {
-                                    "type": "object",
-                                    "required": [
-                                        "repo_generation",
-                                        "node_name",
-                                        "loop_spec",
-                                        "reason",
-                                    ],
-                                    "properties": {
-                                        "repo_generation": {"type": "integer", "minimum": 0},
-                                        "node_name": {"type": "string", "minLength": 1},
-                                        "loop_spec": {
-                                            "type": "string",
-                                            "pattern": AUTOSCALE_LOOP_SPEC_RE,
-                                        },
-                                        "reason": {"type": "string", "minLength": 1},
-                                    },
-                                },
-                                "status": {
-                                    "type": "object",
-                                    "properties": {
-                                        "phase": {"type": "string", "enum": list(AUTOSCALE_PHASES)},
-                                        "started_at": {"type": "string", "format": "date-time"},
-                                        "finished_at": {"type": "string", "format": "date-time"},
-                                        "message": {"type": "string"},
-                                        "worker_node": {"type": "string"},
-                                    },
-                                },
-                            },
-                        },
-                    },
-                    "subresources": {"status": {}},
-                }
-            ],
-        },
-    }
-
-
-def _service_account_manifest() -> dict:
-    return {
-        "apiVersion": "v1",
-        "kind": "ServiceAccount",
-        "metadata": {
-            "name": AUTOSCALE_SERVICE_ACCOUNT,
-            "namespace": BERTRAND_NAMESPACE,
-            "labels": {AUTOSCALE_LABEL: AUTOSCALE_LABEL_VALUE},
-        },
-    }
-
-
-def _cluster_role_manifest() -> dict:
-    return {
-        "apiVersion": "rbac.authorization.k8s.io/v1",
-        "kind": "ClusterRole",
-        "metadata": {
-            "name": AUTOSCALE_SERVICE_ACCOUNT,
-            "labels": {AUTOSCALE_LABEL: AUTOSCALE_LABEL_VALUE},
-        },
-        "rules": [
-            {
-                "apiGroups": [AUTOSCALE_GROUP],
-                "resources": [AUTOSCALE_AUTOSCALER_PLURAL, AUTOSCALE_ACTION_PLURAL],
-                "verbs": ["get", "list", "watch", "create", "update", "patch"],
-            },
-            {
-                "apiGroups": [AUTOSCALE_GROUP],
-                "resources": [
-                    f"{AUTOSCALE_AUTOSCALER_PLURAL}/status",
-                    f"{AUTOSCALE_ACTION_PLURAL}/status",
-                ],
-                "verbs": ["get", "update", "patch"],
-            },
-            {
-                "apiGroups": [""],
-                "resources": ["nodes"],
-                "verbs": ["get", "list", "watch", "patch"],
-            },
-        ],
-    }
-
-
-def _cluster_role_binding_manifest() -> dict:
-    return {
-        "apiVersion": "rbac.authorization.k8s.io/v1",
-        "kind": "ClusterRoleBinding",
-        "metadata": {
-            "name": AUTOSCALE_SERVICE_ACCOUNT,
-            "labels": {AUTOSCALE_LABEL: AUTOSCALE_LABEL_VALUE},
-        },
-        "roleRef": {
-            "apiGroup": "rbac.authorization.k8s.io",
-            "kind": "ClusterRole",
-            "name": AUTOSCALE_SERVICE_ACCOUNT,
-        },
-        "subjects": [
-            {
-                "kind": "ServiceAccount",
-                "name": AUTOSCALE_SERVICE_ACCOUNT,
-                "namespace": BERTRAND_NAMESPACE,
-            }
-        ],
-    }
-
-
-def _controller_manifest(image: str) -> dict:
-    return {
-        "apiVersion": "apps/v1",
-        "kind": "Deployment",
-        "metadata": {
-            "name": AUTOSCALE_CONTROLLER_NAME,
-            "namespace": BERTRAND_NAMESPACE,
-            "labels": {AUTOSCALE_LABEL: AUTOSCALE_LABEL_VALUE},
-        },
-        "spec": {
-            "replicas": 1,
-            "selector": {"matchLabels": {"app": AUTOSCALE_CONTROLLER_NAME}},
-            "template": {
-                "metadata": {
-                    "labels": {
-                        "app": AUTOSCALE_CONTROLLER_NAME,
-                        AUTOSCALE_LABEL: AUTOSCALE_LABEL_VALUE,
-                    }
-                },
-                "spec": {
-                    "serviceAccountName": AUTOSCALE_SERVICE_ACCOUNT,
-                    "nodeSelector": {
-                        CLUSTER_REGISTRY_READY_LABEL: CLUSTER_REGISTRY_READY_VALUE,
-                    },
-                    "hostPID": True,
-                    "containers": [
-                        {
-                            "name": "controller",
-                            "image": image,
-                            "imagePullPolicy": "Always",
-                            "args": ["controller"],
-                            "env": [
-                                {
-                                    "name": "NODE_NAME",
-                                    "valueFrom": {"fieldRef": {"fieldPath": "spec.nodeName"}},
-                                }
-                            ],
-                            "securityContext": {
-                                "privileged": True,
-                                "runAsUser": 0,
-                            },
-                            "volumeMounts": [
-                                {
-                                    "name": "host-root",
-                                    "mountPath": "/host",
-                                }
-                            ],
-                        }
-                    ],
-                    "volumes": [
-                        {
-                            "name": "host-root",
-                            "hostPath": {"path": "/", "type": "Directory"},
-                        }
-                    ],
-                },
-            },
-        },
-    }
-
-
-def _agent_manifest(image: str) -> dict:
-    return {
-        "apiVersion": "apps/v1",
-        "kind": "DaemonSet",
-        "metadata": {
-            "name": AUTOSCALE_AGENT_NAME,
-            "namespace": BERTRAND_NAMESPACE,
-            "labels": {AUTOSCALE_LABEL: AUTOSCALE_LABEL_VALUE},
-        },
-        "spec": {
-            "selector": {"matchLabels": {"app": AUTOSCALE_AGENT_NAME}},
-            "template": {
-                "metadata": {
-                    "labels": {
-                        "app": AUTOSCALE_AGENT_NAME,
-                        AUTOSCALE_LABEL: AUTOSCALE_LABEL_VALUE,
-                    },
-                },
-                "spec": {
-                    "serviceAccountName": AUTOSCALE_SERVICE_ACCOUNT,
-                    "nodeSelector": {
-                        CLUSTER_REGISTRY_READY_LABEL: CLUSTER_REGISTRY_READY_VALUE,
-                    },
-                    "hostPID": True,
-                    "containers": [
-                        {
-                            "name": "agent",
-                            "image": image,
-                            "imagePullPolicy": "Always",
-                            "args": ["agent"],
-                            "env": [
-                                {
-                                    "name": "NODE_NAME",
-                                    "valueFrom": {"fieldRef": {"fieldPath": "spec.nodeName"}},
-                                }
-                            ],
-                            "securityContext": {
-                                "privileged": True,
-                                "runAsUser": 0,
-                            },
-                            "volumeMounts": [
-                                {
-                                    "name": "host-root",
-                                    "mountPath": "/host",
-                                }
-                            ],
-                        }
-                    ],
-                    "volumes": [
-                        {
-                            "name": "host-root",
-                            "hostPath": {"path": "/", "type": "Directory"},
-                        }
-                    ],
-                },
-            },
-        },
-    }
-
-
-def _default_autoscaler_manifest() -> dict:
-    return {
-        "apiVersion": f"{AUTOSCALE_GROUP}/{AUTOSCALE_VERSION}",
-        "kind": AUTOSCALE_AUTOSCALER_KIND,
-        "metadata": {
-            "name": AUTOSCALE_DEFAULT_NAME,
-            "namespace": BERTRAND_NAMESPACE,
-            "labels": {AUTOSCALE_LABEL: AUTOSCALE_LABEL_VALUE},
-        },
-        "spec": CephStorageAutoscalerSpec().model_dump(mode="json"),
-    }
-
-
-async def _apply_manifest(manifest: dict, *, timeout: float) -> None:
-    await kubectl(
-        ["apply", "-f", "-"],
-        input=json.dumps(manifest, separators=(",", ":")),
-        timeout=timeout,
-    )
+    h = hashlib.sha256()
+    for path in (
+        Path(__file__).resolve(),
+        Path(__file__).with_name("autoscale_kube.py").resolve(),
+        Path(__file__).with_name("microceph.py").resolve(),
+    ):
+        payload = path.read_bytes()
+        h.update(len(payload).to_bytes(8, "big"))
+        h.update(payload)
+    return IMAGES.ref("ceph-autoscaler", f"v1-{h.hexdigest()[:12]}")
 
 
 def _autoscale_dockerfile() -> str:
@@ -723,463 +341,190 @@ def _autoscale_dockerfile() -> str:
         "ENV PYTHONUNBUFFERED=1\n"
         "ENV PYTHONPATH=/opt/bertrand\n"
         "COPY bertrand /opt/bertrand/bertrand\n"
-        "RUN python -m pip install --no-cache-dir 'pydantic>=2,<3'\n"
+        "RUN python -m pip install --no-cache-dir 'kubernetes>=32,<35'\n"
         "ENTRYPOINT ['python', '-m', 'bertrand.env.kube.ceph.autoscale']\n"
     ).replace("'", '"')
 
 
-def ceph_capacity_controlplane_image_build() -> ClusterImageBuild:
-    """Return the autoscaler controlplane image build contract.
-
-    Returns
-    -------
-    ClusterImageBuild
-        Declarative cluster image build request for Ceph autoscaler workloads.
-    """
+def ceph_capacity_controlplane_image_build() -> BuildKitImageBuild:
+    """Return the autoscaler controlplane image build contract."""
     repo_root = Path(__file__).resolve().parents[4]
-    return ClusterImageBuild(
+    return BuildKitImageBuild(
         image=_autoscaler_image_ref(),
         dockerfile=_autoscale_dockerfile(),
         context_copies=((repo_root / "bertrand", Path("bertrand")),),
         context_prefix=AUTOSCALE_IMAGE_CONTEXT_PREFIX,
-        build_flags=("--progress=plain",),
         build_labels={BERTRAND_ENV: "1"},
     )
 
 
 async def ensure_ceph_capacity_controlplane(*, image: str, timeout: float) -> None:
-    """Converge Ceph autoscaler CRDs and workloads in the local cluster.
-
-    Parameters
-    ----------
-    image : str
-        Pre-published controlplane image reference to deploy.
-    timeout : float
-        Maximum runtime budget in seconds for this convergence pass.  If infinite,
-        wait indefinitely.
-
-    Returns
-    -------
-    None
-        This function executes for side effects only.
-
-    Raises
-    ------
-    OSError
-        If convergence cannot complete safely.
-    TimeoutError
-        If timeout is exhausted.
-
-    Notes
-    -----
-    This is intentionally a grow-only v1.  It deploys controller + node agents and a
-    singleton autoscaler policy object, but does not implement shrink semantics.
-    """
-
-    if timeout <= 0:
-        raise TimeoutError("timeout must be non-negative")
-    image = image.strip()
-    if not image:
-        raise ValueError("controlplane image reference cannot be empty")
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
-
-    manifests = (
-        _autoscaler_crd_manifest(),
-        _action_crd_manifest(),
-        _service_account_manifest(),
-        _cluster_role_manifest(),
-        _cluster_role_binding_manifest(),
-        _controller_manifest(image),
-        _agent_manifest(image),
-        _default_autoscaler_manifest(),
-    )
-    for manifest in manifests:
-        await _apply_manifest(manifest, timeout=_remaining(deadline))
+    """Converge Ceph autoscaler CRDs, RBAC, and workloads in the local cluster."""
+    with await Kube.host(timeout=timeout) as kube:
+        await RESOURCES.ensure(kube, image=image, timeout=timeout)
 
 
-async def _host_ceph_command(
-    argv: list[str],
+def _action_counts(actions: Collection[StorageAction]) -> dict[str, int]:
+    counts = {phase: 0 for phase in AUTOSCALE_PHASES}
+    for action in actions:
+        counts[action.status.phase] += 1
+    return counts
+
+
+def _eligible_nodes(
     *,
-    timeout: float,
-) -> subprocess.CompletedProcess[str]:
-    if timeout <= 0:
-        raise TimeoutError("timeout must be non-negative")
-
-    # NOTE: controller/agent pods run inside containers that may not ship microceph
-    # binaries.  We chroot into /host in those contexts to execute the host command.
-    if Path("/host").is_dir() and not shutil.which(argv[0]):
-        cmd = ["chroot", "/host", *argv]
-    else:
-        cmd = argv
-
-    result = await run(
-        cmd,
-        check=False,
-        capture_output=True,
-        timeout=timeout,
-    )
-    return result
-
-
-async def _ceph_capacity(*, timeout: float) -> CephCapacitySnapshot:
-    result = await _host_ceph_command(["microceph.ceph", "df", "--format", "json"], timeout=timeout)
-    if result.returncode != 0:
-        raise OSError(f"failed to inspect ceph capacity:\n{result}")
-    try:
-        payload = json.loads(result.stdout)
-    except json.JSONDecodeError as err:
-        raise OSError(f"ceph df returned malformed JSON: {err}") from err
-
-    # NOTE: ceph JSON keys changed across releases; we accept modern fields first and
-    # then legacy-compatible fallbacks.
-    stats = payload.get("stats", {}) if isinstance(payload, dict) else {}
-    total = int(stats.get("total_bytes") or stats.get("total_space") or 0)
-    used = int(
-        stats.get("total_used_bytes")
-        or stats.get("total_used_raw_bytes")
-        or stats.get("total_used")
-        or 0
-    )
-    if total <= 0:
-        raise OSError(f"ceph df reported invalid total capacity: {total}")
-    if used < 0:
-        raise OSError(f"ceph df reported invalid used capacity: {used}")
-    return CephCapacitySnapshot(total_bytes=total, used_bytes=used, used_ratio=used / total)
-
-
-async def _controller_read_autoscaler(api: Kube, *, timeout: float) -> CephStorageAutoscaler:
-    payload = await api.run(
-        lambda request_timeout: api.custom.get_namespaced_custom_object(
-            group=AUTOSCALE_GROUP,
-            version=AUTOSCALE_VERSION,
-            namespace=api.namespace,
-            plural=AUTOSCALE_AUTOSCALER_PLURAL,
-            name=AUTOSCALE_DEFAULT_NAME,
-            _request_timeout=request_timeout,
-        ),
-        timeout=timeout,
-        context=(
-            f"failed to read {AUTOSCALE_AUTOSCALER_KIND} {AUTOSCALE_DEFAULT_NAME!r} "
-            f"in namespace {api.namespace!r}"
-        ),
-    )
-    if payload is None:
-        raise OSError(
-            f"{AUTOSCALE_AUTOSCALER_KIND} {AUTOSCALE_DEFAULT_NAME!r} is missing in "
-            f"namespace {api.namespace!r}"
-        )
-    try:
-        return CephStorageAutoscaler.model_validate(payload)
-    except ValidationError as err:
-        raise OSError(f"malformed autoscaler payload: {err}") from err
-
-
-async def _controller_list_actions(api: Kube, *, timeout: float) -> ActionList:
-    payload = await api.run(
-        lambda request_timeout: api.custom.list_namespaced_custom_object(
-            group=AUTOSCALE_GROUP,
-            version=AUTOSCALE_VERSION,
-            namespace=api.namespace,
-            plural=AUTOSCALE_ACTION_PLURAL,
-            _request_timeout=request_timeout,
-        ),
-        timeout=timeout,
-        context=(f"failed to list {AUTOSCALE_ACTION_KIND} objects in namespace {api.namespace!r}"),
-    )
-    try:
-        return ActionList.model_validate(payload)
-    except ValidationError as err:
-        raise OSError(f"malformed action list payload: {err}") from err
-
-
-async def _controller_list_nodes(api: Kube, *, timeout: float) -> list[Node]:
-    return await Node.list(kube=api, timeout=timeout)
-
-
-def _eligible_nodes(nodes: list[Node]) -> list[str]:
-    return sorted(
-        node.name
-        for node in nodes
-        if node.name
-        and node.labels.get(CLUSTER_REGISTRY_READY_LABEL) == CLUSTER_REGISTRY_READY_VALUE
-    )
+    ready_nodes: Collection[str],
+    reports: Collection[StorageNodeReport],
+    loop_bytes: int,
+) -> list[str]:
+    ready = frozenset(ready_nodes)
+    now = _now()
+    eligible: list[str] = []
+    for report in reports:
+        if report.node_name not in ready or report.heartbeat_at is None:
+            continue
+        if (now - report.heartbeat_at).total_seconds() > AUTOSCALE_NODE_REPORT_MAX_AGE_SECONDS:
+            continue
+        slots = report.free_bytes // loop_bytes
+        eligible.extend([report.node_name] * min(slots, 32))
+    return sorted(eligible)
 
 
 def _plan_actions(
     *,
-    autoscaler: CephStorageAutoscaler,
+    policy: AutoscalerPolicy,
     capacity: CephCapacitySnapshot,
-    nodes: list[str],
+    actions: Collection[StorageAction],
+    eligible_nodes: list[str],
     state: ControllerState,
 ) -> list[PlannedAction]:
-    spec = autoscaler.spec
-    if not spec.enabled:
+    if not policy.enabled or not eligible_nodes or capacity.used_ratio < policy.high_watermark:
         return []
-    if not nodes:
-        return []
-    if capacity.used_ratio < spec.high_watermark:
-        return []
-
-    loop_bytes = _parse_loop_size_bytes(spec.loop_size)
-    if loop_bytes <= 0:
-        return []
-
-    target_used = spec.target_watermark * capacity.total_bytes
+    loop_bytes = _parse_loop_size_bytes(policy.loop_size)
+    target_used = policy.target_watermark * capacity.total_bytes
     deficit = capacity.used_bytes - target_used
     if deficit <= 0:
         return []
 
-    desired = math.ceil(deficit / loop_bytes)
-    count = max(0, min(desired, spec.max_actions_per_reconcile))
-    if count == 0:
+    counts = _action_counts(actions)
+    in_flight = counts["Pending"] + counts["Running"]
+    budget = policy.max_actions_per_reconcile - in_flight
+    if budget <= 0:
         return []
 
-    # NOTE: deterministic round-robin distribution avoids action hotspots while still
-    # keeping scheduling deterministic for debugging.
+    desired = math.ceil(deficit / loop_bytes)
+    count = max(0, min(desired, budget, len(eligible_nodes)))
     planned: list[PlannedAction] = []
     for index in range(count):
-        node = nodes[(state.round_robin_offset + index) % len(nodes)]
+        node = eligible_nodes[(state.round_robin_offset + index) % len(eligible_nodes)]
         planned.append(
             PlannedAction(
                 node_name=node,
-                loop_spec=f"loop,{spec.loop_size},1",
+                loop_spec=f"loop,{policy.loop_size},1",
                 reason=(
                     "cluster usage "
-                    f"{capacity.used_ratio:.2%} >= high watermark {spec.high_watermark:.2%}"
+                    f"{capacity.used_ratio:.2%} >= high watermark {policy.high_watermark:.2%}"
                 ),
             )
         )
-    state.round_robin_offset = (state.round_robin_offset + count) % len(nodes)
+    if eligible_nodes:
+        state.round_robin_offset = (state.round_robin_offset + count) % len(eligible_nodes)
     return planned
 
 
-async def _controller_create_actions(
-    api: Kube,
+async def _patch_policy_status(
+    kube: Kube,
     *,
-    autoscaler: CephStorageAutoscaler,
-    actions: list[PlannedAction],
-    timeout: float,
-) -> None:
-    # NOTE: controller enqueues intent objects instead of mutating disks directly so
-    # host-level mutation always runs on the target node with local failure reporting.
-    for action in actions:
-        manifest = {
-            "apiVersion": f"{AUTOSCALE_GROUP}/{AUTOSCALE_VERSION}",
-            "kind": AUTOSCALE_ACTION_KIND,
-            "metadata": {
-                "name": f"{AUTOSCALE_DEFAULT_NAME}-{uuid.uuid4().hex[:12]}",
-                "namespace": api.namespace,
-                "labels": {AUTOSCALE_LABEL: AUTOSCALE_LABEL_VALUE},
-            },
-            "spec": {
-                "repo_generation": autoscaler.metadata.generation,
-                "node_name": action.node_name,
-                "loop_spec": action.loop_spec,
-                "reason": action.reason,
-            },
-            "status": {"phase": "Pending"},
-        }
-        await api.run(
-            lambda request_timeout, manifest=manifest: api.custom.create_namespaced_custom_object(
-                group=AUTOSCALE_GROUP,
-                version=AUTOSCALE_VERSION,
-                namespace=api.namespace,
-                plural=AUTOSCALE_ACTION_PLURAL,
-                body=manifest,
-                _request_timeout=request_timeout,
-            ),
-            timeout=timeout,
-            context=(f"failed to create {AUTOSCALE_ACTION_KIND} in namespace {api.namespace!r}"),
-        )
-
-
-async def _controller_patch_status(
-    api: Kube,
-    *,
-    autoscaler: CephStorageAutoscaler,
+    policy: AutoscalerPolicy,
     capacity: CephCapacitySnapshot | None,
-    counts: dict[str, int],
+    counts: Mapping[str, int],
     error: str,
     timeout: float,
 ) -> None:
-    status = {
-        "status": {
-            "observedGeneration": autoscaler.metadata.generation,
-            "total_bytes": capacity.total_bytes if capacity else None,
-            "used_bytes": capacity.used_bytes if capacity else None,
-            "used_ratio": capacity.used_ratio if capacity else None,
+    await RESOURCES.patch_policy_status(
+        kube,
+        status={
+            "observedGeneration": policy.generation,
+            "total_bytes": capacity.total_bytes if capacity is not None else None,
+            "used_bytes": capacity.used_bytes if capacity is not None else None,
+            "used_ratio": capacity.used_ratio if capacity is not None else None,
             "pending_actions": counts.get("Pending", 0),
             "running_actions": counts.get("Running", 0),
             "succeeded_actions": counts.get("Succeeded", 0),
             "failed_actions": counts.get("Failed", 0),
             "last_reconciled_at": _now_iso(),
             "last_error": error,
-        }
-    }
-    await api.run(
-        lambda request_timeout: api.custom.patch_namespaced_custom_object_status(
-            group=AUTOSCALE_GROUP,
-            version=AUTOSCALE_VERSION,
-            namespace=api.namespace,
-            plural=AUTOSCALE_AUTOSCALER_PLURAL,
-            name=AUTOSCALE_DEFAULT_NAME,
-            body=status,
-            _request_timeout=request_timeout,
-        ),
+        },
         timeout=timeout,
-        context=(
-            f"failed to patch status for {AUTOSCALE_AUTOSCALER_KIND} {AUTOSCALE_DEFAULT_NAME!r}"
-        ),
     )
 
 
-async def _controller_watch_actions(
-    api: Kube,
-    *,
-    state: ControllerState,
-    timeout: float,
-) -> None:
-    if timeout <= 0:
-        return
-    timeout_seconds = max(1, int(math.ceil(timeout)))
-
-    def _watch() -> str:
-        watcher = kube_watch.Watch()
-        latest_rv = state.actions_resource_version
-        kwargs: dict[str, object] = {
-            "group": AUTOSCALE_GROUP,
-            "version": AUTOSCALE_VERSION,
-            "namespace": api.namespace,
-            "plural": AUTOSCALE_ACTION_PLURAL,
-            "timeout_seconds": timeout_seconds,
-            "_request_timeout": None if math.isinf(timeout) else timeout,
-        }
-        if state.actions_resource_version:
-            kwargs["resource_version"] = state.actions_resource_version
-
-        try:
-            for event in watcher.stream(
-                api.custom.list_namespaced_custom_object,
-                **kwargs,
-            ):
-                if not isinstance(event, dict):
-                    continue
-                obj = event.get("object")
-                if not isinstance(obj, dict):
-                    continue
-                metadata = obj.get("metadata")
-                if not isinstance(metadata, dict):
-                    continue
-                rv = str(metadata.get("resourceVersion", "")).strip()
-                if rv:
-                    latest_rv = rv
-            return latest_rv
-        finally:
-            watcher.stop()
-
-    try:
-        latest_rv = await asyncio.wait_for(
-            asyncio.to_thread(_watch),
-            timeout=None if math.isinf(timeout) else timeout,
-        )
-    except TimeoutError:
-        return
-    except ApiException as err:
-        if err.status == 410:
-            # NOTE: watch streams can expire between cycles; reset and relist.
-            state.actions_resource_version = ""
-        return
-    except OSError:
-        return
-    except Exception:
-        return
-
-    if latest_rv:
-        state.actions_resource_version = latest_rv
-
-
 async def run_ceph_capacity_controller(*, timeout: float = INFINITY) -> None:
-    """Run controller reconciliation loop for Ceph autoscaling actions.
-
-    Parameters
-    ----------
-    timeout : float, optional
-        Maximum runtime for this loop.  Defaults to infinity.
-
-    Returns
-    -------
-    None
-        This function runs until cancelled or timeout is reached.
-
-    Raises
-    ------
-    OSError
-        If malformed managed state or unrecoverable API errors are encountered.
-    """
-
+    """Run controller reconciliation loop for Ceph autoscaling actions."""
     if timeout <= 0:
         raise TimeoutError("controller timeout must be non-negative")
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout
     state = ControllerState()
-    with Kube.inside_cluster() as api:
-        # NOTE: watch+tick hybrid ensures bounded convergence latency while still reacting
-        # quickly to action updates.
+    with Kube.inside_cluster() as kube:
         while True:
             interval = 30.0
             try:
-                autoscaler = await _controller_read_autoscaler(api, timeout=_remaining(deadline))
-                interval = float(autoscaler.spec.reconcile_interval_seconds)
-                actions = await _controller_list_actions(api, timeout=_remaining(deadline))
-                nodes = await _controller_list_nodes(api, timeout=_remaining(deadline))
-                capacity = await _ceph_capacity(timeout=_remaining(deadline))
-
-                counts = {phase: 0 for phase in AUTOSCALE_PHASES}
-                for action in actions.items:
-                    phase = action.status.phase if action.status is not None else "Pending"
-                    if phase in counts:
-                        counts[phase] += 1
-                    rv = action.metadata.resourceVersion.strip()
-                    if rv:
-                        state.actions_resource_version = rv
-
+                policy = _parse_policy(
+                    await RESOURCES.get_policy(kube, timeout=_remaining(deadline))
+                )
+                interval = float(policy.reconcile_interval_seconds)
+                actions = [
+                    _parse_action(obj)
+                    for obj in await RESOURCES.list_actions(kube, timeout=_remaining(deadline))
+                ]
+                reports = [
+                    _parse_node_report(obj)
+                    for obj in await RESOURCES.list_node_reports(kube, timeout=_remaining(deadline))
+                ]
+                ready_nodes = await RESOURCES.list_ready_nodes(kube, timeout=_remaining(deadline))
+                capacity = await ceph_df(timeout=_remaining(deadline))
+                loop_bytes = _parse_loop_size_bytes(policy.loop_size)
                 planned = _plan_actions(
-                    autoscaler=autoscaler,
+                    policy=policy,
                     capacity=capacity,
-                    nodes=_eligible_nodes(nodes),
+                    actions=actions,
+                    eligible_nodes=_eligible_nodes(
+                        ready_nodes=ready_nodes,
+                        reports=reports,
+                        loop_bytes=loop_bytes,
+                    ),
                     state=state,
                 )
                 if planned:
-                    await _controller_create_actions(
-                        api,
-                        autoscaler=autoscaler,
-                        actions=planned,
+                    await RESOURCES.create_actions(
+                        kube,
+                        policy_generation=policy.generation,
+                        actions=[action.spec() for action in planned],
                         timeout=_remaining(deadline),
                     )
-                    counts["Pending"] += len(planned)
-
-                await _controller_patch_status(
-                    api,
-                    autoscaler=autoscaler,
+                    actions = [
+                        _parse_action(obj)
+                        for obj in await RESOURCES.list_actions(kube, timeout=_remaining(deadline))
+                    ]
+                await _patch_policy_status(
+                    kube,
+                    policy=policy,
                     capacity=capacity,
-                    counts=counts,
+                    counts=_action_counts(actions),
                     error="",
                     timeout=_remaining(deadline),
                 )
             except asyncio.CancelledError:
                 raise
-            except Exception as err:  # pylint: disable=broad-exception-caught
-                # fail-closed status updates make malformed managed state visible to
-                # operators instead of silently masking reconciliation drift.
+            except Exception as err:
                 try:
-                    autoscaler = await _controller_read_autoscaler(
-                        api,
-                        timeout=_remaining(deadline),
+                    policy = _parse_policy(
+                        await RESOURCES.get_policy(kube, timeout=_remaining(deadline))
                     )
-                    await _controller_patch_status(
-                        api,
-                        autoscaler=autoscaler,
+                    await _patch_policy_status(
+                        kube,
+                        policy=policy,
                         capacity=None,
                         counts={phase: 0 for phase in AUTOSCALE_PHASES},
                         error=str(err),
@@ -1187,160 +532,150 @@ async def run_ceph_capacity_controller(*, timeout: float = INFINITY) -> None:
                     )
                 except Exception:
                     pass
-
-            await _controller_watch_actions(
-                api,
-                state=state,
-                timeout=min(interval, _remaining(deadline)),
-            )
+            await asyncio.sleep(min(interval, _remaining(deadline)))
 
 
-async def _agent_list_actions(api: Kube, *, timeout: float) -> list[CephStorageAction]:
-    actions = await _controller_list_actions(api, timeout=timeout)
-    node = os.environ.get("NODE_NAME", "").strip() or platform.node().strip()
+def _worker_node_name() -> str:
+    return sys.argv[2].strip() if len(sys.argv) > 2 else ""
 
-    pending: list[CephStorageAction] = []
-    for action in actions.items:
-        phase = action.status.phase if action.status is not None else "Pending"
-        if action.spec.node_name != node:
-            continue
-        if phase != "Pending":
-            continue
-        pending.append(action)
-    pending.sort(key=lambda item: item.metadata.name)
+
+def _node_name() -> str:
+    import os
+    import platform
+
+    return os.environ.get("NODE_NAME", "").strip() or _worker_node_name() or platform.node().strip()
+
+
+def _node_report_status() -> dict[str, object]:
+    try:
+        snapshot = host_free_bytes()
+        return {
+            "free_bytes": snapshot.free_bytes,
+            "path": snapshot.path.as_posix(),
+            "heartbeat_at": _now_iso(),
+            "last_error": "",
+        }
+    except Exception as err:
+        return {
+            "free_bytes": 0,
+            "path": "",
+            "heartbeat_at": _now_iso(),
+            "last_error": str(err),
+        }
+
+
+async def _agent_pending_actions(
+    kube: Kube,
+    *,
+    node_name: str,
+    timeout: float,
+) -> list[StorageAction]:
+    actions = [_parse_action(obj) for obj in await RESOURCES.list_actions(kube, timeout=timeout)]
+    pending = [
+        action
+        for action in actions
+        if action.node_name == node_name and action.status.phase == "Pending"
+    ]
+    pending.sort(key=lambda action: action.name)
     return pending
 
 
-async def _agent_patch_action_status(
-    api: Kube,
+async def _patch_action_status(
+    kube: Kube,
     *,
-    action: CephStorageAction,
-    phase: Literal["Pending", "Running", "Succeeded", "Failed"],
+    action: StorageAction,
+    phase: ActionPhase,
     message: str,
+    node_name: str,
     timeout: float,
     started: bool = False,
     finished: bool = False,
 ) -> None:
-    patch: dict[str, dict[str, str]] = {
-        "status": {
-            "phase": phase,
-            "message": message,
-            "worker_node": os.environ.get("NODE_NAME", "").strip() or platform.node().strip(),
-        }
+    status: dict[str, object] = {
+        "phase": phase,
+        "message": message,
+        "worker_node": node_name,
     }
     if started:
-        patch["status"]["started_at"] = _now_iso()
+        status["started_at"] = _now_iso()
     if finished:
-        patch["status"]["finished_at"] = _now_iso()
-    await api.run(
-        lambda request_timeout: api.custom.patch_namespaced_custom_object_status(
-            group=AUTOSCALE_GROUP,
-            version=AUTOSCALE_VERSION,
-            namespace=api.namespace,
-            plural=AUTOSCALE_ACTION_PLURAL,
-            name=action.metadata.name,
-            body=patch,
-            _request_timeout=request_timeout,
-        ),
-        timeout=timeout,
-        context=(f"failed to patch status for {AUTOSCALE_ACTION_KIND} {action.metadata.name!r}"),
-    )
-
-
-async def _agent_execute(action: CephStorageAction, *, timeout: float) -> None:
-    result = await _host_ceph_command(
-        ["microceph", "disk", "add", action.spec.loop_spec],
+        status["finished_at"] = _now_iso()
+    await RESOURCES.patch_action_status(
+        kube,
+        name=action.name,
+        status=status,
         timeout=timeout,
     )
-    if result.returncode != 0:
-        raise OSError(f"microceph disk add failed for {action.spec.loop_spec}:\n{result}")
 
 
 async def run_ceph_capacity_agent(*, timeout: float = INFINITY) -> None:
-    """Run node agent loop for executing queued `CephStorageAction` resources.
-
-    Parameters
-    ----------
-    timeout : float, optional
-        Maximum runtime for this loop.  Defaults to infinity.
-
-    Returns
-    -------
-    None
-        This function runs until cancelled or timeout is reached.
-    """
-
+    """Run node agent loop for node reports and queued growth actions."""
     if timeout <= 0:
         raise TimeoutError("agent timeout must be non-negative")
+    node_name = _node_name()
+    if not node_name:
+        raise OSError("Ceph autoscaler agent could not resolve NODE_NAME")
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout
-    with Kube.inside_cluster() as api:
+    with Kube.inside_cluster() as kube:
         while True:
-            pending = await _agent_list_actions(api, timeout=_remaining(deadline))
-            for action in pending:
+            await RESOURCES.upsert_node_report(
+                kube,
+                node_name=node_name,
+                status=_node_report_status(),
+                timeout=_remaining(deadline),
+            )
+            for action in await _agent_pending_actions(
+                kube,
+                node_name=node_name,
+                timeout=_remaining(deadline),
+            ):
                 try:
-                    await _agent_patch_action_status(
-                        api,
+                    await _patch_action_status(
+                        kube,
                         action=action,
                         phase="Running",
                         message="action claimed by node agent",
+                        node_name=node_name,
                         timeout=_remaining(deadline),
                         started=True,
                     )
-                    await _agent_execute(action, timeout=_remaining(deadline))
-                    await _agent_patch_action_status(
-                        api,
+                    await add_loop_osd(action.loop_spec, timeout=_remaining(deadline))
+                    await _patch_action_status(
+                        kube,
                         action=action,
                         phase="Succeeded",
                         message="microceph disk add completed",
+                        node_name=node_name,
                         timeout=_remaining(deadline),
                         finished=True,
                     )
                 except asyncio.CancelledError:
                     raise
-                except Exception as err:  # pylint: disable=broad-exception-caught
-                    await _agent_patch_action_status(
-                        api,
+                except Exception as err:
+                    await _patch_action_status(
+                        kube,
                         action=action,
                         phase="Failed",
                         message=str(err),
+                        node_name=node_name,
                         timeout=_remaining(deadline),
                         finished=True,
                     )
-
             await asyncio.sleep(min(5.0, _remaining(deadline)))
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Entry point for controlplane container role dispatch.
-
-    Parameters
-    ----------
-    argv : list[str] | None, optional
-        Optional CLI arguments.  Defaults to `sys.argv[1:]`.
-
-    Returns
-    -------
-    int
-        POSIX-style exit status code.
-    """
-
+    """Entry point for controlplane container role dispatch."""
     if argv is None:
         argv = sys.argv[1:]
-    if not argv:
-        role = "controller"
-    else:
-        role = argv[0].strip().lower()
-
+    role = argv[0].strip().lower() if argv else "controller"
     if role not in {"controller", "agent"}:
         print(
             "usage: python -m bertrand.env.kube.ceph.autoscale [controller|agent]",
             file=sys.stderr,
         )
         return 2
-
-    # NOTE: split roles keep mutation authority explicit.  Controller enqueues intents;
-    # agent performs host-level disk mutation for node-local execution.
     with asyncio.Runner() as runner:
         if role == "controller":
             runner.run(run_ceph_capacity_controller())

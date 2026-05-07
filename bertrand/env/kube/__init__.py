@@ -52,27 +52,33 @@ from .capability import (
 )
 from .ceph import (
     DEFAULT_VOLUME_SIZE,
-    CephStorageAction,
-    CephStorageActionSpec,
-    CephStorageActionStatus,
-    CephStorageAutoscaler,
-    CephStorageAutoscalerSpec,
-    CephStorageAutoscalerStatus,
+    AutoscalerPolicy,
+    CephCapacitySnapshot,
     MountInfo,
+    NodeCapacitySnapshot,
+    PlannedAction,
     RepoCredentials,
     RepoVolume,
+    StorageAction,
+    StorageActionStatus,
+    StorageNodeReport,
     ceph_capacity_controlplane_image_build,
     ensure_ceph_capacity_controlplane,
     run_ceph_capacity_agent,
     run_ceph_capacity_controller,
 )
 from .config_map import ConfigMap
+from .crd import CustomResourceDefinition
+from .custom import CustomResourceClient, CustomResourceSpec, NamespacedCustomObject
+from .daemonset import DaemonSet
 from .deployment import Deployment
 from .job import Job
 from .node import Node
 from .pod import Pod
+from .rbac import ClusterRole, ClusterRoleBinding, PolicyRuleSpec
 from .secret import Secret
 from .service import Service
+from .service_account import ServiceAccount
 from .volume import (
     PersistentVolume,
     PersistentVolumeClaim,
@@ -103,16 +109,18 @@ __all__ = [
     "CapabilityKind",
     "CapabilityRef",
     "CapabilityScope",
-    "CephStorageAction",
-    "CephStorageActionSpec",
-    "CephStorageActionStatus",
-    "CephStorageAutoscaler",
-    "CephStorageAutoscalerSpec",
-    "CephStorageAutoscalerStatus",
+    "AutoscalerPolicy",
+    "CephCapacitySnapshot",
     "ContainerPortSpec",
     "ContainerSpec",
     "ConfigMap",
+    "ClusterRole",
+    "ClusterRoleBinding",
+    "CustomResourceDefinition",
+    "CustomResourceClient",
+    "CustomResourceSpec",
     "DEFAULT_VOLUME_SIZE",
+    "DaemonSet",
     "DevicePermission",
     "Deployment",
     "EnvVarSpec",
@@ -128,17 +136,25 @@ __all__ = [
     "Job",
     "Kube",
     "MountInfo",
+    "NamespacedCustomObject",
     "Node",
+    "NodeCapacitySnapshot",
     "PersistentVolume",
     "PersistentVolumeClaim",
     "Pod",
+    "PlannedAction",
+    "PolicyRuleSpec",
     "ProbeSpec",
     "RepoCredentials",
     "RepoVolume",
     "Secret",
     "Service",
+    "ServiceAccount",
     "ServicePortSpec",
+    "StorageAction",
+    "StorageActionStatus",
     "StorageClass",
+    "StorageNodeReport",
     "VolumeMountSpec",
     "VolumeSpec",
     "ceph_capacity_controlplane_image_build",
