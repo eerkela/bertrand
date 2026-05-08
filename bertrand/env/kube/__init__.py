@@ -52,24 +52,28 @@ from .capability import (
 )
 from .ceph import (
     DEFAULT_VOLUME_SIZE,
-    AutoscalerPolicy,
+    Agent,
     CephCapacitySnapshot,
+    Controller,
+    LoopOSDSpec,
     MountInfo,
     NodeCapacitySnapshot,
-    PlannedAction,
     RepoCredentials,
     RepoVolume,
-    StorageAction,
-    StorageActionStatus,
-    StorageNodeReport,
     ceph_capacity_controlplane_image_build,
     ensure_ceph_capacity_controlplane,
+    parse_loop_osd_spec,
+    parse_size_bytes,
     run_ceph_capacity_agent,
     run_ceph_capacity_controller,
 )
 from .config_map import ConfigMap
-from .crd import CustomResourceDefinition
-from .custom import CustomResourceClient, CustomResourceSpec, NamespacedCustomObject
+from .crd import (
+    CustomResourceClient,
+    CustomResourceDefinition,
+    CustomResourceSpec,
+    NamespacedCustomObject,
+)
 from .daemonset import DaemonSet
 from .deployment import Deployment
 from .job import Job
@@ -109,8 +113,8 @@ __all__ = [
     "CapabilityKind",
     "CapabilityRef",
     "CapabilityScope",
-    "AutoscalerPolicy",
     "CephCapacitySnapshot",
+    "Controller",
     "ContainerPortSpec",
     "ContainerSpec",
     "ConfigMap",
@@ -135,6 +139,7 @@ __all__ = [
     "IMAGE_REPOSITORY_SIZE",
     "Job",
     "Kube",
+    "LoopOSDSpec",
     "MountInfo",
     "NamespacedCustomObject",
     "Node",
@@ -142,7 +147,6 @@ __all__ = [
     "PersistentVolume",
     "PersistentVolumeClaim",
     "Pod",
-    "PlannedAction",
     "PolicyRuleSpec",
     "ProbeSpec",
     "RepoCredentials",
@@ -151,19 +155,19 @@ __all__ = [
     "Service",
     "ServiceAccount",
     "ServicePortSpec",
-    "StorageAction",
-    "StorageActionStatus",
     "StorageClass",
-    "StorageNodeReport",
     "VolumeMountSpec",
     "VolumeSpec",
     "ceph_capacity_controlplane_image_build",
+    "Agent",
     "build_device_flags",
     "build_secret_flags",
     "cleanup_secret_staged",
     "ensure_ceph_capacity_controlplane",
     "ensure_microk8s_kubeconfig",
+    "parse_loop_osd_spec",
     "parse_pvc_size",
+    "parse_size_bytes",
     "run_ceph_capacity_agent",
     "run_ceph_capacity_controller",
 ]
