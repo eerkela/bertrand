@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
-from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Self
+from typing import TYPE_CHECKING, Self
 
 from kubernetes import client as kube_client
 
-from .api import Kube
+if TYPE_CHECKING:
+    from collections.abc import Collection, Mapping
+
+    from .api import Kube
 
 
 @dataclass(frozen=True)
@@ -30,24 +32,16 @@ class PolicyRuleSpec:
     resources: Collection[str]
     verbs: Collection[str]
 
-    def manifest(self) -> dict[str, object]:
-        """Render this rule into a Kubernetes RBAC manifest fragment.
-
-        Returns
-        -------
-        dict[str, object]
-            Kubernetes `PolicyRule` payload.
-        """
-        return {
-            "apiGroups": list(self.api_groups),
-            "resources": list(self.resources),
-            "verbs": list(self.verbs),
-        }
-
 
 @dataclass(frozen=True)
 class ClusterRole:
-    """General-purpose wrapper around one Kubernetes ClusterRole object."""
+    """General-purpose wrapper around one Kubernetes ClusterRole object.
+
+    Parameters
+    ----------
+    obj : kube_client.V1ClusterRole
+        Typed Kubernetes ClusterRole payload returned by the cluster API.
+    """
 
     obj: kube_client.V1ClusterRole
 
@@ -67,7 +61,14 @@ class ClusterRole:
                 "labels": dict(labels or {}),
                 "annotations": dict(annotations or {}),
             },
-            "rules": [rule.manifest() for rule in rules],
+            "rules": [
+                {
+                    "apiGroups": list(rule.api_groups),
+                    "resources": list(rule.resources),
+                    "verbs": list(rule.verbs),
+                }
+                for rule in rules
+            ],
         }
 
     @classmethod
@@ -81,10 +82,37 @@ class ClusterRole:
         labels: Mapping[str, str] | None = None,
         annotations: Mapping[str, str] | None = None,
     ) -> Self:
-        """Create or patch one Kubernetes ClusterRole."""
+        """Create or patch one Kubernetes ClusterRole.
+
+        Parameters
+        ----------
+        kube : Kube
+            Active Kubernetes API context.
+        name : str
+            ClusterRole name to create or patch.
+        rules : Collection[PolicyRuleSpec]
+            RBAC policy rules to grant.
+        timeout : float
+            Maximum request budget in seconds. If infinite, wait indefinitely.
+        labels : Mapping[str, str] | None, optional
+            Labels to apply to `metadata.labels`.
+        annotations : Mapping[str, str] | None, optional
+            Annotations to apply to `metadata.annotations`.
+
+        Returns
+        -------
+        ClusterRole
+            Wrapped created or patched ClusterRole.
+
+        Raises
+        ------
+        OSError
+            If Kubernetes create/patch fails or returns malformed data.
+        """
         name = name.strip()
         if not name:
-            raise OSError("ClusterRole upsert requires non-empty name")
+            msg = "ClusterRole upsert requires non-empty name"
+            raise OSError(msg)
         manifest = cls._manifest(
             name=name,
             rules=rules,
@@ -100,13 +128,17 @@ class ClusterRole:
                 timeout=timeout,
                 context=f"failed to create ClusterRole {name}",
             )
-            if not isinstance(created, kube_client.V1ClusterRole):
-                raise OSError(f"malformed Kubernetes ClusterRole payload while creating {name!r}")
-            return cls(obj=created)
         except OSError as err:
             detail = str(err).lower()
             if "status 409" not in detail and "already exists" not in detail:
                 raise
+        else:
+            if not isinstance(created, kube_client.V1ClusterRole):
+                msg = (
+                    f"malformed Kubernetes ClusterRole payload while creating {name!r}"
+                )
+                raise OSError(msg)
+            return cls(obj=created)
 
         patched = await kube.run(
             lambda request_timeout: kube.rbac.patch_cluster_role(
@@ -118,12 +150,14 @@ class ClusterRole:
             context=f"failed to patch ClusterRole {name}",
         )
         if not isinstance(patched, kube_client.V1ClusterRole):
-            raise OSError(f"malformed Kubernetes ClusterRole payload while patching {name!r}")
+            msg = f"malformed Kubernetes ClusterRole payload while patching {name!r}"
+            raise OSError(msg)
         return cls(obj=patched)
 
     @property
     def name(self) -> str:
-        """
+        """Return the ClusterRole name.
+
         Returns
         -------
         str
@@ -134,7 +168,8 @@ class ClusterRole:
 
     @property
     def labels(self) -> Mapping[str, str]:
-        """
+        """Return the ClusterRole labels.
+
         Returns
         -------
         Mapping[str, str]
@@ -148,7 +183,13 @@ class ClusterRole:
 
 @dataclass(frozen=True)
 class ClusterRoleBinding:
-    """General-purpose wrapper around one Kubernetes ClusterRoleBinding object."""
+    """General-purpose wrapper around one Kubernetes ClusterRoleBinding object.
+
+    Parameters
+    ----------
+    obj : kube_client.V1ClusterRoleBinding
+        Typed Kubernetes ClusterRoleBinding payload returned by the cluster API.
+    """
 
     obj: kube_client.V1ClusterRoleBinding
 
@@ -197,10 +238,41 @@ class ClusterRoleBinding:
         labels: Mapping[str, str] | None = None,
         annotations: Mapping[str, str] | None = None,
     ) -> Self:
-        """Create or patch one Kubernetes ClusterRoleBinding."""
+        """Create or patch one Kubernetes ClusterRoleBinding.
+
+        Parameters
+        ----------
+        kube : Kube
+            Active Kubernetes API context.
+        name : str
+            ClusterRoleBinding name to create or patch.
+        role_name : str
+            ClusterRole referenced by the binding.
+        service_account_name : str
+            ServiceAccount subject name.
+        service_account_namespace : str
+            ServiceAccount subject namespace.
+        timeout : float
+            Maximum request budget in seconds. If infinite, wait indefinitely.
+        labels : Mapping[str, str] | None, optional
+            Labels to apply to `metadata.labels`.
+        annotations : Mapping[str, str] | None, optional
+            Annotations to apply to `metadata.annotations`.
+
+        Returns
+        -------
+        ClusterRoleBinding
+            Wrapped created or patched ClusterRoleBinding.
+
+        Raises
+        ------
+        OSError
+            If Kubernetes create/patch fails or returns malformed data.
+        """
         name = name.strip()
         if not name:
-            raise OSError("ClusterRoleBinding upsert requires non-empty name")
+            msg = "ClusterRoleBinding upsert requires non-empty name"
+            raise OSError(msg)
         manifest = cls._manifest(
             name=name,
             role_name=role_name,
@@ -218,15 +290,18 @@ class ClusterRoleBinding:
                 timeout=timeout,
                 context=f"failed to create ClusterRoleBinding {name}",
             )
-            if not isinstance(created, kube_client.V1ClusterRoleBinding):
-                raise OSError(
-                    f"malformed Kubernetes ClusterRoleBinding payload while creating {name!r}"
-                )
-            return cls(obj=created)
         except OSError as err:
             detail = str(err).lower()
             if "status 409" not in detail and "already exists" not in detail:
                 raise
+        else:
+            if not isinstance(created, kube_client.V1ClusterRoleBinding):
+                msg = (
+                    "malformed Kubernetes ClusterRoleBinding payload while creating "
+                    f"{name!r}"
+                )
+                raise OSError(msg)
+            return cls(obj=created)
 
         patched = await kube.run(
             lambda request_timeout: kube.rbac.patch_cluster_role_binding(
@@ -238,14 +313,17 @@ class ClusterRoleBinding:
             context=f"failed to patch ClusterRoleBinding {name}",
         )
         if not isinstance(patched, kube_client.V1ClusterRoleBinding):
-            raise OSError(
-                f"malformed Kubernetes ClusterRoleBinding payload while patching {name!r}"
+            msg = (
+                "malformed Kubernetes ClusterRoleBinding payload while patching "
+                f"{name!r}"
             )
+            raise OSError(msg)
         return cls(obj=patched)
 
     @property
     def name(self) -> str:
-        """
+        """Return the ClusterRoleBinding name.
+
         Returns
         -------
         str

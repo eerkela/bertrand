@@ -4,21 +4,30 @@ from __future__ import annotations
 
 import base64
 import binascii
-import builtins
-from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Self
+from typing import TYPE_CHECKING, Self
 
 from kubernetes import client as kube_client
 
-from ..config.core import KubeName
 from .api import Kube, _label_selector
+
+if TYPE_CHECKING:
+    import builtins
+    from collections.abc import Collection, Mapping
+
+    from bertrand.env.config.core import KubeName
 
 
 @dataclass(frozen=True)
 class Secret:
-    """General-purpose wrapper around one Kubernetes Secret object."""
+    """General-purpose wrapper around one Kubernetes Secret object.
+
+    Parameters
+    ----------
+    obj : kube_client.V1Secret
+        Typed Kubernetes Secret payload returned by the cluster API.
+    """
 
     obj: kube_client.V1Secret
 
@@ -51,8 +60,6 @@ class Secret:
 
         Raises
         ------
-        TimeoutError
-            If the Kubernetes request exceeds `timeout`.
         OSError
             If the Kubernetes API call fails or returns malformed data.
         """
@@ -63,14 +70,18 @@ class Secret:
                 _request_timeout=request_timeout,
             ),
             timeout=timeout,
-            context=f"failed to read cluster secret {name!r} in namespace {namespace!r}",
+            context=(
+                f"failed to read cluster secret {name!r} in namespace {namespace!r}"
+            ),
         )
         if payload is None:
             return None
         if not isinstance(payload, kube_client.V1Secret):
-            raise OSError(
-                f"malformed Kubernetes Secret payload for {name!r} in namespace {namespace!r}"
+            msg = (
+                f"malformed Kubernetes Secret payload for {name!r} in namespace "
+                f"{namespace!r}"
             )
+            raise OSError(msg)
         return cls(obj=payload)
 
     @classmethod
@@ -103,8 +114,6 @@ class Secret:
 
         Raises
         ------
-        TimeoutError
-            If any Kubernetes request exceeds `timeout`.
         OSError
             If a Kubernetes API call fails or returns malformed data.
         """
@@ -132,13 +141,17 @@ class Secret:
                 return []
             for namespace in sorted(normalized):
                 payload = await kube.run(
-                    lambda request_timeout, namespace=namespace: kube.core.list_namespaced_secret(
-                        namespace=namespace,
-                        label_selector=label_selector,
-                        _request_timeout=request_timeout,
+                    lambda request_timeout, namespace=namespace: (
+                        kube.core.list_namespaced_secret(
+                            namespace=namespace,
+                            label_selector=label_selector,
+                            _request_timeout=request_timeout,
+                        )
                     ),
                     timeout=timeout,
-                    context=f"failed to list cluster secrets in namespace {namespace!r}",
+                    context=(
+                        f"failed to list cluster secrets in namespace {namespace!r}"
+                    ),
                 )
                 if payload is not None:
                     payloads.append(payload)
@@ -146,10 +159,12 @@ class Secret:
         out: builtins.list[Self] = []
         for payload in payloads:
             if not isinstance(payload, kube_client.V1SecretList):
-                raise OSError("malformed Kubernetes Secret list payload")
+                msg = "malformed Kubernetes Secret list payload"
+                raise OSError(msg)
             for item in payload.items or []:
                 if not isinstance(item, kube_client.V1Secret):
-                    raise OSError("malformed Kubernetes Secret entry in list payload")
+                    msg = "malformed Kubernetes Secret entry in list payload"
+                    raise OSError(msg)
                 out.append(cls(obj=item))
         return out
 
@@ -191,8 +206,6 @@ class Secret:
 
         Raises
         ------
-        TimeoutError
-            If any Kubernetes request exceeds `timeout`.
         OSError
             If Kubernetes create/patch fails or returns malformed data.
         """
@@ -219,13 +232,15 @@ class Secret:
                 timeout=timeout,
                 context=f"failed to create cluster secret {name!r}",
             )
-            if not isinstance(created, kube_client.V1Secret):
-                raise OSError(f"malformed Kubernetes Secret payload while creating {name!r}")
-            return cls(obj=created)
         except OSError as err:
             detail = str(err).lower()
             if "status 409" not in detail and "already exists" not in detail:
                 raise
+        else:
+            if not isinstance(created, kube_client.V1Secret):
+                msg = f"malformed Kubernetes Secret payload while creating {name!r}"
+                raise OSError(msg)
+            return cls(obj=created)
 
         updated = await kube.run(
             lambda request_timeout: kube.core.patch_namespaced_secret(
@@ -238,7 +253,8 @@ class Secret:
             context=f"failed to update cluster secret {name!r}",
         )
         if not isinstance(updated, kube_client.V1Secret):
-            raise OSError(f"malformed Kubernetes Secret payload while updating {name!r}")
+            msg = f"malformed Kubernetes Secret payload while updating {name!r}"
+            raise OSError(msg)
         return cls(obj=updated)
 
     @property
@@ -258,7 +274,8 @@ class Secret:
         metadata = self.obj.metadata or kube_client.V1ObjectMeta()
         namespace = (metadata.namespace or "").strip()
         if not namespace:
-            raise OSError("secret metadata is missing namespace")
+            msg = "secret metadata is missing namespace"
+            raise OSError(msg)
         return namespace
 
     @property
@@ -278,7 +295,8 @@ class Secret:
         metadata = self.obj.metadata or kube_client.V1ObjectMeta()
         name = (metadata.name or "").strip()
         if not name:
-            raise OSError("secret metadata is missing name")
+            msg = "secret metadata is missing name"
+            raise OSError(msg)
         return name
 
     @property
@@ -327,13 +345,16 @@ class Secret:
         name = self.name
         value = (self.obj.data or {}).get("value")
         if value is None:
-            raise OSError(f"cluster secret {name!r} does not define required key 'data.value'")
+            msg = f"cluster secret {name!r} does not define required key 'data.value'"
+            raise OSError(msg)
         try:
             return base64.b64decode(value, validate=True)
         except (binascii.Error, ValueError) as err:
-            raise OSError(
-                f"cluster secret {name!r} contains invalid base64 data for key 'data.value'"
-            ) from err
+            msg = (
+                f"cluster secret {name!r} contains invalid base64 data for key "
+                "'data.value'"
+            )
+            raise OSError(msg) from err
 
     async def refresh(self, kube: Kube, *, timeout: float) -> Self | None:
         """Re-read this secret by identity.
@@ -350,12 +371,6 @@ class Secret:
         Secret | None
             Latest secret wrapper if it still exists, otherwise `None`.
 
-        Raises
-        ------
-        TimeoutError
-            If the Kubernetes request exceeds `timeout`.
-        OSError
-            If identity is malformed, API request fails, or payload is malformed.
         """
         return await type(self).get(
             kube=kube,
@@ -374,12 +389,6 @@ class Secret:
         timeout : float
             Maximum request budget in seconds. If infinite, wait indefinitely.
 
-        Raises
-        ------
-        TimeoutError
-            If the Kubernetes request exceeds `timeout`.
-        OSError
-            If identity is malformed or Kubernetes delete fails.
         """
         name = self.name
         await kube.run(

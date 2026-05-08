@@ -2,16 +2,19 @@
 
 from __future__ import annotations
 
-import builtins
-from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Self
+from typing import TYPE_CHECKING, Self
 
 from kubernetes import client as kube_client
 
-from ..config.core import KubeName
 from .api import Kube, _label_selector
+
+if TYPE_CHECKING:
+    import builtins
+    from collections.abc import Collection, Mapping
+
+    from bertrand.env.config.core import KubeName
 
 
 @dataclass(frozen=True)
@@ -60,8 +63,6 @@ class ConfigMap:
 
         Raises
         ------
-        TimeoutError
-            If the Kubernetes request exceeds `timeout`.
         OSError
             If Kubernetes returns malformed data or the API call fails.
         """
@@ -72,14 +73,18 @@ class ConfigMap:
                 _request_timeout=request_timeout,
             ),
             timeout=timeout,
-            context=(f"failed to read cluster ConfigMap {name!r} in namespace {namespace!r}"),
+            context=(
+                f"failed to read cluster ConfigMap {name!r} in namespace {namespace!r}"
+            ),
         )
         if payload is None:
             return None
         if not isinstance(payload, kube_client.V1ConfigMap):
-            raise OSError(
-                f"malformed Kubernetes ConfigMap payload for {name!r} in namespace {namespace!r}"
+            msg = (
+                f"malformed Kubernetes ConfigMap payload for {name!r} "
+                f"in namespace {namespace!r}"
             )
+            raise OSError(msg)
         return cls(obj=payload)
 
     @classmethod
@@ -112,8 +117,6 @@ class ConfigMap:
 
         Raises
         ------
-        TimeoutError
-            If any Kubernetes request exceeds `timeout`.
         OSError
             If Kubernetes returns malformed data or a list call fails.
         """
@@ -146,7 +149,9 @@ class ConfigMap:
                         )
                     ),
                     timeout=timeout,
-                    context=f"failed to list cluster ConfigMaps in namespace {namespace!r}",
+                    context=(
+                        f"failed to list cluster ConfigMaps in namespace {namespace!r}"
+                    ),
                 )
                 if payload is not None:
                     payloads.append(payload)
@@ -154,10 +159,12 @@ class ConfigMap:
         out: builtins.list[Self] = []
         for payload in payloads:
             if not isinstance(payload, kube_client.V1ConfigMapList):
-                raise OSError("malformed Kubernetes ConfigMap list payload")
+                msg = "malformed Kubernetes ConfigMap list payload"
+                raise OSError(msg)
             for item in payload.items or []:
                 if not isinstance(item, kube_client.V1ConfigMap):
-                    raise OSError("malformed Kubernetes ConfigMap entry in list payload")
+                    msg = "malformed Kubernetes ConfigMap entry in list payload"
+                    raise OSError(msg)
                 out.append(cls(obj=item))
         return out
 
@@ -227,8 +234,6 @@ class ConfigMap:
 
         Raises
         ------
-        TimeoutError
-            If any Kubernetes request exceeds `timeout`.
         OSError
             If namespace/name are empty, or Kubernetes create/patch fails or returns
             malformed data.
@@ -236,7 +241,8 @@ class ConfigMap:
         namespace = namespace.strip()
         name = name.strip()
         if not namespace or not name:
-            raise OSError("ConfigMap upsert requires non-empty namespace and name")
+            msg = "ConfigMap upsert requires non-empty namespace and name"
+            raise OSError(msg)
         manifest = cls._manifest(
             namespace=namespace,
             name=name,
@@ -256,13 +262,15 @@ class ConfigMap:
                 timeout=timeout,
                 context=f"failed to create cluster ConfigMap {name!r}",
             )
-            if not isinstance(created, kube_client.V1ConfigMap):
-                raise OSError(f"malformed Kubernetes ConfigMap payload while creating {name!r}")
-            return cls(obj=created)
         except OSError as err:
             detail = str(err).lower()
             if "status 409" not in detail and "already exists" not in detail:
                 raise
+        else:
+            if not isinstance(created, kube_client.V1ConfigMap):
+                msg = f"malformed Kubernetes ConfigMap payload while creating {name!r}"
+                raise OSError(msg)
+            return cls(obj=created)
 
         updated = await kube.run(
             lambda request_timeout: kube.core.patch_namespaced_config_map(
@@ -275,12 +283,14 @@ class ConfigMap:
             context=f"failed to update cluster ConfigMap {name!r}",
         )
         if not isinstance(updated, kube_client.V1ConfigMap):
-            raise OSError(f"malformed Kubernetes ConfigMap payload while updating {name!r}")
+            msg = f"malformed Kubernetes ConfigMap payload while updating {name!r}"
+            raise OSError(msg)
         return cls(obj=updated)
 
     @property
     def name(self) -> str:
-        """
+        """Return this ConfigMap's name.
+
         Returns
         -------
         str
@@ -291,7 +301,8 @@ class ConfigMap:
 
     @property
     def namespace(self) -> str:
-        """
+        """Return this ConfigMap's namespace.
+
         Returns
         -------
         str
@@ -302,7 +313,8 @@ class ConfigMap:
 
     @property
     def identity(self) -> tuple[str, str]:
-        """
+        """Return this ConfigMap's namespace/name identity.
+
         Returns
         -------
         tuple[str, str]
@@ -316,12 +328,14 @@ class ConfigMap:
         namespace = self.namespace
         name = self.name
         if not namespace or not name:
-            raise OSError("ConfigMap metadata is missing namespace/name identity")
+            msg = "ConfigMap metadata is missing namespace/name identity"
+            raise OSError(msg)
         return namespace, name
 
     @property
     def data(self) -> Mapping[str, str]:
-        """
+        """Return this ConfigMap's text data.
+
         Returns
         -------
         Mapping[str, str]
@@ -331,7 +345,8 @@ class ConfigMap:
 
     @property
     def binary_data(self) -> Mapping[str, str]:
-        """
+        """Return this ConfigMap's binary data.
+
         Returns
         -------
         Mapping[str, str]
@@ -341,7 +356,8 @@ class ConfigMap:
 
     @property
     def labels(self) -> Mapping[str, str]:
-        """
+        """Return this ConfigMap's labels.
+
         Returns
         -------
         Mapping[str, str]
@@ -354,7 +370,8 @@ class ConfigMap:
 
     @property
     def annotations(self) -> Mapping[str, str]:
-        """
+        """Return this ConfigMap's annotations.
+
         Returns
         -------
         Mapping[str, str]
@@ -380,14 +397,6 @@ class ConfigMap:
         -------
         ConfigMap | None
             Fresh wrapper for the same ConfigMap, or `None` if it no longer exists.
-
-        Raises
-        ------
-        OSError
-            If this wrapper does not contain enough metadata to identify the
-            ConfigMap, or if Kubernetes returns malformed data.
-        TimeoutError
-            If the Kubernetes request exceeds `timeout`.
         """
         namespace, name = self.identity
         return await type(self).get(
@@ -406,14 +415,6 @@ class ConfigMap:
             Active Kubernetes API context.
         timeout : float
             Maximum request budget in seconds. If infinite, wait indefinitely.
-
-        Raises
-        ------
-        OSError
-            If this wrapper does not contain enough metadata to identify the
-            ConfigMap or the delete request fails.
-        TimeoutError
-            If the Kubernetes request exceeds `timeout`.
         """
         namespace, name = self.identity
         await kube.run(

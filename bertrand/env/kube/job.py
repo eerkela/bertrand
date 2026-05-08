@@ -3,19 +3,120 @@
 from __future__ import annotations
 
 import asyncio
-import builtins
-from collections.abc import Collection, Mapping
 from dataclasses import dataclass
-from datetime import datetime
 from types import MappingProxyType
-from typing import Literal, Self
+from typing import TYPE_CHECKING, Literal, Self
 
 import kubernetes
 
-from .api import ContainerSpec, Kube, VolumeSpec, _label_selector
+from .api import ContainerSpec, Kube, ProbeSpec, VolumeSpec, _label_selector
+
+if TYPE_CHECKING:
+    import builtins
+    from collections.abc import Collection, Mapping
+    from datetime import datetime
 
 JOB_WAIT_POLL_INTERVAL_SECONDS = 0.5
 type RestartPolicy = Literal["Never", "OnFailure"]
+
+
+def _probe_manifest(probe: ProbeSpec) -> dict[str, object]:
+    payload = dict(probe.handler)
+    if probe.initial_delay_seconds is not None:
+        payload["initialDelaySeconds"] = probe.initial_delay_seconds
+    if probe.period_seconds is not None:
+        payload["periodSeconds"] = probe.period_seconds
+    if probe.failure_threshold is not None:
+        payload["failureThreshold"] = probe.failure_threshold
+    return payload
+
+
+def _container_manifest(container: ContainerSpec) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "name": container.name,
+        "image": container.image,
+    }
+    if container.image_pull_policy is not None:
+        payload["imagePullPolicy"] = container.image_pull_policy
+    if container.command is not None:
+        payload["command"] = list(container.command)
+    if container.args is not None:
+        payload["args"] = list(container.args)
+    if container.ports:
+        payload["ports"] = [
+            {
+                "name": port.name,
+                "containerPort": port.container_port,
+                "protocol": port.protocol,
+            }
+            for port in container.ports
+        ]
+    if container.env:
+        env: list[dict[str, object]] = []
+        for var in container.env:
+            sources = sum(value is not None for value in (var.value, var.field_path))
+            if sources != 1:
+                msg = "environment variable must define exactly one source"
+                raise ValueError(msg)
+            item: dict[str, object] = {"name": var.name}
+            if var.value is not None:
+                item["value"] = var.value
+            elif var.field_path is not None:
+                item["valueFrom"] = {"fieldRef": {"fieldPath": var.field_path}}
+            env.append(item)
+        payload["env"] = env
+    if container.readiness_probe is not None:
+        payload["readinessProbe"] = _probe_manifest(container.readiness_probe)
+    if container.liveness_probe is not None:
+        payload["livenessProbe"] = _probe_manifest(container.liveness_probe)
+    if container.volume_mounts:
+        payload["volumeMounts"] = [
+            {
+                key: value
+                for key, value in {
+                    "name": mount.name,
+                    "mountPath": mount.mount_path,
+                    "readOnly": mount.read_only,
+                }.items()
+                if value is not None
+            }
+            for mount in container.volume_mounts
+        ]
+    if container.security_context is not None:
+        payload["securityContext"] = dict(container.security_context)
+    return payload
+
+
+def _volume_manifest(volume: VolumeSpec) -> dict[str, object]:
+    kinds = sum(
+        value is not None
+        for value in (
+            volume.empty_dir_config,
+            volume.config_map_name,
+            volume.persistent_volume_claim,
+            volume.host_path_path,
+        )
+    )
+    if kinds != 1:
+        msg = "Kubernetes volume must define exactly one source"
+        raise ValueError(msg)
+
+    payload: dict[str, object] = {"name": volume.name}
+    if volume.empty_dir_config is not None:
+        payload["emptyDir"] = dict(volume.empty_dir_config)
+    elif volume.config_map_name is not None:
+        config_map: dict[str, object] = {"name": volume.config_map_name}
+        if volume.config_map_optional is not None:
+            config_map["optional"] = volume.config_map_optional
+        payload["configMap"] = config_map
+    elif volume.persistent_volume_claim is not None:
+        payload["persistentVolumeClaim"] = {"claimName": volume.persistent_volume_claim}
+    elif volume.host_path_path is not None:
+        host_path: dict[str, object] = {"path": volume.host_path_path}
+        if volume.host_path_type is not None:
+            host_path["type"] = volume.host_path_type
+        payload["hostPath"] = host_path
+    return payload
 
 
 @dataclass(frozen=True)
@@ -65,8 +166,6 @@ class Job:
 
         Raises
         ------
-        TimeoutError
-            If the Kubernetes request exceeds `timeout`.
         OSError
             If Kubernetes returns malformed data or the API call fails.
         """
@@ -82,9 +181,11 @@ class Job:
         if payload is None:
             return None
         if not isinstance(payload, kubernetes.client.V1Job):
-            raise OSError(
-                f"malformed Kubernetes Job payload for {name!r} in namespace {namespace!r}"
+            msg = (
+                f"malformed Kubernetes Job payload for {name!r} in namespace "
+                f"{namespace!r}"
             )
+            raise OSError(msg)
         return cls(obj=payload)
 
     @classmethod
@@ -117,8 +218,6 @@ class Job:
 
         Raises
         ------
-        TimeoutError
-            If any Kubernetes request exceeds `timeout`.
         OSError
             If Kubernetes returns malformed data or a list call fails.
         """
@@ -143,10 +242,12 @@ class Job:
                 return []
             for namespace in sorted(normalized):
                 payload = await kube.run(
-                    lambda request_timeout, namespace=namespace: kube.batch.list_namespaced_job(
-                        namespace=namespace,
-                        label_selector=label_selector,
-                        _request_timeout=request_timeout,
+                    lambda request_timeout, namespace=namespace: (
+                        kube.batch.list_namespaced_job(
+                            namespace=namespace,
+                            label_selector=label_selector,
+                            _request_timeout=request_timeout,
+                        )
                     ),
                     timeout=timeout,
                     context=f"failed to list Jobs in namespace {namespace!r}",
@@ -157,10 +258,12 @@ class Job:
         out: builtins.list[Self] = []
         for payload in payloads:
             if not isinstance(payload, kubernetes.client.V1JobList):
-                raise OSError("malformed Kubernetes Job list payload")
+                msg = "malformed Kubernetes Job list payload"
+                raise OSError(msg)
             for item in payload.items or []:
                 if not isinstance(item, kubernetes.client.V1Job):
-                    raise OSError("malformed Kubernetes Job entry in list payload")
+                    msg = "malformed Kubernetes Job entry in list payload"
+                    raise OSError(msg)
                 out.append(cls(obj=item))
         return out
 
@@ -183,8 +286,8 @@ class Job:
         template_spec: dict[str, object] = {
             "automountServiceAccountToken": automount_service_account_token,
             "restartPolicy": restart_policy,
-            "containers": [container.manifest() for container in containers],
-            "volumes": [volume.manifest() for volume in volumes],
+            "containers": [_container_manifest(container) for container in containers],
+            "volumes": [_volume_manifest(volume) for volume in volumes],
         }
         if node_selector:
             template_spec["nodeSelector"] = dict(node_selector)
@@ -272,8 +375,6 @@ class Job:
 
         Raises
         ------
-        TimeoutError
-            If the Kubernetes request exceeds `timeout`.
         OSError
             If Kubernetes create fails or returns malformed data.
         ValueError
@@ -282,11 +383,14 @@ class Job:
         namespace = namespace.strip()
         name = name.strip()
         if not namespace or not name:
-            raise OSError("Job create requires non-empty namespace and name")
+            msg = "Job create requires non-empty namespace and name"
+            raise OSError(msg)
         if backoff_limit < 0:
-            raise ValueError("Job backoff limit cannot be negative")
+            msg = "Job backoff limit cannot be negative"
+            raise ValueError(msg)
         if ttl_seconds_after_finished is not None and ttl_seconds_after_finished < 0:
-            raise ValueError("Job TTL cannot be negative")
+            msg = "Job TTL cannot be negative"
+            raise ValueError(msg)
 
         manifest = cls._manifest(
             namespace=namespace,
@@ -312,12 +416,14 @@ class Job:
             context=f"failed to create Job {namespace}/{name}",
         )
         if not isinstance(created, kubernetes.client.V1Job):
-            raise OSError(f"malformed Kubernetes Job payload while creating {name!r}")
+            msg = f"malformed Kubernetes Job payload while creating {name!r}"
+            raise OSError(msg)
         return cls(obj=created)
 
     @property
     def name(self) -> str:
-        """
+        """Return the Job name.
+
         Returns
         -------
         str
@@ -328,7 +434,8 @@ class Job:
 
     @property
     def namespace(self) -> str:
-        """
+        """Return the Job namespace.
+
         Returns
         -------
         str
@@ -339,7 +446,8 @@ class Job:
 
     @property
     def labels(self) -> Mapping[str, str]:
-        """
+        """Return the Job labels.
+
         Returns
         -------
         Mapping[str, str]
@@ -352,7 +460,8 @@ class Job:
 
     @property
     def active(self) -> int:
-        """
+        """Return the active pod count.
+
         Returns
         -------
         int
@@ -363,7 +472,8 @@ class Job:
 
     @property
     def succeeded(self) -> int:
-        """
+        """Return the succeeded pod count.
+
         Returns
         -------
         int
@@ -374,7 +484,8 @@ class Job:
 
     @property
     def failed(self) -> int:
-        """
+        """Return the failed pod count.
+
         Returns
         -------
         int
@@ -385,7 +496,8 @@ class Job:
 
     @property
     def completion_time(self) -> datetime | None:
-        """
+        """Return the Job completion timestamp.
+
         Returns
         -------
         datetime | None
@@ -396,7 +508,8 @@ class Job:
 
     @property
     def failed_condition(self) -> str | None:
-        """
+        """Return the terminal failure message.
+
         Returns
         -------
         str | None
@@ -428,13 +541,12 @@ class Job:
         OSError
             If this wrapper does not contain enough metadata to identify the Job,
             or if Kubernetes returns malformed data.
-        TimeoutError
-            If the Kubernetes request exceeds `timeout`.
         """
         namespace = self.namespace
         name = self.name
         if not namespace or not name:
-            raise OSError("cannot refresh Job with missing metadata.name/namespace")
+            msg = "cannot refresh Job with missing metadata.name/namespace"
+            raise OSError(msg)
         return await type(self).get(
             kube,
             namespace=namespace,
@@ -457,13 +569,12 @@ class Job:
         OSError
             If this wrapper is missing identity, the delete request fails, or
             Kubernetes returns malformed data.
-        TimeoutError
-            If the Kubernetes request exceeds `timeout`.
         """
         namespace = self.namespace
         name = self.name
         if not namespace or not name:
-            raise OSError("cannot delete Job with missing metadata.name/namespace")
+            msg = "cannot delete Job with missing metadata.name/namespace"
+            raise OSError(msg)
         payload = await kube.run(
             lambda request_timeout: kube.batch.delete_namespaced_job(
                 name=name,
@@ -475,7 +586,8 @@ class Job:
             context=f"failed to delete Job {namespace}/{name}",
         )
         if payload is not None and not isinstance(payload, kubernetes.client.V1Status):
-            raise OSError(f"malformed Kubernetes response while deleting Job {namespace}/{name}")
+            msg = f"malformed Kubernetes response while deleting Job {namespace}/{name}"
+            raise OSError(msg)
 
     async def wait_deleted(self, kube: Kube, *, timeout: float) -> None:
         """Wait until this Job is deleted from the cluster.
@@ -498,15 +610,18 @@ class Job:
         namespace = self.namespace
         name = self.name
         if not namespace or not name:
-            raise OSError("cannot wait for Job deletion with missing identity")
+            msg = "cannot wait for Job deletion with missing identity"
+            raise OSError(msg)
         if timeout <= 0:
-            raise TimeoutError(f"timed out waiting for Job {namespace}/{name} deletion")
+            msg = f"timed out waiting for Job {namespace}/{name} deletion"
+            raise TimeoutError(msg)
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
         while True:
             remaining = deadline - loop.time()
             if remaining <= 0:
-                raise TimeoutError(f"timed out waiting for Job {namespace}/{name} deletion")
+                msg = f"timed out waiting for Job {namespace}/{name} deletion"
+                raise TimeoutError(msg)
             live = await self.refresh(kube, timeout=remaining)
             if live is None:
                 return
@@ -538,9 +653,11 @@ class Job:
         namespace = self.namespace
         name = self.name
         if not namespace or not name:
-            raise OSError("cannot wait for Job completion with missing identity")
+            msg = "cannot wait for Job completion with missing identity"
+            raise OSError(msg)
         if timeout <= 0:
-            raise TimeoutError(f"timed out waiting for Job {namespace}/{name} completion")
+            msg = f"timed out waiting for Job {namespace}/{name} completion"
+            raise TimeoutError(msg)
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
         current: Self = self
@@ -549,13 +666,16 @@ class Job:
                 return current
             failed_condition = current.failed_condition
             if failed_condition is not None:
-                raise OSError(f"Job {namespace}/{name} failed: {failed_condition}")
+                msg = f"Job {namespace}/{name} failed: {failed_condition}"
+                raise OSError(msg)
 
             remaining = deadline - loop.time()
             if remaining <= 0:
-                raise TimeoutError(f"timed out waiting for Job {namespace}/{name} completion")
+                msg = f"timed out waiting for Job {namespace}/{name} completion"
+                raise TimeoutError(msg)
             await asyncio.sleep(min(JOB_WAIT_POLL_INTERVAL_SECONDS, remaining))
             refreshed = await current.refresh(kube, timeout=deadline - loop.time())
             if refreshed is None:
-                raise OSError(f"Job {namespace}/{name} disappeared while waiting for completion")
+                msg = f"Job {namespace}/{name} disappeared while waiting for completion"
+                raise OSError(msg)
             current = refreshed

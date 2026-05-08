@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import math
 from collections.abc import Callable, Collection, Mapping, Sequence
+from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, Self
@@ -17,16 +18,16 @@ from urllib.parse import urlparse
 import kubernetes
 from kubernetes.client.rest import ApiException
 
-from ..run import BERTRAND_NAMESPACE, STATE_DIR, atomic_write_text, run
+from bertrand.env.run import BERTRAND_NAMESPACE, STATE_DIR, atomic_write_text, run
 
 CLUSTER_REGISTRY_READY_LABEL = "bertrand.dev/registry-ready"
 CLUSTER_REGISTRY_READY_VALUE = "true"
 KUBE_CONFIG_FILE = STATE_DIR / "kubeconfig"
 MICROK8S_KUBECONFIG_CONTEXT = "microk8s"
+type PortProtocol = Literal["TCP", "UDP", "SCTP"]
 
 
 def _label_selector(labels: Mapping[str, str] | None) -> str | None:
-    """Render Kubernetes label selectors from key-value dictionaries."""
     if labels is None:
         return None
     if not labels:
@@ -35,30 +36,34 @@ def _label_selector(labels: Mapping[str, str] | None) -> str | None:
 
 
 def _kubeconfig_identity(payload: str, *, source: str) -> tuple[str, str]:
-    """Extract `(server, certificate-authority-data)` from one kubeconfig payload."""
     try:
         raw = kubernetes.config.kube_config.yaml.safe_load(payload)
     except Exception as err:
-        raise OSError(f"{source} is not valid kubeconfig YAML: {err}") from err
+        msg = f"{source} is not valid kubeconfig YAML: {err}"
+        raise OSError(msg) from err
     if not isinstance(raw, Mapping):
-        raise OSError(f"{source} kubeconfig must deserialize into a mapping")
+        msg = f"{source} kubeconfig must deserialize into a mapping"
+        raise OSError(msg)
 
     current_context = str(raw.get("current-context") or "").strip()
     if not current_context:
-        raise OSError(f"{source} kubeconfig is missing 'current-context'")
+        msg = f"{source} kubeconfig is missing 'current-context'"
+        raise OSError(msg)
 
     # NOTE: we lock to MicroK8s' canonical context name so a mismatched config
     # cannot silently retarget Bertrand to another cluster.
     if current_context != MICROK8S_KUBECONFIG_CONTEXT:
-        raise OSError(
+        msg = (
             f"{source} kubeconfig must use current-context "
             f"{MICROK8S_KUBECONFIG_CONTEXT!r}, got {current_context!r}"
         )
+        raise OSError(msg)
 
     cluster_name = ""
     contexts = raw.get("contexts")
     if not isinstance(contexts, list):
-        raise OSError(f"{source} kubeconfig is missing context list")
+        msg = f"{source} kubeconfig is missing context list"
+        raise OSError(msg)
     for entry in contexts:
         if not isinstance(entry, Mapping):
             continue
@@ -69,11 +74,13 @@ def _kubeconfig_identity(payload: str, *, source: str) -> tuple[str, str]:
             cluster_name = str(context.get("cluster") or "").strip()
             break
     if not cluster_name:
-        raise OSError(f"{source} kubeconfig has no cluster bound to context {current_context!r}")
+        msg = f"{source} kubeconfig has no cluster bound to context {current_context!r}"
+        raise OSError(msg)
 
     clusters = raw.get("clusters")
     if not isinstance(clusters, list):
-        raise OSError(f"{source} kubeconfig is missing cluster list")
+        msg = f"{source} kubeconfig is missing cluster list"
+        raise OSError(msg)
     cluster_payload: Mapping[str, object] | None = None
     for entry in clusters:
         if not isinstance(entry, Mapping):
@@ -85,27 +92,33 @@ def _kubeconfig_identity(payload: str, *, source: str) -> tuple[str, str]:
             cluster_payload = cluster
             break
     if cluster_payload is None:
-        raise OSError(f"{source} kubeconfig has no cluster payload named {cluster_name!r}")
+        msg = f"{source} kubeconfig has no cluster payload named {cluster_name!r}"
+        raise OSError(msg)
 
     server = str(cluster_payload.get("server") or "").strip()
     if not server:
-        raise OSError(f"{source} kubeconfig is missing cluster.server")
+        msg = f"{source} kubeconfig is missing cluster.server"
+        raise OSError(msg)
     parsed = urlparse(server)
     if parsed.scheme != "https" or not parsed.hostname:
-        raise OSError(
-            f"{source} kubeconfig cluster.server must be a valid HTTPS URL, got {server!r}"
+        msg = (
+            f"{source} kubeconfig cluster.server must be a valid HTTPS URL, "
+            f"got {server!r}"
         )
+        raise OSError(msg)
 
     ca_data = str(cluster_payload.get("certificate-authority-data") or "").strip()
     if not ca_data:
-        raise OSError(f"{source} kubeconfig is missing cluster.certificate-authority-data")
+        msg = f"{source} kubeconfig is missing cluster.certificate-authority-data"
+        raise OSError(msg)
 
     return server, ca_data
 
 
 async def _microk8s_config_payload(*, timeout: float) -> str:
     if timeout <= 0:
-        raise TimeoutError("kubeconfig timeout must be non-negative")
+        msg = "kubeconfig timeout must be non-negative"
+        raise TimeoutError(msg)
     result = await run(
         ["microk8s", "config"],
         capture_output=True,
@@ -113,7 +126,8 @@ async def _microk8s_config_payload(*, timeout: float) -> str:
     )
     text = result.stdout.strip()
     if not text:
-        raise OSError("microk8s config returned an empty kubeconfig payload")
+        msg = "microk8s config returned an empty kubeconfig payload"
+        raise OSError(msg)
     return text if text.endswith("\n") else f"{text}\n"
 
 
@@ -129,13 +143,6 @@ async def ensure_microk8s_kubeconfig(*, timeout: float) -> Path:
     -------
     Path
         The managed kubeconfig path that was converged.
-
-    Raises
-    ------
-    TimeoutError
-        If `timeout` is non-positive or command execution exceeds the budget.
-    OSError
-        If `microk8s config` returns an empty payload.
     """
     payload = await _microk8s_config_payload(timeout=timeout)
 
@@ -192,6 +199,7 @@ class Kube:
     storage: kubernetes.client.StorageV1Api = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
+        """Initialize typed Kubernetes API handles from the shared transport."""
         try:
             self.core = kubernetes.client.CoreV1Api(self.client)
             self.apps = kubernetes.client.AppsV1Api(self.client)
@@ -201,10 +209,8 @@ class Kube:
             self.rbac = kubernetes.client.RbacAuthorizationV1Api(self.client)
             self.storage = kubernetes.client.StorageV1Api(self.client)
         except Exception:
-            try:
+            with suppress(Exception):
                 self.client.close()
-            except Exception:
-                pass
             raise
 
     @classmethod
@@ -236,19 +242,21 @@ class Kube:
             strict Bertrand-managed path.
         """
         if not config_file.is_file():
-            raise OSError(
+            msg = (
                 f"kubernetes config is missing at {config_file}.  Run `bertrand init` "
                 "to converge MicroK8s API access first."
             )
+            raise OSError(msg)
         try:
             return cls(
                 namespace=namespace,
-                client=kubernetes.config.new_client_from_config(config_file=str(config_file)),
+                client=kubernetes.config.new_client_from_config(
+                    config_file=str(config_file)
+                ),
             )
         except Exception as err:
-            raise OSError(
-                f"failed to initialize kubernetes client from {config_file}: {err}"
-            ) from err
+            msg = f"failed to initialize kubernetes client from {config_file}: {err}"
+            raise OSError(msg) from err
 
     @classmethod
     async def host(
@@ -257,7 +265,7 @@ class Kube:
         timeout: float,
         namespace: str = BERTRAND_NAMESPACE,
     ) -> Self:
-        """Build a host-side Kubernetes client with strict local MicroK8s identity proof.
+        """Build a host-side Kubernetes client with strict local MicroK8s identity.
 
         Parameters
         ----------
@@ -280,7 +288,8 @@ class Kube:
             client initialization fails.
         """
         if timeout <= 0:
-            raise TimeoutError("kubernetes host-client timeout must be non-negative")
+            msg = "kubernetes host-client timeout must be non-negative"
+            raise TimeoutError(msg)
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
 
@@ -290,7 +299,8 @@ class Kube:
         try:
             managed_payload = config_file.read_text(encoding="utf-8")
         except OSError as err:
-            raise OSError(f"failed to read managed kubeconfig at {config_file}: {err}") from err
+            msg = f"failed to read managed kubeconfig at {config_file}: {err}"
+            raise OSError(msg) from err
         fresh_payload = await _microk8s_config_payload(timeout=deadline - loop.time())
 
         managed_server, managed_ca = _kubeconfig_identity(
@@ -302,20 +312,22 @@ class Kube:
             source="`microk8s config`",
         )
         if managed_server != local_server or managed_ca != local_ca:
-            raise OSError(
+            msg = (
                 "managed kubeconfig identity does not match local MicroK8s identity; "
                 "run `bertrand init` to reconverge host kube access."
             )
+            raise OSError(msg)
 
         try:
             return cls(
                 namespace=namespace,
-                client=kubernetes.config.new_client_from_config(config_file=str(config_file)),
+                client=kubernetes.config.new_client_from_config(
+                    config_file=str(config_file)
+                ),
             )
         except Exception as err:
-            raise OSError(
-                f"failed to initialize kubernetes client from {config_file}: {err}"
-            ) from err
+            msg = f"failed to initialize kubernetes client from {config_file}: {err}"
+            raise OSError(msg) from err
 
     @classmethod
     def inside_cluster(
@@ -345,11 +357,14 @@ class Kube:
         try:
             kubernetes.config.load_incluster_config(client_configuration=configuration)
         except Exception as err:
-            raise OSError(f"failed to load in-cluster kubernetes configuration: {err}") from err
+            msg = f"failed to load in-cluster kubernetes configuration: {err}"
+            raise OSError(msg) from err
 
         resolved_namespace = namespace
         if resolved_namespace is None:
-            namespace_path = Path("/var/run/secrets/kubernetes.io/serviceaccount/namespace")
+            namespace_path = Path(
+                "/var/run/secrets/kubernetes.io/serviceaccount/namespace"
+            )
             resolved_namespace = (
                 namespace_path.read_text(encoding="utf-8").strip()
                 if namespace_path.is_file()
@@ -364,9 +379,17 @@ class Kube:
         )
 
     def __enter__(self) -> Self:
+        """Enter the Kubernetes client context manager.
+
+        Returns
+        -------
+        Kube
+            This Kubernetes API wrapper.
+        """
         return self
 
     def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+        """Close the Kubernetes API transport when leaving the context manager."""
         self.client.close()
 
     async def run[T](
@@ -401,7 +424,8 @@ class Kube:
             If the API call fails with any non-404 error.
         """
         if timeout <= 0:
-            raise TimeoutError(f"{context} timed out before request could start")
+            msg = f"{context} timed out before request could start"
+            raise TimeoutError(msg)
         request_timeout = None if math.isinf(timeout) else timeout
         try:
             return await asyncio.wait_for(
@@ -409,17 +433,14 @@ class Kube:
                 timeout=request_timeout,
             )
         except TimeoutError as err:
-            raise TimeoutError(f"{context} timed out after {timeout} seconds") from err
+            msg = f"{context} timed out after {timeout} seconds"
+            raise TimeoutError(msg) from err
         except ApiException as err:
             if err.status == 404:
                 return None
             detail = (err.body or err.reason or str(err)).strip()
-            raise OSError(
-                f"{context} failed with kubernetes API status {err.status}: {detail}"
-            ) from err
-
-
-type PortProtocol = Literal["TCP", "UDP", "SCTP"]
+            msg = f"{context} failed with kubernetes API status {err.status}: {detail}"
+            raise OSError(msg) from err
 
 
 @dataclass(frozen=True)
@@ -432,18 +453,6 @@ class ServicePortSpec:
     protocol: PortProtocol = "TCP"
     node_port: int | None = None
 
-    def manifest(self) -> dict[str, object]:
-        """Render this port as a Kubernetes Service port manifest."""
-        payload: dict[str, object] = {
-            "name": self.name,
-            "port": self.port,
-            "targetPort": self.target_port,
-            "protocol": self.protocol,
-        }
-        if self.node_port is not None:
-            payload["nodePort"] = self.node_port
-        return payload
-
 
 @dataclass(frozen=True)
 class ContainerPortSpec:
@@ -452,14 +461,6 @@ class ContainerPortSpec:
     name: str
     container_port: int
     protocol: PortProtocol = "TCP"
-
-    def manifest(self) -> dict[str, object]:
-        """Render this port as a Kubernetes container port manifest."""
-        return {
-            "name": self.name,
-            "containerPort": self.container_port,
-            "protocol": self.protocol,
-        }
 
 
 @dataclass(frozen=True)
@@ -472,20 +473,21 @@ class EnvVarSpec:
 
     @classmethod
     def field_ref(cls, name: str, *, field_path: str) -> Self:
-        """Create an environment variable from a Kubernetes field reference."""
-        return cls(name=name, field_path=field_path)
+        """Create an environment variable from a Kubernetes field reference.
 
-    def manifest(self) -> dict[str, object]:
-        """Render this environment variable as a Kubernetes manifest."""
-        sources = sum(value is not None for value in (self.value, self.field_path))
-        if sources != 1:
-            raise ValueError("environment variable must define exactly one source")
-        payload: dict[str, object] = {"name": self.name}
-        if self.value is not None:
-            payload["value"] = self.value
-        elif self.field_path is not None:
-            payload["valueFrom"] = {"fieldRef": {"fieldPath": self.field_path}}
-        return payload
+        Parameters
+        ----------
+        name : str
+            Environment variable name.
+        field_path : str
+            Kubernetes field path to project into the environment variable.
+
+        Returns
+        -------
+        Self
+            Environment variable specification.
+        """
+        return cls(name=name, field_path=field_path)
 
 
 @dataclass(frozen=True)
@@ -495,16 +497,6 @@ class VolumeMountSpec:
     name: str
     mount_path: str
     read_only: bool | None = None
-
-    def manifest(self) -> dict[str, object]:
-        """Render this mount as a Kubernetes volume mount manifest."""
-        payload: dict[str, object] = {
-            "name": self.name,
-            "mountPath": self.mount_path,
-        }
-        if self.read_only is not None:
-            payload["readOnly"] = self.read_only
-        return payload
 
 
 @dataclass(frozen=True)
@@ -525,7 +517,24 @@ class ProbeSpec:
         period_seconds: int | None = None,
         failure_threshold: int | None = None,
     ) -> Self:
-        """Create a TCP socket probe."""
+        """Create a TCP socket probe.
+
+        Parameters
+        ----------
+        port : int | str
+            Container port number or named port to probe.
+        initial_delay_seconds : int | None, optional
+            Delay before the first probe.
+        period_seconds : int | None, optional
+            Interval between probes.
+        failure_threshold : int | None, optional
+            Number of failed probes before Kubernetes marks the container unhealthy.
+
+        Returns
+        -------
+        Self
+            Probe specification.
+        """
         return cls(
             handler={"tcpSocket": {"port": port}},
             initial_delay_seconds=initial_delay_seconds,
@@ -543,24 +552,32 @@ class ProbeSpec:
         period_seconds: int | None = None,
         failure_threshold: int | None = None,
     ) -> Self:
-        """Create an HTTP GET probe."""
+        """Create an HTTP GET probe.
+
+        Parameters
+        ----------
+        path : str
+            HTTP path to request.
+        port : int | str
+            Container port number or named port to probe.
+        initial_delay_seconds : int | None, optional
+            Delay before the first probe.
+        period_seconds : int | None, optional
+            Interval between probes.
+        failure_threshold : int | None, optional
+            Number of failed probes before Kubernetes marks the container unhealthy.
+
+        Returns
+        -------
+        Self
+            Probe specification.
+        """
         return cls(
             handler={"httpGet": {"path": path, "port": port}},
             initial_delay_seconds=initial_delay_seconds,
             period_seconds=period_seconds,
             failure_threshold=failure_threshold,
         )
-
-    def manifest(self) -> dict[str, object]:
-        """Render this probe as a Kubernetes manifest."""
-        payload = dict(self.handler)
-        if self.initial_delay_seconds is not None:
-            payload["initialDelaySeconds"] = self.initial_delay_seconds
-        if self.period_seconds is not None:
-            payload["periodSeconds"] = self.period_seconds
-        if self.failure_threshold is not None:
-            payload["failureThreshold"] = self.failure_threshold
-        return payload
 
 
 @dataclass(frozen=True)
@@ -578,32 +595,6 @@ class ContainerSpec:
     liveness_probe: ProbeSpec | None = None
     volume_mounts: Collection[VolumeMountSpec] = ()
     security_context: Mapping[str, object] | None = None
-
-    def manifest(self) -> dict[str, object]:
-        """Render this container as a Kubernetes manifest."""
-        payload: dict[str, object] = {
-            "name": self.name,
-            "image": self.image,
-        }
-        if self.image_pull_policy is not None:
-            payload["imagePullPolicy"] = self.image_pull_policy
-        if self.command is not None:
-            payload["command"] = list(self.command)
-        if self.args is not None:
-            payload["args"] = list(self.args)
-        if self.ports:
-            payload["ports"] = [port.manifest() for port in self.ports]
-        if self.env:
-            payload["env"] = [var.manifest() for var in self.env]
-        if self.readiness_probe is not None:
-            payload["readinessProbe"] = self.readiness_probe.manifest()
-        if self.liveness_probe is not None:
-            payload["livenessProbe"] = self.liveness_probe.manifest()
-        if self.volume_mounts:
-            payload["volumeMounts"] = [mount.manifest() for mount in self.volume_mounts]
-        if self.security_context is not None:
-            payload["securityContext"] = dict(self.security_context)
-        return payload
 
 
 @dataclass(frozen=True)
@@ -624,7 +615,20 @@ class VolumeSpec:
         name: str,
         config: Mapping[str, object] | None = None,
     ) -> Self:
-        """Create an `emptyDir` volume specification."""
+        """Create an `emptyDir` volume specification.
+
+        Parameters
+        ----------
+        name : str
+            Pod volume name.
+        config : Mapping[str, object] | None, optional
+            Raw `emptyDir` configuration.
+
+        Returns
+        -------
+        Self
+            Volume specification.
+        """
         return cls(name=name, empty_dir_config=dict(config or {}))
 
     @classmethod
@@ -635,12 +639,44 @@ class VolumeSpec:
         config_map_name: str,
         optional: bool | None = None,
     ) -> Self:
-        """Create a ConfigMap-backed volume specification."""
-        return cls(name=name, config_map_name=config_map_name, config_map_optional=optional)
+        """Create a ConfigMap-backed volume specification.
+
+        Parameters
+        ----------
+        name : str
+            Pod volume name.
+        config_map_name : str
+            Name of the ConfigMap to mount.
+        optional : bool | None, optional
+            Whether the ConfigMap reference is optional.
+
+        Returns
+        -------
+        Self
+            Volume specification.
+        """
+        return cls(
+            name=name,
+            config_map_name=config_map_name,
+            config_map_optional=optional,
+        )
 
     @classmethod
     def pvc(cls, name: str, *, claim_name: str) -> Self:
-        """Create a PVC-backed volume specification."""
+        """Create a PVC-backed volume specification.
+
+        Parameters
+        ----------
+        name : str
+            Pod volume name.
+        claim_name : str
+            Name of the PersistentVolumeClaim to mount.
+
+        Returns
+        -------
+        Self
+            Volume specification.
+        """
         return cls(name=name, persistent_volume_claim=claim_name)
 
     @classmethod
@@ -651,65 +687,20 @@ class VolumeSpec:
         path: str | Path,
         host_path_type: str | None = None,
     ) -> Self:
-        """Create a hostPath-backed volume specification."""
+        """Create a hostPath-backed volume specification.
+
+        Parameters
+        ----------
+        name : str
+            Pod volume name.
+        path : str | Path
+            Host path to mount.
+        host_path_type : str | None, optional
+            Optional Kubernetes hostPath type constraint.
+
+        Returns
+        -------
+        Self
+            Volume specification.
+        """
         return cls(name=name, host_path_path=str(path), host_path_type=host_path_type)
-
-    def manifest(self) -> dict[str, object]:
-        """Render this volume as a Kubernetes manifest."""
-        kinds = sum(
-            value is not None
-            for value in (
-                self.empty_dir_config,
-                self.config_map_name,
-                self.persistent_volume_claim,
-                self.host_path_path,
-            )
-        )
-        if kinds != 1:
-            raise ValueError("Kubernetes volume must define exactly one source")
-
-        payload: dict[str, object] = {"name": self.name}
-        if self.empty_dir_config is not None:
-            payload["emptyDir"] = dict(self.empty_dir_config)
-        elif self.config_map_name is not None:
-            config_map: dict[str, object] = {"name": self.config_map_name}
-            if self.config_map_optional is not None:
-                config_map["optional"] = self.config_map_optional
-            payload["configMap"] = config_map
-        elif self.persistent_volume_claim is not None:
-            payload["persistentVolumeClaim"] = {"claimName": self.persistent_volume_claim}
-        elif self.host_path_path is not None:
-            host_path: dict[str, object] = {"path": self.host_path_path}
-            if self.host_path_type is not None:
-                host_path["type"] = self.host_path_type
-            payload["hostPath"] = host_path
-        return payload
-
-
-def _pod_template_manifest(
-    *,
-    labels: Mapping[str, str],
-    containers: Collection[ContainerSpec],
-    volumes: Collection[VolumeSpec],
-    automount_service_account_token: bool,
-    service_account_name: str | None = None,
-    node_selector: Mapping[str, str] | None = None,
-    host_pid: bool | None = None,
-) -> dict[str, object]:
-    spec: dict[str, object] = {
-        "automountServiceAccountToken": automount_service_account_token,
-        "containers": [container.manifest() for container in containers],
-        "volumes": [volume.manifest() for volume in volumes],
-    }
-    if service_account_name is not None:
-        service_account_name = service_account_name.strip()
-        if service_account_name:
-            spec["serviceAccountName"] = service_account_name
-    if node_selector:
-        spec["nodeSelector"] = dict(node_selector)
-    if host_pid is not None:
-        spec["hostPID"] = host_pid
-    return {
-        "metadata": {"labels": dict(labels)},
-        "spec": spec,
-    }

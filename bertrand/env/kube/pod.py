@@ -3,16 +3,19 @@
 from __future__ import annotations
 
 import asyncio
-import builtins
-from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Self
+from typing import TYPE_CHECKING, Self
 
 import kubernetes
 
-from ..config.core import KubeName
 from .api import Kube, _label_selector
+
+if TYPE_CHECKING:
+    import builtins
+    from collections.abc import Collection, Mapping
+
+    from bertrand.env.config.core import KubeName
 
 POD_MIRROR_ANNOTATION = "kubernetes.io/config.mirror"
 POD_SUPPORTED_CONTROLLER_KINDS = frozenset(
@@ -31,7 +34,13 @@ POD_WAIT_POLL_INTERVAL_SECONDS = 0.5
 
 @dataclass(frozen=True)
 class Pod:
-    """General-purpose wrapper around one Kubernetes Pod object."""
+    """General-purpose wrapper around one Kubernetes Pod object.
+
+    Parameters
+    ----------
+    obj : kubernetes.client.V1Pod
+        Typed Kubernetes Pod payload returned by the cluster API.
+    """
 
     obj: kubernetes.client.V1Pod
 
@@ -65,8 +74,6 @@ class Pod:
 
         Raises
         ------
-        TimeoutError
-            If the Kubernetes request exceeds the timeout budget.
         OSError
             If the Kubernetes API call fails or returns malformed data.
         """
@@ -82,9 +89,11 @@ class Pod:
         if payload is None:
             return None
         if not isinstance(payload, kubernetes.client.V1Pod):
-            raise OSError(
-                f"malformed Kubernetes Pod payload for {name!r} in namespace {namespace!r}"
+            msg = (
+                f"malformed Kubernetes Pod payload for {name!r} in namespace "
+                f"{namespace!r}"
             )
+            raise OSError(msg)
         return cls(obj=payload)
 
     @classmethod
@@ -118,8 +127,6 @@ class Pod:
 
         Raises
         ------
-        TimeoutError
-            If the Kubernetes request exceeds the timeout budget.
         OSError
             If the Kubernetes API call fails or returns malformed data.
         """
@@ -147,10 +154,12 @@ class Pod:
                 return []
             for namespace in sorted(normalized):
                 payload = await kube.run(
-                    lambda request_timeout, namespace=namespace: kube.core.list_namespaced_pod(
-                        namespace=namespace,
-                        label_selector=label_selector,
-                        _request_timeout=request_timeout,
+                    lambda request_timeout, namespace=namespace: (
+                        kube.core.list_namespaced_pod(
+                            namespace=namespace,
+                            label_selector=label_selector,
+                            _request_timeout=request_timeout,
+                        )
                     ),
                     timeout=timeout,
                     context=f"failed to list pods in namespace {namespace!r}",
@@ -161,16 +170,19 @@ class Pod:
         out: builtins.list[Self] = []
         for payload in payloads:
             if not isinstance(payload, kubernetes.client.V1PodList):
-                raise OSError("malformed Kubernetes Pod list payload")
+                msg = "malformed Kubernetes Pod list payload"
+                raise OSError(msg)
             for item in payload.items or []:
                 if not isinstance(item, kubernetes.client.V1Pod):
-                    raise OSError("malformed Kubernetes Pod entry in list payload")
+                    msg = "malformed Kubernetes Pod entry in list payload"
+                    raise OSError(msg)
                 out.append(cls(obj=item))
         return out
 
     @property
     def name(self) -> str:
-        """
+        """Return the Pod name.
+
         Returns
         -------
         str
@@ -181,7 +193,8 @@ class Pod:
 
     @property
     def namespace(self) -> str:
-        """
+        """Return the Pod namespace.
+
         Returns
         -------
         str
@@ -192,7 +205,8 @@ class Pod:
 
     @property
     def identity(self) -> tuple[str, str] | None:
-        """
+        """Return the Pod namespace/name identity.
+
         Returns
         -------
         tuple[str, str] | None
@@ -206,7 +220,8 @@ class Pod:
 
     @property
     def labels(self) -> Mapping[str, str]:
-        """
+        """Return the Pod labels.
+
         Returns
         -------
         Mapping[str, str]
@@ -219,7 +234,8 @@ class Pod:
 
     @property
     def annotations(self) -> Mapping[str, str]:
-        """
+        """Return the Pod annotations.
+
         Returns
         -------
         Mapping[str, str]
@@ -233,7 +249,8 @@ class Pod:
 
     @property
     def phase(self) -> str:
-        """
+        """Return the current Pod phase.
+
         Returns
         -------
         str
@@ -244,7 +261,8 @@ class Pod:
 
     @property
     def is_terminating(self) -> bool:
-        """
+        """Return whether the Pod is terminating.
+
         Returns
         -------
         bool
@@ -255,7 +273,8 @@ class Pod:
 
     @property
     def is_active(self) -> bool:
-        """
+        """Return whether the Pod is active.
+
         Returns
         -------
         bool
@@ -266,7 +285,8 @@ class Pod:
 
     @property
     def is_terminal(self) -> bool:
-        """
+        """Return whether the Pod is terminal.
+
         Returns
         -------
         bool
@@ -276,7 +296,8 @@ class Pod:
 
     @property
     def is_mirror(self) -> bool:
-        """
+        """Return whether the Pod is a static mirror pod.
+
         Returns
         -------
         bool
@@ -286,7 +307,8 @@ class Pod:
 
     @property
     def is_daemonset_controlled(self) -> bool:
-        """
+        """Return whether the Pod is controlled by a DaemonSet.
+
         Returns
         -------
         bool
@@ -328,7 +350,8 @@ class Pod:
 
     @property
     def uses_emptydir(self) -> bool:
-        """
+        """Return whether the Pod uses any `emptyDir` volume.
+
         Returns
         -------
         bool
@@ -342,7 +365,8 @@ class Pod:
 
     @property
     def persistent_volume_claim_names(self) -> tuple[str, ...]:
-        """
+        """Return referenced PersistentVolumeClaim names.
+
         Returns
         -------
         tuple[str, ...]
@@ -381,12 +405,11 @@ class Pod:
         ------
         OSError
             If this pod has no resolvable `(namespace, name)` identity.
-        TimeoutError
-            If the Kubernetes request exceeds the timeout budget.
         """
         identity = self.identity
         if identity is None:
-            raise OSError("cannot refresh pod with missing metadata.name/namespace")
+            msg = "cannot refresh pod with missing metadata.name/namespace"
+            raise OSError(msg)
         namespace, name = identity
         return await type(self).get(
             kube,
@@ -414,16 +437,19 @@ class Pod:
         """
         identity = self.identity
         if identity is None:
-            raise OSError("cannot wait for deletion of pod with missing metadata.name/namespace")
+            msg = "cannot wait for deletion of pod with missing metadata.name/namespace"
+            raise OSError(msg)
         namespace, name = identity
         if timeout <= 0:
-            raise TimeoutError(f"timed out waiting for pod {namespace}/{name} deletion")
+            msg = f"timed out waiting for pod {namespace}/{name} deletion"
+            raise TimeoutError(msg)
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
         while True:
             remaining = deadline - loop.time()
             if remaining <= 0:
-                raise TimeoutError(f"timed out waiting for pod {namespace}/{name} deletion")
+                msg = f"timed out waiting for pod {namespace}/{name} deletion"
+                raise TimeoutError(msg)
             live = await self.refresh(kube, timeout=remaining)
             if live is None:
                 return
@@ -454,23 +480,29 @@ class Pod:
         """
         identity = self.identity
         if identity is None:
-            raise OSError(
-                "cannot wait for terminal phase of pod with missing metadata.name/namespace"
+            msg = (
+                "cannot wait for terminal phase of pod with missing "
+                "metadata.name/namespace"
             )
+            raise OSError(msg)
         namespace, name = identity
         if timeout <= 0:
-            raise TimeoutError(f"timed out waiting for pod {namespace}/{name} terminal phase")
+            msg = f"timed out waiting for pod {namespace}/{name} terminal phase"
+            raise TimeoutError(msg)
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
         while True:
             remaining = deadline - loop.time()
             if remaining <= 0:
-                raise TimeoutError(f"timed out waiting for pod {namespace}/{name} terminal phase")
+                msg = f"timed out waiting for pod {namespace}/{name} terminal phase"
+                raise TimeoutError(msg)
             live = await self.refresh(kube, timeout=remaining)
             if live is None:
-                raise OSError(
-                    f"pod {namespace}/{name} was deleted before reaching a terminal phase"
+                msg = (
+                    f"pod {namespace}/{name} was deleted before reaching a "
+                    "terminal phase"
                 )
+                raise OSError(msg)
             if live.is_terminal:
                 return live
             await asyncio.sleep(min(POD_WAIT_POLL_INTERVAL_SECONDS, remaining))
@@ -494,12 +526,11 @@ class Pod:
         ------
         OSError
             If pod identity is incomplete or eviction fails.
-        TimeoutError
-            If the Kubernetes request exceeds the timeout budget.
         """
         identity = self.identity
         if identity is None:
-            raise OSError("cannot evict pod with missing metadata.name/namespace")
+            msg = "cannot evict pod with missing metadata.name/namespace"
+            raise OSError(msg)
 
         namespace, name = identity
 
@@ -536,12 +567,11 @@ class Pod:
         ------
         OSError
             If this pod has no resolvable `(namespace, name)` identity.
-        TimeoutError
-            If the Kubernetes request exceeds the timeout budget.
         """
         identity = self.identity
         if identity is None:
-            raise OSError("cannot delete pod with missing metadata.name/namespace")
+            msg = "cannot delete pod with missing metadata.name/namespace"
+            raise OSError(msg)
         namespace, name = identity
 
         payload = await kube.run(
@@ -558,4 +588,5 @@ class Pod:
             payload,
             kubernetes.client.V1Status,
         ):
-            raise OSError(f"malformed Kubernetes response while deleting pod {namespace}/{name}")
+            msg = f"malformed Kubernetes response while deleting pod {namespace}/{name}"
+            raise OSError(msg)

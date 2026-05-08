@@ -63,7 +63,6 @@ dependencies = [
     # "pandas >= 2.0.0",
     "psutil",
     # "pyarrow",
-    # "pybind11 >= 2.6.1",
     "pydantic",
     # "python-dateutil",
     # "pytz",
@@ -71,7 +70,6 @@ dependencies = [
     # "regex",
     # "requests",
     # "setuptools",
-    # "tqdm",
     # "tomlkit",
     # "tzlocal",
 ]
@@ -84,13 +82,9 @@ bertrand-mcp = "bertrand.env.mcp:main"
 
 [project.optional-dependencies]
 dev = [
-    "black",
-    "bumpver",
-    "cibuildwheel",
     # "cmake>=3.28",
-    "mypy",
+    "numpydoc",
     "pandas-stubs",
-    "pylint",
     "ruff",
     "pytest",
     "pytest-cpp",
@@ -99,8 +93,6 @@ dev = [
     "sphinx-tabs",
     "sphinx-togglebutton",
     "ty",
-    # "types-colorama",
-    # "types-beautifulsoup4",
     "types-psutil",
     # "types-python-dateutil",
     # "types-pytz",
@@ -108,7 +100,6 @@ dev = [
     # "types-requests",
     # "types-regex",
     "types-setuptools",
-    # "types-tqdm",
     # "types-tzlocal",
 ]
 
@@ -134,7 +125,7 @@ before-all = "choco install visualstudio2022buildtools"  # C/C++ build tools
 
 [tool.ruff]
 target-version = "py312"
-line-length = 100
+line-length = 88
 indent-width = 4
 output-format = "full"
 respect-gitignore = true
@@ -143,27 +134,78 @@ respect-gitignore = true
 quote-style = "preserve"
 indent-style = "space"
 line-ending = "auto"
+docstring-code-format = true
+skip-magic-trailing-comma = false
 
 [tool.ruff.lint]
+preview = true
 select = [
-    "E",
-    "F",
-    "I",
+    "A",
+    "ARG",
+    "ANN",
     "B",
-    "UP",
-    # "ANN",
-    # "D",
+    "BLE",
+    "C4",
+    "D",
     "DOC",
+    "DTZ",
+    "E",
+    "EM",
+    "F",
+    "FA",
+    "FBT",
     "FIX",
+    "G",
+    "I",
+    "LOG",
+    "N",
+    "PERF",
+    "PIE",
+    "PTH",
+    "PYI",
+    "RET",
+    "RSE",
+    "RUF",
+    "SIM",
+    "SLOT",
+    "TC",
+    "TID",
+    "TRY",
+    "UP",
+    "W",
 ]
-# preview = true
+ignore = [
+    "ANN401",   # allow Any where deliberately needed
+    "COM812",   # formatter-compatible if COM is later enabled
+    "ISC001",   # formatter-compatible if ISC is later enabled
+]
 exclude = ["*.pyi"]
 
 [tool.ruff.lint.pydocstyle]
 convention = "numpy"
 
+[tool.ruff.lint.pydoclint]
+ignore-one-line-docstrings = false
+
 [tool.ruff.lint.flake8-annotations]
 mypy-init-return = true
+
+[tool.numpydoc_validation]
+checks = [
+    "PR01",
+    "PR02",
+    "PR03",
+    "PR04",
+    "PR07",
+    "RT01",
+    "RT03",
+    "YD01",
+]
+exclude = [
+    '\._.*$',
+    '\.__repr__$',
+    '\.__str__$',
+]
 
 [tool.ty.src]
 include = ["bertrand", "test", "ast_tests"]
@@ -176,8 +218,8 @@ replace-imports-with-any = ["conan.**"]
 [tool.ty.rules]
 # Preserve default error behavior and explicitly track mypy-like warnings.
 possibly-unresolved-reference = "error"
-redundant-cast = "warn"
-unused-ignore-comment = "warn"
+redundant-cast = "error"
+unused-ignore-comment = "error"
 
 [tool.ty.terminal]
 error-on-warning = false
@@ -186,35 +228,3 @@ error-on-warning = false
 pythonVersion = "3.12"
 venvPath = "."
 venv = "venv"
-
-# Temporary legacy settings during mypy -> ty transition.
-[tool.mypy]
-allow_untyped_globals = false        # force globals to be typed
-disallow_untyped_defs = true         # force function signatures to be typed
-disallow_any_generics = true         # force generic containers to be typed
-strict_optional = true               # force Nones to be explicitly typed
-warn_redundant_casts = true          # warn if typing.cast() is unnecessary
-warn_unused_ignores = true           # warn on unnecessary # type: ignore comments
-warn_no_return = true                # warn on functions with no return branch
-warn_unreachable = true              # warn on unreachable code after type analysis
-pretty = true                        # add source context to error messages
-color_output = true                  # colorize error messages
-error_summary = true                 # print a short summary for each error
-
-[[tool.mypy.overrides]]
-module = ["conan.*"]
-follow_untyped_imports = true
-
-# Temporary legacy settings during pylint -> ruff transition.
-[tool.pylint]
-ignore-patterns = [".*\\.pyi"]       # ignore type stubs
-disable = ["too-many-lines"]         # disable max line length for modules
-extension-pkg-allow-list = "bertrand"  # load Cython extensions
-load-plugins = ["pylint.extensions.docparams"]
-accept-no-param-doc = false          # force function parameters to be documented
-accept-no-return-doc = false         # force function return values to be documented
-accept-no-raise-doc = false          # force exceptions to be documented
-accept-no-yields-doc = false         # force generator yields to be documented
-output-format = "colorized"
-suggestion-mode = true
-jobs = 0

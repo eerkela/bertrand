@@ -3,19 +3,22 @@
 from __future__ import annotations
 
 import asyncio
-import builtins
 import os
 import platform
-from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Literal, Self
+from typing import TYPE_CHECKING, Literal, Self
 
 import kubernetes
 
-from ..config.core import KubeName
 from .api import Kube, _label_selector
 from .pod import Pod
+
+if TYPE_CHECKING:
+    import builtins
+    from collections.abc import Collection, Mapping
+
+    from bertrand.env.config.core import KubeName
 
 NODE_SYSTEM_NAMESPACES = frozenset(
     {
@@ -39,6 +42,13 @@ type TaintEffect = Literal["NoSchedule", "PreferNoSchedule", "NoExecute"]
 class Node:
     """General-purpose wrapper around one Kubernetes Node object.
 
+    Parameters
+    ----------
+    obj : kubernetes.client.V1Node
+        Typed Kubernetes Node payload returned by the cluster API.
+
+    Notes
+    -----
     This wrapper exposes a small, typed surface for common node introspection and
     mutation operations so downstream modules can avoid reimplementing Kubernetes
     node-shape parsing.
@@ -73,8 +83,6 @@ class Node:
 
         Raises
         ------
-        TimeoutError
-            If the Kubernetes request exceeds the timeout budget.
         OSError
             If the Kubernetes API call fails or returns malformed data.
         """
@@ -89,7 +97,8 @@ class Node:
         if payload is None:
             return None
         if not isinstance(payload, kubernetes.client.V1Node):
-            raise OSError(f"malformed Kubernetes node payload for {name!r}")
+            msg = f"malformed Kubernetes node payload for {name!r}"
+            raise OSError(msg)
         return cls(obj=payload)
 
     @classmethod
@@ -119,8 +128,6 @@ class Node:
 
         Raises
         ------
-        TimeoutError
-            If the Kubernetes request exceeds the timeout budget.
         OSError
             If the Kubernetes API call fails or returns malformed data.
         """
@@ -135,11 +142,13 @@ class Node:
         if payload is None:
             return []
         if not isinstance(payload, kubernetes.client.V1NodeList):
-            raise OSError("malformed Kubernetes node list payload")
+            msg = "malformed Kubernetes node list payload"
+            raise OSError(msg)
         out: builtins.list[Self] = []
         for item in payload.items or []:
             if not isinstance(item, kubernetes.client.V1Node):
-                raise OSError("malformed Kubernetes node entry in list payload")
+                msg = "malformed Kubernetes node entry in list payload"
+                raise OSError(msg)
             out.append(cls(obj=item))
         return out
 
@@ -161,15 +170,14 @@ class Node:
 
         Raises
         ------
-        TimeoutError
-            If the node list request exceeds `timeout`.
         OSError
             If no node can be matched, the matched node has no name, or multiple
             nodes make host identity ambiguous.
         """
         nodes = await cls.list(kube=kube, timeout=timeout)
         if not nodes:
-            raise OSError("Kubernetes node list is empty")
+            msg = "Kubernetes node list is empty"
+            raise OSError(msg)
 
         hints = {
             platform.node().strip(),
@@ -181,24 +189,28 @@ class Node:
         for node in nodes:
             if node.matches_identity(hints):
                 if not node.name:
-                    raise OSError("matched local Kubernetes node is missing metadata.name")
+                    msg = "matched local Kubernetes node is missing metadata.name"
+                    raise OSError(msg)
                 return node
 
         if len(nodes) == 1:
             node = nodes[0]
             if not node.name:
-                raise OSError("single Kubernetes node is missing metadata.name")
+                msg = "single Kubernetes node is missing metadata.name"
+                raise OSError(msg)
             return node
 
         names = ", ".join(sorted(node.name for node in nodes if node.name))
-        raise OSError(
+        msg = (
             "unable to map host identity to a unique Kubernetes node name; "
             f"available nodes: {names}"
         )
+        raise OSError(msg)
 
     @property
     def name(self) -> str:
-        """
+        """Return the Node name.
+
         Returns
         -------
         str
@@ -211,7 +223,8 @@ class Node:
 
     @property
     def labels(self) -> Mapping[str, str]:
-        """
+        """Return the Node labels.
+
         Returns
         -------
         Mapping[str, str]
@@ -224,7 +237,8 @@ class Node:
 
     @property
     def annotations(self) -> Mapping[str, str]:
-        """
+        """Return the Node annotations.
+
         Returns
         -------
         Mapping[str, str]
@@ -238,7 +252,8 @@ class Node:
 
     @property
     def hostname(self) -> str:
-        """
+        """Return the Kubernetes hostname label.
+
         Returns
         -------
         str
@@ -248,7 +263,8 @@ class Node:
 
     @property
     def addresses(self) -> tuple[str, ...]:
-        """
+        """Return reported Node addresses.
+
         Returns
         -------
         tuple[str, ...]
@@ -264,7 +280,8 @@ class Node:
 
     @property
     def identity_values(self) -> frozenset[str]:
-        """
+        """Return values that can identify this Node.
+
         Returns
         -------
         frozenset[str]
@@ -293,7 +310,8 @@ class Node:
 
     @property
     def internal_ips(self) -> tuple[str, ...]:
-        """
+        """Return reported internal IP addresses.
+
         Returns
         -------
         tuple[str, ...]
@@ -311,7 +329,8 @@ class Node:
 
     @property
     def external_ips(self) -> tuple[str, ...]:
-        """
+        """Return reported external IP addresses.
+
         Returns
         -------
         tuple[str, ...]
@@ -329,7 +348,8 @@ class Node:
 
     @property
     def roles(self) -> set[str]:
-        """
+        """Return Kubernetes role labels.
+
         Returns
         -------
         set[str]
@@ -344,7 +364,8 @@ class Node:
 
     @property
     def is_control_plane(self) -> bool:
-        """
+        """Return whether this Node is a control-plane node.
+
         Returns
         -------
         bool
@@ -358,7 +379,8 @@ class Node:
 
     @property
     def is_ready(self) -> bool:
-        """
+        """Return whether this Node currently reports Ready.
+
         Returns
         -------
         bool
@@ -373,7 +395,8 @@ class Node:
 
     @property
     def is_schedulable(self) -> bool:
-        """
+        """Return whether this Node accepts new pods.
+
         Returns
         -------
         bool
@@ -384,7 +407,8 @@ class Node:
 
     @property
     def taints(self) -> tuple[kubernetes.client.V1Taint, ...]:
-        """
+        """Return the Node taints.
+
         Returns
         -------
         tuple[kubernetes.client.V1Taint, ...]
@@ -405,7 +429,8 @@ class Node:
     ) -> kubernetes.client.V1Node:
         name = self.name
         if not name:
-            raise OSError("cannot patch Kubernetes node with missing metadata.name")
+            msg = "cannot patch Kubernetes node with missing metadata.name"
+            raise OSError(msg)
         payload = await kube.run(
             lambda timeout: kube.core.patch_node(
                 name=name,
@@ -416,9 +441,11 @@ class Node:
             context=context,
         )
         if payload is None:
-            raise OSError(f"unable to patch Kubernetes node {name!r}: node not found")
+            msg = f"unable to patch Kubernetes node {name!r}: node not found"
+            raise OSError(msg)
         if not isinstance(payload, kubernetes.client.V1Node):
-            raise OSError(f"malformed Kubernetes node patch response for {name!r}")
+            msg = f"malformed Kubernetes node patch response for {name!r}"
+            raise OSError(msg)
         return payload
 
     async def set_label(
@@ -442,12 +469,6 @@ class Node:
         timeout : float
             Maximum runtime budget in seconds.  If infinite, wait indefinitely.
 
-        Raises
-        ------
-        TimeoutError
-            If the patch operation exceeds the timeout budget.
-        OSError
-            If the Kubernetes patch call fails.
         """
         await self._patch(
             kube=kube,
@@ -474,12 +495,6 @@ class Node:
         timeout : float
             Maximum runtime budget in seconds.  If infinite, wait indefinitely.
 
-        Raises
-        ------
-        TimeoutError
-            If the patch operation exceeds the timeout budget.
-        OSError
-            If the Kubernetes patch call fails.
         """
         labels = dict(self.labels)
         if label not in labels:
@@ -489,7 +504,9 @@ class Node:
             kube=kube,
             body={"metadata": {"labels": labels}},
             timeout=timeout,
-            context=f"failed to remove label {label!r} from Kubernetes node {self.name!r}",
+            context=(
+                f"failed to remove label {label!r} from Kubernetes node {self.name!r}"
+            ),
         )
 
     async def set_annotation(
@@ -513,18 +530,14 @@ class Node:
         timeout : float
             Maximum runtime budget in seconds.  If infinite, wait indefinitely.
 
-        Raises
-        ------
-        TimeoutError
-            If the patch operation exceeds the timeout budget.
-        OSError
-            If the Kubernetes patch call fails.
         """
         await self._patch(
             kube=kube,
             body={"metadata": {"annotations": {key: value}}},
             timeout=timeout,
-            context=f"failed to set annotation {key!r} on Kubernetes node {self.name!r}",
+            context=(
+                f"failed to set annotation {key!r} on Kubernetes node {self.name!r}"
+            ),
         )
 
     async def remove_annotation(
@@ -545,12 +558,6 @@ class Node:
         timeout : float
             Maximum runtime budget in seconds.  If infinite, wait indefinitely.
 
-        Raises
-        ------
-        TimeoutError
-            If the patch operation exceeds the timeout budget.
-        OSError
-            If the Kubernetes patch call fails.
         """
         annotations = dict(self.annotations)
         if key not in annotations:
@@ -560,7 +567,10 @@ class Node:
             kube=kube,
             body={"metadata": {"annotations": annotations}},
             timeout=timeout,
-            context=f"failed to remove annotation {key!r} from Kubernetes node {self.name!r}",
+            context=(
+                f"failed to remove annotation {key!r} from Kubernetes node "
+                f"{self.name!r}"
+            ),
         )
 
     async def cordon(self, kube: Kube, *, timeout: float) -> None:
@@ -573,12 +583,6 @@ class Node:
         timeout : float
             Maximum runtime budget in seconds.  If infinite, wait indefinitely.
 
-        Raises
-        ------
-        TimeoutError
-            If the patch operation exceeds the timeout budget.
-        OSError
-            If the Kubernetes patch call fails.
         """
         await self._patch(
             kube=kube,
@@ -597,12 +601,6 @@ class Node:
         timeout : float
             Maximum runtime budget in seconds.  If infinite, wait indefinitely.
 
-        Raises
-        ------
-        TimeoutError
-            If the patch operation exceeds the timeout budget.
-        OSError
-            If the Kubernetes patch call fails.
         """
         await self._patch(
             kube=kube,
@@ -635,12 +633,6 @@ class Node:
         timeout : float
             Maximum runtime budget in seconds.  If infinite, wait indefinitely.
 
-        Raises
-        ------
-        TimeoutError
-            If the patch operation exceeds the timeout budget.
-        OSError
-            If the Kubernetes patch call fails.
         """
         # normalize to one taint per (key, effect) pair so repeated calls converge
         # instead of duplicating entries
@@ -652,11 +644,15 @@ class Node:
                 if replaced:
                     continue
                 replaced = True
-                normalized.append(kubernetes.client.V1Taint(key=key, effect=effect, value=value))
+                normalized.append(
+                    kubernetes.client.V1Taint(key=key, effect=effect, value=value)
+                )
                 continue
             normalized.append(taint)
         if not replaced:
-            normalized.append(kubernetes.client.V1Taint(key=key, effect=effect, value=value))
+            normalized.append(
+                kubernetes.client.V1Taint(key=key, effect=effect, value=value)
+            )
         payload = [
             {
                 "key": (taint.key or ""),
@@ -670,7 +666,10 @@ class Node:
             kube=kube,
             body={"spec": {"taints": payload}},
             timeout=timeout,
-            context=(f"failed to set taint {key!r}/{effect!r} on Kubernetes node {self!r}"),
+            context=(
+                f"failed to set taint {key!r}/{effect!r} on Kubernetes node "
+                f"{self.name!r}"
+            ),
         )
 
     async def remove_taint(
@@ -694,12 +693,6 @@ class Node:
         timeout : float
             Maximum runtime budget in seconds.  If infinite, wait indefinitely.
 
-        Raises
-        ------
-        TimeoutError
-            If the patch operation exceeds the timeout budget.
-        OSError
-            If the Kubernetes patch call fails.
         """
         payload = [
             {
@@ -708,7 +701,10 @@ class Node:
                 **({"value": taint.value} if taint.value else {}),
             }
             for taint in self.taints
-            if not ((taint.key or "") == key and (effect is None or (taint.effect or "") == effect))
+            if not (
+                (taint.key or "") == key
+                and (effect is None or (taint.effect or "") == effect)
+            )
             if (taint.key or "").strip() and (taint.effect or "").strip()
         ]
         await self._patch(
@@ -716,7 +712,8 @@ class Node:
             body={"spec": {"taints": payload}},
             timeout=timeout,
             context=(
-                f"failed to remove taint {key!r}/{effect or '*'} on Kubernetes node {self.name!r}"
+                f"failed to remove taint {key!r}/{effect or '*'} on Kubernetes "
+                f"node {self.name!r}"
             ),
         )
 
@@ -750,8 +747,6 @@ class Node:
 
         Raises
         ------
-        TimeoutError
-            If the Kubernetes request exceeds the timeout budget.
         OSError
             If this node has no name, or if the API payload is malformed.
 
@@ -762,7 +757,8 @@ class Node:
         """
         node_name = self.name
         if not node_name:
-            raise OSError("cannot query pods for Kubernetes node with missing name")
+            msg = "cannot query pods for Kubernetes node with missing name"
+            raise OSError(msg)
         label_selector = _label_selector(labels)
 
         # if no namespace filter is given, do a single cluster-wide query
@@ -782,9 +778,9 @@ class Node:
 
         # otherwise, query each namespace individually and aggregate results
         else:
-            _namespaces = {namespace.strip() for namespace in namespaces}
-            _namespaces.discard("")
-            for namespace in _namespaces:
+            namespaces_ = {namespace.strip() for namespace in namespaces}
+            namespaces_.discard("")
+            for namespace in namespaces_:
                 payload = await kube.run(
                     lambda timeout, namespace=namespace: kube.core.list_namespaced_pod(
                         namespace=namespace,
@@ -805,12 +801,15 @@ class Node:
         out: builtins.list[Pod] = []
         for payload in payloads:
             if not isinstance(payload, kubernetes.client.V1PodList):
-                raise OSError(f"malformed pod list payload for Kubernetes node {node_name!r}")
+                msg = f"malformed pod list payload for Kubernetes node {node_name!r}"
+                raise OSError(msg)
             for item in payload.items or []:
                 if not isinstance(item, kubernetes.client.V1Pod):
-                    raise OSError(
-                        f"malformed pod entry while listing Kubernetes node {node_name!r}"
+                    msg = (
+                        "malformed pod entry while listing Kubernetes node "
+                        f"{node_name!r}"
                     )
+                    raise OSError(msg)
                 out.append(Pod(obj=item))
         return out
 
@@ -848,7 +847,8 @@ class Node:
         require explicit force for potentially disruptive cases.
         """
         if timeout <= 0:
-            raise TimeoutError("node drain timeout must be non-negative")
+            msg = "node drain timeout must be non-negative"
+            raise TimeoutError(msg)
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
 
@@ -868,23 +868,29 @@ class Node:
 
             # DaemonSet pods are always skipped because they are managed to run
             # per-node; drain should not treat them as evictable workload pods
-            if pod.is_daemonset_controlled or (namespace in NODE_SYSTEM_NAMESPACES and not force):
+            if pod.is_daemonset_controlled or (
+                namespace in NODE_SYSTEM_NAMESPACES and not force
+            ):
                 continue
             if pod.uses_emptydir and not force:
                 blocked.append(
-                    f"{namespace}/{name}: uses emptyDir volume (set force=True to allow)"
+                    f"{namespace}/{name}: uses emptyDir volume "
+                    "(set force=True to allow)"
                 )
                 continue
             if not pod.has_supported_controller() and not force:
-                blocked.append(f"{namespace}/{name}: unmanaged pod (set force=True to allow)")
+                blocked.append(
+                    f"{namespace}/{name}: unmanaged pod (set force=True to allow)"
+                )
                 continue
             candidates.append(pod)
         if blocked:
             details = "\n".join(f"  - {line}" for line in sorted(blocked))
-            raise OSError(
+            msg = (
                 f"refusing to drain Kubernetes node {self.name!r} due to non-evictable "
                 f"pods:\n{details}"
             )
+            raise OSError(msg)
 
         # submit evictions first, then track completion separately so PDB retries and
         # convergence polling stay decoupled and predictable
@@ -906,23 +912,28 @@ class Node:
                         raise
                     remaining = deadline - loop.time()
                     if remaining <= 0:
-                        raise TimeoutError(
+                        msg = (
                             f"timed out waiting for PDB eviction budget while draining "
                             f"node {self.name!r}"
-                        ) from err
-                    await asyncio.sleep(min(NODE_DRAIN_POLL_INTERVAL_SECONDS, remaining))
+                        )
+                        raise TimeoutError(msg) from err
+                    await asyncio.sleep(
+                        min(NODE_DRAIN_POLL_INTERVAL_SECONDS, remaining)
+                    )
 
         # eviction admission does not guarantee immediate termination, so we poll
         # node-local pod state until every targeted pod disappears
         while pending:
             remaining = deadline - loop.time()
             if remaining <= 0:
-                raise TimeoutError(
-                    f"timed out waiting for pod eviction convergence on node "
-                    f"{self.name!r}; remaining: {
-                        ', '.join(f'{namespace}/{name}' for namespace, name in sorted(pending))
-                    }"
+                remaining_pods = ", ".join(
+                    f"{namespace}/{name}" for namespace, name in sorted(pending)
                 )
+                msg = (
+                    f"timed out waiting for pod eviction convergence on node "
+                    f"{self.name!r}; remaining: {remaining_pods}"
+                )
+                raise TimeoutError(msg)
             live: set[tuple[str, str]] = set()
             for pod in await self.pods(kube=kube, timeout=remaining):
                 identity = pod.identity
@@ -932,4 +943,6 @@ class Node:
             if pending:
                 # eviction admission is asynchronous, so we poll until all targeted
                 # pods terminate or timeout
-                await asyncio.sleep(min(NODE_DRAIN_POLL_INTERVAL_SECONDS, deadline - loop.time()))
+                await asyncio.sleep(
+                    min(NODE_DRAIN_POLL_INTERVAL_SECONDS, deadline - loop.time())
+                )
