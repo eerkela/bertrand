@@ -28,6 +28,47 @@ CACHE_VOLUME_ENV: str = "BERTRAND_CACHE_VOLUME"
 
 
 @dataclass(frozen=True)
+class BuildKitCacheStatus:
+    """Read-only readiness report for the BuildKit daemon cache PVC.
+
+    Parameters
+    ----------
+    namespace : str
+        Namespace that owns the cache claim.
+    name : str
+        PersistentVolumeClaim name used for BuildKit daemon state.
+    present : bool
+        Whether the claim currently exists.
+    managed : bool
+        Whether the claim carries Bertrand's BuildKit cache ownership labels.
+    bound : bool
+        Whether the claim is bound to a PersistentVolume.
+    phase : str
+        Kubernetes claim phase, or an empty string when the claim is absent.
+    storage_class : str
+        StorageClass name reported by the claim, or an empty string when absent.
+    access_modes : tuple[str, ...]
+        Access modes reported by the claim.
+    storage_request : str
+        Requested storage quantity reported by the claim, or an empty string when
+        absent.
+    ready : bool
+        Whether the claim is present, managed, bound, and usable by BuildKit.
+    """
+
+    namespace: str
+    name: str
+    present: bool
+    managed: bool
+    bound: bool
+    phase: str
+    storage_class: str
+    access_modes: tuple[str, ...]
+    storage_request: str
+    ready: bool
+
+
+@dataclass(frozen=True)
 class BuildKitCache:
     """Persistent BuildKit daemon cache claim.
 
@@ -137,7 +178,77 @@ class BuildKitCache:
                 "ReadWriteMany"
             )
             raise OSError(msg)
-        return pvc
+        return await pvc.wait_bound(kube, timeout=deadline - loop.time())
+
+    async def status(self, kube: Kube, *, timeout: float) -> BuildKitCacheStatus:
+        """Inspect the BuildKit daemon cache PVC.
+
+        Parameters
+        ----------
+        kube : Kube
+            Active Kubernetes API context.
+        timeout : float
+            Maximum request budget in seconds. If infinite, wait indefinitely.
+
+        Returns
+        -------
+        BuildKitCacheStatus
+            Read-only cache claim readiness report.
+
+        Raises
+        ------
+        OSError
+            If Kubernetes returns malformed PVC data.
+        """
+        try:
+            pvc = await PersistentVolumeClaim.get(
+                kube=kube,
+                namespace=self.namespace,
+                timeout=timeout,
+                name=self.name,
+            )
+            if pvc is None:
+                return BuildKitCacheStatus(
+                    namespace=self.namespace,
+                    name=self.name,
+                    present=False,
+                    managed=False,
+                    bound=False,
+                    phase="",
+                    storage_class="",
+                    access_modes=(),
+                    storage_request="",
+                    ready=False,
+                )
+
+            managed = (
+                pvc.labels.get(BERTRAND_ENV) == "1"
+                and pvc.labels.get(BUILDKIT_CACHE_ENV) == "1"
+            )
+            ready = (
+                managed
+                and pvc.is_bound
+                and bool(pvc.storage_class_name)
+                and "ReadWriteMany" in pvc.access_modes
+            )
+            return BuildKitCacheStatus(
+                namespace=self.namespace,
+                name=self.name,
+                present=True,
+                managed=managed,
+                bound=pvc.is_bound,
+                phase=pvc.phase,
+                storage_class=pvc.storage_class_name,
+                access_modes=pvc.access_modes,
+                storage_request=pvc.requested_storage,
+                ready=ready,
+            )
+        except OSError as err:
+            msg = (
+                f"failed to inspect BuildKit cache PVC "
+                f"{self.namespace}/{self.name}: {err}"
+            )
+            raise OSError(msg) from err
 
 
 @dataclass(frozen=True)
@@ -452,30 +563,6 @@ class CacheVolume:
                     require_rwo=False,
                 )
                 await pvc.delete(kube=kube, timeout=deadline - loop.time())
-
-
-async def format_volumes(config: Config, tag: str, env_id: str) -> list[str]:
-    """Render legacy `nerdctl` volume flags for configured cache volumes.
-
-    Parameters
-    ----------
-    config : Config
-        Active configuration context with resolved resources.
-    tag : str
-        Build tag whose resource cache declarations should be rendered.
-    env_id : str
-        Canonical environment UUID used for cache volume identity.
-
-    Returns
-    -------
-    list[str]
-        Flat `nerdctl` argument list containing `-v` mount flags.
-
-    """
-    flags: list[str] = []
-    for volume in await CacheVolume.from_config(config, tag, env_id):
-        flags.extend(["-v", f"{volume.name}:{volume.target.as_posix()}"])
-    return flags
 
 
 BUILDKIT_CACHE = BuildKitCache(

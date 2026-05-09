@@ -1183,7 +1183,8 @@ async def _finalize(
 
 
 REPO_STAGES: tuple[
-    Callable[[RepoState, set[Resource], set[Resource], bool], Awaitable[None]], ...
+    Callable[[RepoState, set[Resource], set[Resource], bool], Awaitable[None]],
+    ...
 ] = (
     _ensure_repo_volume,
     _ensure_repo_credentials,

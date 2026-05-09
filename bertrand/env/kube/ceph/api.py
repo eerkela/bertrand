@@ -5,11 +5,14 @@ from __future__ import annotations
 import json
 import re
 import shutil
-import subprocess
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-from ...run import run
+from bertrand.env.run import run
+
+if TYPE_CHECKING:
+    import subprocess
 
 MICROCEPH_HOST_ROOT = Path("/host")
 MICROCEPH_LOOP_STORAGE_PATH = Path("/var/snap/microceph/common")
@@ -68,13 +71,26 @@ class LoopOSDSpec:
     count: int = 1
 
     def __post_init__(self) -> None:
+        """Normalize and validate the allocation request.
+
+        Raises
+        ------
+        ValueError
+            If the requested loop size or count is invalid.
+        """
         object.__setattr__(self, "size", _normalize_size(self.size))
-        if not isinstance(self.count, int) or isinstance(self.count, bool) or self.count <= 0:
-            raise ValueError(f"invalid MicroCeph loop OSD count: {self.count!r}")
+        if (
+            not isinstance(self.count, int)
+            or isinstance(self.count, bool)
+            or self.count <= 0
+        ):
+            msg = f"invalid MicroCeph loop OSD count: {self.count!r}"
+            raise ValueError(msg)
 
     @property
     def bytes(self) -> int:
-        """
+        """Return the total requested allocation size in bytes.
+
         Returns
         -------
         int
@@ -83,7 +99,8 @@ class LoopOSDSpec:
         return parse_size_bytes(self.size) * self.count
 
     def render(self) -> str:
-        """
+        """Render this allocation as a MicroCeph loop OSD spec string.
+
         Returns
         -------
         str
@@ -101,7 +118,8 @@ def _container_path(path: Path) -> Path:
 def _normalize_size(size: str) -> str:
     normalized = size.strip().upper()
     if not re.fullmatch(LOOP_OSD_SIZE_PATTERN, normalized):
-        raise ValueError(f"invalid MicroCeph loop OSD size: {size!r}")
+        msg = f"invalid MicroCeph loop OSD size: {size!r}"
+        raise ValueError(msg)
     return normalized
 
 
@@ -117,6 +135,7 @@ def parse_size_bytes(size: str) -> int:
     -------
     int
         Parsed byte count.
+
     """
     normalized = _normalize_size(size)
     scale = {"M": 2**20, "G": 2**30, "T": 2**40}[normalized[-1]]
@@ -135,14 +154,21 @@ def parse_loop_osd_spec(value: str) -> LoopOSDSpec:
     -------
     LoopOSDSpec
         Parsed allocation request.
+
+    Raises
+    ------
+    ValueError
+        If `value` does not use the supported MicroCeph loop OSD spec format.
     """
     parts = [part.strip() for part in value.strip().split(",")]
     if len(parts) != 3 or parts[0] != "loop":
-        raise ValueError(f"invalid MicroCeph loop OSD spec: {value!r}")
+        msg = f"invalid MicroCeph loop OSD spec: {value!r}"
+        raise ValueError(msg)
     try:
         count = int(parts[2])
     except ValueError as err:
-        raise ValueError(f"invalid MicroCeph loop OSD count: {parts[2]!r}") from err
+        msg = f"invalid MicroCeph loop OSD count: {parts[2]!r}"
+        raise ValueError(msg) from err
     return LoopOSDSpec(size=parts[1], count=count)
 
 
@@ -151,9 +177,28 @@ async def host_command(
     *,
     timeout: float,
 ) -> subprocess.CompletedProcess[str]:
-    """Run a host MicroCeph command from either host or privileged container context."""
+    """Run a MicroCeph command in host or privileged-container context.
+
+    Parameters
+    ----------
+    argv : list[str]
+        Command vector to execute.
+    timeout : float
+        Maximum command runtime in seconds.
+
+    Returns
+    -------
+    subprocess.CompletedProcess[str]
+        Completed command result with captured text streams.
+
+    Raises
+    ------
+    TimeoutError
+        If `timeout` is non-positive.
+    """
     if timeout <= 0:
-        raise TimeoutError("timeout must be non-negative")
+        msg = "timeout must be non-negative"
+        raise TimeoutError(msg)
     if MICROCEPH_HOST_ROOT.is_dir() and not shutil.which(argv[0]):
         cmd = ["chroot", str(MICROCEPH_HOST_ROOT), *argv]
     else:
@@ -167,14 +212,34 @@ async def host_command(
 
 
 async def ceph_df(*, timeout: float) -> CephCapacitySnapshot:
-    """Inspect raw Ceph cluster capacity using MicroCeph's Ceph CLI."""
-    result = await host_command(["microceph.ceph", "df", "--format", "json"], timeout=timeout)
+    """Inspect raw Ceph cluster capacity using MicroCeph's Ceph CLI.
+
+    Parameters
+    ----------
+    timeout : float
+        Maximum command runtime in seconds.
+
+    Returns
+    -------
+    CephCapacitySnapshot
+        Parsed raw capacity snapshot.
+
+    Raises
+    ------
+    OSError
+        If the MicroCeph command fails or returns malformed capacity data.
+    """
+    result = await host_command(
+        ["microceph.ceph", "df", "--format", "json"], timeout=timeout
+    )
     if result.returncode != 0:
-        raise OSError(f"failed to inspect Ceph capacity:\n{result}")
+        msg = f"failed to inspect Ceph capacity:\n{result}"
+        raise OSError(msg)
     try:
         payload = json.loads(result.stdout)
     except json.JSONDecodeError as err:
-        raise OSError(f"ceph df returned malformed JSON: {err}") from err
+        msg = f"ceph df returned malformed JSON: {err}"
+        raise OSError(msg) from err
 
     stats = payload.get("stats", {}) if isinstance(payload, dict) else {}
     total = int(stats.get("total_bytes") or stats.get("total_space") or 0)
@@ -185,23 +250,56 @@ async def ceph_df(*, timeout: float) -> CephCapacitySnapshot:
         or 0
     )
     if total <= 0:
-        raise OSError(f"ceph df reported invalid total capacity: {total}")
+        msg = f"ceph df reported invalid total capacity: {total}"
+        raise OSError(msg)
     if used < 0:
-        raise OSError(f"ceph df reported invalid used capacity: {used}")
-    return CephCapacitySnapshot(total_bytes=total, used_bytes=used, used_ratio=used / total)
+        msg = f"ceph df reported invalid used capacity: {used}"
+        raise OSError(msg)
+    return CephCapacitySnapshot(
+        total_bytes=total, used_bytes=used, used_ratio=used / total
+    )
 
 
 def host_free_bytes(path: Path = MICROCEPH_LOOP_STORAGE_PATH) -> NodeCapacitySnapshot:
-    """Inspect free host bytes for MicroCeph loop-backed OSD storage."""
+    """Inspect free host bytes for MicroCeph loop-backed OSD storage.
+
+    Parameters
+    ----------
+    path : Path, default MICROCEPH_LOOP_STORAGE_PATH
+        Host path whose filesystem free space should be inspected.
+
+    Returns
+    -------
+    NodeCapacitySnapshot
+        Free-space snapshot for the requested host path.
+    """
     target = _container_path(path)
     usage = shutil.disk_usage(target)
     return NodeCapacitySnapshot(free_bytes=int(usage.free), path=path)
 
 
 async def add_loop_osd(loop_spec: LoopOSDSpec | str, *, timeout: float) -> None:
-    """Add one or more loop-backed OSDs through MicroCeph."""
-    spec = loop_spec if isinstance(loop_spec, LoopOSDSpec) else parse_loop_osd_spec(loop_spec)
+    """Add one or more loop-backed OSDs through MicroCeph.
+
+    Parameters
+    ----------
+    loop_spec : LoopOSDSpec | str
+        Loop OSD allocation request.
+    timeout : float
+        Maximum command runtime in seconds.
+
+    Raises
+    ------
+    OSError
+        If MicroCeph rejects the loop OSD allocation.
+    """
+    spec = (
+        loop_spec
+        if isinstance(loop_spec, LoopOSDSpec)
+        else parse_loop_osd_spec(loop_spec)
+    )
     rendered = spec.render()
     result = await host_command(["microceph", "disk", "add", rendered], timeout=timeout)
     if result.returncode != 0:
-        raise OSError(f"microceph disk add failed for {rendered}:\n{result}")
+        msg = f"microceph disk add failed for {rendered}:\n{result}"
+        raise OSError(msg)

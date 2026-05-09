@@ -469,6 +469,73 @@ class Pod:
             out.append(claim_name)
         return tuple(out)
 
+    async def logs(
+        self,
+        kube: Kube,
+        *,
+        timeout: float,
+        container: str | None = None,
+        tail_lines: int | None = None,
+    ) -> str:
+        """Read this Pod's logs.
+
+        Parameters
+        ----------
+        kube : Kube
+            Active Kubernetes API context.
+        timeout : float
+            Maximum request budget in seconds. If infinite, wait indefinitely.
+        container : str | None, optional
+            Optional container name. If omitted, Kubernetes selects the default
+            container when possible.
+        tail_lines : int | None, optional
+            Optional number of log lines to return from the end of the stream.
+
+        Returns
+        -------
+        str
+            Pod log text returned by Kubernetes.
+
+        Raises
+        ------
+        OSError
+            If this pod has no resolvable metadata namespace and name, the log
+            request fails, or Kubernetes returns malformed log data.
+        ValueError
+            If `tail_lines` is not positive.
+        """
+        namespace = self.namespace
+        name = self.name
+        if not namespace or not name:
+            msg = "cannot read logs for pod with missing metadata.name/namespace"
+            raise OSError(msg)
+        if tail_lines is not None and tail_lines <= 0:
+            msg = "pod log tail_lines must be positive"
+            raise ValueError(msg)
+        container = container.strip() if container is not None else None
+        if container == "":
+            container = None
+
+        payload = await kube.run(
+            lambda request_timeout: kube.core.read_namespaced_pod_log(
+                name=name,
+                namespace=namespace,
+                container=container,
+                tail_lines=tail_lines,
+                _request_timeout=request_timeout,
+            ),
+            timeout=timeout,
+            context=f"failed to read logs for pod {namespace}/{name}",
+        )
+        if payload is None:
+            return ""
+        if isinstance(payload, bytes):
+            return payload.decode("utf-8", errors="replace")
+        if not isinstance(payload, str):
+            msg = f"malformed Kubernetes log payload for pod {namespace}/{name}"
+            raise OSError(msg)
+        return payload
+
     async def refresh(self, kube: Kube, *, timeout: float) -> Self | None:
         """Re-read this pod by its metadata namespace and name.
 

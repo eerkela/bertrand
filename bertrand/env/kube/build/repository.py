@@ -7,8 +7,11 @@ import hashlib
 import json
 import re
 import tempfile
+import urllib.error
+import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from bertrand.env.kube.api import (
     CLUSTER_REGISTRY_READY_LABEL,
@@ -40,6 +43,9 @@ from bertrand.env.run import (
     sudo,
 )
 
+if TYPE_CHECKING:
+    from collections.abc import Mapping
+
 IMAGE_REPOSITORY_NAME = "bertrand-registry"
 IMAGE_REPOSITORY_IMAGE = "registry:2"
 IMAGE_REPOSITORY_PORT = 5000
@@ -56,6 +62,116 @@ IMAGE_REPOSITORY_LABEL = "bertrand.dev/image-repository"
 IMAGE_REPOSITORY_LABEL_VALUE = "v1"
 IMAGE_REF_COMPONENT_RE = re.compile(r"^[a-z0-9]+(?:(?:[._]|__|[-]*)[a-z0-9]+)*$")
 IMAGE_TAG_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$")
+IMAGE_REPOSITORY_ROUTE_POLL_INTERVAL_SECONDS = 0.5
+IMAGE_REPOSITORY_ROUTE_REQUEST_TIMEOUT_SECONDS = 2.0
+IMAGE_REPOSITORY_ROUTE_READY_STATUS = frozenset({200, 401})
+
+
+def _config_hash(data: Mapping[str, str]) -> str:
+    payload = json.dumps(data, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _registry_route_status(url: str, timeout: float) -> int:
+    request = urllib.request.Request(url, method="GET")
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return int(response.status)
+    except urllib.error.HTTPError as err:
+        return int(err.code)
+
+
+@dataclass(frozen=True)
+class ImageRepositoryStatus:
+    """Read-only readiness report for Bertrand's OCI image repository.
+
+    Parameters
+    ----------
+    namespace : str
+        Namespace that owns the registry resources.
+    name : str
+        Registry Service, Deployment, and PVC name.
+    service_present : bool
+        Whether the registry Service currently exists.
+    service_selector_ready : bool
+        Whether the Service selector matches the expected registry pod selector.
+    service_port_ready : bool
+        Whether the Service exposes the expected registry port and NodePort.
+    service_ready : bool
+        Whether the Service exists and has the expected type, selector, and port.
+    deployment_present : bool
+        Whether the registry Deployment currently exists.
+    pvc_present : bool
+        Whether the registry PersistentVolumeClaim currently exists.
+    pvc_managed : bool
+        Whether the registry claim carries Bertrand registry ownership labels.
+    pvc_bound : bool
+        Whether the registry PersistentVolumeClaim is bound to a PersistentVolume.
+    pvc_phase : str
+        Kubernetes claim phase, or an empty string when the claim is absent.
+    storage_class : str
+        StorageClass name reported by the registry claim.
+    access_modes : tuple[str, ...]
+        Access modes reported by the registry claim.
+    storage_request : str
+        Requested storage quantity reported by the registry claim.
+    storage_ready : bool
+        Whether the registry claim is managed, bound, and exposes ReadWriteMany.
+    available_replicas : int
+        Registry Deployment replicas currently reported available.
+    updated_replicas : int
+        Registry Deployment replicas updated to the latest pod template.
+    observed_generation : int
+        Registry Deployment generation observed by the Kubernetes controller.
+    generation : int
+        Desired Registry Deployment metadata generation.
+    rollout_ready : bool
+        Whether the Deployment controller has observed the desired generation and at
+        least one replica is updated and available.
+    desired_config_hash : str
+        BuildKit registry-routing config hash expected by this repository object.
+    installed_config_hash : str
+        BuildKit registry-routing config hash currently stored in the ConfigMap.
+    config_current : bool
+        Whether the installed BuildKit registry config matches the desired config.
+    node_trust_ready : bool
+        Whether every listed Kubernetes node carries the registry-ready label.
+    trusted_nodes : tuple[str, ...]
+        Node names with the registry-ready label.
+    untrusted_nodes : tuple[str, ...]
+        Node names missing the registry-ready label.
+    ready : bool
+        Whether the registry Service, Deployment rollout, PVC, BuildKit config, and
+        node trust labels are ready.
+    """
+
+    namespace: str
+    name: str
+    service_present: bool
+    service_selector_ready: bool
+    service_port_ready: bool
+    service_ready: bool
+    deployment_present: bool
+    pvc_present: bool
+    pvc_managed: bool
+    pvc_bound: bool
+    pvc_phase: str
+    storage_class: str
+    access_modes: tuple[str, ...]
+    storage_request: str
+    storage_ready: bool
+    available_replicas: int
+    updated_replicas: int
+    observed_generation: int
+    generation: int
+    rollout_ready: bool
+    desired_config_hash: str
+    installed_config_hash: str
+    config_current: bool
+    node_trust_ready: bool
+    trusted_nodes: tuple[str, ...]
+    untrusted_nodes: tuple[str, ...]
+    ready: bool
 
 
 @dataclass(frozen=True)
@@ -167,12 +283,7 @@ class ImageRepository:
         str
             SHA-256 digest of the BuildKit registry configuration data.
         """
-        payload = json.dumps(
-            self.buildkit_config_data,
-            sort_keys=True,
-            separators=(",", ":"),
-        )
-        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+        return _config_hash(self.buildkit_config_data)
 
     async def ensure_trust(self, *, timeout: float = INFINITY) -> None:
         """Converge local MicroK8s containerd trust for this repository.
@@ -245,7 +356,8 @@ class ImageRepository:
         Raises
         ------
         TimeoutError
-            If `timeout` is non-positive or convergence exceeds the budget.
+            If `timeout` is non-positive, local route verification fails, or
+            convergence exceeds the budget.
         """
         if timeout <= 0:
             msg = "image repository node-trust timeout must be non-negative"
@@ -253,6 +365,7 @@ class ImageRepository:
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
         await self.ensure_trust(timeout=deadline - loop.time())
+        await self.assert_local_route(timeout=deadline - loop.time())
         node = await Node.local(kube, timeout=deadline - loop.time())
         await node.set_label(
             kube=kube,
@@ -260,6 +373,53 @@ class ImageRepository:
             value=CLUSTER_REGISTRY_READY_VALUE,
             timeout=deadline - loop.time(),
         )
+
+    async def assert_local_route(self, *, timeout: float = INFINITY) -> None:
+        """Assert the local registry route is reachable.
+
+        Parameters
+        ----------
+        timeout : float, optional
+            Maximum wait budget in seconds. If infinite, wait indefinitely.
+
+        Raises
+        ------
+        TimeoutError
+            If `timeout` is non-positive or the local registry route does not return
+            an accepted status before the deadline.
+        """
+        if timeout <= 0:
+            msg = "image repository local route timeout must be non-negative"
+            raise TimeoutError(msg)
+        url = f"{self.pull_server}/v2/"
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        last_error = ""
+        while True:
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                msg = f"local image repository route {url!r} is not ready"
+                if last_error:
+                    msg = f"{msg}: {last_error}"
+                raise TimeoutError(msg)
+            request_timeout = min(
+                IMAGE_REPOSITORY_ROUTE_REQUEST_TIMEOUT_SECONDS,
+                remaining,
+            )
+            try:
+                status = await asyncio.to_thread(
+                    _registry_route_status,
+                    url,
+                    request_timeout,
+                )
+                if status in IMAGE_REPOSITORY_ROUTE_READY_STATUS:
+                    return
+                last_error = f"HTTP status {status}"
+            except (OSError, TimeoutError, urllib.error.URLError) as err:
+                last_error = str(err)
+            await asyncio.sleep(
+                min(IMAGE_REPOSITORY_ROUTE_POLL_INTERVAL_SECONDS, remaining),
+            )
 
     async def assert_node_trust(
         self,
@@ -299,6 +459,177 @@ class ImageRepository:
                 "hosts first to converge registry trust and mark them ready."
             )
             raise OSError(msg)
+
+    async def status(
+        self,
+        kube: Kube,
+        *,
+        timeout: float = INFINITY,
+    ) -> ImageRepositoryStatus:
+        """Inspect repository readiness without mutating the cluster.
+
+        Parameters
+        ----------
+        kube : Kube
+            Kubernetes API client for the target cluster.
+        timeout : float, optional
+            Maximum request budget in seconds. If infinite, wait indefinitely.
+
+        Returns
+        -------
+        ImageRepositoryStatus
+            Read-only image repository readiness report.
+
+        Raises
+        ------
+        TimeoutError
+            If `timeout` is non-positive.
+        OSError
+            If Kubernetes read operations fail or return malformed data.
+        """
+        if timeout <= 0:
+            msg = "image repository status timeout must be non-negative"
+            raise TimeoutError(msg)
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+
+        try:
+            service = await Service.get(
+                kube,
+                namespace=self.namespace,
+                timeout=deadline - loop.time(),
+                name=self.service,
+            )
+            deployment = await Deployment.get(
+                kube,
+                namespace=self.namespace,
+                timeout=deadline - loop.time(),
+                name=self.service,
+            )
+            pvc = await PersistentVolumeClaim.get(
+                kube=kube,
+                namespace=self.namespace,
+                timeout=deadline - loop.time(),
+                name=self.service,
+            )
+            config = await ConfigMap.get(
+                kube,
+                namespace=self.namespace,
+                timeout=deadline - loop.time(),
+                name=BUILDKIT_CONFIG_NAME,
+            )
+            nodes = await Node.list(kube=kube, timeout=deadline - loop.time())
+
+            service_selector_ready = (
+                service is not None and dict(service.selector) == self.selector
+            )
+            service_port_ready = service is not None and any(
+                port.name == "registry"
+                and port.port == self.port
+                and port.target_port == self.port
+                and port.protocol == "TCP"
+                and port.node_port == self.node_port
+                for port in service.ports
+            )
+            service_ready = (
+                service is not None
+                and service.type == "NodePort"
+                and service_selector_ready
+                and service_port_ready
+            )
+            available = 0
+            updated = 0
+            observed = 0
+            generation = 0
+            generation_observed = False
+            if deployment is not None:
+                available = deployment.available_replicas
+                updated = deployment.updated_replicas
+                observed = deployment.observed_generation
+                generation = deployment.generation
+                generation_observed = generation <= 0 or observed >= generation
+
+            pvc_bound = pvc.is_bound if pvc is not None else False
+            pvc_phase = pvc.phase if pvc is not None else ""
+            storage_class = pvc.storage_class_name if pvc is not None else ""
+            access_modes = pvc.access_modes if pvc is not None else ()
+            storage_request = pvc.requested_storage if pvc is not None else ""
+            pvc_managed = (
+                pvc is not None
+                and pvc.labels.get(BERTRAND_ENV) == "1"
+                and pvc.labels.get(IMAGE_REPOSITORY_LABEL)
+                == IMAGE_REPOSITORY_LABEL_VALUE
+            )
+            storage_ready = (
+                pvc_managed
+                and pvc_bound
+                and bool(storage_class)
+                and "ReadWriteMany" in access_modes
+            )
+            desired_config_hash = self.buildkit_config_hash
+            installed_config_hash = (
+                _config_hash(config.data) if config is not None else ""
+            )
+            config_current = installed_config_hash == desired_config_hash
+
+            named_nodes = sorted(node.name for node in nodes if node.name)
+            trusted = sorted(
+                node.name
+                for node in nodes
+                if node.name
+                and node.labels.get(CLUSTER_REGISTRY_READY_LABEL)
+                == CLUSTER_REGISTRY_READY_VALUE
+            )
+            trusted_set = frozenset(trusted)
+            untrusted = [name for name in named_nodes if name not in trusted_set]
+            node_trust_ready = bool(named_nodes) and not untrusted
+            deployment_ready = (
+                deployment is not None
+                and generation_observed
+                and available >= 1
+                and updated >= 1
+            )
+            return ImageRepositoryStatus(
+                namespace=self.namespace,
+                name=self.service,
+                service_present=service is not None,
+                service_selector_ready=service_selector_ready,
+                service_port_ready=service_port_ready,
+                service_ready=service_ready,
+                deployment_present=deployment is not None,
+                pvc_present=pvc is not None,
+                pvc_managed=pvc_managed,
+                pvc_bound=pvc_bound,
+                pvc_phase=pvc_phase,
+                storage_class=storage_class,
+                access_modes=access_modes,
+                storage_request=storage_request,
+                storage_ready=storage_ready,
+                available_replicas=available,
+                updated_replicas=updated,
+                observed_generation=observed,
+                generation=generation,
+                rollout_ready=deployment_ready,
+                desired_config_hash=desired_config_hash,
+                installed_config_hash=installed_config_hash,
+                config_current=config_current,
+                node_trust_ready=node_trust_ready,
+                trusted_nodes=tuple(trusted),
+                untrusted_nodes=tuple(untrusted),
+                ready=(
+                    service_ready
+                    and deployment_ready
+                    and storage_ready
+                    and config_current
+                    and node_trust_ready
+                ),
+            )
+        except OSError as err:
+            msg = (
+                f"failed to inspect image repository "
+                f"{self.namespace}/{self.service}: {err}"
+            )
+            raise OSError(msg) from err
 
     async def ensure(self, kube: Kube, *, timeout: float = INFINITY) -> None:
         """Converge Bertrand's OCI image repository resources.
@@ -356,6 +687,7 @@ class ImageRepository:
         if "ReadWriteMany" not in pvc.access_modes:
             msg = f"registry PVC {self.namespace}/{self.service} must use ReadWriteMany"
             raise OSError(msg)
+        await pvc.wait_bound(kube, timeout=deadline - loop.time())
 
         await Service.upsert(
             kube,
@@ -432,6 +764,7 @@ class ImageRepository:
                     claim_name=self.service,
                 )
             ],
+            strategy_type="Recreate",
             timeout=deadline - loop.time(),
         )
         await deployment.wait_rollout(kube, timeout=deadline - loop.time())

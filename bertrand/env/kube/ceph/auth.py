@@ -6,16 +6,18 @@ import asyncio
 import os
 import re
 import tempfile
-from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path, PosixPath
-from typing import Annotated, Self
+from typing import TYPE_CHECKING, Annotated, Self
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from ...config.core import UUIDHex, _check_uuid
-from ...run import RUN_DIR, CommandError, ceph, start_microceph
+from bertrand.env.config.core import UUIDHex, _check_uuid
+from bertrand.env.run import RUN_DIR, CommandError, ceph, start_microceph
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 REPO_FS_NAME = "ceph"
 REPO_ENTITY_PREFIX = "bertrand-repo-"
@@ -40,12 +42,16 @@ class CephMonitors(BaseModel):
 
             model_config = ConfigDict(extra="ignore")
             addrvec: Annotated[
-                list[CephMonitors.Mon.PublicAddrs.AddrVec], Field(default_factory=list)
+                list[CephMonitors.Mon.PublicAddrs.AddrVec],
+                Field(default_factory=list),
             ]
 
         model_config = ConfigDict(extra="ignore")
         addr: Annotated[str, Field(default="")]
-        public_addrs: Annotated[CephMonitors.Mon.PublicAddrs | None, Field(default=None)]
+        public_addrs: Annotated[
+            CephMonitors.Mon.PublicAddrs | None,
+            Field(default=None),
+        ]
 
     model_config = ConfigDict(extra="ignore")
     mons: Annotated[list[CephMonitors.Mon], Field(default_factory=list)]
@@ -129,10 +135,12 @@ async def _get_key(entity: str, *, timeout: float) -> str | None:
             return None
         # NOTE: we intentionally do not re-raise or print the error here, since it
         # could possibly expose a secret key (although unlikely)
-        raise OSError(f"failed to read Ceph credentials for {entity!r}")  # noqa: B904
+        msg = f"failed to read Ceph credentials for {entity!r}"
+        raise OSError(msg)  # noqa: B904
     key = result.stdout.strip()
     if not key:
-        raise OSError(f"Ceph returned an empty key for {entity!r}")
+        msg = f"Ceph returned an empty key for {entity!r}"
+        raise OSError(msg)
     return key
 
 
@@ -145,12 +153,12 @@ async def _get_monitors(*, timeout: float) -> tuple[str, ...]:
     try:
         parsed = CephMonitors.model_validate_json(result.stdout)
     except ValidationError as err:
-        raise OSError(
-            f"Ceph monitor dump payload is malformed and could not be parsed: {err}"
-        ) from err
+        msg = f"Ceph monitor dump payload is malformed and could not be parsed: {err}"
+        raise OSError(msg) from err
     out = parsed.endpoints()
     if not out:
-        raise OSError("Ceph monitor dump did not provide any usable monitor endpoints")
+        msg = "Ceph monitor dump did not provide any usable monitor endpoints"
+        raise OSError(msg)
     return out
 
 
@@ -206,29 +214,42 @@ class RepoCredentials:
             Fresh credentials for this repository identity.  The credentials will be
             created if they do not already exist.
 
+        Raises
+        ------
+        OSError
+            If MicroCeph fails to create, read, or parse credentials.
+        TimeoutError
+            If `timeout` is non-positive.
+        ValueError
+            If `repo_id` or `ceph_path` is invalid.
+
         Notes
         -----
         This function is idempotent and lock-free, and the credentials it returns are
-        bounded to the lifetime of a corresponding CephFS repository volume, which is only
-        removed explicitly deleted via the CLI and no active reference exists in the
-        cluster.  As a result, concurrent ensure/delete operations for the same `repo_id`
-        should never occur under normal operation, and if they do, they should fail
-        gracefully.
+        bounded to the lifetime of a corresponding CephFS repository volume, which is
+        only removed explicitly deleted via the CLI and no active reference exists in
+        the cluster.  As a result, concurrent ensure/delete operations for the same
+        `repo_id` should never occur under normal operation, and if they do, they
+        should fail gracefully.
         """
         if timeout <= 0:
-            raise TimeoutError("timeout must be non-negative")
+            msg = "timeout must be non-negative"
+            raise TimeoutError(msg)
         repo_id = _check_uuid(repo_id)
         if not ceph_path.parts:
-            raise ValueError("Ceph repository path cannot be empty")
+            msg = "Ceph repository path cannot be empty"
+            raise ValueError(msg)
         if not ceph_path.is_absolute():
             ceph_path = PosixPath("/") / ceph_path
 
         user = f"{REPO_ENTITY_PREFIX}{repo_id}"
         entity = f"{REPO_ENTITY_NAMESPACE}.{user}"
         if not entity.startswith(f"{REPO_ENTITY_NAMESPACE}."):
-            raise ValueError(
-                f"Ceph entity must be namespaced as {REPO_ENTITY_NAMESPACE!r}: {entity!r}"
+            msg = (
+                f"Ceph entity must be namespaced as {REPO_ENTITY_NAMESPACE!r}: "
+                f"{entity!r}"
             )
+            raise ValueError(msg)
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
 
@@ -246,7 +267,8 @@ class RepoCredentials:
         # exist.
         key = await _get_key(entity, timeout=deadline - loop.time())
         if key is None:
-            raise OSError(f"Ceph authorization did not materialize credentials for {entity!r}")
+            msg = f"Ceph authorization did not materialize credentials for {entity!r}"
+            raise OSError(msg)
 
         # retrieve current monitor endpoints; this ensures the caller has enough
         # information to confidently connect to and mount the repository using the
@@ -280,19 +302,29 @@ class RepoCredentials:
         Returns
         -------
         RepoCredentials | None
-            Fresh credentials for this repository identity, or None if credentials do not
-            exist.
+            Fresh credentials for this repository identity, or None if credentials do
+            not exist.
+
+        Raises
+        ------
+        TimeoutError
+            If `timeout` is non-positive.
+        ValueError
+            If `repo_id` is invalid.
         """
         if timeout <= 0:
-            raise TimeoutError("timeout must be non-negative")
+            msg = "timeout must be non-negative"
+            raise TimeoutError(msg)
 
         repo_id = _check_uuid(repo_id)
         user = f"{REPO_ENTITY_PREFIX}{repo_id}"
         entity = f"{REPO_ENTITY_NAMESPACE}.{user}"
         if not entity.startswith(f"{REPO_ENTITY_NAMESPACE}."):
-            raise ValueError(
-                f"Ceph entity must be namespaced as {REPO_ENTITY_NAMESPACE!r}: {entity!r}"
+            msg = (
+                f"Ceph entity must be namespaced as {REPO_ENTITY_NAMESPACE!r}: "
+                f"{entity!r}"
             )
+            raise ValueError(msg)
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
 
@@ -324,13 +356,22 @@ class RepoCredentials:
         Parameters
         ----------
         timeout : float
-            Maximum time to wait for the cluster to be ready and credentials to be deleted,
-            in seconds.  If infinite, wait indefinitely.
+            Maximum time to wait for the cluster to be ready and credentials to be
+            deleted, in seconds.  If infinite, wait indefinitely.
 
         Returns
         -------
         bool
             True if credentials were deleted, False if credentials did not exist.
+
+        Raises
+        ------
+        OSError
+            If MicroCeph rejects credential deletion.
+        TimeoutError
+            If `timeout` is non-positive.
+        ValueError
+            If this credential identity is invalid.
 
         Notes
         -----
@@ -339,14 +380,17 @@ class RepoCredentials:
         Callers should retry and revalidate on transient auth failures.
         """
         if timeout <= 0:
-            raise TimeoutError("timeout must be non-negative")
+            msg = "timeout must be non-negative"
+            raise TimeoutError(msg)
         repo_id = self.repo_id
         user = f"{REPO_ENTITY_PREFIX}{repo_id}"
         entity = f"{REPO_ENTITY_NAMESPACE}.{user}"
         if not entity.startswith(f"{REPO_ENTITY_NAMESPACE}."):
-            raise ValueError(
-                f"Ceph entity must be namespaced as {REPO_ENTITY_NAMESPACE!r}: {entity!r}"
+            msg = (
+                f"Ceph entity must be namespaced as {REPO_ENTITY_NAMESPACE!r}: "
+                f"{entity!r}"
             )
+            raise ValueError(msg)
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
 
@@ -371,25 +415,32 @@ class RepoCredentials:
             return False
         # NOTE: we intentionally do not print the error here, since it could possibly
         # expose a secret key (although unlikely)
-        raise OSError(f"failed to delete Ceph credentials for {entity!r}")
+        msg = f"failed to delete Ceph credentials for {entity!r}"
+        raise OSError(msg)
 
     @contextmanager
     def secretfile(self) -> Iterator[Path]:
         """Yield a temporary secretfile path for kernel Ceph mount operations.
 
         The file is created with private mode (0600), stored under Bertrand's runtime
-        directory (`RUN_DIR`) which is expected to be tmpfs-backed, contains only the Ceph
-        key, and is always deleted when the context exits.
+        directory (`RUN_DIR`) which is expected to be tmpfs-backed, contains only the
+        Ceph key, and is always deleted when the context exits.
 
         Yields
         ------
         Path
-            The path to the temporary secretfile, which is valid only for the duration of
-            the context.
+            The path to the temporary secretfile, which is valid only for the
+            duration of the context.
+
+        Raises
+        ------
+        ValueError
+            If the stored Ceph key is empty.
         """
         key = self.key.strip()
         if not key:
-            raise ValueError("repository credentials key cannot be empty")
+            msg = "repository credentials key cannot be empty"
+            raise ValueError(msg)
 
         # create private tempfile
         fd: int | None = None
@@ -407,9 +458,7 @@ class RepoCredentials:
         # unconditionally delete the file on context exit
         finally:
             if fd is not None:
-                try:
+                with suppress(OSError):
                     os.close(fd)
-                except OSError:
-                    pass
             if path is not None:
                 path.unlink(missing_ok=True)

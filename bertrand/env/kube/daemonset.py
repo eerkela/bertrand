@@ -777,3 +777,76 @@ class DaemonSet:
                 msg = f"DaemonSet {self.namespace}/{self.name} disappeared"
                 raise OSError(msg)
             current = refreshed
+
+    async def wait_rollout(
+        self,
+        kube: Kube,
+        *,
+        timeout: float,
+        minimum: int = 1,
+    ) -> Self:
+        """Wait until this DaemonSet's rollout is observed and available.
+
+        Parameters
+        ----------
+        kube : Kube
+            Active Kubernetes API context.
+        timeout : float
+            Maximum wait budget in seconds. If infinite, wait indefinitely.
+        minimum : int, optional
+            Minimum available pod count required before returning.
+
+        Returns
+        -------
+        DaemonSet
+            Refreshed DaemonSet wrapper whose observed generation and scheduled pod
+            counts indicate rollout completion.
+
+        Raises
+        ------
+        OSError
+            If this wrapper cannot be refreshed or disappears while waiting.
+        TimeoutError
+            If the DaemonSet does not complete rollout before `timeout`.
+        ValueError
+            If `minimum` is negative.
+        """
+        if minimum < 0:
+            msg = "DaemonSet rollout minimum cannot be negative"
+            raise ValueError(msg)
+        namespace = self.namespace
+        name = self.name
+        if not namespace or not name:
+            msg = "cannot wait on DaemonSet with missing metadata.name/namespace"
+            raise OSError(msg)
+        if timeout <= 0:
+            msg = f"timed out waiting for DaemonSet {namespace}/{name} rollout"
+            raise TimeoutError(msg)
+        target_generation = self.generation
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        current: Self = self
+        while True:
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                msg = f"timed out waiting for DaemonSet {namespace}/{name} rollout"
+                raise TimeoutError(msg)
+            refreshed = await current.refresh(kube, timeout=remaining)
+            if refreshed is None:
+                msg = (
+                    f"DaemonSet {namespace}/{name} disappeared while waiting for "
+                    "rollout"
+                )
+                raise OSError(msg)
+            desired = refreshed.desired_number_scheduled
+            required = max(minimum, desired)
+            generation_observed = (
+                target_generation <= 0
+                or refreshed.observed_generation >= target_generation
+            )
+            updated = refreshed.updated_number_scheduled >= desired
+            available = refreshed.number_available >= required
+            if generation_observed and updated and available:
+                return refreshed
+            current = refreshed
+            await asyncio.sleep(min(DAEMONSET_WAIT_POLL_INTERVAL_SECONDS, remaining))

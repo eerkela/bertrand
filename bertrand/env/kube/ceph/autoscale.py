@@ -9,11 +9,11 @@ import os
 import platform
 import sys
 import uuid
-from collections.abc import Collection, Mapping
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Annotated, Literal, cast
+from typing import TYPE_CHECKING, Annotated, Literal, cast
 
 from pydantic import (
     BaseModel,
@@ -22,11 +22,9 @@ from pydantic import (
     PositiveInt,
     ValidationError,
     field_validator,
-    model_validator,
 )
 
-from ...run import BERTRAND_ENV, BERTRAND_NAMESPACE, INFINITY
-from ..api import (
+from bertrand.env.kube.api import (
     CLUSTER_REGISTRY_READY_LABEL,
     CLUSTER_REGISTRY_READY_VALUE,
     ContainerSpec,
@@ -34,17 +32,12 @@ from ..api import (
     EnvVarSpec,
     Kube,
     PolicyRuleSpec,
+    SecurityContextSpec,
     VolumeMountSpec,
     VolumeSpec,
 )
-from ..build import IMAGES, BuildKitImageBuild
-from ..crd import CustomResourceClient, CustomResourceDefinition
-from ..daemonset import DaemonSet
-from ..deployment import Deployment
-from ..node import Node
-from ..rbac import ClusterRole, ClusterRoleBinding
-from ..service_account import ServiceAccount
-from .api import (
+from bertrand.env.kube.build import IMAGES, BuildKitImageBuild
+from bertrand.env.kube.ceph.api import (
     LOOP_OSD_SIZE_PATTERN,
     LOOP_OSD_SPEC_PATTERN,
     CephCapacitySnapshot,
@@ -55,6 +48,16 @@ from .api import (
     parse_loop_osd_spec,
     parse_size_bytes,
 )
+from bertrand.env.kube.crd import CustomResourceClient, CustomResourceDefinition
+from bertrand.env.kube.daemonset import DaemonSet
+from bertrand.env.kube.deployment import Deployment
+from bertrand.env.kube.node import Node
+from bertrand.env.kube.rbac import ClusterRole, ClusterRoleBinding
+from bertrand.env.kube.service_account import ServiceAccount
+from bertrand.env.run import BERTRAND_ENV, BERTRAND_NAMESPACE, INFINITY
+
+if TYPE_CHECKING:
+    from collections.abc import Collection, Mapping
 
 AUTOSCALE_GROUP = "ceph.bertrand.dev"
 AUTOSCALE_VERSION = "v1alpha1"
@@ -91,7 +94,7 @@ class _ObjectMeta(BaseModel):
     name: str = ""
     namespace: str = ""
     generation: int = 0
-    resourceVersion: str = ""
+    resource_version: str = Field(default="", alias="resourceVersion")
     labels: dict[str, str] = Field(default_factory=dict)
 
 
@@ -118,7 +121,7 @@ class _AutoscalerStatus(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    observedGeneration: int | None = None
+    observed_generation: int | None = Field(default=None, alias="observedGeneration")
     total_bytes: int | None = None
     used_bytes: int | None = None
     used_ratio: float | None = None
@@ -135,7 +138,7 @@ class _AutoscalerPolicy(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    apiVersion: str
+    api_version: str = Field(alias="apiVersion")
     kind: Literal["CephStorageAutoscaler"]
     metadata: _ObjectMeta
     spec: _AutoscalerSpec = Field(default_factory=_AutoscalerSpec)
@@ -151,16 +154,6 @@ class _StorageActionSpec(BaseModel):
     node_name: Annotated[str, Field(min_length=1)]
     loop_spec: _LoopSpec
     reason: Annotated[str, Field(min_length=1)]
-
-    @model_validator(mode="before")
-    @classmethod
-    def _accept_repo_generation_alias(cls, value: object) -> object:
-        if not isinstance(value, Mapping):
-            return value
-        data = dict(value)
-        if "policy_generation" not in data and "repo_generation" in data:
-            data["policy_generation"] = data.pop("repo_generation")
-        return data
 
     @field_validator("loop_spec")
     @classmethod
@@ -185,7 +178,7 @@ class _StorageAction(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    apiVersion: str
+    api_version: str = Field(alias="apiVersion")
     kind: Literal["CephStorageAction"]
     metadata: _ObjectMeta
     spec: _StorageActionSpec
@@ -216,7 +209,7 @@ class _StorageNodeReport(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    apiVersion: str
+    api_version: str = Field(alias="apiVersion")
     kind: Literal["CephStorageNode"]
     metadata: _ObjectMeta
     spec: _StorageNodeSpec
@@ -239,7 +232,18 @@ class _PlannedAction:
     reason: str
 
     def spec(self, *, policy_generation: int) -> dict[str, object]:
-        """Render this planned action as `CephStorageAction.spec` fields."""
+        """Render this planned action as `CephStorageAction.spec` fields.
+
+        Parameters
+        ----------
+        policy_generation : int
+            Autoscaler policy generation that produced the action.
+
+        Returns
+        -------
+        dict[str, object]
+            Custom-resource `spec` payload for the planned action.
+        """
         return {
             "policy_generation": policy_generation,
             "node_name": self.node_name,
@@ -252,9 +256,23 @@ _AUTOSCALER_SPEC_SCHEMA = {
     "type": "object",
     "properties": {
         "enabled": {"type": "boolean", "default": True},
-        "high_watermark": {"type": "number", "minimum": 0, "maximum": 1, "default": 0.75},
-        "target_watermark": {"type": "number", "minimum": 0, "maximum": 1, "default": 0.65},
-        "loop_size": {"type": "string", "pattern": LOOP_OSD_SIZE_PATTERN, "default": "4G"},
+        "high_watermark": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "default": 0.75,
+        },
+        "target_watermark": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "default": 0.65,
+        },
+        "loop_size": {
+            "type": "string",
+            "pattern": LOOP_OSD_SIZE_PATTERN,
+            "default": "4G",
+        },
         "max_actions_per_reconcile": {"type": "integer", "minimum": 1, "default": 3},
         "reconcile_interval_seconds": {"type": "integer", "minimum": 1, "default": 30},
     },
@@ -338,7 +356,8 @@ _NODE_REPORT_CLIENT = CustomResourceClient(NODE_REPORT)
 def _remaining(deadline: float) -> float:
     remaining = deadline - asyncio.get_running_loop().time()
     if remaining <= 0:
-        raise TimeoutError("timed out while converging Ceph autoscaler")
+        msg = "timed out while converging Ceph autoscaler"
+        raise TimeoutError(msg)
     return remaining
 
 
@@ -357,17 +376,21 @@ def _controlplane_container(image: str, role: str) -> ContainerSpec:
         image_pull_policy="Always",
         args=[role],
         env=[EnvVarSpec.field_ref("NODE_NAME", field_path="spec.nodeName")],
-        security_context={"privileged": True, "runAsUser": 0},
-        volume_mounts=[VolumeMountSpec(name=HOST_ROOT_VOLUME, mount_path=HOST_ROOT_MOUNT)],
+        security_context=SecurityContextSpec(privileged=True, run_as_user=0),
+        volume_mounts=[
+            VolumeMountSpec(name=HOST_ROOT_VOLUME, mount_path=HOST_ROOT_MOUNT)
+        ],
     )
 
 
 def _pod_volumes() -> list[VolumeSpec]:
-    return [VolumeSpec.host_path(HOST_ROOT_VOLUME, path="/", host_path_type="Directory")]
+    return [
+        VolumeSpec.host_path(HOST_ROOT_VOLUME, path="/", host_path_type="Directory")
+    ]
 
 
 def _action_counts(actions: Collection[_StorageAction]) -> dict[str, int]:
-    counts = {phase: 0 for phase in AUTOSCALE_PHASES}
+    counts: dict[str, int] = dict.fromkeys(AUTOSCALE_PHASES, 0)
     for action in actions:
         counts[action.status.phase] += 1
     return counts
@@ -405,7 +428,11 @@ def _plan_actions(
     state: _ControllerState,
 ) -> list[_PlannedAction]:
     spec = policy.spec
-    if not spec.enabled or not eligible_nodes or capacity.used_ratio < spec.high_watermark:
+    if (
+        not spec.enabled
+        or not eligible_nodes
+        or capacity.used_ratio < spec.high_watermark
+    ):
         return []
     loop_bytes = parse_size_bytes(spec.loop_size)
     target_used = spec.target_watermark * capacity.total_bytes
@@ -430,12 +457,15 @@ def _plan_actions(
                 loop_spec=LoopOSDSpec(size=spec.loop_size).render(),
                 reason=(
                     "cluster usage "
-                    f"{capacity.used_ratio:.2%} >= high watermark {spec.high_watermark:.2%}"
+                    f"{capacity.used_ratio:.2%} >= high watermark "
+                    f"{spec.high_watermark:.2%}"
                 ),
             )
         )
     if eligible_nodes:
-        state.round_robin_offset = (state.round_robin_offset + count) % len(eligible_nodes)
+        state.round_robin_offset = (state.round_robin_offset + count) % len(
+            eligible_nodes
+        )
     return planned
 
 
@@ -545,7 +575,7 @@ async def _ensure_workloads(kube: Kube, *, image: str, deadline: float) -> None:
         host_pid=True,
         timeout=_remaining(deadline),
     )
-    await controller.wait_available(kube, timeout=_remaining(deadline))
+    await controller.wait_rollout(kube, timeout=_remaining(deadline))
 
     agent = await DaemonSet.upsert(
         kube,
@@ -565,16 +595,35 @@ async def _ensure_workloads(kube: Kube, *, image: str, deadline: float) -> None:
         host_pid=True,
         timeout=_remaining(deadline),
     )
-    await agent.wait_available(kube, timeout=_remaining(deadline))
+    await agent.wait_rollout(kube, timeout=_remaining(deadline))
 
 
 def ceph_capacity_controlplane_image_build() -> BuildKitImageBuild:
-    """Return the autoscaler controlplane image build contract."""
+    """Return the autoscaler controlplane image build contract.
+
+    Returns
+    -------
+    BuildKitImageBuild
+        Build contract for the Ceph autoscaler controller/agent image.
+    """
     repo_root = Path(__file__).resolve().parents[4]
     h = hashlib.sha256()
     for path in (
         Path(__file__).resolve(),
         Path(__file__).with_name("api.py").resolve(),
+        repo_root / "bertrand/env/kube/api.py",
+        repo_root / "bertrand/env/kube/crd.py",
+        repo_root / "bertrand/env/kube/daemonset.py",
+        repo_root / "bertrand/env/kube/deployment.py",
+        repo_root / "bertrand/env/kube/node.py",
+        repo_root / "bertrand/env/kube/rbac.py",
+        repo_root / "bertrand/env/kube/service_account.py",
+        repo_root / "bertrand/env/kube/build/__init__.py",
+        repo_root / "bertrand/env/kube/build/cache.py",
+        repo_root / "bertrand/env/kube/build/daemon.py",
+        repo_root / "bertrand/env/kube/build/job.py",
+        repo_root / "bertrand/env/kube/build/repository.py",
+        repo_root / "bertrand/env/run.py",
     ):
         payload = path.read_bytes()
         h.update(len(payload).to_bytes(8, "big"))
@@ -589,7 +638,8 @@ def ceph_capacity_controlplane_image_build() -> BuildKitImageBuild:
                 "ENV PYTHONUNBUFFERED=1",
                 "ENV PYTHONPATH=/opt/bertrand",
                 "COPY bertrand /opt/bertrand/bertrand",
-                "RUN python -m pip install --no-cache-dir 'pydantic>=2,<3' 'kubernetes>=32,<35'",
+                "RUN python -m pip install --no-cache-dir "
+                "'pydantic>=2,<3' 'kubernetes>=32,<35'",
                 "ENTRYPOINT [\"python\", \"-m\", \"bertrand.env.kube.ceph.autoscale\"]",
             )
         )
@@ -601,12 +651,29 @@ def ceph_capacity_controlplane_image_build() -> BuildKitImageBuild:
 
 
 async def ensure_ceph_capacity_controlplane(*, image: str, timeout: float) -> None:
-    """Converge Ceph autoscaler CRDs, RBAC, and workloads in the local cluster."""
+    """Converge Ceph autoscaler CRDs, RBAC, and workloads in the local cluster.
+
+    Parameters
+    ----------
+    image : str
+        Fully qualified autoscaler image reference.
+    timeout : float
+        Maximum convergence budget in seconds.
+
+    Raises
+    ------
+    TimeoutError
+        If `timeout` is non-positive or convergence exceeds the budget.
+    ValueError
+        If `image` is empty.
+    """
     if timeout <= 0:
-        raise TimeoutError("timeout must be non-negative")
+        msg = "timeout must be non-negative"
+        raise TimeoutError(msg)
     image = image.strip()
     if not image:
-        raise ValueError("controlplane image reference cannot be empty")
+        msg = "controlplane image reference cannot be empty"
+        raise ValueError(msg)
     deadline = asyncio.get_running_loop().time() + timeout
     with await Kube.host(timeout=_remaining(deadline)) as kube:
         await _ensure_crd(
@@ -650,8 +717,26 @@ class Controller:
     def __init__(self) -> None:
         self.state = _ControllerState()
 
-    async def read_policy(self, kube: Kube, *, timeout: float) -> _AutoscalerPolicy:
-        """Read and validate the singleton autoscaler policy."""
+    async def _read_policy(self, kube: Kube, *, timeout: float) -> _AutoscalerPolicy:
+        """Read and validate the singleton autoscaler policy.
+
+        Parameters
+        ----------
+        kube : Kube
+            Active Kubernetes API context.
+        timeout : float
+            Maximum request budget in seconds.
+
+        Returns
+        -------
+        _AutoscalerPolicy
+            Validated singleton autoscaler policy.
+
+        Raises
+        ------
+        OSError
+            If the singleton policy resource does not exist.
+        """
         obj = await _AUTOSCALER_CLIENT.get(
             kube,
             namespace=BERTRAND_NAMESPACE,
@@ -659,11 +744,27 @@ class Controller:
             timeout=timeout,
         )
         if obj is None:
-            raise OSError(f"{AUTOSCALE_AUTOSCALER_KIND} {AUTOSCALE_DEFAULT_NAME!r} is missing")
+            msg = f"{AUTOSCALE_AUTOSCALER_KIND} {AUTOSCALE_DEFAULT_NAME!r} is missing"
+            raise OSError(msg)
         return _AutoscalerPolicy.model_validate(obj.payload)
 
-    async def list_actions(self, kube: Kube, *, timeout: float) -> list[_StorageAction]:
-        """List and validate autoscaler action resources."""
+    async def _list_actions(
+        self, kube: Kube, *, timeout: float
+    ) -> list[_StorageAction]:
+        """List and validate autoscaler action resources.
+
+        Parameters
+        ----------
+        kube : Kube
+            Active Kubernetes API context.
+        timeout : float
+            Maximum request budget in seconds.
+
+        Returns
+        -------
+        list[_StorageAction]
+            Validated action resources.
+        """
         objects = await _ACTION_CLIENT.list(
             kube,
             namespace=BERTRAND_NAMESPACE,
@@ -672,8 +773,23 @@ class Controller:
         )
         return [_StorageAction.model_validate(obj.payload) for obj in objects]
 
-    async def list_node_reports(self, kube: Kube, *, timeout: float) -> list[_StorageNodeReport]:
-        """List and validate node capacity report resources."""
+    async def _list_node_reports(
+        self, kube: Kube, *, timeout: float
+    ) -> list[_StorageNodeReport]:
+        """List and validate node capacity report resources.
+
+        Parameters
+        ----------
+        kube : Kube
+            Active Kubernetes API context.
+        timeout : float
+            Maximum request budget in seconds.
+
+        Returns
+        -------
+        list[_StorageNodeReport]
+            Validated node capacity report resources.
+        """
         objects = await _NODE_REPORT_CLIENT.list(
             kube,
             namespace=BERTRAND_NAMESPACE,
@@ -682,8 +798,21 @@ class Controller:
         )
         return [_StorageNodeReport.model_validate(obj.payload) for obj in objects]
 
-    async def ready_nodes(self, kube: Kube, *, timeout: float) -> list[str]:
-        """List Kubernetes nodes that are ready for Bertrand registry pulls."""
+    async def _ready_nodes(self, kube: Kube, *, timeout: float) -> list[str]:
+        """List Kubernetes nodes that are ready for Bertrand registry pulls.
+
+        Parameters
+        ----------
+        kube : Kube
+            Active Kubernetes API context.
+        timeout : float
+            Maximum request budget in seconds.
+
+        Returns
+        -------
+        list[str]
+            Ready node names sorted in deterministic order.
+        """
         nodes = await Node.list(
             kube,
             labels={CLUSTER_REGISTRY_READY_LABEL: CLUSTER_REGISTRY_READY_VALUE},
@@ -691,7 +820,7 @@ class Controller:
         )
         return sorted(node.name for node in nodes if node.name and node.is_ready)
 
-    async def create_actions(
+    async def _create_actions(
         self,
         kube: Kube,
         *,
@@ -709,7 +838,7 @@ class Controller:
                 timeout=timeout,
             )
 
-    async def patch_status(
+    async def _patch_status(
         self,
         kube: Kube,
         *,
@@ -728,32 +857,45 @@ class Controller:
         )
 
     async def reconcile(self, kube: Kube, *, deadline: float) -> float:
-        """Run one controller reconciliation pass and return the next interval."""
-        policy = await self.read_policy(kube, timeout=_remaining(deadline))
-        actions = await self.list_actions(kube, timeout=_remaining(deadline))
-        reports = await self.list_node_reports(kube, timeout=_remaining(deadline))
+        """Run one controller reconciliation pass and return the next interval.
+
+        Parameters
+        ----------
+        kube : Kube
+            Active Kubernetes API context.
+        deadline : float
+            Absolute event-loop deadline for this controller run.
+
+        Returns
+        -------
+        float
+            Delay in seconds before the next reconciliation pass.
+        """
+        policy = await self._read_policy(kube, timeout=_remaining(deadline))
+        actions = await self._list_actions(kube, timeout=_remaining(deadline))
+        reports = await self._list_node_reports(kube, timeout=_remaining(deadline))
         capacity = await ceph_df(timeout=_remaining(deadline))
         planned = _plan_actions(
             policy=policy,
             capacity=capacity,
             actions=actions,
             eligible_nodes=_eligible_nodes(
-                ready_nodes=await self.ready_nodes(kube, timeout=_remaining(deadline)),
+                ready_nodes=await self._ready_nodes(kube, timeout=_remaining(deadline)),
                 reports=reports,
                 loop_bytes=parse_size_bytes(policy.spec.loop_size),
             ),
             state=self.state,
         )
         if planned:
-            await self.create_actions(
+            await self._create_actions(
                 kube,
                 policy_generation=policy.metadata.generation,
                 actions=planned,
                 timeout=_remaining(deadline),
             )
-            actions = await self.list_actions(kube, timeout=_remaining(deadline))
+            actions = await self._list_actions(kube, timeout=_remaining(deadline))
         counts = _action_counts(actions)
-        await self.patch_status(
+        await self._patch_status(
             kube,
             policy=policy,
             status={
@@ -771,10 +913,10 @@ class Controller:
         )
         return float(policy.spec.reconcile_interval_seconds)
 
-    async def patch_error(self, kube: Kube, *, error: str, deadline: float) -> None:
+    async def _patch_error(self, kube: Kube, *, error: str, deadline: float) -> None:
         """Best-effort status patch for reconciliation failures."""
-        policy = await self.read_policy(kube, timeout=_remaining(deadline))
-        await self.patch_status(
+        policy = await self._read_policy(kube, timeout=_remaining(deadline))
+        await self._patch_status(
             kube,
             policy=policy,
             status={
@@ -792,9 +934,23 @@ class Controller:
         )
 
     async def run(self, *, timeout: float = INFINITY) -> None:
-        """Run the controller loop until cancelled or timed out."""
+        """Run the controller loop until cancelled or timed out.
+
+        Parameters
+        ----------
+        timeout : float, default=INFINITY
+            Maximum controller runtime in seconds.
+
+        Raises
+        ------
+        TimeoutError
+            If `timeout` is non-positive or the loop exceeds the budget.
+        asyncio.CancelledError
+            If the surrounding task is cancelled.
+        """
         if timeout <= 0:
-            raise TimeoutError("controller timeout must be non-negative")
+            msg = "controller timeout must be non-negative"
+            raise TimeoutError(msg)
         deadline = asyncio.get_running_loop().time() + timeout
         with Kube.inside_cluster() as kube:
             while True:
@@ -804,19 +960,17 @@ class Controller:
                 except asyncio.CancelledError:
                     raise
                 except ValidationError as err:
-                    try:
-                        await self.patch_error(
+                    with suppress(OSError, TimeoutError, ValueError):
+                        await self._patch_error(
                             kube,
-                            error=f"malformed autoscaler custom resource payload: {err}",
+                            error=(
+                                f"malformed autoscaler custom resource payload: {err}"
+                            ),
                             deadline=deadline,
                         )
-                    except Exception:
-                        pass
-                except Exception as err:
-                    try:
-                        await self.patch_error(kube, error=str(err), deadline=deadline)
-                    except Exception:
-                        pass
+                except (OSError, TimeoutError, ValueError, RuntimeError) as err:
+                    with suppress(OSError, TimeoutError, ValueError):
+                        await self._patch_error(kube, error=str(err), deadline=deadline)
                 await asyncio.sleep(min(interval, _remaining(deadline)))
 
 
@@ -828,7 +982,18 @@ class Agent:
 
     @staticmethod
     def resolve_node_name() -> str:
-        """Resolve the Kubernetes node name for this agent process."""
+        """Resolve the Kubernetes node name for this agent process.
+
+        Returns
+        -------
+        str
+            Resolved Kubernetes node name.
+
+        Raises
+        ------
+        OSError
+            If no node name can be inferred from the process environment.
+        """
         name = os.environ.get("NODE_NAME", "").strip()
         if name:
             return name
@@ -838,9 +1003,10 @@ class Agent:
         name = platform.node().strip()
         if name:
             return name
-        raise OSError("Ceph autoscaler agent could not resolve NODE_NAME")
+        msg = "Ceph autoscaler agent could not resolve NODE_NAME"
+        raise OSError(msg)
 
-    async def upsert_node_report(self, kube: Kube, *, timeout: float) -> None:
+    async def _upsert_node_report(self, kube: Kube, *, timeout: float) -> None:
         """Report current host free capacity for this node."""
         try:
             snapshot = host_free_bytes()
@@ -850,7 +1016,7 @@ class Agent:
                 "heartbeat_at": datetime.now(UTC).isoformat(),
                 "last_error": "",
             }
-        except Exception as err:
+        except OSError as err:
             status = {
                 "free_bytes": 0,
                 "path": "",
@@ -872,8 +1038,23 @@ class Agent:
             timeout=timeout,
         )
 
-    async def pending_actions(self, kube: Kube, *, timeout: float) -> list[_StorageAction]:
-        """List pending actions assigned to this node."""
+    async def _pending_actions(
+        self, kube: Kube, *, timeout: float
+    ) -> list[_StorageAction]:
+        """List pending actions assigned to this node.
+
+        Parameters
+        ----------
+        kube : Kube
+            Active Kubernetes API context.
+        timeout : float
+            Maximum request budget in seconds.
+
+        Returns
+        -------
+        list[_StorageAction]
+            Pending actions targeting this agent's node.
+        """
         objects = await _ACTION_CLIENT.list(
             kube,
             namespace=BERTRAND_NAMESPACE,
@@ -884,12 +1065,13 @@ class Agent:
         pending = [
             action
             for action in actions
-            if action.spec.node_name == self.node_name and action.status.phase == "Pending"
+            if action.spec.node_name == self.node_name
+            and action.status.phase == "Pending"
         ]
         pending.sort(key=lambda action: action.metadata.name)
         return pending
 
-    async def patch_action(
+    async def _patch_action(
         self,
         kube: Kube,
         *,
@@ -906,10 +1088,27 @@ class Agent:
             timeout=timeout,
         )
 
-    async def execute_action(self, kube: Kube, *, action: _StorageAction, deadline: float) -> None:
-        """Claim and execute one pending action on this node."""
+    async def _execute_action(
+        self, kube: Kube, *, action: _StorageAction, deadline: float
+    ) -> None:
+        """Claim and execute one pending action on this node.
+
+        Parameters
+        ----------
+        kube : Kube
+            Active Kubernetes API context.
+        action : _StorageAction
+            Pending action assigned to this node.
+        deadline : float
+            Absolute event-loop deadline for this agent run.
+
+        Raises
+        ------
+        asyncio.CancelledError
+            If the surrounding task is cancelled.
+        """
         try:
-            await self.patch_action(
+            await self._patch_action(
                 kube,
                 action=action,
                 status={
@@ -921,7 +1120,7 @@ class Agent:
                 timeout=_remaining(deadline),
             )
             await add_loop_osd(action.spec.loop_spec, timeout=_remaining(deadline))
-            await self.patch_action(
+            await self._patch_action(
                 kube,
                 action=action,
                 status={
@@ -934,8 +1133,8 @@ class Agent:
             )
         except asyncio.CancelledError:
             raise
-        except Exception as err:
-            await self.patch_action(
+        except (OSError, TimeoutError, ValueError, RuntimeError) as err:
+            await self._patch_action(
                 kube,
                 action=action,
                 status={
@@ -947,16 +1146,40 @@ class Agent:
                 timeout=_remaining(deadline),
             )
 
+    async def sync(self, kube: Kube, *, deadline: float) -> None:
+        """Run one node-agent synchronization pass.
+
+        Parameters
+        ----------
+        kube : Kube
+            Active Kubernetes API context.
+        deadline : float
+            Absolute event-loop deadline for this synchronization pass.
+        """
+        await self._upsert_node_report(kube, timeout=_remaining(deadline))
+        for action in await self._pending_actions(kube, timeout=_remaining(deadline)):
+            await self._execute_action(kube, action=action, deadline=deadline)
+
     async def run(self, *, timeout: float = INFINITY) -> None:
-        """Run the node agent loop until cancelled or timed out."""
+        """Run the node agent loop until cancelled or timed out.
+
+        Parameters
+        ----------
+        timeout : float, default=INFINITY
+            Maximum agent runtime in seconds.
+
+        Raises
+        ------
+        TimeoutError
+            If `timeout` is non-positive or the loop exceeds the budget.
+        """
         if timeout <= 0:
-            raise TimeoutError("agent timeout must be non-negative")
+            msg = "agent timeout must be non-negative"
+            raise TimeoutError(msg)
         deadline = asyncio.get_running_loop().time() + timeout
         with Kube.inside_cluster() as kube:
             while True:
-                await self.upsert_node_report(kube, timeout=_remaining(deadline))
-                for action in await self.pending_actions(kube, timeout=_remaining(deadline)):
-                    await self.execute_action(kube, action=action, deadline=deadline)
+                await self.sync(kube, deadline=deadline)
                 await asyncio.sleep(min(5.0, _remaining(deadline)))
 
 
@@ -971,7 +1194,19 @@ async def run_ceph_capacity_agent(*, timeout: float = INFINITY) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Entry point for controlplane container role dispatch."""
+    """Entry point for controlplane container role dispatch.
+
+    Parameters
+    ----------
+    argv : list[str] | None, optional
+        Command-line arguments without the executable name. If `None`, use
+        `sys.argv[1:]`.
+
+    Returns
+    -------
+    int
+        Process exit code.
+    """
     if argv is None:
         argv = sys.argv[1:]
     role = argv[0].strip().lower() if argv else "controller"

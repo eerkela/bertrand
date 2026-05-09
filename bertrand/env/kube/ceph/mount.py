@@ -3,16 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import platform
 import sys
-from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path, PosixPath
-from types import TracebackType
-from typing import Annotated, Self
+from typing import TYPE_CHECKING, Annotated, Self
 
 from pydantic import (
     AfterValidator,
@@ -23,8 +22,8 @@ from pydantic import (
     ValidationError,
 )
 
-from ...config.core import UUIDHex, _check_uuid
-from ...run import (
+from bertrand.env.config.core import UUIDHex, _check_uuid
+from bertrand.env.run import (
     HOST_MOUNTS,
     INFINITY,
     REPO_ALIASES_EXT,
@@ -41,14 +40,21 @@ from ...run import (
     symlink_points_to,
 )
 
+if TYPE_CHECKING:
+    from collections.abc import Sequence
+    from types import TracebackType
+
 DEFAULT_REPO_FS_NAME = "ceph"
 if not DEFAULT_REPO_FS_NAME:
-    raise ValueError("internal default repository Ceph fs_name cannot be empty")
+    msg = "internal default repository Ceph fs_name cannot be empty"
+    raise ValueError(msg)
 if "," in DEFAULT_REPO_FS_NAME:
-    raise ValueError("internal default repository Ceph fs_name cannot contain commas")
+    msg = "internal default repository Ceph fs_name cannot contain commas"
+    raise ValueError(msg)
 DEFAULT_REPO_MOUNT_OPTIONS: tuple[str, ...] = ()
 if any("," in opt for opt in DEFAULT_REPO_MOUNT_OPTIONS):
-    raise ValueError("internal default repository mount options cannot contain comma separators")
+    msg = "internal default repository mount options cannot contain comma separators"
+    raise ValueError(msg)
 
 ALIASES_SCHEMA_VERSION = 1
 REPO_ORPHAN_GC_BATCH_SIZE = 8
@@ -59,35 +65,37 @@ REPO_ORPHAN_GC_BUDGET = 2.0
 
 def _check_alias_version(value: int) -> int:
     if value != ALIASES_SCHEMA_VERSION:
-        raise ValueError(
+        msg = (
             f"repository alias index file has unsupported schema version {value}; "
             f"expected {ALIASES_SCHEMA_VERSION}"
         )
+        raise ValueError(msg)
     return value
 
 
 def _check_alias_path(value: Path) -> Path:
     if value != abspath(value):
-        raise ValueError(
+        msg = (
             "repository alias index file contains invalid alias path: expected "
             f"canonical absolute path, got {value}"
         )
+        raise ValueError(msg)
     return value
 
 
 def _to_utc(value: datetime) -> datetime:
     if value.tzinfo is None or value.utcoffset() is None:
-        raise ValueError(
+        msg = (
             "repository alias index file has invalid format: 'last_accessed' must "
             "include timezone information"
         )
+        raise ValueError(msg)
     return value.astimezone(UTC)
 
 
 @dataclass(frozen=True)
 class MountInfo:
-    """Subset of `/proc/self/mountinfo` used by Bertrand's Ceph repository mounts and
-    their symlink aliases, as well as other utilities that need to inspect host mounts.
+    r"""Describe a host mount entry relevant to Bertrand repository mounts.
 
     Attributes
     ----------
@@ -184,9 +192,8 @@ class MountInfo:
             try:
                 target = candidate.readlink()
             except OSError as err:
-                raise OSError(
-                    f"failed to inspect managed alias candidate {candidate}: {err}"
-                ) from err
+                msg = f"failed to inspect managed alias candidate {candidate}: {err}"
+                raise OSError(msg) from err
             if not target.is_absolute():
                 continue
 
@@ -196,18 +203,23 @@ class MountInfo:
                 relative = target.relative_to(REPO_DIR)
             except ValueError:
                 continue
-            if len(relative.parts) != 2 or relative.parts[1] != REPO_MOUNT_EXT.as_posix():
-                raise OSError(
+            if (
+                len(relative.parts) != 2
+                or relative.parts[1] != REPO_MOUNT_EXT.as_posix()
+            ):
+                msg = (
                     f"repository alias path {candidate} points to malformed managed "
                     f"target {target}; expected {REPO_DIR}/<repo_id>/{REPO_MOUNT_EXT}"
                 )
+                raise OSError(msg)
             try:
                 repo_id = _check_uuid(relative.parts[0])
             except ValueError as err:
-                raise OSError(
+                msg = (
                     f"repository alias path {candidate} points to invalid repository "
                     f"target {target}: {err}"
-                ) from err
+                )
+                raise OSError(msg) from err
             return repo_id, cls.search(REPO_DIR / repo_id / REPO_MOUNT_EXT)
 
         return None, None
@@ -220,11 +232,17 @@ class MountInfo:
         -------
         dict[Path, MountInfo]
             Parsed entries with decoded mountpoint paths as keys, for fast lookup.
+
+        Raises
+        ------
+        OSError
+            If the host mount table cannot be read.
         """
         try:
             lines = HOST_MOUNTS.read_text(encoding="utf-8").splitlines()
         except OSError as err:
-            raise OSError(f"failed to inspect host mount table: {err}") from err
+            msg = f"failed to inspect host mount table: {err}"
+            raise OSError(msg) from err
 
         out: dict[Path, Self] = {}
         for line in lines:
@@ -329,35 +347,44 @@ class MountInfo:
 
         Raises
         ------
+        FileNotFoundError
+            If `ceph_secretfile` is missing or is not a regular file.
         OSError
             If mount convergence fails or an incompatible mount already exists.
         TimeoutError
             If timeout is non-positive.
+        ValueError
+            If the repository identity or mount inputs are invalid.
         """
         repo_id = _check_uuid(repo_id)
         if not ceph_path.is_absolute():
             ceph_path = PosixPath("/") / ceph_path
         if os.name != "posix" or platform.system() != "Linux":
-            raise OSError("repository mounts are only supported on Linux platforms")
+            msg = "repository mounts are only supported on Linux platforms"
+            raise OSError(msg)
         if timeout <= 0:
-            raise TimeoutError("timeout must be non-negative")
+            msg = "timeout must be non-negative"
+            raise TimeoutError(msg)
 
         ceph_user = ceph_user.strip()
         if not ceph_user:
-            raise ValueError("repository Ceph user cannot be empty")
+            msg = "repository Ceph user cannot be empty"
+            raise ValueError(msg)
         if "," in ceph_user:
-            raise ValueError("repository Ceph user cannot contain comma separators")
+            msg = "repository Ceph user cannot contain comma separators"
+            raise ValueError(msg)
         monitors = [monitor.strip() for monitor in monitors if monitor.strip()]
         if not monitors:
-            raise ValueError("repository mount requires at least one Ceph monitor endpoint")
+            msg = "repository mount requires at least one Ceph monitor endpoint"
+            raise ValueError(msg)
 
         ceph_secretfile = ceph_secretfile.expanduser().resolve()
         if not ceph_secretfile.exists():
-            raise FileNotFoundError(
-                f"repository Ceph secret file does not exist: {ceph_secretfile}"
-            )
+            msg = f"repository Ceph secret file does not exist: {ceph_secretfile}"
+            raise FileNotFoundError(msg)
         if not ceph_secretfile.is_file():
-            raise FileNotFoundError(f"repository Ceph secret path is not a file: {ceph_secretfile}")
+            msg = f"repository Ceph secret path is not a file: {ceph_secretfile}"
+            raise FileNotFoundError(msg)
 
         root = REPO_DIR / repo_id
         mount_path = root / REPO_MOUNT_EXT
@@ -396,22 +423,25 @@ class MountInfo:
                 )
                 mounted = cls.search(mount_path)
                 if mounted is None:
-                    raise OSError(
+                    msg = (
                         f"repository mount target {mount_path!r} failed to appear in "
                         f"{HOST_MOUNTS} after successful mount subcommand"
                     )
+                    raise OSError(msg)
 
             if not mounted.ceph_path is not None:
-                raise OSError(
+                msg = (
                     f"repository mount target {mounted.mount_point!r} is mounted with "
                     f"unsupported source {mounted.source!r}, expected parseable Ceph "
                     "mount"
                 )
+                raise OSError(msg)
             if ceph_path is not None and mounted.ceph_path != ceph_path:
-                raise OSError(
+                msg = (
                     f"repository mount target {mounted.mount_point!r} is attached to "
                     f"{mounted.source!r}, expected Ceph source suffix ':{ceph_path}'"
                 )
+                raise OSError(msg)
 
         return mounted
 
@@ -438,9 +468,11 @@ class MountInfo:
             If unmounting fails or the mount remains attached.
         """
         if os.name != "posix" or platform.system() != "Linux":
-            raise OSError("repository mounts are only supported on Linux platforms")
+            msg = "repository mounts are only supported on Linux platforms"
+            raise OSError(msg)
         if timeout <= 0:
-            raise TimeoutError("timeout must be non-negative")
+            msg = "timeout must be non-negative"
+            raise TimeoutError(msg)
 
         cmd = ["umount"]
         if force:
@@ -456,10 +488,12 @@ class MountInfo:
             # Treat a stale-entry race as idempotent success.
             if MountInfo.search(self.mount_point) is None:
                 return False
-            raise OSError(f"unmount command failed:\n{err}") from err
+            msg = f"unmount command failed:\n{err}"
+            raise OSError(msg) from err
 
         if MountInfo.search(self.mount_point) is not None:
-            raise OSError(f"failed to unmount volume at {self.mount_point}")
+            msg = f"failed to unmount volume at {self.mount_point}"
+            raise OSError(msg)
         return True
 
     @dataclass
@@ -503,6 +537,15 @@ class MountInfo:
                 -------
                 MountInfo.Aliases.JSON
                     Parsed alias metadata.
+
+                Raises
+                ------
+                FileNotFoundError
+                    If the alias index path exists but is not a regular file.
+                OSError
+                    If the alias index cannot be read.
+                ValueError
+                    If the alias index content fails schema validation.
                 """
                 if not path.exists():
                     return cls(
@@ -511,17 +554,18 @@ class MountInfo:
                         last_accessed=datetime.now(UTC),
                     )
                 if not path.is_file():
-                    raise FileNotFoundError(f"repository alias index path is not a file: {path}")
+                    msg = f"repository alias index path is not a file: {path}"
+                    raise FileNotFoundError(msg)
                 try:
                     text = path.read_text(encoding="utf-8")
                 except OSError as err:
-                    raise OSError(f"failed to read repository alias index file: {err}") from err
+                    msg = f"failed to read repository alias index file: {err}"
+                    raise OSError(msg) from err
                 try:
                     return cls.model_validate_json(text)
                 except ValidationError as err:
-                    raise ValueError(
-                        f"repository alias index file has invalid format: {err}"
-                    ) from err
+                    msg = f"repository alias index file has invalid format: {err}"
+                    raise ValueError(msg) from err
 
             def dump(self, path: Path) -> None:
                 """Persist alias metadata to disk in canonical JSON format.
@@ -530,6 +574,11 @@ class MountInfo:
                 ----------
                 path : Path
                     Path to persist alias metadata to.
+
+                Raises
+                ------
+                OSError
+                    If the alias index cannot be written.
                 """
                 try:
                     atomic_write_text(
@@ -544,11 +593,11 @@ class MountInfo:
                         encoding="utf-8",
                     )
                 except OSError as err:
-                    raise OSError(f"failed to write repository alias index file: {err}") from err
+                    msg = f"failed to write repository alias index file: {err}"
+                    raise OSError(msg) from err
 
             def filter(self, mount: Path) -> set[Path]:
-                """Return the subset of declared aliases that still point to the given
-                mount path, filtering out any stale entries.
+                """Return declared aliases that still point to the mount path.
 
                 Parameters
                 ----------
@@ -561,7 +610,9 @@ class MountInfo:
                     Living alias paths that point to the given mount.
                 """
                 mount = mount.expanduser().resolve()
-                return {alias for alias in self.aliases if symlink_points_to(alias, mount)}
+                return {
+                    alias for alias in self.aliases if symlink_points_to(alias, mount)
+                }
 
         mount: MountInfo
         timeout: float
@@ -574,19 +625,34 @@ class MountInfo:
         _depth: int = field(default=0)
 
         def __post_init__(self) -> None:
+            """Validate the alias manager and derive repository paths.
+
+            Raises
+            ------
+            OSError
+                If the mount is not a managed repository mount.
+            TimeoutError
+                If `timeout` is non-positive.
+            """
             if self.timeout <= 0:
-                raise TimeoutError("timeout must be non-negative")
+                msg = "timeout must be non-negative"
+                raise TimeoutError(msg)
             if self.mount.repo_id is None:
-                raise OSError(
+                msg = (
                     "alias state is only available for repository mounts with a valid "
                     "repository identity"
                 )
+                raise OSError(msg)
             self._root = REPO_DIR / self.mount.repo_id
             self._mount_path = self._root / REPO_MOUNT_EXT
 
         async def __aenter__(self) -> Self:
-            """Read the alias registry for this mount, automatically pruning stale
-            entries and synchronizing concurrent mutations.
+            """Read and lock the alias registry for this mount.
+
+            Returns
+            -------
+            MountInfo.Aliases
+                Active alias state manager.
             """
             if self._depth >= 1:
                 self._depth += 1
@@ -610,15 +676,14 @@ class MountInfo:
                 aliases = self.JSON.load(self._root / REPO_ALIASES_EXT)
                 self.aliases = aliases.filter(self._mount_path)
                 self._depth = 1
-                return self
             except Exception:
-                try:
+                with contextlib.suppress(Exception):
                     await self._lock.unlock(ignore_errors=True)
-                except Exception:
-                    pass
                 self._lock = None
                 self._depth = 0
                 raise
+            else:
+                return self
 
         def link(self, path: Path) -> bool:
             """Create/update a managed alias symlink to this mount's registry.
@@ -642,9 +707,11 @@ class MountInfo:
                 If called outside an active context manager block.
             """
             if self._depth < 1:
-                raise RuntimeError(
-                    "MountAliases must be used inside 'async with' before calling link()/unlink()"
+                msg = (
+                    "MountAliases must be used inside 'async with' before calling "
+                    "link()/unlink()"
                 )
+                raise RuntimeError(msg)
 
             # avoid collisions with file or directory paths, as well as symlinks that
             # do not point to the expected mount
@@ -653,10 +720,11 @@ class MountInfo:
             if missing:
                 atomic_symlink(self._mount_path, path)
             elif not symlink_points_to(path, self._mount_path):
-                raise OSError(
+                msg = (
                     f"repository alias path {path!r} already exists and is not a "
                     f"managed symlink to {self._mount_path!r}"
                 )
+                raise OSError(msg)
             self.aliases.add(path)
             return missing
 
@@ -680,9 +748,11 @@ class MountInfo:
                 If called outside an active context manager block.
             """
             if self._depth < 1:
-                raise RuntimeError(
-                    "MountAliases must be used inside 'async with' before calling link()/unlink()"
+                msg = (
+                    "MountAliases must be used inside 'async with' before calling "
+                    "link()/unlink()"
                 )
+                raise RuntimeError(msg)
             path = abspath(path)
             if path not in self.aliases:
                 return False
@@ -724,7 +794,9 @@ class MountInfo:
             # rotate over the roots based on current timestamp to ensure GC covers the
             # whole set of mounts over time, without any extra state
             now = datetime.now(UTC)
-            start = int(now.timestamp() // REPO_ORPHAN_GC_SLOT_PERIOD.total_seconds()) % len(roots)
+            start = int(
+                now.timestamp() // REPO_ORPHAN_GC_SLOT_PERIOD.total_seconds()
+            ) % len(roots)
             mounts = MountInfo.local()
             for offset in range(min(REPO_ORPHAN_GC_BATCH_SIZE, len(roots))):
                 root = roots[(start + offset) % len(roots)]
@@ -760,7 +832,7 @@ class MountInfo:
                         await mount.unmount(timeout=remaining, force=False)
                     except asyncio.CancelledError:
                         raise
-                    except Exception as err:
+                    except Exception as err:  # noqa: BLE001
                         print(
                             "bertrand: warning: failed to garbage-collect orphan "
                             f"repository mount {mount.mount_point}: {err}",
@@ -768,9 +840,10 @@ class MountInfo:
                         )
                 except asyncio.CancelledError:
                     raise
-                except Exception as err:
+                except Exception as err:  # noqa: BLE001
                     print(
-                        "bertrand: warning: failed to process orphan mount GC candidate "
+                        "bertrand: warning: failed to process orphan mount GC "
+                        "candidate "
                         f"{root}: {err}",
                         file=sys.stderr,
                     )
@@ -778,7 +851,7 @@ class MountInfo:
                     if locked:  # release opportunistic lock if we acquired it
                         try:
                             await lock.unlock()
-                        except Exception as err:
+                        except Exception as err:  # noqa: BLE001
                             print(
                                 "bertrand: warning: failed to release orphan mount GC "
                                 f"lock for {root}: {err}",
@@ -791,6 +864,13 @@ class MountInfo:
             exc_value: BaseException | None,
             traceback: TracebackType | None,
         ) -> None:
+            """Flush alias state and release the repository lock.
+
+            Raises
+            ------
+            asyncio.CancelledError
+                If cancellation interrupts alias cleanup.
+            """
             self._depth -= 1
             if self._depth > 0:
                 return  # re-entrant
@@ -805,16 +885,18 @@ class MountInfo:
                     last_accessed=datetime.now(UTC),
                 )
                 state.dump(self._root / REPO_ALIASES_EXT)
-            except Exception as err:  # pylint: disable=broad-except
+            except Exception as err:  # noqa: BLE001
                 internal_error = err
 
             # release this mount's lock to not deadlock during GC
             if self._lock is not None:
                 try:
                     await self._lock.unlock(
-                        ignore_errors=internal_error is not None or exc_value is not None
+                        ignore_errors=(
+                            internal_error is not None or exc_value is not None
+                        )
                     )
-                except Exception as err:  # pylint: disable=broad-except
+                except Exception as err:  # noqa: BLE001
                     if internal_error is None:
                         internal_error = err
                 finally:
@@ -830,7 +912,7 @@ class MountInfo:
                     await self._gc_orphan_mounts(timeout=self._deadline - loop.time())
                 except asyncio.CancelledError:
                     raise
-                except Exception as err:  # pylint: disable=broad-except
+                except Exception as err:  # noqa: BLE001
                     print(
                         f"bertrand: warning: orphan repository mount GC failed: {err}",
                         file=sys.stderr,
@@ -871,8 +953,9 @@ class MountInfo:
             If this mount does not correspond to a Bertrand repository.
         """
         if self.repo_id is None:
-            raise OSError(
+            msg = (
                 "alias state is only available for repository mounts with a valid "
                 "repository identity"
             )
+            raise OSError(msg)
         return self.Aliases(self, timeout=timeout, gc=gc)

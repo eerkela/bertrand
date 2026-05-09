@@ -517,6 +517,23 @@ class Deployment:
         return MappingProxyType(metadata.annotations)
 
     @property
+    def pod_annotations(self) -> Mapping[str, str]:
+        """Return this Deployment's pod template annotations.
+
+        Returns
+        -------
+        Mapping[str, str]
+            Read-only view of `spec.template.metadata.annotations`, or an empty
+            mapping when unavailable.
+        """
+        spec = self._obj.spec
+        template = spec.template if spec is not None else None
+        metadata = template.metadata if template is not None else None
+        if metadata is None or metadata.annotations is None:
+            return MappingProxyType({})
+        return MappingProxyType(metadata.annotations)
+
+    @property
     def resource_version(self) -> str:
         """Return this Deployment's resource version.
 

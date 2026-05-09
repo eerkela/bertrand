@@ -5,14 +5,20 @@ from __future__ import annotations
 import asyncio
 import hashlib
 from dataclasses import dataclass
-from pathlib import PosixPath
-from typing import Self
+from typing import TYPE_CHECKING, Self
 
-from ...config.core import _check_uuid
-from ...run import BERTRAND_ENV, BERTRAND_NAMESPACE, REPO_ID_ENV
-from ..api import Kube
-from ..pod import Pod
-from ..volume import PersistentVolume, PersistentVolumeClaim, StorageClass
+from bertrand.env.config.core import _check_uuid
+from bertrand.env.kube.api import Kube
+from bertrand.env.kube.pod import Pod
+from bertrand.env.kube.volume import (
+    PersistentVolume,
+    PersistentVolumeClaim,
+    StorageClass,
+)
+from bertrand.env.run import BERTRAND_ENV, BERTRAND_NAMESPACE, REPO_ID_ENV
+
+if TYPE_CHECKING:
+    from pathlib import PosixPath
 
 REPO_VOLUME_ENV: str = "BERTRAND_REPO_VOLUME"
 DEFAULT_VOLUME_SIZE = "16Mi"
@@ -54,31 +60,36 @@ class RepoVolume:
     ) -> None:
         actual_name = pvc.name
         if actual_name != claim_name:
-            raise OSError(
+            msg = (
                 f"cluster PVC for repo {repo_id!r} has non-deterministic claim name "
                 f"{actual_name!r}, expected {claim_name!r}"
             )
+            raise OSError(msg)
         labels = pvc.labels
         storage_class_name = pvc.storage_class_name
         access_modes = pvc.access_modes
         if labels.get(BERTRAND_ENV) != "1" or labels.get(REPO_VOLUME_ENV) != "1":
-            raise OSError(
+            msg = (
                 f"cluster PVC {claim_name!r} collides with Bertrand volume claim, but "
                 "is not managed by Bertrand"
             )
+            raise OSError(msg)
         actual_repo_id = labels.get(REPO_ID_ENV)
         if actual_repo_id != repo_id:
-            raise OSError(
+            msg = (
                 f"cluster PVC {claim_name!r} has mismatched repo identity label "
                 f"{REPO_ID_ENV!r}: expected {repo_id!r}, got {actual_repo_id!r}"
             )
+            raise OSError(msg)
         if storage_class is not None and storage_class_name != storage_class:
-            raise OSError(
+            msg = (
                 f"cluster PVC {claim_name!r} uses storage class "
                 f"{storage_class_name!r}, expected {storage_class!r}"
             )
+            raise OSError(msg)
         if require_rwx and "ReadWriteMany" not in access_modes:
-            raise OSError(f"cluster PVC {claim_name!r} must include ReadWriteMany access mode")
+            msg = f"cluster PVC {claim_name!r} must include ReadWriteMany access mode"
+            raise OSError(msg)
 
     @classmethod
     async def create(
@@ -88,13 +99,39 @@ class RepoVolume:
         timeout: float,
         size_request: str,
     ) -> Self:
-        """Ensure a deterministic, cluster-wide RWX claim exists for one repository."""
+        """Ensure a deterministic, cluster-wide RWX claim exists.
+
+        Parameters
+        ----------
+        repo_id : str
+            Repository UUID used to derive the claim name and ownership labels.
+        timeout : float
+            Maximum convergence budget in seconds.
+        size_request : str
+            Kubernetes storage request to apply to the claim.
+
+        Returns
+        -------
+        RepoVolume
+            Repository volume wrapper for the converged claim.
+
+        Raises
+        ------
+        OSError
+            If a selected storage class or existing PVC is incompatible.
+        TimeoutError
+            If `timeout` is non-positive.
+        ValueError
+            If `repo_id` or `size_request` is invalid.
+        """
         repo_id = _check_uuid(repo_id)
         if timeout <= 0:
-            raise TimeoutError("timeout must be non-negative")
+            msg = "timeout must be non-negative"
+            raise TimeoutError(msg)
         size_request = size_request.strip()
         if not size_request:
-            raise ValueError("size request cannot be empty")
+            msg = "size request cannot be empty"
+            raise ValueError(msg)
         claim_name = cls._kube_name(repo_id)
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
@@ -106,11 +143,12 @@ class RepoVolume:
                 require_expansion=True,
             )
             if not storage.is_cephfs:
-                raise OSError(
+                msg = (
                     f"storage class {storage.name!r} uses provisioner "
-                    f"{storage.provisioner!r}, but Bertrand repository volumes require a "
-                    "CephFS CSI provisioner"
+                    f"{storage.provisioner!r}, but Bertrand repository volumes "
+                    "require a CephFS CSI provisioner"
                 )
+                raise OSError(msg)
             storage_class = storage.name
 
             pvc = await PersistentVolumeClaim.upsert(
@@ -140,13 +178,34 @@ class RepoVolume:
 
     @classmethod
     async def get(cls, repo_id: str | None, *, timeout: float) -> list[Self]:
-        """List repository volumes currently present in the cluster."""
+        """List repository volumes currently present in the cluster.
+
+        Parameters
+        ----------
+        repo_id : str | None
+            Optional repository UUID to filter for.
+        timeout : float
+            Maximum list budget in seconds.
+
+        Returns
+        -------
+        list[RepoVolume]
+            Repository volumes sorted by repository identity and claim name.
+
+        Raises
+        ------
+        OSError
+            If a discovered PVC has invalid Bertrand repository ownership metadata.
+        TimeoutError
+            If `timeout` is non-positive.
+        """
         labels = {BERTRAND_ENV: "1", REPO_VOLUME_ENV: "1"}
         if repo_id is not None:
             repo_id = _check_uuid(repo_id)
             labels[REPO_ID_ENV] = repo_id
         if timeout <= 0:
-            raise TimeoutError("timeout must be non-negative")
+            msg = "timeout must be non-negative"
+            raise TimeoutError(msg)
         with await Kube.host(timeout=timeout) as kube:
             pvcs = await PersistentVolumeClaim.list(
                 kube=kube,
@@ -159,7 +218,8 @@ class RepoVolume:
                 labels = pvc.labels
                 repo_id = labels.get(REPO_ID_ENV, "")
                 if not repo_id:
-                    raise OSError(f"cluster PVC {pvc.name!r} is missing label {REPO_ID_ENV!r}")
+                    msg = f"cluster PVC {pvc.name!r} is missing label {REPO_ID_ENV!r}"
+                    raise OSError(msg)
                 repo_id = _check_uuid(repo_id)
                 cls._assert_managed_pvc(
                     pvc,
@@ -179,9 +239,25 @@ class RepoVolume:
             return out
 
     async def delete(self, *, timeout: float, force: bool) -> None:
-        """Delete this repository volume claim from the cluster."""
+        """Delete this repository volume claim from the cluster.
+
+        Parameters
+        ----------
+        timeout : float
+            Maximum deletion budget in seconds.
+        force : bool
+            Whether to delete even when active pods reference the claim.
+
+        Raises
+        ------
+        OSError
+            If the claim is still active and `force` is False, or deletion fails.
+        TimeoutError
+            If `timeout` is non-positive.
+        """
         if timeout <= 0:
-            raise TimeoutError("timeout must be non-negative")
+            msg = "timeout must be non-negative"
+            raise TimeoutError(msg)
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
         with await Kube.host(timeout=deadline - loop.time()) as kube:
@@ -201,25 +277,48 @@ class RepoVolume:
                 active.discard("")
                 name = self.pvc.name
                 if name in active:
-                    raise OSError(
+                    msg = (
                         f"cannot delete repository volume {name!r} while "
                         "it is being used by active pods"
                     )
+                    raise OSError(msg)
 
             await self.pvc.delete(kube=kube, timeout=deadline - loop.time())
 
     async def resolve_ceph_path(self, *, timeout: float) -> PosixPath:
-        """Resolve this repo claim's CephFS path from bound PVC/PV metadata."""
+        """Resolve this repo claim's CephFS path from bound PVC/PV metadata.
+
+        Parameters
+        ----------
+        timeout : float
+            Maximum resolution budget in seconds.
+
+        Returns
+        -------
+        PosixPath
+            Absolute CephFS path backing this repository claim.
+
+        Raises
+        ------
+        OSError
+            If the PVC/PV binding is missing or does not expose a CephFS path.
+        TimeoutError
+            If `timeout` is non-positive.
+        """
         if timeout <= 0:
-            raise TimeoutError("timeout must be non-negative")
+            msg = "timeout must be non-negative"
+            raise TimeoutError(msg)
         name = self.pvc.name
         namespace = self.pvc.namespace
         if not name:
-            raise OSError("cannot resolve Ceph path for PVC with missing metadata.name")
+            msg = "cannot resolve Ceph path for PVC with missing metadata.name"
+            raise OSError(msg)
         if not namespace:
-            raise OSError(
-                f"cannot resolve Ceph path for PVC {name!r} with missing metadata.namespace"
+            msg = (
+                f"cannot resolve Ceph path for PVC {name!r} with missing "
+                "metadata.namespace"
             )
+            raise OSError(msg)
 
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
@@ -237,20 +336,23 @@ class RepoVolume:
 
             driver = volume.csi_driver
             if not driver:
-                raise OSError(
+                msg = (
                     f"PersistentVolume {volume_name!r} is not CSI-backed and cannot be "
                     "mounted as a Ceph repository volume"
                 )
+                raise OSError(msg)
             if "cephfs" not in driver.lower():
-                raise OSError(
+                msg = (
                     f"PersistentVolume {volume_name!r} uses CSI driver {driver!r}, "
                     "expected a CephFS driver"
                 )
+                raise OSError(msg)
 
             ceph_path = volume.ceph_path
             if ceph_path is None:
-                raise OSError(
+                msg = (
                     "repository PersistentVolume is missing CephFS path attributes "
                     "(expected one of 'subvolumePath', 'rootPath', or 'path')"
                 )
+                raise OSError(msg)
             return ceph_path

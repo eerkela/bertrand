@@ -40,6 +40,9 @@ BUILD_JOB_SSH_MOUNT = "/run/bertrand/buildkit/ssh"
 BUILD_JOB_LABEL = "bertrand.dev/build-job"
 BUILD_JOB_LABEL_VALUE = "v1"
 BUILD_JOB_TTL_SECONDS = 3600
+BUILD_JOB_LOG_TAIL_LINES = 120
+BUILD_JOB_DIAGNOSTIC_TIMEOUT_SECONDS = 10.0
+BUILD_JOB_CLEANUP_TIMEOUT_SECONDS = 10.0
 BUILD_CACHE_TAG = "buildcache"
 CAPABILITY_VALUE_KEY = "value"
 
@@ -357,6 +360,9 @@ class BuildKitImageBuild:
             If staging, Job creation, or Job completion exceeds `timeout`.
         FileNotFoundError
             If a declared build context source does not exist.
+        OSError
+            If the Kubernetes build Job fails, Job creation fails, or BuildKit
+            metadata cannot be loaded.
         ValueError
             If capability inputs are present without `env_id`.
         """
@@ -454,11 +460,27 @@ class BuildKitImageBuild:
                 node_name=local_node.name,
                 timeout=deadline - loop.time(),
             )
-            await job.wait_complete(kube, timeout=deadline - loop.time())
-            return _load_build_metadata(
-                metadata / Path(BUILD_JOB_METADATA_FILE).name,
-                image=self.image,
-            )
+            try:
+                await job.wait_complete(kube, timeout=deadline - loop.time())
+                return _load_build_metadata(
+                    metadata / Path(BUILD_JOB_METADATA_FILE).name,
+                    image=self.image,
+                )
+            except (OSError, TimeoutError) as err:
+                logs = await _build_job_log_tail(
+                    kube,
+                    job,
+                    timeout=BUILD_JOB_DIAGNOSTIC_TIMEOUT_SECONDS,
+                )
+                await _delete_build_job(
+                    kube,
+                    job,
+                    timeout=BUILD_JOB_CLEANUP_TIMEOUT_SECONDS,
+                )
+                msg = _build_failure_message(self.image, err, logs)
+                if isinstance(err, TimeoutError):
+                    raise TimeoutError(msg) from err
+                raise OSError(msg) from err
 
     async def _capability_mounts(
         self,
@@ -485,7 +507,7 @@ class BuildKitImageBuild:
             capability = await Capability.resolve(
                 kube,
                 kind="secret",
-                id=capability_id,
+                capability_id=capability_id,
                 env_id=env_id,
                 required=required,
                 timeout=deadline - loop.time(),
@@ -514,7 +536,7 @@ class BuildKitImageBuild:
             capability = await Capability.resolve(
                 kube,
                 kind="ssh",
-                id=capability_id,
+                capability_id=capability_id,
                 env_id=env_id,
                 required=required,
                 timeout=deadline - loop.time(),
@@ -540,6 +562,52 @@ class BuildKitImageBuild:
             ssh_paths[capability_id] = f"{mount_path}/{CAPABILITY_VALUE_KEY}"
 
         return volumes, mounts, secret_paths, ssh_paths
+
+
+async def _build_job_log_tail(kube: Kube, job: Job, *, timeout: float) -> str:
+    if timeout <= 0:
+        return ""
+    try:
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        pods = await job.pods(kube, timeout=deadline - loop.time())
+        chunks: list[str] = []
+        for pod in pods:
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                break
+            log = await pod.logs(
+                kube,
+                timeout=remaining,
+                tail_lines=BUILD_JOB_LOG_TAIL_LINES,
+            )
+            log = log.strip()
+            if log:
+                chunks.append(f"--- {pod.namespace}/{pod.name} ---\n{log}")
+        return "\n\n".join(chunks)
+    except (OSError, TimeoutError, ValueError) as err:
+        return f"<failed to read BuildKit build pod logs: {err}>"
+
+
+async def _delete_build_job(kube: Kube, job: Job, *, timeout: float) -> None:
+    if timeout <= 0:
+        return
+    try:
+        await job.delete(
+            kube,
+            timeout=timeout,
+            propagation_policy="Foreground",
+        )
+    except (OSError, TimeoutError):
+        return
+
+
+def _build_failure_message(image: str, err: BaseException, logs: str) -> str:
+    msg = f"BuildKit image build for {image!r} failed: {err}"
+    logs = logs.strip()
+    if logs:
+        msg = f"{msg}\n\nBuild pod logs:\n{logs}"
+    return msg
 
 
 def _normalize_capability_requests(

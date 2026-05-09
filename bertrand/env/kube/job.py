@@ -20,6 +20,7 @@ from .api import (
     _label_selector,
     _pod_template_manifest,
 )
+from .pod import Pod
 
 if TYPE_CHECKING:
     import builtins
@@ -28,6 +29,7 @@ if TYPE_CHECKING:
 
 JOB_WAIT_POLL_INTERVAL_SECONDS = 0.5
 type RestartPolicy = Literal["Never", "OnFailure"]
+type DeletionPropagationPolicy = Literal["Background", "Foreground", "Orphan"]
 
 
 @dataclass(frozen=True)
@@ -655,6 +657,51 @@ class Job:
         """
         return self.failure_message
 
+    async def pods(self, kube: Kube, *, timeout: float) -> builtins.list[Pod]:
+        """List Pods owned by this Job.
+
+        Parameters
+        ----------
+        kube : Kube
+            Active Kubernetes API context.
+        timeout : float
+            Maximum request budget in seconds. If infinite, wait indefinitely.
+
+        Returns
+        -------
+        list[Pod]
+            Pods selected by Kubernetes' standard Job ownership labels.
+
+        Raises
+        ------
+        OSError
+            If this wrapper is missing metadata, or Kubernetes returns malformed pod
+            data.
+        """
+        namespace = self.namespace
+        name = self.name
+        if not namespace or not name:
+            msg = "cannot list Job pods with missing metadata.name/namespace"
+            raise OSError(msg)
+        try:
+            pods = await Pod.list(
+                kube,
+                namespaces=(namespace,),
+                labels={"batch.kubernetes.io/job-name": name},
+                timeout=timeout,
+            )
+            if pods:
+                return pods
+            return await Pod.list(
+                kube,
+                namespaces=(namespace,),
+                labels={"job-name": name},
+                timeout=timeout,
+            )
+        except OSError as err:
+            msg = f"failed to list pods for Job {namespace}/{name}: {err}"
+            raise OSError(msg) from err
+
     async def refresh(self, kube: Kube, *, timeout: float) -> Self | None:
         """Re-read this Job by its metadata namespace and name.
 
@@ -688,7 +735,13 @@ class Job:
             timeout=timeout,
         )
 
-    async def delete(self, kube: Kube, *, timeout: float) -> None:
+    async def delete(
+        self,
+        kube: Kube,
+        *,
+        timeout: float,
+        propagation_policy: DeletionPropagationPolicy = "Background",
+    ) -> None:
         """Delete this Job from the cluster.
 
         Parameters
@@ -697,23 +750,32 @@ class Job:
             Active Kubernetes API context.
         timeout : float
             Maximum request budget in seconds. If infinite, wait indefinitely.
+        propagation_policy : {"Background", "Foreground", "Orphan"}, optional
+            Kubernetes deletion propagation policy.
 
         Raises
         ------
         OSError
             If this wrapper is missing metadata, the delete request fails, or
             Kubernetes returns malformed data.
+        ValueError
+            If `propagation_policy` is invalid.
         """
         namespace = self.namespace
         name = self.name
         if not namespace or not name:
             msg = "cannot delete Job with missing metadata.name/namespace"
             raise OSError(msg)
+        if propagation_policy not in ("Background", "Foreground", "Orphan"):
+            msg = f"invalid Job deletion propagation policy: {propagation_policy!r}"
+            raise ValueError(msg)
         payload = await kube.run(
             lambda request_timeout: kube.batch.delete_namespaced_job(
                 name=name,
                 namespace=namespace,
-                body=kubernetes.client.V1DeleteOptions(propagation_policy="Background"),
+                body=kubernetes.client.V1DeleteOptions(
+                    propagation_policy=propagation_policy,
+                ),
                 _request_timeout=request_timeout,
             ),
             timeout=timeout,
