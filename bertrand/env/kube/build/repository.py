@@ -3,19 +3,16 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import re
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from ...run import (
-    BERTRAND_ENV,
-    BERTRAND_NAMESPACE,
-    INFINITY,
-    run,
-    sudo,
-)
-from ..api import (
+from bertrand.env.kube.api import (
+    CLUSTER_REGISTRY_READY_LABEL,
+    CLUSTER_REGISTRY_READY_VALUE,
     ContainerPortSpec,
     ContainerSpec,
     EnvVarSpec,
@@ -25,14 +22,22 @@ from ..api import (
     VolumeMountSpec,
     VolumeSpec,
 )
-from ..ceph import CEPHFS_STORAGE_CLASS_PREFERENCES
-from ..configmap import ConfigMap
-from ..deployment import Deployment
-from ..service import Service
-from ..volume import PersistentVolumeClaim, StorageClass
-from .daemon import (
+from bertrand.env.kube.build.daemon import (
     BUILDKIT_CONFIG_KEY,
     BUILDKIT_CONFIG_NAME,
+)
+from bertrand.env.kube.ceph.volume import CEPHFS_STORAGE_CLASS_PREFERENCES
+from bertrand.env.kube.configmap import ConfigMap
+from bertrand.env.kube.deployment import Deployment
+from bertrand.env.kube.node import Node
+from bertrand.env.kube.service import Service
+from bertrand.env.kube.volume import PersistentVolumeClaim, StorageClass
+from bertrand.env.run import (
+    BERTRAND_ENV,
+    BERTRAND_NAMESPACE,
+    INFINITY,
+    run,
+    sudo,
 )
 
 IMAGE_REPOSITORY_NAME = "bertrand-registry"
@@ -41,7 +46,8 @@ IMAGE_REPOSITORY_PORT = 5000
 IMAGE_REPOSITORY_NODE_PORT = 32000
 IMAGE_REPOSITORY_PULL_HOST = f"localhost:{IMAGE_REPOSITORY_NODE_PORT}"
 IMAGE_REPOSITORY_SERVICE_ADDR = (
-    f"{IMAGE_REPOSITORY_NAME}.{BERTRAND_NAMESPACE}.svc.cluster.local:{IMAGE_REPOSITORY_PORT}"
+    f"{IMAGE_REPOSITORY_NAME}.{BERTRAND_NAMESPACE}.svc.cluster.local:"
+    f"{IMAGE_REPOSITORY_PORT}"
 )
 IMAGE_REPOSITORY_SIZE = "4Gi"
 IMAGE_REPOSITORY_MOUNT = "/var/lib/registry"
@@ -84,7 +90,8 @@ class ImageRepository:
 
     @property
     def pull_server(self) -> str:
-        """
+        """Return the HTTP registry server address.
+
         Returns
         -------
         str
@@ -94,7 +101,8 @@ class ImageRepository:
 
     @property
     def trust_hosts(self) -> tuple[str, ...]:
-        """
+        """Return local registry aliases trusted by containerd.
+
         Returns
         -------
         tuple[str, ...]
@@ -104,7 +112,8 @@ class ImageRepository:
 
     @property
     def labels(self) -> dict[str, str]:
-        """
+        """Return labels shared by image repository resources.
+
         Returns
         -------
         dict[str, str]
@@ -119,7 +128,8 @@ class ImageRepository:
 
     @property
     def selector(self) -> dict[str, str]:
-        """
+        """Return the image repository pod selector.
+
         Returns
         -------
         dict[str, str]
@@ -129,6 +139,40 @@ class ImageRepository:
             "app.kubernetes.io/name": self.service,
             IMAGE_REPOSITORY_LABEL: IMAGE_REPOSITORY_LABEL_VALUE,
         }
+
+    @property
+    def buildkit_config_data(self) -> dict[str, str]:
+        """Return BuildKit registry routing ConfigMap data.
+
+        Returns
+        -------
+        dict[str, str]
+            Data payload for the BuildKit registry configuration ConfigMap.
+        """
+        return {
+            BUILDKIT_CONFIG_KEY: (
+                f"[registry.\"{self.pull_host}\"]\n"
+                f"  mirrors = [\"{self.service_addr}\"]\n"
+                "  http = true\n"
+                "  insecure = true\n"
+            )
+        }
+
+    @property
+    def buildkit_config_hash(self) -> str:
+        """Return a deterministic hash for BuildKit registry configuration.
+
+        Returns
+        -------
+        str
+            SHA-256 digest of the BuildKit registry configuration data.
+        """
+        payload = json.dumps(
+            self.buildkit_config_data,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
     async def ensure_trust(self, *, timeout: float = INFINITY) -> None:
         """Converge local MicroK8s containerd trust for this repository.
@@ -142,11 +186,10 @@ class ImageRepository:
         ------
         TimeoutError
             If `timeout` is non-positive or host file updates exceed the budget.
-        OSError
-            If the local host trust files cannot be installed.
         """
         if timeout <= 0:
-            raise TimeoutError("image repository trust timeout must be non-negative")
+            msg = "image repository trust timeout must be non-negative"
+            raise TimeoutError(msg)
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
         content = (
@@ -184,6 +227,79 @@ class ImageRepository:
                     timeout=deadline - loop.time(),
                 )
 
+    async def ensure_node_trust(
+        self,
+        kube: Kube,
+        *,
+        timeout: float = INFINITY,
+    ) -> None:
+        """Converge local registry trust and mark the local node ready.
+
+        Parameters
+        ----------
+        kube : Kube
+            Kubernetes API client for the target cluster.
+        timeout : float, optional
+            Maximum runtime budget in seconds. If infinite, wait indefinitely.
+
+        Raises
+        ------
+        TimeoutError
+            If `timeout` is non-positive or convergence exceeds the budget.
+        """
+        if timeout <= 0:
+            msg = "image repository node-trust timeout must be non-negative"
+            raise TimeoutError(msg)
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        await self.ensure_trust(timeout=deadline - loop.time())
+        node = await Node.local(kube, timeout=deadline - loop.time())
+        await node.set_label(
+            kube=kube,
+            label=CLUSTER_REGISTRY_READY_LABEL,
+            value=CLUSTER_REGISTRY_READY_VALUE,
+            timeout=deadline - loop.time(),
+        )
+
+    async def assert_node_trust(
+        self,
+        kube: Kube,
+        *,
+        timeout: float = INFINITY,
+    ) -> None:
+        """Assert all cluster nodes are marked ready for registry pulls.
+
+        Parameters
+        ----------
+        kube : Kube
+            Kubernetes API client for the target cluster.
+        timeout : float, optional
+            Maximum request budget in seconds. If infinite, wait indefinitely.
+
+        Raises
+        ------
+        OSError
+            If any cluster node is missing the registry-ready label.
+        """
+        nodes = await Node.list(kube=kube, timeout=timeout)
+        ready = {
+            node.name
+            for node in nodes
+            if node.name
+            and node.labels.get(CLUSTER_REGISTRY_READY_LABEL)
+            == CLUSTER_REGISTRY_READY_VALUE
+        }
+        missing = sorted(
+            node.name for node in nodes if node.name and node.name not in ready
+        )
+        if missing:
+            msg = (
+                "build runtime rollout blocked: registry trust label is missing on "
+                f"node(s): {', '.join(missing)}. Run `bertrand init` on those "
+                "hosts first to converge registry trust and mark them ready."
+            )
+            raise OSError(msg)
+
     async def ensure(self, kube: Kube, *, timeout: float = INFINITY) -> None:
         """Converge Bertrand's OCI image repository resources.
 
@@ -203,7 +319,8 @@ class ImageRepository:
             are not present.
         """
         if timeout <= 0:
-            raise TimeoutError("image repository timeout must be non-negative")
+            msg = "image repository timeout must be non-negative"
+            raise TimeoutError(msg)
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
 
@@ -214,11 +331,12 @@ class ImageRepository:
             require_expansion=True,
         )
         if not storage.is_cephfs:
-            raise OSError(
+            msg = (
                 f"storage class {storage.name!r} uses provisioner "
                 f"{storage.provisioner!r}, but Bertrand registry storage requires "
                 "a CephFS CSI provisioner"
             )
+            raise OSError(msg)
         pvc = await PersistentVolumeClaim.upsert(
             kube=kube,
             namespace=self.namespace,
@@ -230,12 +348,14 @@ class ImageRepository:
             timeout=deadline - loop.time(),
         )
         if pvc.storage_class_name != storage.name:
-            raise OSError(
+            msg = (
                 f"registry PVC {self.namespace}/{self.service} uses storage class "
                 f"{pvc.storage_class_name!r}, expected {storage.name!r}"
             )
+            raise OSError(msg)
         if "ReadWriteMany" not in pvc.access_modes:
-            raise OSError(f"registry PVC {self.namespace}/{self.service} must use ReadWriteMany")
+            msg = f"registry PVC {self.namespace}/{self.service} must use ReadWriteMany"
+            raise OSError(msg)
 
         await Service.upsert(
             kube,
@@ -259,14 +379,7 @@ class ImageRepository:
             namespace=self.namespace,
             name=BUILDKIT_CONFIG_NAME,
             labels=self.labels,
-            data={
-                BUILDKIT_CONFIG_KEY: (
-                    f"[registry.\"{self.pull_host}\"]\n"
-                    f"  mirrors = [\"{self.service_addr}\"]\n"
-                    "  http = true\n"
-                    "  insecure = true\n"
-                ),
-            },
+            data=self.buildkit_config_data,
             timeout=deadline - loop.time(),
         )
         deployment = await Deployment.upsert(
@@ -321,7 +434,7 @@ class ImageRepository:
             ],
             timeout=deadline - loop.time(),
         )
-        await deployment.wait_available(kube, timeout=deadline - loop.time())
+        await deployment.wait_rollout(kube, timeout=deadline - loop.time())
 
     def ref(self, name: str, tag: str) -> str:
         """Render a stable Bertrand image reference.
@@ -347,14 +460,18 @@ class ImageRepository:
         path = name.strip().strip("/")
         normalized_tag = tag.strip()
         if not path:
-            raise ValueError("image repository path cannot be empty")
+            msg = "image repository path cannot be empty"
+            raise ValueError(msg)
         if not normalized_tag:
-            raise ValueError("image tag cannot be empty")
+            msg = "image tag cannot be empty"
+            raise ValueError(msg)
         if not IMAGE_TAG_RE.fullmatch(normalized_tag):
-            raise ValueError(f"invalid image tag: {tag!r}")
+            msg = f"invalid image tag: {tag!r}"
+            raise ValueError(msg)
         parts = path.split("/")
         if any(not IMAGE_REF_COMPONENT_RE.fullmatch(part) for part in parts):
-            raise ValueError(f"invalid image repository path: {name!r}")
+            msg = f"invalid image repository path: {name!r}"
+            raise ValueError(msg)
         return f"{self.pull_host}/bertrand/{path}:{normalized_tag}"
 
 

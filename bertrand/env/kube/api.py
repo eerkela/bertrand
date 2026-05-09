@@ -1686,6 +1686,7 @@ def _volume_manifest(volume: VolumeSpec) -> dict[str, object]:
 def _pod_template_manifest(
     *,
     labels: Mapping[str, str],
+    pod_annotations: Mapping[str, str] | None,
     containers: Collection[ContainerSpec],
     volumes: Collection[VolumeSpec],
     automount_service_account_token: bool,
@@ -1750,7 +1751,7 @@ def _pod_template_manifest(
             msg = "termination grace period cannot be negative"
             raise ValueError(msg)
         spec["terminationGracePeriodSeconds"] = termination_grace_period_seconds
-    return {
-        "metadata": {"labels": dict(labels)},
-        "spec": spec,
-    }
+    metadata: dict[str, object] = {"labels": dict(labels)}
+    if pod_annotations:
+        metadata["annotations"] = dict(pod_annotations)
+    return {"metadata": metadata, "spec": spec}

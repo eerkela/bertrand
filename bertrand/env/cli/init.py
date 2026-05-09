@@ -32,12 +32,10 @@ from ..config.core import (
 )
 from ..kube import (
     BUILDKIT,
-    CLUSTER_REGISTRY_READY_LABEL,
-    CLUSTER_REGISTRY_READY_VALUE,
     IMAGES,
     Kube,
     MountInfo,
-    Node,
+    Namespace,
     RepoCredentials,
     ceph_capacity_controlplane_image_build,
     ensure_ceph_capacity_controlplane,
@@ -46,6 +44,7 @@ from ..kube import (
 from ..kube.ceph import DEFAULT_VOLUME_SIZE, RepoVolume
 from ..run import (
     BERTRAND_GROUP,
+    BERTRAND_NAMESPACE,
     INFINITY,
     METADATA_REPO_ID,
     REPO_DIR,
@@ -1197,43 +1196,25 @@ REPO_STAGES: tuple[
 )
 
 
-async def _ensure_registry_ready_node_label(kube: Kube, *, timeout: float) -> None:
-    node = await Node.local(kube, timeout=timeout)
-    await node.set_label(
-        kube=kube,
-        label=CLUSTER_REGISTRY_READY_LABEL,
-        value=CLUSTER_REGISTRY_READY_VALUE,
-        timeout=timeout,
-    )
-
-
-async def _assert_registry_ready_nodes(kube: Kube, *, timeout: float) -> None:
-    nodes = await Node.list(kube=kube, timeout=timeout)
-    ready = {
-        node.name
-        for node in nodes
-        if node.name
-        and node.labels.get(CLUSTER_REGISTRY_READY_LABEL) == CLUSTER_REGISTRY_READY_VALUE
-    }
-    missing = sorted(node.name for node in nodes if node.name and node.name not in ready)
-    if missing:
-        raise OSError(
-            "build runtime rollout blocked: registry trust label is missing on "
-            f"node(s): {', '.join(sorted(missing))}. Run `bertrand init` on those "
-            "hosts first to converge registry trust and mark them ready."
-        )
-
-
 async def _converge_build_runtime(kube: Kube, *, timeout: float) -> None:
     if timeout <= 0:
-        raise TimeoutError("build runtime timeout must be non-negative")
+        msg = "build runtime timeout must be non-negative"
+        raise TimeoutError(msg)
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout
+    await Namespace.upsert(
+        kube,
+        name=BERTRAND_NAMESPACE,
+        timeout=deadline - loop.time(),
+    )
     await IMAGES.ensure(kube, timeout=deadline - loop.time())
-    await IMAGES.ensure_trust(timeout=deadline - loop.time())
-    await _ensure_registry_ready_node_label(kube, timeout=deadline - loop.time())
-    await _assert_registry_ready_nodes(kube, timeout=deadline - loop.time())
-    await BUILDKIT.ensure(kube, timeout=deadline - loop.time())
+    await IMAGES.ensure_node_trust(kube, timeout=deadline - loop.time())
+    await IMAGES.assert_node_trust(kube, timeout=deadline - loop.time())
+    await BUILDKIT.ensure(
+        kube,
+        timeout=deadline - loop.time(),
+        config_hash=IMAGES.buildkit_config_hash,
+    )
 
 
 ###################
@@ -1342,12 +1323,12 @@ async def bertrand_init(
         with await Kube.host(timeout=deadline - loop.time()) as kube:
             await _converge_build_runtime(kube, timeout=deadline - loop.time())
             autoscaler_build = ceph_capacity_controlplane_image_build()
-            autoscaler_image = await autoscaler_build.publish(
+            autoscaler_result = await autoscaler_build.publish(
                 kube,
                 timeout=deadline - loop.time(),
             )
             await ensure_ceph_capacity_controlplane(
-                image=autoscaler_image,
+                image=autoscaler_result.image,
                 timeout=deadline - loop.time(),
             )
 

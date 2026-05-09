@@ -235,6 +235,7 @@ class DaemonSet:
         volumes: Collection[VolumeSpec],
         automount_service_account_token: bool,
         annotations: Mapping[str, str] | None,
+        pod_annotations: Mapping[str, str] | None,
         service_account_name: str | None,
         node_selector: Mapping[str, str] | None,
         host_pid: bool | None,
@@ -261,6 +262,7 @@ class DaemonSet:
                 "selector": {"matchLabels": dict(selector)},
                 "template": _pod_template_manifest(
                     labels=template_labels,
+                    pod_annotations=pod_annotations,
                     containers=containers,
                     volumes=volumes,
                     automount_service_account_token=automount_service_account_token,
@@ -292,6 +294,7 @@ class DaemonSet:
         timeout: float,
         automount_service_account_token: bool = False,
         annotations: Mapping[str, str] | None = None,
+        pod_annotations: Mapping[str, str] | None = None,
         service_account_name: str | None = None,
         node_selector: Mapping[str, str] | None = None,
         host_pid: bool | None = None,
@@ -329,6 +332,8 @@ class DaemonSet:
             Whether pods should automount the default service-account token.
         annotations : Mapping[str, str] | None, optional
             Annotations to apply to `metadata.annotations`.
+        pod_annotations : Mapping[str, str] | None, optional
+            Annotations to apply to pod template `metadata.annotations`.
         service_account_name : str | None, optional
             Optional pod service account name.
         node_selector : Mapping[str, str] | None, optional
@@ -375,6 +380,7 @@ class DaemonSet:
             volumes=volumes,
             automount_service_account_token=automount_service_account_token,
             annotations=annotations,
+            pod_annotations=pod_annotations,
             service_account_name=service_account_name,
             node_selector=node_selector,
             host_pid=host_pid,

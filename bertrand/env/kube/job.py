@@ -253,6 +253,7 @@ class Job:
         ttl_seconds_after_finished: int | None,
         automount_service_account_token: bool,
         annotations: Mapping[str, str] | None,
+        pod_annotations: Mapping[str, str] | None,
         service_account_name: str | None,
         node_selector: Mapping[str, str] | None,
         node_name: str | None,
@@ -269,6 +270,7 @@ class Job:
             "backoffLimit": backoff_limit,
             "template": _pod_template_manifest(
                 labels=labels,
+                pod_annotations=pod_annotations,
                 containers=containers,
                 volumes=volumes,
                 automount_service_account_token=automount_service_account_token,
@@ -317,6 +319,7 @@ class Job:
         ttl_seconds_after_finished: int | None = 3600,
         automount_service_account_token: bool = False,
         annotations: Mapping[str, str] | None = None,
+        pod_annotations: Mapping[str, str] | None = None,
         service_account_name: str | None = None,
         node_selector: Mapping[str, str] | None = None,
         node_name: str | None = None,
@@ -359,6 +362,8 @@ class Job:
             Whether pods should automount the default service-account token.
         annotations : Mapping[str, str] | None, optional
             Annotations to apply to `metadata.annotations`.
+        pod_annotations : Mapping[str, str] | None, optional
+            Annotations to apply to pod template `metadata.annotations`.
         service_account_name : str | None, optional
             Optional pod service account name.
         node_selector : Mapping[str, str] | None, optional
@@ -417,6 +422,7 @@ class Job:
             ttl_seconds_after_finished=ttl_seconds_after_finished,
             automount_service_account_token=automount_service_account_token,
             annotations=annotations,
+            pod_annotations=pod_annotations,
             service_account_name=service_account_name,
             node_selector=node_selector,
             node_name=node_name,

@@ -8,21 +8,65 @@ import json
 import shutil
 import tempfile
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import MappingProxyType
+from typing import TYPE_CHECKING, Literal, cast
 
-from ...config.core import NonEmpty, OCIImageRef, Trimmed
-from ...run import BERTRAND_ENV, BERTRAND_NAMESPACE, INFINITY, atomic_write_text
-from ..api import ContainerSpec, Kube, VolumeMountSpec, VolumeSpec
-from ..job import Job
-from ..node import Node
-from .daemon import BUILDKIT, BUILDKIT_IMAGE, BuildKit
+from bertrand.env.config.core import _check_kube_name, _check_uuid
+from bertrand.env.kube.api import ContainerSpec, Kube, VolumeMountSpec, VolumeSpec
+from bertrand.env.kube.build.daemon import BUILDKIT, BUILDKIT_IMAGE, BuildKit
+from bertrand.env.kube.capability import Capability, CapabilityKind
+from bertrand.env.kube.job import Job
+from bertrand.env.kube.node import Node
+from bertrand.env.run import (
+    BERTRAND_ENV,
+    BERTRAND_NAMESPACE,
+    INFINITY,
+    atomic_write_text,
+)
+
+if TYPE_CHECKING:
+    from bertrand.env.config.core import KubeName, NonEmpty, OCIImageRef, Trimmed
 
 BUILD_JOB_CONTEXT_MOUNT = "/workspace"
 BUILD_JOB_CONTEXT_VOLUME = "context"
+BUILD_JOB_METADATA_FILE = "/run/bertrand/buildkit/metadata/metadata.json"
+BUILD_JOB_METADATA_MOUNT = "/run/bertrand/buildkit/metadata"
+BUILD_JOB_METADATA_VOLUME = "metadata"
+BUILD_JOB_SECRET_MOUNT = "/run/bertrand/buildkit/secrets"
+BUILD_JOB_SSH_MOUNT = "/run/bertrand/buildkit/ssh"
 BUILD_JOB_LABEL = "bertrand.dev/build-job"
 BUILD_JOB_LABEL_VALUE = "v1"
 BUILD_JOB_TTL_SECONDS = 3600
+BUILD_CACHE_TAG = "buildcache"
+CAPABILITY_VALUE_KEY = "value"
+
+
+@dataclass(frozen=True)
+class BuildKitImageResult:
+    """Result metadata for one published BuildKit image.
+
+    Parameters
+    ----------
+    image : OCIImageRef
+        Fully-qualified image reference that was pushed.
+    digest : str
+        Pushed image digest reported by BuildKit.
+    config_digest : str
+        Image config digest reported by BuildKit, or an empty string if unavailable.
+    descriptor : Mapping[str, object]
+        Read-only image descriptor metadata reported by BuildKit.
+    metadata : Mapping[str, object]
+        Read-only raw metadata loaded from BuildKit's metadata file.
+    """
+
+    image: OCIImageRef
+    digest: str
+    config_digest: str
+    descriptor: Mapping[str, object]
+    metadata: Mapping[str, object]
 
 
 @dataclass(frozen=True)
@@ -49,6 +93,18 @@ class BuildKitImageBuild:
         Optional target stage in a multi-stage Containerfile.
     progress : str
         BuildKit progress mode.
+    secrets : Mapping[KubeName, bool]
+        Secret capability IDs to expose to the build. Values indicate whether the
+        capability is required.
+    ssh : Mapping[KubeName, bool]
+        SSH capability IDs to expose to the build. Values indicate whether the
+        capability is required.
+    cache : bool
+        Whether to import and export registry-backed BuildKit cache.
+    cache_ref : str | None
+        Explicit registry cache reference. If omitted, one is derived from `image`.
+    cache_mode : Literal["min", "max"]
+        Registry cache export mode.
     """
 
     image: OCIImageRef
@@ -59,34 +115,77 @@ class BuildKitImageBuild:
     build_labels: dict[str, str] = field(default_factory=dict)
     target: str | None = None
     progress: str = "plain"
+    secrets: Mapping[KubeName, bool] = field(default_factory=dict)
+    ssh: Mapping[KubeName, bool] = field(default_factory=dict)
+    cache: bool = True
+    cache_ref: str | None = None
+    cache_mode: Literal["min", "max"] = "max"
 
     def __post_init__(self) -> None:
+        """Validate immutable build contract fields.
+
+        Raises
+        ------
+        ValueError
+            If any build contract field is empty or structurally invalid.
+        """
         if not self.image.strip():
-            raise ValueError("BuildKit image reference cannot be empty")
+            msg = "BuildKit image reference cannot be empty"
+            raise ValueError(msg)
         if not self.dockerfile.strip():
-            raise ValueError("BuildKit image Containerfile cannot be empty")
+            msg = "BuildKit image Containerfile cannot be empty"
+            raise ValueError(msg)
         if not self.context_prefix.strip():
-            raise ValueError("BuildKit image context prefix cannot be empty")
+            msg = "BuildKit image context prefix cannot be empty"
+            raise ValueError(msg)
         if self.target is not None and not self.target.strip():
-            raise ValueError("BuildKit target stage cannot be empty")
+            msg = "BuildKit target stage cannot be empty"
+            raise ValueError(msg)
         if not self.progress.strip():
-            raise ValueError("BuildKit progress mode cannot be empty")
+            msg = "BuildKit progress mode cannot be empty"
+            raise ValueError(msg)
+        object.__setattr__(
+            self,
+            "secrets",
+            _normalize_capability_requests(self.secrets, kind="secret"),
+        )
+        object.__setattr__(
+            self,
+            "ssh",
+            _normalize_capability_requests(self.ssh, kind="ssh"),
+        )
+        if self.cache_mode not in ("min", "max"):
+            msg = "BuildKit registry cache mode must be 'min' or 'max'"
+            raise ValueError(msg)
+        if self.cache_ref is not None:
+            cache_ref = self.cache_ref.strip()
+            if not cache_ref:
+                msg = "BuildKit registry cache ref cannot be empty"
+                raise ValueError(msg)
+            object.__setattr__(self, "cache_ref", cache_ref)
+        if self.cache and self.cache_ref is None:
+            _default_cache_ref(self.image)
         for source, target in self.context_copies:
             if source != source.expanduser().resolve():
-                raise ValueError(
-                    f"BuildKit context sources must be canonical absolute paths: {source}"
+                msg = (
+                    "BuildKit context sources must be canonical absolute paths: "
+                    f"{source}"
                 )
+                raise ValueError(msg)
             if target.is_absolute():
-                raise ValueError(f"BuildKit context targets must be relative: {target}")
+                msg = f"BuildKit context targets must be relative: {target}"
+                raise ValueError(msg)
             if any(part in ("", ".", "..") for part in target.parts):
-                raise ValueError(
+                msg = (
                     "BuildKit context targets cannot contain '.', '..', or empty "
                     f"path segments: {target}"
                 )
+                raise ValueError(msg)
 
     @property
     def labels(self) -> dict[str, str]:
-        """
+        """Return labels applied to the Kubernetes build Job.
+
         Returns
         -------
         dict[str, str]
@@ -101,7 +200,8 @@ class BuildKitImageBuild:
 
     @property
     def job_name(self) -> str:
-        """
+        """Return a unique Kubernetes Job name for this build.
+
         Returns
         -------
         str
@@ -111,24 +211,72 @@ class BuildKitImageBuild:
             "image": self.image,
             "dockerfile": self.dockerfile,
             "context_copies": [
-                (source.as_posix(), target.as_posix()) for source, target in self.context_copies
+                (source.as_posix(), target.as_posix())
+                for source, target in self.context_copies
             ],
             "build_args": self.build_args,
             "build_labels": self.build_labels,
             "target": self.target,
+            "secrets": dict(sorted(self.secrets.items())),
+            "ssh": dict(sorted(self.ssh.items())),
+            "cache": self.cache,
+            "cache_ref": self.cache_ref,
+            "cache_mode": self.cache_mode,
         }
-        text = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        text = json.dumps(
+            payload,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        )
         digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
         nonce = uuid.uuid4().hex[:8]
         return f"bertrand-build-{digest}-{nonce}"
 
-    def buildctl_args(self, buildkit: BuildKit = BUILDKIT) -> list[str]:
+    @property
+    def registry_cache_ref(self) -> str | None:
+        """Return the registry cache reference for this build.
+
+        Returns
+        -------
+        str | None
+            Registry cache reference, or `None` when registry cache is disabled.
+
+        Raises
+        ------
+        ValueError
+            If cache is enabled and no explicit or derivable cache reference exists.
+        """
+        if not self.cache:
+            return None
+        if self.cache_ref is not None:
+            return self.cache_ref
+        try:
+            return _default_cache_ref(self.image)
+        except ValueError as err:
+            msg = str(err)
+            raise ValueError(msg) from err
+
+    def buildctl_args(
+        self,
+        buildkit: BuildKit = BUILDKIT,
+        *,
+        secret_paths: Mapping[str, str] | None = None,
+        ssh_paths: Mapping[str, str] | None = None,
+        metadata_file: str | None = None,
+    ) -> list[str]:
         """Render the `buildctl` command arguments for this build.
 
         Parameters
         ----------
         buildkit : BuildKit, optional
             BuildKit daemon endpoint used by the client Job.
+        secret_paths : Mapping[str, str] | None, optional
+            BuildKit secret IDs mapped to mounted payload paths.
+        ssh_paths : Mapping[str, str] | None, optional
+            BuildKit SSH IDs mapped to mounted credential paths.
+        metadata_file : str | None, optional
+            Mounted path where BuildKit should write metadata JSON.
 
         Returns
         -------
@@ -157,6 +305,23 @@ class BuildKitImageBuild:
             args.extend(["--opt", f"build-arg:{key}={value}"])
         for key, value in sorted(self.build_labels.items()):
             args.extend(["--opt", f"label:{key}={value}"])
+        for capability_id, path in sorted((secret_paths or {}).items()):
+            args.extend(["--secret", f"id={capability_id},src={path}"])
+        for capability_id, path in sorted((ssh_paths or {}).items()):
+            args.extend(["--ssh", f"{capability_id}={path}"])
+        cache_ref = self.registry_cache_ref
+        if cache_ref is not None:
+            args.extend(["--import-cache", f"type=registry,ref={cache_ref}"])
+            args.extend(
+                [
+                    "--export-cache",
+                    f"type=registry,ref={cache_ref},mode={self.cache_mode}",
+                ]
+            )
+        if metadata_file is not None:
+            metadata_file = metadata_file.strip()
+            if metadata_file:
+                args.extend(["--metadata-file", metadata_file])
         args.extend(["--output", f"type=image,name={self.image},push=true"])
         return args
 
@@ -166,7 +331,8 @@ class BuildKitImageBuild:
         *,
         timeout: float = INFINITY,
         buildkit: BuildKit = BUILDKIT,
-    ) -> str:
+        env_id: str | None = None,
+    ) -> BuildKitImageResult:
         """Run a one-off BuildKit client Job and publish the image.
 
         Parameters
@@ -177,33 +343,47 @@ class BuildKitImageBuild:
             Maximum runtime budget in seconds. If infinite, wait indefinitely.
         buildkit : BuildKit, optional
             BuildKit daemon endpoint used by the client Job.
+        env_id : str | None, optional
+            Environment UUID used to resolve secret and SSH capabilities.
 
         Returns
         -------
-        str
-            Published image reference.
+        BuildKitImageResult
+            Published image reference and digest metadata.
 
         Raises
         ------
         TimeoutError
             If staging, Job creation, or Job completion exceeds `timeout`.
-        OSError
-            If context staging fails, Kubernetes Job submission fails, or the Job
-            reports failure.
+        FileNotFoundError
+            If a declared build context source does not exist.
+        ValueError
+            If capability inputs are present without `env_id`.
         """
         if timeout <= 0:
-            raise TimeoutError("BuildKit image build timeout must be non-negative")
+            msg = "BuildKit image build timeout must be non-negative"
+            raise TimeoutError(msg)
+        if env_id is None and (self.secrets or self.ssh):
+            msg = "BuildKit secret and SSH inputs require an environment identity"
+            raise ValueError(msg)
+        if env_id is not None:
+            env_id = _check_uuid(env_id)
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
 
         with tempfile.TemporaryDirectory(prefix=f"{self.context_prefix}-") as tmp:
-            context = Path(tmp).resolve()
+            root = Path(tmp).resolve()
+            context = root / "context"
+            metadata = root / "metadata"
+            context.mkdir()
+            metadata.mkdir()
             local_node = await Node.local(kube, timeout=deadline - loop.time())
             for source, target in self.context_copies:
                 if not source.exists():
-                    raise FileNotFoundError(
+                    msg = (
                         f"BuildKit image build context source does not exist: {source}"
                     )
+                    raise FileNotFoundError(msg)
                 target = context / target
                 target.parent.mkdir(parents=True, exist_ok=True)
                 if source.is_dir():
@@ -214,6 +394,16 @@ class BuildKitImageBuild:
                 context / "Containerfile",
                 self.dockerfile,
                 encoding="utf-8",
+            )
+            (
+                capability_volumes,
+                capability_mounts,
+                secret_paths,
+                ssh_paths,
+            ) = await self._capability_mounts(
+                kube,
+                env_id=env_id,
+                timeout=deadline - loop.time(),
             )
 
             job = await Job.create(
@@ -227,13 +417,23 @@ class BuildKitImageBuild:
                         image=BUILDKIT_IMAGE,
                         image_pull_policy="IfNotPresent",
                         command=["buildctl"],
-                        args=self.buildctl_args(buildkit),
+                        args=self.buildctl_args(
+                            buildkit,
+                            secret_paths=secret_paths,
+                            ssh_paths=ssh_paths,
+                            metadata_file=BUILD_JOB_METADATA_FILE,
+                        ),
                         volume_mounts=[
                             VolumeMountSpec(
                                 name=BUILD_JOB_CONTEXT_VOLUME,
                                 mount_path=BUILD_JOB_CONTEXT_MOUNT,
                                 read_only=True,
-                            )
+                            ),
+                            VolumeMountSpec(
+                                name=BUILD_JOB_METADATA_VOLUME,
+                                mount_path=BUILD_JOB_METADATA_MOUNT,
+                            ),
+                            *capability_mounts,
                         ],
                     )
                 ],
@@ -242,11 +442,177 @@ class BuildKitImageBuild:
                         BUILD_JOB_CONTEXT_VOLUME,
                         path=context,
                         host_path_type="Directory",
-                    )
+                    ),
+                    VolumeSpec.host_path(
+                        BUILD_JOB_METADATA_VOLUME,
+                        path=metadata,
+                        host_path_type="Directory",
+                    ),
+                    *capability_volumes,
                 ],
                 ttl_seconds_after_finished=BUILD_JOB_TTL_SECONDS,
                 node_name=local_node.name,
                 timeout=deadline - loop.time(),
             )
             await job.wait_complete(kube, timeout=deadline - loop.time())
-        return self.image
+            return _load_build_metadata(
+                metadata / Path(BUILD_JOB_METADATA_FILE).name,
+                image=self.image,
+            )
+
+    async def _capability_mounts(
+        self,
+        kube: Kube,
+        *,
+        env_id: str | None,
+        timeout: float,
+    ) -> tuple[
+        list[VolumeSpec],
+        list[VolumeMountSpec],
+        dict[str, str],
+        dict[str, str],
+    ]:
+        if env_id is None:
+            return [], [], {}, {}
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        volumes: list[VolumeSpec] = []
+        mounts: list[VolumeMountSpec] = []
+        secret_paths: dict[str, str] = {}
+        ssh_paths: dict[str, str] = {}
+
+        for capability_id, required in sorted(self.secrets.items()):
+            capability = await Capability.resolve(
+                kube,
+                kind="secret",
+                id=capability_id,
+                env_id=env_id,
+                required=required,
+                timeout=deadline - loop.time(),
+            )
+            if capability is None:
+                continue
+            volume_name = _capability_volume_name("secret", capability_id)
+            mount_path = f"{BUILD_JOB_SECRET_MOUNT}/{capability_id}"
+            volumes.append(
+                VolumeSpec.secret(
+                    volume_name,
+                    secret_name=capability.ref.name,
+                    default_mode=0o400,
+                )
+            )
+            mounts.append(
+                VolumeMountSpec(
+                    name=volume_name,
+                    mount_path=mount_path,
+                    read_only=True,
+                )
+            )
+            secret_paths[capability_id] = f"{mount_path}/{CAPABILITY_VALUE_KEY}"
+
+        for capability_id, required in sorted(self.ssh.items()):
+            capability = await Capability.resolve(
+                kube,
+                kind="ssh",
+                id=capability_id,
+                env_id=env_id,
+                required=required,
+                timeout=deadline - loop.time(),
+            )
+            if capability is None:
+                continue
+            volume_name = _capability_volume_name("ssh", capability_id)
+            mount_path = f"{BUILD_JOB_SSH_MOUNT}/{capability_id}"
+            volumes.append(
+                VolumeSpec.secret(
+                    volume_name,
+                    secret_name=capability.ref.name,
+                    default_mode=0o400,
+                )
+            )
+            mounts.append(
+                VolumeMountSpec(
+                    name=volume_name,
+                    mount_path=mount_path,
+                    read_only=True,
+                )
+            )
+            ssh_paths[capability_id] = f"{mount_path}/{CAPABILITY_VALUE_KEY}"
+
+        return volumes, mounts, secret_paths, ssh_paths
+
+
+def _normalize_capability_requests(
+    requests: Mapping[KubeName, bool],
+    *,
+    kind: str,
+) -> dict[KubeName, bool]:
+    normalized: dict[KubeName, bool] = {}
+    for capability_id, required in requests.items():
+        checked = _check_kube_name(capability_id)
+        if checked in normalized:
+            msg = f"duplicate BuildKit {kind} capability ID: {checked!r}"
+            raise ValueError(msg)
+        if not isinstance(required, bool):
+            msg = f"BuildKit {kind} capability {checked!r} required flag must be bool"
+            raise TypeError(msg)
+        normalized[checked] = required
+    return normalized
+
+
+def _default_cache_ref(image: str) -> str:
+    image = image.strip()
+    if "@" in image:
+        msg = (
+            f"BuildKit image reference {image!r} uses a digest; provide explicit "
+            "cache_ref or disable cache"
+        )
+        raise ValueError(msg)
+    slash = image.rfind("/")
+    colon = image.rfind(":")
+    if colon <= slash or colon == len(image) - 1:
+        msg = (
+            f"BuildKit image reference {image!r} has no tag; provide explicit "
+            "cache_ref or disable cache"
+        )
+        raise ValueError(msg)
+    return f"{image[:colon]}:{BUILD_CACHE_TAG}"
+
+
+def _capability_volume_name(kind: CapabilityKind, capability_id: str) -> str:
+    payload = f"{kind}:{capability_id}".encode()
+    digest = hashlib.sha256(payload).hexdigest()[:16]
+    return f"build-{kind}-{digest}"
+
+
+def _load_build_metadata(path: Path, *, image: str) -> BuildKitImageResult:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except OSError as err:
+        msg = f"BuildKit did not write metadata file {path}: {err}"
+        raise OSError(msg) from err
+    except json.JSONDecodeError as err:
+        msg = f"BuildKit metadata file {path} is not valid JSON: {err}"
+        raise OSError(msg) from err
+    if not isinstance(payload, Mapping):
+        msg = f"BuildKit metadata file {path} must contain a JSON object"
+        raise OSError(msg)
+    metadata = dict(cast("Mapping[str, object]", payload))
+    digest = str(metadata.get("containerimage.digest") or "").strip()
+    if not digest:
+        msg = "BuildKit metadata is missing containerimage.digest"
+        raise OSError(msg)
+    config_digest = str(metadata.get("containerimage.config.digest") or "").strip()
+    raw_descriptor = metadata.get("containerimage.descriptor")
+    descriptor = (
+        MappingProxyType(dict(cast("Mapping[str, object]", raw_descriptor)))
+        if isinstance(raw_descriptor, Mapping)
+        else MappingProxyType({})
+    )
+    return BuildKitImageResult(
+        image=image,
+        digest=digest,
+        config_digest=config_digest,
+        descriptor=descriptor,
+        metadata=MappingProxyType(metadata),
+    )

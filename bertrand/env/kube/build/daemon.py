@@ -1,5 +1,6 @@
-"""Long-lived BuildKit daemon (Deployment + Service) for Bertrand's Kubernetes image
-build runtime.
+"""Long-lived BuildKit daemon for Bertrand's Kubernetes image build runtime.
+
+The daemon is represented as one stable Deployment and Service pair.
 """
 
 from __future__ import annotations
@@ -7,30 +8,35 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 
-from ...run import BERTRAND_NAMESPACE, INFINITY
-from ..api import (
+from bertrand.env.kube.api import (
     ContainerPortSpec,
     ContainerSpec,
     Kube,
     ProbeSpec,
+    SecurityContextSpec,
     ServicePortSpec,
     VolumeMountSpec,
     VolumeSpec,
 )
-from ..deployment import Deployment
-from ..service import Service
+from bertrand.env.kube.build.cache import BUILDKIT_CACHE
+from bertrand.env.kube.deployment import Deployment
+from bertrand.env.kube.service import Service
+from bertrand.env.run import BERTRAND_NAMESPACE, INFINITY
 
 BUILDKIT_NAME = "bertrand-buildkit"
 BUILDKIT_IMAGE = "moby/buildkit:v0.29.0"
 BUILDKIT_PORT = 1234
 BUILDKIT_LISTEN_ADDR = f"tcp://0.0.0.0:{BUILDKIT_PORT}"
-BUILDKIT_ADDR = f"tcp://{BUILDKIT_NAME}.{BERTRAND_NAMESPACE}.svc.cluster.local:{BUILDKIT_PORT}"
+BUILDKIT_ADDR = (
+    f"tcp://{BUILDKIT_NAME}.{BERTRAND_NAMESPACE}.svc.cluster.local:{BUILDKIT_PORT}"
+)
 BUILDKIT_CACHE_MOUNT = "/var/lib/buildkit"
 BUILDKIT_CACHE_VOLUME = "buildkit-state"
 BUILDKIT_CONFIG_DIR = "/etc/buildkit"
 BUILDKIT_CONFIG_FILE = f"{BUILDKIT_CONFIG_DIR}/buildkitd.toml"
 BUILDKIT_CONFIG_KEY = "buildkitd.toml"
 BUILDKIT_CONFIG_NAME = f"{BUILDKIT_NAME}-registry"
+BUILDKIT_CONFIG_HASH_ANNOTATION = "bertrand.dev/buildkit-config-hash"
 BUILDKIT_CONFIG_VOLUME = "buildkit-config"
 BUILDKIT_LABEL = "bertrand.dev/buildkit"
 BUILDKIT_LABEL_VALUE = "v1"
@@ -59,7 +65,8 @@ class BuildKit:
 
     @property
     def labels(self) -> dict[str, str]:
-        """
+        """Return shared BuildKit resource labels.
+
         Returns
         -------
         dict[str, str]
@@ -73,7 +80,8 @@ class BuildKit:
 
     @property
     def selector(self) -> dict[str, str]:
-        """
+        """Return the BuildKit pod selector.
+
         Returns
         -------
         dict[str, str]
@@ -84,7 +92,13 @@ class BuildKit:
             BUILDKIT_LABEL: BUILDKIT_LABEL_VALUE,
         }
 
-    async def ensure(self, kube: Kube, *, timeout: float = INFINITY) -> None:
+    async def ensure(
+        self,
+        kube: Kube,
+        *,
+        timeout: float = INFINITY,
+        config_hash: str | None = None,
+    ) -> None:
         """Converge Bertrand's bootstrap BuildKit Deployment and Service.
 
         Parameters
@@ -93,19 +107,27 @@ class BuildKit:
             Kubernetes API client for the target cluster.
         timeout : float, optional
             Maximum runtime budget in seconds. If infinite, wait indefinitely.
+        config_hash : str | None, optional
+            Hash of the mounted BuildKit configuration.  When provided, the hash is
+            applied to the pod template to trigger a rollout after config changes.
 
         Raises
         ------
         TimeoutError
             If `timeout` is non-positive, Kubernetes requests exceed the budget, or the
-            Deployment does not report at least one available replica before the deadline.
-        OSError
-            If Kubernetes create/patch/read operations fail or return malformed payloads.
+            Deployment does not report at least one available replica before the
+            deadline.
         """
         if timeout <= 0:
-            raise TimeoutError("BuildKit daemon timeout must be non-negative")
+            msg = "BuildKit daemon timeout must be non-negative"
+            raise TimeoutError(msg)
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
+        pod_annotations = (
+            {BUILDKIT_CONFIG_HASH_ANNOTATION: config_hash}
+            if config_hash is not None
+            else None
+        )
 
         await Service.upsert(
             kube,
@@ -122,6 +144,7 @@ class BuildKit:
             ],
             timeout=deadline - loop.time(),
         )
+        cache = await BUILDKIT_CACHE.ensure(kube, timeout=deadline - loop.time())
         deployment = await Deployment.upsert(
             kube,
             namespace=self.namespace,
@@ -149,10 +172,10 @@ class BuildKit:
                             container_port=self.port,
                         )
                     ],
-                    security_context={
-                        "privileged": True,
-                        "runAsUser": 0,
-                    },
+                    security_context=SecurityContextSpec(
+                        privileged=True,
+                        run_as_user=0,
+                    ),
                     readiness_probe=ProbeSpec.tcp(
                         port=self.port,
                         period_seconds=2,
@@ -178,16 +201,21 @@ class BuildKit:
                 )
             ],
             volumes=[
-                VolumeSpec.empty_dir(BUILDKIT_CACHE_VOLUME),
+                VolumeSpec.pvc(
+                    BUILDKIT_CACHE_VOLUME,
+                    claim_name=cache.name,
+                ),
                 VolumeSpec.config_map(
                     BUILDKIT_CONFIG_VOLUME,
                     config_map_name=BUILDKIT_CONFIG_NAME,
                     optional=True,
                 ),
             ],
+            pod_annotations=pod_annotations,
+            strategy_type="Recreate",
             timeout=deadline - loop.time(),
         )
-        await deployment.wait_available(kube, timeout=deadline - loop.time())
+        await deployment.wait_rollout(kube, timeout=deadline - loop.time())
 
 
 BUILDKIT = BuildKit(

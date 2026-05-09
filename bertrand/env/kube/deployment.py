@@ -251,6 +251,7 @@ class Deployment:
         replicas: int,
         automount_service_account_token: bool,
         annotations: Mapping[str, str] | None,
+        pod_annotations: Mapping[str, str] | None,
         service_account_name: str | None,
         node_selector: Mapping[str, str] | None,
         host_pid: bool | None,
@@ -261,9 +262,38 @@ class Deployment:
         dns_policy: str | None,
         host_network: bool | None,
         termination_grace_period_seconds: int | None,
+        strategy_type: str | None,
     ) -> dict[str, object]:
         template_labels = dict(labels)
         template_labels.update(selector)
+        spec: dict[str, object] = {
+            "replicas": replicas,
+            "selector": {"matchLabels": dict(selector)},
+            "template": _pod_template_manifest(
+                labels=template_labels,
+                pod_annotations=pod_annotations,
+                containers=containers,
+                volumes=volumes,
+                automount_service_account_token=automount_service_account_token,
+                service_account_name=service_account_name,
+                node_selector=node_selector,
+                host_pid=host_pid,
+                pod_security_context=pod_security_context,
+                tolerations=tolerations,
+                image_pull_secrets=image_pull_secrets,
+                priority_class_name=priority_class_name,
+                dns_policy=dns_policy,
+                host_network=host_network,
+                termination_grace_period_seconds=(termination_grace_period_seconds),
+            ),
+        }
+        if strategy_type is not None:
+            strategy_type = strategy_type.strip()
+            if strategy_type:
+                strategy: dict[str, object] = {"type": strategy_type}
+                if strategy_type == "Recreate":
+                    strategy["rollingUpdate"] = None
+                spec["strategy"] = strategy
         return {
             "apiVersion": "apps/v1",
             "kind": "Deployment",
@@ -273,26 +303,7 @@ class Deployment:
                 "labels": dict(labels),
                 "annotations": dict(annotations or {}),
             },
-            "spec": {
-                "replicas": replicas,
-                "selector": {"matchLabels": dict(selector)},
-                "template": _pod_template_manifest(
-                    labels=template_labels,
-                    containers=containers,
-                    volumes=volumes,
-                    automount_service_account_token=automount_service_account_token,
-                    service_account_name=service_account_name,
-                    node_selector=node_selector,
-                    host_pid=host_pid,
-                    pod_security_context=pod_security_context,
-                    tolerations=tolerations,
-                    image_pull_secrets=image_pull_secrets,
-                    priority_class_name=priority_class_name,
-                    dns_policy=dns_policy,
-                    host_network=host_network,
-                    termination_grace_period_seconds=(termination_grace_period_seconds),
-                ),
-            },
+            "spec": spec,
         }
 
     @classmethod
@@ -310,6 +321,7 @@ class Deployment:
         replicas: int = 1,
         automount_service_account_token: bool = False,
         annotations: Mapping[str, str] | None = None,
+        pod_annotations: Mapping[str, str] | None = None,
         service_account_name: str | None = None,
         node_selector: Mapping[str, str] | None = None,
         host_pid: bool | None = None,
@@ -322,6 +334,7 @@ class Deployment:
         dns_policy: str | None = None,
         host_network: bool | None = None,
         termination_grace_period_seconds: int | None = None,
+        strategy_type: str | None = None,
     ) -> Self:
         """Create or patch one Kubernetes Deployment from intent-level fields.
 
@@ -349,6 +362,8 @@ class Deployment:
             Whether pods should automount the default service-account token.
         annotations : Mapping[str, str] | None, optional
             Annotations to apply to `metadata.annotations`.
+        pod_annotations : Mapping[str, str] | None, optional
+            Annotations to apply to pod template `metadata.annotations`.
         service_account_name : str | None, optional
             Optional pod service account name.
         node_selector : Mapping[str, str] | None, optional
@@ -369,6 +384,8 @@ class Deployment:
             Optional pod `hostNetwork` value.
         termination_grace_period_seconds : int | None, optional
             Optional pod termination grace period in seconds.
+        strategy_type : str | None, optional
+            Optional Deployment rollout strategy type, such as `"Recreate"`.
 
         Returns
         -------
@@ -397,6 +414,7 @@ class Deployment:
             replicas=replicas,
             automount_service_account_token=automount_service_account_token,
             annotations=annotations,
+            pod_annotations=pod_annotations,
             service_account_name=service_account_name,
             node_selector=node_selector,
             host_pid=host_pid,
@@ -407,6 +425,7 @@ class Deployment:
             dns_policy=dns_policy,
             host_network=host_network,
             termination_grace_period_seconds=termination_grace_period_seconds,
+            strategy_type=strategy_type,
         )
 
         try:
@@ -809,6 +828,77 @@ class Deployment:
                 )
                 raise OSError(msg)
             if refreshed.available_replicas >= minimum:
+                return refreshed
+            live = refreshed
+            await asyncio.sleep(min(DEPLOYMENT_WAIT_POLL_INTERVAL_SECONDS, remaining))
+
+    async def wait_rollout(
+        self,
+        kube: Kube,
+        *,
+        timeout: float,
+        minimum: int = 1,
+    ) -> Self:
+        """Wait until this Deployment rolls out at least `minimum` replicas.
+
+        Parameters
+        ----------
+        kube : Kube
+            Active Kubernetes API context.
+        timeout : float
+            Maximum wait time in seconds. Must be positive.
+        minimum : int, optional
+            Minimum acceptable updated and available replica count.
+
+        Returns
+        -------
+        Deployment
+            Fresh wrapper whose controller-observed generation and replica status
+            indicate the rollout has completed for at least `minimum` replicas.
+
+        Raises
+        ------
+        ValueError
+            If `minimum` is less than one.
+        OSError
+            If this wrapper is missing metadata or the Deployment disappears.
+        TimeoutError
+            If the Deployment rollout does not complete before `timeout`.
+        """
+        if minimum < 1:
+            msg = "minimum rolled out Deployment replicas must be positive"
+            raise ValueError(msg)
+        namespace = self.namespace
+        name = self.name
+        if not namespace or not name:
+            msg = "cannot wait on Deployment with missing metadata.name/namespace"
+            raise OSError(msg)
+        if timeout <= 0:
+            msg = f"timed out waiting for Deployment {namespace}/{name} rollout"
+            raise TimeoutError(msg)
+        target_generation = self.generation
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        live: Self = self
+        while True:
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                msg = f"timed out waiting for Deployment {namespace}/{name} rollout"
+                raise TimeoutError(msg)
+            refreshed = await live.refresh(kube, timeout=remaining)
+            if refreshed is None:
+                msg = (
+                    f"Deployment {namespace}/{name} disappeared while waiting for "
+                    "rollout"
+                )
+                raise OSError(msg)
+            generation_observed = (
+                target_generation <= 0
+                or refreshed.observed_generation >= target_generation
+            )
+            replicas_updated = refreshed.updated_replicas >= minimum
+            replicas_available = refreshed.available_replicas >= minimum
+            if generation_observed and replicas_updated and replicas_available:
                 return refreshed
             live = refreshed
             await asyncio.sleep(min(DEPLOYMENT_WAIT_POLL_INTERVAL_SECONDS, remaining))
