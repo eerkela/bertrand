@@ -11,16 +11,19 @@ import kubernetes
 
 from .api import (
     ContainerSpec,
+    ImagePullSecretSpec,
     Kube,
+    PodSecurityContextSpec,
+    TolerationSpec,
     VolumeSpec,
-    _container_manifest,
+    WatchEvent,
     _label_selector,
-    _volume_manifest,
+    _pod_template_manifest,
 )
 
 if TYPE_CHECKING:
     import builtins
-    from collections.abc import Collection, Mapping
+    from collections.abc import AsyncIterator, Collection, Mapping
     from datetime import datetime
 
 JOB_WAIT_POLL_INTERVAL_SECONDS = 0.5
@@ -175,6 +178,68 @@ class Job:
                 out.append(cls(_obj=item))
         return out
 
+    @classmethod
+    async def watch(
+        cls,
+        kube: Kube,
+        *,
+        timeout: float,
+        namespace: str | None = None,
+        labels: Mapping[str, str] | None = None,
+        field_selector: str | None = None,
+        resource_version: str | None = None,
+    ) -> AsyncIterator[WatchEvent[Self]]:
+        """Watch Kubernetes Jobs.
+
+        Parameters
+        ----------
+        kube : Kube
+            Active Kubernetes API context.
+        timeout : float
+            Maximum watch budget in seconds. If infinite, wait indefinitely.
+        namespace : str | None, optional
+            Namespace to watch. If omitted, watches Jobs across all namespaces.
+        labels : Mapping[str, str] | None, optional
+            Optional label selector key/value pairs.
+        field_selector : str | None, optional
+            Raw Kubernetes field selector.
+        resource_version : str | None, optional
+            Resource version to watch from.
+
+        Yields
+        ------
+        WatchEvent[Job]
+            Typed watch events containing wrapped Jobs.
+        """
+        namespace = namespace.strip() if namespace is not None else ""
+        if namespace:
+            fn = kube.batch.list_namespaced_job
+            api_kwargs: Mapping[str, object] = {"namespace": namespace}
+            context = f"failed to watch Jobs in namespace {namespace!r}"
+        else:
+            fn = kube.batch.list_job_for_all_namespaces
+            api_kwargs = {}
+            context = "failed to watch Jobs across all namespaces"
+
+        async for event in kube.watch(
+            fn,
+            wrapper=cls._watch_payload,
+            timeout=timeout,
+            context=context,
+            resource_version=resource_version,
+            labels=labels,
+            field_selector=field_selector,
+            api_kwargs=api_kwargs,
+        ):
+            yield event
+
+    @classmethod
+    def _watch_payload(cls, payload: object) -> Self:
+        if not isinstance(payload, kubernetes.client.V1Job):
+            msg = "malformed Kubernetes Job watch payload"
+            raise OSError(msg)
+        return cls(_obj=payload)
+
     @staticmethod
     def _manifest(
         *,
@@ -188,26 +253,38 @@ class Job:
         ttl_seconds_after_finished: int | None,
         automount_service_account_token: bool,
         annotations: Mapping[str, str] | None,
+        service_account_name: str | None,
         node_selector: Mapping[str, str] | None,
         node_name: str | None,
+        host_pid: bool | None,
+        pod_security_context: PodSecurityContextSpec | Mapping[str, object] | None,
+        tolerations: Collection[TolerationSpec],
+        image_pull_secrets: Collection[ImagePullSecretSpec],
+        priority_class_name: str | None,
+        dns_policy: str | None,
+        host_network: bool | None,
+        termination_grace_period_seconds: int | None,
     ) -> dict[str, object]:
-        template_spec: dict[str, object] = {
-            "automountServiceAccountToken": automount_service_account_token,
-            "restartPolicy": restart_policy,
-            "containers": [_container_manifest(container) for container in containers],
-            "volumes": [_volume_manifest(volume) for volume in volumes],
-        }
-        if node_selector:
-            template_spec["nodeSelector"] = dict(node_selector)
-        if node_name is not None:
-            template_spec["nodeName"] = node_name
-
         spec: dict[str, object] = {
             "backoffLimit": backoff_limit,
-            "template": {
-                "metadata": {"labels": dict(labels)},
-                "spec": template_spec,
-            },
+            "template": _pod_template_manifest(
+                labels=labels,
+                containers=containers,
+                volumes=volumes,
+                automount_service_account_token=automount_service_account_token,
+                service_account_name=service_account_name,
+                node_selector=node_selector,
+                host_pid=host_pid,
+                restart_policy=restart_policy,
+                pod_security_context=pod_security_context,
+                tolerations=tolerations,
+                image_pull_secrets=image_pull_secrets,
+                priority_class_name=priority_class_name,
+                dns_policy=dns_policy,
+                host_network=host_network,
+                termination_grace_period_seconds=termination_grace_period_seconds,
+                node_name=node_name,
+            ),
         }
         if ttl_seconds_after_finished is not None:
             spec["ttlSecondsAfterFinished"] = ttl_seconds_after_finished
@@ -240,8 +317,19 @@ class Job:
         ttl_seconds_after_finished: int | None = 3600,
         automount_service_account_token: bool = False,
         annotations: Mapping[str, str] | None = None,
+        service_account_name: str | None = None,
         node_selector: Mapping[str, str] | None = None,
         node_name: str | None = None,
+        host_pid: bool | None = None,
+        pod_security_context: PodSecurityContextSpec
+        | Mapping[str, object]
+        | None = None,
+        tolerations: Collection[TolerationSpec] = (),
+        image_pull_secrets: Collection[ImagePullSecretSpec] = (),
+        priority_class_name: str | None = None,
+        dns_policy: str | None = None,
+        host_network: bool | None = None,
+        termination_grace_period_seconds: int | None = None,
     ) -> Self:
         """Create one Kubernetes Job from intent-level fields.
 
@@ -271,10 +359,28 @@ class Job:
             Whether pods should automount the default service-account token.
         annotations : Mapping[str, str] | None, optional
             Annotations to apply to `metadata.annotations`.
+        service_account_name : str | None, optional
+            Optional pod service account name.
         node_selector : Mapping[str, str] | None, optional
             Optional pod node selector.
         node_name : str | None, optional
             Optional exact node name for host-local execution.
+        host_pid : bool | None, optional
+            Optional pod `hostPID` value.
+        pod_security_context : PodSecurityContextSpec | Mapping | None, optional
+            Optional pod security context.
+        tolerations : Collection[TolerationSpec], optional
+            Optional pod tolerations.
+        image_pull_secrets : Collection[ImagePullSecretSpec], optional
+            Optional image pull Secret references.
+        priority_class_name : str | None, optional
+            Optional pod priority class name.
+        dns_policy : str | None, optional
+            Optional pod DNS policy.
+        host_network : bool | None, optional
+            Optional pod `hostNetwork` value.
+        termination_grace_period_seconds : int | None, optional
+            Optional pod termination grace period in seconds.
 
         Returns
         -------
@@ -311,8 +417,17 @@ class Job:
             ttl_seconds_after_finished=ttl_seconds_after_finished,
             automount_service_account_token=automount_service_account_token,
             annotations=annotations,
+            service_account_name=service_account_name,
             node_selector=node_selector,
             node_name=node_name,
+            host_pid=host_pid,
+            pod_security_context=pod_security_context,
+            tolerations=tolerations,
+            image_pull_secrets=image_pull_secrets,
+            priority_class_name=priority_class_name,
+            dns_policy=dns_policy,
+            host_network=host_network,
+            termination_grace_period_seconds=termination_grace_period_seconds,
         )
         created = await kube.run(
             lambda request_timeout: kube.batch.create_namespaced_job(

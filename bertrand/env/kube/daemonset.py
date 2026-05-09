@@ -11,8 +11,12 @@ import kubernetes
 
 from .api import (
     ContainerSpec,
+    ImagePullSecretSpec,
     Kube,
+    PodSecurityContextSpec,
+    TolerationSpec,
     VolumeSpec,
+    WatchEvent,
     _label_selector,
     _pod_template_manifest,
 )
@@ -21,7 +25,7 @@ DAEMONSET_WAIT_POLL_INTERVAL_SECONDS = 0.5
 
 if TYPE_CHECKING:
     import builtins
-    from collections.abc import Collection, Mapping
+    from collections.abc import AsyncIterator, Collection, Mapping
     from datetime import datetime
 
 
@@ -158,6 +162,68 @@ class DaemonSet:
                 out.append(cls(_obj=item))
         return out
 
+    @classmethod
+    async def watch(
+        cls,
+        kube: Kube,
+        *,
+        timeout: float,
+        namespace: str | None = None,
+        labels: Mapping[str, str] | None = None,
+        field_selector: str | None = None,
+        resource_version: str | None = None,
+    ) -> AsyncIterator[WatchEvent[Self]]:
+        """Watch Kubernetes DaemonSets.
+
+        Parameters
+        ----------
+        kube : Kube
+            Active Kubernetes API context.
+        timeout : float
+            Maximum watch budget in seconds. If infinite, wait indefinitely.
+        namespace : str | None, optional
+            Namespace to watch. If omitted, watches DaemonSets across all namespaces.
+        labels : Mapping[str, str] | None, optional
+            Optional label selector key/value pairs.
+        field_selector : str | None, optional
+            Raw Kubernetes field selector.
+        resource_version : str | None, optional
+            Resource version to watch from.
+
+        Yields
+        ------
+        WatchEvent[DaemonSet]
+            Typed watch events containing wrapped DaemonSets.
+        """
+        namespace = namespace.strip() if namespace is not None else ""
+        if namespace:
+            fn = kube.apps.list_namespaced_daemon_set
+            api_kwargs: Mapping[str, object] = {"namespace": namespace}
+            context = f"failed to watch DaemonSets in namespace {namespace!r}"
+        else:
+            fn = kube.apps.list_daemon_set_for_all_namespaces
+            api_kwargs = {}
+            context = "failed to watch DaemonSets across all namespaces"
+
+        async for event in kube.watch(
+            fn,
+            wrapper=cls._watch_payload,
+            timeout=timeout,
+            context=context,
+            resource_version=resource_version,
+            labels=labels,
+            field_selector=field_selector,
+            api_kwargs=api_kwargs,
+        ):
+            yield event
+
+    @classmethod
+    def _watch_payload(cls, payload: object) -> Self:
+        if not isinstance(payload, kubernetes.client.V1DaemonSet):
+            msg = "malformed Kubernetes DaemonSet watch payload"
+            raise OSError(msg)
+        return cls(_obj=payload)
+
     @staticmethod
     def _manifest(
         *,
@@ -172,6 +238,13 @@ class DaemonSet:
         service_account_name: str | None,
         node_selector: Mapping[str, str] | None,
         host_pid: bool | None,
+        pod_security_context: PodSecurityContextSpec | Mapping[str, object] | None,
+        tolerations: Collection[TolerationSpec],
+        image_pull_secrets: Collection[ImagePullSecretSpec],
+        priority_class_name: str | None,
+        dns_policy: str | None,
+        host_network: bool | None,
+        termination_grace_period_seconds: int | None,
     ) -> dict[str, object]:
         template_labels = dict(labels)
         template_labels.update(selector)
@@ -194,6 +267,13 @@ class DaemonSet:
                     service_account_name=service_account_name,
                     node_selector=node_selector,
                     host_pid=host_pid,
+                    pod_security_context=pod_security_context,
+                    tolerations=tolerations,
+                    image_pull_secrets=image_pull_secrets,
+                    priority_class_name=priority_class_name,
+                    dns_policy=dns_policy,
+                    host_network=host_network,
+                    termination_grace_period_seconds=(termination_grace_period_seconds),
                 ),
             },
         }
@@ -215,6 +295,15 @@ class DaemonSet:
         service_account_name: str | None = None,
         node_selector: Mapping[str, str] | None = None,
         host_pid: bool | None = None,
+        pod_security_context: PodSecurityContextSpec
+        | Mapping[str, object]
+        | None = None,
+        tolerations: Collection[TolerationSpec] = (),
+        image_pull_secrets: Collection[ImagePullSecretSpec] = (),
+        priority_class_name: str | None = None,
+        dns_policy: str | None = None,
+        host_network: bool | None = None,
+        termination_grace_period_seconds: int | None = None,
     ) -> Self:
         """Create or patch one Kubernetes DaemonSet from intent-level fields.
 
@@ -246,6 +335,20 @@ class DaemonSet:
             Optional pod node selector.
         host_pid : bool | None, optional
             Optional pod `hostPID` value.
+        pod_security_context : PodSecurityContextSpec | Mapping | None, optional
+            Optional pod security context.
+        tolerations : Collection[TolerationSpec], optional
+            Optional pod tolerations.
+        image_pull_secrets : Collection[ImagePullSecretSpec], optional
+            Optional image pull Secret references.
+        priority_class_name : str | None, optional
+            Optional pod priority class name.
+        dns_policy : str | None, optional
+            Optional pod DNS policy.
+        host_network : bool | None, optional
+            Optional pod `hostNetwork` value.
+        termination_grace_period_seconds : int | None, optional
+            Optional pod termination grace period in seconds.
 
         Returns
         -------
@@ -275,6 +378,13 @@ class DaemonSet:
             service_account_name=service_account_name,
             node_selector=node_selector,
             host_pid=host_pid,
+            pod_security_context=pod_security_context,
+            tolerations=tolerations,
+            image_pull_secrets=image_pull_secrets,
+            priority_class_name=priority_class_name,
+            dns_policy=dns_policy,
+            host_network=host_network,
+            termination_grace_period_seconds=termination_grace_period_seconds,
         )
         try:
             created = await kube.run(

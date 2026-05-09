@@ -860,11 +860,29 @@ class EnvVarSpec:
         Literal environment variable value.
     field_path : str | None, optional
         Kubernetes field path to project with `valueFrom.fieldRef`.
+    secret_name : str | None, optional
+        Secret name to project with `valueFrom.secretKeyRef`.
+    secret_key : str | None, optional
+        Secret key to project with `valueFrom.secretKeyRef`.
+    secret_optional : bool | None, optional
+        Whether the Secret key reference is optional.
+    config_map_name : str | None, optional
+        ConfigMap name to project with `valueFrom.configMapKeyRef`.
+    config_map_key : str | None, optional
+        ConfigMap key to project with `valueFrom.configMapKeyRef`.
+    config_map_optional : bool | None, optional
+        Whether the ConfigMap key reference is optional.
     """
 
     name: str
     value: str | None = None
     field_path: str | None = None
+    secret_name: str | None = None
+    secret_key: str | None = None
+    secret_optional: bool | None = None
+    config_map_name: str | None = None
+    config_map_key: str | None = None
+    config_map_optional: bool | None = None
 
     @classmethod
     def field_ref(cls, name: str, *, field_path: str) -> Self:
@@ -884,6 +902,74 @@ class EnvVarSpec:
         """
         return cls(name=name, field_path=field_path)
 
+    @classmethod
+    def secret_key_ref(
+        cls,
+        name: str,
+        *,
+        secret_name: str,
+        key: str,
+        optional: bool | None = None,
+    ) -> Self:
+        """Create an environment variable from a Secret key reference.
+
+        Parameters
+        ----------
+        name : str
+            Environment variable name.
+        secret_name : str
+            Secret name containing the key.
+        key : str
+            Secret key to project into the environment variable.
+        optional : bool | None, optional
+            Whether the Secret key reference is optional.
+
+        Returns
+        -------
+        Self
+            Environment variable specification.
+        """
+        return cls(
+            name=name,
+            secret_name=secret_name,
+            secret_key=key,
+            secret_optional=optional,
+        )
+
+    @classmethod
+    def config_map_key_ref(
+        cls,
+        name: str,
+        *,
+        config_map_name: str,
+        key: str,
+        optional: bool | None = None,
+    ) -> Self:
+        """Create an environment variable from a ConfigMap key reference.
+
+        Parameters
+        ----------
+        name : str
+            Environment variable name.
+        config_map_name : str
+            ConfigMap name containing the key.
+        key : str
+            ConfigMap key to project into the environment variable.
+        optional : bool | None, optional
+            Whether the ConfigMap key reference is optional.
+
+        Returns
+        -------
+        Self
+            Environment variable specification.
+        """
+        return cls(
+            name=name,
+            config_map_name=config_map_name,
+            config_map_key=key,
+            config_map_optional=optional,
+        )
+
 
 @dataclass(frozen=True)
 class VolumeMountSpec:
@@ -897,11 +983,14 @@ class VolumeMountSpec:
         Container path where the volume is mounted.
     read_only : bool | None, optional
         Whether the mount is read-only. `None` leaves the Kubernetes default.
+    sub_path : str | None, optional
+        Optional single file or directory within the volume to mount.
     """
 
     name: str
     mount_path: str
     read_only: bool | None = None
+    sub_path: str | None = None
 
 
 @dataclass(frozen=True)
@@ -998,6 +1087,131 @@ class ProbeSpec:
 
 
 @dataclass(frozen=True)
+class ResourceRequirementsSpec:
+    """Intent-level Kubernetes container resource requirements.
+
+    Parameters
+    ----------
+    requests : Mapping[str, str]
+        Resource requests such as `{"cpu": "100m", "memory": "128Mi"}`.
+    limits : Mapping[str, str]
+        Resource limits such as `{"cpu": "1", "memory": "1Gi"}`.
+    """
+
+    requests: Mapping[str, str] = MappingProxyType({})
+    limits: Mapping[str, str] = MappingProxyType({})
+
+
+@dataclass(frozen=True)
+class SecurityContextSpec:
+    """Intent-level Kubernetes container security context.
+
+    Parameters
+    ----------
+    privileged : bool | None, optional
+        Whether the container should run privileged.
+    run_as_user : int | None, optional
+        Container user ID.
+    run_as_group : int | None, optional
+        Container group ID.
+    run_as_non_root : bool | None, optional
+        Whether Kubernetes should require a non-root user.
+    read_only_root_filesystem : bool | None, optional
+        Whether the root filesystem should be mounted read-only.
+    allow_privilege_escalation : bool | None, optional
+        Whether privilege escalation is allowed.
+    capabilities_add : Collection[str]
+        Linux capabilities to add.
+    capabilities_drop : Collection[str]
+        Linux capabilities to drop.
+    seccomp_profile_type : str | None, optional
+        Seccomp profile type.
+    seccomp_profile_localhost_profile : str | None, optional
+        Localhost seccomp profile name.
+    """
+
+    privileged: bool | None = None
+    run_as_user: int | None = None
+    run_as_group: int | None = None
+    run_as_non_root: bool | None = None
+    read_only_root_filesystem: bool | None = None
+    allow_privilege_escalation: bool | None = None
+    capabilities_add: Collection[str] = ()
+    capabilities_drop: Collection[str] = ()
+    seccomp_profile_type: str | None = None
+    seccomp_profile_localhost_profile: str | None = None
+
+
+@dataclass(frozen=True)
+class PodSecurityContextSpec:
+    """Intent-level Kubernetes pod security context.
+
+    Parameters
+    ----------
+    run_as_user : int | None, optional
+        Pod-level user ID.
+    run_as_group : int | None, optional
+        Pod-level group ID.
+    run_as_non_root : bool | None, optional
+        Whether Kubernetes should require a non-root user.
+    fs_group : int | None, optional
+        Filesystem group ID.
+    supplemental_groups : Collection[int]
+        Supplemental group IDs.
+    seccomp_profile_type : str | None, optional
+        Seccomp profile type.
+    seccomp_profile_localhost_profile : str | None, optional
+        Localhost seccomp profile name.
+    """
+
+    run_as_user: int | None = None
+    run_as_group: int | None = None
+    run_as_non_root: bool | None = None
+    fs_group: int | None = None
+    supplemental_groups: Collection[int] = ()
+    seccomp_profile_type: str | None = None
+    seccomp_profile_localhost_profile: str | None = None
+
+
+@dataclass(frozen=True)
+class TolerationSpec:
+    """Intent-level Kubernetes pod toleration.
+
+    Parameters
+    ----------
+    key : str | None, optional
+        Taint key matched by the toleration.
+    operator : str | None, optional
+        Toleration operator, such as `"Equal"` or `"Exists"`.
+    value : str | None, optional
+        Taint value matched by the toleration.
+    effect : str | None, optional
+        Taint effect matched by the toleration.
+    toleration_seconds : int | None, optional
+        Duration for `NoExecute` tolerations.
+    """
+
+    key: str | None = None
+    operator: str | None = None
+    value: str | None = None
+    effect: str | None = None
+    toleration_seconds: int | None = None
+
+
+@dataclass(frozen=True)
+class ImagePullSecretSpec:
+    """Intent-level Kubernetes image pull Secret reference.
+
+    Parameters
+    ----------
+    name : str
+        Secret name to include in `imagePullSecrets`.
+    """
+
+    name: str
+
+
+@dataclass(frozen=True)
 class ContainerSpec:
     """Intent-level Kubernetes container specification.
 
@@ -1023,8 +1237,10 @@ class ContainerSpec:
         Liveness probe intent.
     volume_mounts : Collection[VolumeMountSpec], optional
         Pod volume mounts for the container.
-    security_context : Mapping[str, object] | None, optional
-        Kubernetes container security context payload.
+    resources : ResourceRequirementsSpec | Mapping[str, object] | None, optional
+        Container resource requests and limits.
+    security_context : SecurityContextSpec | Mapping[str, object] | None, optional
+        Container security context intent.
     """
 
     name: str
@@ -1037,7 +1253,8 @@ class ContainerSpec:
     readiness_probe: ProbeSpec | None = None
     liveness_probe: ProbeSpec | None = None
     volume_mounts: Collection[VolumeMountSpec] = ()
-    security_context: Mapping[str, object] | None = None
+    resources: ResourceRequirementsSpec | Mapping[str, object] | None = None
+    security_context: SecurityContextSpec | Mapping[str, object] | None = None
 
 
 @dataclass(frozen=True)
@@ -1054,6 +1271,12 @@ class VolumeSpec:
         ConfigMap name for ConfigMap-backed volumes.
     config_map_optional : bool | None, optional
         Whether the ConfigMap reference is optional.
+    secret_name : str | None, optional
+        Secret name for Secret-backed volumes.
+    secret_optional : bool | None, optional
+        Whether the Secret reference is optional.
+    secret_default_mode : int | None, optional
+        Default POSIX mode for Secret-backed volume files.
     persistent_volume_claim : str | None, optional
         PersistentVolumeClaim name for PVC-backed volumes.
     host_path_path : str | None, optional
@@ -1066,6 +1289,9 @@ class VolumeSpec:
     empty_dir_config: Mapping[str, object] | None = None
     config_map_name: str | None = None
     config_map_optional: bool | None = None
+    secret_name: str | None = None
+    secret_optional: bool | None = None
+    secret_default_mode: int | None = None
     persistent_volume_claim: str | None = None
     host_path_path: str | None = None
     host_path_type: str | None = None
@@ -1120,6 +1346,40 @@ class VolumeSpec:
             name=name,
             config_map_name=config_map_name,
             config_map_optional=optional,
+        )
+
+    @classmethod
+    def secret(
+        cls,
+        name: str,
+        *,
+        secret_name: str,
+        optional: bool | None = None,
+        default_mode: int | None = None,
+    ) -> Self:
+        """Create a Secret-backed volume specification.
+
+        Parameters
+        ----------
+        name : str
+            Pod volume name.
+        secret_name : str
+            Name of the Secret to mount.
+        optional : bool | None, optional
+            Whether the Secret reference is optional.
+        default_mode : int | None, optional
+            Default POSIX mode for Secret-backed volume files.
+
+        Returns
+        -------
+        Self
+            Volume specification.
+        """
+        return cls(
+            name=name,
+            secret_name=secret_name,
+            secret_optional=optional,
+            secret_default_mode=default_mode,
         )
 
     @classmethod
@@ -1178,6 +1438,115 @@ def _probe_manifest(probe: ProbeSpec) -> dict[str, object]:
     return payload
 
 
+def _resource_requirements_manifest(
+    resources: ResourceRequirementsSpec | Mapping[str, object],
+) -> dict[str, object]:
+    if isinstance(resources, ResourceRequirementsSpec):
+        payload: dict[str, object] = {}
+        if resources.requests:
+            payload["requests"] = dict(resources.requests)
+        if resources.limits:
+            payload["limits"] = dict(resources.limits)
+        return payload
+    return dict(resources)
+
+
+def _seccomp_profile_manifest(
+    *,
+    profile_type: str | None,
+    localhost_profile: str | None,
+) -> dict[str, object] | None:
+    if profile_type is None and localhost_profile is None:
+        return None
+    payload: dict[str, object] = {}
+    if profile_type is not None:
+        payload["type"] = profile_type
+    if localhost_profile is not None:
+        payload["localhostProfile"] = localhost_profile
+    return payload
+
+
+def _security_context_manifest(
+    security_context: SecurityContextSpec | Mapping[str, object],
+) -> dict[str, object]:
+    if not isinstance(security_context, SecurityContextSpec):
+        return dict(security_context)
+
+    payload: dict[str, object] = {}
+    if security_context.privileged is not None:
+        payload["privileged"] = security_context.privileged
+    if security_context.run_as_user is not None:
+        payload["runAsUser"] = security_context.run_as_user
+    if security_context.run_as_group is not None:
+        payload["runAsGroup"] = security_context.run_as_group
+    if security_context.run_as_non_root is not None:
+        payload["runAsNonRoot"] = security_context.run_as_non_root
+    if security_context.read_only_root_filesystem is not None:
+        payload["readOnlyRootFilesystem"] = security_context.read_only_root_filesystem
+    if security_context.allow_privilege_escalation is not None:
+        payload["allowPrivilegeEscalation"] = (
+            security_context.allow_privilege_escalation
+        )
+    capabilities: dict[str, object] = {}
+    if security_context.capabilities_add:
+        capabilities["add"] = list(security_context.capabilities_add)
+    if security_context.capabilities_drop:
+        capabilities["drop"] = list(security_context.capabilities_drop)
+    if capabilities:
+        payload["capabilities"] = capabilities
+    seccomp_profile = _seccomp_profile_manifest(
+        profile_type=security_context.seccomp_profile_type,
+        localhost_profile=security_context.seccomp_profile_localhost_profile,
+    )
+    if seccomp_profile is not None:
+        payload["seccompProfile"] = seccomp_profile
+    return payload
+
+
+def _pod_security_context_manifest(
+    security_context: PodSecurityContextSpec | Mapping[str, object],
+) -> dict[str, object]:
+    if not isinstance(security_context, PodSecurityContextSpec):
+        return dict(security_context)
+
+    payload: dict[str, object] = {}
+    if security_context.run_as_user is not None:
+        payload["runAsUser"] = security_context.run_as_user
+    if security_context.run_as_group is not None:
+        payload["runAsGroup"] = security_context.run_as_group
+    if security_context.run_as_non_root is not None:
+        payload["runAsNonRoot"] = security_context.run_as_non_root
+    if security_context.fs_group is not None:
+        payload["fsGroup"] = security_context.fs_group
+    if security_context.supplemental_groups:
+        payload["supplementalGroups"] = list(security_context.supplemental_groups)
+    seccomp_profile = _seccomp_profile_manifest(
+        profile_type=security_context.seccomp_profile_type,
+        localhost_profile=security_context.seccomp_profile_localhost_profile,
+    )
+    if seccomp_profile is not None:
+        payload["seccompProfile"] = seccomp_profile
+    return payload
+
+
+def _toleration_manifest(toleration: TolerationSpec) -> dict[str, object]:
+    payload: dict[str, object] = {}
+    if toleration.key is not None:
+        payload["key"] = toleration.key
+    if toleration.operator is not None:
+        payload["operator"] = toleration.operator
+    if toleration.value is not None:
+        payload["value"] = toleration.value
+    if toleration.effect is not None:
+        payload["effect"] = toleration.effect
+    if toleration.toleration_seconds is not None:
+        if toleration.toleration_seconds < 0:
+            msg = "toleration seconds cannot be negative"
+            raise ValueError(msg)
+        payload["tolerationSeconds"] = toleration.toleration_seconds
+    return payload
+
+
 def _container_manifest(container: ContainerSpec) -> dict[str, object]:
     payload: dict[str, object] = {
         "name": container.name,
@@ -1201,7 +1570,18 @@ def _container_manifest(container: ContainerSpec) -> dict[str, object]:
     if container.env:
         env: list[dict[str, object]] = []
         for var in container.env:
-            sources = sum(value is not None for value in (var.value, var.field_path))
+            secret_source = var.secret_name is not None or var.secret_key is not None
+            config_map_source = (
+                var.config_map_name is not None or var.config_map_key is not None
+            )
+            sources = sum(
+                (
+                    var.value is not None,
+                    var.field_path is not None,
+                    secret_source,
+                    config_map_source,
+                )
+            )
             if sources != 1:
                 msg = "environment variable must define exactly one source"
                 raise ValueError(msg)
@@ -1210,6 +1590,28 @@ def _container_manifest(container: ContainerSpec) -> dict[str, object]:
                 item["value"] = var.value
             elif var.field_path is not None:
                 item["valueFrom"] = {"fieldRef": {"fieldPath": var.field_path}}
+            elif secret_source:
+                if var.secret_name is None or var.secret_key is None:
+                    msg = "Secret environment variable source requires name and key"
+                    raise ValueError(msg)
+                secret_ref: dict[str, object] = {
+                    "name": var.secret_name,
+                    "key": var.secret_key,
+                }
+                if var.secret_optional is not None:
+                    secret_ref["optional"] = var.secret_optional
+                item["valueFrom"] = {"secretKeyRef": secret_ref}
+            elif config_map_source:
+                if var.config_map_name is None or var.config_map_key is None:
+                    msg = "ConfigMap environment variable source requires name and key"
+                    raise ValueError(msg)
+                config_map_ref: dict[str, object] = {
+                    "name": var.config_map_name,
+                    "key": var.config_map_key,
+                }
+                if var.config_map_optional is not None:
+                    config_map_ref["optional"] = var.config_map_optional
+                item["valueFrom"] = {"configMapKeyRef": config_map_ref}
             env.append(item)
         payload["env"] = env
     if container.readiness_probe is not None:
@@ -1224,13 +1626,20 @@ def _container_manifest(container: ContainerSpec) -> dict[str, object]:
                     "name": mount.name,
                     "mountPath": mount.mount_path,
                     "readOnly": mount.read_only,
+                    "subPath": mount.sub_path,
                 }.items()
                 if value is not None
             }
             for mount in container.volume_mounts
         ]
+    if container.resources is not None:
+        resources = _resource_requirements_manifest(container.resources)
+        if resources:
+            payload["resources"] = resources
     if container.security_context is not None:
-        payload["securityContext"] = dict(container.security_context)
+        security_context = _security_context_manifest(container.security_context)
+        if security_context:
+            payload["securityContext"] = security_context
     return payload
 
 
@@ -1240,6 +1649,7 @@ def _volume_manifest(volume: VolumeSpec) -> dict[str, object]:
         for value in (
             volume.empty_dir_config,
             volume.config_map_name,
+            volume.secret_name,
             volume.persistent_volume_claim,
             volume.host_path_path,
         )
@@ -1256,6 +1666,13 @@ def _volume_manifest(volume: VolumeSpec) -> dict[str, object]:
         if volume.config_map_optional is not None:
             config_map["optional"] = volume.config_map_optional
         payload["configMap"] = config_map
+    elif volume.secret_name is not None:
+        secret: dict[str, object] = {"secretName": volume.secret_name}
+        if volume.secret_optional is not None:
+            secret["optional"] = volume.secret_optional
+        if volume.secret_default_mode is not None:
+            secret["defaultMode"] = volume.secret_default_mode
+        payload["secret"] = secret
     elif volume.persistent_volume_claim is not None:
         payload["persistentVolumeClaim"] = {"claimName": volume.persistent_volume_claim}
     elif volume.host_path_path is not None:
@@ -1275,20 +1692,64 @@ def _pod_template_manifest(
     service_account_name: str | None,
     node_selector: Mapping[str, str] | None,
     host_pid: bool | None,
+    restart_policy: str | None = None,
+    pod_security_context: PodSecurityContextSpec | Mapping[str, object] | None = None,
+    tolerations: Collection[TolerationSpec] = (),
+    image_pull_secrets: Collection[ImagePullSecretSpec] = (),
+    priority_class_name: str | None = None,
+    dns_policy: str | None = None,
+    host_network: bool | None = None,
+    termination_grace_period_seconds: int | None = None,
+    node_name: str | None = None,
 ) -> dict[str, object]:
     spec: dict[str, object] = {
         "automountServiceAccountToken": automount_service_account_token,
         "containers": [_container_manifest(container) for container in containers],
         "volumes": [_volume_manifest(volume) for volume in volumes],
     }
+    if restart_policy is not None:
+        spec["restartPolicy"] = restart_policy
     if service_account_name is not None:
         service_account_name = service_account_name.strip()
         if service_account_name:
             spec["serviceAccountName"] = service_account_name
     if node_selector:
         spec["nodeSelector"] = dict(node_selector)
+    if node_name is not None:
+        node_name = node_name.strip()
+        if node_name:
+            spec["nodeName"] = node_name
+    if pod_security_context is not None:
+        security_context = _pod_security_context_manifest(pod_security_context)
+        if security_context:
+            spec["securityContext"] = security_context
+    if tolerations:
+        spec["tolerations"] = [
+            _toleration_manifest(toleration) for toleration in tolerations
+        ]
+    if image_pull_secrets:
+        spec["imagePullSecrets"] = [
+            {"name": secret.name}
+            for secret in image_pull_secrets
+            if secret.name.strip()
+        ]
+    if priority_class_name is not None:
+        priority_class_name = priority_class_name.strip()
+        if priority_class_name:
+            spec["priorityClassName"] = priority_class_name
+    if dns_policy is not None:
+        dns_policy = dns_policy.strip()
+        if dns_policy:
+            spec["dnsPolicy"] = dns_policy
+    if host_network is not None:
+        spec["hostNetwork"] = host_network
     if host_pid is not None:
         spec["hostPID"] = host_pid
+    if termination_grace_period_seconds is not None:
+        if termination_grace_period_seconds < 0:
+            msg = "termination grace period cannot be negative"
+            raise ValueError(msg)
+        spec["terminationGracePeriodSeconds"] = termination_grace_period_seconds
     return {
         "metadata": {"labels": dict(labels)},
         "spec": spec,
