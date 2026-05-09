@@ -660,7 +660,7 @@ class Controller:
         )
         if obj is None:
             raise OSError(f"{AUTOSCALE_AUTOSCALER_KIND} {AUTOSCALE_DEFAULT_NAME!r} is missing")
-        return _AutoscalerPolicy.model_validate(obj.obj)
+        return _AutoscalerPolicy.model_validate(obj.payload)
 
     async def list_actions(self, kube: Kube, *, timeout: float) -> list[_StorageAction]:
         """List and validate autoscaler action resources."""
@@ -670,7 +670,7 @@ class Controller:
             labels={AUTOSCALE_LABEL: AUTOSCALE_LABEL_VALUE},
             timeout=timeout,
         )
-        return [_StorageAction.model_validate(obj.obj) for obj in objects]
+        return [_StorageAction.model_validate(obj.payload) for obj in objects]
 
     async def list_node_reports(self, kube: Kube, *, timeout: float) -> list[_StorageNodeReport]:
         """List and validate node capacity report resources."""
@@ -680,7 +680,7 @@ class Controller:
             labels={AUTOSCALE_LABEL: AUTOSCALE_LABEL_VALUE},
             timeout=timeout,
         )
-        return [_StorageNodeReport.model_validate(obj.obj) for obj in objects]
+        return [_StorageNodeReport.model_validate(obj.payload) for obj in objects]
 
     async def ready_nodes(self, kube: Kube, *, timeout: float) -> list[str]:
         """List Kubernetes nodes that are ready for Bertrand registry pulls."""
@@ -880,7 +880,7 @@ class Agent:
             labels={AUTOSCALE_LABEL: AUTOSCALE_LABEL_VALUE},
             timeout=timeout,
         )
-        actions = [_StorageAction.model_validate(obj.obj) for obj in objects]
+        actions = [_StorageAction.model_validate(obj.payload) for obj in objects]
         pending = [
             action
             for action in actions

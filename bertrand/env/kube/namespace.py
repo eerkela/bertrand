@@ -14,6 +14,7 @@ from .api import _label_selector
 if TYPE_CHECKING:
     import builtins
     from collections.abc import Mapping
+    from datetime import datetime
 
     from .api import Kube
 
@@ -26,11 +27,11 @@ class Namespace:
 
     Parameters
     ----------
-    obj : kube_client.V1Namespace
+    _obj : kube_client.V1Namespace
         Typed Kubernetes Namespace payload returned by the cluster API.
     """
 
-    obj: kube_client.V1Namespace
+    _obj: kube_client.V1Namespace
 
     @classmethod
     async def get(cls, kube: Kube, *, name: str, timeout: float) -> Self | None:
@@ -68,7 +69,7 @@ class Namespace:
         if not isinstance(payload, kube_client.V1Namespace):
             msg = f"malformed Kubernetes Namespace payload for {name!r}"
             raise OSError(msg)
-        return cls(obj=payload)
+        return cls(_obj=payload)
 
     @classmethod
     async def list(
@@ -117,7 +118,7 @@ class Namespace:
             if not isinstance(item, kube_client.V1Namespace):
                 msg = "malformed Kubernetes Namespace entry in list payload"
                 raise OSError(msg)
-            out.append(cls(obj=item))
+            out.append(cls(_obj=item))
         return out
 
     @staticmethod
@@ -195,7 +196,7 @@ class Namespace:
             if not isinstance(created, kube_client.V1Namespace):
                 msg = f"malformed Kubernetes Namespace payload while creating {name!r}"
                 raise OSError(msg)
-            return cls(obj=created)
+            return cls(_obj=created)
 
         patched = await kube.run(
             lambda request_timeout: kube.core.patch_namespace(
@@ -209,7 +210,7 @@ class Namespace:
         if not isinstance(patched, kube_client.V1Namespace):
             msg = f"malformed Kubernetes Namespace payload while patching {name!r}"
             raise OSError(msg)
-        return cls(obj=patched)
+        return cls(_obj=patched)
 
     @property
     def name(self) -> str:
@@ -220,7 +221,7 @@ class Namespace:
         str
             Trimmed `metadata.name`, or an empty string when unavailable.
         """
-        metadata = self.obj.metadata
+        metadata = self._obj.metadata
         return (metadata.name or "").strip() if metadata is not None else ""
 
     @property
@@ -232,7 +233,7 @@ class Namespace:
         Mapping[str, str]
             Read-only view of `metadata.labels`, or an empty mapping when unavailable.
         """
-        metadata = self.obj.metadata
+        metadata = self._obj.metadata
         if metadata is None or metadata.labels is None:
             return MappingProxyType({})
         return MappingProxyType(metadata.labels)
@@ -247,7 +248,7 @@ class Namespace:
             Read-only view of `metadata.annotations`, or an empty mapping when
             unavailable.
         """
-        metadata = self.obj.metadata
+        metadata = self._obj.metadata
         if metadata is None or metadata.annotations is None:
             return MappingProxyType({})
         return MappingProxyType(metadata.annotations)
@@ -262,8 +263,32 @@ class Namespace:
             Kubernetes `metadata.resourceVersion`, or an empty string when
             unavailable.
         """
-        metadata = self.obj.metadata
+        metadata = self._obj.metadata
         return (metadata.resource_version or "").strip() if metadata is not None else ""
+
+    @property
+    def uid(self) -> str:
+        """Return the Namespace UID.
+
+        Returns
+        -------
+        str
+            Kubernetes `metadata.uid`, or an empty string when unavailable.
+        """
+        metadata = self._obj.metadata
+        return (metadata.uid or "").strip() if metadata is not None else ""
+
+    @property
+    def created_at(self) -> datetime | None:
+        """Return the Namespace creation timestamp.
+
+        Returns
+        -------
+        datetime | None
+            Kubernetes `metadata.creationTimestamp`, or `None` when unavailable.
+        """
+        metadata = self._obj.metadata
+        return metadata.creation_timestamp if metadata is not None else None
 
     @property
     def phase(self) -> str:
@@ -274,7 +299,7 @@ class Namespace:
         str
             Namespace `status.phase`, or an empty string when unavailable.
         """
-        status = self.obj.status
+        status = self._obj.status
         return (status.phase or "").strip() if status is not None else ""
 
     async def refresh(self, kube: Kube, *, timeout: float) -> Self | None:

@@ -11,12 +11,13 @@ from typing import TYPE_CHECKING, Literal, Self
 
 import kubernetes
 
-from .api import Kube, _label_selector
+from .api import Kube, TaintView, WatchEvent, _label_selector
 from .pod import Pod
 
 if TYPE_CHECKING:
     import builtins
-    from collections.abc import Collection, Mapping
+    from collections.abc import AsyncIterator, Collection, Mapping
+    from datetime import datetime
 
 NODE_SYSTEM_NAMESPACES = frozenset(
     {
@@ -42,7 +43,7 @@ class Node:
 
     Parameters
     ----------
-    obj : kubernetes.client.V1Node
+    _obj : kubernetes.client.V1Node
         Typed Kubernetes Node payload returned by the cluster API.
 
     Notes
@@ -52,7 +53,7 @@ class Node:
     node-shape parsing.
     """
 
-    obj: kubernetes.client.V1Node
+    _obj: kubernetes.client.V1Node
 
     @classmethod
     async def get(
@@ -97,7 +98,7 @@ class Node:
         if not isinstance(payload, kubernetes.client.V1Node):
             msg = f"malformed Kubernetes node payload for {name!r}"
             raise OSError(msg)
-        return cls(obj=payload)
+        return cls(_obj=payload)
 
     @classmethod
     async def list(
@@ -147,8 +148,52 @@ class Node:
             if not isinstance(item, kubernetes.client.V1Node):
                 msg = "malformed Kubernetes node entry in list payload"
                 raise OSError(msg)
-            out.append(cls(obj=item))
+            out.append(cls(_obj=item))
         return out
+
+    @classmethod
+    async def watch(
+        cls,
+        kube: Kube,
+        *,
+        timeout: float,
+        labels: Mapping[str, str] | None = None,
+        resource_version: str | None = None,
+    ) -> AsyncIterator[WatchEvent[Self]]:
+        """Watch Kubernetes Nodes.
+
+        Parameters
+        ----------
+        kube : Kube
+            Active Kubernetes API context.
+        timeout : float
+            Maximum watch budget in seconds. If infinite, wait indefinitely.
+        labels : Mapping[str, str] | None, optional
+            Optional label selector key/value pairs.
+        resource_version : str | None, optional
+            Resource version to watch from.
+
+        Yields
+        ------
+        WatchEvent[Node]
+            Typed watch events containing wrapped Nodes.
+        """
+        async for event in kube.watch(
+            kube.core.list_node,
+            wrapper=cls._watch_payload,
+            timeout=timeout,
+            context="failed to watch Kubernetes Nodes",
+            resource_version=resource_version,
+            labels=labels,
+        ):
+            yield event
+
+    @classmethod
+    def _watch_payload(cls, payload: object) -> Self:
+        if not isinstance(payload, kubernetes.client.V1Node):
+            msg = "malformed Kubernetes Node watch payload"
+            raise OSError(msg)
+        return cls(_obj=payload)
 
     @classmethod
     async def local(cls, kube: Kube, *, timeout: float) -> Self:
@@ -214,7 +259,7 @@ class Node:
         str
             Trimmed `metadata.name`, or an empty string when unavailable.
         """
-        metadata = self.obj.metadata
+        metadata = self._obj.metadata
         if metadata is None:
             return ""
         return (metadata.name or "").strip()
@@ -228,7 +273,7 @@ class Node:
         Mapping[str, str]
             Read-only view of `metadata.labels`, or an empty mapping when unavailable.
         """
-        metadata = self.obj.metadata
+        metadata = self._obj.metadata
         if metadata is None or metadata.labels is None:
             return MappingProxyType({})
         return MappingProxyType(metadata.labels)
@@ -243,10 +288,47 @@ class Node:
             Read-only view of `metadata.annotations`, or an empty mapping when
             unavailable.
         """
-        metadata = self.obj.metadata
+        metadata = self._obj.metadata
         if metadata is None or metadata.annotations is None:
             return MappingProxyType({})
         return MappingProxyType(metadata.annotations)
+
+    @property
+    def resource_version(self) -> str:
+        """Return the Node resource version.
+
+        Returns
+        -------
+        str
+            Kubernetes `metadata.resourceVersion`, or an empty string when
+            unavailable.
+        """
+        metadata = self._obj.metadata
+        return (metadata.resource_version or "").strip() if metadata is not None else ""
+
+    @property
+    def uid(self) -> str:
+        """Return the Node UID.
+
+        Returns
+        -------
+        str
+            Kubernetes `metadata.uid`, or an empty string when unavailable.
+        """
+        metadata = self._obj.metadata
+        return (metadata.uid or "").strip() if metadata is not None else ""
+
+    @property
+    def created_at(self) -> datetime | None:
+        """Return the Node creation timestamp.
+
+        Returns
+        -------
+        datetime | None
+            Kubernetes `metadata.creationTimestamp`, or `None` when unavailable.
+        """
+        metadata = self._obj.metadata
+        return metadata.creation_timestamp if metadata is not None else None
 
     @property
     def hostname(self) -> str:
@@ -268,7 +350,7 @@ class Node:
         tuple[str, ...]
             All non-empty reported node addresses in Kubernetes API order.
         """
-        status = self.obj.status
+        status = self._obj.status
         out: builtins.list[str] = []
         for address in (status.addresses or []) if status is not None else []:
             value = (address.address or "").strip()
@@ -315,7 +397,7 @@ class Node:
         tuple[str, ...]
             All non-empty `InternalIP` addresses in reported node order.
         """
-        status = self.obj.status
+        status = self._obj.status
         out: builtins.list[str] = []
         for address in (status.addresses or []) if status is not None else []:
             if (address.type or "").strip() != "InternalIP":
@@ -334,7 +416,7 @@ class Node:
         tuple[str, ...]
             All non-empty `ExternalIP` addresses in reported node order.
         """
-        status = self.obj.status
+        status = self._obj.status
         out: builtins.list[str] = []
         for address in (status.addresses or []) if status is not None else []:
             if (address.type or "").strip() != "ExternalIP":
@@ -345,12 +427,12 @@ class Node:
         return tuple(out)
 
     @property
-    def roles(self) -> set[str]:
+    def roles(self) -> frozenset[str]:
         """Return Kubernetes role labels.
 
         Returns
         -------
-        set[str]
+        frozenset[str]
             Role names extracted from `node-role.kubernetes.io/*` keys.
         """
         out: set[str] = set()
@@ -358,7 +440,7 @@ class Node:
             if key.startswith("node-role.kubernetes.io/"):
                 role = key.removeprefix("node-role.kubernetes.io/").strip()
                 out.add(role if role else "control-plane")
-        return out
+        return frozenset(out)
 
     @property
     def is_control_plane(self) -> bool:
@@ -384,7 +466,7 @@ class Node:
         bool
             `True` when the `Ready` condition exists and has status `True`.
         """
-        status = self.obj.status
+        status = self._obj.status
         for condition in (status.conditions or []) if status is not None else []:
             if (condition.type or "").strip() != "Ready":
                 continue
@@ -400,22 +482,29 @@ class Node:
         bool
             `False` only when `spec.unschedulable` is explicitly true.
         """
-        spec = self.obj.spec
+        spec = self._obj.spec
         return not bool(spec.unschedulable) if spec is not None else True
 
     @property
-    def taints(self) -> tuple[kubernetes.client.V1Taint, ...]:
+    def taints(self) -> tuple[TaintView, ...]:
         """Return the Node taints.
 
         Returns
         -------
-        tuple[kubernetes.client.V1Taint, ...]
-            Immutable snapshot of taints, or an empty tuple when none exist.
+        tuple[TaintView, ...]
+            Immutable snapshot of taint views, or an empty tuple when none exist.
         """
-        spec = self.obj.spec
+        spec = self._obj.spec
         if spec is None or spec.taints is None:
             return ()
-        return tuple(spec.taints)
+        return tuple(
+            TaintView(
+                key=(taint.key or "").strip(),
+                effect=(taint.effect or "").strip(),
+                value=(taint.value or "").strip(),
+            )
+            for taint in spec.taints
+        )
 
     async def _patch(
         self,
@@ -635,30 +724,26 @@ class Node:
         # normalize to one taint per (key, effect) pair so repeated calls converge
         # instead of duplicating entries
         taints = list(self.taints)
-        normalized: builtins.list[kubernetes.client.V1Taint] = []
+        normalized: builtins.list[TaintView] = []
         replaced = False
         for taint in taints:
-            if (taint.key or "") == key and (taint.effect or "") == effect:
+            if taint.key == key and taint.effect == effect:
                 if replaced:
                     continue
                 replaced = True
-                normalized.append(
-                    kubernetes.client.V1Taint(key=key, effect=effect, value=value)
-                )
+                normalized.append(TaintView(key=key, effect=effect, value=value or ""))
                 continue
             normalized.append(taint)
         if not replaced:
-            normalized.append(
-                kubernetes.client.V1Taint(key=key, effect=effect, value=value)
-            )
+            normalized.append(TaintView(key=key, effect=effect, value=value or ""))
         payload = [
             {
-                "key": (taint.key or ""),
-                "effect": (taint.effect or ""),
+                "key": taint.key,
+                "effect": taint.effect,
                 **({"value": taint.value} if taint.value else {}),
             }
             for taint in normalized
-            if (taint.key or "").strip() and (taint.effect or "").strip()
+            if taint.key and taint.effect
         ]
         await self._patch(
             kube=kube,
@@ -694,16 +779,13 @@ class Node:
         """
         payload = [
             {
-                "key": (taint.key or ""),
-                "effect": (taint.effect or ""),
+                "key": taint.key,
+                "effect": taint.effect,
                 **({"value": taint.value} if taint.value else {}),
             }
             for taint in self.taints
-            if not (
-                (taint.key or "") == key
-                and (effect is None or (taint.effect or "") == effect)
-            )
-            if (taint.key or "").strip() and (taint.effect or "").strip()
+            if not (taint.key == key and (effect is None or taint.effect == effect))
+            if taint.key and taint.effect
         ]
         await self._patch(
             kube=kube,
@@ -808,7 +890,7 @@ class Node:
                         f"{node_name!r}"
                     )
                     raise OSError(msg)
-                out.append(Pod(obj=item))
+                out.append(Pod(_obj=item))
         return out
 
     async def drain(

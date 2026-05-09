@@ -9,11 +9,12 @@ from typing import TYPE_CHECKING, Self
 
 import kubernetes
 
-from .api import Kube, _label_selector
+from .api import Kube, WatchEvent, _label_selector
 
 if TYPE_CHECKING:
     import builtins
-    from collections.abc import Collection, Mapping
+    from collections.abc import AsyncIterator, Collection, Mapping
+    from datetime import datetime
 
 POD_MIRROR_ANNOTATION = "kubernetes.io/config.mirror"
 POD_SUPPORTED_CONTROLLER_KINDS = frozenset(
@@ -36,11 +37,11 @@ class Pod:
 
     Parameters
     ----------
-    obj : kubernetes.client.V1Pod
+    _obj : kubernetes.client.V1Pod
         Typed Kubernetes Pod payload returned by the cluster API.
     """
 
-    obj: kubernetes.client.V1Pod
+    _obj: kubernetes.client.V1Pod
 
     @classmethod
     async def get(
@@ -92,7 +93,7 @@ class Pod:
                 f"{namespace!r}"
             )
             raise OSError(msg)
-        return cls(obj=payload)
+        return cls(_obj=payload)
 
     @classmethod
     async def list(
@@ -174,8 +175,70 @@ class Pod:
                 if not isinstance(item, kubernetes.client.V1Pod):
                     msg = "malformed Kubernetes Pod entry in list payload"
                     raise OSError(msg)
-                out.append(cls(obj=item))
+                out.append(cls(_obj=item))
         return out
+
+    @classmethod
+    async def watch(
+        cls,
+        kube: Kube,
+        *,
+        timeout: float,
+        namespace: str | None = None,
+        labels: Mapping[str, str] | None = None,
+        field_selector: str | None = None,
+        resource_version: str | None = None,
+    ) -> AsyncIterator[WatchEvent[Self]]:
+        """Watch Kubernetes Pods.
+
+        Parameters
+        ----------
+        kube : Kube
+            Active Kubernetes API context.
+        timeout : float
+            Maximum watch budget in seconds. If infinite, wait indefinitely.
+        namespace : str | None, optional
+            Namespace to watch. If omitted, watches Pods across all namespaces.
+        labels : Mapping[str, str] | None, optional
+            Optional label selector key/value pairs.
+        field_selector : str | None, optional
+            Raw Kubernetes field selector.
+        resource_version : str | None, optional
+            Resource version to watch from.
+
+        Yields
+        ------
+        WatchEvent[Pod]
+            Typed watch events containing wrapped Pods.
+        """
+        namespace = namespace.strip() if namespace is not None else ""
+        if namespace:
+            fn = kube.core.list_namespaced_pod
+            api_kwargs: Mapping[str, object] = {"namespace": namespace}
+            context = f"failed to watch Pods in namespace {namespace!r}"
+        else:
+            fn = kube.core.list_pod_for_all_namespaces
+            api_kwargs = {}
+            context = "failed to watch Pods across all namespaces"
+
+        async for event in kube.watch(
+            fn,
+            wrapper=cls._watch_payload,
+            timeout=timeout,
+            context=context,
+            resource_version=resource_version,
+            labels=labels,
+            field_selector=field_selector,
+            api_kwargs=api_kwargs,
+        ):
+            yield event
+
+    @classmethod
+    def _watch_payload(cls, payload: object) -> Self:
+        if not isinstance(payload, kubernetes.client.V1Pod):
+            msg = "malformed Kubernetes Pod watch payload"
+            raise OSError(msg)
+        return cls(_obj=payload)
 
     @property
     def name(self) -> str:
@@ -186,7 +249,7 @@ class Pod:
         str
             Trimmed `metadata.name`, or an empty string when unavailable.
         """
-        metadata = self.obj.metadata
+        metadata = self._obj.metadata
         return (metadata.name or "").strip() if metadata is not None else ""
 
     @property
@@ -198,7 +261,7 @@ class Pod:
         str
             Trimmed `metadata.namespace`, or an empty string when unavailable.
         """
-        metadata = self.obj.metadata
+        metadata = self._obj.metadata
         return (metadata.namespace or "").strip() if metadata is not None else ""
 
     @property
@@ -210,7 +273,7 @@ class Pod:
         Mapping[str, str]
             Read-only view of `metadata.labels`, or an empty mapping when unavailable.
         """
-        metadata = self.obj.metadata
+        metadata = self._obj.metadata
         if metadata is None or metadata.labels is None:
             return MappingProxyType({})
         return MappingProxyType(metadata.labels)
@@ -225,10 +288,47 @@ class Pod:
             Read-only view of `metadata.annotations`, or an empty mapping when
             unavailable.
         """
-        metadata = self.obj.metadata
+        metadata = self._obj.metadata
         if metadata is None or metadata.annotations is None:
             return MappingProxyType({})
         return MappingProxyType(metadata.annotations)
+
+    @property
+    def resource_version(self) -> str:
+        """Return the Pod resource version.
+
+        Returns
+        -------
+        str
+            Kubernetes `metadata.resourceVersion`, or an empty string when
+            unavailable.
+        """
+        metadata = self._obj.metadata
+        return (metadata.resource_version or "").strip() if metadata is not None else ""
+
+    @property
+    def uid(self) -> str:
+        """Return the Pod UID.
+
+        Returns
+        -------
+        str
+            Kubernetes `metadata.uid`, or an empty string when unavailable.
+        """
+        metadata = self._obj.metadata
+        return (metadata.uid or "").strip() if metadata is not None else ""
+
+    @property
+    def created_at(self) -> datetime | None:
+        """Return the Pod creation timestamp.
+
+        Returns
+        -------
+        datetime | None
+            Kubernetes `metadata.creationTimestamp`, or `None` when unavailable.
+        """
+        metadata = self._obj.metadata
+        return metadata.creation_timestamp if metadata is not None else None
 
     @property
     def phase(self) -> str:
@@ -239,7 +339,7 @@ class Pod:
         str
             Current pod phase value, or an empty string when unavailable.
         """
-        status = self.obj.status
+        status = self._obj.status
         return (status.phase or "").strip() if status is not None else ""
 
     @property
@@ -251,7 +351,7 @@ class Pod:
         bool
             `True` when `metadata.deletion_timestamp` is present.
         """
-        metadata = self.obj.metadata
+        metadata = self._obj.metadata
         return bool(metadata.deletion_timestamp) if metadata is not None else False
 
     @property
@@ -297,7 +397,7 @@ class Pod:
         bool
             `True` when a controller owner-reference of kind `DaemonSet` exists.
         """
-        metadata = self.obj.metadata
+        metadata = self._obj.metadata
         owners = (metadata.owner_references or []) if metadata is not None else []
         for owner in owners:
             if (owner.kind or "").strip() != "DaemonSet":
@@ -322,7 +422,7 @@ class Pod:
         bool
             `True` when a controller owner-reference matches one of `kinds`.
         """
-        metadata = self.obj.metadata
+        metadata = self._obj.metadata
         owners = (metadata.owner_references or []) if metadata is not None else []
         for owner in owners:
             if (owner.kind or "").strip() not in kinds:
@@ -340,7 +440,7 @@ class Pod:
         bool
             `True` when this pod spec includes at least one `emptyDir` volume.
         """
-        spec = self.obj.spec
+        spec = self._obj.spec
         for volume in (spec.volumes or []) if spec is not None else []:
             if volume.empty_dir is not None:
                 return True
@@ -355,7 +455,7 @@ class Pod:
         tuple[str, ...]
             Distinct PVC claim names referenced by this pod, preserving spec order.
         """
-        spec = self.obj.spec
+        spec = self._obj.spec
         seen: set[str] = set()
         out: builtins.list[str] = []
         for volume in (spec.volumes or []) if spec is not None else []:

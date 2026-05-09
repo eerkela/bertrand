@@ -14,6 +14,7 @@ from .api import Kube, _label_selector
 if TYPE_CHECKING:
     import builtins
     from collections.abc import Collection, Mapping
+    from datetime import datetime
 
 CONFIGMAP_WAIT_POLL_INTERVAL_SECONDS = 0.5
 
@@ -24,7 +25,7 @@ class ConfigMap:
 
     Parameters
     ----------
-    obj : kubernetes.client.V1ConfigMap
+    _obj : kubernetes.client.V1ConfigMap
         Typed Kubernetes ConfigMap payload returned by the cluster API.
 
     Notes
@@ -33,7 +34,7 @@ class ConfigMap:
     manifests as an internal implementation detail.
     """
 
-    obj: kube_client.V1ConfigMap
+    _obj: kube_client.V1ConfigMap
 
     @classmethod
     async def get(
@@ -86,7 +87,7 @@ class ConfigMap:
                 f"in namespace {namespace!r}"
             )
             raise OSError(msg)
-        return cls(obj=payload)
+        return cls(_obj=payload)
 
     @classmethod
     async def list(
@@ -166,7 +167,7 @@ class ConfigMap:
                 if not isinstance(item, kube_client.V1ConfigMap):
                     msg = "malformed Kubernetes ConfigMap entry in list payload"
                     raise OSError(msg)
-                out.append(cls(obj=item))
+                out.append(cls(_obj=item))
         return out
 
     @staticmethod
@@ -271,7 +272,7 @@ class ConfigMap:
             if not isinstance(created, kube_client.V1ConfigMap):
                 msg = f"malformed Kubernetes ConfigMap payload while creating {name!r}"
                 raise OSError(msg)
-            return cls(obj=created)
+            return cls(_obj=created)
 
         updated = await kube.run(
             lambda request_timeout: kube.core.patch_namespaced_config_map(
@@ -286,7 +287,7 @@ class ConfigMap:
         if not isinstance(updated, kube_client.V1ConfigMap):
             msg = f"malformed Kubernetes ConfigMap payload while updating {name!r}"
             raise OSError(msg)
-        return cls(obj=updated)
+        return cls(_obj=updated)
 
     @property
     def name(self) -> str:
@@ -297,7 +298,7 @@ class ConfigMap:
         str
             Trimmed `metadata.name`, or an empty string when unavailable.
         """
-        metadata = self.obj.metadata
+        metadata = self._obj.metadata
         return (metadata.name or "").strip() if metadata is not None else ""
 
     @property
@@ -309,7 +310,7 @@ class ConfigMap:
         str
             Trimmed `metadata.namespace`, or an empty string when unavailable.
         """
-        metadata = self.obj.metadata
+        metadata = self._obj.metadata
         return (metadata.namespace or "").strip() if metadata is not None else ""
 
     @property
@@ -321,7 +322,7 @@ class ConfigMap:
         Mapping[str, str]
             Read-only view of ConfigMap text data.
         """
-        return MappingProxyType(self.obj.data or {})
+        return MappingProxyType(self._obj.data or {})
 
     @property
     def binary_data(self) -> Mapping[str, str]:
@@ -332,7 +333,7 @@ class ConfigMap:
         Mapping[str, str]
             Read-only view of ConfigMap binary data.
         """
-        return MappingProxyType(self.obj.binary_data or {})
+        return MappingProxyType(self._obj.binary_data or {})
 
     @property
     def labels(self) -> Mapping[str, str]:
@@ -343,7 +344,7 @@ class ConfigMap:
         Mapping[str, str]
             Read-only view of `metadata.labels`, or an empty mapping when unavailable.
         """
-        metadata = self.obj.metadata
+        metadata = self._obj.metadata
         if metadata is None or metadata.labels is None:
             return MappingProxyType({})
         return MappingProxyType(metadata.labels)
@@ -358,10 +359,47 @@ class ConfigMap:
             Read-only view of `metadata.annotations`, or an empty mapping when
             unavailable.
         """
-        metadata = self.obj.metadata
+        metadata = self._obj.metadata
         if metadata is None or metadata.annotations is None:
             return MappingProxyType({})
         return MappingProxyType(metadata.annotations)
+
+    @property
+    def resource_version(self) -> str:
+        """Return this ConfigMap's resource version.
+
+        Returns
+        -------
+        str
+            Kubernetes `metadata.resourceVersion`, or an empty string when
+            unavailable.
+        """
+        metadata = self._obj.metadata
+        return (metadata.resource_version or "").strip() if metadata is not None else ""
+
+    @property
+    def uid(self) -> str:
+        """Return this ConfigMap's UID.
+
+        Returns
+        -------
+        str
+            Kubernetes `metadata.uid`, or an empty string when unavailable.
+        """
+        metadata = self._obj.metadata
+        return (metadata.uid or "").strip() if metadata is not None else ""
+
+    @property
+    def created_at(self) -> datetime | None:
+        """Return this ConfigMap's creation timestamp.
+
+        Returns
+        -------
+        datetime | None
+            Kubernetes `metadata.creationTimestamp`, or `None` when unavailable.
+        """
+        metadata = self._obj.metadata
+        return metadata.creation_timestamp if metadata is not None else None
 
     async def refresh(self, kube: Kube, *, timeout: float) -> Self | None:
         """Re-read this ConfigMap by its metadata namespace and name.

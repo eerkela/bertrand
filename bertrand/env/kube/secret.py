@@ -16,6 +16,7 @@ from .api import Kube, _label_selector
 if TYPE_CHECKING:
     import builtins
     from collections.abc import Collection, Mapping
+    from datetime import datetime
 
 SECRET_WAIT_POLL_INTERVAL_SECONDS = 0.5
 
@@ -26,11 +27,11 @@ class Secret:
 
     Parameters
     ----------
-    obj : kube_client.V1Secret
+    _obj : kube_client.V1Secret
         Typed Kubernetes Secret payload returned by the cluster API.
     """
 
-    obj: kube_client.V1Secret
+    _obj: kube_client.V1Secret
 
     @classmethod
     async def get(
@@ -83,7 +84,7 @@ class Secret:
                 f"{namespace!r}"
             )
             raise OSError(msg)
-        return cls(obj=payload)
+        return cls(_obj=payload)
 
     @classmethod
     async def list(
@@ -166,7 +167,7 @@ class Secret:
                 if not isinstance(item, kube_client.V1Secret):
                     msg = "malformed Kubernetes Secret entry in list payload"
                     raise OSError(msg)
-                out.append(cls(obj=item))
+                out.append(cls(_obj=item))
         return out
 
     @classmethod
@@ -241,7 +242,7 @@ class Secret:
             if not isinstance(created, kube_client.V1Secret):
                 msg = f"malformed Kubernetes Secret payload while creating {name!r}"
                 raise OSError(msg)
-            return cls(obj=created)
+            return cls(_obj=created)
 
         updated = await kube.run(
             lambda request_timeout: kube.core.patch_namespaced_secret(
@@ -256,7 +257,7 @@ class Secret:
         if not isinstance(updated, kube_client.V1Secret):
             msg = f"malformed Kubernetes Secret payload while updating {name!r}"
             raise OSError(msg)
-        return cls(obj=updated)
+        return cls(_obj=updated)
 
     @property
     def namespace(self) -> str:
@@ -272,7 +273,7 @@ class Secret:
         OSError
             If `metadata.namespace` is missing or malformed.
         """
-        metadata = self.obj.metadata or kube_client.V1ObjectMeta()
+        metadata = self._obj.metadata or kube_client.V1ObjectMeta()
         namespace = (metadata.namespace or "").strip()
         if not namespace:
             msg = "secret metadata is missing namespace"
@@ -293,7 +294,7 @@ class Secret:
         OSError
             If `metadata.name` is missing or malformed.
         """
-        metadata = self.obj.metadata or kube_client.V1ObjectMeta()
+        metadata = self._obj.metadata or kube_client.V1ObjectMeta()
         name = (metadata.name or "").strip()
         if not name:
             msg = "secret metadata is missing name"
@@ -309,7 +310,7 @@ class Secret:
         Mapping[str, str]
             Read-only view of `metadata.labels`, or an empty mapping when unavailable.
         """
-        metadata = self.obj.metadata
+        metadata = self._obj.metadata
         if metadata is None or metadata.labels is None:
             return MappingProxyType({})
         return MappingProxyType(metadata.labels)
@@ -324,10 +325,47 @@ class Secret:
             Read-only view of `metadata.annotations`, or an empty mapping when
             unavailable.
         """
-        metadata = self.obj.metadata
+        metadata = self._obj.metadata
         if metadata is None or metadata.annotations is None:
             return MappingProxyType({})
         return MappingProxyType(metadata.annotations)
+
+    @property
+    def resource_version(self) -> str:
+        """Return this secret's resource version.
+
+        Returns
+        -------
+        str
+            Kubernetes `metadata.resourceVersion`, or an empty string when
+            unavailable.
+        """
+        metadata = self._obj.metadata
+        return (metadata.resource_version or "").strip() if metadata is not None else ""
+
+    @property
+    def uid(self) -> str:
+        """Return this secret's UID.
+
+        Returns
+        -------
+        str
+            Kubernetes `metadata.uid`, or an empty string when unavailable.
+        """
+        metadata = self._obj.metadata
+        return (metadata.uid or "").strip() if metadata is not None else ""
+
+    @property
+    def created_at(self) -> datetime | None:
+        """Return this secret's creation timestamp.
+
+        Returns
+        -------
+        datetime | None
+            Kubernetes `metadata.creationTimestamp`, or `None` when unavailable.
+        """
+        metadata = self._obj.metadata
+        return metadata.creation_timestamp if metadata is not None else None
 
     @property
     def value(self) -> bytes:
@@ -344,7 +382,7 @@ class Secret:
             If the secret's `value` is missing or contains invalid base64.
         """
         name = self.name
-        value = (self.obj.data or {}).get("value")
+        value = (self._obj.data or {}).get("value")
         if value is None:
             msg = f"cluster secret {name!r} does not define required key 'data.value'"
             raise OSError(msg)

@@ -3,23 +3,24 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Self
 
 from kubernetes import client as kube_client
 
-from .api import _label_selector
+from .api import ObjectReference, _label_selector
 
 if TYPE_CHECKING:
     import builtins
-    from collections.abc import Collection, Mapping
+    from collections.abc import AsyncIterator, Collection, Mapping
     from datetime import datetime
 
-    from .api import Kube
+    from .api import Kube, WatchEvent
 
 
 def _object_identity(
     ref: kube_client.V1ObjectReference | None,
-) -> tuple[str, str, str] | None:
+) -> ObjectReference | None:
     if ref is None:
         return None
     kind = (ref.kind or "").strip()
@@ -27,7 +28,14 @@ def _object_identity(
     name = (ref.name or "").strip()
     if not kind and not namespace and not name:
         return None
-    return kind, namespace, name
+    return ObjectReference(
+        kind=kind,
+        namespace=namespace,
+        name=name,
+        api_version=(ref.api_version or "").strip(),
+        uid=(ref.uid or "").strip(),
+        resource_version=(ref.resource_version or "").strip(),
+    )
 
 
 @dataclass(frozen=True)
@@ -36,11 +44,11 @@ class Event:
 
     Parameters
     ----------
-    obj : kube_client.EventsV1Event
+    _obj : kube_client.EventsV1Event
         Typed Kubernetes Event payload returned by the cluster API.
     """
 
-    obj: kube_client.EventsV1Event
+    _obj: kube_client.EventsV1Event
 
     @classmethod
     async def get(
@@ -91,7 +99,7 @@ class Event:
                 f"{namespace!r}"
             )
             raise OSError(msg)
-        return cls(obj=payload)
+        return cls(_obj=payload)
 
     @classmethod
     async def list(
@@ -175,8 +183,70 @@ class Event:
                 if not isinstance(item, kube_client.EventsV1Event):
                     msg = "malformed Kubernetes Event entry in list payload"
                     raise OSError(msg)
-                out.append(cls(obj=item))
+                out.append(cls(_obj=item))
         return out
+
+    @classmethod
+    async def watch(
+        cls,
+        kube: Kube,
+        *,
+        timeout: float,
+        namespace: str | None = None,
+        labels: Mapping[str, str] | None = None,
+        field_selector: str | None = None,
+        resource_version: str | None = None,
+    ) -> AsyncIterator[WatchEvent[Self]]:
+        """Watch Kubernetes Events.
+
+        Parameters
+        ----------
+        kube : Kube
+            Active Kubernetes API context.
+        timeout : float
+            Maximum watch budget in seconds. If infinite, wait indefinitely.
+        namespace : str | None, optional
+            Namespace to watch. If omitted, watches across all namespaces.
+        labels : Mapping[str, str] | None, optional
+            Optional label selector key/value pairs.
+        field_selector : str | None, optional
+            Raw Kubernetes field selector.
+        resource_version : str | None, optional
+            Resource version to watch from.
+
+        Yields
+        ------
+        WatchEvent[Event]
+            Typed watch events containing wrapped Events.
+        """
+        namespace = namespace.strip() if namespace is not None else ""
+        if namespace:
+            fn = kube.events.list_namespaced_event
+            api_kwargs: Mapping[str, object] = {"namespace": namespace}
+            context = f"failed to watch Events in namespace {namespace!r}"
+        else:
+            fn = kube.events.list_event_for_all_namespaces
+            api_kwargs = {}
+            context = "failed to watch Events across all namespaces"
+
+        async for event in kube.watch(
+            fn,
+            wrapper=cls._watch_payload,
+            timeout=timeout,
+            context=context,
+            resource_version=resource_version,
+            labels=labels,
+            field_selector=field_selector,
+            api_kwargs=api_kwargs,
+        ):
+            yield event
+
+    @classmethod
+    def _watch_payload(cls, payload: object) -> Self:
+        if not isinstance(payload, kube_client.EventsV1Event):
+            msg = "malformed Kubernetes Event watch payload"
+            raise OSError(msg)
+        return cls(_obj=payload)
 
     @property
     def name(self) -> str:
@@ -187,7 +257,7 @@ class Event:
         str
             Trimmed `metadata.name`, or an empty string when unavailable.
         """
-        metadata = self.obj.metadata
+        metadata = self._obj.metadata
         return (metadata.name or "").strip() if metadata is not None else ""
 
     @property
@@ -199,7 +269,7 @@ class Event:
         str
             Trimmed `metadata.namespace`, or an empty string when unavailable.
         """
-        metadata = self.obj.metadata
+        metadata = self._obj.metadata
         return (metadata.namespace or "").strip() if metadata is not None else ""
 
     @property
@@ -212,8 +282,61 @@ class Event:
             Kubernetes `metadata.resourceVersion`, or an empty string when
             unavailable.
         """
-        metadata = self.obj.metadata
+        metadata = self._obj.metadata
         return (metadata.resource_version or "").strip() if metadata is not None else ""
+
+    @property
+    def uid(self) -> str:
+        """Return the Event UID.
+
+        Returns
+        -------
+        str
+            Kubernetes `metadata.uid`, or an empty string when unavailable.
+        """
+        metadata = self._obj.metadata
+        return (metadata.uid or "").strip() if metadata is not None else ""
+
+    @property
+    def created_at(self) -> datetime | None:
+        """Return the Event creation timestamp.
+
+        Returns
+        -------
+        datetime | None
+            Kubernetes `metadata.creationTimestamp`, or `None` when unavailable.
+        """
+        metadata = self._obj.metadata
+        return metadata.creation_timestamp if metadata is not None else None
+
+    @property
+    def labels(self) -> Mapping[str, str]:
+        """Return the Event labels.
+
+        Returns
+        -------
+        Mapping[str, str]
+            Read-only view of `metadata.labels`, or an empty mapping when unavailable.
+        """
+        metadata = self._obj.metadata
+        if metadata is None or metadata.labels is None:
+            return MappingProxyType({})
+        return MappingProxyType(metadata.labels)
+
+    @property
+    def annotations(self) -> Mapping[str, str]:
+        """Return the Event annotations.
+
+        Returns
+        -------
+        Mapping[str, str]
+            Read-only view of `metadata.annotations`, or an empty mapping when
+            unavailable.
+        """
+        metadata = self._obj.metadata
+        if metadata is None or metadata.annotations is None:
+            return MappingProxyType({})
+        return MappingProxyType(metadata.annotations)
 
     @property
     def reason(self) -> str:
@@ -224,7 +347,7 @@ class Event:
         str
             Event reason, or an empty string when unavailable.
         """
-        return (self.obj.reason or "").strip()
+        return (self._obj.reason or "").strip()
 
     @property
     def type(self) -> str:
@@ -236,7 +359,7 @@ class Event:
             Event type, such as `"Normal"` or `"Warning"`, or an empty string when
             unavailable.
         """
-        return (self.obj.type or "").strip()
+        return (self._obj.type or "").strip()
 
     @property
     def action(self) -> str:
@@ -247,7 +370,7 @@ class Event:
         str
             Event action, or an empty string when unavailable.
         """
-        return (self.obj.action or "").strip()
+        return (self._obj.action or "").strip()
 
     @property
     def note(self) -> str:
@@ -258,7 +381,7 @@ class Event:
         str
             Human-readable Event note, or an empty string when unavailable.
         """
-        return (self.obj.note or "").strip()
+        return (self._obj.note or "").strip()
 
     @property
     def reporting_controller(self) -> str:
@@ -269,7 +392,7 @@ class Event:
         str
             Event `reportingController`, or an empty string when unavailable.
         """
-        return (self.obj.reporting_controller or "").strip()
+        return (self._obj.reporting_controller or "").strip()
 
     @property
     def reporting_instance(self) -> str:
@@ -280,7 +403,7 @@ class Event:
         str
             Event `reportingInstance`, or an empty string when unavailable.
         """
-        return (self.obj.reporting_instance or "").strip()
+        return (self._obj.reporting_instance or "").strip()
 
     @property
     def event_time(self) -> datetime | None:
@@ -291,28 +414,28 @@ class Event:
         datetime | None
             Event `eventTime`, or `None` when unavailable.
         """
-        return self.obj.event_time
+        return self._obj.event_time
 
     @property
-    def regarding_identity(self) -> tuple[str, str, str] | None:
+    def regarding_identity(self) -> ObjectReference | None:
         """Return the primary object identity for this Event.
 
         Returns
         -------
-        tuple[str, str, str] | None
-            Tuple of `(kind, namespace, name)` from `regarding`, or `None` when the
-            Event has no object reference.
+        ObjectReference | None
+            Reference from `regarding`, or `None` when the Event has no object
+            reference.
         """
-        return _object_identity(self.obj.regarding)
+        return _object_identity(self._obj.regarding)
 
     @property
-    def related_identity(self) -> tuple[str, str, str] | None:
+    def related_identity(self) -> ObjectReference | None:
         """Return the secondary object identity for this Event.
 
         Returns
         -------
-        tuple[str, str, str] | None
-            Tuple of `(kind, namespace, name)` from `related`, or `None` when the
-            Event has no related object reference.
+        ObjectReference | None
+            Reference from `related`, or `None` when the Event has no related object
+            reference.
         """
-        return _object_identity(self.obj.related)
+        return _object_identity(self._obj.related)

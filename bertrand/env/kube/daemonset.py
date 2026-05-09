@@ -22,13 +22,14 @@ DAEMONSET_WAIT_POLL_INTERVAL_SECONDS = 0.5
 if TYPE_CHECKING:
     import builtins
     from collections.abc import Collection, Mapping
+    from datetime import datetime
 
 
 @dataclass(frozen=True)
 class DaemonSet:
     """General-purpose wrapper around one Kubernetes DaemonSet object."""
 
-    obj: kubernetes.client.V1DaemonSet
+    _obj: kubernetes.client.V1DaemonSet
 
     @classmethod
     async def get(
@@ -79,7 +80,7 @@ class DaemonSet:
                 f"in namespace {namespace!r}"
             )
             raise OSError(msg)
-        return cls(obj=payload)
+        return cls(_obj=payload)
 
     @classmethod
     async def list(
@@ -154,7 +155,7 @@ class DaemonSet:
                 if not isinstance(item, kubernetes.client.V1DaemonSet):
                     msg = "malformed Kubernetes DaemonSet entry in list payload"
                     raise OSError(msg)
-                out.append(cls(obj=item))
+                out.append(cls(_obj=item))
         return out
 
     @staticmethod
@@ -293,7 +294,7 @@ class DaemonSet:
             if not isinstance(created, kubernetes.client.V1DaemonSet):
                 msg = f"malformed Kubernetes DaemonSet payload while creating {name!r}"
                 raise OSError(msg)
-            return cls(obj=created)
+            return cls(_obj=created)
 
         patched = await kube.run(
             lambda request_timeout: kube.apps.patch_namespaced_daemon_set(
@@ -308,7 +309,7 @@ class DaemonSet:
         if not isinstance(patched, kubernetes.client.V1DaemonSet):
             msg = f"malformed Kubernetes DaemonSet payload while patching {name!r}"
             raise OSError(msg)
-        return cls(obj=patched)
+        return cls(_obj=patched)
 
     @property
     def name(self) -> str:
@@ -319,7 +320,7 @@ class DaemonSet:
         str
             Trimmed `metadata.name`, or an empty string when unavailable.
         """
-        metadata = self.obj.metadata
+        metadata = self._obj.metadata
         return (metadata.name or "").strip() if metadata is not None else ""
 
     @property
@@ -331,7 +332,7 @@ class DaemonSet:
         str
             Trimmed `metadata.namespace`, or an empty string when unavailable.
         """
-        metadata = self.obj.metadata
+        metadata = self._obj.metadata
         return (metadata.namespace or "").strip() if metadata is not None else ""
 
     @property
@@ -343,10 +344,74 @@ class DaemonSet:
         Mapping[str, str]
             Read-only view of `metadata.labels`, or an empty mapping when unavailable.
         """
-        metadata = self.obj.metadata
+        metadata = self._obj.metadata
         if metadata is None or metadata.labels is None:
             return MappingProxyType({})
         return MappingProxyType(metadata.labels)
+
+    @property
+    def annotations(self) -> Mapping[str, str]:
+        """Return this DaemonSet's annotations.
+
+        Returns
+        -------
+        Mapping[str, str]
+            Read-only view of `metadata.annotations`, or an empty mapping when
+            unavailable.
+        """
+        metadata = self._obj.metadata
+        if metadata is None or metadata.annotations is None:
+            return MappingProxyType({})
+        return MappingProxyType(metadata.annotations)
+
+    @property
+    def resource_version(self) -> str:
+        """Return this DaemonSet's resource version.
+
+        Returns
+        -------
+        str
+            Kubernetes `metadata.resourceVersion`, or an empty string when
+            unavailable.
+        """
+        metadata = self._obj.metadata
+        return (metadata.resource_version or "").strip() if metadata is not None else ""
+
+    @property
+    def uid(self) -> str:
+        """Return this DaemonSet's UID.
+
+        Returns
+        -------
+        str
+            Kubernetes `metadata.uid`, or an empty string when unavailable.
+        """
+        metadata = self._obj.metadata
+        return (metadata.uid or "").strip() if metadata is not None else ""
+
+    @property
+    def created_at(self) -> datetime | None:
+        """Return this DaemonSet's creation timestamp.
+
+        Returns
+        -------
+        datetime | None
+            Kubernetes `metadata.creationTimestamp`, or `None` when unavailable.
+        """
+        metadata = self._obj.metadata
+        return metadata.creation_timestamp if metadata is not None else None
+
+    @property
+    def generation(self) -> int:
+        """Return this DaemonSet's metadata generation.
+
+        Returns
+        -------
+        int
+            Kubernetes `metadata.generation`, or zero when unavailable.
+        """
+        metadata = self._obj.metadata
+        return int(metadata.generation or 0) if metadata is not None else 0
 
     @property
     def number_available(self) -> int:
@@ -357,8 +422,80 @@ class DaemonSet:
         int
             Available DaemonSet pod count, or zero when unavailable.
         """
-        status = self.obj.status
+        status = self._obj.status
         return int(status.number_available or 0) if status is not None else 0
+
+    @property
+    def desired_number_scheduled(self) -> int:
+        """Return this DaemonSet's desired scheduled pod count.
+
+        Returns
+        -------
+        int
+            Desired scheduled pod count, or zero when unavailable.
+        """
+        status = self._obj.status
+        return int(status.desired_number_scheduled or 0) if status is not None else 0
+
+    @property
+    def current_number_scheduled(self) -> int:
+        """Return this DaemonSet's current scheduled pod count.
+
+        Returns
+        -------
+        int
+            Current scheduled pod count, or zero when unavailable.
+        """
+        status = self._obj.status
+        return int(status.current_number_scheduled or 0) if status is not None else 0
+
+    @property
+    def number_ready(self) -> int:
+        """Return this DaemonSet's ready pod count.
+
+        Returns
+        -------
+        int
+            Ready DaemonSet pod count, or zero when unavailable.
+        """
+        status = self._obj.status
+        return int(status.number_ready or 0) if status is not None else 0
+
+    @property
+    def updated_number_scheduled(self) -> int:
+        """Return this DaemonSet's updated scheduled pod count.
+
+        Returns
+        -------
+        int
+            Updated scheduled pod count, or zero when unavailable.
+        """
+        status = self._obj.status
+        return int(status.updated_number_scheduled or 0) if status is not None else 0
+
+    @property
+    def number_unavailable(self) -> int:
+        """Return this DaemonSet's unavailable pod count.
+
+        Returns
+        -------
+        int
+            Unavailable DaemonSet pod count, or zero when unavailable.
+        """
+        status = self._obj.status
+        return int(status.number_unavailable or 0) if status is not None else 0
+
+    @property
+    def observed_generation(self) -> int:
+        """Return the DaemonSet generation observed by the controller.
+
+        Returns
+        -------
+        int
+            Kubernetes `status.observedGeneration`, or zero when unavailable.
+        """
+        status = self._obj.status
+        return int(status.observed_generation or 0) if status is not None else 0
 
     async def refresh(self, kube: Kube, *, timeout: float) -> Self | None:
         """Re-read this DaemonSet by name and namespace.

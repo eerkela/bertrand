@@ -3,19 +3,32 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Collection, Mapping
-from dataclasses import dataclass
+from collections.abc import AsyncIterator, Collection, Mapping
+from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Self, cast
 
 from kubernetes import client as kube_client
 
-from .api import CustomResourceSpec, Kube, _label_selector
+from .api import (
+    CustomResourceSpec,
+    Kube,
+    WatchEvent,
+    WatchExpired,
+    _label_selector,
+)
 
 CRD_WAIT_POLL_INTERVAL_SECONDS = 0.5
 
 if TYPE_CHECKING:
     import builtins
+    from datetime import datetime
+
+
+@dataclass(frozen=True)
+class _CustomResourceSnapshot:
+    items: list[NamespacedCustomObject]
+    resource_version: str
 
 
 @dataclass(frozen=True)
@@ -124,6 +137,111 @@ class CustomResourceClient:
             labels=labels,
             timeout=timeout,
         )
+
+    async def watch(
+        self,
+        kube: Kube,
+        *,
+        namespace: str,
+        timeout: float,
+        labels: Mapping[str, str] | None = None,
+        resource_version: str | None = None,
+        emit_initial: bool = False,
+    ) -> AsyncIterator[WatchEvent[NamespacedCustomObject]]:
+        """Watch namespaced custom objects with relist-on-expiry recovery.
+
+        Parameters
+        ----------
+        kube : Kube
+            Active Kubernetes API context.
+        namespace : str
+            Namespace to watch.
+        timeout : float
+            Maximum watch budget in seconds. If infinite, wait indefinitely.
+        labels : Mapping[str, str] | None, optional
+            Optional label selector key/value pairs.
+        resource_version : str | None, optional
+            Resource version to resume from. If omitted, the client lists once and
+            watches from the list resource version.
+        emit_initial : bool, optional
+            Whether to emit listed objects as synthetic `"ADDED"` events before
+            live watch events. Only applies when `resource_version` is omitted.
+
+        Yields
+        ------
+        WatchEvent[NamespacedCustomObject]
+            Typed custom-object watch events.
+
+        Raises
+        ------
+        TimeoutError
+            If the watch exceeds the timeout budget.
+        """
+        if timeout <= 0:
+            msg = "custom resource watch timeout must be non-negative"
+            raise TimeoutError(msg)
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        current_version = resource_version.strip() if resource_version else ""
+        can_emit_initial = emit_initial and not current_version
+        while True:
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                return
+            if not current_version:
+                snapshot = await NamespacedCustomObject._snapshot(
+                    kube,
+                    group=self.spec.group,
+                    version=self.spec.version,
+                    namespace=namespace,
+                    plural=self.spec.plural,
+                    labels=labels,
+                    timeout=remaining,
+                )
+                current_version = snapshot.resource_version
+                if can_emit_initial:
+                    for item in snapshot.items:
+                        yield WatchEvent(
+                            type="ADDED",
+                            object=item,
+                            resource_version=item.resource_version or current_version,
+                            raw_type="ADDED",
+                        )
+                    can_emit_initial = False
+
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                return
+            try:
+                async for event in kube.watch(
+                    kube.custom.list_namespaced_custom_object,
+                    wrapper=lambda payload: NamespacedCustomObject._from_payload(
+                        group=self.spec.group,
+                        version=self.spec.version,
+                        plural=self.spec.plural,
+                        payload=payload,
+                    ),
+                    timeout=remaining,
+                    context=(
+                        f"custom object {self.spec.plural} watch in namespace "
+                        f"{namespace!r}"
+                    ),
+                    resource_version=current_version,
+                    labels=labels,
+                    api_kwargs={
+                        "group": self.spec.group,
+                        "version": self.spec.version,
+                        "namespace": namespace,
+                        "plural": self.spec.plural,
+                    },
+                ):
+                    if event.resource_version:
+                        current_version = event.resource_version
+                    yield event
+            except WatchExpired:
+                current_version = ""
+            else:
+                return
 
     async def create(
         self,
@@ -260,7 +378,7 @@ class CustomResourceClient:
             group=self.spec.group,
             version=self.spec.version,
             plural=self.spec.plural,
-            obj={},
+            payload={},
         )
         return await obj.patch_status(
             kube,
@@ -271,14 +389,71 @@ class CustomResourceClient:
         )
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, init=False)
 class NamespacedCustomObject:
-    """Generic wrapper around one namespaced Kubernetes custom object."""
+    """Generic wrapper around one namespaced Kubernetes custom object.
+
+    Parameters
+    ----------
+    group : str
+        API group that owns the custom object.
+    version : str
+        Served API version.
+    plural : str
+        Plural REST resource name.
+    payload : Mapping[str, Any]
+        Custom-object payload returned by Kubernetes.
+    """
 
     group: str
     version: str
     plural: str
-    obj: Mapping[str, Any]
+    _payload: Mapping[str, Any] = field(repr=False)
+
+    def __init__(
+        self,
+        *,
+        group: str,
+        version: str,
+        plural: str,
+        payload: Mapping[str, Any],
+    ) -> None:
+        """Initialize one custom-object wrapper.
+
+        Parameters
+        ----------
+        group : str
+            API group that owns the custom object.
+        version : str
+            Served API version.
+        plural : str
+            Plural REST resource name.
+        payload : Mapping[str, Any]
+            Custom-object payload returned by Kubernetes.
+        """
+        object.__setattr__(self, "group", group)
+        object.__setattr__(self, "version", version)
+        object.__setattr__(self, "plural", plural)
+        object.__setattr__(self, "_payload", payload)
+
+    @classmethod
+    def _from_payload(
+        cls,
+        *,
+        group: str,
+        version: str,
+        plural: str,
+        payload: object,
+    ) -> Self:
+        if not isinstance(payload, Mapping):
+            msg = f"malformed Kubernetes custom object payload for {plural}"
+            raise OSError(msg)
+        return cls(
+            group=group,
+            version=version,
+            plural=plural,
+            payload=cast("Mapping[str, Any]", payload),
+        )
 
     @classmethod
     async def get(
@@ -341,7 +516,12 @@ class NamespacedCustomObject:
         if not isinstance(payload, Mapping):
             msg = f"malformed Kubernetes custom object payload for {plural}/{name}"
             raise OSError(msg)
-        return cls(group=group, version=version, plural=plural, obj=payload)
+        return cls(
+            group=group,
+            version=version,
+            plural=plural,
+            payload=cast("Mapping[str, Any]", payload),
+        )
 
     @classmethod
     async def list(
@@ -354,7 +534,7 @@ class NamespacedCustomObject:
         plural: str,
         timeout: float,
         labels: Mapping[str, str] | None = None,
-    ) -> builtins.list[Self]:
+    ) -> builtins.list[NamespacedCustomObject]:
         """List namespaced custom objects with optional label filtering.
 
         Parameters
@@ -379,11 +559,30 @@ class NamespacedCustomObject:
         list[NamespacedCustomObject]
             Wrapped custom objects matching the requested filters.
 
-        Raises
-        ------
-        OSError
-            If Kubernetes returns malformed data or a list call fails.
         """
+        snapshot = await cls._snapshot(
+            kube,
+            group=group,
+            version=version,
+            namespace=namespace,
+            plural=plural,
+            labels=labels,
+            timeout=timeout,
+        )
+        return snapshot.items
+
+    @classmethod
+    async def _snapshot(
+        cls,
+        kube: Kube,
+        *,
+        group: str,
+        version: str,
+        namespace: str,
+        plural: str,
+        timeout: float,
+        labels: Mapping[str, str] | None = None,
+    ) -> _CustomResourceSnapshot:
         payload = await kube.run(
             lambda request_timeout: kube.custom.list_namespaced_custom_object(
                 group=group,
@@ -399,21 +598,35 @@ class NamespacedCustomObject:
             ),
         )
         if payload is None:
-            return []
+            msg = f"Kubernetes custom object list for {plural} returned no payload"
+            raise OSError(msg)
         if not isinstance(payload, Mapping):
             msg = f"malformed Kubernetes custom object list payload for {plural}"
+            raise OSError(msg)
+        payload = cast("Mapping[str, object]", payload)
+        metadata = payload.get("metadata", {})
+        if not isinstance(metadata, Mapping):
+            msg = f"malformed Kubernetes custom object list metadata for {plural}"
+            raise OSError(msg)
+        metadata = cast("Mapping[str, object]", metadata)
+        resource_version = str(metadata.get("resourceVersion") or "").strip()
+        if not resource_version:
+            msg = f"Kubernetes custom object list for {plural} had no resourceVersion"
             raise OSError(msg)
         items = payload.get("items", [])
         if not isinstance(items, list):
             msg = f"malformed Kubernetes custom object list items for {plural}"
             raise OSError(msg)
-        out: builtins.list[Self] = []
-        for item in items:
-            if not isinstance(item, Mapping):
-                msg = f"malformed Kubernetes custom object list entry for {plural}"
-                raise OSError(msg)
-            out.append(cls(group=group, version=version, plural=plural, obj=item))
-        return out
+        out = [
+            NamespacedCustomObject._from_payload(
+                group=group,
+                version=version,
+                plural=plural,
+                payload=item,
+            )
+            for item in items
+        ]
+        return _CustomResourceSnapshot(items=out, resource_version=resource_version)
 
     @classmethod
     async def _create(
@@ -473,7 +686,7 @@ class NamespacedCustomObject:
         if not isinstance(payload, Mapping):
             msg = f"malformed Kubernetes custom object create payload for {plural}"
             raise OSError(msg)
-        return cls(group=group, version=version, plural=plural, obj=payload)
+        return cls(group=group, version=version, plural=plural, payload=payload)
 
     @classmethod
     async def _upsert(
@@ -562,7 +775,7 @@ class NamespacedCustomObject:
                 f"malformed Kubernetes custom object patch payload for {plural}/{name}"
             )
             raise OSError(msg)
-        return cls(group=group, version=version, plural=plural, obj=payload)
+        return cls(group=group, version=version, plural=plural, payload=payload)
 
     async def patch_status(
         self,
@@ -618,8 +831,20 @@ class NamespacedCustomObject:
             group=self.group,
             version=self.version,
             plural=self.plural,
-            obj=payload,
+            payload=payload,
         )
+
+    @property
+    def payload(self) -> Mapping[str, Any]:
+        """Return this custom object's payload.
+
+        Returns
+        -------
+        Mapping[str, Any]
+            Read-only top-level view of the custom-object payload returned by
+            Kubernetes.
+        """
+        return MappingProxyType(dict(self._payload))
 
     @property
     def metadata(self) -> Mapping[str, Any]:
@@ -630,7 +855,7 @@ class NamespacedCustomObject:
         Mapping[str, Any]
             Read-only view of `metadata`, or an empty mapping when unavailable.
         """
-        metadata = self.obj.get("metadata", {})
+        metadata = self._payload.get("metadata", {})
         if not isinstance(metadata, Mapping):
             return MappingProxyType({})
         return MappingProxyType(cast("dict[str, Any]", dict(metadata)))
@@ -646,12 +871,90 @@ class NamespacedCustomObject:
         """
         return str(self.metadata.get("name") or "").strip()
 
+    @property
+    def namespace(self) -> str:
+        """Return this custom object's namespace.
+
+        Returns
+        -------
+        str
+            Trimmed `metadata.namespace`, or an empty string when unavailable.
+        """
+        return str(self.metadata.get("namespace") or "").strip()
+
+    @property
+    def labels(self) -> Mapping[str, str]:
+        """Return this custom object's labels.
+
+        Returns
+        -------
+        Mapping[str, str]
+            Read-only view of `metadata.labels`, or an empty mapping when
+            unavailable.
+        """
+        labels = self.metadata.get("labels", {})
+        if not isinstance(labels, Mapping):
+            return MappingProxyType({})
+        return MappingProxyType({str(key): str(value) for key, value in labels.items()})
+
+    @property
+    def annotations(self) -> Mapping[str, str]:
+        """Return this custom object's annotations.
+
+        Returns
+        -------
+        Mapping[str, str]
+            Read-only view of `metadata.annotations`, or an empty mapping when
+            unavailable.
+        """
+        annotations = self.metadata.get("annotations", {})
+        if not isinstance(annotations, Mapping):
+            return MappingProxyType({})
+        return MappingProxyType(
+            {str(key): str(value) for key, value in annotations.items()}
+        )
+
+    @property
+    def resource_version(self) -> str:
+        """Return this custom object's resource version.
+
+        Returns
+        -------
+        str
+            Kubernetes `metadata.resourceVersion`, or an empty string when
+            unavailable.
+        """
+        return str(self.metadata.get("resourceVersion") or "").strip()
+
+    @property
+    def uid(self) -> str:
+        """Return this custom object's UID.
+
+        Returns
+        -------
+        str
+            Kubernetes `metadata.uid`, or an empty string when unavailable.
+        """
+        return str(self.metadata.get("uid") or "").strip()
+
+    @property
+    def created_at(self) -> str:
+        """Return this custom object's creation timestamp.
+
+        Returns
+        -------
+        str
+            Kubernetes `metadata.creationTimestamp`, or an empty string when
+            unavailable.
+        """
+        return str(self.metadata.get("creationTimestamp") or "").strip()
+
 
 @dataclass(frozen=True)
 class CustomResourceDefinition:
     """General-purpose wrapper around one Kubernetes CRD object."""
 
-    obj: kube_client.V1CustomResourceDefinition
+    _obj: kube_client.V1CustomResourceDefinition
 
     @staticmethod
     def _manifest(
@@ -741,7 +1044,7 @@ class CustomResourceDefinition:
         if not isinstance(payload, kube_client.V1CustomResourceDefinition):
             msg = f"malformed Kubernetes CRD payload for {name!r}"
             raise OSError(msg)
-        return cls(obj=payload)
+        return cls(_obj=payload)
 
     @classmethod
     async def list(
@@ -790,7 +1093,7 @@ class CustomResourceDefinition:
             if not isinstance(item, kube_client.V1CustomResourceDefinition):
                 msg = "malformed Kubernetes CRD entry in list payload"
                 raise OSError(msg)
-            out.append(cls(obj=item))
+            out.append(cls(_obj=item))
         return out
 
     @classmethod
@@ -895,7 +1198,7 @@ class CustomResourceDefinition:
             if not isinstance(created, kube_client.V1CustomResourceDefinition):
                 msg = f"malformed Kubernetes CRD payload while creating {name!r}"
                 raise OSError(msg)
-            return cls(obj=created)
+            return cls(_obj=created)
 
         patched = await kube.run(
             lambda request_timeout: kube.apiextensions.patch_custom_resource_definition(
@@ -909,7 +1212,7 @@ class CustomResourceDefinition:
         if not isinstance(patched, kube_client.V1CustomResourceDefinition):
             msg = f"malformed Kubernetes CRD payload while patching {name!r}"
             raise OSError(msg)
-        return cls(obj=patched)
+        return cls(_obj=patched)
 
     @property
     def name(self) -> str:
@@ -920,7 +1223,7 @@ class CustomResourceDefinition:
         str
             Trimmed `metadata.name`, or an empty string when unavailable.
         """
-        metadata = self.obj.metadata
+        metadata = self._obj.metadata
         return (metadata.name or "").strip() if metadata is not None else ""
 
     @property
@@ -932,7 +1235,7 @@ class CustomResourceDefinition:
         Mapping[str, str]
             Read-only view of `metadata.labels`, or an empty mapping when unavailable.
         """
-        metadata = self.obj.metadata
+        metadata = self._obj.metadata
         if metadata is None or metadata.labels is None:
             return MappingProxyType({})
         return MappingProxyType(metadata.labels)
@@ -947,10 +1250,47 @@ class CustomResourceDefinition:
             Read-only view of `metadata.annotations`, or an empty mapping when
             unavailable.
         """
-        metadata = self.obj.metadata
+        metadata = self._obj.metadata
         if metadata is None or metadata.annotations is None:
             return MappingProxyType({})
         return MappingProxyType(metadata.annotations)
+
+    @property
+    def resource_version(self) -> str:
+        """Return this CRD's resource version.
+
+        Returns
+        -------
+        str
+            Kubernetes `metadata.resourceVersion`, or an empty string when
+            unavailable.
+        """
+        metadata = self._obj.metadata
+        return (metadata.resource_version or "").strip() if metadata is not None else ""
+
+    @property
+    def uid(self) -> str:
+        """Return this CRD's UID.
+
+        Returns
+        -------
+        str
+            Kubernetes `metadata.uid`, or an empty string when unavailable.
+        """
+        metadata = self._obj.metadata
+        return (metadata.uid or "").strip() if metadata is not None else ""
+
+    @property
+    def created_at(self) -> datetime | None:
+        """Return this CRD's creation timestamp.
+
+        Returns
+        -------
+        datetime | None
+            Kubernetes `metadata.creationTimestamp`, or `None` when unavailable.
+        """
+        metadata = self._obj.metadata
+        return metadata.creation_timestamp if metadata is not None else None
 
     @property
     def is_established(self) -> bool:
@@ -961,7 +1301,7 @@ class CustomResourceDefinition:
         bool
             Whether the CRD has an `Established=True` condition.
         """
-        status = self.obj.status
+        status = self._obj.status
         for condition in (status.conditions or []) if status is not None else []:
             if condition.type == "Established" and condition.status == "True":
                 return True

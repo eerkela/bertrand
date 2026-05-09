@@ -22,6 +22,7 @@ DEPLOYMENT_WAIT_POLL_INTERVAL_SECONDS = 0.5
 if TYPE_CHECKING:
     import builtins
     from collections.abc import Collection, Mapping
+    from datetime import datetime
 
 
 @dataclass(frozen=True)
@@ -30,7 +31,7 @@ class Deployment:
 
     Parameters
     ----------
-    obj : kubernetes.client.V1Deployment
+    _obj : kubernetes.client.V1Deployment
         Typed Kubernetes Deployment payload returned by the cluster API.
 
     Notes
@@ -39,7 +40,7 @@ class Deployment:
     manifests as an internal implementation detail.
     """
 
-    obj: kubernetes.client.V1Deployment
+    _obj: kubernetes.client.V1Deployment
 
     @classmethod
     async def get(
@@ -90,7 +91,7 @@ class Deployment:
                 f"in namespace {namespace!r}"
             )
             raise OSError(msg)
-        return cls(obj=payload)
+        return cls(_obj=payload)
 
     @classmethod
     async def list(
@@ -168,7 +169,7 @@ class Deployment:
                 if not isinstance(item, kubernetes.client.V1Deployment):
                     msg = "malformed Kubernetes Deployment entry in list payload"
                     raise OSError(msg)
-                out.append(cls(obj=item))
+                out.append(cls(_obj=item))
         return out
 
     @staticmethod
@@ -315,7 +316,7 @@ class Deployment:
             if not isinstance(created, kubernetes.client.V1Deployment):
                 msg = f"malformed Kubernetes Deployment payload while creating {name!r}"
                 raise OSError(msg)
-            return cls(obj=created)
+            return cls(_obj=created)
 
         patched = await kube.run(
             lambda request_timeout: kube.apps.patch_namespaced_deployment(
@@ -330,7 +331,7 @@ class Deployment:
         if not isinstance(patched, kubernetes.client.V1Deployment):
             msg = f"malformed Kubernetes Deployment payload while patching {name!r}"
             raise OSError(msg)
-        return cls(obj=patched)
+        return cls(_obj=patched)
 
     @property
     def name(self) -> str:
@@ -341,7 +342,7 @@ class Deployment:
         str
             Trimmed `metadata.name`, or an empty string when unavailable.
         """
-        metadata = self.obj.metadata
+        metadata = self._obj.metadata
         return (metadata.name or "").strip() if metadata is not None else ""
 
     @property
@@ -353,7 +354,7 @@ class Deployment:
         str
             Trimmed `metadata.namespace`, or an empty string when unavailable.
         """
-        metadata = self.obj.metadata
+        metadata = self._obj.metadata
         return (metadata.namespace or "").strip() if metadata is not None else ""
 
     @property
@@ -365,7 +366,7 @@ class Deployment:
         Mapping[str, str]
             Read-only view of `metadata.labels`, or an empty mapping when unavailable.
         """
-        metadata = self.obj.metadata
+        metadata = self._obj.metadata
         if metadata is None or metadata.labels is None:
             return MappingProxyType({})
         return MappingProxyType(metadata.labels)
@@ -380,10 +381,59 @@ class Deployment:
             Read-only view of `metadata.annotations`, or an empty mapping when
             unavailable.
         """
-        metadata = self.obj.metadata
+        metadata = self._obj.metadata
         if metadata is None or metadata.annotations is None:
             return MappingProxyType({})
         return MappingProxyType(metadata.annotations)
+
+    @property
+    def resource_version(self) -> str:
+        """Return this Deployment's resource version.
+
+        Returns
+        -------
+        str
+            Kubernetes `metadata.resourceVersion`, or an empty string when
+            unavailable.
+        """
+        metadata = self._obj.metadata
+        return (metadata.resource_version or "").strip() if metadata is not None else ""
+
+    @property
+    def uid(self) -> str:
+        """Return this Deployment's UID.
+
+        Returns
+        -------
+        str
+            Kubernetes `metadata.uid`, or an empty string when unavailable.
+        """
+        metadata = self._obj.metadata
+        return (metadata.uid or "").strip() if metadata is not None else ""
+
+    @property
+    def created_at(self) -> datetime | None:
+        """Return this Deployment's creation timestamp.
+
+        Returns
+        -------
+        datetime | None
+            Kubernetes `metadata.creationTimestamp`, or `None` when unavailable.
+        """
+        metadata = self._obj.metadata
+        return metadata.creation_timestamp if metadata is not None else None
+
+    @property
+    def generation(self) -> int:
+        """Return this Deployment's metadata generation.
+
+        Returns
+        -------
+        int
+            Kubernetes `metadata.generation`, or zero when unavailable.
+        """
+        metadata = self._obj.metadata
+        return int(metadata.generation or 0) if metadata is not None else 0
 
     @property
     def replicas(self) -> int:
@@ -394,7 +444,7 @@ class Deployment:
         int
             Desired replica count, or zero when unavailable.
         """
-        spec = self.obj.spec
+        spec = self._obj.spec
         return int(spec.replicas or 0) if spec is not None else 0
 
     @property
@@ -406,7 +456,7 @@ class Deployment:
         int
             Available replica count, or zero when unavailable.
         """
-        status = self.obj.status
+        status = self._obj.status
         return int(status.available_replicas or 0) if status is not None else 0
 
     @property
@@ -418,8 +468,44 @@ class Deployment:
         int
             Ready replica count, or zero when unavailable.
         """
-        status = self.obj.status
+        status = self._obj.status
         return int(status.ready_replicas or 0) if status is not None else 0
+
+    @property
+    def updated_replicas(self) -> int:
+        """Return this Deployment's updated replica count.
+
+        Returns
+        -------
+        int
+            Updated replica count, or zero when unavailable.
+        """
+        status = self._obj.status
+        return int(status.updated_replicas or 0) if status is not None else 0
+
+    @property
+    def unavailable_replicas(self) -> int:
+        """Return this Deployment's unavailable replica count.
+
+        Returns
+        -------
+        int
+            Unavailable replica count, or zero when unavailable.
+        """
+        status = self._obj.status
+        return int(status.unavailable_replicas or 0) if status is not None else 0
+
+    @property
+    def observed_generation(self) -> int:
+        """Return the Deployment generation observed by the controller.
+
+        Returns
+        -------
+        int
+            Kubernetes `status.observedGeneration`, or zero when unavailable.
+        """
+        status = self._obj.status
+        return int(status.observed_generation or 0) if status is not None else 0
 
     @property
     def selector(self) -> Mapping[str, str]:
@@ -431,7 +517,7 @@ class Deployment:
             Read-only view of `spec.selector.match_labels`, or an empty mapping when
             unavailable.
         """
-        spec = self.obj.spec
+        spec = self._obj.spec
         selector = spec.selector if spec is not None else None
         labels = selector.match_labels if selector is not None else None
         if labels is None:

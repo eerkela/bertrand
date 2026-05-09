@@ -13,10 +13,10 @@ from .api import _label_selector
 
 if TYPE_CHECKING:
     import builtins
-    from collections.abc import Collection, Mapping
+    from collections.abc import AsyncIterator, Collection, Mapping
     from datetime import datetime
 
-    from .api import Kube
+    from .api import Kube, WatchEvent
 
 LEASE_WAIT_POLL_INTERVAL_SECONDS = 0.5
 
@@ -27,11 +27,11 @@ class Lease:
 
     Parameters
     ----------
-    obj : kube_client.V1Lease
+    _obj : kube_client.V1Lease
         Typed Kubernetes Lease payload returned by the cluster API.
     """
 
-    obj: kube_client.V1Lease
+    _obj: kube_client.V1Lease
 
     @classmethod
     async def get(
@@ -82,7 +82,7 @@ class Lease:
                 f"{namespace!r}"
             )
             raise OSError(msg)
-        return cls(obj=payload)
+        return cls(_obj=payload)
 
     @classmethod
     async def list(
@@ -158,8 +158,70 @@ class Lease:
                 if not isinstance(item, kube_client.V1Lease):
                     msg = "malformed Kubernetes Lease entry in list payload"
                     raise OSError(msg)
-                out.append(cls(obj=item))
+                out.append(cls(_obj=item))
         return out
+
+    @classmethod
+    async def watch(
+        cls,
+        kube: Kube,
+        *,
+        timeout: float,
+        namespace: str | None = None,
+        labels: Mapping[str, str] | None = None,
+        field_selector: str | None = None,
+        resource_version: str | None = None,
+    ) -> AsyncIterator[WatchEvent[Self]]:
+        """Watch Kubernetes Leases.
+
+        Parameters
+        ----------
+        kube : Kube
+            Active Kubernetes API context.
+        timeout : float
+            Maximum watch budget in seconds. If infinite, wait indefinitely.
+        namespace : str | None, optional
+            Namespace to watch. If omitted, watches Leases across all namespaces.
+        labels : Mapping[str, str] | None, optional
+            Optional label selector key/value pairs.
+        field_selector : str | None, optional
+            Raw Kubernetes field selector.
+        resource_version : str | None, optional
+            Resource version to watch from.
+
+        Yields
+        ------
+        WatchEvent[Lease]
+            Typed watch events containing wrapped Leases.
+        """
+        namespace = namespace.strip() if namespace is not None else ""
+        if namespace:
+            fn = kube.coordination.list_namespaced_lease
+            api_kwargs: Mapping[str, object] = {"namespace": namespace}
+            context = f"failed to watch Leases in namespace {namespace!r}"
+        else:
+            fn = kube.coordination.list_lease_for_all_namespaces
+            api_kwargs = {}
+            context = "failed to watch Leases across all namespaces"
+
+        async for event in kube.watch(
+            fn,
+            wrapper=cls._watch_payload,
+            timeout=timeout,
+            context=context,
+            resource_version=resource_version,
+            labels=labels,
+            field_selector=field_selector,
+            api_kwargs=api_kwargs,
+        ):
+            yield event
+
+    @classmethod
+    def _watch_payload(cls, payload: object) -> Self:
+        if not isinstance(payload, kube_client.V1Lease):
+            msg = "malformed Kubernetes Lease watch payload"
+            raise OSError(msg)
+        return cls(_obj=payload)
 
     @staticmethod
     def _manifest(
@@ -284,7 +346,7 @@ class Lease:
                     f"{namespace}/{name}"
                 )
                 raise OSError(msg)
-            return cls(obj=created)
+            return cls(_obj=created)
 
         patched = await kube.run(
             lambda request_timeout: kube.coordination.patch_namespaced_lease(
@@ -301,7 +363,7 @@ class Lease:
                 f"malformed Kubernetes Lease payload while patching {namespace}/{name}"
             )
             raise OSError(msg)
-        return cls(obj=patched)
+        return cls(_obj=patched)
 
     @property
     def name(self) -> str:
@@ -312,7 +374,7 @@ class Lease:
         str
             Trimmed `metadata.name`, or an empty string when unavailable.
         """
-        metadata = self.obj.metadata
+        metadata = self._obj.metadata
         return (metadata.name or "").strip() if metadata is not None else ""
 
     @property
@@ -324,7 +386,7 @@ class Lease:
         str
             Trimmed `metadata.namespace`, or an empty string when unavailable.
         """
-        metadata = self.obj.metadata
+        metadata = self._obj.metadata
         return (metadata.namespace or "").strip() if metadata is not None else ""
 
     @property
@@ -336,7 +398,7 @@ class Lease:
         Mapping[str, str]
             Read-only view of `metadata.labels`, or an empty mapping when unavailable.
         """
-        metadata = self.obj.metadata
+        metadata = self._obj.metadata
         if metadata is None or metadata.labels is None:
             return MappingProxyType({})
         return MappingProxyType(metadata.labels)
@@ -351,7 +413,7 @@ class Lease:
             Read-only view of `metadata.annotations`, or an empty mapping when
             unavailable.
         """
-        metadata = self.obj.metadata
+        metadata = self._obj.metadata
         if metadata is None or metadata.annotations is None:
             return MappingProxyType({})
         return MappingProxyType(metadata.annotations)
@@ -366,8 +428,32 @@ class Lease:
             Kubernetes `metadata.resourceVersion`, or an empty string when
             unavailable.
         """
-        metadata = self.obj.metadata
+        metadata = self._obj.metadata
         return (metadata.resource_version or "").strip() if metadata is not None else ""
+
+    @property
+    def uid(self) -> str:
+        """Return the Lease UID.
+
+        Returns
+        -------
+        str
+            Kubernetes `metadata.uid`, or an empty string when unavailable.
+        """
+        metadata = self._obj.metadata
+        return (metadata.uid or "").strip() if metadata is not None else ""
+
+    @property
+    def created_at(self) -> datetime | None:
+        """Return the Lease creation timestamp.
+
+        Returns
+        -------
+        datetime | None
+            Kubernetes `metadata.creationTimestamp`, or `None` when unavailable.
+        """
+        metadata = self._obj.metadata
+        return metadata.creation_timestamp if metadata is not None else None
 
     @property
     def holder_identity(self) -> str:
@@ -378,7 +464,7 @@ class Lease:
         str
             Lease `spec.holderIdentity`, or an empty string when unavailable.
         """
-        spec = self.obj.spec
+        spec = self._obj.spec
         return (spec.holder_identity or "").strip() if spec is not None else ""
 
     @property
@@ -390,7 +476,7 @@ class Lease:
         int | None
             Lease `spec.leaseDurationSeconds`, or `None` when unavailable.
         """
-        spec = self.obj.spec
+        spec = self._obj.spec
         return spec.lease_duration_seconds if spec is not None else None
 
     @property
@@ -402,7 +488,7 @@ class Lease:
         datetime | None
             Lease `spec.acquireTime`, or `None` when unavailable.
         """
-        spec = self.obj.spec
+        spec = self._obj.spec
         return spec.acquire_time if spec is not None else None
 
     @property
@@ -414,7 +500,7 @@ class Lease:
         datetime | None
             Lease `spec.renewTime`, or `None` when unavailable.
         """
-        spec = self.obj.spec
+        spec = self._obj.spec
         return spec.renew_time if spec is not None else None
 
     async def refresh(self, kube: Kube, *, timeout: float) -> Self | None:

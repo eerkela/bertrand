@@ -9,11 +9,12 @@ from typing import TYPE_CHECKING, Literal, Self, cast
 
 import kubernetes
 
-from .api import Kube, ServicePortSpec, _label_selector
+from .api import Kube, ServicePortSpec, ServicePortView, _label_selector
 
 if TYPE_CHECKING:
     import builtins
     from collections.abc import Collection, Mapping
+    from datetime import datetime
 
 SERVICE_WAIT_INTERVAL = 0.5
 type ServiceType = Literal["ClusterIP", "NodePort", "LoadBalancer", "ExternalName"]
@@ -25,7 +26,7 @@ class Service:
 
     Parameters
     ----------
-    obj : kubernetes.client.V1Service
+    _obj : kubernetes.client.V1Service
         Typed Kubernetes Service payload returned by the cluster API.
 
     Notes
@@ -34,7 +35,7 @@ class Service:
     manifests as an internal implementation detail.
     """
 
-    obj: kubernetes.client.V1Service
+    _obj: kubernetes.client.V1Service
 
     @classmethod
     async def get(
@@ -85,7 +86,7 @@ class Service:
                 f"{namespace!r}"
             )
             raise OSError(msg)
-        return cls(obj=payload)
+        return cls(_obj=payload)
 
     @classmethod
     async def list(
@@ -163,7 +164,7 @@ class Service:
                 if not isinstance(item, kubernetes.client.V1Service):
                     msg = "malformed Kubernetes Service entry in list payload"
                     raise OSError(msg)
-                out.append(cls(obj=item))
+                out.append(cls(_obj=item))
         return out
 
     @staticmethod
@@ -293,7 +294,7 @@ class Service:
             if not isinstance(created, kubernetes.client.V1Service):
                 msg = f"malformed Kubernetes Service payload while creating {name!r}"
                 raise OSError(msg)
-            return cls(obj=created)
+            return cls(_obj=created)
 
         # patch the Service if it already exists
         patched = await kube.run(
@@ -309,7 +310,7 @@ class Service:
         if not isinstance(patched, kubernetes.client.V1Service):
             msg = f"malformed Kubernetes Service payload while patching {name!r}"
             raise OSError(msg)
-        return cls(obj=patched)
+        return cls(_obj=patched)
 
     @property
     def name(self) -> str:
@@ -320,7 +321,7 @@ class Service:
         str
             Trimmed `metadata.name`, or an empty string when unavailable.
         """
-        metadata = self.obj.metadata
+        metadata = self._obj.metadata
         return (metadata.name or "").strip() if metadata is not None else ""
 
     @property
@@ -332,7 +333,7 @@ class Service:
         str
             Trimmed `metadata.namespace`, or an empty string when unavailable.
         """
-        metadata = self.obj.metadata
+        metadata = self._obj.metadata
         return (metadata.namespace or "").strip() if metadata is not None else ""
 
     @property
@@ -344,7 +345,7 @@ class Service:
         Mapping[str, str]
             Read-only view of `metadata.labels`, or an empty mapping when unavailable.
         """
-        metadata = self.obj.metadata
+        metadata = self._obj.metadata
         if metadata is None or metadata.labels is None:
             return MappingProxyType({})
         return MappingProxyType(metadata.labels)
@@ -359,10 +360,47 @@ class Service:
             Read-only view of `metadata.annotations`, or an empty mapping when
             unavailable.
         """
-        metadata = self.obj.metadata
+        metadata = self._obj.metadata
         if metadata is None or metadata.annotations is None:
             return MappingProxyType({})
         return MappingProxyType(metadata.annotations)
+
+    @property
+    def resource_version(self) -> str:
+        """Return the Service resource version.
+
+        Returns
+        -------
+        str
+            Kubernetes `metadata.resourceVersion`, or an empty string when
+            unavailable.
+        """
+        metadata = self._obj.metadata
+        return (metadata.resource_version or "").strip() if metadata is not None else ""
+
+    @property
+    def uid(self) -> str:
+        """Return the Service UID.
+
+        Returns
+        -------
+        str
+            Kubernetes `metadata.uid`, or an empty string when unavailable.
+        """
+        metadata = self._obj.metadata
+        return (metadata.uid or "").strip() if metadata is not None else ""
+
+    @property
+    def created_at(self) -> datetime | None:
+        """Return the Service creation timestamp.
+
+        Returns
+        -------
+        datetime | None
+            Kubernetes `metadata.creationTimestamp`, or `None` when unavailable.
+        """
+        metadata = self._obj.metadata
+        return metadata.creation_timestamp if metadata is not None else None
 
     @property
     def selector(self) -> Mapping[str, str]:
@@ -373,7 +411,7 @@ class Service:
         Mapping[str, str]
             Read-only view of `spec.selector`, or an empty mapping when unavailable.
         """
-        spec = self.obj.spec
+        spec = self._obj.spec
         if spec is None or spec.selector is None:
             return MappingProxyType({})
         return MappingProxyType(spec.selector)
@@ -387,20 +425,33 @@ class Service:
         str
             Trimmed Service type, or an empty string when unavailable.
         """
-        spec = self.obj.spec
+        spec = self._obj.spec
         return (spec.type or "").strip() if spec is not None else ""
 
     @property
-    def ports(self) -> tuple[kubernetes.client.V1ServicePort, ...]:
+    def ports(self) -> tuple[ServicePortView, ...]:
         """Return the Service ports.
 
         Returns
         -------
-        tuple[kubernetes.client.V1ServicePort, ...]
-            Immutable snapshot of Service ports.
+        tuple[ServicePortView, ...]
+            Immutable snapshot of Service port views.
         """
-        spec = self.obj.spec
-        return tuple(spec.ports or ()) if spec is not None else ()
+        spec = self._obj.spec
+        if spec is None:
+            return ()
+        return tuple(
+            ServicePortView(
+                name=(port.name or "").strip(),
+                port=int(port.port or 0),
+                target_port=port.target_port
+                if port.target_port is not None
+                else int(port.port or 0),
+                protocol=(port.protocol or "TCP").strip(),
+                node_port=port.node_port,
+            )
+            for port in spec.ports or ()
+        )
 
     async def refresh(self, kube: Kube, *, timeout: float) -> Self | None:
         """Re-read this Service by its metadata namespace and name.

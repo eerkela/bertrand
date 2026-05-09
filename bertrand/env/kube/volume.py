@@ -17,6 +17,7 @@ from .api import Kube, _label_selector
 if TYPE_CHECKING:
     import builtins
     from collections.abc import Collection, Mapping
+    from datetime import datetime
 
 PVC_GROW_RETRIES = 4
 VOLUME_WAIT_POLL_INTERVAL_SECONDS = 0.5
@@ -46,11 +47,11 @@ class StorageClass:
 
     Parameters
     ----------
-    obj : kubernetes.client.V1StorageClass
+    _obj : kubernetes.client.V1StorageClass
         Typed Kubernetes StorageClass payload returned by the cluster API.
     """
 
-    obj: kubernetes.client.V1StorageClass
+    _obj: kubernetes.client.V1StorageClass
 
     @classmethod
     async def get(
@@ -94,7 +95,7 @@ class StorageClass:
         if not isinstance(payload, kubernetes.client.V1StorageClass):
             msg = f"malformed Kubernetes StorageClass payload for {name!r}"
             raise OSError(msg)
-        return cls(obj=payload)
+        return cls(_obj=payload)
 
     @classmethod
     async def list(
@@ -143,7 +144,7 @@ class StorageClass:
             if not isinstance(item, kubernetes.client.V1StorageClass):
                 msg = "malformed Kubernetes StorageClass entry in list payload"
                 raise OSError(msg)
-            out.append(cls(obj=item))
+            out.append(cls(_obj=item))
         return out
 
     @classmethod
@@ -209,8 +210,74 @@ class StorageClass:
         str
             Trimmed `metadata.name`, or an empty string when unavailable.
         """
-        metadata = self.obj.metadata
+        metadata = self._obj.metadata
         return (metadata.name or "").strip() if metadata is not None else ""
+
+    @property
+    def labels(self) -> Mapping[str, str]:
+        """Return the StorageClass labels.
+
+        Returns
+        -------
+        Mapping[str, str]
+            Read-only view of `metadata.labels`, or an empty mapping when unavailable.
+        """
+        metadata = self._obj.metadata
+        if metadata is None or metadata.labels is None:
+            return MappingProxyType({})
+        return MappingProxyType(metadata.labels)
+
+    @property
+    def annotations(self) -> Mapping[str, str]:
+        """Return the StorageClass annotations.
+
+        Returns
+        -------
+        Mapping[str, str]
+            Read-only view of `metadata.annotations`, or an empty mapping when
+            unavailable.
+        """
+        metadata = self._obj.metadata
+        if metadata is None or metadata.annotations is None:
+            return MappingProxyType({})
+        return MappingProxyType(metadata.annotations)
+
+    @property
+    def resource_version(self) -> str:
+        """Return the StorageClass resource version.
+
+        Returns
+        -------
+        str
+            Kubernetes `metadata.resourceVersion`, or an empty string when
+            unavailable.
+        """
+        metadata = self._obj.metadata
+        return (metadata.resource_version or "").strip() if metadata is not None else ""
+
+    @property
+    def uid(self) -> str:
+        """Return the StorageClass UID.
+
+        Returns
+        -------
+        str
+            Kubernetes `metadata.uid`, or an empty string when unavailable.
+        """
+        metadata = self._obj.metadata
+        return (metadata.uid or "").strip() if metadata is not None else ""
+
+    @property
+    def created_at(self) -> datetime | None:
+        """Return the StorageClass creation timestamp.
+
+        Returns
+        -------
+        datetime | None
+            Kubernetes `metadata.creationTimestamp`, or `None` when unavailable.
+        """
+        metadata = self._obj.metadata
+        return metadata.creation_timestamp if metadata is not None else None
 
     @property
     def provisioner(self) -> str:
@@ -221,7 +288,7 @@ class StorageClass:
         str
             Trimmed provisioner name, or an empty string when unavailable.
         """
-        return (self.obj.provisioner or "").strip()
+        return (self._obj.provisioner or "").strip()
 
     @property
     def allow_volume_expansion(self) -> bool:
@@ -232,7 +299,7 @@ class StorageClass:
         bool
             Whether this StorageClass allows dynamic volume expansion.
         """
-        return bool(self.obj.allow_volume_expansion)
+        return bool(self._obj.allow_volume_expansion)
 
     @property
     def is_cephfs(self) -> bool:
@@ -255,7 +322,7 @@ class StorageClass:
         Mapping[str, str]
             StorageClass parameters, or an empty mapping when unavailable.
         """
-        return MappingProxyType(self.obj.parameters or {})
+        return MappingProxyType(self._obj.parameters or {})
 
 
 @dataclass(frozen=True)
@@ -264,7 +331,7 @@ class PersistentVolumeClaim:
 
     Parameters
     ----------
-    obj : kubernetes.client.V1PersistentVolumeClaim
+    _obj : kubernetes.client.V1PersistentVolumeClaim
         Typed Kubernetes PersistentVolumeClaim payload returned by the cluster API.
 
     Notes
@@ -274,7 +341,7 @@ class PersistentVolumeClaim:
     detail.
     """
 
-    obj: kubernetes.client.V1PersistentVolumeClaim
+    _obj: kubernetes.client.V1PersistentVolumeClaim
 
     @classmethod
     async def get(
@@ -325,7 +392,7 @@ class PersistentVolumeClaim:
                 f"{namespace!r}"
             )
             raise OSError(msg)
-        return cls(obj=payload)
+        return cls(_obj=payload)
 
     @classmethod
     async def list(
@@ -407,7 +474,7 @@ class PersistentVolumeClaim:
                         "list payload"
                     )
                     raise OSError(msg)
-                out.append(cls(obj=item))
+                out.append(cls(_obj=item))
         return out
 
     @staticmethod
@@ -544,7 +611,7 @@ class PersistentVolumeClaim:
                     f"{namespace}/{name}"
                 )
                 raise OSError(msg)
-            return cls(obj=payload)
+            return cls(_obj=payload)
 
         live = await cls.get(
             kube,
@@ -860,7 +927,7 @@ class PersistentVolumeClaim:
         str
             Trimmed `metadata.name`, or an empty string when unavailable.
         """
-        metadata = self.obj.metadata
+        metadata = self._obj.metadata
         return (metadata.name or "").strip() if metadata is not None else ""
 
     @property
@@ -872,7 +939,7 @@ class PersistentVolumeClaim:
         str
             Trimmed `metadata.namespace`, or an empty string when unavailable.
         """
-        metadata = self.obj.metadata
+        metadata = self._obj.metadata
         return (metadata.namespace or "").strip() if metadata is not None else ""
 
     @property
@@ -884,7 +951,7 @@ class PersistentVolumeClaim:
         Mapping[str, str]
             Claim labels, or an empty mapping when unavailable.
         """
-        metadata = self.obj.metadata
+        metadata = self._obj.metadata
         if metadata is None or metadata.labels is None:
             return MappingProxyType({})
         return MappingProxyType(metadata.labels)
@@ -898,10 +965,47 @@ class PersistentVolumeClaim:
         Mapping[str, str]
             Claim annotations, or an empty mapping when unavailable.
         """
-        metadata = self.obj.metadata
+        metadata = self._obj.metadata
         if metadata is None or metadata.annotations is None:
             return MappingProxyType({})
         return MappingProxyType(metadata.annotations)
+
+    @property
+    def resource_version(self) -> str:
+        """Return the PersistentVolumeClaim resource version.
+
+        Returns
+        -------
+        str
+            Kubernetes `metadata.resourceVersion`, or an empty string when
+            unavailable.
+        """
+        metadata = self._obj.metadata
+        return (metadata.resource_version or "").strip() if metadata is not None else ""
+
+    @property
+    def uid(self) -> str:
+        """Return the PersistentVolumeClaim UID.
+
+        Returns
+        -------
+        str
+            Kubernetes `metadata.uid`, or an empty string when unavailable.
+        """
+        metadata = self._obj.metadata
+        return (metadata.uid or "").strip() if metadata is not None else ""
+
+    @property
+    def created_at(self) -> datetime | None:
+        """Return the PersistentVolumeClaim creation timestamp.
+
+        Returns
+        -------
+        datetime | None
+            Kubernetes `metadata.creationTimestamp`, or `None` when unavailable.
+        """
+        metadata = self._obj.metadata
+        return metadata.creation_timestamp if metadata is not None else None
 
     @property
     def phase(self) -> str:
@@ -912,7 +1016,7 @@ class PersistentVolumeClaim:
         str
             Trimmed claim phase string, or an empty string when unavailable.
         """
-        status = self.obj.status
+        status = self._obj.status
         return (status.phase or "").strip() if status is not None else ""
 
     @property
@@ -935,7 +1039,7 @@ class PersistentVolumeClaim:
         str
             Trimmed bound `spec.volumeName`, or an empty string when unavailable.
         """
-        spec = self.obj.spec
+        spec = self._obj.spec
         return (spec.volume_name or "").strip() if spec is not None else ""
 
     @property
@@ -952,7 +1056,7 @@ class PersistentVolumeClaim:
         OSError
             If the claim does not expose a storage request.
         """
-        spec = self.obj.spec or kubernetes.client.V1PersistentVolumeClaimSpec()
+        spec = self._obj.spec or kubernetes.client.V1PersistentVolumeClaimSpec()
         resources = spec.resources or kubernetes.client.V1VolumeResourceRequirements()
         requests = resources.requests or {}
         value = str(requests.get("storage") or "").strip()
@@ -970,7 +1074,7 @@ class PersistentVolumeClaim:
         str
             Trimmed storage class name, or an empty string when unavailable.
         """
-        spec = self.obj.spec
+        spec = self._obj.spec
         return (spec.storage_class_name or "").strip() if spec is not None else ""
 
     @property
@@ -982,7 +1086,7 @@ class PersistentVolumeClaim:
         tuple[str, ...]
             Immutable access mode tuple, preserving API order.
         """
-        spec = self.obj.spec
+        spec = self._obj.spec
         modes = (spec.access_modes or []) if spec is not None else []
         return tuple(mode.strip() for mode in modes if mode and mode.strip())
 
@@ -993,11 +1097,11 @@ class PersistentVolume:
 
     Parameters
     ----------
-    obj : kubernetes.client.V1PersistentVolume
+    _obj : kubernetes.client.V1PersistentVolume
         Typed Kubernetes PersistentVolume payload returned by the cluster API.
     """
 
-    obj: kubernetes.client.V1PersistentVolume
+    _obj: kubernetes.client.V1PersistentVolume
 
     @classmethod
     async def get(
@@ -1041,7 +1145,7 @@ class PersistentVolume:
         if not isinstance(payload, kubernetes.client.V1PersistentVolume):
             msg = f"malformed Kubernetes PersistentVolume payload for {name!r}"
             raise OSError(msg)
-        return cls(obj=payload)
+        return cls(_obj=payload)
 
     @classmethod
     async def list(
@@ -1090,7 +1194,7 @@ class PersistentVolume:
             if not isinstance(item, kubernetes.client.V1PersistentVolume):
                 msg = "malformed Kubernetes PersistentVolume entry in list payload"
                 raise OSError(msg)
-            out.append(cls(obj=item))
+            out.append(cls(_obj=item))
         return out
 
     async def refresh(self, kube: Kube, *, timeout: float) -> Self | None:
@@ -1173,8 +1277,74 @@ class PersistentVolume:
         str
             Trimmed `metadata.name`, or an empty string when unavailable.
         """
-        metadata = self.obj.metadata
+        metadata = self._obj.metadata
         return (metadata.name or "").strip() if metadata is not None else ""
+
+    @property
+    def labels(self) -> Mapping[str, str]:
+        """Return the PersistentVolume labels.
+
+        Returns
+        -------
+        Mapping[str, str]
+            Read-only view of `metadata.labels`, or an empty mapping when unavailable.
+        """
+        metadata = self._obj.metadata
+        if metadata is None or metadata.labels is None:
+            return MappingProxyType({})
+        return MappingProxyType(metadata.labels)
+
+    @property
+    def annotations(self) -> Mapping[str, str]:
+        """Return the PersistentVolume annotations.
+
+        Returns
+        -------
+        Mapping[str, str]
+            Read-only view of `metadata.annotations`, or an empty mapping when
+            unavailable.
+        """
+        metadata = self._obj.metadata
+        if metadata is None or metadata.annotations is None:
+            return MappingProxyType({})
+        return MappingProxyType(metadata.annotations)
+
+    @property
+    def resource_version(self) -> str:
+        """Return the PersistentVolume resource version.
+
+        Returns
+        -------
+        str
+            Kubernetes `metadata.resourceVersion`, or an empty string when
+            unavailable.
+        """
+        metadata = self._obj.metadata
+        return (metadata.resource_version or "").strip() if metadata is not None else ""
+
+    @property
+    def uid(self) -> str:
+        """Return the PersistentVolume UID.
+
+        Returns
+        -------
+        str
+            Kubernetes `metadata.uid`, or an empty string when unavailable.
+        """
+        metadata = self._obj.metadata
+        return (metadata.uid or "").strip() if metadata is not None else ""
+
+    @property
+    def created_at(self) -> datetime | None:
+        """Return the PersistentVolume creation timestamp.
+
+        Returns
+        -------
+        datetime | None
+            Kubernetes `metadata.creationTimestamp`, or `None` when unavailable.
+        """
+        metadata = self._obj.metadata
+        return metadata.creation_timestamp if metadata is not None else None
 
     @property
     def phase(self) -> str:
@@ -1185,7 +1355,7 @@ class PersistentVolume:
         str
             Trimmed PersistentVolume phase string, or an empty string when unavailable.
         """
-        status = self.obj.status
+        status = self._obj.status
         return (status.phase or "").strip() if status is not None else ""
 
     @property
@@ -1197,7 +1367,7 @@ class PersistentVolume:
         tuple[str, str] | None
             `(namespace, claim_name)` from the claim reference, or `None` if absent.
         """
-        spec = self.obj.spec
+        spec = self._obj.spec
         claim_ref = spec.claim_ref if spec is not None else None
         if claim_ref is None:
             return None
@@ -1216,7 +1386,7 @@ class PersistentVolume:
         str
             Trimmed CSI driver string, or an empty string when unavailable.
         """
-        spec = self.obj.spec
+        spec = self._obj.spec
         csi = spec.csi if spec is not None else None
         return (csi.driver or "").strip() if csi is not None else ""
 
@@ -1229,7 +1399,7 @@ class PersistentVolume:
         Mapping[str, str]
             CSI volume attributes, or an empty mapping when unavailable.
         """
-        spec = self.obj.spec
+        spec = self._obj.spec
         csi = spec.csi if spec is not None else None
         if csi is None or csi.volume_attributes is None:
             return MappingProxyType({})

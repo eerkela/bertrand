@@ -33,7 +33,7 @@ class Job:
 
     Parameters
     ----------
-    obj : kubernetes.client.V1Job
+    _obj : kubernetes.client.V1Job
         Typed Kubernetes Job payload returned by the cluster API.
 
     Notes
@@ -43,7 +43,7 @@ class Job:
     immutable once submitted.
     """
 
-    obj: kubernetes.client.V1Job
+    _obj: kubernetes.client.V1Job
 
     @classmethod
     async def get(
@@ -94,7 +94,7 @@ class Job:
                 f"{namespace!r}"
             )
             raise OSError(msg)
-        return cls(obj=payload)
+        return cls(_obj=payload)
 
     @classmethod
     async def list(
@@ -172,7 +172,7 @@ class Job:
                 if not isinstance(item, kubernetes.client.V1Job):
                     msg = "malformed Kubernetes Job entry in list payload"
                     raise OSError(msg)
-                out.append(cls(obj=item))
+                out.append(cls(_obj=item))
         return out
 
     @staticmethod
@@ -326,7 +326,7 @@ class Job:
         if not isinstance(created, kubernetes.client.V1Job):
             msg = f"malformed Kubernetes Job payload while creating {name!r}"
             raise OSError(msg)
-        return cls(obj=created)
+        return cls(_obj=created)
 
     @property
     def name(self) -> str:
@@ -337,7 +337,7 @@ class Job:
         str
             Trimmed `metadata.name`, or an empty string when unavailable.
         """
-        metadata = self.obj.metadata
+        metadata = self._obj.metadata
         return (metadata.name or "").strip() if metadata is not None else ""
 
     @property
@@ -349,7 +349,7 @@ class Job:
         str
             Trimmed `metadata.namespace`, or an empty string when unavailable.
         """
-        metadata = self.obj.metadata
+        metadata = self._obj.metadata
         return (metadata.namespace or "").strip() if metadata is not None else ""
 
     @property
@@ -361,10 +361,62 @@ class Job:
         Mapping[str, str]
             Read-only view of `metadata.labels`, or an empty mapping when unavailable.
         """
-        metadata = self.obj.metadata
+        metadata = self._obj.metadata
         if metadata is None or metadata.labels is None:
             return MappingProxyType({})
         return MappingProxyType(metadata.labels)
+
+    @property
+    def annotations(self) -> Mapping[str, str]:
+        """Return the Job annotations.
+
+        Returns
+        -------
+        Mapping[str, str]
+            Read-only view of `metadata.annotations`, or an empty mapping when
+            unavailable.
+        """
+        metadata = self._obj.metadata
+        if metadata is None or metadata.annotations is None:
+            return MappingProxyType({})
+        return MappingProxyType(metadata.annotations)
+
+    @property
+    def resource_version(self) -> str:
+        """Return the Job resource version.
+
+        Returns
+        -------
+        str
+            Kubernetes `metadata.resourceVersion`, or an empty string when
+            unavailable.
+        """
+        metadata = self._obj.metadata
+        return (metadata.resource_version or "").strip() if metadata is not None else ""
+
+    @property
+    def uid(self) -> str:
+        """Return the Job UID.
+
+        Returns
+        -------
+        str
+            Kubernetes `metadata.uid`, or an empty string when unavailable.
+        """
+        metadata = self._obj.metadata
+        return (metadata.uid or "").strip() if metadata is not None else ""
+
+    @property
+    def created_at(self) -> datetime | None:
+        """Return the Job creation timestamp.
+
+        Returns
+        -------
+        datetime | None
+            Kubernetes `metadata.creationTimestamp`, or `None` when unavailable.
+        """
+        metadata = self._obj.metadata
+        return metadata.creation_timestamp if metadata is not None else None
 
     @property
     def active(self) -> int:
@@ -375,7 +427,7 @@ class Job:
         int
             Active pod count, or zero when unavailable.
         """
-        status = self.obj.status
+        status = self._obj.status
         return int(status.active or 0) if status is not None else 0
 
     @property
@@ -387,7 +439,7 @@ class Job:
         int
             Succeeded pod count, or zero when unavailable.
         """
-        status = self.obj.status
+        status = self._obj.status
         return int(status.succeeded or 0) if status is not None else 0
 
     @property
@@ -399,7 +451,7 @@ class Job:
         int
             Failed pod count, or zero when unavailable.
         """
-        status = self.obj.status
+        status = self._obj.status
         return int(status.failed or 0) if status is not None else 0
 
     @property
@@ -411,8 +463,65 @@ class Job:
         datetime | None
             Job completion timestamp, if reported by Kubernetes.
         """
-        status = self.obj.status
+        status = self._obj.status
         return status.completion_time if status is not None else None
+
+    @property
+    def start_time(self) -> datetime | None:
+        """Return the Job start timestamp.
+
+        Returns
+        -------
+        datetime | None
+            Job start timestamp, if reported by Kubernetes.
+        """
+        status = self._obj.status
+        return status.start_time if status is not None else None
+
+    @property
+    def is_complete(self) -> bool:
+        """Return whether the Job reports a complete condition.
+
+        Returns
+        -------
+        bool
+            `True` when Kubernetes reports a successful completion condition.
+        """
+        status = self._obj.status
+        for condition in (status.conditions or []) if status is not None else []:
+            if condition.type == "Complete" and condition.status == "True":
+                return True
+        return False
+
+    @property
+    def is_failed(self) -> bool:
+        """Return whether the Job reports a failed condition.
+
+        Returns
+        -------
+        bool
+            `True` when Kubernetes reports a failed condition.
+        """
+        status = self._obj.status
+        for condition in (status.conditions or []) if status is not None else []:
+            if condition.type == "Failed" and condition.status == "True":
+                return True
+        return False
+
+    @property
+    def failure_message(self) -> str | None:
+        """Return the terminal Job failure message.
+
+        Returns
+        -------
+        str | None
+            Failure condition message or reason, if the Job has failed.
+        """
+        status = self._obj.status
+        for condition in (status.conditions or []) if status is not None else []:
+            if condition.type == "Failed" and condition.status == "True":
+                return condition.message or condition.reason or "Job failed"
+        return None
 
     @property
     def failed_condition(self) -> str | None:
@@ -423,11 +532,7 @@ class Job:
         str | None
             Failure condition message or reason, if the Job has failed.
         """
-        status = self.obj.status
-        for condition in (status.conditions or []) if status is not None else []:
-            if condition.type == "Failed" and condition.status == "True":
-                return condition.message or condition.reason or "Job failed"
-        return None
+        return self.failure_message
 
     async def refresh(self, kube: Kube, *, timeout: float) -> Self | None:
         """Re-read this Job by its metadata namespace and name.

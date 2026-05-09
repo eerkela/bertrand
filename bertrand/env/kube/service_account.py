@@ -14,6 +14,7 @@ from .api import _label_selector
 if TYPE_CHECKING:
     import builtins
     from collections.abc import Collection, Mapping
+    from datetime import datetime
 
     from .api import Kube
 
@@ -26,11 +27,11 @@ class ServiceAccount:
 
     Parameters
     ----------
-    obj : kube_client.V1ServiceAccount
+    _obj : kube_client.V1ServiceAccount
         Typed Kubernetes ServiceAccount payload returned by the cluster API.
     """
 
-    obj: kube_client.V1ServiceAccount
+    _obj: kube_client.V1ServiceAccount
 
     @classmethod
     async def get(
@@ -83,7 +84,7 @@ class ServiceAccount:
                 f"in namespace {namespace!r}"
             )
             raise OSError(msg)
-        return cls(obj=payload)
+        return cls(_obj=payload)
 
     @classmethod
     async def list(
@@ -163,7 +164,7 @@ class ServiceAccount:
                 if not isinstance(item, kube_client.V1ServiceAccount):
                     msg = "malformed Kubernetes ServiceAccount entry in list payload"
                     raise OSError(msg)
-                out.append(cls(obj=item))
+                out.append(cls(_obj=item))
         return out
 
     @staticmethod
@@ -255,7 +256,7 @@ class ServiceAccount:
                     f"{name!r}"
                 )
                 raise OSError(msg)
-            return cls(obj=created)
+            return cls(_obj=created)
 
         patched = await kube.run(
             lambda request_timeout: kube.core.patch_namespaced_service_account(
@@ -270,7 +271,7 @@ class ServiceAccount:
         if not isinstance(patched, kube_client.V1ServiceAccount):
             msg = f"malformed Kubernetes ServiceAccount payload while patching {name!r}"
             raise OSError(msg)
-        return cls(obj=patched)
+        return cls(_obj=patched)
 
     @property
     def name(self) -> str:
@@ -281,7 +282,7 @@ class ServiceAccount:
         str
             Trimmed `metadata.name`, or an empty string when unavailable.
         """
-        metadata = self.obj.metadata
+        metadata = self._obj.metadata
         return (metadata.name or "").strip() if metadata is not None else ""
 
     @property
@@ -293,7 +294,7 @@ class ServiceAccount:
         str
             Trimmed `metadata.namespace`, or an empty string when unavailable.
         """
-        metadata = self.obj.metadata
+        metadata = self._obj.metadata
         return (metadata.namespace or "").strip() if metadata is not None else ""
 
     @property
@@ -305,7 +306,7 @@ class ServiceAccount:
         Mapping[str, str]
             Read-only view of `metadata.labels`, or an empty mapping when unavailable.
         """
-        metadata = self.obj.metadata
+        metadata = self._obj.metadata
         if metadata is None or metadata.labels is None:
             return MappingProxyType({})
         return MappingProxyType(metadata.labels)
@@ -320,10 +321,47 @@ class ServiceAccount:
             Read-only view of `metadata.annotations`, or an empty mapping when
             unavailable.
         """
-        metadata = self.obj.metadata
+        metadata = self._obj.metadata
         if metadata is None or metadata.annotations is None:
             return MappingProxyType({})
         return MappingProxyType(metadata.annotations)
+
+    @property
+    def resource_version(self) -> str:
+        """Return the ServiceAccount resource version.
+
+        Returns
+        -------
+        str
+            Kubernetes `metadata.resourceVersion`, or an empty string when
+            unavailable.
+        """
+        metadata = self._obj.metadata
+        return (metadata.resource_version or "").strip() if metadata is not None else ""
+
+    @property
+    def uid(self) -> str:
+        """Return the ServiceAccount UID.
+
+        Returns
+        -------
+        str
+            Kubernetes `metadata.uid`, or an empty string when unavailable.
+        """
+        metadata = self._obj.metadata
+        return (metadata.uid or "").strip() if metadata is not None else ""
+
+    @property
+    def created_at(self) -> datetime | None:
+        """Return the ServiceAccount creation timestamp.
+
+        Returns
+        -------
+        datetime | None
+            Kubernetes `metadata.creationTimestamp`, or `None` when unavailable.
+        """
+        metadata = self._obj.metadata
+        return metadata.creation_timestamp if metadata is not None else None
 
     async def refresh(self, kube: Kube, *, timeout: float) -> Self | None:
         """Re-read this ServiceAccount by its metadata namespace and name.

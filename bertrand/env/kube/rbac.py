@@ -14,6 +14,7 @@ from .api import PolicyRuleSpec, _label_selector
 if TYPE_CHECKING:
     import builtins
     from collections.abc import Collection, Mapping
+    from datetime import datetime
 
     from .api import Kube
 
@@ -38,11 +39,11 @@ class ClusterRole:
 
     Parameters
     ----------
-    obj : kube_client.V1ClusterRole
+    _obj : kube_client.V1ClusterRole
         Typed Kubernetes ClusterRole payload returned by the cluster API.
     """
 
-    obj: kube_client.V1ClusterRole
+    _obj: kube_client.V1ClusterRole
 
     @classmethod
     async def get(cls, kube: Kube, *, name: str, timeout: float) -> Self | None:
@@ -80,7 +81,7 @@ class ClusterRole:
         if not isinstance(payload, kube_client.V1ClusterRole):
             msg = f"malformed Kubernetes ClusterRole payload for {name!r}"
             raise OSError(msg)
-        return cls(obj=payload)
+        return cls(_obj=payload)
 
     @classmethod
     async def list(
@@ -129,7 +130,7 @@ class ClusterRole:
             if not isinstance(item, kube_client.V1ClusterRole):
                 msg = "malformed Kubernetes ClusterRole entry in list payload"
                 raise OSError(msg)
-            out.append(cls(obj=item))
+            out.append(cls(_obj=item))
         return out
 
     @staticmethod
@@ -218,7 +219,7 @@ class ClusterRole:
                     f"malformed Kubernetes ClusterRole payload while creating {name!r}"
                 )
                 raise OSError(msg)
-            return cls(obj=created)
+            return cls(_obj=created)
 
         patched = await kube.run(
             lambda request_timeout: kube.rbac.patch_cluster_role(
@@ -232,7 +233,7 @@ class ClusterRole:
         if not isinstance(patched, kube_client.V1ClusterRole):
             msg = f"malformed Kubernetes ClusterRole payload while patching {name!r}"
             raise OSError(msg)
-        return cls(obj=patched)
+        return cls(_obj=patched)
 
     @property
     def name(self) -> str:
@@ -243,7 +244,7 @@ class ClusterRole:
         str
             Trimmed `metadata.name`, or an empty string when unavailable.
         """
-        metadata = self.obj.metadata
+        metadata = self._obj.metadata
         return (metadata.name or "").strip() if metadata is not None else ""
 
     @property
@@ -255,7 +256,7 @@ class ClusterRole:
         Mapping[str, str]
             Read-only view of `metadata.labels`, or an empty mapping when unavailable.
         """
-        metadata = self.obj.metadata
+        metadata = self._obj.metadata
         if metadata is None or metadata.labels is None:
             return MappingProxyType({})
         return MappingProxyType(metadata.labels)
@@ -270,10 +271,47 @@ class ClusterRole:
             Read-only view of `metadata.annotations`, or an empty mapping when
             unavailable.
         """
-        metadata = self.obj.metadata
+        metadata = self._obj.metadata
         if metadata is None or metadata.annotations is None:
             return MappingProxyType({})
         return MappingProxyType(metadata.annotations)
+
+    @property
+    def resource_version(self) -> str:
+        """Return the ClusterRole resource version.
+
+        Returns
+        -------
+        str
+            Kubernetes `metadata.resourceVersion`, or an empty string when
+            unavailable.
+        """
+        metadata = self._obj.metadata
+        return (metadata.resource_version or "").strip() if metadata is not None else ""
+
+    @property
+    def uid(self) -> str:
+        """Return the ClusterRole UID.
+
+        Returns
+        -------
+        str
+            Kubernetes `metadata.uid`, or an empty string when unavailable.
+        """
+        metadata = self._obj.metadata
+        return (metadata.uid or "").strip() if metadata is not None else ""
+
+    @property
+    def created_at(self) -> datetime | None:
+        """Return the ClusterRole creation timestamp.
+
+        Returns
+        -------
+        datetime | None
+            Kubernetes `metadata.creationTimestamp`, or `None` when unavailable.
+        """
+        metadata = self._obj.metadata
+        return metadata.creation_timestamp if metadata is not None else None
 
     async def refresh(self, kube: Kube, *, timeout: float) -> Self | None:
         """Re-read this ClusterRole by its metadata name.
@@ -380,11 +418,11 @@ class ClusterRoleBinding:
 
     Parameters
     ----------
-    obj : kube_client.V1ClusterRoleBinding
+    _obj : kube_client.V1ClusterRoleBinding
         Typed Kubernetes ClusterRoleBinding payload returned by the cluster API.
     """
 
-    obj: kube_client.V1ClusterRoleBinding
+    _obj: kube_client.V1ClusterRoleBinding
 
     @classmethod
     async def get(cls, kube: Kube, *, name: str, timeout: float) -> Self | None:
@@ -422,7 +460,7 @@ class ClusterRoleBinding:
         if not isinstance(payload, kube_client.V1ClusterRoleBinding):
             msg = f"malformed Kubernetes ClusterRoleBinding payload for {name!r}"
             raise OSError(msg)
-        return cls(obj=payload)
+        return cls(_obj=payload)
 
     @classmethod
     async def list(
@@ -471,7 +509,7 @@ class ClusterRoleBinding:
             if not isinstance(item, kube_client.V1ClusterRoleBinding):
                 msg = "malformed Kubernetes ClusterRoleBinding entry in list payload"
                 raise OSError(msg)
-            out.append(cls(obj=item))
+            out.append(cls(_obj=item))
         return out
 
     @staticmethod
@@ -582,7 +620,7 @@ class ClusterRoleBinding:
                     f"{name!r}"
                 )
                 raise OSError(msg)
-            return cls(obj=created)
+            return cls(_obj=created)
 
         patched = await kube.run(
             lambda request_timeout: kube.rbac.patch_cluster_role_binding(
@@ -599,7 +637,7 @@ class ClusterRoleBinding:
                 f"{name!r}"
             )
             raise OSError(msg)
-        return cls(obj=patched)
+        return cls(_obj=patched)
 
     @property
     def name(self) -> str:
@@ -610,7 +648,7 @@ class ClusterRoleBinding:
         str
             Trimmed `metadata.name`, or an empty string when unavailable.
         """
-        metadata = self.obj.metadata
+        metadata = self._obj.metadata
         return (metadata.name or "").strip() if metadata is not None else ""
 
     @property
@@ -622,7 +660,7 @@ class ClusterRoleBinding:
         Mapping[str, str]
             Read-only view of `metadata.labels`, or an empty mapping when unavailable.
         """
-        metadata = self.obj.metadata
+        metadata = self._obj.metadata
         if metadata is None or metadata.labels is None:
             return MappingProxyType({})
         return MappingProxyType(metadata.labels)
@@ -637,10 +675,47 @@ class ClusterRoleBinding:
             Read-only view of `metadata.annotations`, or an empty mapping when
             unavailable.
         """
-        metadata = self.obj.metadata
+        metadata = self._obj.metadata
         if metadata is None or metadata.annotations is None:
             return MappingProxyType({})
         return MappingProxyType(metadata.annotations)
+
+    @property
+    def resource_version(self) -> str:
+        """Return the ClusterRoleBinding resource version.
+
+        Returns
+        -------
+        str
+            Kubernetes `metadata.resourceVersion`, or an empty string when
+            unavailable.
+        """
+        metadata = self._obj.metadata
+        return (metadata.resource_version or "").strip() if metadata is not None else ""
+
+    @property
+    def uid(self) -> str:
+        """Return the ClusterRoleBinding UID.
+
+        Returns
+        -------
+        str
+            Kubernetes `metadata.uid`, or an empty string when unavailable.
+        """
+        metadata = self._obj.metadata
+        return (metadata.uid or "").strip() if metadata is not None else ""
+
+    @property
+    def created_at(self) -> datetime | None:
+        """Return the ClusterRoleBinding creation timestamp.
+
+        Returns
+        -------
+        datetime | None
+            Kubernetes `metadata.creationTimestamp`, or `None` when unavailable.
+        """
+        metadata = self._obj.metadata
+        return metadata.creation_timestamp if metadata is not None else None
 
     async def refresh(self, kube: Kube, *, timeout: float) -> Self | None:
         """Re-read this ClusterRoleBinding by its metadata name.
@@ -753,11 +828,11 @@ class Role:
 
     Parameters
     ----------
-    obj : kube_client.V1Role
+    _obj : kube_client.V1Role
         Typed Kubernetes Role payload returned by the cluster API.
     """
 
-    obj: kube_client.V1Role
+    _obj: kube_client.V1Role
 
     @classmethod
     async def get(
@@ -808,7 +883,7 @@ class Role:
                 f"{namespace!r}"
             )
             raise OSError(msg)
-        return cls(obj=payload)
+        return cls(_obj=payload)
 
     @classmethod
     async def list(
@@ -884,7 +959,7 @@ class Role:
                 if not isinstance(item, kube_client.V1Role):
                     msg = "malformed Kubernetes Role entry in list payload"
                     raise OSError(msg)
-                out.append(cls(obj=item))
+                out.append(cls(_obj=item))
         return out
 
     @staticmethod
@@ -983,7 +1058,7 @@ class Role:
                     f"{namespace}/{name}"
                 )
                 raise OSError(msg)
-            return cls(obj=created)
+            return cls(_obj=created)
 
         patched = await kube.run(
             lambda request_timeout: kube.rbac.patch_namespaced_role(
@@ -998,7 +1073,7 @@ class Role:
         if not isinstance(patched, kube_client.V1Role):
             msg = f"malformed Kubernetes Role payload while patching {namespace}/{name}"
             raise OSError(msg)
-        return cls(obj=patched)
+        return cls(_obj=patched)
 
     @property
     def name(self) -> str:
@@ -1009,7 +1084,7 @@ class Role:
         str
             Trimmed `metadata.name`, or an empty string when unavailable.
         """
-        metadata = self.obj.metadata
+        metadata = self._obj.metadata
         return (metadata.name or "").strip() if metadata is not None else ""
 
     @property
@@ -1021,7 +1096,7 @@ class Role:
         str
             Trimmed `metadata.namespace`, or an empty string when unavailable.
         """
-        metadata = self.obj.metadata
+        metadata = self._obj.metadata
         return (metadata.namespace or "").strip() if metadata is not None else ""
 
     @property
@@ -1033,7 +1108,7 @@ class Role:
         Mapping[str, str]
             Read-only view of `metadata.labels`, or an empty mapping when unavailable.
         """
-        metadata = self.obj.metadata
+        metadata = self._obj.metadata
         if metadata is None or metadata.labels is None:
             return MappingProxyType({})
         return MappingProxyType(metadata.labels)
@@ -1048,7 +1123,7 @@ class Role:
             Read-only view of `metadata.annotations`, or an empty mapping when
             unavailable.
         """
-        metadata = self.obj.metadata
+        metadata = self._obj.metadata
         if metadata is None or metadata.annotations is None:
             return MappingProxyType({})
         return MappingProxyType(metadata.annotations)
@@ -1063,8 +1138,32 @@ class Role:
             Kubernetes `metadata.resourceVersion`, or an empty string when
             unavailable.
         """
-        metadata = self.obj.metadata
+        metadata = self._obj.metadata
         return (metadata.resource_version or "").strip() if metadata is not None else ""
+
+    @property
+    def uid(self) -> str:
+        """Return the Role UID.
+
+        Returns
+        -------
+        str
+            Kubernetes `metadata.uid`, or an empty string when unavailable.
+        """
+        metadata = self._obj.metadata
+        return (metadata.uid or "").strip() if metadata is not None else ""
+
+    @property
+    def created_at(self) -> datetime | None:
+        """Return the Role creation timestamp.
+
+        Returns
+        -------
+        datetime | None
+            Kubernetes `metadata.creationTimestamp`, or `None` when unavailable.
+        """
+        metadata = self._obj.metadata
+        return metadata.creation_timestamp if metadata is not None else None
 
     async def refresh(self, kube: Kube, *, timeout: float) -> Self | None:
         """Re-read this Role by its metadata namespace and name.
@@ -1181,11 +1280,11 @@ class RoleBinding:
 
     Parameters
     ----------
-    obj : kube_client.V1RoleBinding
+    _obj : kube_client.V1RoleBinding
         Typed Kubernetes RoleBinding payload returned by the cluster API.
     """
 
-    obj: kube_client.V1RoleBinding
+    _obj: kube_client.V1RoleBinding
 
     @classmethod
     async def get(
@@ -1236,7 +1335,7 @@ class RoleBinding:
                 f"{namespace!r}"
             )
             raise OSError(msg)
-        return cls(obj=payload)
+        return cls(_obj=payload)
 
     @classmethod
     async def list(
@@ -1312,7 +1411,7 @@ class RoleBinding:
                 if not isinstance(item, kube_client.V1RoleBinding):
                     msg = "malformed Kubernetes RoleBinding entry in list payload"
                     raise OSError(msg)
-                out.append(cls(obj=item))
+                out.append(cls(_obj=item))
         return out
 
     @staticmethod
@@ -1446,7 +1545,7 @@ class RoleBinding:
                     f"{namespace}/{name}"
                 )
                 raise OSError(msg)
-            return cls(obj=created)
+            return cls(_obj=created)
 
         patched = await kube.run(
             lambda request_timeout: kube.rbac.patch_namespaced_role_binding(
@@ -1464,7 +1563,7 @@ class RoleBinding:
                 f"{namespace}/{name}"
             )
             raise OSError(msg)
-        return cls(obj=patched)
+        return cls(_obj=patched)
 
     @property
     def name(self) -> str:
@@ -1475,7 +1574,7 @@ class RoleBinding:
         str
             Trimmed `metadata.name`, or an empty string when unavailable.
         """
-        metadata = self.obj.metadata
+        metadata = self._obj.metadata
         return (metadata.name or "").strip() if metadata is not None else ""
 
     @property
@@ -1487,7 +1586,7 @@ class RoleBinding:
         str
             Trimmed `metadata.namespace`, or an empty string when unavailable.
         """
-        metadata = self.obj.metadata
+        metadata = self._obj.metadata
         return (metadata.namespace or "").strip() if metadata is not None else ""
 
     @property
@@ -1499,7 +1598,7 @@ class RoleBinding:
         Mapping[str, str]
             Read-only view of `metadata.labels`, or an empty mapping when unavailable.
         """
-        metadata = self.obj.metadata
+        metadata = self._obj.metadata
         if metadata is None or metadata.labels is None:
             return MappingProxyType({})
         return MappingProxyType(metadata.labels)
@@ -1514,7 +1613,7 @@ class RoleBinding:
             Read-only view of `metadata.annotations`, or an empty mapping when
             unavailable.
         """
-        metadata = self.obj.metadata
+        metadata = self._obj.metadata
         if metadata is None or metadata.annotations is None:
             return MappingProxyType({})
         return MappingProxyType(metadata.annotations)
@@ -1529,8 +1628,32 @@ class RoleBinding:
             Kubernetes `metadata.resourceVersion`, or an empty string when
             unavailable.
         """
-        metadata = self.obj.metadata
+        metadata = self._obj.metadata
         return (metadata.resource_version or "").strip() if metadata is not None else ""
+
+    @property
+    def uid(self) -> str:
+        """Return the RoleBinding UID.
+
+        Returns
+        -------
+        str
+            Kubernetes `metadata.uid`, or an empty string when unavailable.
+        """
+        metadata = self._obj.metadata
+        return (metadata.uid or "").strip() if metadata is not None else ""
+
+    @property
+    def created_at(self) -> datetime | None:
+        """Return the RoleBinding creation timestamp.
+
+        Returns
+        -------
+        datetime | None
+            Kubernetes `metadata.creationTimestamp`, or `None` when unavailable.
+        """
+        metadata = self._obj.metadata
+        return metadata.creation_timestamp if metadata is not None else None
 
     async def refresh(self, kube: Kube, *, timeout: float) -> Self | None:
         """Re-read this RoleBinding by its metadata namespace and name.
