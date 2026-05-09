@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Self
@@ -14,7 +15,7 @@ if TYPE_CHECKING:
     import builtins
     from collections.abc import Collection, Mapping
 
-    from bertrand.env.config.core import KubeName
+CONFIGMAP_WAIT_POLL_INTERVAL_SECONDS = 0.5
 
 
 @dataclass(frozen=True)
@@ -41,7 +42,7 @@ class ConfigMap:
         *,
         namespace: str,
         timeout: float,
-        name: KubeName,
+        name: str,
     ) -> Self | None:
         """Read one Kubernetes ConfigMap by name.
 
@@ -53,7 +54,7 @@ class ConfigMap:
             Namespace that owns the ConfigMap.
         timeout : float
             Maximum request budget in seconds. If infinite, wait indefinitely.
-        name : KubeName
+        name : str
             ConfigMap name to read.
 
         Returns
@@ -172,7 +173,7 @@ class ConfigMap:
     def _manifest(
         *,
         namespace: str,
-        name: KubeName,
+        name: str,
         data: Mapping[str, str],
         binary_data: Mapping[str, str] | None,
         labels: Mapping[str, str] | None,
@@ -199,7 +200,7 @@ class ConfigMap:
         kube: Kube,
         *,
         namespace: str,
-        name: KubeName,
+        name: str,
         data: Mapping[str, str],
         timeout: float,
         binary_data: Mapping[str, str] | None = None,
@@ -214,7 +215,7 @@ class ConfigMap:
             Active Kubernetes API context.
         namespace : str
             Namespace that owns the ConfigMap.
-        name : KubeName
+        name : str
             ConfigMap name to create or patch.
         data : Mapping[str, str]
             Text data to apply to `data`.
@@ -312,27 +313,6 @@ class ConfigMap:
         return (metadata.namespace or "").strip() if metadata is not None else ""
 
     @property
-    def identity(self) -> tuple[str, str]:
-        """Return this ConfigMap's namespace/name identity.
-
-        Returns
-        -------
-        tuple[str, str]
-            Canonical `(namespace, name)` identity.
-
-        Raises
-        ------
-        OSError
-            If this ConfigMap is missing `metadata.namespace` or `metadata.name`.
-        """
-        namespace = self.namespace
-        name = self.name
-        if not namespace or not name:
-            msg = "ConfigMap metadata is missing namespace/name identity"
-            raise OSError(msg)
-        return namespace, name
-
-    @property
     def data(self) -> Mapping[str, str]:
         """Return this ConfigMap's text data.
 
@@ -384,7 +364,7 @@ class ConfigMap:
         return MappingProxyType(metadata.annotations)
 
     async def refresh(self, kube: Kube, *, timeout: float) -> Self | None:
-        """Re-read this ConfigMap by identity.
+        """Re-read this ConfigMap by its metadata namespace and name.
 
         Parameters
         ----------
@@ -397,8 +377,18 @@ class ConfigMap:
         -------
         ConfigMap | None
             Fresh wrapper for the same ConfigMap, or `None` if it no longer exists.
+
+        Raises
+        ------
+        OSError
+            If this wrapper does not contain enough metadata to identify the
+            ConfigMap, or if Kubernetes returns malformed data.
         """
-        namespace, name = self.identity
+        namespace = self.namespace
+        name = self.name
+        if not namespace or not name:
+            msg = "cannot refresh ConfigMap with missing metadata.name/namespace"
+            raise OSError(msg)
         return await type(self).get(
             kube=kube,
             namespace=namespace,
@@ -415,8 +405,18 @@ class ConfigMap:
             Active Kubernetes API context.
         timeout : float
             Maximum request budget in seconds. If infinite, wait indefinitely.
+
+        Raises
+        ------
+        OSError
+            If this wrapper does not contain enough metadata to identify the
+            ConfigMap, or if the delete request fails.
         """
-        namespace, name = self.identity
+        namespace = self.namespace
+        name = self.name
+        if not namespace or not name:
+            msg = "cannot delete ConfigMap with missing metadata.name/namespace"
+            raise OSError(msg)
         await kube.run(
             lambda request_timeout: kube.core.delete_namespaced_config_map(
                 name=name,
@@ -426,3 +426,44 @@ class ConfigMap:
             timeout=timeout,
             context=f"failed to delete cluster ConfigMap {name!r}",
         )
+
+    async def wait_deleted(self, kube: Kube, *, timeout: float) -> None:
+        """Wait until this ConfigMap is deleted from the cluster.
+
+        Parameters
+        ----------
+        kube : Kube
+            Active Kubernetes API context.
+        timeout : float
+            Maximum wait time in seconds. Must be positive.
+
+        Raises
+        ------
+        OSError
+            If this wrapper does not contain enough metadata to identify the
+            ConfigMap, or if a refresh request returns malformed data.
+        TimeoutError
+            If the ConfigMap still exists when `timeout` expires.
+        """
+        namespace = self.namespace
+        name = self.name
+        if not namespace or not name:
+            msg = (
+                "cannot wait for ConfigMap deletion with missing "
+                "metadata.name/namespace"
+            )
+            raise OSError(msg)
+        if timeout <= 0:
+            msg = f"timed out waiting for ConfigMap {namespace}/{name} deletion"
+            raise TimeoutError(msg)
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        while True:
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                msg = f"timed out waiting for ConfigMap {namespace}/{name} deletion"
+                raise TimeoutError(msg)
+            live = await self.refresh(kube, timeout=remaining)
+            if live is None:
+                return
+            await asyncio.sleep(min(CONFIGMAP_WAIT_POLL_INTERVAL_SECONDS, remaining))

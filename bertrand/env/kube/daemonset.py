@@ -9,141 +9,19 @@ from typing import TYPE_CHECKING, Self
 
 import kubernetes
 
-from .api import ContainerSpec, Kube, ProbeSpec, VolumeSpec, _label_selector
+from .api import (
+    ContainerSpec,
+    Kube,
+    VolumeSpec,
+    _label_selector,
+    _pod_template_manifest,
+)
 
 DAEMONSET_WAIT_POLL_INTERVAL_SECONDS = 0.5
 
 if TYPE_CHECKING:
     import builtins
     from collections.abc import Collection, Mapping
-
-
-def _probe_manifest(probe: ProbeSpec) -> dict[str, object]:
-    payload = dict(probe.handler)
-    if probe.initial_delay_seconds is not None:
-        payload["initialDelaySeconds"] = probe.initial_delay_seconds
-    if probe.period_seconds is not None:
-        payload["periodSeconds"] = probe.period_seconds
-    if probe.failure_threshold is not None:
-        payload["failureThreshold"] = probe.failure_threshold
-    return payload
-
-
-def _container_manifest(container: ContainerSpec) -> dict[str, object]:
-    payload: dict[str, object] = {
-        "name": container.name,
-        "image": container.image,
-    }
-    if container.image_pull_policy is not None:
-        payload["imagePullPolicy"] = container.image_pull_policy
-    if container.command is not None:
-        payload["command"] = list(container.command)
-    if container.args is not None:
-        payload["args"] = list(container.args)
-    if container.ports:
-        payload["ports"] = [
-            {
-                "name": port.name,
-                "containerPort": port.container_port,
-                "protocol": port.protocol,
-            }
-            for port in container.ports
-        ]
-    if container.env:
-        env: list[dict[str, object]] = []
-        for var in container.env:
-            sources = sum(value is not None for value in (var.value, var.field_path))
-            if sources != 1:
-                msg = "environment variable must define exactly one source"
-                raise ValueError(msg)
-            item: dict[str, object] = {"name": var.name}
-            if var.value is not None:
-                item["value"] = var.value
-            elif var.field_path is not None:
-                item["valueFrom"] = {"fieldRef": {"fieldPath": var.field_path}}
-            env.append(item)
-        payload["env"] = env
-    if container.readiness_probe is not None:
-        payload["readinessProbe"] = _probe_manifest(container.readiness_probe)
-    if container.liveness_probe is not None:
-        payload["livenessProbe"] = _probe_manifest(container.liveness_probe)
-    if container.volume_mounts:
-        payload["volumeMounts"] = [
-            {
-                key: value
-                for key, value in {
-                    "name": mount.name,
-                    "mountPath": mount.mount_path,
-                    "readOnly": mount.read_only,
-                }.items()
-                if value is not None
-            }
-            for mount in container.volume_mounts
-        ]
-    if container.security_context is not None:
-        payload["securityContext"] = dict(container.security_context)
-    return payload
-
-
-def _volume_manifest(volume: VolumeSpec) -> dict[str, object]:
-    kinds = sum(
-        value is not None
-        for value in (
-            volume.empty_dir_config,
-            volume.config_map_name,
-            volume.persistent_volume_claim,
-            volume.host_path_path,
-        )
-    )
-    if kinds != 1:
-        msg = "Kubernetes volume must define exactly one source"
-        raise ValueError(msg)
-
-    payload: dict[str, object] = {"name": volume.name}
-    if volume.empty_dir_config is not None:
-        payload["emptyDir"] = dict(volume.empty_dir_config)
-    elif volume.config_map_name is not None:
-        config_map: dict[str, object] = {"name": volume.config_map_name}
-        if volume.config_map_optional is not None:
-            config_map["optional"] = volume.config_map_optional
-        payload["configMap"] = config_map
-    elif volume.persistent_volume_claim is not None:
-        payload["persistentVolumeClaim"] = {"claimName": volume.persistent_volume_claim}
-    elif volume.host_path_path is not None:
-        host_path: dict[str, object] = {"path": volume.host_path_path}
-        if volume.host_path_type is not None:
-            host_path["type"] = volume.host_path_type
-        payload["hostPath"] = host_path
-    return payload
-
-
-def _pod_template_manifest(
-    *,
-    labels: Mapping[str, str],
-    containers: Collection[ContainerSpec],
-    volumes: Collection[VolumeSpec],
-    automount_service_account_token: bool,
-    service_account_name: str | None,
-    node_selector: Mapping[str, str] | None,
-    host_pid: bool | None,
-) -> dict[str, object]:
-    spec: dict[str, object] = {
-        "automountServiceAccountToken": automount_service_account_token,
-        "containers": [_container_manifest(container) for container in containers],
-        "volumes": [_volume_manifest(volume) for volume in volumes],
-    }
-    if service_account_name is not None:
-        service_account_name = service_account_name.strip()
-        if service_account_name:
-            spec["serviceAccountName"] = service_account_name
-    if node_selector:
-        spec["nodeSelector"] = dict(node_selector)
-    if host_pid is not None:
-        spec["hostPID"] = host_pid
-    return {
-        "metadata": {"labels": dict(labels)},
-        "spec": spec,
-    }
 
 
 @dataclass(frozen=True)
@@ -511,6 +389,86 @@ class DaemonSet:
         return await type(self).get(
             kube, namespace=namespace, name=name, timeout=timeout
         )
+
+    async def delete(self, kube: Kube, *, timeout: float) -> None:
+        """Delete this DaemonSet from the cluster.
+
+        Parameters
+        ----------
+        kube : Kube
+            Active Kubernetes API context.
+        timeout : float
+            Maximum request budget in seconds. If infinite, wait indefinitely.
+
+        Raises
+        ------
+        OSError
+            If this wrapper does not contain enough metadata to identify the
+            DaemonSet, if the delete request fails, or if Kubernetes returns
+            malformed data.
+        """
+        namespace = self.namespace
+        name = self.name
+        if not namespace or not name:
+            msg = "cannot delete DaemonSet with missing metadata.name/namespace"
+            raise OSError(msg)
+        payload = await kube.run(
+            lambda request_timeout: kube.apps.delete_namespaced_daemon_set(
+                name=name,
+                namespace=namespace,
+                body=kubernetes.client.V1DeleteOptions(),
+                _request_timeout=request_timeout,
+            ),
+            timeout=timeout,
+            context=f"failed to delete DaemonSet {namespace}/{name}",
+        )
+        if payload is not None and not isinstance(payload, kubernetes.client.V1Status):
+            msg = (
+                "malformed Kubernetes response while deleting DaemonSet "
+                f"{namespace}/{name}"
+            )
+            raise OSError(msg)
+
+    async def wait_deleted(self, kube: Kube, *, timeout: float) -> None:
+        """Wait until this DaemonSet is deleted from the cluster.
+
+        Parameters
+        ----------
+        kube : Kube
+            Active Kubernetes API context.
+        timeout : float
+            Maximum wait time in seconds. Must be positive.
+
+        Raises
+        ------
+        OSError
+            If this wrapper does not contain enough metadata to identify the
+            DaemonSet, or if a refresh request returns malformed data.
+        TimeoutError
+            If the DaemonSet still exists when `timeout` expires.
+        """
+        namespace = self.namespace
+        name = self.name
+        if not namespace or not name:
+            msg = (
+                "cannot wait for DaemonSet deletion with missing "
+                "metadata.name/namespace"
+            )
+            raise OSError(msg)
+        if timeout <= 0:
+            msg = f"timed out waiting for DaemonSet {namespace}/{name} deletion"
+            raise TimeoutError(msg)
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        while True:
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                msg = f"timed out waiting for DaemonSet {namespace}/{name} deletion"
+                raise TimeoutError(msg)
+            live = await self.refresh(kube, timeout=remaining)
+            if live is None:
+                return
+            await asyncio.sleep(min(DAEMONSET_WAIT_POLL_INTERVAL_SECONDS, remaining))
 
     async def wait_available(
         self,

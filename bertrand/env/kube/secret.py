@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import binascii
 from dataclasses import dataclass
@@ -16,7 +17,7 @@ if TYPE_CHECKING:
     import builtins
     from collections.abc import Collection, Mapping
 
-    from bertrand.env.config.core import KubeName
+SECRET_WAIT_POLL_INTERVAL_SECONDS = 0.5
 
 
 @dataclass(frozen=True)
@@ -37,7 +38,7 @@ class Secret:
         kube: Kube,
         *,
         namespace: str,
-        name: KubeName,
+        name: str,
         timeout: float,
     ) -> Self | None:
         """Read one Kubernetes Secret by name.
@@ -48,7 +49,7 @@ class Secret:
             Active Kubernetes API context.
         namespace : str
             Namespace that owns the secret.
-        name : KubeName
+        name : str
             Name of the secret to read.
         timeout : float
             Maximum request budget in seconds. If infinite, wait indefinitely.
@@ -174,7 +175,7 @@ class Secret:
         kube: Kube,
         *,
         namespace: str,
-        name: KubeName,
+        name: str,
         labels: Mapping[str, str] | None,
         annotations: Mapping[str, str] | None,
         payload: bytes,
@@ -188,7 +189,7 @@ class Secret:
             Active Kubernetes API context.
         namespace : str
             Namespace that owns the secret.
-        name : KubeName
+        name : str
             Secret name to create or patch.
         labels : Mapping[str, str] | None
             Labels to apply to `metadata.labels`.
@@ -279,12 +280,12 @@ class Secret:
         return namespace
 
     @property
-    def name(self) -> KubeName:
+    def name(self) -> str:
         """Return this secret's name.
 
         Returns
         -------
-        KubeName
+        str
             Trimmed name from `metadata`.
 
         Raises
@@ -357,7 +358,7 @@ class Secret:
             raise OSError(msg) from err
 
     async def refresh(self, kube: Kube, *, timeout: float) -> Self | None:
-        """Re-read this secret by identity.
+        """Re-read this secret by its metadata namespace and name.
 
         Parameters
         ----------
@@ -400,3 +401,41 @@ class Secret:
             timeout=timeout,
             context=f"failed to delete cluster secret {name!r}",
         )
+
+    async def wait_deleted(self, kube: Kube, *, timeout: float) -> None:
+        """Wait until this secret is deleted from the cluster.
+
+        Parameters
+        ----------
+        kube : Kube
+            Active Kubernetes API context.
+        timeout : float
+            Maximum wait time in seconds. Must be positive.
+
+        Raises
+        ------
+        OSError
+            If this wrapper does not contain enough metadata to identify the secret,
+            or if a refresh request returns malformed data.
+        TimeoutError
+            If the secret still exists when `timeout` expires.
+        """
+        namespace = self.namespace
+        name = self.name
+        if not namespace or not name:
+            msg = "cannot wait for secret deletion with missing metadata.name/namespace"
+            raise OSError(msg)
+        if timeout <= 0:
+            msg = f"timed out waiting for secret {namespace}/{name} deletion"
+            raise TimeoutError(msg)
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        while True:
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                msg = f"timed out waiting for secret {namespace}/{name} deletion"
+                raise TimeoutError(msg)
+            live = await self.refresh(kube, timeout=remaining)
+            if live is None:
+                return
+            await asyncio.sleep(min(SECRET_WAIT_POLL_INTERVAL_SECONDS, remaining))

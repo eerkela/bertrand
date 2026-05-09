@@ -30,17 +30,19 @@ from ..api import (
     CLUSTER_REGISTRY_READY_LABEL,
     CLUSTER_REGISTRY_READY_VALUE,
     ContainerSpec,
+    CustomResourceSpec,
     EnvVarSpec,
     Kube,
+    PolicyRuleSpec,
     VolumeMountSpec,
     VolumeSpec,
 )
 from ..build import IMAGES, BuildKitImageBuild
-from ..crd import CustomResourceDefinition, CustomResourceSpec
+from ..crd import CustomResourceClient, CustomResourceDefinition
 from ..daemonset import DaemonSet
 from ..deployment import Deployment
 from ..node import Node
-from ..rbac import ClusterRole, ClusterRoleBinding, PolicyRuleSpec
+from ..rbac import ClusterRole, ClusterRoleBinding
 from ..service_account import ServiceAccount
 from .api import (
     LOOP_OSD_SIZE_PATTERN,
@@ -328,9 +330,9 @@ NODE_REPORT = CustomResourceSpec(
     plural=AUTOSCALE_NODE_PLURAL,
     labels=AUTOSCALE_LABELS,
 )
-_AUTOSCALER_CLIENT = AUTOSCALER.client()
-_ACTION_CLIENT = ACTION.client()
-_NODE_REPORT_CLIENT = NODE_REPORT.client()
+_AUTOSCALER_CLIENT = CustomResourceClient(AUTOSCALER)
+_ACTION_CLIENT = CustomResourceClient(ACTION)
+_NODE_REPORT_CLIENT = CustomResourceClient(NODE_REPORT)
 
 
 def _remaining(deadline: float) -> float:

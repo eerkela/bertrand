@@ -18,8 +18,6 @@ if TYPE_CHECKING:
     import builtins
     from collections.abc import Collection, Mapping
 
-    from bertrand.env.config.core import KubeName
-
 NODE_SYSTEM_NAMESPACES = frozenset(
     {
         "kube-system",
@@ -62,7 +60,7 @@ class Node:
         kube: Kube,
         *,
         timeout: float,
-        name: KubeName,
+        name: str,
     ) -> Self | None:
         """Read one Kubernetes Node by name.
 
@@ -73,7 +71,7 @@ class Node:
         timeout : float
             The maximum time to wait for Kubernetes node queries in seconds.  If
             infinite, wait indefinitely.
-        name : str | None, optional
+        name : str
             Node name to read.
 
         Returns
@@ -861,10 +859,10 @@ class Node:
         candidates: builtins.list[Pod] = []
         blocked: builtins.list[str] = []
         for pod in pods:
-            identity = pod.identity
-            if identity is None or not pod.is_active or pod.is_mirror:
+            namespace = pod.namespace
+            name = pod.name
+            if not namespace or not name or not pod.is_active or pod.is_mirror:
                 continue
-            namespace, name = identity
 
             # DaemonSet pods are always skipped because they are managed to run
             # per-node; drain should not treat them as evictable workload pods
@@ -896,9 +894,10 @@ class Node:
         # convergence polling stay decoupled and predictable
         pending: set[tuple[str, str]] = set()
         for pod in candidates:
-            identity = pod.identity
-            if identity is not None:
-                pending.add(identity)
+            namespace = pod.namespace
+            name = pod.name
+            if namespace and name:
+                pending.add((namespace, name))
         for pod in candidates:
             while True:
                 try:
@@ -936,9 +935,10 @@ class Node:
                 raise TimeoutError(msg)
             live: set[tuple[str, str]] = set()
             for pod in await self.pods(kube=kube, timeout=remaining):
-                identity = pod.identity
-                if identity is not None:
-                    live.add(identity)
+                namespace = pod.namespace
+                name = pod.name
+                if namespace and name:
+                    live.add((namespace, name))
             pending.intersection_update(live)
             if pending:
                 # eviction admission is asynchronous, so we poll until all targeted

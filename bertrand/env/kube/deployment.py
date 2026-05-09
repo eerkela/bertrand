@@ -9,141 +9,19 @@ from typing import TYPE_CHECKING, Self
 
 import kubernetes
 
-from .api import ContainerSpec, Kube, ProbeSpec, VolumeSpec, _label_selector
+from .api import (
+    ContainerSpec,
+    Kube,
+    VolumeSpec,
+    _label_selector,
+    _pod_template_manifest,
+)
 
 DEPLOYMENT_WAIT_POLL_INTERVAL_SECONDS = 0.5
 
 if TYPE_CHECKING:
     import builtins
     from collections.abc import Collection, Mapping
-
-
-def _probe_manifest(probe: ProbeSpec) -> dict[str, object]:
-    payload = dict(probe.handler)
-    if probe.initial_delay_seconds is not None:
-        payload["initialDelaySeconds"] = probe.initial_delay_seconds
-    if probe.period_seconds is not None:
-        payload["periodSeconds"] = probe.period_seconds
-    if probe.failure_threshold is not None:
-        payload["failureThreshold"] = probe.failure_threshold
-    return payload
-
-
-def _container_manifest(container: ContainerSpec) -> dict[str, object]:
-    payload: dict[str, object] = {
-        "name": container.name,
-        "image": container.image,
-    }
-    if container.image_pull_policy is not None:
-        payload["imagePullPolicy"] = container.image_pull_policy
-    if container.command is not None:
-        payload["command"] = list(container.command)
-    if container.args is not None:
-        payload["args"] = list(container.args)
-    if container.ports:
-        payload["ports"] = [
-            {
-                "name": port.name,
-                "containerPort": port.container_port,
-                "protocol": port.protocol,
-            }
-            for port in container.ports
-        ]
-    if container.env:
-        env: list[dict[str, object]] = []
-        for var in container.env:
-            sources = sum(value is not None for value in (var.value, var.field_path))
-            if sources != 1:
-                msg = "environment variable must define exactly one source"
-                raise ValueError(msg)
-            item: dict[str, object] = {"name": var.name}
-            if var.value is not None:
-                item["value"] = var.value
-            elif var.field_path is not None:
-                item["valueFrom"] = {"fieldRef": {"fieldPath": var.field_path}}
-            env.append(item)
-        payload["env"] = env
-    if container.readiness_probe is not None:
-        payload["readinessProbe"] = _probe_manifest(container.readiness_probe)
-    if container.liveness_probe is not None:
-        payload["livenessProbe"] = _probe_manifest(container.liveness_probe)
-    if container.volume_mounts:
-        payload["volumeMounts"] = [
-            {
-                key: value
-                for key, value in {
-                    "name": mount.name,
-                    "mountPath": mount.mount_path,
-                    "readOnly": mount.read_only,
-                }.items()
-                if value is not None
-            }
-            for mount in container.volume_mounts
-        ]
-    if container.security_context is not None:
-        payload["securityContext"] = dict(container.security_context)
-    return payload
-
-
-def _volume_manifest(volume: VolumeSpec) -> dict[str, object]:
-    kinds = sum(
-        value is not None
-        for value in (
-            volume.empty_dir_config,
-            volume.config_map_name,
-            volume.persistent_volume_claim,
-            volume.host_path_path,
-        )
-    )
-    if kinds != 1:
-        msg = "Kubernetes volume must define exactly one source"
-        raise ValueError(msg)
-
-    payload: dict[str, object] = {"name": volume.name}
-    if volume.empty_dir_config is not None:
-        payload["emptyDir"] = dict(volume.empty_dir_config)
-    elif volume.config_map_name is not None:
-        config_map: dict[str, object] = {"name": volume.config_map_name}
-        if volume.config_map_optional is not None:
-            config_map["optional"] = volume.config_map_optional
-        payload["configMap"] = config_map
-    elif volume.persistent_volume_claim is not None:
-        payload["persistentVolumeClaim"] = {"claimName": volume.persistent_volume_claim}
-    elif volume.host_path_path is not None:
-        host_path: dict[str, object] = {"path": volume.host_path_path}
-        if volume.host_path_type is not None:
-            host_path["type"] = volume.host_path_type
-        payload["hostPath"] = host_path
-    return payload
-
-
-def _pod_template_manifest(
-    *,
-    labels: Mapping[str, str],
-    containers: Collection[ContainerSpec],
-    volumes: Collection[VolumeSpec],
-    automount_service_account_token: bool,
-    service_account_name: str | None,
-    node_selector: Mapping[str, str] | None,
-    host_pid: bool | None,
-) -> dict[str, object]:
-    spec: dict[str, object] = {
-        "automountServiceAccountToken": automount_service_account_token,
-        "containers": [_container_manifest(container) for container in containers],
-        "volumes": [_volume_manifest(volume) for volume in volumes],
-    }
-    if service_account_name is not None:
-        service_account_name = service_account_name.strip()
-        if service_account_name:
-            spec["serviceAccountName"] = service_account_name
-    if node_selector:
-        spec["nodeSelector"] = dict(node_selector)
-    if host_pid is not None:
-        spec["hostPID"] = host_pid
-    return {
-        "metadata": {"labels": dict(labels)},
-        "spec": spec,
-    }
 
 
 @dataclass(frozen=True)
@@ -479,21 +357,6 @@ class Deployment:
         return (metadata.namespace or "").strip() if metadata is not None else ""
 
     @property
-    def identity(self) -> tuple[str, str] | None:
-        """Return this Deployment's namespace/name identity.
-
-        Returns
-        -------
-        tuple[str, str] | None
-            `(namespace, name)` when both are available, otherwise `None`.
-        """
-        namespace = self.namespace
-        name = self.name
-        if not namespace or not name:
-            return None
-        return namespace, name
-
-    @property
     def labels(self) -> Mapping[str, str]:
         """Return this Deployment's labels.
 
@@ -576,7 +439,7 @@ class Deployment:
         return MappingProxyType(labels)
 
     async def refresh(self, kube: Kube, *, timeout: float) -> Self | None:
-        """Re-read this Deployment by identity.
+        """Re-read this Deployment by its metadata namespace and name.
 
         Parameters
         ----------
@@ -596,11 +459,11 @@ class Deployment:
             If this wrapper does not contain enough metadata to identify the
             Deployment, or if Kubernetes returns malformed data.
         """
-        identity = self.identity
-        if identity is None:
+        namespace = self.namespace
+        name = self.name
+        if not namespace or not name:
             msg = "cannot refresh Deployment with missing metadata.name/namespace"
             raise OSError(msg)
-        namespace, name = identity
         return await type(self).get(
             kube,
             namespace=namespace,
@@ -625,11 +488,11 @@ class Deployment:
             Deployment, if the delete request fails, or if Kubernetes returns
             malformed data.
         """
-        identity = self.identity
-        if identity is None:
+        namespace = self.namespace
+        name = self.name
+        if not namespace or not name:
             msg = "cannot delete Deployment with missing metadata.name/namespace"
             raise OSError(msg)
-        namespace, name = identity
         payload = await kube.run(
             lambda request_timeout: kube.apps.delete_namespaced_deployment(
                 name=name,
@@ -665,11 +528,14 @@ class Deployment:
         TimeoutError
             If the Deployment still exists when `timeout` expires.
         """
-        identity = self.identity
-        if identity is None:
-            msg = "cannot wait for Deployment deletion with missing identity"
+        namespace = self.namespace
+        name = self.name
+        if not namespace or not name:
+            msg = (
+                "cannot wait for Deployment deletion with missing "
+                "metadata.name/namespace"
+            )
             raise OSError(msg)
-        namespace, name = identity
         if timeout <= 0:
             msg = f"timed out waiting for Deployment {namespace}/{name} deletion"
             raise TimeoutError(msg)
@@ -713,18 +579,18 @@ class Deployment:
         ValueError
             If `minimum` is less than one.
         OSError
-            If this wrapper is missing identity or the Deployment disappears.
+            If this wrapper is missing metadata or the Deployment disappears.
         TimeoutError
             If the Deployment does not become available before `timeout`.
         """
         if minimum < 1:
             msg = "minimum available Deployment replicas must be positive"
             raise ValueError(msg)
-        identity = self.identity
-        if identity is None:
+        namespace = self.namespace
+        name = self.name
+        if not namespace or not name:
             msg = "cannot wait on Deployment with missing metadata.name/namespace"
             raise OSError(msg)
-        namespace, name = identity
         if timeout <= 0:
             msg = f"timed out waiting for Deployment {namespace}/{name} availability"
             raise TimeoutError(msg)
@@ -772,17 +638,17 @@ class Deployment:
         ValueError
             If `replicas` is negative.
         OSError
-            If this wrapper is missing identity, Kubernetes rejects the patch, or
+            If this wrapper is missing metadata, Kubernetes rejects the patch, or
             the Deployment disappears during refresh.
         """
         if replicas < 0:
             msg = "Deployment replicas cannot be negative"
             raise ValueError(msg)
-        identity = self.identity
-        if identity is None:
+        namespace = self.namespace
+        name = self.name
+        if not namespace or not name:
             msg = "cannot scale Deployment with missing metadata.name/namespace"
             raise OSError(msg)
-        namespace, name = identity
         payload = await kube.run(
             lambda request_timeout: kube.apps.patch_namespaced_deployment_scale(
                 name=name,

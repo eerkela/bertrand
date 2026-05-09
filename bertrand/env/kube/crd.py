@@ -10,101 +10,12 @@ from typing import TYPE_CHECKING, Any, Self, cast
 
 from kubernetes import client as kube_client
 
-from .api import Kube, _label_selector
+from .api import CustomResourceSpec, Kube, _label_selector
 
 CRD_WAIT_POLL_INTERVAL_SECONDS = 0.5
 
 if TYPE_CHECKING:
     import builtins
-
-
-@dataclass(frozen=True)
-class CustomResourceSpec:
-    """Intent description for one namespaced Kubernetes custom resource type.
-
-    Parameters
-    ----------
-    group : str
-        Kubernetes API group that owns the resource.
-    version : str
-        Served API version for the resource.
-    kind : str
-        Kubernetes kind name.
-    plural : str
-        Plural REST resource name.
-    labels : Mapping[str, str], optional
-        Default labels to apply to objects created through this spec.
-    """
-
-    group: str
-    version: str
-    kind: str
-    plural: str
-    labels: Mapping[str, str] = MappingProxyType({})
-
-    @property
-    def api_version(self) -> str:
-        """Return the fully qualified Kubernetes API version.
-
-        Returns
-        -------
-        str
-            Fully qualified Kubernetes API version for objects of this type.
-        """
-        return f"{self.group}/{self.version}"
-
-    def body(
-        self,
-        *,
-        namespace: str,
-        name: str,
-        spec: Mapping[str, object],
-        labels: Mapping[str, str] | None = None,
-        annotations: Mapping[str, str] | None = None,
-    ) -> dict[str, object]:
-        """Render an object body for create or patch operations.
-
-        Parameters
-        ----------
-        namespace : str
-            Namespace that owns the custom object.
-        name : str
-            Object name.
-        spec : Mapping[str, object]
-            Desired `spec` payload.
-        labels : Mapping[str, str] | None, optional
-            Labels to merge over the spec defaults.
-        annotations : Mapping[str, str] | None, optional
-            Metadata annotations to apply.
-
-        Returns
-        -------
-        dict[str, object]
-            Kubernetes custom-object payload.
-        """
-        merged_labels = dict(self.labels)
-        merged_labels.update(labels or {})
-        return {
-            "apiVersion": self.api_version,
-            "kind": self.kind,
-            "metadata": {
-                "name": name,
-                "namespace": namespace,
-                "labels": merged_labels,
-                "annotations": dict(annotations or {}),
-            },
-            "spec": dict(spec),
-        }
-
-    def client(self) -> CustomResourceClient:
-        """Create a bound client for this custom resource type.
-
-        Returns
-        -------
-        CustomResourceClient
-            Client whose operations are bound to this resource spec.
-        """
-        return CustomResourceClient(self)
 
 
 @dataclass(frozen=True)
@@ -118,6 +29,29 @@ class CustomResourceClient:
     """
 
     spec: CustomResourceSpec
+
+    def _body(
+        self,
+        *,
+        namespace: str,
+        name: str,
+        spec: Mapping[str, object],
+        labels: Mapping[str, str] | None,
+        annotations: Mapping[str, str] | None,
+    ) -> dict[str, object]:
+        merged_labels = dict(self.spec.labels)
+        merged_labels.update(labels or {})
+        return {
+            "apiVersion": self.spec.api_version,
+            "kind": self.spec.kind,
+            "metadata": {
+                "name": name,
+                "namespace": namespace,
+                "labels": merged_labels,
+                "annotations": dict(annotations or {}),
+            },
+            "spec": dict(spec),
+        }
 
     async def get(
         self,
@@ -226,13 +160,13 @@ class CustomResourceClient:
         NamespacedCustomObject
             Wrapped created custom object.
         """
-        return await NamespacedCustomObject.create(
+        return await NamespacedCustomObject._create(
             kube,
             group=self.spec.group,
             version=self.spec.version,
             namespace=namespace,
             plural=self.spec.plural,
-            body=self.spec.body(
+            body=self._body(
                 namespace=namespace,
                 name=name,
                 spec=spec,
@@ -277,13 +211,13 @@ class CustomResourceClient:
         NamespacedCustomObject
             Wrapped created or patched custom object.
         """
-        return await NamespacedCustomObject.upsert(
+        return await NamespacedCustomObject._upsert(
             kube,
             group=self.spec.group,
             version=self.spec.version,
             namespace=namespace,
             plural=self.spec.plural,
-            body=self.spec.body(
+            body=self._body(
                 namespace=namespace,
                 name=name,
                 spec=spec,
@@ -482,7 +416,7 @@ class NamespacedCustomObject:
         return out
 
     @classmethod
-    async def create(
+    async def _create(
         cls,
         kube: Kube,
         *,
@@ -542,7 +476,7 @@ class NamespacedCustomObject:
         return cls(group=group, version=version, plural=plural, obj=payload)
 
     @classmethod
-    async def upsert(
+    async def _upsert(
         cls,
         kube: Kube,
         *,
@@ -593,7 +527,7 @@ class NamespacedCustomObject:
             msg = "custom object body must define metadata.name"
             raise OSError(msg)
         try:
-            return await cls.create(
+            return await cls._create(
                 kube,
                 group=group,
                 version=version,
@@ -810,6 +744,56 @@ class CustomResourceDefinition:
         return cls(obj=payload)
 
     @classmethod
+    async def list(
+        cls,
+        kube: Kube,
+        *,
+        timeout: float,
+        labels: Mapping[str, str] | None = None,
+    ) -> builtins.list[Self]:
+        """List Kubernetes CustomResourceDefinitions with optional filtering.
+
+        Parameters
+        ----------
+        kube : Kube
+            Active Kubernetes API context.
+        timeout : float
+            Maximum request budget in seconds. If infinite, wait indefinitely.
+        labels : Mapping[str, str] | None, optional
+            Optional label selector key/value pairs.
+
+        Returns
+        -------
+        list[CustomResourceDefinition]
+            Wrapped CRDs matching the requested filters.
+
+        Raises
+        ------
+        OSError
+            If Kubernetes returns malformed data or a list call fails.
+        """
+        payload = await kube.run(
+            lambda request_timeout: kube.apiextensions.list_custom_resource_definition(
+                label_selector=_label_selector(labels),
+                _request_timeout=request_timeout,
+            ),
+            timeout=timeout,
+            context="failed to list CustomResourceDefinitions",
+        )
+        if payload is None:
+            return []
+        if not isinstance(payload, kube_client.V1CustomResourceDefinitionList):
+            msg = "malformed Kubernetes CRD list payload"
+            raise OSError(msg)
+        out: builtins.list[Self] = []
+        for item in payload.items or []:
+            if not isinstance(item, kube_client.V1CustomResourceDefinition):
+                msg = "malformed Kubernetes CRD entry in list payload"
+                raise OSError(msg)
+            out.append(cls(obj=item))
+        return out
+
+    @classmethod
     async def upsert(
         cls,
         kube: Kube,
@@ -954,6 +938,21 @@ class CustomResourceDefinition:
         return MappingProxyType(metadata.labels)
 
     @property
+    def annotations(self) -> Mapping[str, str]:
+        """Return this CRD's annotations.
+
+        Returns
+        -------
+        Mapping[str, str]
+            Read-only view of `metadata.annotations`, or an empty mapping when
+            unavailable.
+        """
+        metadata = self.obj.metadata
+        if metadata is None or metadata.annotations is None:
+            return MappingProxyType({})
+        return MappingProxyType(metadata.annotations)
+
+    @property
     def is_established(self) -> bool:
         """Return whether this CRD is established.
 
@@ -994,6 +993,78 @@ class CustomResourceDefinition:
             msg = "cannot refresh CRD with missing metadata.name"
             raise OSError(msg)
         return await type(self).get(kube, name=name, timeout=timeout)
+
+    async def delete(self, kube: Kube, *, timeout: float) -> None:
+        """Delete this CRD from the cluster.
+
+        Parameters
+        ----------
+        kube : Kube
+            Active Kubernetes API context.
+        timeout : float
+            Maximum request budget in seconds. If infinite, wait indefinitely.
+
+        Raises
+        ------
+        OSError
+            If this wrapper does not contain enough metadata to identify the CRD, if
+            the delete request fails, or if Kubernetes returns malformed data.
+        """
+        name = self.name
+        if not name:
+            msg = "cannot delete CRD with missing metadata.name"
+            raise OSError(msg)
+        payload = await kube.run(
+            lambda request_timeout: (
+                kube.apiextensions.delete_custom_resource_definition(
+                    name=name,
+                    body=kube_client.V1DeleteOptions(),
+                    _request_timeout=request_timeout,
+                )
+            ),
+            timeout=timeout,
+            context=f"failed to delete CustomResourceDefinition {name}",
+        )
+        if payload is not None and not isinstance(payload, kube_client.V1Status):
+            msg = f"malformed Kubernetes response while deleting CRD {name}"
+            raise OSError(msg)
+
+    async def wait_deleted(self, kube: Kube, *, timeout: float) -> None:
+        """Wait until this CRD is deleted from the cluster.
+
+        Parameters
+        ----------
+        kube : Kube
+            Active Kubernetes API context.
+        timeout : float
+            Maximum wait time in seconds. Must be positive.
+
+        Raises
+        ------
+        OSError
+            If this wrapper does not contain enough metadata to identify the CRD, or
+            if a refresh request returns malformed data.
+        TimeoutError
+            If the CRD still exists when `timeout` expires.
+        """
+        name = self.name
+        if not name:
+            msg = "cannot wait for CRD deletion with missing metadata.name"
+            raise OSError(msg)
+        if timeout <= 0:
+            msg = f"timed out waiting for CRD {name!r} deletion"
+            raise TimeoutError(msg)
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        while True:
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                msg = f"timed out waiting for CRD {name!r} deletion"
+                raise TimeoutError(msg)
+            live = await self.refresh(kube, timeout=remaining)
+            if live is None:
+                return
+            await asyncio.sleep(min(CRD_WAIT_POLL_INTERVAL_SECONDS, remaining))
 
     async def wait_established(self, kube: Kube, *, timeout: float) -> Self:
         """Wait until this CRD reports `Established=True`.

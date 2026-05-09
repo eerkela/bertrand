@@ -5,8 +5,10 @@ from .api import (
     CLUSTER_REGISTRY_READY_VALUE,
     ContainerPortSpec,
     ContainerSpec,
+    CustomResourceSpec,
     EnvVarSpec,
     Kube,
+    PolicyRuleSpec,
     ProbeSpec,
     ServicePortSpec,
     VolumeMountSpec,
@@ -67,19 +69,21 @@ from .ceph import (
     run_ceph_capacity_agent,
     run_ceph_capacity_controller,
 )
-from .config_map import ConfigMap
+from .configmap import ConfigMap
 from .crd import (
     CustomResourceClient,
     CustomResourceDefinition,
-    CustomResourceSpec,
     NamespacedCustomObject,
 )
 from .daemonset import DaemonSet
 from .deployment import Deployment
+from .event import Event
 from .job import Job
+from .lease import Lease
+from .namespace import Namespace
 from .node import Node
 from .pod import Pod
-from .rbac import ClusterRole, ClusterRoleBinding, PolicyRuleSpec
+from .rbac import ClusterRole, ClusterRoleBinding, Role, RoleBinding
 from .secret import Secret
 from .service import Service
 from .service_account import ServiceAccount
@@ -137,11 +141,14 @@ __all__ = [
     "Deployment",
     "DevicePermission",
     "EnvVarSpec",
+    "Event",
     "ImageRepository",
     "Job",
     "Kube",
+    "Lease",
     "LoopOSDSpec",
     "MountInfo",
+    "Namespace",
     "NamespacedCustomObject",
     "Node",
     "NodeCapacitySnapshot",
@@ -152,6 +159,8 @@ __all__ = [
     "ProbeSpec",
     "RepoCredentials",
     "RepoVolume",
+    "Role",
+    "RoleBinding",
     "Secret",
     "Service",
     "ServiceAccount",

@@ -15,8 +15,6 @@ if TYPE_CHECKING:
     import builtins
     from collections.abc import Collection, Mapping
 
-    from bertrand.env.config.core import KubeName
-
 POD_MIRROR_ANNOTATION = "kubernetes.io/config.mirror"
 POD_SUPPORTED_CONTROLLER_KINDS = frozenset(
     {
@@ -51,7 +49,7 @@ class Pod:
         *,
         namespace: str,
         timeout: float,
-        name: KubeName,
+        name: str,
     ) -> Self | None:
         """Read one Kubernetes Pod by name.
 
@@ -202,21 +200,6 @@ class Pod:
         """
         metadata = self.obj.metadata
         return (metadata.namespace or "").strip() if metadata is not None else ""
-
-    @property
-    def identity(self) -> tuple[str, str] | None:
-        """Return the Pod namespace/name identity.
-
-        Returns
-        -------
-        tuple[str, str] | None
-            `(namespace, name)` when both are available, otherwise `None`.
-        """
-        namespace = self.namespace
-        name = self.name
-        if not namespace or not name:
-            return None
-        return namespace, name
 
     @property
     def labels(self) -> Mapping[str, str]:
@@ -387,7 +370,7 @@ class Pod:
         return tuple(out)
 
     async def refresh(self, kube: Kube, *, timeout: float) -> Self | None:
-        """Re-read this pod by identity.
+        """Re-read this pod by its metadata namespace and name.
 
         Parameters
         ----------
@@ -404,13 +387,13 @@ class Pod:
         Raises
         ------
         OSError
-            If this pod has no resolvable `(namespace, name)` identity.
+            If this pod has no resolvable metadata namespace and name.
         """
-        identity = self.identity
-        if identity is None:
+        namespace = self.namespace
+        name = self.name
+        if not namespace or not name:
             msg = "cannot refresh pod with missing metadata.name/namespace"
             raise OSError(msg)
-        namespace, name = identity
         return await type(self).get(
             kube,
             namespace=namespace,
@@ -431,15 +414,15 @@ class Pod:
         Raises
         ------
         OSError
-            If this pod has no resolvable `(namespace, name)` identity.
+            If this pod has no resolvable metadata namespace and name.
         TimeoutError
             If deletion does not converge within `timeout`.
         """
-        identity = self.identity
-        if identity is None:
+        namespace = self.namespace
+        name = self.name
+        if not namespace or not name:
             msg = "cannot wait for deletion of pod with missing metadata.name/namespace"
             raise OSError(msg)
-        namespace, name = identity
         if timeout <= 0:
             msg = f"timed out waiting for pod {namespace}/{name} deletion"
             raise TimeoutError(msg)
@@ -473,19 +456,19 @@ class Pod:
         Raises
         ------
         OSError
-            If this pod has no resolvable `(namespace, name)` identity, or if it is
+            If this pod has no resolvable metadata namespace and name, or if it is
             deleted before reaching a terminal phase.
         TimeoutError
             If terminal phase convergence does not complete within `timeout`.
         """
-        identity = self.identity
-        if identity is None:
+        namespace = self.namespace
+        name = self.name
+        if not namespace or not name:
             msg = (
                 "cannot wait for terminal phase of pod with missing "
                 "metadata.name/namespace"
             )
             raise OSError(msg)
-        namespace, name = identity
         if timeout <= 0:
             msg = f"timed out waiting for pod {namespace}/{name} terminal phase"
             raise TimeoutError(msg)
@@ -525,14 +508,13 @@ class Pod:
         Raises
         ------
         OSError
-            If pod identity is incomplete or eviction fails.
+            If pod metadata is incomplete or eviction fails.
         """
-        identity = self.identity
-        if identity is None:
+        namespace = self.namespace
+        name = self.name
+        if not namespace or not name:
             msg = "cannot evict pod with missing metadata.name/namespace"
             raise OSError(msg)
-
-        namespace, name = identity
 
         # policy/v1 eviction is preferred over delete because it respects
         # PodDisruptionBudgets and communicates scheduling intent explicitly.
@@ -566,13 +548,13 @@ class Pod:
         Raises
         ------
         OSError
-            If this pod has no resolvable `(namespace, name)` identity.
+            If this pod has no resolvable metadata namespace and name.
         """
-        identity = self.identity
-        if identity is None:
+        namespace = self.namespace
+        name = self.name
+        if not namespace or not name:
             msg = "cannot delete pod with missing metadata.name/namespace"
             raise OSError(msg)
-        namespace, name = identity
 
         payload = await kube.run(
             lambda request_timeout: kube.core.delete_namespaced_pod(

@@ -2,16 +2,22 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Self
 
 from kubernetes import client as kube_client
 
+from .api import _label_selector
+
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    import builtins
+    from collections.abc import Collection, Mapping
 
     from .api import Kube
+
+SERVICE_ACCOUNT_WAIT_POLL_INTERVAL_SECONDS = 0.5
 
 
 @dataclass(frozen=True)
@@ -78,6 +84,87 @@ class ServiceAccount:
             )
             raise OSError(msg)
         return cls(obj=payload)
+
+    @classmethod
+    async def list(
+        cls,
+        kube: Kube,
+        *,
+        timeout: float,
+        namespaces: Collection[str] | None = None,
+        labels: Mapping[str, str] | None = None,
+    ) -> builtins.list[Self]:
+        """List Kubernetes ServiceAccounts with optional filtering.
+
+        Parameters
+        ----------
+        kube : Kube
+            Active Kubernetes API context.
+        timeout : float
+            Maximum request budget in seconds. If infinite, wait indefinitely.
+        namespaces : Collection[str] | None, optional
+            Optional namespace filters. `None` queries all namespaces.
+        labels : Mapping[str, str] | None, optional
+            Optional label selector key/value pairs.
+
+        Returns
+        -------
+        list[ServiceAccount]
+            Wrapped ServiceAccounts matching the requested filters.
+
+        Raises
+        ------
+        OSError
+            If Kubernetes returns malformed data or a list call fails.
+        """
+        label_selector = _label_selector(labels)
+        payloads: builtins.list[kube_client.V1ServiceAccountList] = []
+        if namespaces is None:
+            payload = await kube.run(
+                lambda request_timeout: (
+                    kube.core.list_service_account_for_all_namespaces(
+                        label_selector=label_selector,
+                        _request_timeout=request_timeout,
+                    )
+                ),
+                timeout=timeout,
+                context="failed to list ServiceAccounts across all namespaces",
+            )
+            if payload is not None:
+                payloads.append(payload)
+        else:
+            normalized = {namespace.strip() for namespace in namespaces}
+            normalized.discard("")
+            if not normalized:
+                return []
+            for namespace in sorted(normalized):
+                payload = await kube.run(
+                    lambda request_timeout, namespace=namespace: (
+                        kube.core.list_namespaced_service_account(
+                            namespace=namespace,
+                            label_selector=label_selector,
+                            _request_timeout=request_timeout,
+                        )
+                    ),
+                    timeout=timeout,
+                    context=(
+                        f"failed to list ServiceAccounts in namespace {namespace!r}"
+                    ),
+                )
+                if payload is not None:
+                    payloads.append(payload)
+
+        out: builtins.list[Self] = []
+        for payload in payloads:
+            if not isinstance(payload, kube_client.V1ServiceAccountList):
+                msg = "malformed Kubernetes ServiceAccount list payload"
+                raise OSError(msg)
+            for item in payload.items or []:
+                if not isinstance(item, kube_client.V1ServiceAccount):
+                    msg = "malformed Kubernetes ServiceAccount entry in list payload"
+                    raise OSError(msg)
+                out.append(cls(obj=item))
+        return out
 
     @staticmethod
     def _manifest(
@@ -222,3 +309,136 @@ class ServiceAccount:
         if metadata is None or metadata.labels is None:
             return MappingProxyType({})
         return MappingProxyType(metadata.labels)
+
+    @property
+    def annotations(self) -> Mapping[str, str]:
+        """Return the ServiceAccount annotations.
+
+        Returns
+        -------
+        Mapping[str, str]
+            Read-only view of `metadata.annotations`, or an empty mapping when
+            unavailable.
+        """
+        metadata = self.obj.metadata
+        if metadata is None or metadata.annotations is None:
+            return MappingProxyType({})
+        return MappingProxyType(metadata.annotations)
+
+    async def refresh(self, kube: Kube, *, timeout: float) -> Self | None:
+        """Re-read this ServiceAccount by its metadata namespace and name.
+
+        Parameters
+        ----------
+        kube : Kube
+            Active Kubernetes API context.
+        timeout : float
+            Maximum request budget in seconds. If infinite, wait indefinitely.
+
+        Returns
+        -------
+        ServiceAccount | None
+            Fresh wrapper for the same ServiceAccount, or `None` if it no longer
+            exists.
+
+        Raises
+        ------
+        OSError
+            If this wrapper does not contain enough metadata to identify the
+            ServiceAccount, or if Kubernetes returns malformed data.
+        """
+        namespace = self.namespace
+        name = self.name
+        if not namespace or not name:
+            msg = "cannot refresh ServiceAccount with missing metadata.name/namespace"
+            raise OSError(msg)
+        return await type(self).get(
+            kube,
+            namespace=namespace,
+            name=name,
+            timeout=timeout,
+        )
+
+    async def delete(self, kube: Kube, *, timeout: float) -> None:
+        """Delete this ServiceAccount from the cluster.
+
+        Parameters
+        ----------
+        kube : Kube
+            Active Kubernetes API context.
+        timeout : float
+            Maximum request budget in seconds. If infinite, wait indefinitely.
+
+        Raises
+        ------
+        OSError
+            If this wrapper does not contain enough metadata to identify the
+            ServiceAccount, if the delete request fails, or if Kubernetes returns
+            malformed data.
+        """
+        namespace = self.namespace
+        name = self.name
+        if not namespace or not name:
+            msg = "cannot delete ServiceAccount with missing metadata.name/namespace"
+            raise OSError(msg)
+        payload = await kube.run(
+            lambda request_timeout: kube.core.delete_namespaced_service_account(
+                name=name,
+                namespace=namespace,
+                body=kube_client.V1DeleteOptions(),
+                _request_timeout=request_timeout,
+            ),
+            timeout=timeout,
+            context=f"failed to delete ServiceAccount {namespace}/{name}",
+        )
+        if payload is not None and not isinstance(payload, kube_client.V1Status):
+            msg = (
+                "malformed Kubernetes response while deleting ServiceAccount "
+                f"{namespace}/{name}"
+            )
+            raise OSError(msg)
+
+    async def wait_deleted(self, kube: Kube, *, timeout: float) -> None:
+        """Wait until this ServiceAccount is deleted from the cluster.
+
+        Parameters
+        ----------
+        kube : Kube
+            Active Kubernetes API context.
+        timeout : float
+            Maximum wait time in seconds. Must be positive.
+
+        Raises
+        ------
+        OSError
+            If this wrapper does not contain enough metadata to identify the
+            ServiceAccount, or if a refresh request returns malformed data.
+        TimeoutError
+            If the ServiceAccount still exists when `timeout` expires.
+        """
+        namespace = self.namespace
+        name = self.name
+        if not namespace or not name:
+            msg = (
+                "cannot wait for ServiceAccount deletion with missing "
+                "metadata.name/namespace"
+            )
+            raise OSError(msg)
+        if timeout <= 0:
+            msg = f"timed out waiting for ServiceAccount {namespace}/{name} deletion"
+            raise TimeoutError(msg)
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        while True:
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                msg = (
+                    f"timed out waiting for ServiceAccount {namespace}/{name} deletion"
+                )
+                raise TimeoutError(msg)
+            live = await self.refresh(kube, timeout=remaining)
+            if live is None:
+                return
+            await asyncio.sleep(
+                min(SERVICE_ACCOUNT_WAIT_POLL_INTERVAL_SECONDS, remaining)
+            )

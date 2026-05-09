@@ -9,7 +9,14 @@ from typing import TYPE_CHECKING, Literal, Self
 
 import kubernetes
 
-from .api import ContainerSpec, Kube, ProbeSpec, VolumeSpec, _label_selector
+from .api import (
+    ContainerSpec,
+    Kube,
+    VolumeSpec,
+    _container_manifest,
+    _label_selector,
+    _volume_manifest,
+)
 
 if TYPE_CHECKING:
     import builtins
@@ -18,105 +25,6 @@ if TYPE_CHECKING:
 
 JOB_WAIT_POLL_INTERVAL_SECONDS = 0.5
 type RestartPolicy = Literal["Never", "OnFailure"]
-
-
-def _probe_manifest(probe: ProbeSpec) -> dict[str, object]:
-    payload = dict(probe.handler)
-    if probe.initial_delay_seconds is not None:
-        payload["initialDelaySeconds"] = probe.initial_delay_seconds
-    if probe.period_seconds is not None:
-        payload["periodSeconds"] = probe.period_seconds
-    if probe.failure_threshold is not None:
-        payload["failureThreshold"] = probe.failure_threshold
-    return payload
-
-
-def _container_manifest(container: ContainerSpec) -> dict[str, object]:
-    payload: dict[str, object] = {
-        "name": container.name,
-        "image": container.image,
-    }
-    if container.image_pull_policy is not None:
-        payload["imagePullPolicy"] = container.image_pull_policy
-    if container.command is not None:
-        payload["command"] = list(container.command)
-    if container.args is not None:
-        payload["args"] = list(container.args)
-    if container.ports:
-        payload["ports"] = [
-            {
-                "name": port.name,
-                "containerPort": port.container_port,
-                "protocol": port.protocol,
-            }
-            for port in container.ports
-        ]
-    if container.env:
-        env: list[dict[str, object]] = []
-        for var in container.env:
-            sources = sum(value is not None for value in (var.value, var.field_path))
-            if sources != 1:
-                msg = "environment variable must define exactly one source"
-                raise ValueError(msg)
-            item: dict[str, object] = {"name": var.name}
-            if var.value is not None:
-                item["value"] = var.value
-            elif var.field_path is not None:
-                item["valueFrom"] = {"fieldRef": {"fieldPath": var.field_path}}
-            env.append(item)
-        payload["env"] = env
-    if container.readiness_probe is not None:
-        payload["readinessProbe"] = _probe_manifest(container.readiness_probe)
-    if container.liveness_probe is not None:
-        payload["livenessProbe"] = _probe_manifest(container.liveness_probe)
-    if container.volume_mounts:
-        payload["volumeMounts"] = [
-            {
-                key: value
-                for key, value in {
-                    "name": mount.name,
-                    "mountPath": mount.mount_path,
-                    "readOnly": mount.read_only,
-                }.items()
-                if value is not None
-            }
-            for mount in container.volume_mounts
-        ]
-    if container.security_context is not None:
-        payload["securityContext"] = dict(container.security_context)
-    return payload
-
-
-def _volume_manifest(volume: VolumeSpec) -> dict[str, object]:
-    kinds = sum(
-        value is not None
-        for value in (
-            volume.empty_dir_config,
-            volume.config_map_name,
-            volume.persistent_volume_claim,
-            volume.host_path_path,
-        )
-    )
-    if kinds != 1:
-        msg = "Kubernetes volume must define exactly one source"
-        raise ValueError(msg)
-
-    payload: dict[str, object] = {"name": volume.name}
-    if volume.empty_dir_config is not None:
-        payload["emptyDir"] = dict(volume.empty_dir_config)
-    elif volume.config_map_name is not None:
-        config_map: dict[str, object] = {"name": volume.config_map_name}
-        if volume.config_map_optional is not None:
-            config_map["optional"] = volume.config_map_optional
-        payload["configMap"] = config_map
-    elif volume.persistent_volume_claim is not None:
-        payload["persistentVolumeClaim"] = {"claimName": volume.persistent_volume_claim}
-    elif volume.host_path_path is not None:
-        host_path: dict[str, object] = {"path": volume.host_path_path}
-        if volume.host_path_type is not None:
-            host_path["type"] = volume.host_path_type
-        payload["hostPath"] = host_path
-    return payload
 
 
 @dataclass(frozen=True)
@@ -522,7 +430,7 @@ class Job:
         return None
 
     async def refresh(self, kube: Kube, *, timeout: float) -> Self | None:
-        """Re-read this Job by identity.
+        """Re-read this Job by its metadata namespace and name.
 
         Parameters
         ----------
@@ -567,7 +475,7 @@ class Job:
         Raises
         ------
         OSError
-            If this wrapper is missing identity, the delete request fails, or
+            If this wrapper is missing metadata, the delete request fails, or
             Kubernetes returns malformed data.
         """
         namespace = self.namespace
@@ -610,7 +518,7 @@ class Job:
         namespace = self.namespace
         name = self.name
         if not namespace or not name:
-            msg = "cannot wait for Job deletion with missing identity"
+            msg = "cannot wait for Job deletion with missing metadata.name/namespace"
             raise OSError(msg)
         if timeout <= 0:
             msg = f"timed out waiting for Job {namespace}/{name} deletion"
@@ -645,7 +553,7 @@ class Job:
         Raises
         ------
         OSError
-            If this wrapper is missing identity, the Job disappears, or the Job
+            If this wrapper is missing metadata, the Job disappears, or the Job
             reports a terminal failure condition.
         TimeoutError
             If the Job does not complete before `timeout`.
@@ -653,7 +561,7 @@ class Job:
         namespace = self.namespace
         name = self.name
         if not namespace or not name:
-            msg = "cannot wait for Job completion with missing identity"
+            msg = "cannot wait for Job completion with missing metadata.name/namespace"
             raise OSError(msg)
         if timeout <= 0:
             msg = f"timed out waiting for Job {namespace}/{name} completion"

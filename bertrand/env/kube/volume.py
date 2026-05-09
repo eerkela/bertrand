@@ -7,6 +7,7 @@ import re
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from pathlib import PosixPath
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Self
 
 import kubernetes
@@ -16,8 +17,6 @@ from .api import Kube, _label_selector
 if TYPE_CHECKING:
     import builtins
     from collections.abc import Collection, Mapping
-
-    from bertrand.env.config.core import KubeName
 
 PVC_GROW_RETRIES = 4
 VOLUME_WAIT_POLL_INTERVAL_SECONDS = 0.5
@@ -56,10 +55,10 @@ class StorageClass:
     @classmethod
     async def get(
         cls,
-        *,
         kube: Kube,
+        *,
         timeout: float,
-        name: KubeName,
+        name: str,
     ) -> Self | None:
         """Read one Kubernetes StorageClass by name.
 
@@ -100,8 +99,8 @@ class StorageClass:
     @classmethod
     async def list(
         cls,
-        *,
         kube: Kube,
+        *,
         timeout: float,
         labels: Mapping[str, str] | None = None,
     ) -> builtins.list[Self]:
@@ -150,8 +149,8 @@ class StorageClass:
     @classmethod
     async def select(
         cls,
-        *,
         kube: Kube,
+        *,
         timeout: float,
         preferences: Collection[str],
         require_expansion: bool = False,
@@ -190,7 +189,7 @@ class StorageClass:
             msg = "storage class preferences cannot be empty"
             raise ValueError(msg)
         for name in normalized:
-            storage = await cls.get(kube=kube, timeout=timeout, name=name)
+            storage = await cls.get(kube, timeout=timeout, name=name)
             if storage is None:
                 continue
             if require_expansion and not storage.allow_volume_expansion:
@@ -256,7 +255,7 @@ class StorageClass:
         Mapping[str, str]
             StorageClass parameters, or an empty mapping when unavailable.
         """
-        return self.obj.parameters or {}
+        return MappingProxyType(self.obj.parameters or {})
 
 
 @dataclass(frozen=True)
@@ -280,11 +279,11 @@ class PersistentVolumeClaim:
     @classmethod
     async def get(
         cls,
-        *,
         kube: Kube,
+        *,
         namespace: str,
         timeout: float,
-        name: KubeName,
+        name: str,
     ) -> Self | None:
         """Read one Kubernetes PersistentVolumeClaim by name.
 
@@ -296,7 +295,7 @@ class PersistentVolumeClaim:
             Namespace that owns the claim.
         timeout : float
             Maximum request budget in seconds. If infinite, wait indefinitely.
-        name : KubeName
+        name : str
             Claim name to read.
 
         Returns
@@ -331,8 +330,8 @@ class PersistentVolumeClaim:
     @classmethod
     async def list(
         cls,
-        *,
         kube: Kube,
+        *,
         timeout: float,
         namespaces: Collection[str] | None = None,
         labels: Mapping[str, str] | None = None,
@@ -445,8 +444,8 @@ class PersistentVolumeClaim:
     @classmethod
     async def upsert(
         cls,
-        *,
         kube: Kube,
+        *,
         namespace: str,
         name: str,
         access_modes: Collection[str],
@@ -548,7 +547,7 @@ class PersistentVolumeClaim:
             return cls(obj=payload)
 
         live = await cls.get(
-            kube=kube,
+            kube,
             namespace=namespace,
             timeout=deadline - loop.time(),
             name=name,
@@ -576,8 +575,8 @@ class PersistentVolumeClaim:
         labels: Mapping[str, str] | None,
         annotations: Mapping[str, str] | None,
     ) -> None:
-        identity = self.identity
-        namespace, name = identity if identity is not None else ("", "")
+        namespace = self.namespace
+        name = self.name
         if self.storage_class_name != storage_class:
             msg = (
                 f"PVC {namespace}/{name} uses storage class "
@@ -635,18 +634,18 @@ class PersistentVolumeClaim:
             If the claim cannot be identified or resize convergence fails.
         """
         new_size = parse_pvc_size(requested)
-        identity = self.identity
-        if identity is None:
+        namespace = self.namespace
+        name = self.name
+        if not namespace or not name:
             msg = "cannot resize PVC with missing metadata.name/namespace"
             raise OSError(msg)
-        namespace, name = identity
         patch = {"spec": {"resources": {"requests": {"storage": requested}}}}
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
 
         for attempt in range(PVC_GROW_RETRIES):
             live = await type(self).get(
-                kube=kube,
+                kube,
                 namespace=namespace,
                 timeout=deadline - loop.time(),
                 name=name,
@@ -684,7 +683,7 @@ class PersistentVolumeClaim:
                 raise
 
             live = await type(self).get(
-                kube=kube,
+                kube,
                 namespace=namespace,
                 timeout=deadline - loop.time(),
                 name=name,
@@ -704,7 +703,7 @@ class PersistentVolumeClaim:
         msg = f"PVC {name!r} did not converge to requested size {requested!r}"
         raise OSError(msg)
 
-    async def delete(self, *, kube: Kube, timeout: float) -> None:
+    async def delete(self, kube: Kube, *, timeout: float) -> None:
         """Delete this PVC from the cluster.
 
         Parameters
@@ -717,13 +716,13 @@ class PersistentVolumeClaim:
         Raises
         ------
         OSError
-            If this wrapper is missing identity or the delete request fails.
+            If this wrapper is missing metadata or the delete request fails.
         """
-        identity = self.identity
-        if identity is None:
+        namespace = self.namespace
+        name = self.name
+        if not namespace or not name:
             msg = "cannot delete PVC with missing metadata.name/namespace"
             raise OSError(msg)
-        namespace, name = identity
         await kube.run(
             lambda request_timeout: kube.core.delete_namespaced_persistent_volume_claim(
                 name=name,
@@ -735,8 +734,8 @@ class PersistentVolumeClaim:
             context=f"failed to delete PVC {name!r}",
         )
 
-    async def refresh(self, *, kube: Kube, timeout: float) -> Self | None:
-        """Re-read this PVC by identity.
+    async def refresh(self, kube: Kube, *, timeout: float) -> Self | None:
+        """Re-read this PVC by its metadata namespace and name.
 
         Parameters
         ----------
@@ -753,21 +752,21 @@ class PersistentVolumeClaim:
         Raises
         ------
         OSError
-            If this wrapper is missing identity or Kubernetes returns malformed data.
+            If this wrapper is missing metadata or Kubernetes returns malformed data.
         """
-        identity = self.identity
-        if identity is None:
+        namespace = self.namespace
+        name = self.name
+        if not namespace or not name:
             msg = "cannot refresh PVC with missing metadata.name/namespace"
             raise OSError(msg)
-        namespace, name = identity
         return await type(self).get(
-            kube=kube,
+            kube,
             namespace=namespace,
             timeout=timeout,
             name=name,
         )
 
-    async def wait_bound(self, *, kube: Kube, timeout: float) -> Self:
+    async def wait_bound(self, kube: Kube, *, timeout: float) -> Self:
         """Wait until this PVC reaches a bound state.
 
         Parameters
@@ -785,18 +784,18 @@ class PersistentVolumeClaim:
         Raises
         ------
         OSError
-            If this wrapper is missing identity or the claim disappears.
+            If this wrapper is missing metadata or the claim disappears.
         TimeoutError
             If the claim does not bind before `timeout`.
         """
-        identity = self.identity
-        if identity is None:
+        namespace = self.namespace
+        name = self.name
+        if not namespace or not name:
             msg = (
                 "cannot wait for bound state of PVC with missing "
                 "metadata.name/namespace"
             )
             raise OSError(msg)
-        namespace, name = identity
         if timeout <= 0:
             msg = f"timed out waiting for PVC {namespace}/{name} binding"
             raise TimeoutError(msg)
@@ -807,7 +806,7 @@ class PersistentVolumeClaim:
             if remaining <= 0:
                 msg = f"timed out waiting for PVC {namespace}/{name} binding"
                 raise TimeoutError(msg)
-            live = await self.refresh(kube=kube, timeout=remaining)
+            live = await self.refresh(kube, timeout=remaining)
             if live is None:
                 msg = f"PVC {name!r} disappeared before binding"
                 raise OSError(msg)
@@ -815,7 +814,7 @@ class PersistentVolumeClaim:
                 return live
             await asyncio.sleep(min(VOLUME_WAIT_POLL_INTERVAL_SECONDS, remaining))
 
-    async def wait_deleted(self, *, kube: Kube, timeout: float) -> None:
+    async def wait_deleted(self, kube: Kube, *, timeout: float) -> None:
         """Wait until this PVC is deleted.
 
         Parameters
@@ -828,15 +827,15 @@ class PersistentVolumeClaim:
         Raises
         ------
         OSError
-            If this wrapper is missing identity or Kubernetes returns malformed data.
+            If this wrapper is missing metadata or Kubernetes returns malformed data.
         TimeoutError
             If the claim still exists when `timeout` expires.
         """
-        identity = self.identity
-        if identity is None:
+        namespace = self.namespace
+        name = self.name
+        if not namespace or not name:
             msg = "cannot wait for deletion of PVC with missing metadata.name/namespace"
             raise OSError(msg)
-        namespace, name = identity
         if timeout <= 0:
             msg = f"timed out waiting for PVC {namespace}/{name} deletion"
             raise TimeoutError(msg)
@@ -847,7 +846,7 @@ class PersistentVolumeClaim:
             if remaining <= 0:
                 msg = f"timed out waiting for PVC {namespace}/{name} deletion"
                 raise TimeoutError(msg)
-            live = await self.refresh(kube=kube, timeout=remaining)
+            live = await self.refresh(kube, timeout=remaining)
             if live is None:
                 return
             await asyncio.sleep(min(VOLUME_WAIT_POLL_INTERVAL_SECONDS, remaining))
@@ -877,21 +876,6 @@ class PersistentVolumeClaim:
         return (metadata.namespace or "").strip() if metadata is not None else ""
 
     @property
-    def identity(self) -> tuple[str, str] | None:
-        """Return the PersistentVolumeClaim namespace/name identity.
-
-        Returns
-        -------
-        tuple[str, str] | None
-            `(namespace, name)` when both components are available, otherwise `None`.
-        """
-        namespace = self.namespace
-        name = self.name
-        if not namespace or not name:
-            return None
-        return namespace, name
-
-    @property
     def labels(self) -> Mapping[str, str]:
         """Return the PersistentVolumeClaim labels.
 
@@ -901,7 +885,9 @@ class PersistentVolumeClaim:
             Claim labels, or an empty mapping when unavailable.
         """
         metadata = self.obj.metadata
-        return metadata.labels or {} if metadata is not None else {}
+        if metadata is None or metadata.labels is None:
+            return MappingProxyType({})
+        return MappingProxyType(metadata.labels)
 
     @property
     def annotations(self) -> Mapping[str, str]:
@@ -913,7 +899,9 @@ class PersistentVolumeClaim:
             Claim annotations, or an empty mapping when unavailable.
         """
         metadata = self.obj.metadata
-        return metadata.annotations or {} if metadata is not None else {}
+        if metadata is None or metadata.annotations is None:
+            return MappingProxyType({})
+        return MappingProxyType(metadata.annotations)
 
     @property
     def phase(self) -> str:
@@ -1014,10 +1002,10 @@ class PersistentVolume:
     @classmethod
     async def get(
         cls,
-        *,
         kube: Kube,
+        *,
         timeout: float,
-        name: KubeName,
+        name: str,
     ) -> Self | None:
         """Read one Kubernetes PersistentVolume by name.
 
@@ -1027,7 +1015,7 @@ class PersistentVolume:
             Active Kubernetes API context.
         timeout : float
             Maximum request budget in seconds. If infinite, wait indefinitely.
-        name : KubeName
+        name : str
             PersistentVolume name to read.
 
         Returns
@@ -1058,8 +1046,8 @@ class PersistentVolume:
     @classmethod
     async def list(
         cls,
-        *,
         kube: Kube,
+        *,
         timeout: float,
         labels: Mapping[str, str] | None = None,
     ) -> builtins.list[Self]:
@@ -1105,7 +1093,7 @@ class PersistentVolume:
             out.append(cls(obj=item))
         return out
 
-    async def refresh(self, *, kube: Kube, timeout: float) -> Self | None:
+    async def refresh(self, kube: Kube, *, timeout: float) -> Self | None:
         """Re-read this PersistentVolume by name.
 
         Parameters
@@ -1130,15 +1118,15 @@ class PersistentVolume:
         if not name:
             msg = "cannot refresh PersistentVolume with missing metadata.name"
             raise OSError(msg)
-        return await type(self).get(kube=kube, timeout=timeout, name=name)
+        return await type(self).get(kube, timeout=timeout, name=name)
 
     @classmethod
     async def wait_present(
         cls,
-        *,
         kube: Kube,
+        *,
         timeout: float,
-        name: KubeName,
+        name: str,
     ) -> Self:
         """Wait until a PersistentVolume exists by name.
 
@@ -1148,7 +1136,7 @@ class PersistentVolume:
             Active Kubernetes API context.
         timeout : float
             Maximum wait time in seconds. Must be positive.
-        name : KubeName
+        name : str
             PersistentVolume name to wait for.
 
         Returns
@@ -1171,7 +1159,7 @@ class PersistentVolume:
             if remaining <= 0:
                 msg = f"timed out waiting for PersistentVolume {name!r}"
                 raise TimeoutError(msg)
-            live = await cls.get(kube=kube, timeout=remaining, name=name)
+            live = await cls.get(kube, timeout=remaining, name=name)
             if live is not None:
                 return live
             await asyncio.sleep(min(VOLUME_WAIT_POLL_INTERVAL_SECONDS, remaining))
@@ -1243,7 +1231,9 @@ class PersistentVolume:
         """
         spec = self.obj.spec
         csi = spec.csi if spec is not None else None
-        return csi.volume_attributes or {} if csi is not None else {}
+        if csi is None or csi.volume_attributes is None:
+            return MappingProxyType({})
+        return MappingProxyType(csi.volume_attributes)
 
     @property
     def ceph_path(self) -> PosixPath | None:

@@ -12,6 +12,7 @@ from collections.abc import Callable, Collection, Mapping, Sequence
 from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import MappingProxyType
 from typing import Literal, Self
 from urllib.parse import urlparse
 
@@ -186,6 +187,10 @@ class Kube:
         RBAC authorization v1 API surface.
     storage : kubernetes.client.StorageV1Api
         Storage v1 API surface for StorageClass resources.
+    events : kubernetes.client.EventsV1Api
+        Events v1 API surface for diagnostic Event resources.
+    coordination : kubernetes.client.CoordinationV1Api
+        Coordination v1 API surface for Lease resources.
     """
 
     namespace: str
@@ -197,6 +202,8 @@ class Kube:
     apiextensions: kubernetes.client.ApiextensionsV1Api = field(init=False, repr=False)
     rbac: kubernetes.client.RbacAuthorizationV1Api = field(init=False, repr=False)
     storage: kubernetes.client.StorageV1Api = field(init=False, repr=False)
+    events: kubernetes.client.EventsV1Api = field(init=False, repr=False)
+    coordination: kubernetes.client.CoordinationV1Api = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
         """Initialize typed Kubernetes API handles from the shared transport."""
@@ -208,6 +215,8 @@ class Kube:
             self.apiextensions = kubernetes.client.ApiextensionsV1Api(self.client)
             self.rbac = kubernetes.client.RbacAuthorizationV1Api(self.client)
             self.storage = kubernetes.client.StorageV1Api(self.client)
+            self.events = kubernetes.client.EventsV1Api(self.client)
+            self.coordination = kubernetes.client.CoordinationV1Api(self.client)
         except Exception:
             with suppress(Exception):
                 self.client.close()
@@ -445,7 +454,21 @@ class Kube:
 
 @dataclass(frozen=True)
 class ServicePortSpec:
-    """Intent-level Kubernetes Service port specification."""
+    """Intent-level Kubernetes Service port specification.
+
+    Parameters
+    ----------
+    name : str
+        Stable port name exposed by the Service.
+    port : int
+        Service port number.
+    target_port : int | str
+        Container port number or named port selected by the Service.
+    protocol : {"TCP", "UDP", "SCTP"}, optional
+        Network protocol for the Service port.
+    node_port : int | None, optional
+        Fixed NodePort value for `NodePort` Services.
+    """
 
     name: str
     port: int
@@ -455,8 +478,73 @@ class ServicePortSpec:
 
 
 @dataclass(frozen=True)
+class PolicyRuleSpec:
+    """Intent-level Kubernetes RBAC policy rule specification.
+
+    Parameters
+    ----------
+    api_groups : Collection[str]
+        API groups covered by the rule. Use `""` for the core API group.
+    resources : Collection[str]
+        Resource names covered by the rule.
+    verbs : Collection[str]
+        Verbs granted by the rule.
+    """
+
+    api_groups: Collection[str]
+    resources: Collection[str]
+    verbs: Collection[str]
+
+
+@dataclass(frozen=True)
+class CustomResourceSpec:
+    """Intent-level namespaced Kubernetes custom resource specification.
+
+    Parameters
+    ----------
+    group : str
+        Kubernetes API group that owns the resource.
+    version : str
+        Served API version for the resource.
+    kind : str
+        Kubernetes kind name.
+    plural : str
+        Plural REST resource name.
+    labels : Mapping[str, str], optional
+        Default labels to apply to objects created through this spec.
+    """
+
+    group: str
+    version: str
+    kind: str
+    plural: str
+    labels: Mapping[str, str] = MappingProxyType({})
+
+    @property
+    def api_version(self) -> str:
+        """Return the fully qualified Kubernetes API version.
+
+        Returns
+        -------
+        str
+            Fully qualified Kubernetes API version for objects of this type.
+        """
+        return f"{self.group}/{self.version}"
+
+
+@dataclass(frozen=True)
 class ContainerPortSpec:
-    """Intent-level Kubernetes container port specification."""
+    """Intent-level Kubernetes container port specification.
+
+    Parameters
+    ----------
+    name : str
+        Stable name for the container port.
+    container_port : int
+        Port number exposed by the container.
+    protocol : {"TCP", "UDP", "SCTP"}, optional
+        Network protocol for the container port.
+    """
 
     name: str
     container_port: int
@@ -465,7 +553,17 @@ class ContainerPortSpec:
 
 @dataclass(frozen=True)
 class EnvVarSpec:
-    """Intent-level Kubernetes container environment variable."""
+    """Intent-level Kubernetes container environment variable.
+
+    Parameters
+    ----------
+    name : str
+        Environment variable name.
+    value : str | None, optional
+        Literal environment variable value.
+    field_path : str | None, optional
+        Kubernetes field path to project with `valueFrom.fieldRef`.
+    """
 
     name: str
     value: str | None = None
@@ -492,7 +590,17 @@ class EnvVarSpec:
 
 @dataclass(frozen=True)
 class VolumeMountSpec:
-    """Intent-level Kubernetes container volume mount."""
+    """Intent-level Kubernetes container volume mount.
+
+    Parameters
+    ----------
+    name : str
+        Name of the pod volume to mount.
+    mount_path : str
+        Container path where the volume is mounted.
+    read_only : bool | None, optional
+        Whether the mount is read-only. `None` leaves the Kubernetes default.
+    """
 
     name: str
     mount_path: str
@@ -501,7 +609,19 @@ class VolumeMountSpec:
 
 @dataclass(frozen=True)
 class ProbeSpec:
-    """Intent-level Kubernetes container health probe."""
+    """Intent-level Kubernetes container health probe.
+
+    Parameters
+    ----------
+    handler : Mapping[str, object]
+        Kubernetes probe handler payload, such as `tcpSocket` or `httpGet`.
+    initial_delay_seconds : int | None, optional
+        Delay before the first probe.
+    period_seconds : int | None, optional
+        Interval between probes.
+    failure_threshold : int | None, optional
+        Number of failed probes before Kubernetes marks the container unhealthy.
+    """
 
     handler: Mapping[str, object]
     initial_delay_seconds: int | None = None
@@ -582,7 +702,33 @@ class ProbeSpec:
 
 @dataclass(frozen=True)
 class ContainerSpec:
-    """Intent-level Kubernetes container specification."""
+    """Intent-level Kubernetes container specification.
+
+    Parameters
+    ----------
+    name : str
+        Container name.
+    image : str
+        Container image reference.
+    image_pull_policy : str | None, optional
+        Kubernetes image pull policy.
+    command : Sequence[str] | None, optional
+        Container entrypoint command.
+    args : Sequence[str] | None, optional
+        Container command arguments.
+    ports : Collection[ContainerPortSpec], optional
+        Container ports to expose.
+    env : Collection[EnvVarSpec], optional
+        Container environment variables.
+    readiness_probe : ProbeSpec | None, optional
+        Readiness probe intent.
+    liveness_probe : ProbeSpec | None, optional
+        Liveness probe intent.
+    volume_mounts : Collection[VolumeMountSpec], optional
+        Pod volume mounts for the container.
+    security_context : Mapping[str, object] | None, optional
+        Kubernetes container security context payload.
+    """
 
     name: str
     image: str
@@ -599,7 +745,25 @@ class ContainerSpec:
 
 @dataclass(frozen=True)
 class VolumeSpec:
-    """Intent-level Kubernetes pod volume specification."""
+    """Intent-level Kubernetes pod volume specification.
+
+    Parameters
+    ----------
+    name : str
+        Pod volume name.
+    empty_dir_config : Mapping[str, object] | None, optional
+        `emptyDir` volume configuration.
+    config_map_name : str | None, optional
+        ConfigMap name for ConfigMap-backed volumes.
+    config_map_optional : bool | None, optional
+        Whether the ConfigMap reference is optional.
+    persistent_volume_claim : str | None, optional
+        PersistentVolumeClaim name for PVC-backed volumes.
+    host_path_path : str | None, optional
+        Host path for hostPath-backed volumes.
+    host_path_type : str | None, optional
+        Optional Kubernetes hostPath type constraint.
+    """
 
     name: str
     empty_dir_config: Mapping[str, object] | None = None
@@ -704,3 +868,131 @@ class VolumeSpec:
             Volume specification.
         """
         return cls(name=name, host_path_path=str(path), host_path_type=host_path_type)
+
+
+def _probe_manifest(probe: ProbeSpec) -> dict[str, object]:
+    payload = dict(probe.handler)
+    if probe.initial_delay_seconds is not None:
+        payload["initialDelaySeconds"] = probe.initial_delay_seconds
+    if probe.period_seconds is not None:
+        payload["periodSeconds"] = probe.period_seconds
+    if probe.failure_threshold is not None:
+        payload["failureThreshold"] = probe.failure_threshold
+    return payload
+
+
+def _container_manifest(container: ContainerSpec) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "name": container.name,
+        "image": container.image,
+    }
+    if container.image_pull_policy is not None:
+        payload["imagePullPolicy"] = container.image_pull_policy
+    if container.command is not None:
+        payload["command"] = list(container.command)
+    if container.args is not None:
+        payload["args"] = list(container.args)
+    if container.ports:
+        payload["ports"] = [
+            {
+                "name": port.name,
+                "containerPort": port.container_port,
+                "protocol": port.protocol,
+            }
+            for port in container.ports
+        ]
+    if container.env:
+        env: list[dict[str, object]] = []
+        for var in container.env:
+            sources = sum(value is not None for value in (var.value, var.field_path))
+            if sources != 1:
+                msg = "environment variable must define exactly one source"
+                raise ValueError(msg)
+            item: dict[str, object] = {"name": var.name}
+            if var.value is not None:
+                item["value"] = var.value
+            elif var.field_path is not None:
+                item["valueFrom"] = {"fieldRef": {"fieldPath": var.field_path}}
+            env.append(item)
+        payload["env"] = env
+    if container.readiness_probe is not None:
+        payload["readinessProbe"] = _probe_manifest(container.readiness_probe)
+    if container.liveness_probe is not None:
+        payload["livenessProbe"] = _probe_manifest(container.liveness_probe)
+    if container.volume_mounts:
+        payload["volumeMounts"] = [
+            {
+                key: value
+                for key, value in {
+                    "name": mount.name,
+                    "mountPath": mount.mount_path,
+                    "readOnly": mount.read_only,
+                }.items()
+                if value is not None
+            }
+            for mount in container.volume_mounts
+        ]
+    if container.security_context is not None:
+        payload["securityContext"] = dict(container.security_context)
+    return payload
+
+
+def _volume_manifest(volume: VolumeSpec) -> dict[str, object]:
+    kinds = sum(
+        value is not None
+        for value in (
+            volume.empty_dir_config,
+            volume.config_map_name,
+            volume.persistent_volume_claim,
+            volume.host_path_path,
+        )
+    )
+    if kinds != 1:
+        msg = "Kubernetes volume must define exactly one source"
+        raise ValueError(msg)
+
+    payload: dict[str, object] = {"name": volume.name}
+    if volume.empty_dir_config is not None:
+        payload["emptyDir"] = dict(volume.empty_dir_config)
+    elif volume.config_map_name is not None:
+        config_map: dict[str, object] = {"name": volume.config_map_name}
+        if volume.config_map_optional is not None:
+            config_map["optional"] = volume.config_map_optional
+        payload["configMap"] = config_map
+    elif volume.persistent_volume_claim is not None:
+        payload["persistentVolumeClaim"] = {"claimName": volume.persistent_volume_claim}
+    elif volume.host_path_path is not None:
+        host_path: dict[str, object] = {"path": volume.host_path_path}
+        if volume.host_path_type is not None:
+            host_path["type"] = volume.host_path_type
+        payload["hostPath"] = host_path
+    return payload
+
+
+def _pod_template_manifest(
+    *,
+    labels: Mapping[str, str],
+    containers: Collection[ContainerSpec],
+    volumes: Collection[VolumeSpec],
+    automount_service_account_token: bool,
+    service_account_name: str | None,
+    node_selector: Mapping[str, str] | None,
+    host_pid: bool | None,
+) -> dict[str, object]:
+    spec: dict[str, object] = {
+        "automountServiceAccountToken": automount_service_account_token,
+        "containers": [_container_manifest(container) for container in containers],
+        "volumes": [_volume_manifest(volume) for volume in volumes],
+    }
+    if service_account_name is not None:
+        service_account_name = service_account_name.strip()
+        if service_account_name:
+            spec["serviceAccountName"] = service_account_name
+    if node_selector:
+        spec["nodeSelector"] = dict(node_selector)
+    if host_pid is not None:
+        spec["hostPID"] = host_pid
+    return {
+        "metadata": {"labels": dict(labels)},
+        "spec": spec,
+    }

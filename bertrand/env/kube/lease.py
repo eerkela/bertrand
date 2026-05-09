@@ -1,40 +1,37 @@
-"""Wrappers for the Kubernetes Service API and related operations."""
+"""Wrappers for Kubernetes coordination Lease resources."""
 
 from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Literal, Self, cast
+from typing import TYPE_CHECKING, Self
 
-import kubernetes
+from kubernetes import client as kube_client
 
-from .api import Kube, ServicePortSpec, _label_selector
+from .api import _label_selector
 
 if TYPE_CHECKING:
     import builtins
     from collections.abc import Collection, Mapping
+    from datetime import datetime
 
-SERVICE_WAIT_INTERVAL = 0.5
-type ServiceType = Literal["ClusterIP", "NodePort", "LoadBalancer", "ExternalName"]
+    from .api import Kube
+
+LEASE_WAIT_POLL_INTERVAL_SECONDS = 0.5
 
 
 @dataclass(frozen=True)
-class Service:
-    """General-purpose wrapper around one Kubernetes Service object.
+class Lease:
+    """General-purpose wrapper around one Kubernetes Lease object.
 
     Parameters
     ----------
-    obj : kubernetes.client.V1Service
-        Typed Kubernetes Service payload returned by the cluster API.
-
-    Notes
-    -----
-    The public convergence API accepts intent-level fields and keeps raw Kubernetes
-    manifests as an internal implementation detail.
+    obj : kube_client.V1Lease
+        Typed Kubernetes Lease payload returned by the cluster API.
     """
 
-    obj: kubernetes.client.V1Service
+    obj: kube_client.V1Lease
 
     @classmethod
     async def get(
@@ -42,26 +39,26 @@ class Service:
         kube: Kube,
         *,
         namespace: str,
-        timeout: float,
         name: str,
+        timeout: float,
     ) -> Self | None:
-        """Read one Kubernetes Service by name.
+        """Read one Kubernetes Lease by name.
 
         Parameters
         ----------
         kube : Kube
             Active Kubernetes API context.
         namespace : str
-            Namespace that owns the Service.
+            Namespace that owns the Lease.
+        name : str
+            Lease name to read.
         timeout : float
             Maximum request budget in seconds. If infinite, wait indefinitely.
-        name : str
-            Service name to read.
 
         Returns
         -------
-        Service | None
-            Wrapped Kubernetes Service, or `None` if it does not exist.
+        Lease | None
+            Wrapped Kubernetes Lease, or `None` if it does not exist.
 
         Raises
         ------
@@ -69,19 +66,19 @@ class Service:
             If Kubernetes returns malformed data or the API call fails.
         """
         payload = await kube.run(
-            lambda request_timeout: kube.core.read_namespaced_service(
+            lambda request_timeout: kube.coordination.read_namespaced_lease(
                 name=name,
                 namespace=namespace,
                 _request_timeout=request_timeout,
             ),
             timeout=timeout,
-            context=f"failed to read Service {name!r} in namespace {namespace!r}",
+            context=f"failed to read Lease {name!r} in namespace {namespace!r}",
         )
         if payload is None:
             return None
-        if not isinstance(payload, kubernetes.client.V1Service):
+        if not isinstance(payload, kube_client.V1Lease):
             msg = (
-                f"malformed Kubernetes Service payload for {name!r} in namespace "
+                f"malformed Kubernetes Lease payload for {name!r} in namespace "
                 f"{namespace!r}"
             )
             raise OSError(msg)
@@ -96,7 +93,7 @@ class Service:
         namespaces: Collection[str] | None = None,
         labels: Mapping[str, str] | None = None,
     ) -> builtins.list[Self]:
-        """List Kubernetes Services with optional namespace and label filtering.
+        """List Kubernetes Leases with optional namespace and label filtering.
 
         Parameters
         ----------
@@ -105,15 +102,14 @@ class Service:
         timeout : float
             Maximum request budget in seconds. If infinite, wait indefinitely.
         namespaces : Collection[str] | None, optional
-            Optional namespace filters. `None` queries all namespaces. Otherwise,
-            entries are trimmed, deduplicated, and queried individually.
+            Optional namespace filters. `None` queries all namespaces.
         labels : Mapping[str, str] | None, optional
             Optional label selector key/value pairs.
 
         Returns
         -------
-        list[Service]
-            Wrapped Kubernetes Services matching the requested filters.
+        list[Lease]
+            Wrapped Leases matching the requested filters.
 
         Raises
         ------
@@ -121,16 +117,15 @@ class Service:
             If Kubernetes returns malformed data or a list call fails.
         """
         label_selector = _label_selector(labels)
-        payloads: builtins.list[kubernetes.client.V1ServiceList] = []
-
+        payloads: builtins.list[kube_client.V1LeaseList] = []
         if namespaces is None:
             payload = await kube.run(
-                lambda request_timeout: kube.core.list_service_for_all_namespaces(
+                lambda request_timeout: kube.coordination.list_lease_for_all_namespaces(
                     label_selector=label_selector,
                     _request_timeout=request_timeout,
                 ),
                 timeout=timeout,
-                context="failed to list Services across all namespaces",
+                context="failed to list Leases across all namespaces",
             )
             if payload is not None:
                 payloads.append(payload)
@@ -142,26 +137,26 @@ class Service:
             for namespace in sorted(normalized):
                 payload = await kube.run(
                     lambda request_timeout, namespace=namespace: (
-                        kube.core.list_namespaced_service(
+                        kube.coordination.list_namespaced_lease(
                             namespace=namespace,
                             label_selector=label_selector,
                             _request_timeout=request_timeout,
                         )
                     ),
                     timeout=timeout,
-                    context=f"failed to list Services in namespace {namespace!r}",
+                    context=f"failed to list Leases in namespace {namespace!r}",
                 )
                 if payload is not None:
                     payloads.append(payload)
 
         out: builtins.list[Self] = []
         for payload in payloads:
-            if not isinstance(payload, kubernetes.client.V1ServiceList):
-                msg = "malformed Kubernetes Service list payload"
+            if not isinstance(payload, kube_client.V1LeaseList):
+                msg = "malformed Kubernetes Lease list payload"
                 raise OSError(msg)
             for item in payload.items or []:
-                if not isinstance(item, kubernetes.client.V1Service):
-                    msg = "malformed Kubernetes Service entry in list payload"
+                if not isinstance(item, kube_client.V1Lease):
+                    msg = "malformed Kubernetes Lease entry in list payload"
                     raise OSError(msg)
                 out.append(cls(obj=item))
         return out
@@ -171,39 +166,31 @@ class Service:
         *,
         namespace: str,
         name: str,
-        selector: Mapping[str, str],
-        ports: Collection[ServicePortSpec],
+        holder_identity: str,
+        lease_duration_seconds: int,
+        acquire_time: datetime | None,
+        renew_time: datetime | None,
         labels: Mapping[str, str] | None,
         annotations: Mapping[str, str] | None,
-        service_type: ServiceType,
     ) -> dict[str, object]:
+        spec: dict[str, object] = {
+            "holderIdentity": holder_identity,
+            "leaseDurationSeconds": lease_duration_seconds,
+        }
+        if acquire_time is not None:
+            spec["acquireTime"] = acquire_time
+        if renew_time is not None:
+            spec["renewTime"] = renew_time
         return {
-            "apiVersion": "v1",
-            "kind": "Service",
+            "apiVersion": "coordination.k8s.io/v1",
+            "kind": "Lease",
             "metadata": {
                 "name": name,
                 "namespace": namespace,
                 "labels": dict(labels or {}),
                 "annotations": dict(annotations or {}),
             },
-            "spec": {
-                "type": service_type,
-                "selector": dict(selector),
-                "ports": [
-                    {
-                        key: value
-                        for key, value in {
-                            "name": port.name,
-                            "port": port.port,
-                            "targetPort": port.target_port,
-                            "protocol": port.protocol,
-                            "nodePort": port.node_port,
-                        }.items()
-                        if value is not None
-                    }
-                    for port in ports
-                ],
-            },
+            "spec": spec,
         }
 
     @classmethod
@@ -213,107 +200,112 @@ class Service:
         *,
         namespace: str,
         name: str,
-        selector: Mapping[str, str],
-        ports: Collection[ServicePortSpec],
+        holder_identity: str,
+        lease_duration_seconds: int,
         timeout: float,
+        acquire_time: datetime | None = None,
+        renew_time: datetime | None = None,
         labels: Mapping[str, str] | None = None,
         annotations: Mapping[str, str] | None = None,
-        service_type: ServiceType = "ClusterIP",
     ) -> Self:
-        """Create or patch one Kubernetes Service from intent-level fields.
+        """Create or patch one Kubernetes Lease.
 
         Parameters
         ----------
         kube : Kube
             Active Kubernetes API context.
         namespace : str
-            Namespace that owns the Service.
+            Namespace that owns the Lease.
         name : str
-            Service name to create or patch.
-        selector : Mapping[str, str]
-            Pod label selector for the Service.
-        ports : Collection[ServicePortSpec]
-            Ports exposed by the Service.
+            Lease name to create or patch.
+        holder_identity : str
+            Identity string for the current lease holder.
+        lease_duration_seconds : int
+            Lease duration in seconds.
         timeout : float
             Maximum request budget in seconds. If infinite, wait indefinitely.
+        acquire_time : datetime | None, optional
+            Time when the lease was first acquired.
+        renew_time : datetime | None, optional
+            Time when the lease was last renewed.
         labels : Mapping[str, str] | None, optional
             Labels to apply to `metadata.labels`.
         annotations : Mapping[str, str] | None, optional
             Annotations to apply to `metadata.annotations`.
-        service_type : {"ClusterIP", "NodePort", "LoadBalancer", ...
-                "ExternalName"}, optional
-            Kubernetes Service type.
 
         Returns
         -------
-        Service
-            Wrapped created or patched Service.
+        Lease
+            Wrapped created or patched Lease.
 
         Raises
         ------
         OSError
-            If Kubernetes create/patch fails or returns malformed data.
+            If required identity fields are empty, duration is invalid, or Kubernetes
+            create/patch fails or returns malformed data.
         """
+        namespace = namespace.strip()
+        name = name.strip()
+        holder_identity = holder_identity.strip()
+        if not namespace or not name or not holder_identity:
+            msg = "Lease upsert requires non-empty namespace, name, and holder identity"
+            raise OSError(msg)
+        if lease_duration_seconds <= 0:
+            msg = "Lease duration must be positive"
+            raise OSError(msg)
         manifest = cls._manifest(
             namespace=namespace,
             name=name,
-            selector=selector,
-            ports=ports,
+            holder_identity=holder_identity,
+            lease_duration_seconds=lease_duration_seconds,
+            acquire_time=acquire_time,
+            renew_time=renew_time,
             labels=labels,
             annotations=annotations,
-            service_type=service_type,
         )
-        metadata = manifest.get("metadata")
-        if not isinstance(metadata, dict):
-            msg = "Service manifest must define metadata"
-            raise OSError(msg)
-        metadata = cast("dict[object, object]", metadata)
-        namespace = str(metadata.get("namespace") or "").strip()
-        name = str(metadata.get("name") or "").strip()
-        if not namespace or not name:
-            msg = "Service manifest must define metadata.namespace and metadata.name"
-            raise OSError(msg)
-
-        # try to create the Service if it is missing
         try:
             created = await kube.run(
-                lambda request_timeout: kube.core.create_namespaced_service(
+                lambda request_timeout: kube.coordination.create_namespaced_lease(
                     namespace=namespace,
                     body=manifest,
                     _request_timeout=request_timeout,
                 ),
                 timeout=timeout,
-                context=f"failed to create Service {namespace}/{name}",
+                context=f"failed to create Lease {namespace}/{name}",
             )
         except OSError as err:
             detail = str(err).lower()
             if "status 409" not in detail and "already exists" not in detail:
                 raise
         else:
-            if not isinstance(created, kubernetes.client.V1Service):
-                msg = f"malformed Kubernetes Service payload while creating {name!r}"
+            if not isinstance(created, kube_client.V1Lease):
+                msg = (
+                    "malformed Kubernetes Lease payload while creating "
+                    f"{namespace}/{name}"
+                )
                 raise OSError(msg)
             return cls(obj=created)
 
-        # patch the Service if it already exists
         patched = await kube.run(
-            lambda request_timeout: kube.core.patch_namespaced_service(
+            lambda request_timeout: kube.coordination.patch_namespaced_lease(
                 name=name,
                 namespace=namespace,
                 body=manifest,
                 _request_timeout=request_timeout,
             ),
             timeout=timeout,
-            context=f"failed to patch Service {namespace}/{name}",
+            context=f"failed to patch Lease {namespace}/{name}",
         )
-        if not isinstance(patched, kubernetes.client.V1Service):
-            msg = f"malformed Kubernetes Service payload while patching {name!r}"
+        if not isinstance(patched, kube_client.V1Lease):
+            msg = (
+                f"malformed Kubernetes Lease payload while patching {namespace}/{name}"
+            )
             raise OSError(msg)
         return cls(obj=patched)
 
     @property
     def name(self) -> str:
-        """Return the Service name.
+        """Return the Lease name.
 
         Returns
         -------
@@ -325,7 +317,7 @@ class Service:
 
     @property
     def namespace(self) -> str:
-        """Return the Service namespace.
+        """Return the Lease namespace.
 
         Returns
         -------
@@ -337,7 +329,7 @@ class Service:
 
     @property
     def labels(self) -> Mapping[str, str]:
-        """Return the Service labels.
+        """Return the Lease labels.
 
         Returns
         -------
@@ -351,7 +343,7 @@ class Service:
 
     @property
     def annotations(self) -> Mapping[str, str]:
-        """Return the Service annotations.
+        """Return the Lease annotations.
 
         Returns
         -------
@@ -365,45 +357,68 @@ class Service:
         return MappingProxyType(metadata.annotations)
 
     @property
-    def selector(self) -> Mapping[str, str]:
-        """Return the Service selector.
-
-        Returns
-        -------
-        Mapping[str, str]
-            Read-only view of `spec.selector`, or an empty mapping when unavailable.
-        """
-        spec = self.obj.spec
-        if spec is None or spec.selector is None:
-            return MappingProxyType({})
-        return MappingProxyType(spec.selector)
-
-    @property
-    def type(self) -> str:
-        """Return the Service type.
+    def resource_version(self) -> str:
+        """Return the Lease resource version.
 
         Returns
         -------
         str
-            Trimmed Service type, or an empty string when unavailable.
+            Kubernetes `metadata.resourceVersion`, or an empty string when
+            unavailable.
         """
-        spec = self.obj.spec
-        return (spec.type or "").strip() if spec is not None else ""
+        metadata = self.obj.metadata
+        return (metadata.resource_version or "").strip() if metadata is not None else ""
 
     @property
-    def ports(self) -> tuple[kubernetes.client.V1ServicePort, ...]:
-        """Return the Service ports.
+    def holder_identity(self) -> str:
+        """Return the current Lease holder identity.
 
         Returns
         -------
-        tuple[kubernetes.client.V1ServicePort, ...]
-            Immutable snapshot of Service ports.
+        str
+            Lease `spec.holderIdentity`, or an empty string when unavailable.
         """
         spec = self.obj.spec
-        return tuple(spec.ports or ()) if spec is not None else ()
+        return (spec.holder_identity or "").strip() if spec is not None else ""
+
+    @property
+    def lease_duration_seconds(self) -> int | None:
+        """Return the Lease duration in seconds.
+
+        Returns
+        -------
+        int | None
+            Lease `spec.leaseDurationSeconds`, or `None` when unavailable.
+        """
+        spec = self.obj.spec
+        return spec.lease_duration_seconds if spec is not None else None
+
+    @property
+    def acquire_time(self) -> datetime | None:
+        """Return the Lease acquire time.
+
+        Returns
+        -------
+        datetime | None
+            Lease `spec.acquireTime`, or `None` when unavailable.
+        """
+        spec = self.obj.spec
+        return spec.acquire_time if spec is not None else None
+
+    @property
+    def renew_time(self) -> datetime | None:
+        """Return the Lease renew time.
+
+        Returns
+        -------
+        datetime | None
+            Lease `spec.renewTime`, or `None` when unavailable.
+        """
+        spec = self.obj.spec
+        return spec.renew_time if spec is not None else None
 
     async def refresh(self, kube: Kube, *, timeout: float) -> Self | None:
-        """Re-read this Service by its metadata namespace and name.
+        """Re-read this Lease by its metadata namespace and name.
 
         Parameters
         ----------
@@ -414,29 +429,29 @@ class Service:
 
         Returns
         -------
-        Service | None
-            Fresh wrapper for the same Service, or `None` if it no longer exists.
+        Lease | None
+            Fresh wrapper for the same Lease, or `None` if it no longer exists.
 
         Raises
         ------
         OSError
-            If this wrapper does not contain enough metadata to identify the
-            Service, or if Kubernetes returns malformed data.
+            If this wrapper does not contain enough metadata to identify the Lease,
+            or if Kubernetes returns malformed data.
         """
         namespace = self.namespace
         name = self.name
         if not namespace or not name:
-            msg = "cannot refresh Service with missing metadata.name/namespace"
+            msg = "cannot refresh Lease with missing metadata.name/namespace"
             raise OSError(msg)
         return await type(self).get(
             kube,
             namespace=namespace,
-            timeout=timeout,
             name=name,
+            timeout=timeout,
         )
 
     async def delete(self, kube: Kube, *, timeout: float) -> None:
-        """Delete this Service from the cluster.
+        """Delete this Lease from the cluster.
 
         Parameters
         ----------
@@ -448,34 +463,32 @@ class Service:
         Raises
         ------
         OSError
-            If this wrapper does not contain enough metadata to identify the
-            Service, if the delete request fails, or if Kubernetes returns
-            malformed data.
+            If this wrapper does not contain enough metadata to identify the Lease,
+            if the delete request fails, or if Kubernetes returns malformed data.
         """
         namespace = self.namespace
         name = self.name
         if not namespace or not name:
-            msg = "cannot delete Service with missing metadata.name/namespace"
+            msg = "cannot delete Lease with missing metadata.name/namespace"
             raise OSError(msg)
         payload = await kube.run(
-            lambda request_timeout: kube.core.delete_namespaced_service(
+            lambda request_timeout: kube.coordination.delete_namespaced_lease(
                 name=name,
                 namespace=namespace,
-                body=kubernetes.client.V1DeleteOptions(),
+                body=kube_client.V1DeleteOptions(),
                 _request_timeout=request_timeout,
             ),
             timeout=timeout,
-            context=f"failed to delete Service {namespace}/{name}",
+            context=f"failed to delete Lease {namespace}/{name}",
         )
-        if payload is not None and not isinstance(payload, kubernetes.client.V1Status):
+        if payload is not None and not isinstance(payload, kube_client.V1Status):
             msg = (
-                "malformed Kubernetes response while deleting Service "
-                f"{namespace}/{name}"
+                f"malformed Kubernetes response while deleting Lease {namespace}/{name}"
             )
             raise OSError(msg)
 
     async def wait_deleted(self, kube: Kube, *, timeout: float) -> None:
-        """Wait until this Service is deleted from the cluster.
+        """Wait until this Lease is deleted from the cluster.
 
         Parameters
         ----------
@@ -487,29 +500,27 @@ class Service:
         Raises
         ------
         OSError
-            If this wrapper does not contain enough metadata to identify the
-            Service, or if a refresh request returns malformed data.
+            If this wrapper does not contain enough metadata to identify the Lease,
+            or if a refresh request returns malformed data.
         TimeoutError
-            If the Service still exists when `timeout` expires.
+            If the Lease still exists when `timeout` expires.
         """
         namespace = self.namespace
         name = self.name
         if not namespace or not name:
-            msg = (
-                "cannot wait for Service deletion with missing metadata.name/namespace"
-            )
+            msg = "cannot wait for Lease deletion with missing metadata.name/namespace"
             raise OSError(msg)
         if timeout <= 0:
-            msg = f"timed out waiting for Service {namespace}/{name} deletion"
+            msg = f"timed out waiting for Lease {namespace}/{name} deletion"
             raise TimeoutError(msg)
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
         while True:
             remaining = deadline - loop.time()
             if remaining <= 0:
-                msg = f"timed out waiting for Service {namespace}/{name} deletion"
+                msg = f"timed out waiting for Lease {namespace}/{name} deletion"
                 raise TimeoutError(msg)
             live = await self.refresh(kube, timeout=remaining)
             if live is None:
                 return
-            await asyncio.sleep(min(SERVICE_WAIT_INTERVAL, remaining))
+            await asyncio.sleep(min(LEASE_WAIT_POLL_INTERVAL_SECONDS, remaining))
