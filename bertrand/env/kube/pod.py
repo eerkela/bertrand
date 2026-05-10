@@ -219,6 +219,19 @@ class Pod(NamespacedKubeMetadata[kubernetes.client.V1Pod]):
         return (status.phase or "").strip() if status is not None else ""
 
     @property
+    def node_name(self) -> str:
+        """Return the node this Pod is assigned to.
+
+        Returns
+        -------
+        str
+            Kubernetes node name from `spec.nodeName`, or an empty string when the
+            pod has not been scheduled.
+        """
+        spec = self._obj.spec
+        return (spec.node_name or "").strip() if spec is not None else ""
+
+    @property
     def is_terminating(self) -> bool:
         """Return whether the Pod is terminating.
 

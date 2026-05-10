@@ -5,21 +5,26 @@ from __future__ import annotations
 import shutil
 import sys
 import uuid
-from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from bertrand.env.config.core import KubeName, _check_kube_name, _check_uuid
 from bertrand.env.git import atomic_write_bytes
 from bertrand.env.host import CACHE_DIR
 from bertrand.env.kube.capability.base import Capability
 
-type DevicePermission = Literal["r", "w", "m", "rw", "rm", "wm", "rwm"]
+if TYPE_CHECKING:
+    from pathlib import Path
+
+    from bertrand.env.kube.api import Kube
 
 CAPABILITY_DIR = CACHE_DIR / "capabilities"
-DEVICE_PERMISSIONS = frozenset({"r", "w", "m", "rw", "rm", "wm", "rwm"})
 
 
-def _stage_secret_payload(staged: Path, capability_id: KubeName, payload: bytes) -> Path:
+def _stage_secret_payload(
+    staged: Path,
+    capability_id: KubeName,
+    payload: bytes,
+) -> Path:
     target = staged / "secrets" / capability_id
     target.parent.mkdir(parents=True, exist_ok=True)
     atomic_write_bytes(target, payload)
@@ -35,7 +40,7 @@ def cleanup_secret_staged(path: Path | None) -> None:
 
 
 async def _resolve_build_flag(
-    kube,
+    kube: Kube,
     *,
     mode: Literal["secret", "ssh"],
     capability_id: KubeName,
@@ -54,7 +59,8 @@ async def _resolve_build_flag(
     )
     if capability is None:
         print(
-            f"bertrand: optional {mode} {capability_id!r} was not found; continuing without it",
+            f"bertrand: optional {mode} {capability_id!r} was not found; "
+            "continuing without it",
             file=sys.stderr,
         )
         return []
@@ -70,15 +76,21 @@ async def _resolve_build_flag(
 
 
 async def build_secret_flags(
-    kube,
+    kube: Kube,
     *,
     env_id: str,
     build: object,
     timeout: float,
 ) -> tuple[tuple[str, ...], Path | None]:
-    """Build legacy secret and SSH CLI flags for one nerdctl build request."""
-    secrets = tuple(getattr(build, "secrets", ()))
-    ssh = tuple(getattr(build, "ssh", ()))
+    """Build legacy secret and SSH CLI flags for one nerdctl build request.
+
+    Returns
+    -------
+    tuple[tuple[str, ...], Path | None]
+        CLI flags and an optional staged payload directory to clean up.
+    """
+    secrets: tuple[Any, ...] = tuple(getattr(build, "secrets", ()))
+    ssh: tuple[Any, ...] = tuple(getattr(build, "ssh", ()))
     if not secrets and not ssh:
         return (), None
 
@@ -122,14 +134,25 @@ class DeviceConfigMap:
     @classmethod
     async def build_flags(
         cls,
-        kube,
+        kube: Kube,
         *,
         env_id: str,
         build: object,
         timeout: float,
     ) -> tuple[str, ...]:
-        """Build legacy device CLI flags for one build request."""
-        requests = tuple(getattr(build, "devices", ()))
+        """Build legacy device CLI flags for one build request.
+
+        Returns
+        -------
+        tuple[str, ...]
+            Legacy `--device` CLI flags.
+
+        Raises
+        ------
+        ValueError
+            If a request declares a duplicate device capability ID.
+        """
+        requests: tuple[Any, ...] = tuple(getattr(build, "devices", ()))
         if not requests:
             return ()
 
@@ -143,17 +166,8 @@ class DeviceConfigMap:
                 raise ValueError(msg)
             seen.add(capability_id)
 
-            permissions = str(request.permissions)
-            if permissions not in DEVICE_PERMISSIONS:
-                msg = (
-                    f"invalid device permissions {permissions!r}; must be a non-empty "
-                    "combination of 'r', 'w', and 'm'"
-                )
-                raise ValueError(msg)
-
-            capability = await Capability.resolve(
+            capability = await Capability.resolve_device(
                 kube,
-                kind="device",
                 capability_id=capability_id,
                 env_id=validated_env,
                 required=request.required,
@@ -161,15 +175,16 @@ class DeviceConfigMap:
             )
             if capability is None:
                 print(
-                    f"bertrand: optional device selector {capability_id!r} was not found; "
-                    "continuing without it",
+                    f"bertrand: optional device selector {capability_id!r} was not "
+                    "found; continuing without it",
                     file=sys.stderr,
                 )
                 continue
-            selector = capability.payload.decode("utf-8").strip()
-            if not selector:
-                msg = f"device capability {capability_id!r} cannot be empty"
-                raise OSError(msg)
-            flags.extend(["--device", f"{selector}:{permissions}"])
+            flags.extend(
+                [
+                    "--device",
+                    capability.selector,
+                ]
+            )
 
         return tuple(flags)

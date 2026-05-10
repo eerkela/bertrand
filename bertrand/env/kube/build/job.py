@@ -102,6 +102,9 @@ class BuildKitImageBuild:
     ssh : Mapping[KubeName, bool]
         SSH capability IDs to expose to the build. Values indicate whether the
         capability is required.
+    devices : Mapping[KubeName, bool]
+        CDI device capability IDs to allow during the build. Values indicate
+        whether the capability is required.
     cache : bool
         Whether to import and export registry-backed BuildKit cache.
     cache_ref : str | None
@@ -120,6 +123,7 @@ class BuildKitImageBuild:
     progress: str = "plain"
     secrets: Mapping[KubeName, bool] = field(default_factory=dict)
     ssh: Mapping[KubeName, bool] = field(default_factory=dict)
+    devices: Mapping[KubeName, bool] = field(default_factory=dict)
     cache: bool = True
     cache_ref: str | None = None
     cache_mode: Literal["min", "max"] = "max"
@@ -156,6 +160,11 @@ class BuildKitImageBuild:
             self,
             "ssh",
             _normalize_capability_requests(self.ssh, kind="ssh"),
+        )
+        object.__setattr__(
+            self,
+            "devices",
+            _normalize_capability_requests(self.devices, kind="device"),
         )
         if self.cache_mode not in ("min", "max"):
             msg = "BuildKit registry cache mode must be 'min' or 'max'"
@@ -222,6 +231,7 @@ class BuildKitImageBuild:
             "target": self.target,
             "secrets": dict(sorted(self.secrets.items())),
             "ssh": dict(sorted(self.ssh.items())),
+            "devices": dict(sorted(self.devices.items())),
             "cache": self.cache,
             "cache_ref": self.cache_ref,
             "cache_mode": self.cache_mode,
@@ -266,6 +276,7 @@ class BuildKitImageBuild:
         *,
         secret_paths: Mapping[str, str] | None = None,
         ssh_paths: Mapping[str, str] | None = None,
+        device_selectors: tuple[str, ...] = (),
         metadata_file: str | None = None,
     ) -> list[str]:
         """Render the `buildctl` command arguments for this build.
@@ -278,6 +289,8 @@ class BuildKitImageBuild:
             BuildKit secret IDs mapped to mounted payload paths.
         ssh_paths : Mapping[str, str] | None, optional
             BuildKit SSH IDs mapped to mounted credential paths.
+        device_selectors : tuple[str, ...], optional
+            CDI selectors allowed for `RUN --device` instructions.
         metadata_file : str | None, optional
             Mounted path where BuildKit should write metadata JSON.
 
@@ -312,6 +325,8 @@ class BuildKitImageBuild:
             args.extend(["--secret", f"id={capability_id},src={path}"])
         for capability_id, path in sorted((ssh_paths or {}).items()):
             args.extend(["--ssh", f"{capability_id}={path}"])
+        for selector in sorted(set(device_selectors)):
+            args.extend(["--allow", f"device={selector}"])
         cache_ref = self.registry_cache_ref
         if cache_ref is not None:
             args.extend(["--import-cache", f"type=registry,ref={cache_ref}"])
@@ -347,7 +362,7 @@ class BuildKitImageBuild:
         buildkit : BuildKit, optional
             BuildKit daemon endpoint used by the client Job.
         env_id : str | None, optional
-            Environment UUID used to resolve secret and SSH capabilities.
+            Environment UUID used to resolve secret, SSH, and device capabilities.
 
         Returns
         -------
@@ -369,8 +384,8 @@ class BuildKitImageBuild:
         if timeout <= 0:
             msg = "BuildKit image build timeout must be non-negative"
             raise TimeoutError(msg)
-        if env_id is None and (self.secrets or self.ssh):
-            msg = "BuildKit secret and SSH inputs require an environment identity"
+        if env_id is None and (self.secrets or self.ssh or self.devices):
+            msg = "BuildKit capability inputs require an environment identity"
             raise ValueError(msg)
         if env_id is not None:
             env_id = _check_uuid(env_id)
@@ -394,6 +409,17 @@ class BuildKitImageBuild:
                 env_id=env_id,
                 timeout=deadline - loop.time(),
             )
+            buildkit_node = (
+                await buildkit.active_node(kube, timeout=deadline - loop.time())
+                if self.devices
+                else None
+            )
+            device_selectors = await self._device_selectors(
+                kube,
+                env_id=env_id,
+                node=buildkit_node,
+                timeout=deadline - loop.time(),
+            )
 
             job = await Job.create(
                 kube,
@@ -410,6 +436,7 @@ class BuildKitImageBuild:
                             buildkit,
                             secret_paths=secret_paths,
                             ssh_paths=ssh_paths,
+                            device_selectors=device_selectors,
                             metadata_file=BUILD_JOB_METADATA_FILE,
                         ),
                         volume_mounts=[
@@ -546,6 +573,38 @@ class BuildKitImageBuild:
                 paths[capability_id] = f"{mount_path}/{CAPABILITY_VALUE_KEY}"
 
         return volumes, mounts, secret_paths, ssh_paths
+
+    async def _device_selectors(
+        self,
+        kube: Kube,
+        *,
+        env_id: str | None,
+        node: str | None,
+        timeout: float,
+    ) -> tuple[str, ...]:
+        if not self.devices:
+            return ()
+        if timeout <= 0:
+            msg = "BuildKit device capability resolution timeout must be non-negative"
+            raise TimeoutError(msg)
+        if env_id is None:
+            msg = "BuildKit device inputs require an environment identity"
+            raise ValueError(msg)
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        selectors: list[str] = []
+        for capability_id, required in sorted(self.devices.items()):
+            capability = await Capability.resolve_device(
+                kube,
+                capability_id=capability_id,
+                env_id=env_id,
+                node=node,
+                required=required,
+                timeout=deadline - loop.time(),
+            )
+            if capability is not None:
+                selectors.append(capability.selector)
+        return tuple(selectors)
 
 
 async def _build_job_log_tail(kube: Kube, job: Job, *, timeout: float) -> str:

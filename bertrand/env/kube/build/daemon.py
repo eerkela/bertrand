@@ -23,6 +23,7 @@ from bertrand.env.kube.api import (
 from bertrand.env.kube.build._status import _deployment_status, _service_status
 from bertrand.env.kube.build.cache import BUILDKIT_CACHE, BuildKitCacheStatus
 from bertrand.env.kube.deployment import Deployment
+from bertrand.env.kube.pod import Pod
 from bertrand.env.kube.service import Service
 
 BUILDKIT_NAME = "bertrand-buildkit"
@@ -37,6 +38,11 @@ BUILDKIT_CONFIG_KEY = "buildkitd.toml"
 BUILDKIT_CONFIG_NAME = f"{BUILDKIT_NAME}-registry"
 BUILDKIT_CONFIG_HASH_ANNOTATION = "bertrand.dev/buildkit-config-hash"
 BUILDKIT_CONFIG_VOLUME = "buildkit-config"
+BUILDKIT_DEVICE_ENTITLEMENT = "device"
+BUILDKIT_CDI_SPEC_MOUNTS = (
+    ("buildkit-cdi-etc", "/etc/cdi"),
+    ("buildkit-cdi-run", "/var/run/cdi"),
+)
 BUILDKIT_LABEL = "bertrand.dev/buildkit"
 BUILDKIT_LABEL_VALUE = "v1"
 
@@ -194,6 +200,10 @@ class BuildKit:
             if config_hash is not None
             else None
         )
+        buildkitd_flags = (
+            f"--addr {BUILDKIT_LISTEN_ADDR!r} "
+            f"--allow-insecure-entitlement {BUILDKIT_DEVICE_ENTITLEMENT!r}"
+        )
 
         await Service.upsert(
             kube,
@@ -226,10 +236,10 @@ class BuildKit:
                     args=[
                         (
                             f"if [ -s {BUILDKIT_CONFIG_FILE!r} ]; then "
-                            f"exec buildkitd --addr {BUILDKIT_LISTEN_ADDR!r} "
+                            f"exec buildkitd {buildkitd_flags} "
                             f"--config {BUILDKIT_CONFIG_FILE!r}; "
                             "fi; "
-                            f"exec buildkitd --addr {BUILDKIT_LISTEN_ADDR!r}"
+                            f"exec buildkitd {buildkitd_flags}"
                         )
                     ],
                     ports=[
@@ -263,6 +273,14 @@ class BuildKit:
                             mount_path=BUILDKIT_CONFIG_DIR,
                             read_only=True,
                         ),
+                        *(
+                            VolumeMountSpec(
+                                name=name,
+                                mount_path=path,
+                                read_only=True,
+                            )
+                            for name, path in BUILDKIT_CDI_SPEC_MOUNTS
+                        ),
                     ],
                 )
             ],
@@ -275,6 +293,14 @@ class BuildKit:
                     BUILDKIT_CONFIG_VOLUME,
                     config_map_name=BUILDKIT_CONFIG_NAME,
                     optional=True,
+                ),
+                *(
+                    VolumeSpec.host_path(
+                        name,
+                        path=path,
+                        host_path_type="DirectoryOrCreate",
+                    )
+                    for name, path in BUILDKIT_CDI_SPEC_MOUNTS
                 ),
             ],
             pod_annotations=pod_annotations,
@@ -383,6 +409,54 @@ class BuildKit:
                 f"{self.namespace}/{self.service}: {err}"
             )
             raise OSError(msg) from err
+
+    async def active_node(self, kube: Kube, *, timeout: float) -> str:
+        """Return the node running the active BuildKit daemon pod.
+
+        Parameters
+        ----------
+        kube : Kube
+            Kubernetes API client for the target cluster.
+        timeout : float
+            Maximum request budget in seconds. If infinite, wait indefinitely.
+
+        Returns
+        -------
+        str
+            Kubernetes node name running the active BuildKit pod.
+
+        Raises
+        ------
+        TimeoutError
+            If `timeout` is non-positive.
+        OSError
+            If no active BuildKit pod exists, more than one active pod exists, or
+            the active pod has not been assigned to a node.
+        """
+        if timeout <= 0:
+            msg = "BuildKit active node timeout must be non-negative"
+            raise TimeoutError(msg)
+        pods = await Pod.list(
+            kube,
+            timeout=timeout,
+            namespaces=(self.namespace,),
+            labels=self.selector,
+        )
+        active = [pod for pod in pods if pod.is_active]
+        if len(active) != 1:
+            msg = (
+                f"expected exactly one active BuildKit pod for {self.namespace}/"
+                f"{self.service}, found {len(active)}"
+            )
+            raise OSError(msg)
+        node_name = active[0].node_name
+        if not node_name:
+            msg = (
+                f"active BuildKit pod {active[0].namespace}/{active[0].name} is not "
+                "assigned to a node"
+            )
+            raise OSError(msg)
+        return node_name
 
 
 BUILDKIT = BuildKit(
