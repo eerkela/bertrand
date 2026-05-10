@@ -16,7 +16,8 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from bertrand.env.config.core import UUIDHex, _check_uuid
 from bertrand.env.git import CommandError
 from bertrand.env.host import RUN_DIR
-from bertrand.env.kube.ceph.api import ceph, start_microceph
+from bertrand.env.kube.ceph.api import ceph
+from bertrand.env.kube.ceph.bootstrap import start_microceph
 
 if TYPE_CHECKING:
     from collections.abc import Iterator

@@ -19,6 +19,7 @@ from bertrand.env.kube.api import (
     CLUSTER_REGISTRY_READY_VALUE,
     ContainerPortSpec,
     ContainerSpec,
+    DeploymentStrategySpec,
     EnvVarSpec,
     Kube,
     ProbeSpec,
@@ -749,7 +750,7 @@ class ImageRepository:
                     claim_name=self.service,
                 )
             ],
-            strategy_type="Recreate",
+            strategy=DeploymentStrategySpec.recreate(),
             timeout=deadline - loop.time(),
         )
         await deployment.wait_rollout(kube, timeout=deadline - loop.time())

@@ -10,7 +10,20 @@ from typing import TYPE_CHECKING, Literal, Self
 
 import kubernetes
 
-from .api import Kube, KubeMetadata, TaintView, WatchEvent, _label_selector
+from .api import (
+    Kube,
+    KubeMetadata,
+    TaintView,
+    WatchEvent,
+)
+from .api._helpers import (
+    _list_cluster_items,
+    _list_namespaced_items,
+    _typed_payload,
+)
+from .api.watch import (
+    _watch_cluster_resource,
+)
 from .pod import Pod
 
 if TYPE_CHECKING:
@@ -78,10 +91,6 @@ class Node(KubeMetadata[kubernetes.client.V1Node]):
         Node | None
             Validated Kubernetes node wrapper, or `None` if the node does not exist.
 
-        Raises
-        ------
-        OSError
-            If the Kubernetes API call fails or returns malformed data.
         """
         payload = await kube.run(
             lambda timeout: kube.core.read_node(
@@ -93,10 +102,9 @@ class Node(KubeMetadata[kubernetes.client.V1Node]):
         )
         if payload is None:
             return None
-        if not isinstance(payload, kubernetes.client.V1Node):
-            msg = f"malformed Kubernetes node payload for {name!r}"
-            raise OSError(msg)
-        return cls(_obj=payload)
+        return cls(
+            _obj=_typed_payload(payload, kubernetes.client.V1Node, context="node")
+        )
 
     @classmethod
     async def list(
@@ -123,31 +131,24 @@ class Node(KubeMetadata[kubernetes.client.V1Node]):
         builtins.list[Node]
             Validated Kubernetes node wrappers.
 
-        Raises
-        ------
-        OSError
-            If the Kubernetes API call fails or returns malformed data.
         """
-        payload = await kube.run(
-            lambda timeout: kube.core.list_node(
-                label_selector=_label_selector(labels),
-                _request_timeout=timeout,
-            ),
-            timeout=timeout,
-            context="failed to list Kubernetes nodes",
-        )
-        if payload is None:
-            return []
-        if not isinstance(payload, kubernetes.client.V1NodeList):
-            msg = "malformed Kubernetes node list payload"
-            raise OSError(msg)
-        out: builtins.list[Self] = []
-        for item in payload.items or []:
-            if not isinstance(item, kubernetes.client.V1Node):
-                msg = "malformed Kubernetes node entry in list payload"
-                raise OSError(msg)
-            out.append(cls(_obj=item))
-        return out
+        return [
+            cls(_obj=item)
+            for item in await _list_cluster_items(
+                kube,
+                timeout=timeout,
+                labels=labels,
+                list_items=lambda label_selector, request_timeout: kube.core.list_node(
+                    label_selector=label_selector,
+                    _request_timeout=request_timeout,
+                ),
+                list_type=kubernetes.client.V1NodeList,
+                item_type=kubernetes.client.V1Node,
+                context="failed to list Kubernetes nodes",
+                list_context="node",
+                item_context="node",
+            )
+        ]
 
     @classmethod
     async def watch(
@@ -176,22 +177,19 @@ class Node(KubeMetadata[kubernetes.client.V1Node]):
         WatchEvent[Node]
             Typed watch events containing wrapped Nodes.
         """
-        async for event in kube.watch(
-            kube.core.list_node,
-            wrapper=cls._watch_payload,
+        async for event in _watch_cluster_resource(
+            kube,
+            watch_fn=kube.core.list_node,
+            expected=kubernetes.client.V1Node,
+            wrapper=lambda payload: cls(_obj=payload),
             timeout=timeout,
             context="failed to watch Kubernetes Nodes",
             resource_version=resource_version,
             labels=labels,
+            field_selector=None,
+            payload_context="Node watch",
         ):
             yield event
-
-    @classmethod
-    def _watch_payload(cls, payload: object) -> Self:
-        if not isinstance(payload, kubernetes.client.V1Node):
-            msg = "malformed Kubernetes Node watch payload"
-            raise OSError(msg)
-        return cls(_obj=payload)
 
     @classmethod
     async def local(cls, kube: Kube, *, timeout: float) -> Self:
@@ -757,59 +755,39 @@ class Node(KubeMetadata[kubernetes.client.V1Node]):
         if not node_name:
             msg = "cannot query pods for Kubernetes node with missing name"
             raise OSError(msg)
-        label_selector = _label_selector(labels)
-
-        # if no namespace filter is given, do a single cluster-wide query
-        payloads: builtins.list[kubernetes.client.V1PodList] = []
-        if namespaces is None:
-            payload = await kube.run(
-                lambda timeout: kube.core.list_pod_for_all_namespaces(
-                    field_selector=f"spec.nodeName={node_name}",
-                    label_selector=label_selector,
-                    _request_timeout=timeout,
-                ),
+        return [
+            Pod(_obj=item)
+            for item in await _list_namespaced_items(
+                kube,
                 timeout=timeout,
-                context=f"failed to list pods on Kubernetes node {node_name!r}",
-            )
-            if payload is not None:
-                payloads.append(payload)
-
-        # otherwise, query each namespace individually and aggregate results
-        else:
-            namespaces_ = {namespace.strip() for namespace in namespaces}
-            namespaces_.discard("")
-            for namespace in namespaces_:
-                payload = await kube.run(
-                    lambda timeout, namespace=namespace: kube.core.list_namespaced_pod(
+                namespaces=namespaces,
+                labels=labels,
+                list_all=lambda label_selector, request_timeout: (
+                    kube.core.list_pod_for_all_namespaces(
+                        field_selector=f"spec.nodeName={node_name}",
+                        label_selector=label_selector,
+                        _request_timeout=request_timeout,
+                    )
+                ),
+                list_namespace=lambda namespace, label_selector, request_timeout: (
+                    kube.core.list_namespaced_pod(
                         namespace=namespace,
                         field_selector=f"spec.nodeName={node_name}",
                         label_selector=label_selector,
-                        _request_timeout=timeout,
-                    ),
-                    timeout=timeout,
-                    context=(
-                        f"failed to list pods in namespace {namespace!r} on "
-                        f"Kubernetes node {node_name!r}"
-                    ),
-                )
-                if payload is not None:
-                    payloads.append(payload)
-
-        # verify each payload and convert to Pod wrappers
-        out: builtins.list[Pod] = []
-        for payload in payloads:
-            if not isinstance(payload, kubernetes.client.V1PodList):
-                msg = f"malformed pod list payload for Kubernetes node {node_name!r}"
-                raise OSError(msg)
-            for item in payload.items or []:
-                if not isinstance(item, kubernetes.client.V1Pod):
-                    msg = (
-                        "malformed pod entry while listing Kubernetes node "
-                        f"{node_name!r}"
+                        _request_timeout=request_timeout,
                     )
-                    raise OSError(msg)
-                out.append(Pod(_obj=item))
-        return out
+                ),
+                list_type=kubernetes.client.V1PodList,
+                item_type=kubernetes.client.V1Pod,
+                all_context=f"failed to list pods on Kubernetes node {node_name!r}",
+                namespace_context=lambda namespace: (
+                    f"failed to list pods in namespace {namespace!r} on "
+                    f"Kubernetes node {node_name!r}"
+                ),
+                list_context="pod",
+                item_context="pod",
+            )
+        ]
 
     async def drain(
         self,

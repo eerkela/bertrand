@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-import asyncio
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Self
 
 import kubernetes
+
+from bertrand.env.git import until
 
 from .api import (
     ContainerSpec,
@@ -17,10 +18,19 @@ from .api import (
     TolerationSpec,
     VolumeSpec,
     WatchEvent,
-    _label_selector,
-    _pod_template_manifest,
+)
+from .api._helpers import (
+    _create_or_patch,
+    _list_namespaced_items,
+    _typed_payload,
     _validate_delete_status,
     _wait_until_deleted,
+)
+from .api._render import (
+    _pod_template_manifest,
+)
+from .api.watch import (
+    _watch_namespaced_resource,
 )
 
 DAEMONSET_WAIT_POLL_INTERVAL_SECONDS = 0.5
@@ -62,11 +72,6 @@ class DaemonSet(NamespacedKubeMetadata[kubernetes.client.V1DaemonSet]):
         -------
         DaemonSet | None
             Wrapped Kubernetes DaemonSet, or `None` if it does not exist.
-
-        Raises
-        ------
-        OSError
-            If Kubernetes returns malformed data or the API call fails.
         """
         payload = await kube.run(
             lambda request_timeout: kube.apps.read_namespaced_daemon_set(
@@ -79,13 +84,13 @@ class DaemonSet(NamespacedKubeMetadata[kubernetes.client.V1DaemonSet]):
         )
         if payload is None:
             return None
-        if not isinstance(payload, kubernetes.client.V1DaemonSet):
-            msg = (
-                f"malformed Kubernetes DaemonSet payload for {name!r} "
-                f"in namespace {namespace!r}"
+        return cls(
+            _obj=_typed_payload(
+                payload,
+                kubernetes.client.V1DaemonSet,
+                context="DaemonSet",
             )
-            raise OSError(msg)
-        return cls(_obj=payload)
+        )
 
     @classmethod
     async def list(
@@ -114,54 +119,37 @@ class DaemonSet(NamespacedKubeMetadata[kubernetes.client.V1DaemonSet]):
         -------
         list[DaemonSet]
             Wrapped Kubernetes DaemonSets matching the requested filters.
-
-        Raises
-        ------
-        OSError
-            If Kubernetes returns malformed data or a list call fails.
         """
-        label_selector = _label_selector(labels)
-        payloads: builtins.list[kubernetes.client.V1DaemonSetList] = []
-        if namespaces is None:
-            payload = await kube.run(
-                lambda request_timeout: kube.apps.list_daemon_set_for_all_namespaces(
-                    label_selector=label_selector,
-                    _request_timeout=request_timeout,
-                ),
+        return [
+            cls(_obj=item)
+            for item in await _list_namespaced_items(
+                kube,
                 timeout=timeout,
-                context="failed to list DaemonSets across all namespaces",
+                namespaces=namespaces,
+                labels=labels,
+                list_all=lambda label_selector, request_timeout: (
+                    kube.apps.list_daemon_set_for_all_namespaces(
+                        label_selector=label_selector,
+                        _request_timeout=request_timeout,
+                    )
+                ),
+                list_namespace=lambda namespace, label_selector, request_timeout: (
+                    kube.apps.list_namespaced_daemon_set(
+                        namespace=namespace,
+                        label_selector=label_selector,
+                        _request_timeout=request_timeout,
+                    )
+                ),
+                list_type=kubernetes.client.V1DaemonSetList,
+                item_type=kubernetes.client.V1DaemonSet,
+                all_context="failed to list DaemonSets across all namespaces",
+                namespace_context=lambda namespace: (
+                    f"failed to list DaemonSets in namespace {namespace!r}"
+                ),
+                list_context="DaemonSet",
+                item_context="DaemonSet",
             )
-            if payload is not None:
-                payloads.append(payload)
-        else:
-            normalized = {namespace.strip() for namespace in namespaces}
-            normalized.discard("")
-            for namespace in sorted(normalized):
-                payload = await kube.run(
-                    lambda request_timeout, namespace=namespace: (
-                        kube.apps.list_namespaced_daemon_set(
-                            namespace=namespace,
-                            label_selector=label_selector,
-                            _request_timeout=request_timeout,
-                        )
-                    ),
-                    timeout=timeout,
-                    context=f"failed to list DaemonSets in namespace {namespace!r}",
-                )
-                if payload is not None:
-                    payloads.append(payload)
-
-        out: builtins.list[Self] = []
-        for payload in payloads:
-            if not isinstance(payload, kubernetes.client.V1DaemonSetList):
-                msg = "malformed Kubernetes DaemonSet list payload"
-                raise OSError(msg)
-            for item in payload.items or []:
-                if not isinstance(item, kubernetes.client.V1DaemonSet):
-                    msg = "malformed Kubernetes DaemonSet entry in list payload"
-                    raise OSError(msg)
-                out.append(cls(_obj=item))
-        return out
+        ]
 
     @classmethod
     async def watch(
@@ -196,34 +184,24 @@ class DaemonSet(NamespacedKubeMetadata[kubernetes.client.V1DaemonSet]):
         WatchEvent[DaemonSet]
             Typed watch events containing wrapped DaemonSets.
         """
-        namespace = namespace.strip() if namespace is not None else ""
-        if namespace:
-            fn = kube.apps.list_namespaced_daemon_set
-            api_kwargs: Mapping[str, object] = {"namespace": namespace}
-            context = f"failed to watch DaemonSets in namespace {namespace!r}"
-        else:
-            fn = kube.apps.list_daemon_set_for_all_namespaces
-            api_kwargs = {}
-            context = "failed to watch DaemonSets across all namespaces"
-
-        async for event in kube.watch(
-            fn,
-            wrapper=cls._watch_payload,
+        async for event in _watch_namespaced_resource(
+            kube,
+            expected=kubernetes.client.V1DaemonSet,
+            wrapper=lambda payload: cls(_obj=payload),
             timeout=timeout,
-            context=context,
+            namespace=namespace,
             resource_version=resource_version,
             labels=labels,
             field_selector=field_selector,
-            api_kwargs=api_kwargs,
+            watch_all=kube.apps.list_daemon_set_for_all_namespaces,
+            watch_namespace=kube.apps.list_namespaced_daemon_set,
+            all_context="failed to watch DaemonSets across all namespaces",
+            namespace_context=lambda namespace: (
+                f"failed to watch DaemonSets in namespace {namespace!r}"
+            ),
+            payload_context="DaemonSet watch",
         ):
             yield event
-
-    @classmethod
-    def _watch_payload(cls, payload: object) -> Self:
-        if not isinstance(payload, kubernetes.client.V1DaemonSet):
-            msg = "malformed Kubernetes DaemonSet watch payload"
-            raise OSError(msg)
-        return cls(_obj=payload)
 
     @staticmethod
     def _manifest(
@@ -240,7 +218,7 @@ class DaemonSet(NamespacedKubeMetadata[kubernetes.client.V1DaemonSet]):
         service_account_name: str | None,
         node_selector: Mapping[str, str] | None,
         host_pid: bool | None,
-        pod_security_context: PodSecurityContextSpec | Mapping[str, object] | None,
+        pod_security_context: PodSecurityContextSpec | None,
         tolerations: Collection[TolerationSpec],
         image_pull_secrets: Collection[ImagePullSecretSpec],
         priority_class_name: str | None,
@@ -299,9 +277,7 @@ class DaemonSet(NamespacedKubeMetadata[kubernetes.client.V1DaemonSet]):
         service_account_name: str | None = None,
         node_selector: Mapping[str, str] | None = None,
         host_pid: bool | None = None,
-        pod_security_context: PodSecurityContextSpec
-        | Mapping[str, object]
-        | None = None,
+        pod_security_context: PodSecurityContextSpec | None = None,
         tolerations: Collection[TolerationSpec] = (),
         image_pull_secrets: Collection[ImagePullSecretSpec] = (),
         priority_class_name: str | None = None,
@@ -341,7 +317,7 @@ class DaemonSet(NamespacedKubeMetadata[kubernetes.client.V1DaemonSet]):
             Optional pod node selector.
         host_pid : bool | None, optional
             Optional pod `hostPID` value.
-        pod_security_context : PodSecurityContextSpec | Mapping | None, optional
+        pod_security_context : PodSecurityContextSpec | None, optional
             Optional pod security context.
         tolerations : Collection[TolerationSpec], optional
             Optional pod tolerations.
@@ -364,8 +340,7 @@ class DaemonSet(NamespacedKubeMetadata[kubernetes.client.V1DaemonSet]):
         Raises
         ------
         OSError
-            If namespace/name are empty, or Kubernetes create/patch fails or returns
-            malformed data.
+            If Kubernetes returns malformed data or the API call fails.
         """
         namespace = namespace.strip()
         name = name.strip()
@@ -393,40 +368,26 @@ class DaemonSet(NamespacedKubeMetadata[kubernetes.client.V1DaemonSet]):
             host_network=host_network,
             termination_grace_period_seconds=termination_grace_period_seconds,
         )
-        try:
-            created = await kube.run(
-                lambda request_timeout: kube.apps.create_namespaced_daemon_set(
-                    namespace=namespace,
-                    body=manifest,
-                    _request_timeout=request_timeout,
-                ),
-                timeout=timeout,
-                context=f"failed to create DaemonSet {namespace}/{name}",
-            )
-        except OSError as err:
-            detail = str(err).lower()
-            if "status 409" not in detail and "already exists" not in detail:
-                raise
-        else:
-            if not isinstance(created, kubernetes.client.V1DaemonSet):
-                msg = f"malformed Kubernetes DaemonSet payload while creating {name!r}"
-                raise OSError(msg)
-            return cls(_obj=created)
-
-        patched = await kube.run(
-            lambda request_timeout: kube.apps.patch_namespaced_daemon_set(
+        payload = await _create_or_patch(
+            kube,
+            timeout=timeout,
+            create=lambda request_timeout: kube.apps.create_namespaced_daemon_set(
+                namespace=namespace,
+                body=manifest,
+                _request_timeout=request_timeout,
+            ),
+            patch=lambda request_timeout: kube.apps.patch_namespaced_daemon_set(
                 name=name,
                 namespace=namespace,
                 body=manifest,
                 _request_timeout=request_timeout,
             ),
-            timeout=timeout,
-            context=f"failed to patch DaemonSet {namespace}/{name}",
+            create_context=f"failed to create DaemonSet {namespace}/{name}",
+            patch_context=f"failed to patch DaemonSet {namespace}/{name}",
+            expected=kubernetes.client.V1DaemonSet,
+            payload_context="DaemonSet",
         )
-        if not isinstance(patched, kubernetes.client.V1DaemonSet):
-            msg = f"malformed Kubernetes DaemonSet payload while patching {name!r}"
-            raise OSError(msg)
-        return cls(_obj=patched)
+        return cls(_obj=payload)
 
     @property
     def generation(self) -> int:
@@ -637,20 +598,13 @@ class DaemonSet(NamespacedKubeMetadata[kubernetes.client.V1DaemonSet]):
         timeout : float
             Maximum wait time in seconds. Must be positive.
 
-        Raises
-        ------
-        TimeoutError
-            If the DaemonSet still exists when `timeout` expires.
         """
         namespace, name = self._require_namespace_name("wait for DaemonSet deletion")
-        try:
-            await _wait_until_deleted(
-                label=self._object_label(name=name, namespace=namespace),
-                timeout=timeout,
-                refresh=lambda remaining: self.refresh(kube, timeout=remaining),
-            )
-        except TimeoutError as err:
-            raise TimeoutError(str(err)) from err
+        await _wait_until_deleted(
+            label=self._object_label(name=name, namespace=namespace),
+            timeout=timeout,
+            refresh=lambda remaining: self.refresh(kube, timeout=remaining),
+        )
 
     async def wait_available(
         self,
@@ -681,8 +635,6 @@ class DaemonSet(NamespacedKubeMetadata[kubernetes.client.V1DaemonSet]):
             If `minimum` is negative.
         TimeoutError
             If the DaemonSet does not become available before `timeout`.
-        OSError
-            If the DaemonSet disappears while waiting.
         """
         if minimum < 0:
             msg = "DaemonSet availability minimum cannot be negative"
@@ -690,17 +642,10 @@ class DaemonSet(NamespacedKubeMetadata[kubernetes.client.V1DaemonSet]):
         namespace, name = self._require_namespace_name(
             "wait for DaemonSet availability"
         )
-        if timeout <= 0:
-            msg = f"timed out waiting for DaemonSet {namespace}/{name} availability"
-            raise TimeoutError(msg)
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + timeout
         current: Self = self
-        while True:
-            remaining = deadline - loop.time()
-            if remaining <= 0:
-                msg = f"timed out waiting for DaemonSet {namespace}/{name} availability"
-                raise TimeoutError(msg)
+
+        async def available(remaining: float) -> Self:
+            nonlocal current
             refreshed = await current.refresh(kube, timeout=remaining)
             if refreshed is None:
                 msg = (
@@ -711,7 +656,19 @@ class DaemonSet(NamespacedKubeMetadata[kubernetes.client.V1DaemonSet]):
             if refreshed.has_available_pods(minimum):
                 return refreshed
             current = refreshed
-            await asyncio.sleep(min(DAEMONSET_WAIT_POLL_INTERVAL_SECONDS, remaining))
+            msg = f"DaemonSet {namespace}/{name} is not available yet"
+            raise TimeoutError(msg)
+
+        try:
+            return await until(
+                available,
+                timeout=timeout,
+                interval=DAEMONSET_WAIT_POLL_INTERVAL_SECONDS,
+                action=f"waiting for DaemonSet {namespace}/{name} availability",
+            )
+        except TimeoutError as err:
+            msg = f"timed out waiting for DaemonSet {namespace}/{name} availability"
+            raise TimeoutError(msg) from err
 
     async def wait_rollout(
         self,
@@ -742,25 +699,16 @@ class DaemonSet(NamespacedKubeMetadata[kubernetes.client.V1DaemonSet]):
             If `minimum` is negative.
         TimeoutError
             If the DaemonSet does not complete rollout before `timeout`.
-        OSError
-            If the DaemonSet disappears while waiting.
         """
         if minimum < 0:
             msg = "DaemonSet rollout minimum cannot be negative"
             raise ValueError(msg)
         namespace, name = self._require_namespace_name("wait for DaemonSet rollout")
-        if timeout <= 0:
-            msg = f"timed out waiting for DaemonSet {namespace}/{name} rollout"
-            raise TimeoutError(msg)
         target_generation = self.generation
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + timeout
         current: Self = self
-        while True:
-            remaining = deadline - loop.time()
-            if remaining <= 0:
-                msg = f"timed out waiting for DaemonSet {namespace}/{name} rollout"
-                raise TimeoutError(msg)
+
+        async def rolled_out(remaining: float) -> Self:
+            nonlocal current
             refreshed = await current.refresh(kube, timeout=remaining)
             if refreshed is None:
                 msg = (
@@ -774,4 +722,16 @@ class DaemonSet(NamespacedKubeMetadata[kubernetes.client.V1DaemonSet]):
             ) and refreshed.rollout_ready(minimum):
                 return refreshed
             current = refreshed
-            await asyncio.sleep(min(DAEMONSET_WAIT_POLL_INTERVAL_SECONDS, remaining))
+            msg = f"DaemonSet {namespace}/{name} rollout is not complete yet"
+            raise TimeoutError(msg)
+
+        try:
+            return await until(
+                rolled_out,
+                timeout=timeout,
+                interval=DAEMONSET_WAIT_POLL_INTERVAL_SECONDS,
+                action=f"waiting for DaemonSet {namespace}/{name} rollout",
+            )
+        except TimeoutError as err:
+            msg = f"timed out waiting for DaemonSet {namespace}/{name} rollout"
+            raise TimeoutError(msg) from err

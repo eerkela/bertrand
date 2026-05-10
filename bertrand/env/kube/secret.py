@@ -12,7 +12,11 @@ from kubernetes import client as kube_client
 from .api import (
     Kube,
     NamespacedKubeMetadata,
-    _label_selector,
+)
+from .api._helpers import (
+    _create_or_patch,
+    _list_namespaced_items,
+    _typed_payload,
     _validate_delete_status,
     _wait_until_deleted,
 )
@@ -60,11 +64,6 @@ class Secret(NamespacedKubeMetadata[kube_client.V1Secret]):
         -------
         Secret | None
             Wrapped Kubernetes secret, or `None` when the object does not exist.
-
-        Raises
-        ------
-        OSError
-            If the Kubernetes API call fails or returns malformed data.
         """
         payload = await kube.run(
             lambda request_timeout: kube.core.read_namespaced_secret(
@@ -79,13 +78,7 @@ class Secret(NamespacedKubeMetadata[kube_client.V1Secret]):
         )
         if payload is None:
             return None
-        if not isinstance(payload, kube_client.V1Secret):
-            msg = (
-                f"malformed Kubernetes Secret payload for {name!r} in namespace "
-                f"{namespace!r}"
-            )
-            raise OSError(msg)
-        return cls(_obj=payload)
+        return cls(_obj=_typed_payload(payload, kube_client.V1Secret, context="Secret"))
 
     @classmethod
     async def list(
@@ -114,62 +107,37 @@ class Secret(NamespacedKubeMetadata[kube_client.V1Secret]):
         -------
         builtins.list[Secret]
             Validated secret wrappers matching the requested filters.
-
-        Raises
-        ------
-        OSError
-            If a Kubernetes API call fails or returns malformed data.
         """
-        label_selector = _label_selector(labels)
-        payloads: builtins.list[kube_client.V1SecretList] = []
-
-        # search all namespaces
-        if namespaces is None:
-            payload = await kube.run(
-                lambda request_timeout: kube.core.list_secret_for_all_namespaces(
-                    label_selector=label_selector,
-                    _request_timeout=request_timeout,
-                ),
+        return [
+            cls(_obj=item)
+            for item in await _list_namespaced_items(
+                kube,
                 timeout=timeout,
-                context="failed to list cluster secrets across all namespaces",
+                namespaces=namespaces,
+                labels=labels,
+                list_all=lambda label_selector, request_timeout: (
+                    kube.core.list_secret_for_all_namespaces(
+                        label_selector=label_selector,
+                        _request_timeout=request_timeout,
+                    )
+                ),
+                list_namespace=lambda namespace, label_selector, request_timeout: (
+                    kube.core.list_namespaced_secret(
+                        namespace=namespace,
+                        label_selector=label_selector,
+                        _request_timeout=request_timeout,
+                    )
+                ),
+                list_type=kube_client.V1SecretList,
+                item_type=kube_client.V1Secret,
+                all_context="failed to list cluster secrets across all namespaces",
+                namespace_context=lambda namespace: (
+                    f"failed to list cluster secrets in namespace {namespace!r}"
+                ),
+                list_context="Secret",
+                item_context="Secret",
             )
-            if payload is not None:
-                payloads.append(payload)
-
-        # search specific namespaces
-        else:
-            normalized = {namespace.strip() for namespace in namespaces}
-            normalized.discard("")
-            if not normalized:
-                return []
-            for namespace in sorted(normalized):
-                payload = await kube.run(
-                    lambda request_timeout, namespace=namespace: (
-                        kube.core.list_namespaced_secret(
-                            namespace=namespace,
-                            label_selector=label_selector,
-                            _request_timeout=request_timeout,
-                        )
-                    ),
-                    timeout=timeout,
-                    context=(
-                        f"failed to list cluster secrets in namespace {namespace!r}"
-                    ),
-                )
-                if payload is not None:
-                    payloads.append(payload)
-
-        out: builtins.list[Self] = []
-        for payload in payloads:
-            if not isinstance(payload, kube_client.V1SecretList):
-                msg = "malformed Kubernetes Secret list payload"
-                raise OSError(msg)
-            for item in payload.items or []:
-                if not isinstance(item, kube_client.V1Secret):
-                    msg = "malformed Kubernetes Secret entry in list payload"
-                    raise OSError(msg)
-                out.append(cls(_obj=item))
-        return out
+        ]
 
     @classmethod
     async def upsert(
@@ -206,11 +174,6 @@ class Secret(NamespacedKubeMetadata[kube_client.V1Secret]):
         -------
         Secret
             Wrapped created or patched Kubernetes secret.
-
-        Raises
-        ------
-        OSError
-            If Kubernetes create/patch fails or returns malformed data.
         """
         manifest = {
             "apiVersion": "v1",
@@ -225,40 +188,26 @@ class Secret(NamespacedKubeMetadata[kube_client.V1Secret]):
             "data": {"value": base64.b64encode(payload).decode("ascii")},
         }
 
-        try:
-            created = await kube.run(
-                lambda request_timeout: kube.core.create_namespaced_secret(
-                    namespace=namespace,
-                    body=manifest,
-                    _request_timeout=request_timeout,
-                ),
-                timeout=timeout,
-                context=f"failed to create cluster secret {name!r}",
-            )
-        except OSError as err:
-            detail = str(err).lower()
-            if "status 409" not in detail and "already exists" not in detail:
-                raise
-        else:
-            if not isinstance(created, kube_client.V1Secret):
-                msg = f"malformed Kubernetes Secret payload while creating {name!r}"
-                raise OSError(msg)
-            return cls(_obj=created)
-
-        updated = await kube.run(
-            lambda request_timeout: kube.core.patch_namespaced_secret(
+        result = await _create_or_patch(
+            kube,
+            timeout=timeout,
+            create=lambda request_timeout: kube.core.create_namespaced_secret(
+                namespace=namespace,
+                body=manifest,
+                _request_timeout=request_timeout,
+            ),
+            patch=lambda request_timeout: kube.core.patch_namespaced_secret(
                 name=name,
                 namespace=namespace,
                 body=manifest,
                 _request_timeout=request_timeout,
             ),
-            timeout=timeout,
-            context=f"failed to update cluster secret {name!r}",
+            create_context=f"failed to create cluster secret {name!r}",
+            patch_context=f"failed to update cluster secret {name!r}",
+            expected=kube_client.V1Secret,
+            payload_context="Secret",
         )
-        if not isinstance(updated, kube_client.V1Secret):
-            msg = f"malformed Kubernetes Secret payload while updating {name!r}"
-            raise OSError(msg)
-        return cls(_obj=updated)
+        return cls(_obj=result)
 
     @property
     def value(self) -> bytes:
@@ -345,17 +294,10 @@ class Secret(NamespacedKubeMetadata[kube_client.V1Secret]):
         timeout : float
             Maximum wait time in seconds. Must be positive.
 
-        Raises
-        ------
-        TimeoutError
-            If the secret still exists when `timeout` expires.
         """
         namespace, name = self._require_namespace_name("wait for secret deletion")
-        try:
-            await _wait_until_deleted(
-                label=self._object_label(name=name, namespace=namespace),
-                timeout=timeout,
-                refresh=lambda remaining: self.refresh(kube, timeout=remaining),
-            )
-        except TimeoutError as err:
-            raise TimeoutError(str(err)) from err
+        await _wait_until_deleted(
+            label=self._object_label(name=name, namespace=namespace),
+            timeout=timeout,
+            refresh=lambda remaining: self.refresh(kube, timeout=remaining),
+        )

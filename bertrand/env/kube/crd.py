@@ -10,16 +10,23 @@ from typing import TYPE_CHECKING, Any, Self, cast
 
 from kubernetes import client as kube_client
 
+from bertrand.env.git import until
+
 from .api import (
     CustomResourceSpec,
     Kube,
     KubeMetadata,
     WatchEvent,
     WatchExpired,
+)
+from .api._helpers import (
     _label_selector,
+    _list_cluster_items,
+    _typed_payload,
     _validate_delete_status,
     _wait_until_deleted,
 )
+from .api.watch import watch as kube_watch
 
 CRD_WAIT_POLL_INTERVAL_SECONDS = 0.5
 
@@ -94,14 +101,28 @@ class CustomResourceClient:
         NamespacedCustomObject | None
             Wrapped custom object, or `None` if it does not exist.
         """
-        return await NamespacedCustomObject.get(
-            kube,
+        payload = await kube.run(
+            lambda request_timeout: kube.custom.get_namespaced_custom_object(
+                group=self.spec.group,
+                version=self.spec.version,
+                namespace=namespace,
+                plural=self.spec.plural,
+                name=name,
+                _request_timeout=request_timeout,
+            ),
+            timeout=timeout,
+            context=(
+                f"failed to read custom object {self.spec.plural}/{name} "
+                f"in namespace {namespace!r}"
+            ),
+        )
+        if payload is None:
+            return None
+        return NamespacedCustomObject._from_payload(
             group=self.spec.group,
             version=self.spec.version,
-            namespace=namespace,
             plural=self.spec.plural,
-            name=name,
-            timeout=timeout,
+            payload=payload,
         )
 
     async def list(
@@ -130,15 +151,13 @@ class CustomResourceClient:
         list[NamespacedCustomObject]
             Wrapped custom objects matching the requested filters.
         """
-        return await NamespacedCustomObject.list(
+        snapshot = await self._snapshot(
             kube,
-            group=self.spec.group,
-            version=self.spec.version,
             namespace=namespace,
-            plural=self.spec.plural,
             labels=labels,
             timeout=timeout,
         )
+        return snapshot.items
 
     async def watch(
         self,
@@ -191,12 +210,9 @@ class CustomResourceClient:
             if remaining <= 0:
                 return
             if not current_version:
-                snapshot = await NamespacedCustomObject._snapshot(
+                snapshot = await self._snapshot(
                     kube,
-                    group=self.spec.group,
-                    version=self.spec.version,
                     namespace=namespace,
-                    plural=self.spec.plural,
                     labels=labels,
                     timeout=remaining,
                 )
@@ -215,7 +231,8 @@ class CustomResourceClient:
             if remaining <= 0:
                 return
             try:
-                async for event in kube.watch(
+                async for event in kube_watch(
+                    kube,
                     kube.custom.list_namespaced_custom_object,
                     wrapper=lambda payload: NamespacedCustomObject._from_payload(
                         group=self.spec.group,
@@ -280,12 +297,9 @@ class CustomResourceClient:
         NamespacedCustomObject
             Wrapped created custom object.
         """
-        return await NamespacedCustomObject._create(
+        return await self._create(
             kube,
-            group=self.spec.group,
-            version=self.spec.version,
             namespace=namespace,
-            plural=self.spec.plural,
             body=self._body(
                 namespace=namespace,
                 name=name,
@@ -331,12 +345,9 @@ class CustomResourceClient:
         NamespacedCustomObject
             Wrapped created or patched custom object.
         """
-        return await NamespacedCustomObject._upsert(
+        return await self._upsert(
             kube,
-            group=self.spec.group,
-            version=self.spec.version,
             namespace=namespace,
-            plural=self.spec.plural,
             body=self._body(
                 namespace=namespace,
                 name=name,
@@ -376,18 +387,191 @@ class CustomResourceClient:
         NamespacedCustomObject
             Wrapped custom object returned by the status patch.
         """
-        obj = NamespacedCustomObject(
-            group=self.spec.group,
-            version=self.spec.version,
-            plural=self.spec.plural,
-            payload={},
-        )
-        return await obj.patch_status(
+        return await self._patch_status(
             kube,
             namespace=namespace,
             name=name,
             status=status,
             timeout=timeout,
+        )
+
+    async def _snapshot(
+        self,
+        kube: Kube,
+        *,
+        namespace: str,
+        timeout: float,
+        labels: Mapping[str, str] | None = None,
+    ) -> _CustomResourceSnapshot:
+        payload = await kube.run(
+            lambda request_timeout: kube.custom.list_namespaced_custom_object(
+                group=self.spec.group,
+                version=self.spec.version,
+                namespace=namespace,
+                plural=self.spec.plural,
+                label_selector=_label_selector(labels),
+                _request_timeout=request_timeout,
+            ),
+            timeout=timeout,
+            context=(
+                f"failed to list custom objects {self.spec.plural} "
+                f"in namespace {namespace!r}"
+            ),
+        )
+        if payload is None:
+            msg = (
+                f"Kubernetes custom object list for {self.spec.plural} "
+                "returned no payload"
+            )
+            raise OSError(msg)
+        if not isinstance(payload, Mapping):
+            msg = (
+                f"malformed Kubernetes custom object list payload for "
+                f"{self.spec.plural}"
+            )
+            raise OSError(msg)
+        payload = cast("Mapping[str, object]", payload)
+        metadata = payload.get("metadata", {})
+        if not isinstance(metadata, Mapping):
+            msg = (
+                f"malformed Kubernetes custom object list metadata for "
+                f"{self.spec.plural}"
+            )
+            raise OSError(msg)
+        metadata = cast("Mapping[str, object]", metadata)
+        resource_version = str(metadata.get("resourceVersion") or "").strip()
+        if not resource_version:
+            msg = (
+                f"Kubernetes custom object list for {self.spec.plural} "
+                "had no resourceVersion"
+            )
+            raise OSError(msg)
+        items = payload.get("items", [])
+        if not isinstance(items, list):
+            msg = (
+                f"malformed Kubernetes custom object list items for {self.spec.plural}"
+            )
+            raise OSError(msg)
+        out = [
+            NamespacedCustomObject._from_payload(
+                group=self.spec.group,
+                version=self.spec.version,
+                plural=self.spec.plural,
+                payload=item,
+            )
+            for item in items
+        ]
+        return _CustomResourceSnapshot(items=out, resource_version=resource_version)
+
+    async def _create(
+        self,
+        kube: Kube,
+        *,
+        namespace: str,
+        body: Mapping[str, object],
+        timeout: float,
+    ) -> NamespacedCustomObject:
+        payload = await kube.run(
+            lambda request_timeout: kube.custom.create_namespaced_custom_object(
+                group=self.spec.group,
+                version=self.spec.version,
+                namespace=namespace,
+                plural=self.spec.plural,
+                body=dict(body),
+                _request_timeout=request_timeout,
+            ),
+            timeout=timeout,
+            context=(
+                f"failed to create custom object {self.spec.plural} "
+                f"in namespace {namespace!r}"
+            ),
+        )
+        return NamespacedCustomObject._from_payload(
+            group=self.spec.group,
+            version=self.spec.version,
+            plural=self.spec.plural,
+            payload=payload,
+        )
+
+    async def _upsert(
+        self,
+        kube: Kube,
+        *,
+        namespace: str,
+        body: Mapping[str, object],
+        timeout: float,
+    ) -> NamespacedCustomObject:
+        metadata = body.get("metadata")
+        if not isinstance(metadata, Mapping):
+            msg = "custom object body must define metadata"
+            raise OSError(msg)
+        metadata = cast("Mapping[str, object]", metadata)
+        name = str(metadata.get("name") or "").strip()
+        if not name:
+            msg = "custom object body must define metadata.name"
+            raise OSError(msg)
+        try:
+            return await self._create(
+                kube,
+                namespace=namespace,
+                body=body,
+                timeout=timeout,
+            )
+        except OSError as err:
+            detail = str(err).lower()
+            if "status 409" not in detail and "already exists" not in detail:
+                raise
+
+        payload = await kube.run(
+            lambda request_timeout: kube.custom.patch_namespaced_custom_object(
+                group=self.spec.group,
+                version=self.spec.version,
+                namespace=namespace,
+                plural=self.spec.plural,
+                name=name,
+                body=dict(body),
+                _request_timeout=request_timeout,
+            ),
+            timeout=timeout,
+            context=(
+                f"failed to patch custom object {self.spec.plural}/{name} "
+                f"in namespace {namespace!r}"
+            ),
+        )
+        return NamespacedCustomObject._from_payload(
+            group=self.spec.group,
+            version=self.spec.version,
+            plural=self.spec.plural,
+            payload=payload,
+        )
+
+    async def _patch_status(
+        self,
+        kube: Kube,
+        *,
+        namespace: str,
+        name: str,
+        status: Mapping[str, object],
+        timeout: float,
+    ) -> NamespacedCustomObject:
+        payload = await kube.run(
+            lambda request_timeout: kube.custom.patch_namespaced_custom_object_status(
+                group=self.spec.group,
+                version=self.spec.version,
+                namespace=namespace,
+                plural=self.spec.plural,
+                name=name,
+                body={"status": dict(status)},
+                _request_timeout=request_timeout,
+            ),
+            timeout=timeout,
+            context=f"failed to patch custom object status {self.spec.plural}/{name}",
+        )
+        return NamespacedCustomObject._from_payload(
+            group=self.spec.group,
+            version=self.spec.version,
+            plural=self.spec.plural,
+            payload=payload,
         )
 
 
@@ -455,385 +639,6 @@ class NamespacedCustomObject:
             version=version,
             plural=plural,
             payload=cast("Mapping[str, Any]", payload),
-        )
-
-    @classmethod
-    async def get(
-        cls,
-        kube: Kube,
-        *,
-        group: str,
-        version: str,
-        namespace: str,
-        plural: str,
-        name: str,
-        timeout: float,
-    ) -> Self | None:
-        """Read one namespaced custom object by name.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        group : str
-            API group that owns the custom object.
-        version : str
-            Served API version.
-        namespace : str
-            Namespace that owns the custom object.
-        plural : str
-            Plural REST resource name.
-        name : str
-            Custom object name to read.
-        timeout : float
-            Maximum request budget in seconds. If infinite, wait indefinitely.
-
-        Returns
-        -------
-        NamespacedCustomObject | None
-            Wrapped custom object, or `None` if it does not exist.
-
-        Raises
-        ------
-        OSError
-            If Kubernetes returns malformed data or the API call fails.
-        """
-        payload = await kube.run(
-            lambda request_timeout: kube.custom.get_namespaced_custom_object(
-                group=group,
-                version=version,
-                namespace=namespace,
-                plural=plural,
-                name=name,
-                _request_timeout=request_timeout,
-            ),
-            timeout=timeout,
-            context=(
-                f"failed to read custom object {plural}/{name} "
-                f"in namespace {namespace!r}"
-            ),
-        )
-        if payload is None:
-            return None
-        if not isinstance(payload, Mapping):
-            msg = f"malformed Kubernetes custom object payload for {plural}/{name}"
-            raise OSError(msg)
-        return cls(
-            group=group,
-            version=version,
-            plural=plural,
-            payload=cast("Mapping[str, Any]", payload),
-        )
-
-    @classmethod
-    async def list(
-        cls,
-        kube: Kube,
-        *,
-        group: str,
-        version: str,
-        namespace: str,
-        plural: str,
-        timeout: float,
-        labels: Mapping[str, str] | None = None,
-    ) -> builtins.list[NamespacedCustomObject]:
-        """List namespaced custom objects with optional label filtering.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        group : str
-            API group that owns the custom objects.
-        version : str
-            Served API version.
-        namespace : str
-            Namespace to query.
-        plural : str
-            Plural REST resource name.
-        timeout : float
-            Maximum request budget in seconds. If infinite, wait indefinitely.
-        labels : Mapping[str, str] | None, optional
-            Optional label selector key/value pairs.
-
-        Returns
-        -------
-        list[NamespacedCustomObject]
-            Wrapped custom objects matching the requested filters.
-
-        """
-        snapshot = await cls._snapshot(
-            kube,
-            group=group,
-            version=version,
-            namespace=namespace,
-            plural=plural,
-            labels=labels,
-            timeout=timeout,
-        )
-        return snapshot.items
-
-    @classmethod
-    async def _snapshot(
-        cls,
-        kube: Kube,
-        *,
-        group: str,
-        version: str,
-        namespace: str,
-        plural: str,
-        timeout: float,
-        labels: Mapping[str, str] | None = None,
-    ) -> _CustomResourceSnapshot:
-        payload = await kube.run(
-            lambda request_timeout: kube.custom.list_namespaced_custom_object(
-                group=group,
-                version=version,
-                namespace=namespace,
-                plural=plural,
-                label_selector=_label_selector(labels),
-                _request_timeout=request_timeout,
-            ),
-            timeout=timeout,
-            context=(
-                f"failed to list custom objects {plural} in namespace {namespace!r}"
-            ),
-        )
-        if payload is None:
-            msg = f"Kubernetes custom object list for {plural} returned no payload"
-            raise OSError(msg)
-        if not isinstance(payload, Mapping):
-            msg = f"malformed Kubernetes custom object list payload for {plural}"
-            raise OSError(msg)
-        payload = cast("Mapping[str, object]", payload)
-        metadata = payload.get("metadata", {})
-        if not isinstance(metadata, Mapping):
-            msg = f"malformed Kubernetes custom object list metadata for {plural}"
-            raise OSError(msg)
-        metadata = cast("Mapping[str, object]", metadata)
-        resource_version = str(metadata.get("resourceVersion") or "").strip()
-        if not resource_version:
-            msg = f"Kubernetes custom object list for {plural} had no resourceVersion"
-            raise OSError(msg)
-        items = payload.get("items", [])
-        if not isinstance(items, list):
-            msg = f"malformed Kubernetes custom object list items for {plural}"
-            raise OSError(msg)
-        out = [
-            NamespacedCustomObject._from_payload(
-                group=group,
-                version=version,
-                plural=plural,
-                payload=item,
-            )
-            for item in items
-        ]
-        return _CustomResourceSnapshot(items=out, resource_version=resource_version)
-
-    @classmethod
-    async def _create(
-        cls,
-        kube: Kube,
-        *,
-        group: str,
-        version: str,
-        namespace: str,
-        plural: str,
-        body: Mapping[str, object],
-        timeout: float,
-    ) -> Self:
-        """Create one namespaced custom object.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        group : str
-            API group that owns the custom object.
-        version : str
-            Served API version.
-        namespace : str
-            Namespace that owns the custom object.
-        plural : str
-            Plural REST resource name.
-        body : Mapping[str, object]
-            Kubernetes custom-object body to create.
-        timeout : float
-            Maximum request budget in seconds. If infinite, wait indefinitely.
-
-        Returns
-        -------
-        NamespacedCustomObject
-            Wrapped created custom object.
-
-        Raises
-        ------
-        OSError
-            If Kubernetes create fails or returns malformed data.
-        """
-        payload = await kube.run(
-            lambda request_timeout: kube.custom.create_namespaced_custom_object(
-                group=group,
-                version=version,
-                namespace=namespace,
-                plural=plural,
-                body=dict(body),
-                _request_timeout=request_timeout,
-            ),
-            timeout=timeout,
-            context=(
-                f"failed to create custom object {plural} in namespace {namespace!r}"
-            ),
-        )
-        if not isinstance(payload, Mapping):
-            msg = f"malformed Kubernetes custom object create payload for {plural}"
-            raise OSError(msg)
-        return cls(group=group, version=version, plural=plural, payload=payload)
-
-    @classmethod
-    async def _upsert(
-        cls,
-        kube: Kube,
-        *,
-        group: str,
-        version: str,
-        namespace: str,
-        plural: str,
-        body: Mapping[str, object],
-        timeout: float,
-    ) -> Self:
-        """Create or patch one namespaced custom object.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        group : str
-            API group that owns the custom object.
-        version : str
-            Served API version.
-        namespace : str
-            Namespace that owns the custom object.
-        plural : str
-            Plural REST resource name.
-        body : Mapping[str, object]
-            Kubernetes custom-object body to create or patch.
-        timeout : float
-            Maximum request budget in seconds. If infinite, wait indefinitely.
-
-        Returns
-        -------
-        NamespacedCustomObject
-            Wrapped created or patched custom object.
-
-        Raises
-        ------
-        OSError
-            If the body has no name, or Kubernetes create/patch fails or returns
-            malformed data.
-        """
-        metadata = body.get("metadata")
-        if not isinstance(metadata, Mapping):
-            msg = "custom object body must define metadata"
-            raise OSError(msg)
-        metadata = cast("Mapping[str, object]", metadata)
-        name = str(metadata.get("name") or "").strip()
-        if not name:
-            msg = "custom object body must define metadata.name"
-            raise OSError(msg)
-        try:
-            return await cls._create(
-                kube,
-                group=group,
-                version=version,
-                namespace=namespace,
-                plural=plural,
-                body=body,
-                timeout=timeout,
-            )
-        except OSError as err:
-            detail = str(err).lower()
-            if "status 409" not in detail and "already exists" not in detail:
-                raise
-
-        payload = await kube.run(
-            lambda request_timeout: kube.custom.patch_namespaced_custom_object(
-                group=group,
-                version=version,
-                namespace=namespace,
-                plural=plural,
-                name=name,
-                body=dict(body),
-                _request_timeout=request_timeout,
-            ),
-            timeout=timeout,
-            context=(
-                f"failed to patch custom object {plural}/{name} "
-                f"in namespace {namespace!r}"
-            ),
-        )
-        if not isinstance(payload, Mapping):
-            msg = (
-                f"malformed Kubernetes custom object patch payload for {plural}/{name}"
-            )
-            raise OSError(msg)
-        return cls(group=group, version=version, plural=plural, payload=payload)
-
-    async def patch_status(
-        self,
-        kube: Kube,
-        *,
-        namespace: str,
-        name: str,
-        status: Mapping[str, object],
-        timeout: float,
-    ) -> Self:
-        """Patch the status subresource for this custom object.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        namespace : str
-            Namespace that owns the custom object.
-        name : str
-            Custom object name to patch.
-        status : Mapping[str, object]
-            Desired `status` payload.
-        timeout : float
-            Maximum request budget in seconds. If infinite, wait indefinitely.
-
-        Returns
-        -------
-        NamespacedCustomObject
-            Wrapped custom object returned by the status patch.
-
-        Raises
-        ------
-        OSError
-            If Kubernetes status patch fails or returns malformed data.
-        """
-        payload = await kube.run(
-            lambda request_timeout: kube.custom.patch_namespaced_custom_object_status(
-                group=self.group,
-                version=self.version,
-                namespace=namespace,
-                plural=self.plural,
-                name=name,
-                body={"status": dict(status)},
-                _request_timeout=request_timeout,
-            ),
-            timeout=timeout,
-            context=f"failed to patch custom object status {self.plural}/{name}",
-        )
-        if not isinstance(payload, Mapping):
-            msg = f"malformed Kubernetes custom object status payload for {self.plural}"
-            raise OSError(msg)
-        return type(self)(
-            group=self.group,
-            version=self.version,
-            plural=self.plural,
-            payload=payload,
         )
 
     @property
@@ -1028,10 +833,6 @@ class CustomResourceDefinition(KubeMetadata[kube_client.V1CustomResourceDefiniti
         CustomResourceDefinition | None
             Wrapped Kubernetes CRD, or `None` if it does not exist.
 
-        Raises
-        ------
-        OSError
-            If Kubernetes returns malformed data or the API call fails.
         """
         payload = await kube.run(
             lambda request_timeout: kube.apiextensions.read_custom_resource_definition(
@@ -1043,10 +844,13 @@ class CustomResourceDefinition(KubeMetadata[kube_client.V1CustomResourceDefiniti
         )
         if payload is None:
             return None
-        if not isinstance(payload, kube_client.V1CustomResourceDefinition):
-            msg = f"malformed Kubernetes CRD payload for {name!r}"
-            raise OSError(msg)
-        return cls(_obj=payload)
+        return cls(
+            _obj=_typed_payload(
+                payload,
+                kube_client.V1CustomResourceDefinition,
+                context="CRD",
+            )
+        )
 
     @classmethod
     async def list(
@@ -1072,31 +876,26 @@ class CustomResourceDefinition(KubeMetadata[kube_client.V1CustomResourceDefiniti
         list[CustomResourceDefinition]
             Wrapped CRDs matching the requested filters.
 
-        Raises
-        ------
-        OSError
-            If Kubernetes returns malformed data or a list call fails.
         """
-        payload = await kube.run(
-            lambda request_timeout: kube.apiextensions.list_custom_resource_definition(
-                label_selector=_label_selector(labels),
-                _request_timeout=request_timeout,
-            ),
-            timeout=timeout,
-            context="failed to list CustomResourceDefinitions",
-        )
-        if payload is None:
-            return []
-        if not isinstance(payload, kube_client.V1CustomResourceDefinitionList):
-            msg = "malformed Kubernetes CRD list payload"
-            raise OSError(msg)
-        out: builtins.list[Self] = []
-        for item in payload.items or []:
-            if not isinstance(item, kube_client.V1CustomResourceDefinition):
-                msg = "malformed Kubernetes CRD entry in list payload"
-                raise OSError(msg)
-            out.append(cls(_obj=item))
-        return out
+        return [
+            cls(_obj=item)
+            for item in await _list_cluster_items(
+                kube,
+                timeout=timeout,
+                labels=labels,
+                list_items=lambda label_selector, request_timeout: (
+                    kube.apiextensions.list_custom_resource_definition(
+                        label_selector=label_selector,
+                        _request_timeout=request_timeout,
+                    )
+                ),
+                list_type=kube_client.V1CustomResourceDefinitionList,
+                item_type=kube_client.V1CustomResourceDefinition,
+                context="failed to list CustomResourceDefinitions",
+                list_context="CRD",
+                item_context="CRD",
+            )
+        ]
 
     @classmethod
     async def upsert(
@@ -1155,8 +954,7 @@ class CustomResourceDefinition(KubeMetadata[kube_client.V1CustomResourceDefiniti
         Raises
         ------
         OSError
-            If required CRD identity fields are empty, or Kubernetes create/patch
-            fails or returns malformed data.
+            If Kubernetes returns malformed data or the API call fails.
         """
         group = group.strip()
         version = version.strip()
@@ -1282,20 +1080,13 @@ class CustomResourceDefinition(KubeMetadata[kube_client.V1CustomResourceDefiniti
         timeout : float
             Maximum wait time in seconds. Must be positive.
 
-        Raises
-        ------
-        TimeoutError
-            If the CRD still exists when `timeout` expires.
         """
         name = self._require_name("wait for CRD deletion")
-        try:
-            await _wait_until_deleted(
-                label=self._object_label(name),
-                timeout=timeout,
-                refresh=lambda remaining: self.refresh(kube, timeout=remaining),
-            )
-        except TimeoutError as err:
-            raise TimeoutError(str(err)) from err
+        await _wait_until_deleted(
+            label=self._object_label(name),
+            timeout=timeout,
+            refresh=lambda remaining: self.refresh(kube, timeout=remaining),
+        )
 
     async def wait_established(self, kube: Kube, *, timeout: float) -> Self:
         """Wait until this CRD reports `Established=True`.
@@ -1316,25 +1107,30 @@ class CustomResourceDefinition(KubeMetadata[kube_client.V1CustomResourceDefiniti
         ------
         TimeoutError
             If the CRD does not become established before `timeout`.
-        OSError
-            If this wrapper cannot be refreshed or disappears while waiting.
         """
-        if timeout <= 0:
-            msg = f"timed out waiting for CRD {self.name!r} establishment"
-            raise TimeoutError(msg)
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + timeout
         current: Self = self
-        while True:
+
+        async def established(remaining: float) -> Self:
+            nonlocal current
             if current.is_established:
                 return current
-            remaining = deadline - loop.time()
-            if remaining <= 0:
-                msg = f"timed out waiting for CRD {self.name!r} establishment"
-                raise TimeoutError(msg)
-            await asyncio.sleep(min(CRD_WAIT_POLL_INTERVAL_SECONDS, remaining))
-            refreshed = await current.refresh(kube, timeout=deadline - loop.time())
+            refreshed = await current.refresh(kube, timeout=remaining)
             if refreshed is None:
                 msg = f"CRD {self.name!r} disappeared"
                 raise OSError(msg)
             current = refreshed
+            if current.is_established:
+                return current
+            msg = f"CRD {self.name!r} is not established yet"
+            raise TimeoutError(msg)
+
+        try:
+            return await until(
+                established,
+                timeout=timeout,
+                interval=CRD_WAIT_POLL_INTERVAL_SECONDS,
+                action=f"waiting for CRD {self.name!r} establishment",
+            )
+        except TimeoutError as err:
+            msg = f"timed out waiting for CRD {self.name!r} establishment"
+            raise TimeoutError(msg) from err

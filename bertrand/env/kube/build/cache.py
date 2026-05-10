@@ -231,7 +231,7 @@ class BuildKitCache:
                 managed
                 and pvc.is_bound
                 and bool(pvc.storage_class_name)
-                and "ReadWriteMany" in pvc.access_modes
+                and pvc.has_access_mode("ReadWriteMany")
             )
             return BuildKitCacheStatus(
                 namespace=self.namespace,

@@ -11,18 +11,25 @@ from .api import (
     KubeMetadata,
     NamespacedKubeMetadata,
     PolicyRuleSpec,
-    _label_selector,
+)
+from .api._helpers import (
+    _create_or_patch,
+    _list_cluster_items,
+    _list_namespaced_items,
+    _typed_payload,
     _validate_delete_status,
     _wait_until_deleted,
 )
 
 if TYPE_CHECKING:
     import builtins
-    from collections.abc import Collection, Mapping
+    from collections.abc import Callable, Collection, Mapping
 
     from .api import Kube
 
 type RoleBindingRoleKind = Literal["Role", "ClusterRole"]
+type _RoleKind = Literal["ClusterRole", "Role"]
+type _BindingKind = Literal["ClusterRoleBinding", "RoleBinding"]
 
 
 def _rule_manifests(rules: Collection[PolicyRuleSpec]) -> list[dict[str, object]]:
@@ -36,9 +43,91 @@ def _rule_manifests(rules: Collection[PolicyRuleSpec]) -> list[dict[str, object]
     ]
 
 
-def _is_conflict(err: OSError) -> bool:
-    detail = str(err).lower()
-    return "status 409" in detail or "already exists" in detail
+def _metadata(
+    *,
+    name: str,
+    namespace: str | None,
+    labels: Mapping[str, str] | None,
+    annotations: Mapping[str, str] | None,
+) -> dict[str, object]:
+    metadata: dict[str, object] = {
+        "name": name,
+        "labels": dict(labels or {}),
+        "annotations": dict(annotations or {}),
+    }
+    if namespace is not None:
+        metadata["namespace"] = namespace
+    return metadata
+
+
+def _role_manifest(
+    *,
+    kind: _RoleKind,
+    namespace: str | None,
+    name: str,
+    rules: Collection[PolicyRuleSpec],
+    labels: Mapping[str, str] | None,
+    annotations: Mapping[str, str] | None,
+) -> dict[str, object]:
+    return {
+        "apiVersion": "rbac.authorization.k8s.io/v1",
+        "kind": kind,
+        "metadata": _metadata(
+            name=name,
+            namespace=namespace,
+            labels=labels,
+            annotations=annotations,
+        ),
+        "rules": _rule_manifests(rules),
+    }
+
+
+def _binding_manifest(
+    *,
+    kind: _BindingKind,
+    namespace: str | None,
+    name: str,
+    role_kind: RoleBindingRoleKind,
+    role_name: str,
+    service_account_name: str,
+    service_account_namespace: str,
+    labels: Mapping[str, str] | None,
+    annotations: Mapping[str, str] | None,
+) -> dict[str, object]:
+    return {
+        "apiVersion": "rbac.authorization.k8s.io/v1",
+        "kind": kind,
+        "metadata": _metadata(
+            name=name,
+            namespace=namespace,
+            labels=labels,
+            annotations=annotations,
+        ),
+        "roleRef": {
+            "apiGroup": "rbac.authorization.k8s.io",
+            "kind": role_kind,
+            "name": role_name,
+        },
+        "subjects": [
+            {
+                "kind": "ServiceAccount",
+                "name": service_account_name,
+                "namespace": service_account_namespace,
+            }
+        ],
+    }
+
+
+async def _delete_rbac(
+    kube: Kube,
+    *,
+    timeout: float,
+    label: str,
+    context: str,
+    delete: Callable[[float | None], object],
+) -> None:
+    payload = await kube.run(delete, timeout=timeout, context=context)
+    _validate_delete_status(payload, label=label)
 
 
 @dataclass(frozen=True)
@@ -70,11 +159,6 @@ class ClusterRole(KubeMetadata[kube_client.V1ClusterRole]):
         -------
         ClusterRole | None
             Wrapped Kubernetes ClusterRole, or `None` if it does not exist.
-
-        Raises
-        ------
-        OSError
-            If Kubernetes returns malformed data or the API call fails.
         """
         payload = await kube.run(
             lambda request_timeout: kube.rbac.read_cluster_role(
@@ -86,10 +170,13 @@ class ClusterRole(KubeMetadata[kube_client.V1ClusterRole]):
         )
         if payload is None:
             return None
-        if not isinstance(payload, kube_client.V1ClusterRole):
-            msg = f"malformed Kubernetes ClusterRole payload for {name!r}"
-            raise OSError(msg)
-        return cls(_obj=payload)
+        return cls(
+            _obj=_typed_payload(
+                payload,
+                kube_client.V1ClusterRole,
+                context="ClusterRole",
+            )
+        )
 
     @classmethod
     async def list(
@@ -114,51 +201,26 @@ class ClusterRole(KubeMetadata[kube_client.V1ClusterRole]):
         -------
         list[ClusterRole]
             Wrapped ClusterRoles matching the requested filters.
-
-        Raises
-        ------
-        OSError
-            If Kubernetes returns malformed data or a list call fails.
         """
-        payload = await kube.run(
-            lambda request_timeout: kube.rbac.list_cluster_role(
-                label_selector=_label_selector(labels),
-                _request_timeout=request_timeout,
-            ),
-            timeout=timeout,
-            context="failed to list ClusterRoles",
-        )
-        if payload is None:
-            return []
-        if not isinstance(payload, kube_client.V1ClusterRoleList):
-            msg = "malformed Kubernetes ClusterRole list payload"
-            raise OSError(msg)
-        out: builtins.list[Self] = []
-        for item in payload.items or []:
-            if not isinstance(item, kube_client.V1ClusterRole):
-                msg = "malformed Kubernetes ClusterRole entry in list payload"
-                raise OSError(msg)
-            out.append(cls(_obj=item))
-        return out
-
-    @staticmethod
-    def _manifest(
-        *,
-        name: str,
-        rules: Collection[PolicyRuleSpec],
-        labels: Mapping[str, str] | None,
-        annotations: Mapping[str, str] | None,
-    ) -> dict[str, object]:
-        return {
-            "apiVersion": "rbac.authorization.k8s.io/v1",
-            "kind": "ClusterRole",
-            "metadata": {
-                "name": name,
-                "labels": dict(labels or {}),
-                "annotations": dict(annotations or {}),
-            },
-            "rules": _rule_manifests(rules),
-        }
+        return [
+            cls(_obj=item)
+            for item in await _list_cluster_items(
+                kube,
+                timeout=timeout,
+                labels=labels,
+                list_items=lambda label_selector, request_timeout: (
+                    kube.rbac.list_cluster_role(
+                        label_selector=label_selector,
+                        _request_timeout=request_timeout,
+                    )
+                ),
+                list_type=kube_client.V1ClusterRoleList,
+                item_type=kube_client.V1ClusterRole,
+                context="failed to list ClusterRoles",
+                list_context="ClusterRole",
+                item_context="ClusterRole",
+            )
+        ]
 
     @classmethod
     async def upsert(
@@ -202,45 +264,32 @@ class ClusterRole(KubeMetadata[kube_client.V1ClusterRole]):
         if not name:
             msg = "ClusterRole upsert requires non-empty name"
             raise OSError(msg)
-        manifest = cls._manifest(
+        manifest = _role_manifest(
+            kind="ClusterRole",
+            namespace=None,
             name=name,
             rules=rules,
             labels=labels,
             annotations=annotations,
         )
-        try:
-            created = await kube.run(
-                lambda request_timeout: kube.rbac.create_cluster_role(
-                    body=manifest,
-                    _request_timeout=request_timeout,
-                ),
-                timeout=timeout,
-                context=f"failed to create ClusterRole {name}",
-            )
-        except OSError as err:
-            if not _is_conflict(err):
-                raise
-        else:
-            if not isinstance(created, kube_client.V1ClusterRole):
-                msg = (
-                    f"malformed Kubernetes ClusterRole payload while creating {name!r}"
-                )
-                raise OSError(msg)
-            return cls(_obj=created)
-
-        patched = await kube.run(
-            lambda request_timeout: kube.rbac.patch_cluster_role(
+        payload = await _create_or_patch(
+            kube,
+            timeout=timeout,
+            create=lambda request_timeout: kube.rbac.create_cluster_role(
+                body=manifest,
+                _request_timeout=request_timeout,
+            ),
+            patch=lambda request_timeout: kube.rbac.patch_cluster_role(
                 name=name,
                 body=manifest,
                 _request_timeout=request_timeout,
             ),
-            timeout=timeout,
-            context=f"failed to patch ClusterRole {name}",
+            create_context=f"failed to create ClusterRole {name}",
+            patch_context=f"failed to patch ClusterRole {name}",
+            expected=kube_client.V1ClusterRole,
+            payload_context="ClusterRole",
         )
-        if not isinstance(patched, kube_client.V1ClusterRole):
-            msg = f"malformed Kubernetes ClusterRole payload while patching {name!r}"
-            raise OSError(msg)
-        return cls(_obj=patched)
+        return cls(_obj=payload)
 
     async def refresh(self, kube: Kube, *, timeout: float) -> Self | None:
         """Re-read this ClusterRole by its metadata name.
@@ -271,15 +320,16 @@ class ClusterRole(KubeMetadata[kube_client.V1ClusterRole]):
             Maximum request budget in seconds. If infinite, wait indefinitely.
         """
         name = self._require_name("delete ClusterRole")
-        payload = await kube.run(
-            lambda request_timeout: kube.rbac.delete_cluster_role(
+        await _delete_rbac(
+            kube,
+            timeout=timeout,
+            label=self._object_label(name),
+            context=f"failed to delete ClusterRole {name}",
+            delete=lambda request_timeout: kube.rbac.delete_cluster_role(
                 name=name,
                 _request_timeout=request_timeout,
             ),
-            timeout=timeout,
-            context=f"failed to delete ClusterRole {name}",
         )
-        _validate_delete_status(payload, label=self._object_label(name))
 
     async def wait_deleted(self, kube: Kube, *, timeout: float) -> None:
         """Wait until this ClusterRole is deleted from the cluster.
@@ -291,20 +341,13 @@ class ClusterRole(KubeMetadata[kube_client.V1ClusterRole]):
         timeout : float
             Maximum wait time in seconds. Must be positive.
 
-        Raises
-        ------
-        TimeoutError
-            If the ClusterRole still exists when `timeout` expires.
         """
         name = self._require_name("wait for ClusterRole deletion")
-        try:
-            await _wait_until_deleted(
-                label=self._object_label(name),
-                timeout=timeout,
-                refresh=lambda remaining: self.refresh(kube, timeout=remaining),
-            )
-        except TimeoutError as err:
-            raise TimeoutError(str(err)) from err
+        await _wait_until_deleted(
+            label=self._object_label(name),
+            timeout=timeout,
+            refresh=lambda remaining: self.refresh(kube, timeout=remaining),
+        )
 
 
 @dataclass(frozen=True)
@@ -336,11 +379,6 @@ class ClusterRoleBinding(KubeMetadata[kube_client.V1ClusterRoleBinding]):
         -------
         ClusterRoleBinding | None
             Wrapped Kubernetes ClusterRoleBinding, or `None` if it does not exist.
-
-        Raises
-        ------
-        OSError
-            If Kubernetes returns malformed data or the API call fails.
         """
         payload = await kube.run(
             lambda request_timeout: kube.rbac.read_cluster_role_binding(
@@ -352,10 +390,13 @@ class ClusterRoleBinding(KubeMetadata[kube_client.V1ClusterRoleBinding]):
         )
         if payload is None:
             return None
-        if not isinstance(payload, kube_client.V1ClusterRoleBinding):
-            msg = f"malformed Kubernetes ClusterRoleBinding payload for {name!r}"
-            raise OSError(msg)
-        return cls(_obj=payload)
+        return cls(
+            _obj=_typed_payload(
+                payload,
+                kube_client.V1ClusterRoleBinding,
+                context="ClusterRoleBinding",
+            )
+        )
 
     @classmethod
     async def list(
@@ -380,64 +421,26 @@ class ClusterRoleBinding(KubeMetadata[kube_client.V1ClusterRoleBinding]):
         -------
         list[ClusterRoleBinding]
             Wrapped ClusterRoleBindings matching the requested filters.
-
-        Raises
-        ------
-        OSError
-            If Kubernetes returns malformed data or a list call fails.
         """
-        payload = await kube.run(
-            lambda request_timeout: kube.rbac.list_cluster_role_binding(
-                label_selector=_label_selector(labels),
-                _request_timeout=request_timeout,
-            ),
-            timeout=timeout,
-            context="failed to list ClusterRoleBindings",
-        )
-        if payload is None:
-            return []
-        if not isinstance(payload, kube_client.V1ClusterRoleBindingList):
-            msg = "malformed Kubernetes ClusterRoleBinding list payload"
-            raise OSError(msg)
-        out: builtins.list[Self] = []
-        for item in payload.items or []:
-            if not isinstance(item, kube_client.V1ClusterRoleBinding):
-                msg = "malformed Kubernetes ClusterRoleBinding entry in list payload"
-                raise OSError(msg)
-            out.append(cls(_obj=item))
-        return out
-
-    @staticmethod
-    def _manifest(
-        *,
-        name: str,
-        role_name: str,
-        service_account_name: str,
-        service_account_namespace: str,
-        labels: Mapping[str, str] | None,
-        annotations: Mapping[str, str] | None,
-    ) -> dict[str, object]:
-        return {
-            "apiVersion": "rbac.authorization.k8s.io/v1",
-            "kind": "ClusterRoleBinding",
-            "metadata": {
-                "name": name,
-                "labels": dict(labels or {}),
-                "annotations": dict(annotations or {}),
-            },
-            "roleRef": {
-                "apiGroup": "rbac.authorization.k8s.io",
-                "kind": "ClusterRole",
-                "name": role_name,
-            },
-            "subjects": [
-                {
-                    "kind": "ServiceAccount",
-                    "name": service_account_name,
-                    "namespace": service_account_namespace,
-                }
-            ],
-        }
+        return [
+            cls(_obj=item)
+            for item in await _list_cluster_items(
+                kube,
+                timeout=timeout,
+                labels=labels,
+                list_items=lambda label_selector, request_timeout: (
+                    kube.rbac.list_cluster_role_binding(
+                        label_selector=label_selector,
+                        _request_timeout=request_timeout,
+                    )
+                ),
+                list_type=kube_client.V1ClusterRoleBindingList,
+                item_type=kube_client.V1ClusterRoleBinding,
+                context="failed to list ClusterRoleBindings",
+                list_context="ClusterRoleBinding",
+                item_context="ClusterRoleBinding",
+            )
+        ]
 
     @classmethod
     async def upsert(
@@ -487,51 +490,35 @@ class ClusterRoleBinding(KubeMetadata[kube_client.V1ClusterRoleBinding]):
         if not name:
             msg = "ClusterRoleBinding upsert requires non-empty name"
             raise OSError(msg)
-        manifest = cls._manifest(
+        manifest = _binding_manifest(
+            kind="ClusterRoleBinding",
+            namespace=None,
             name=name,
+            role_kind="ClusterRole",
             role_name=role_name,
             service_account_name=service_account_name,
             service_account_namespace=service_account_namespace,
             labels=labels,
             annotations=annotations,
         )
-        try:
-            created = await kube.run(
-                lambda request_timeout: kube.rbac.create_cluster_role_binding(
-                    body=manifest,
-                    _request_timeout=request_timeout,
-                ),
-                timeout=timeout,
-                context=f"failed to create ClusterRoleBinding {name}",
-            )
-        except OSError as err:
-            if not _is_conflict(err):
-                raise
-        else:
-            if not isinstance(created, kube_client.V1ClusterRoleBinding):
-                msg = (
-                    "malformed Kubernetes ClusterRoleBinding payload while creating "
-                    f"{name!r}"
-                )
-                raise OSError(msg)
-            return cls(_obj=created)
-
-        patched = await kube.run(
-            lambda request_timeout: kube.rbac.patch_cluster_role_binding(
+        payload = await _create_or_patch(
+            kube,
+            timeout=timeout,
+            create=lambda request_timeout: kube.rbac.create_cluster_role_binding(
+                body=manifest,
+                _request_timeout=request_timeout,
+            ),
+            patch=lambda request_timeout: kube.rbac.patch_cluster_role_binding(
                 name=name,
                 body=manifest,
                 _request_timeout=request_timeout,
             ),
-            timeout=timeout,
-            context=f"failed to patch ClusterRoleBinding {name}",
+            create_context=f"failed to create ClusterRoleBinding {name}",
+            patch_context=f"failed to patch ClusterRoleBinding {name}",
+            expected=kube_client.V1ClusterRoleBinding,
+            payload_context="ClusterRoleBinding",
         )
-        if not isinstance(patched, kube_client.V1ClusterRoleBinding):
-            msg = (
-                "malformed Kubernetes ClusterRoleBinding payload while patching "
-                f"{name!r}"
-            )
-            raise OSError(msg)
-        return cls(_obj=patched)
+        return cls(_obj=payload)
 
     async def refresh(self, kube: Kube, *, timeout: float) -> Self | None:
         """Re-read this ClusterRoleBinding by its metadata name.
@@ -563,15 +550,16 @@ class ClusterRoleBinding(KubeMetadata[kube_client.V1ClusterRoleBinding]):
             Maximum request budget in seconds. If infinite, wait indefinitely.
         """
         name = self._require_name("delete ClusterRoleBinding")
-        payload = await kube.run(
-            lambda request_timeout: kube.rbac.delete_cluster_role_binding(
+        await _delete_rbac(
+            kube,
+            timeout=timeout,
+            label=self._object_label(name),
+            context=f"failed to delete ClusterRoleBinding {name}",
+            delete=lambda request_timeout: kube.rbac.delete_cluster_role_binding(
                 name=name,
                 _request_timeout=request_timeout,
             ),
-            timeout=timeout,
-            context=f"failed to delete ClusterRoleBinding {name}",
         )
-        _validate_delete_status(payload, label=self._object_label(name))
 
     async def wait_deleted(self, kube: Kube, *, timeout: float) -> None:
         """Wait until this ClusterRoleBinding is deleted from the cluster.
@@ -583,20 +571,13 @@ class ClusterRoleBinding(KubeMetadata[kube_client.V1ClusterRoleBinding]):
         timeout : float
             Maximum wait time in seconds. Must be positive.
 
-        Raises
-        ------
-        TimeoutError
-            If the ClusterRoleBinding still exists when `timeout` expires.
         """
         name = self._require_name("wait for ClusterRoleBinding deletion")
-        try:
-            await _wait_until_deleted(
-                label=self._object_label(name),
-                timeout=timeout,
-                refresh=lambda remaining: self.refresh(kube, timeout=remaining),
-            )
-        except TimeoutError as err:
-            raise TimeoutError(str(err)) from err
+        await _wait_until_deleted(
+            label=self._object_label(name),
+            timeout=timeout,
+            refresh=lambda remaining: self.refresh(kube, timeout=remaining),
+        )
 
 
 @dataclass(frozen=True)
@@ -637,11 +618,6 @@ class Role(NamespacedKubeMetadata[kube_client.V1Role]):
         -------
         Role | None
             Wrapped Kubernetes Role, or `None` if it does not exist.
-
-        Raises
-        ------
-        OSError
-            If Kubernetes returns malformed data or the API call fails.
         """
         payload = await kube.run(
             lambda request_timeout: kube.rbac.read_namespaced_role(
@@ -654,13 +630,7 @@ class Role(NamespacedKubeMetadata[kube_client.V1Role]):
         )
         if payload is None:
             return None
-        if not isinstance(payload, kube_client.V1Role):
-            msg = (
-                f"malformed Kubernetes Role payload for {name!r} in namespace "
-                f"{namespace!r}"
-            )
-            raise OSError(msg)
-        return cls(_obj=payload)
+        return cls(_obj=_typed_payload(payload, kube_client.V1Role, context="Role"))
 
     @classmethod
     async def list(
@@ -688,77 +658,37 @@ class Role(NamespacedKubeMetadata[kube_client.V1Role]):
         -------
         list[Role]
             Wrapped Roles matching the requested filters.
-
-        Raises
-        ------
-        OSError
-            If Kubernetes returns malformed data or a list call fails.
         """
-        label_selector = _label_selector(labels)
-        payloads: builtins.list[kube_client.V1RoleList] = []
-        if namespaces is None:
-            payload = await kube.run(
-                lambda request_timeout: kube.rbac.list_role_for_all_namespaces(
-                    label_selector=label_selector,
-                    _request_timeout=request_timeout,
-                ),
+        return [
+            cls(_obj=item)
+            for item in await _list_namespaced_items(
+                kube,
                 timeout=timeout,
-                context="failed to list Roles across all namespaces",
+                namespaces=namespaces,
+                labels=labels,
+                list_all=lambda label_selector, request_timeout: (
+                    kube.rbac.list_role_for_all_namespaces(
+                        label_selector=label_selector,
+                        _request_timeout=request_timeout,
+                    )
+                ),
+                list_namespace=lambda namespace, label_selector, request_timeout: (
+                    kube.rbac.list_namespaced_role(
+                        namespace=namespace,
+                        label_selector=label_selector,
+                        _request_timeout=request_timeout,
+                    )
+                ),
+                list_type=kube_client.V1RoleList,
+                item_type=kube_client.V1Role,
+                all_context="failed to list Roles across all namespaces",
+                namespace_context=lambda namespace: (
+                    f"failed to list Roles in namespace {namespace!r}"
+                ),
+                list_context="Role",
+                item_context="Role",
             )
-            if payload is not None:
-                payloads.append(payload)
-        else:
-            normalized = {namespace.strip() for namespace in namespaces}
-            normalized.discard("")
-            if not normalized:
-                return []
-            for namespace in sorted(normalized):
-                payload = await kube.run(
-                    lambda request_timeout, namespace=namespace: (
-                        kube.rbac.list_namespaced_role(
-                            namespace=namespace,
-                            label_selector=label_selector,
-                            _request_timeout=request_timeout,
-                        )
-                    ),
-                    timeout=timeout,
-                    context=f"failed to list Roles in namespace {namespace!r}",
-                )
-                if payload is not None:
-                    payloads.append(payload)
-
-        out: builtins.list[Self] = []
-        for payload in payloads:
-            if not isinstance(payload, kube_client.V1RoleList):
-                msg = "malformed Kubernetes Role list payload"
-                raise OSError(msg)
-            for item in payload.items or []:
-                if not isinstance(item, kube_client.V1Role):
-                    msg = "malformed Kubernetes Role entry in list payload"
-                    raise OSError(msg)
-                out.append(cls(_obj=item))
-        return out
-
-    @staticmethod
-    def _manifest(
-        *,
-        namespace: str,
-        name: str,
-        rules: Collection[PolicyRuleSpec],
-        labels: Mapping[str, str] | None,
-        annotations: Mapping[str, str] | None,
-    ) -> dict[str, object]:
-        return {
-            "apiVersion": "rbac.authorization.k8s.io/v1",
-            "kind": "Role",
-            "metadata": {
-                "name": name,
-                "namespace": namespace,
-                "labels": dict(labels or {}),
-                "annotations": dict(annotations or {}),
-            },
-            "rules": _rule_manifests(rules),
-        }
+        ]
 
     @classmethod
     async def upsert(
@@ -807,49 +737,34 @@ class Role(NamespacedKubeMetadata[kube_client.V1Role]):
         if not namespace or not name:
             msg = "Role upsert requires non-empty namespace and name"
             raise OSError(msg)
-        manifest = cls._manifest(
+        manifest = _role_manifest(
+            kind="Role",
             namespace=namespace,
             name=name,
             rules=rules,
             labels=labels,
             annotations=annotations,
         )
-        try:
-            created = await kube.run(
-                lambda request_timeout: kube.rbac.create_namespaced_role(
-                    namespace=namespace,
-                    body=manifest,
-                    _request_timeout=request_timeout,
-                ),
-                timeout=timeout,
-                context=f"failed to create Role {namespace}/{name}",
-            )
-        except OSError as err:
-            if not _is_conflict(err):
-                raise
-        else:
-            if not isinstance(created, kube_client.V1Role):
-                msg = (
-                    "malformed Kubernetes Role payload while creating "
-                    f"{namespace}/{name}"
-                )
-                raise OSError(msg)
-            return cls(_obj=created)
-
-        patched = await kube.run(
-            lambda request_timeout: kube.rbac.patch_namespaced_role(
+        payload = await _create_or_patch(
+            kube,
+            timeout=timeout,
+            create=lambda request_timeout: kube.rbac.create_namespaced_role(
+                namespace=namespace,
+                body=manifest,
+                _request_timeout=request_timeout,
+            ),
+            patch=lambda request_timeout: kube.rbac.patch_namespaced_role(
                 name=name,
                 namespace=namespace,
                 body=manifest,
                 _request_timeout=request_timeout,
             ),
-            timeout=timeout,
-            context=f"failed to patch Role {namespace}/{name}",
+            create_context=f"failed to create Role {namespace}/{name}",
+            patch_context=f"failed to patch Role {namespace}/{name}",
+            expected=kube_client.V1Role,
+            payload_context="Role",
         )
-        if not isinstance(patched, kube_client.V1Role):
-            msg = f"malformed Kubernetes Role payload while patching {namespace}/{name}"
-            raise OSError(msg)
-        return cls(_obj=patched)
+        return cls(_obj=payload)
 
     async def refresh(self, kube: Kube, *, timeout: float) -> Self | None:
         """Re-read this Role by its metadata namespace and name.
@@ -885,17 +800,16 @@ class Role(NamespacedKubeMetadata[kube_client.V1Role]):
             Maximum request budget in seconds. If infinite, wait indefinitely.
         """
         namespace, name = self._require_namespace_name("delete Role")
-        payload = await kube.run(
-            lambda request_timeout: kube.rbac.delete_namespaced_role(
+        await _delete_rbac(
+            kube,
+            timeout=timeout,
+            label=self._object_label(name=name, namespace=namespace),
+            context=f"failed to delete Role {namespace}/{name}",
+            delete=lambda request_timeout: kube.rbac.delete_namespaced_role(
                 name=name,
                 namespace=namespace,
                 _request_timeout=request_timeout,
             ),
-            timeout=timeout,
-            context=f"failed to delete Role {namespace}/{name}",
-        )
-        _validate_delete_status(
-            payload, label=self._object_label(name=name, namespace=namespace)
         )
 
     async def wait_deleted(self, kube: Kube, *, timeout: float) -> None:
@@ -908,20 +822,13 @@ class Role(NamespacedKubeMetadata[kube_client.V1Role]):
         timeout : float
             Maximum wait time in seconds. Must be positive.
 
-        Raises
-        ------
-        TimeoutError
-            If the Role still exists when `timeout` expires.
         """
         namespace, name = self._require_namespace_name("wait for Role deletion")
-        try:
-            await _wait_until_deleted(
-                label=self._object_label(name=name, namespace=namespace),
-                timeout=timeout,
-                refresh=lambda remaining: self.refresh(kube, timeout=remaining),
-            )
-        except TimeoutError as err:
-            raise TimeoutError(str(err)) from err
+        await _wait_until_deleted(
+            label=self._object_label(name=name, namespace=namespace),
+            timeout=timeout,
+            refresh=lambda remaining: self.refresh(kube, timeout=remaining),
+        )
 
 
 @dataclass(frozen=True)
@@ -962,11 +869,6 @@ class RoleBinding(NamespacedKubeMetadata[kube_client.V1RoleBinding]):
         -------
         RoleBinding | None
             Wrapped Kubernetes RoleBinding, or `None` if it does not exist.
-
-        Raises
-        ------
-        OSError
-            If Kubernetes returns malformed data or the API call fails.
         """
         payload = await kube.run(
             lambda request_timeout: kube.rbac.read_namespaced_role_binding(
@@ -979,13 +881,11 @@ class RoleBinding(NamespacedKubeMetadata[kube_client.V1RoleBinding]):
         )
         if payload is None:
             return None
-        if not isinstance(payload, kube_client.V1RoleBinding):
-            msg = (
-                f"malformed Kubernetes RoleBinding payload for {name!r} in namespace "
-                f"{namespace!r}"
+        return cls(
+            _obj=_typed_payload(
+                payload, kube_client.V1RoleBinding, context="RoleBinding"
             )
-            raise OSError(msg)
-        return cls(_obj=payload)
+        )
 
     @classmethod
     async def list(
@@ -1013,91 +913,37 @@ class RoleBinding(NamespacedKubeMetadata[kube_client.V1RoleBinding]):
         -------
         list[RoleBinding]
             Wrapped RoleBindings matching the requested filters.
-
-        Raises
-        ------
-        OSError
-            If Kubernetes returns malformed data or a list call fails.
         """
-        label_selector = _label_selector(labels)
-        payloads: builtins.list[kube_client.V1RoleBindingList] = []
-        if namespaces is None:
-            payload = await kube.run(
-                lambda request_timeout: kube.rbac.list_role_binding_for_all_namespaces(
-                    label_selector=label_selector,
-                    _request_timeout=request_timeout,
-                ),
+        return [
+            cls(_obj=item)
+            for item in await _list_namespaced_items(
+                kube,
                 timeout=timeout,
-                context="failed to list RoleBindings across all namespaces",
+                namespaces=namespaces,
+                labels=labels,
+                list_all=lambda label_selector, request_timeout: (
+                    kube.rbac.list_role_binding_for_all_namespaces(
+                        label_selector=label_selector,
+                        _request_timeout=request_timeout,
+                    )
+                ),
+                list_namespace=lambda namespace, label_selector, request_timeout: (
+                    kube.rbac.list_namespaced_role_binding(
+                        namespace=namespace,
+                        label_selector=label_selector,
+                        _request_timeout=request_timeout,
+                    )
+                ),
+                list_type=kube_client.V1RoleBindingList,
+                item_type=kube_client.V1RoleBinding,
+                all_context="failed to list RoleBindings across all namespaces",
+                namespace_context=lambda namespace: (
+                    f"failed to list RoleBindings in namespace {namespace!r}"
+                ),
+                list_context="RoleBinding",
+                item_context="RoleBinding",
             )
-            if payload is not None:
-                payloads.append(payload)
-        else:
-            normalized = {namespace.strip() for namespace in namespaces}
-            normalized.discard("")
-            if not normalized:
-                return []
-            for namespace in sorted(normalized):
-                payload = await kube.run(
-                    lambda request_timeout, namespace=namespace: (
-                        kube.rbac.list_namespaced_role_binding(
-                            namespace=namespace,
-                            label_selector=label_selector,
-                            _request_timeout=request_timeout,
-                        )
-                    ),
-                    timeout=timeout,
-                    context=f"failed to list RoleBindings in namespace {namespace!r}",
-                )
-                if payload is not None:
-                    payloads.append(payload)
-
-        out: builtins.list[Self] = []
-        for payload in payloads:
-            if not isinstance(payload, kube_client.V1RoleBindingList):
-                msg = "malformed Kubernetes RoleBinding list payload"
-                raise OSError(msg)
-            for item in payload.items or []:
-                if not isinstance(item, kube_client.V1RoleBinding):
-                    msg = "malformed Kubernetes RoleBinding entry in list payload"
-                    raise OSError(msg)
-                out.append(cls(_obj=item))
-        return out
-
-    @staticmethod
-    def _manifest(
-        *,
-        namespace: str,
-        name: str,
-        role_name: str,
-        service_account_name: str,
-        service_account_namespace: str,
-        role_kind: RoleBindingRoleKind,
-        labels: Mapping[str, str] | None,
-        annotations: Mapping[str, str] | None,
-    ) -> dict[str, object]:
-        return {
-            "apiVersion": "rbac.authorization.k8s.io/v1",
-            "kind": "RoleBinding",
-            "metadata": {
-                "name": name,
-                "namespace": namespace,
-                "labels": dict(labels or {}),
-                "annotations": dict(annotations or {}),
-            },
-            "roleRef": {
-                "apiGroup": "rbac.authorization.k8s.io",
-                "kind": role_kind,
-                "name": role_name,
-            },
-            "subjects": [
-                {
-                    "kind": "ServiceAccount",
-                    "name": service_account_name,
-                    "namespace": service_account_namespace,
-                }
-            ],
-        }
+        ]
 
     @classmethod
     async def upsert(
@@ -1164,7 +1010,8 @@ class RoleBinding(NamespacedKubeMetadata[kube_client.V1RoleBinding]):
         if not service_account_namespace:
             msg = "RoleBinding upsert requires non-empty service account namespace"
             raise OSError(msg)
-        manifest = cls._manifest(
+        manifest = _binding_manifest(
+            kind="RoleBinding",
             namespace=namespace,
             name=name,
             role_name=role_name,
@@ -1174,45 +1021,26 @@ class RoleBinding(NamespacedKubeMetadata[kube_client.V1RoleBinding]):
             labels=labels,
             annotations=annotations,
         )
-        try:
-            created = await kube.run(
-                lambda request_timeout: kube.rbac.create_namespaced_role_binding(
-                    namespace=namespace,
-                    body=manifest,
-                    _request_timeout=request_timeout,
-                ),
-                timeout=timeout,
-                context=f"failed to create RoleBinding {namespace}/{name}",
-            )
-        except OSError as err:
-            if not _is_conflict(err):
-                raise
-        else:
-            if not isinstance(created, kube_client.V1RoleBinding):
-                msg = (
-                    "malformed Kubernetes RoleBinding payload while creating "
-                    f"{namespace}/{name}"
-                )
-                raise OSError(msg)
-            return cls(_obj=created)
-
-        patched = await kube.run(
-            lambda request_timeout: kube.rbac.patch_namespaced_role_binding(
+        payload = await _create_or_patch(
+            kube,
+            timeout=timeout,
+            create=lambda request_timeout: kube.rbac.create_namespaced_role_binding(
+                namespace=namespace,
+                body=manifest,
+                _request_timeout=request_timeout,
+            ),
+            patch=lambda request_timeout: kube.rbac.patch_namespaced_role_binding(
                 name=name,
                 namespace=namespace,
                 body=manifest,
                 _request_timeout=request_timeout,
             ),
-            timeout=timeout,
-            context=f"failed to patch RoleBinding {namespace}/{name}",
+            create_context=f"failed to create RoleBinding {namespace}/{name}",
+            patch_context=f"failed to patch RoleBinding {namespace}/{name}",
+            expected=kube_client.V1RoleBinding,
+            payload_context="RoleBinding",
         )
-        if not isinstance(patched, kube_client.V1RoleBinding):
-            msg = (
-                "malformed Kubernetes RoleBinding payload while patching "
-                f"{namespace}/{name}"
-            )
-            raise OSError(msg)
-        return cls(_obj=patched)
+        return cls(_obj=payload)
 
     async def refresh(self, kube: Kube, *, timeout: float) -> Self | None:
         """Re-read this RoleBinding by its metadata namespace and name.
@@ -1248,17 +1076,16 @@ class RoleBinding(NamespacedKubeMetadata[kube_client.V1RoleBinding]):
             Maximum request budget in seconds. If infinite, wait indefinitely.
         """
         namespace, name = self._require_namespace_name("delete RoleBinding")
-        payload = await kube.run(
-            lambda request_timeout: kube.rbac.delete_namespaced_role_binding(
+        await _delete_rbac(
+            kube,
+            timeout=timeout,
+            label=self._object_label(name=name, namespace=namespace),
+            context=f"failed to delete RoleBinding {namespace}/{name}",
+            delete=lambda request_timeout: kube.rbac.delete_namespaced_role_binding(
                 name=name,
                 namespace=namespace,
                 _request_timeout=request_timeout,
             ),
-            timeout=timeout,
-            context=f"failed to delete RoleBinding {namespace}/{name}",
-        )
-        _validate_delete_status(
-            payload, label=self._object_label(name=name, namespace=namespace)
         )
 
     async def wait_deleted(self, kube: Kube, *, timeout: float) -> None:
@@ -1271,17 +1098,10 @@ class RoleBinding(NamespacedKubeMetadata[kube_client.V1RoleBinding]):
         timeout : float
             Maximum wait time in seconds. Must be positive.
 
-        Raises
-        ------
-        TimeoutError
-            If the RoleBinding still exists when `timeout` expires.
         """
         namespace, name = self._require_namespace_name("wait for RoleBinding deletion")
-        try:
-            await _wait_until_deleted(
-                label=self._object_label(name=name, namespace=namespace),
-                timeout=timeout,
-                refresh=lambda remaining: self.refresh(kube, timeout=remaining),
-            )
-        except TimeoutError as err:
-            raise TimeoutError(str(err)) from err
+        await _wait_until_deleted(
+            label=self._object_label(name=name, namespace=namespace),
+            timeout=timeout,
+            refresh=lambda remaining: self.refresh(kube, timeout=remaining),
+        )

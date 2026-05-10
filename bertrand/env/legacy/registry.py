@@ -18,7 +18,7 @@ from pydantic import (
 from ..config import Config
 from ..config.core import AbsolutePath, TOMLKey, UUIDHex
 from ..kube.api import Kube
-from ..kube.lease import ClusterLock
+from bertrand.env.kube.lock.cluster import ClusterLock
 from ..git import (
     ENV_ID_ENV,
     IMAGE_ID_ENV,

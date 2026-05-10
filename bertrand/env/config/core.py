@@ -30,7 +30,7 @@ from pydantic import (
     ValidationError,
 )
 
-from bertrand.env.kube.lease import ClusterLock
+from bertrand.env.kube.lock.cluster import ClusterLock
 
 from ..git import INFINITY, GitRepository, inside_container, inside_image, run
 

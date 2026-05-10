@@ -13,8 +13,8 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal, Self, cast
 
 from bertrand.env.config.core import _check_kube_name, _check_uuid
-from bertrand.env.kube.secret import Secret
 from bertrand.env.git import BERTRAND_NAMESPACE
+from bertrand.env.kube.secret import Secret
 
 if TYPE_CHECKING:
     import builtins

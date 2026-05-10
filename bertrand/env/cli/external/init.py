@@ -54,8 +54,8 @@ from bertrand.env.host import (
     ensure_host_state,
     host_state_backend_trustworthy,
 )
-from bertrand.env.kube.api import (
-    Kube,
+from bertrand.env.kube.api import Kube
+from bertrand.env.kube.api.bootstrap import (
     assert_microk8s_installed,
     ensure_microk8s_kubeconfig,
     install_microk8s,
@@ -63,15 +63,15 @@ from bertrand.env.kube.api import (
 )
 from bertrand.env.kube.build.daemon import BUILDKIT
 from bertrand.env.kube.build.repository import IMAGES
-from bertrand.env.kube.ceph.api import (
+from bertrand.env.kube.ceph.autoscale import (
+    ceph_autoscaler_image_build,
+    ensure_ceph_autoscaler,
+)
+from bertrand.env.kube.ceph.bootstrap import (
     assert_microceph_installed,
     install_microceph,
     link_kube_ceph,
     start_microceph,
-)
-from bertrand.env.kube.ceph.autoscale import (
-    ceph_autoscaler_image_build,
-    ensure_ceph_autoscaler,
 )
 from bertrand.env.kube.ceph.mount import (
     ensure_repository_mount,

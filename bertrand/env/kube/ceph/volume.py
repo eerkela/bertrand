@@ -8,13 +8,13 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Self
 
 from bertrand.env.config.core import _check_uuid
+from bertrand.env.git import BERTRAND_ENV, BERTRAND_NAMESPACE, REPO_ID_ENV
 from bertrand.env.kube.pod import Pod
 from bertrand.env.kube.volume import (
     PersistentVolume,
     PersistentVolumeClaim,
     StorageClass,
 )
-from bertrand.env.git import BERTRAND_ENV, BERTRAND_NAMESPACE, REPO_ID_ENV
 
 if TYPE_CHECKING:
     import builtins

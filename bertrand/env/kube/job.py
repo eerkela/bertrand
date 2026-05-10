@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-import asyncio
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal, Self
 
 import kubernetes
+
+from bertrand.env.git import until
 
 from .api import (
     ContainerSpec,
@@ -17,10 +18,18 @@ from .api import (
     TolerationSpec,
     VolumeSpec,
     WatchEvent,
-    _label_selector,
-    _pod_template_manifest,
+)
+from .api._helpers import (
+    _list_namespaced_items,
+    _typed_payload,
     _validate_delete_status,
     _wait_until_deleted,
+)
+from .api._render import (
+    _pod_template_manifest,
+)
+from .api.watch import (
+    _watch_namespaced_resource,
 )
 
 if TYPE_CHECKING:
@@ -79,11 +88,6 @@ class Job(NamespacedKubeMetadata[kubernetes.client.V1Job]):
         -------
         Job | None
             Wrapped Kubernetes Job, or `None` if it does not exist.
-
-        Raises
-        ------
-        OSError
-            If Kubernetes returns malformed data or the API call fails.
         """
         payload = await kube.run(
             lambda request_timeout: kube.batch.read_namespaced_job(
@@ -96,13 +100,7 @@ class Job(NamespacedKubeMetadata[kubernetes.client.V1Job]):
         )
         if payload is None:
             return None
-        if not isinstance(payload, kubernetes.client.V1Job):
-            msg = (
-                f"malformed Kubernetes Job payload for {name!r} in namespace "
-                f"{namespace!r}"
-            )
-            raise OSError(msg)
-        return cls(_obj=payload)
+        return cls(_obj=_typed_payload(payload, kubernetes.client.V1Job, context="Job"))
 
     @classmethod
     async def list(
@@ -131,57 +129,37 @@ class Job(NamespacedKubeMetadata[kubernetes.client.V1Job]):
         -------
         list[Job]
             Wrapped Kubernetes Jobs matching the requested filters.
-
-        Raises
-        ------
-        OSError
-            If Kubernetes returns malformed data or a list call fails.
         """
-        label_selector = _label_selector(labels)
-        payloads: builtins.list[kubernetes.client.V1JobList] = []
-
-        if namespaces is None:
-            payload = await kube.run(
-                lambda request_timeout: kube.batch.list_job_for_all_namespaces(
-                    label_selector=label_selector,
-                    _request_timeout=request_timeout,
-                ),
+        return [
+            cls(_obj=item)
+            for item in await _list_namespaced_items(
+                kube,
                 timeout=timeout,
-                context="failed to list Jobs across all namespaces",
+                namespaces=namespaces,
+                labels=labels,
+                list_all=lambda label_selector, request_timeout: (
+                    kube.batch.list_job_for_all_namespaces(
+                        label_selector=label_selector,
+                        _request_timeout=request_timeout,
+                    )
+                ),
+                list_namespace=lambda namespace, label_selector, request_timeout: (
+                    kube.batch.list_namespaced_job(
+                        namespace=namespace,
+                        label_selector=label_selector,
+                        _request_timeout=request_timeout,
+                    )
+                ),
+                list_type=kubernetes.client.V1JobList,
+                item_type=kubernetes.client.V1Job,
+                all_context="failed to list Jobs across all namespaces",
+                namespace_context=lambda namespace: (
+                    f"failed to list Jobs in namespace {namespace!r}"
+                ),
+                list_context="Job",
+                item_context="Job",
             )
-            if payload is not None:
-                payloads.append(payload)
-        else:
-            normalized = {namespace.strip() for namespace in namespaces}
-            normalized.discard("")
-            if not normalized:
-                return []
-            for namespace in sorted(normalized):
-                payload = await kube.run(
-                    lambda request_timeout, namespace=namespace: (
-                        kube.batch.list_namespaced_job(
-                            namespace=namespace,
-                            label_selector=label_selector,
-                            _request_timeout=request_timeout,
-                        )
-                    ),
-                    timeout=timeout,
-                    context=f"failed to list Jobs in namespace {namespace!r}",
-                )
-                if payload is not None:
-                    payloads.append(payload)
-
-        out: builtins.list[Self] = []
-        for payload in payloads:
-            if not isinstance(payload, kubernetes.client.V1JobList):
-                msg = "malformed Kubernetes Job list payload"
-                raise OSError(msg)
-            for item in payload.items or []:
-                if not isinstance(item, kubernetes.client.V1Job):
-                    msg = "malformed Kubernetes Job entry in list payload"
-                    raise OSError(msg)
-                out.append(cls(_obj=item))
-        return out
+        ]
 
     @classmethod
     async def watch(
@@ -216,34 +194,24 @@ class Job(NamespacedKubeMetadata[kubernetes.client.V1Job]):
         WatchEvent[Job]
             Typed watch events containing wrapped Jobs.
         """
-        namespace = namespace.strip() if namespace is not None else ""
-        if namespace:
-            fn = kube.batch.list_namespaced_job
-            api_kwargs: Mapping[str, object] = {"namespace": namespace}
-            context = f"failed to watch Jobs in namespace {namespace!r}"
-        else:
-            fn = kube.batch.list_job_for_all_namespaces
-            api_kwargs = {}
-            context = "failed to watch Jobs across all namespaces"
-
-        async for event in kube.watch(
-            fn,
-            wrapper=cls._watch_payload,
+        async for event in _watch_namespaced_resource(
+            kube,
+            expected=kubernetes.client.V1Job,
+            wrapper=lambda payload: cls(_obj=payload),
             timeout=timeout,
-            context=context,
+            namespace=namespace,
             resource_version=resource_version,
             labels=labels,
             field_selector=field_selector,
-            api_kwargs=api_kwargs,
+            watch_all=kube.batch.list_job_for_all_namespaces,
+            watch_namespace=kube.batch.list_namespaced_job,
+            all_context="failed to watch Jobs across all namespaces",
+            namespace_context=lambda namespace: (
+                f"failed to watch Jobs in namespace {namespace!r}"
+            ),
+            payload_context="Job watch",
         ):
             yield event
-
-    @classmethod
-    def _watch_payload(cls, payload: object) -> Self:
-        if not isinstance(payload, kubernetes.client.V1Job):
-            msg = "malformed Kubernetes Job watch payload"
-            raise OSError(msg)
-        return cls(_obj=payload)
 
     @staticmethod
     def _manifest(
@@ -263,7 +231,7 @@ class Job(NamespacedKubeMetadata[kubernetes.client.V1Job]):
         node_selector: Mapping[str, str] | None,
         node_name: str | None,
         host_pid: bool | None,
-        pod_security_context: PodSecurityContextSpec | Mapping[str, object] | None,
+        pod_security_context: PodSecurityContextSpec | None,
         tolerations: Collection[TolerationSpec],
         image_pull_secrets: Collection[ImagePullSecretSpec],
         priority_class_name: str | None,
@@ -329,9 +297,7 @@ class Job(NamespacedKubeMetadata[kubernetes.client.V1Job]):
         node_selector: Mapping[str, str] | None = None,
         node_name: str | None = None,
         host_pid: bool | None = None,
-        pod_security_context: PodSecurityContextSpec
-        | Mapping[str, object]
-        | None = None,
+        pod_security_context: PodSecurityContextSpec | None = None,
         tolerations: Collection[TolerationSpec] = (),
         image_pull_secrets: Collection[ImagePullSecretSpec] = (),
         priority_class_name: str | None = None,
@@ -377,7 +343,7 @@ class Job(NamespacedKubeMetadata[kubernetes.client.V1Job]):
             Optional exact node name for host-local execution.
         host_pid : bool | None, optional
             Optional pod `hostPID` value.
-        pod_security_context : PodSecurityContextSpec | Mapping | None, optional
+        pod_security_context : PodSecurityContextSpec | None, optional
             Optional pod security context.
         tolerations : Collection[TolerationSpec], optional
             Optional pod tolerations.
@@ -399,10 +365,10 @@ class Job(NamespacedKubeMetadata[kubernetes.client.V1Job]):
 
         Raises
         ------
-        OSError
-            If Kubernetes create fails or returns malformed data.
         ValueError
             If retry or TTL settings are invalid.
+        OSError
+            If Kubernetes returns malformed data or the API call fails.
         """
         namespace = namespace.strip()
         name = name.strip()
@@ -679,20 +645,13 @@ class Job(NamespacedKubeMetadata[kubernetes.client.V1Job]):
         timeout : float
             Maximum wait time in seconds. Must be positive.
 
-        Raises
-        ------
-        TimeoutError
-            If the Job still exists when `timeout` expires.
         """
         namespace, name = self._require_namespace_name("wait for Job deletion")
-        try:
-            await _wait_until_deleted(
-                label=self._object_label(name=name, namespace=namespace),
-                timeout=timeout,
-                refresh=lambda remaining: self.refresh(kube, timeout=remaining),
-            )
-        except TimeoutError as err:
-            raise TimeoutError(str(err)) from err
+        await _wait_until_deleted(
+            label=self._object_label(name=name, namespace=namespace),
+            timeout=timeout,
+            refresh=lambda remaining: self.refresh(kube, timeout=remaining),
+        )
 
     async def wait_complete(self, kube: Kube, *, timeout: float) -> Self:
         """Wait until this Job succeeds or fails.
@@ -713,31 +672,39 @@ class Job(NamespacedKubeMetadata[kubernetes.client.V1Job]):
         ------
         TimeoutError
             If the Job does not complete before `timeout`.
-        OSError
-            If the Job fails or disappears while waiting.
         """
         namespace, name = self._require_namespace_name("wait for Job completion")
-        if timeout <= 0:
-            msg = f"timed out waiting for Job {namespace}/{name} completion"
-            raise TimeoutError(msg)
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + timeout
         current: Self = self
-        while True:
+
+        async def complete(remaining: float) -> Self:
+            nonlocal current
             if current.succeeded > 0:
                 return current
             failed_condition = current.failed_condition
             if failed_condition is not None:
                 msg = f"Job {namespace}/{name} failed: {failed_condition}"
                 raise OSError(msg)
-
-            remaining = deadline - loop.time()
-            if remaining <= 0:
-                msg = f"timed out waiting for Job {namespace}/{name} completion"
-                raise TimeoutError(msg)
-            await asyncio.sleep(min(JOB_WAIT_POLL_INTERVAL_SECONDS, remaining))
-            refreshed = await current.refresh(kube, timeout=deadline - loop.time())
+            refreshed = await current.refresh(kube, timeout=remaining)
             if refreshed is None:
                 msg = f"Job {namespace}/{name} disappeared while waiting for completion"
                 raise OSError(msg)
             current = refreshed
+            if current.succeeded > 0:
+                return current
+            failed_condition = current.failed_condition
+            if failed_condition is not None:
+                msg = f"Job {namespace}/{name} failed: {failed_condition}"
+                raise OSError(msg)
+            msg = f"Job {namespace}/{name} is not complete yet"
+            raise TimeoutError(msg)
+
+        try:
+            return await until(
+                complete,
+                timeout=timeout,
+                interval=JOB_WAIT_POLL_INTERVAL_SECONDS,
+                action=f"waiting for Job {namespace}/{name} completion",
+            )
+        except TimeoutError as err:
+            msg = f"timed out waiting for Job {namespace}/{name} completion"
+            raise TimeoutError(msg) from err

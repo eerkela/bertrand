@@ -16,7 +16,7 @@ from ..git import (
     METADATA_DIR,
 )
 from bertrand.env.kube.api import Kube
-from bertrand.env.kube.lease import ClusterLock
+from bertrand.env.kube.lock.cluster import ClusterLock
 from .capability import DeviceConfigMap, build_secret_flags, cleanup_secret_staged
 from .container import Container
 from .image import Image, image_args

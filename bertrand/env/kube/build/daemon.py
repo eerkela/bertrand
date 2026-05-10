@@ -12,6 +12,7 @@ from bertrand.env.git import BERTRAND_NAMESPACE, INFINITY
 from bertrand.env.kube.api import (
     ContainerPortSpec,
     ContainerSpec,
+    DeploymentStrategySpec,
     Kube,
     ProbeSpec,
     SecurityContextSpec,
@@ -276,7 +277,7 @@ class BuildKit:
                 ),
             ],
             pod_annotations=pod_annotations,
-            strategy_type="Recreate",
+            strategy=DeploymentStrategySpec.recreate(),
             timeout=deadline - loop.time(),
         )
         await deployment.wait_rollout(kube, timeout=deadline - loop.time())

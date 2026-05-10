@@ -9,7 +9,11 @@ from kubernetes import client as kube_client
 
 from .api import (
     KubeMetadata,
-    _label_selector,
+)
+from .api._helpers import (
+    _create_or_patch,
+    _list_cluster_items,
+    _typed_payload,
     _validate_delete_status,
     _wait_until_deleted,
 )
@@ -53,10 +57,6 @@ class Namespace(KubeMetadata[kube_client.V1Namespace]):
         Namespace | None
             Wrapped Kubernetes Namespace, or `None` if it does not exist.
 
-        Raises
-        ------
-        OSError
-            If Kubernetes returns malformed data or the API call fails.
         """
         payload = await kube.run(
             lambda request_timeout: kube.core.read_namespace(
@@ -68,10 +68,9 @@ class Namespace(KubeMetadata[kube_client.V1Namespace]):
         )
         if payload is None:
             return None
-        if not isinstance(payload, kube_client.V1Namespace):
-            msg = f"malformed Kubernetes Namespace payload for {name!r}"
-            raise OSError(msg)
-        return cls(_obj=payload)
+        return cls(
+            _obj=_typed_payload(payload, kube_client.V1Namespace, context="Namespace")
+        )
 
     @classmethod
     async def list(
@@ -97,31 +96,26 @@ class Namespace(KubeMetadata[kube_client.V1Namespace]):
         list[Namespace]
             Wrapped Namespaces matching the requested filters.
 
-        Raises
-        ------
-        OSError
-            If Kubernetes returns malformed data or a list call fails.
         """
-        payload = await kube.run(
-            lambda request_timeout: kube.core.list_namespace(
-                label_selector=_label_selector(labels),
-                _request_timeout=request_timeout,
-            ),
-            timeout=timeout,
-            context="failed to list Namespaces",
-        )
-        if payload is None:
-            return []
-        if not isinstance(payload, kube_client.V1NamespaceList):
-            msg = "malformed Kubernetes Namespace list payload"
-            raise OSError(msg)
-        out: builtins.list[Self] = []
-        for item in payload.items or []:
-            if not isinstance(item, kube_client.V1Namespace):
-                msg = "malformed Kubernetes Namespace entry in list payload"
-                raise OSError(msg)
-            out.append(cls(_obj=item))
-        return out
+        return [
+            cls(_obj=item)
+            for item in await _list_cluster_items(
+                kube,
+                timeout=timeout,
+                labels=labels,
+                list_items=lambda label_selector, request_timeout: (
+                    kube.core.list_namespace(
+                        label_selector=label_selector,
+                        _request_timeout=request_timeout,
+                    )
+                ),
+                list_type=kube_client.V1NamespaceList,
+                item_type=kube_client.V1Namespace,
+                context="failed to list Namespaces",
+                list_context="Namespace",
+                item_context="Namespace",
+            )
+        ]
 
     @staticmethod
     def _manifest(
@@ -181,38 +175,24 @@ class Namespace(KubeMetadata[kube_client.V1Namespace]):
             msg = "Namespace upsert requires non-empty name"
             raise OSError(msg)
         manifest = cls._manifest(name=name, labels=labels, annotations=annotations)
-        try:
-            created = await kube.run(
-                lambda request_timeout: kube.core.create_namespace(
-                    body=manifest,
-                    _request_timeout=request_timeout,
-                ),
-                timeout=timeout,
-                context=f"failed to create Namespace {name}",
-            )
-        except OSError as err:
-            detail = str(err).lower()
-            if "status 409" not in detail and "already exists" not in detail:
-                raise
-        else:
-            if not isinstance(created, kube_client.V1Namespace):
-                msg = f"malformed Kubernetes Namespace payload while creating {name!r}"
-                raise OSError(msg)
-            return cls(_obj=created)
-
-        patched = await kube.run(
-            lambda request_timeout: kube.core.patch_namespace(
+        payload = await _create_or_patch(
+            kube,
+            timeout=timeout,
+            create=lambda request_timeout: kube.core.create_namespace(
+                body=manifest,
+                _request_timeout=request_timeout,
+            ),
+            patch=lambda request_timeout: kube.core.patch_namespace(
                 name=name,
                 body=manifest,
                 _request_timeout=request_timeout,
             ),
-            timeout=timeout,
-            context=f"failed to patch Namespace {name}",
+            create_context=f"failed to create Namespace {name}",
+            patch_context=f"failed to patch Namespace {name}",
+            expected=kube_client.V1Namespace,
+            payload_context="Namespace",
         )
-        if not isinstance(patched, kube_client.V1Namespace):
-            msg = f"malformed Kubernetes Namespace payload while patching {name!r}"
-            raise OSError(msg)
-        return cls(_obj=patched)
+        return cls(_obj=payload)
 
     @property
     def phase(self) -> str:
@@ -275,17 +255,10 @@ class Namespace(KubeMetadata[kube_client.V1Namespace]):
         timeout : float
             Maximum wait time in seconds. Must be positive.
 
-        Raises
-        ------
-        TimeoutError
-            If the Namespace still exists when `timeout` expires.
         """
         name = self._require_name("wait for Namespace deletion")
-        try:
-            await _wait_until_deleted(
-                label=self._object_label(name),
-                timeout=timeout,
-                refresh=lambda remaining: self.refresh(kube, timeout=remaining),
-            )
-        except TimeoutError as err:
-            raise TimeoutError(str(err)) from err
+        await _wait_until_deleted(
+            label=self._object_label(name),
+            timeout=timeout,
+            refresh=lambda remaining: self.refresh(kube, timeout=remaining),
+        )

@@ -2,15 +2,17 @@
 
 from __future__ import annotations
 
-import asyncio
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Self
 
 import kubernetes
 
+from bertrand.env.git import until
+
 from .api import (
     ContainerSpec,
+    DeploymentStrategySpec,
     ImagePullSecretSpec,
     Kube,
     NamespacedKubeMetadata,
@@ -18,10 +20,19 @@ from .api import (
     TolerationSpec,
     VolumeSpec,
     WatchEvent,
-    _label_selector,
-    _pod_template_manifest,
+)
+from .api._helpers import (
+    _create_or_patch,
+    _list_namespaced_items,
+    _typed_payload,
     _validate_delete_status,
     _wait_until_deleted,
+)
+from .api._render import (
+    _pod_template_manifest,
+)
+from .api.watch import (
+    _watch_namespaced_resource,
 )
 
 DEPLOYMENT_WAIT_POLL_INTERVAL_SECONDS = 0.5
@@ -74,11 +85,6 @@ class Deployment(NamespacedKubeMetadata[kubernetes.client.V1Deployment]):
         -------
         Deployment | None
             Wrapped Kubernetes Deployment, or `None` if it does not exist.
-
-        Raises
-        ------
-        OSError
-            If Kubernetes returns malformed data or the API call fails.
         """
         payload = await kube.run(
             lambda request_timeout: kube.apps.read_namespaced_deployment(
@@ -91,13 +97,13 @@ class Deployment(NamespacedKubeMetadata[kubernetes.client.V1Deployment]):
         )
         if payload is None:
             return None
-        if not isinstance(payload, kubernetes.client.V1Deployment):
-            msg = (
-                f"malformed Kubernetes Deployment payload for {name!r} "
-                f"in namespace {namespace!r}"
+        return cls(
+            _obj=_typed_payload(
+                payload,
+                kubernetes.client.V1Deployment,
+                context="Deployment",
             )
-            raise OSError(msg)
-        return cls(_obj=payload)
+        )
 
     @classmethod
     async def list(
@@ -126,57 +132,37 @@ class Deployment(NamespacedKubeMetadata[kubernetes.client.V1Deployment]):
         -------
         list[Deployment]
             Wrapped Kubernetes Deployments matching the requested filters.
-
-        Raises
-        ------
-        OSError
-            If Kubernetes returns malformed data or a list call fails.
         """
-        label_selector = _label_selector(labels)
-        payloads: builtins.list[kubernetes.client.V1DeploymentList] = []
-
-        if namespaces is None:
-            payload = await kube.run(
-                lambda request_timeout: kube.apps.list_deployment_for_all_namespaces(
-                    label_selector=label_selector,
-                    _request_timeout=request_timeout,
-                ),
+        return [
+            cls(_obj=item)
+            for item in await _list_namespaced_items(
+                kube,
                 timeout=timeout,
-                context="failed to list Deployments across all namespaces",
+                namespaces=namespaces,
+                labels=labels,
+                list_all=lambda label_selector, request_timeout: (
+                    kube.apps.list_deployment_for_all_namespaces(
+                        label_selector=label_selector,
+                        _request_timeout=request_timeout,
+                    )
+                ),
+                list_namespace=lambda namespace, label_selector, request_timeout: (
+                    kube.apps.list_namespaced_deployment(
+                        namespace=namespace,
+                        label_selector=label_selector,
+                        _request_timeout=request_timeout,
+                    )
+                ),
+                list_type=kubernetes.client.V1DeploymentList,
+                item_type=kubernetes.client.V1Deployment,
+                all_context="failed to list Deployments across all namespaces",
+                namespace_context=lambda namespace: (
+                    f"failed to list Deployments in namespace {namespace!r}"
+                ),
+                list_context="Deployment",
+                item_context="Deployment",
             )
-            if payload is not None:
-                payloads.append(payload)
-        else:
-            normalized = {namespace.strip() for namespace in namespaces}
-            normalized.discard("")
-            if not normalized:
-                return []
-            for namespace in sorted(normalized):
-                payload = await kube.run(
-                    lambda request_timeout, namespace=namespace: (
-                        kube.apps.list_namespaced_deployment(
-                            namespace=namespace,
-                            label_selector=label_selector,
-                            _request_timeout=request_timeout,
-                        )
-                    ),
-                    timeout=timeout,
-                    context=f"failed to list Deployments in namespace {namespace!r}",
-                )
-                if payload is not None:
-                    payloads.append(payload)
-
-        out: builtins.list[Self] = []
-        for payload in payloads:
-            if not isinstance(payload, kubernetes.client.V1DeploymentList):
-                msg = "malformed Kubernetes Deployment list payload"
-                raise OSError(msg)
-            for item in payload.items or []:
-                if not isinstance(item, kubernetes.client.V1Deployment):
-                    msg = "malformed Kubernetes Deployment entry in list payload"
-                    raise OSError(msg)
-                out.append(cls(_obj=item))
-        return out
+        ]
 
     @classmethod
     async def watch(
@@ -212,34 +198,24 @@ class Deployment(NamespacedKubeMetadata[kubernetes.client.V1Deployment]):
         WatchEvent[Deployment]
             Typed watch events containing wrapped Deployments.
         """
-        namespace = namespace.strip() if namespace is not None else ""
-        if namespace:
-            fn = kube.apps.list_namespaced_deployment
-            api_kwargs: Mapping[str, object] = {"namespace": namespace}
-            context = f"failed to watch Deployments in namespace {namespace!r}"
-        else:
-            fn = kube.apps.list_deployment_for_all_namespaces
-            api_kwargs = {}
-            context = "failed to watch Deployments across all namespaces"
-
-        async for event in kube.watch(
-            fn,
-            wrapper=cls._watch_payload,
+        async for event in _watch_namespaced_resource(
+            kube,
+            expected=kubernetes.client.V1Deployment,
+            wrapper=lambda payload: cls(_obj=payload),
             timeout=timeout,
-            context=context,
+            namespace=namespace,
             resource_version=resource_version,
             labels=labels,
             field_selector=field_selector,
-            api_kwargs=api_kwargs,
+            watch_all=kube.apps.list_deployment_for_all_namespaces,
+            watch_namespace=kube.apps.list_namespaced_deployment,
+            all_context="failed to watch Deployments across all namespaces",
+            namespace_context=lambda namespace: (
+                f"failed to watch Deployments in namespace {namespace!r}"
+            ),
+            payload_context="Deployment watch",
         ):
             yield event
-
-    @classmethod
-    def _watch_payload(cls, payload: object) -> Self:
-        if not isinstance(payload, kubernetes.client.V1Deployment):
-            msg = "malformed Kubernetes Deployment watch payload"
-            raise OSError(msg)
-        return cls(_obj=payload)
 
     @staticmethod
     def _manifest(
@@ -257,14 +233,14 @@ class Deployment(NamespacedKubeMetadata[kubernetes.client.V1Deployment]):
         service_account_name: str | None,
         node_selector: Mapping[str, str] | None,
         host_pid: bool | None,
-        pod_security_context: PodSecurityContextSpec | Mapping[str, object] | None,
+        pod_security_context: PodSecurityContextSpec | None,
         tolerations: Collection[TolerationSpec],
         image_pull_secrets: Collection[ImagePullSecretSpec],
         priority_class_name: str | None,
         dns_policy: str | None,
         host_network: bool | None,
         termination_grace_period_seconds: int | None,
-        strategy_type: str | None,
+        strategy: DeploymentStrategySpec | None,
     ) -> dict[str, object]:
         template_labels = dict(labels)
         template_labels.update(selector)
@@ -289,13 +265,25 @@ class Deployment(NamespacedKubeMetadata[kubernetes.client.V1Deployment]):
                 termination_grace_period_seconds=(termination_grace_period_seconds),
             ),
         }
-        if strategy_type is not None:
-            strategy_type = strategy_type.strip()
+        if strategy is not None:
+            strategy_type = strategy.kind.strip()
             if strategy_type:
-                strategy: dict[str, object] = {"type": strategy_type}
+                payload: dict[str, object] = {"type": strategy_type}
                 if strategy_type == "Recreate":
-                    strategy["rollingUpdate"] = None
-                spec["strategy"] = strategy
+                    payload["rollingUpdate"] = None
+                elif strategy.rolling_update_config is not None:
+                    rolling_update: dict[str, object] = {}
+                    if strategy.rolling_update_config.max_surge is not None:
+                        rolling_update["maxSurge"] = (
+                            strategy.rolling_update_config.max_surge
+                        )
+                    if strategy.rolling_update_config.max_unavailable is not None:
+                        rolling_update["maxUnavailable"] = (
+                            strategy.rolling_update_config.max_unavailable
+                        )
+                    if rolling_update:
+                        payload["rollingUpdate"] = rolling_update
+                spec["strategy"] = payload
         return {
             "apiVersion": "apps/v1",
             "kind": "Deployment",
@@ -327,16 +315,14 @@ class Deployment(NamespacedKubeMetadata[kubernetes.client.V1Deployment]):
         service_account_name: str | None = None,
         node_selector: Mapping[str, str] | None = None,
         host_pid: bool | None = None,
-        pod_security_context: PodSecurityContextSpec
-        | Mapping[str, object]
-        | None = None,
+        pod_security_context: PodSecurityContextSpec | None = None,
         tolerations: Collection[TolerationSpec] = (),
         image_pull_secrets: Collection[ImagePullSecretSpec] = (),
         priority_class_name: str | None = None,
         dns_policy: str | None = None,
         host_network: bool | None = None,
         termination_grace_period_seconds: int | None = None,
-        strategy_type: str | None = None,
+        strategy: DeploymentStrategySpec | None = None,
     ) -> Self:
         """Create or patch one Kubernetes Deployment from intent-level fields.
 
@@ -372,7 +358,7 @@ class Deployment(NamespacedKubeMetadata[kubernetes.client.V1Deployment]):
             Optional pod node selector.
         host_pid : bool | None, optional
             Optional pod `hostPID` value.
-        pod_security_context : PodSecurityContextSpec | Mapping | None, optional
+        pod_security_context : PodSecurityContextSpec | None, optional
             Optional pod security context.
         tolerations : Collection[TolerationSpec], optional
             Optional pod tolerations.
@@ -386,8 +372,8 @@ class Deployment(NamespacedKubeMetadata[kubernetes.client.V1Deployment]):
             Optional pod `hostNetwork` value.
         termination_grace_period_seconds : int | None, optional
             Optional pod termination grace period in seconds.
-        strategy_type : str | None, optional
-            Optional Deployment rollout strategy type, such as `"Recreate"`.
+        strategy : DeploymentStrategySpec | None, optional
+            Optional Deployment rollout strategy.
 
         Returns
         -------
@@ -397,8 +383,7 @@ class Deployment(NamespacedKubeMetadata[kubernetes.client.V1Deployment]):
         Raises
         ------
         OSError
-            If namespace/name are empty, or Kubernetes create/patch fails or returns
-            malformed data.
+            If Kubernetes returns malformed data or the API call fails.
         """
         namespace = namespace.strip()
         name = name.strip()
@@ -427,43 +412,29 @@ class Deployment(NamespacedKubeMetadata[kubernetes.client.V1Deployment]):
             dns_policy=dns_policy,
             host_network=host_network,
             termination_grace_period_seconds=termination_grace_period_seconds,
-            strategy_type=strategy_type,
+            strategy=strategy,
         )
 
-        try:
-            created = await kube.run(
-                lambda request_timeout: kube.apps.create_namespaced_deployment(
-                    namespace=namespace,
-                    body=manifest,
-                    _request_timeout=request_timeout,
-                ),
-                timeout=timeout,
-                context=f"failed to create Deployment {namespace}/{name}",
-            )
-        except OSError as err:
-            detail = str(err).lower()
-            if "status 409" not in detail and "already exists" not in detail:
-                raise
-        else:
-            if not isinstance(created, kubernetes.client.V1Deployment):
-                msg = f"malformed Kubernetes Deployment payload while creating {name!r}"
-                raise OSError(msg)
-            return cls(_obj=created)
-
-        patched = await kube.run(
-            lambda request_timeout: kube.apps.patch_namespaced_deployment(
+        payload = await _create_or_patch(
+            kube,
+            timeout=timeout,
+            create=lambda request_timeout: kube.apps.create_namespaced_deployment(
+                namespace=namespace,
+                body=manifest,
+                _request_timeout=request_timeout,
+            ),
+            patch=lambda request_timeout: kube.apps.patch_namespaced_deployment(
                 name=name,
                 namespace=namespace,
                 body=manifest,
                 _request_timeout=request_timeout,
             ),
-            timeout=timeout,
-            context=f"failed to patch Deployment {namespace}/{name}",
+            create_context=f"failed to create Deployment {namespace}/{name}",
+            patch_context=f"failed to patch Deployment {namespace}/{name}",
+            expected=kubernetes.client.V1Deployment,
+            payload_context="Deployment",
         )
-        if not isinstance(patched, kubernetes.client.V1Deployment):
-            msg = f"malformed Kubernetes Deployment payload while patching {name!r}"
-            raise OSError(msg)
-        return cls(_obj=patched)
+        return cls(_obj=payload)
 
     @property
     def pod_annotations(self) -> Mapping[str, str]:
@@ -694,20 +665,13 @@ class Deployment(NamespacedKubeMetadata[kubernetes.client.V1Deployment]):
         timeout : float
             Maximum wait time in seconds. Must be positive.
 
-        Raises
-        ------
-        TimeoutError
-            If the Deployment still exists when `timeout` expires.
         """
         namespace, name = self._require_namespace_name("wait for Deployment deletion")
-        try:
-            await _wait_until_deleted(
-                label=self._object_label(name=name, namespace=namespace),
-                timeout=timeout,
-                refresh=lambda remaining: self.refresh(kube, timeout=remaining),
-            )
-        except TimeoutError as err:
-            raise TimeoutError(str(err)) from err
+        await _wait_until_deleted(
+            label=self._object_label(name=name, namespace=namespace),
+            timeout=timeout,
+            refresh=lambda remaining: self.refresh(kube, timeout=remaining),
+        )
 
     async def wait_available(
         self,
@@ -738,8 +702,6 @@ class Deployment(NamespacedKubeMetadata[kubernetes.client.V1Deployment]):
             If `minimum` is less than one.
         TimeoutError
             If the Deployment does not become available before `timeout`.
-        OSError
-            If the Deployment disappears while waiting.
         """
         if minimum < 1:
             msg = "minimum available Deployment replicas must be positive"
@@ -747,19 +709,10 @@ class Deployment(NamespacedKubeMetadata[kubernetes.client.V1Deployment]):
         namespace, name = self._require_namespace_name(
             "wait for Deployment availability"
         )
-        if timeout <= 0:
-            msg = f"timed out waiting for Deployment {namespace}/{name} availability"
-            raise TimeoutError(msg)
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + timeout
         live: Self = self
-        while True:
-            remaining = deadline - loop.time()
-            if remaining <= 0:
-                msg = (
-                    f"timed out waiting for Deployment {namespace}/{name} availability"
-                )
-                raise TimeoutError(msg)
+
+        async def available(remaining: float) -> Self:
+            nonlocal live
             refreshed = await live.refresh(kube, timeout=remaining)
             if refreshed is None:
                 msg = (
@@ -770,7 +723,19 @@ class Deployment(NamespacedKubeMetadata[kubernetes.client.V1Deployment]):
             if refreshed.available_replicas >= minimum:
                 return refreshed
             live = refreshed
-            await asyncio.sleep(min(DEPLOYMENT_WAIT_POLL_INTERVAL_SECONDS, remaining))
+            msg = f"Deployment {namespace}/{name} is not available yet"
+            raise TimeoutError(msg)
+
+        try:
+            return await until(
+                available,
+                timeout=timeout,
+                interval=DEPLOYMENT_WAIT_POLL_INTERVAL_SECONDS,
+                action=f"waiting for Deployment {namespace}/{name} availability",
+            )
+        except TimeoutError as err:
+            msg = f"timed out waiting for Deployment {namespace}/{name} availability"
+            raise TimeoutError(msg) from err
 
     async def wait_rollout(
         self,
@@ -802,25 +767,16 @@ class Deployment(NamespacedKubeMetadata[kubernetes.client.V1Deployment]):
             If `minimum` is less than one.
         TimeoutError
             If the Deployment rollout does not complete before `timeout`.
-        OSError
-            If the Deployment disappears while waiting.
         """
         if minimum < 1:
             msg = "minimum rolled out Deployment replicas must be positive"
             raise ValueError(msg)
         namespace, name = self._require_namespace_name("wait for Deployment rollout")
-        if timeout <= 0:
-            msg = f"timed out waiting for Deployment {namespace}/{name} rollout"
-            raise TimeoutError(msg)
         target_generation = self.generation
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + timeout
         live: Self = self
-        while True:
-            remaining = deadline - loop.time()
-            if remaining <= 0:
-                msg = f"timed out waiting for Deployment {namespace}/{name} rollout"
-                raise TimeoutError(msg)
+
+        async def rolled_out(remaining: float) -> Self:
+            nonlocal live
             refreshed = await live.refresh(kube, timeout=remaining)
             if refreshed is None:
                 msg = (
@@ -837,7 +793,19 @@ class Deployment(NamespacedKubeMetadata[kubernetes.client.V1Deployment]):
             if generation_observed and replicas_updated and replicas_available:
                 return refreshed
             live = refreshed
-            await asyncio.sleep(min(DEPLOYMENT_WAIT_POLL_INTERVAL_SECONDS, remaining))
+            msg = f"Deployment {namespace}/{name} rollout is not complete yet"
+            raise TimeoutError(msg)
+
+        try:
+            return await until(
+                rolled_out,
+                timeout=timeout,
+                interval=DEPLOYMENT_WAIT_POLL_INTERVAL_SECONDS,
+                action=f"waiting for Deployment {namespace}/{name} rollout",
+            )
+        except TimeoutError as err:
+            msg = f"timed out waiting for Deployment {namespace}/{name} rollout"
+            raise TimeoutError(msg) from err
 
     async def scale(self, kube: Kube, *, replicas: int, timeout: float) -> Self:
         """Patch this Deployment's desired replica count.
@@ -861,8 +829,7 @@ class Deployment(NamespacedKubeMetadata[kubernetes.client.V1Deployment]):
         ValueError
             If `replicas` is negative.
         OSError
-            If this wrapper is missing metadata, Kubernetes rejects the patch, or
-            the Deployment disappears during refresh.
+            If Kubernetes returns malformed data or the API call fails.
         """
         if replicas < 0:
             msg = "Deployment replicas cannot be negative"

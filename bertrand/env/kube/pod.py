@@ -12,9 +12,15 @@ from .api import (
     Kube,
     NamespacedKubeMetadata,
     WatchEvent,
-    _label_selector,
+)
+from .api._helpers import (
+    _list_namespaced_items,
+    _typed_payload,
     _validate_delete_status,
     _wait_until_deleted,
+)
+from .api.watch import (
+    _watch_namespaced_resource,
 )
 
 if TYPE_CHECKING:
@@ -75,11 +81,6 @@ class Pod(NamespacedKubeMetadata[kubernetes.client.V1Pod]):
         -------
         Pod | None
             Validated Kubernetes pod wrapper, or `None` if the pod does not exist.
-
-        Raises
-        ------
-        OSError
-            If the Kubernetes API call fails or returns malformed data.
         """
         payload = await kube.run(
             lambda request_timeout: kube.core.read_namespaced_pod(
@@ -92,13 +93,7 @@ class Pod(NamespacedKubeMetadata[kubernetes.client.V1Pod]):
         )
         if payload is None:
             return None
-        if not isinstance(payload, kubernetes.client.V1Pod):
-            msg = (
-                f"malformed Kubernetes Pod payload for {name!r} in namespace "
-                f"{namespace!r}"
-            )
-            raise OSError(msg)
-        return cls(_obj=payload)
+        return cls(_obj=_typed_payload(payload, kubernetes.client.V1Pod, context="Pod"))
 
     @classmethod
     async def list(
@@ -128,60 +123,37 @@ class Pod(NamespacedKubeMetadata[kubernetes.client.V1Pod]):
         -------
         builtins.list[Pod]
             Validated Kubernetes pod wrappers.
-
-        Raises
-        ------
-        OSError
-            If the Kubernetes API call fails or returns malformed data.
         """
-        label_selector = _label_selector(labels)
-        payloads: builtins.list[kubernetes.client.V1PodList] = []
-
-        # search all namespaces
-        if namespaces is None:
-            payload = await kube.run(
-                lambda request_timeout: kube.core.list_pod_for_all_namespaces(
-                    label_selector=label_selector,
-                    _request_timeout=request_timeout,
-                ),
+        return [
+            cls(_obj=item)
+            for item in await _list_namespaced_items(
+                kube,
                 timeout=timeout,
-                context="failed to list pods across all namespaces",
+                namespaces=namespaces,
+                labels=labels,
+                list_all=lambda label_selector, request_timeout: (
+                    kube.core.list_pod_for_all_namespaces(
+                        label_selector=label_selector,
+                        _request_timeout=request_timeout,
+                    )
+                ),
+                list_namespace=lambda namespace, label_selector, request_timeout: (
+                    kube.core.list_namespaced_pod(
+                        namespace=namespace,
+                        label_selector=label_selector,
+                        _request_timeout=request_timeout,
+                    )
+                ),
+                list_type=kubernetes.client.V1PodList,
+                item_type=kubernetes.client.V1Pod,
+                all_context="failed to list pods across all namespaces",
+                namespace_context=lambda namespace: (
+                    f"failed to list pods in namespace {namespace!r}"
+                ),
+                list_context="Pod",
+                item_context="Pod",
             )
-            if payload is not None:
-                payloads.append(payload)
-
-        # search specific namespaces
-        else:
-            normalized = {namespace.strip() for namespace in namespaces}
-            normalized.discard("")
-            if not normalized:
-                return []
-            for namespace in sorted(normalized):
-                payload = await kube.run(
-                    lambda request_timeout, namespace=namespace: (
-                        kube.core.list_namespaced_pod(
-                            namespace=namespace,
-                            label_selector=label_selector,
-                            _request_timeout=request_timeout,
-                        )
-                    ),
-                    timeout=timeout,
-                    context=f"failed to list pods in namespace {namespace!r}",
-                )
-                if payload is not None:
-                    payloads.append(payload)
-
-        out: builtins.list[Self] = []
-        for payload in payloads:
-            if not isinstance(payload, kubernetes.client.V1PodList):
-                msg = "malformed Kubernetes Pod list payload"
-                raise OSError(msg)
-            for item in payload.items or []:
-                if not isinstance(item, kubernetes.client.V1Pod):
-                    msg = "malformed Kubernetes Pod entry in list payload"
-                    raise OSError(msg)
-                out.append(cls(_obj=item))
-        return out
+        ]
 
     @classmethod
     async def watch(
@@ -216,34 +188,24 @@ class Pod(NamespacedKubeMetadata[kubernetes.client.V1Pod]):
         WatchEvent[Pod]
             Typed watch events containing wrapped Pods.
         """
-        namespace = namespace.strip() if namespace is not None else ""
-        if namespace:
-            fn = kube.core.list_namespaced_pod
-            api_kwargs: Mapping[str, object] = {"namespace": namespace}
-            context = f"failed to watch Pods in namespace {namespace!r}"
-        else:
-            fn = kube.core.list_pod_for_all_namespaces
-            api_kwargs = {}
-            context = "failed to watch Pods across all namespaces"
-
-        async for event in kube.watch(
-            fn,
-            wrapper=cls._watch_payload,
+        async for event in _watch_namespaced_resource(
+            kube,
+            expected=kubernetes.client.V1Pod,
+            wrapper=lambda payload: cls(_obj=payload),
             timeout=timeout,
-            context=context,
+            namespace=namespace,
             resource_version=resource_version,
             labels=labels,
             field_selector=field_selector,
-            api_kwargs=api_kwargs,
+            watch_all=kube.core.list_pod_for_all_namespaces,
+            watch_namespace=kube.core.list_namespaced_pod,
+            all_context="failed to watch Pods across all namespaces",
+            namespace_context=lambda namespace: (
+                f"failed to watch Pods in namespace {namespace!r}"
+            ),
+            payload_context="Pod watch",
         ):
             yield event
-
-    @classmethod
-    def _watch_payload(cls, payload: object) -> Self:
-        if not isinstance(payload, kubernetes.client.V1Pod):
-            msg = "malformed Kubernetes Pod watch payload"
-            raise OSError(msg)
-        return cls(_obj=payload)
 
     @property
     def phase(self) -> str:
@@ -478,21 +440,13 @@ class Pod(NamespacedKubeMetadata[kubernetes.client.V1Pod]):
             Active Kubernetes API context.
         timeout : float
             Maximum runtime budget in seconds. If infinite, wait indefinitely.
-
-        Raises
-        ------
-        TimeoutError
-            If deletion does not converge within `timeout`.
         """
         namespace, name = self._require_namespace_name("wait for pod deletion")
-        try:
-            await _wait_until_deleted(
-                label=self._object_label(name=name, namespace=namespace),
-                timeout=timeout,
-                refresh=lambda remaining: self.refresh(kube, timeout=remaining),
-            )
-        except TimeoutError as err:
-            raise TimeoutError(str(err)) from err
+        await _wait_until_deleted(
+            label=self._object_label(name=name, namespace=namespace),
+            timeout=timeout,
+            refresh=lambda remaining: self.refresh(kube, timeout=remaining),
+        )
 
     async def wait_terminal(self, kube: Kube, *, timeout: float) -> Self:
         """Wait until this pod reaches a terminal phase.
