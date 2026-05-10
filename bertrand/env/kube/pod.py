@@ -189,7 +189,6 @@ class Pod(NamespacedKubeMetadata[kubernetes.client.V1Pod]):
             Typed watch events containing wrapped Pods.
         """
         async for event in _watch_namespaced_resource(
-            kube,
             expected=kubernetes.client.V1Pod,
             wrapper=lambda payload: cls(_obj=payload),
             timeout=timeout,

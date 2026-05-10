@@ -185,7 +185,6 @@ class DaemonSet(NamespacedKubeMetadata[kubernetes.client.V1DaemonSet]):
             Typed watch events containing wrapped DaemonSets.
         """
         async for event in _watch_namespaced_resource(
-            kube,
             expected=kubernetes.client.V1DaemonSet,
             wrapper=lambda payload: cls(_obj=payload),
             timeout=timeout,

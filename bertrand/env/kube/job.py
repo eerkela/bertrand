@@ -195,7 +195,6 @@ class Job(NamespacedKubeMetadata[kubernetes.client.V1Job]):
             Typed watch events containing wrapped Jobs.
         """
         async for event in _watch_namespaced_resource(
-            kube,
             expected=kubernetes.client.V1Job,
             wrapper=lambda payload: cls(_obj=payload),
             timeout=timeout,

@@ -20,6 +20,7 @@ from .api import (
     WatchExpired,
 )
 from .api._helpers import (
+    _create_or_patch,
     _label_selector,
     _list_cluster_items,
     _typed_payload,
@@ -232,7 +233,6 @@ class CustomResourceClient:
                 return
             try:
                 async for event in kube_watch(
-                    kube,
                     kube.custom.list_namespaced_custom_object,
                     wrapper=lambda payload: NamespacedCustomObject._from_payload(
                         group=self.spec.group,
@@ -979,40 +979,28 @@ class CustomResourceDefinition(KubeMetadata[kube_client.V1CustomResourceDefiniti
             scope=scope,
             short_names=short_names,
         )
-        try:
-            created = await kube.run(
-                lambda request_timeout: (
-                    kube.apiextensions.create_custom_resource_definition(
-                        body=body,
-                        _request_timeout=request_timeout,
-                    )
-                ),
-                timeout=timeout,
-                context=f"failed to create CustomResourceDefinition {name}",
-            )
-        except OSError as err:
-            detail = str(err).lower()
-            if "status 409" not in detail and "already exists" not in detail:
-                raise
-        else:
-            if not isinstance(created, kube_client.V1CustomResourceDefinition):
-                msg = f"malformed Kubernetes CRD payload while creating {name!r}"
-                raise OSError(msg)
-            return cls(_obj=created)
-
-        patched = await kube.run(
-            lambda request_timeout: kube.apiextensions.patch_custom_resource_definition(
-                name=name,
-                body=body,
-                _request_timeout=request_timeout,
-            ),
+        payload = await _create_or_patch(
+            kube,
             timeout=timeout,
-            context=f"failed to patch CustomResourceDefinition {name}",
+            create=lambda request_timeout: (
+                kube.apiextensions.create_custom_resource_definition(
+                    body=body,
+                    _request_timeout=request_timeout,
+                )
+            ),
+            patch=lambda request_timeout: (
+                kube.apiextensions.patch_custom_resource_definition(
+                    name=name,
+                    body=body,
+                    _request_timeout=request_timeout,
+                )
+            ),
+            create_context=f"failed to create CustomResourceDefinition {name}",
+            patch_context=f"failed to patch CustomResourceDefinition {name}",
+            expected=kube_client.V1CustomResourceDefinition,
+            payload_context="CRD",
         )
-        if not isinstance(patched, kube_client.V1CustomResourceDefinition):
-            msg = f"malformed Kubernetes CRD payload while patching {name!r}"
-            raise OSError(msg)
-        return cls(_obj=patched)
+        return cls(_obj=payload)
 
     @property
     def is_established(self) -> bool:

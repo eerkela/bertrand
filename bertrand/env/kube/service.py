@@ -12,7 +12,6 @@ from .api import (
     Kube,
     NamespacedKubeMetadata,
     ServicePortSpec,
-    ServicePortView,
 )
 from .api._helpers import (
     _create_or_patch,
@@ -21,6 +20,7 @@ from .api._helpers import (
     _validate_delete_status,
     _wait_until_deleted,
 )
+from .api.view import ServicePortView
 
 if TYPE_CHECKING:
     import builtins

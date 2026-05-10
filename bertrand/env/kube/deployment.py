@@ -199,7 +199,6 @@ class Deployment(NamespacedKubeMetadata[kubernetes.client.V1Deployment]):
             Typed watch events containing wrapped Deployments.
         """
         async for event in _watch_namespaced_resource(
-            kube,
             expected=kubernetes.client.V1Deployment,
             wrapper=lambda payload: cls(_obj=payload),
             timeout=timeout,

@@ -13,7 +13,6 @@ import kubernetes
 from .api import (
     Kube,
     KubeMetadata,
-    TaintView,
     WatchEvent,
 )
 from .api._helpers import (
@@ -21,6 +20,7 @@ from .api._helpers import (
     _list_namespaced_items,
     _typed_payload,
 )
+from .api.view import TaintView
 from .api.watch import (
     _watch_cluster_resource,
 )
@@ -178,7 +178,6 @@ class Node(KubeMetadata[kubernetes.client.V1Node]):
             Typed watch events containing wrapped Nodes.
         """
         async for event in _watch_cluster_resource(
-            kube,
             watch_fn=kube.core.list_node,
             expected=kubernetes.client.V1Node,
             wrapper=lambda payload: cls(_obj=payload),

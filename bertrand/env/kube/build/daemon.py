@@ -20,6 +20,7 @@ from bertrand.env.kube.api import (
     VolumeMountSpec,
     VolumeSpec,
 )
+from bertrand.env.kube.build._status import _deployment_status, _service_status
 from bertrand.env.kube.build.cache import BUILDKIT_CACHE, BuildKitCacheStatus
 from bertrand.env.kube.deployment import Deployment
 from bertrand.env.kube.service import Service
@@ -338,55 +339,40 @@ class BuildKit:
                 port=self.port,
                 target_port=self.port,
             )
-            service_selector_ready = service is not None and service.selects(
-                self.selector
-            )
-            service_port_ready = service is not None and service.exposes(expected_port)
-            service_ready = service is not None and service.matches(
+            service_status = _service_status(
+                service,
                 service_type="ClusterIP",
                 selector=self.selector,
                 ports=(expected_port,),
             )
-            installed_hash = ""
-            available = 0
-            updated = 0
-            observed = 0
-            generation = 0
-            if deployment is not None:
-                installed_hash = deployment.pod_annotations.get(
-                    BUILDKIT_CONFIG_HASH_ANNOTATION,
-                    "",
-                )
-                available = deployment.available_replicas
-                updated = deployment.updated_replicas
-                observed = deployment.observed_generation
-                generation = deployment.generation
+            deployment_status = _deployment_status(deployment, minimum=1)
+            installed_hash = deployment_status.pod_annotations.get(
+                BUILDKIT_CONFIG_HASH_ANNOTATION,
+                "",
+            )
 
             config_current = config_hash is None or installed_hash == config_hash
-            deployment_ready = deployment is not None and deployment.rollout_ready(
-                minimum=1
-            )
             return BuildKitStatus(
                 namespace=self.namespace,
                 name=self.service,
-                service_present=service is not None,
-                service_selector_ready=service_selector_ready,
-                service_port_ready=service_port_ready,
-                service_ready=service_ready,
-                deployment_present=deployment is not None,
-                available_replicas=available,
-                updated_replicas=updated,
-                observed_generation=observed,
-                generation=generation,
-                rollout_ready=deployment_ready,
+                service_present=service_status.present,
+                service_selector_ready=service_status.selector_ready,
+                service_port_ready=service_status.port_ready,
+                service_ready=service_status.ready,
+                deployment_present=deployment_status.present,
+                available_replicas=deployment_status.available_replicas,
+                updated_replicas=deployment_status.updated_replicas,
+                observed_generation=deployment_status.observed_generation,
+                generation=deployment_status.generation,
+                rollout_ready=deployment_status.rollout_ready,
                 expected_config_hash=config_hash,
                 installed_config_hash=installed_hash,
                 config_current=config_current,
                 storage_ready=cache.ready,
                 cache=cache,
                 ready=(
-                    service_ready
-                    and deployment_ready
+                    service_status.ready
+                    and deployment_status.rollout_ready
                     and config_current
                     and cache.ready
                 ),

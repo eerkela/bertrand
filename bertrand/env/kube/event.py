@@ -9,12 +9,12 @@ from kubernetes import client as kube_client
 
 from .api import (
     NamespacedKubeMetadata,
-    ObjectReference,
 )
 from .api._helpers import (
     _list_namespaced_items,
     _typed_payload,
 )
+from .api.view import ObjectReference
 from .api.watch import (
     _watch_namespaced_resource,
 )
@@ -201,7 +201,6 @@ class Event(NamespacedKubeMetadata[kube_client.EventsV1Event]):
             Typed watch events containing wrapped Events.
         """
         async for event in _watch_namespaced_resource(
-            kube,
             expected=kube_client.EventsV1Event,
             wrapper=lambda payload: cls(_obj=payload),
             timeout=timeout,

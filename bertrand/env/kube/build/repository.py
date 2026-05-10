@@ -27,6 +27,11 @@ from bertrand.env.kube.api import (
     VolumeMountSpec,
     VolumeSpec,
 )
+from bertrand.env.kube.build._status import (
+    _deployment_status,
+    _pvc_status,
+    _service_status,
+)
 from bertrand.env.kube.build.daemon import BUILDKIT_CONFIG_KEY, BUILDKIT_CONFIG_NAME
 from bertrand.env.kube.ceph.volume import CEPHFS_STORAGE_CLASS_PREFERENCES
 from bertrand.env.kube.configmap import ConfigMap
@@ -518,42 +523,20 @@ class ImageRepository:
                 target_port=self.port,
                 node_port=self.node_port,
             )
-            service_selector_ready = service is not None and service.selects(
-                self.selector
-            )
-            service_port_ready = service is not None and service.exposes(expected_port)
-            service_ready = service is not None and service.matches(
+            service_status = _service_status(
+                service,
                 service_type="NodePort",
                 selector=self.selector,
                 ports=(expected_port,),
             )
-            available = 0
-            updated = 0
-            observed = 0
-            generation = 0
-            if deployment is not None:
-                available = deployment.available_replicas
-                updated = deployment.updated_replicas
-                observed = deployment.observed_generation
-                generation = deployment.generation
-
-            pvc_bound = pvc.is_bound if pvc is not None else False
-            pvc_phase = pvc.phase if pvc is not None else ""
-            storage_class = pvc.storage_class_name if pvc is not None else ""
-            access_modes = pvc.access_modes if pvc is not None else ()
-            storage_request = pvc.requested_storage if pvc is not None else ""
-            pvc_managed = (
-                pvc is not None
-                and pvc.labels.get(BERTRAND_ENV) == "1"
-                and pvc.labels.get(IMAGE_REPOSITORY_LABEL)
-                == IMAGE_REPOSITORY_LABEL_VALUE
-            )
-            storage_ready = (
-                pvc_managed
-                and pvc_bound
-                and bool(storage_class)
-                and pvc is not None
-                and pvc.has_access_mode("ReadWriteMany")
+            deployment_status = _deployment_status(deployment, minimum=1)
+            pvc_status = _pvc_status(
+                pvc,
+                required_labels={
+                    BERTRAND_ENV: "1",
+                    IMAGE_REPOSITORY_LABEL: IMAGE_REPOSITORY_LABEL_VALUE,
+                },
+                access_mode="ReadWriteMany",
             )
             desired_config_hash = self.buildkit_config_hash
             installed_config_hash = (
@@ -572,30 +555,27 @@ class ImageRepository:
             trusted_set = frozenset(trusted)
             untrusted = [name for name in named_nodes if name not in trusted_set]
             node_trust_ready = bool(named_nodes) and not untrusted
-            deployment_ready = deployment is not None and deployment.rollout_ready(
-                minimum=1
-            )
             return ImageRepositoryStatus(
                 namespace=self.namespace,
                 name=self.service,
-                service_present=service is not None,
-                service_selector_ready=service_selector_ready,
-                service_port_ready=service_port_ready,
-                service_ready=service_ready,
-                deployment_present=deployment is not None,
-                pvc_present=pvc is not None,
-                pvc_managed=pvc_managed,
-                pvc_bound=pvc_bound,
-                pvc_phase=pvc_phase,
-                storage_class=storage_class,
-                access_modes=access_modes,
-                storage_request=storage_request,
-                storage_ready=storage_ready,
-                available_replicas=available,
-                updated_replicas=updated,
-                observed_generation=observed,
-                generation=generation,
-                rollout_ready=deployment_ready,
+                service_present=service_status.present,
+                service_selector_ready=service_status.selector_ready,
+                service_port_ready=service_status.port_ready,
+                service_ready=service_status.ready,
+                deployment_present=deployment_status.present,
+                pvc_present=pvc_status.present,
+                pvc_managed=pvc_status.managed,
+                pvc_bound=pvc_status.bound,
+                pvc_phase=pvc_status.phase,
+                storage_class=pvc_status.storage_class,
+                access_modes=pvc_status.access_modes,
+                storage_request=pvc_status.storage_request,
+                storage_ready=pvc_status.ready,
+                available_replicas=deployment_status.available_replicas,
+                updated_replicas=deployment_status.updated_replicas,
+                observed_generation=deployment_status.observed_generation,
+                generation=deployment_status.generation,
+                rollout_ready=deployment_status.rollout_ready,
                 desired_config_hash=desired_config_hash,
                 installed_config_hash=installed_config_hash,
                 config_current=config_current,
@@ -603,9 +583,9 @@ class ImageRepository:
                 trusted_nodes=tuple(trusted),
                 untrusted_nodes=tuple(untrusted),
                 ready=(
-                    service_ready
-                    and deployment_ready
-                    and storage_ready
+                    service_status.ready
+                    and deployment_status.rollout_ready
+                    and pvc_status.ready
                     and config_current
                     and node_trust_ready
                 ),

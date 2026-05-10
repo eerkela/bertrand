@@ -16,6 +16,7 @@ from bertrand.env.config.core import (
     _check_uuid,
 )
 from bertrand.env.git import BERTRAND_ENV, BERTRAND_NAMESPACE, ENV_ID_ENV
+from bertrand.env.kube.build._status import _pvc_status
 from bertrand.env.kube.ceph.volume import CEPHFS_STORAGE_CLASS_PREFERENCES
 from bertrand.env.kube.pod import Pod
 from bertrand.env.kube.volume import PersistentVolumeClaim, StorageClass
@@ -210,40 +211,28 @@ class BuildKitCache:
                 name=self.name,
             )
             if pvc is None:
-                return BuildKitCacheStatus(
-                    namespace=self.namespace,
-                    name=self.name,
-                    present=False,
-                    managed=False,
-                    bound=False,
-                    phase="",
-                    storage_class="",
-                    access_modes=(),
-                    storage_request="",
-                    ready=False,
+                status = _pvc_status(
+                    None,
+                    required_labels=self.labels,
+                    access_mode="ReadWriteMany",
                 )
-
-            managed = (
-                pvc.labels.get(BERTRAND_ENV) == "1"
-                and pvc.labels.get(BUILDKIT_CACHE_ENV) == "1"
-            )
-            ready = (
-                managed
-                and pvc.is_bound
-                and bool(pvc.storage_class_name)
-                and pvc.has_access_mode("ReadWriteMany")
-            )
+            else:
+                status = _pvc_status(
+                    pvc,
+                    required_labels=self.labels,
+                    access_mode="ReadWriteMany",
+                )
             return BuildKitCacheStatus(
                 namespace=self.namespace,
                 name=self.name,
-                present=True,
-                managed=managed,
-                bound=pvc.is_bound,
-                phase=pvc.phase,
-                storage_class=pvc.storage_class_name,
-                access_modes=pvc.access_modes,
-                storage_request=pvc.requested_storage,
-                ready=ready,
+                present=status.present,
+                managed=status.managed,
+                bound=status.bound,
+                phase=status.phase,
+                storage_class=status.storage_class,
+                access_modes=status.access_modes,
+                storage_request=status.storage_request,
+                ready=status.ready,
             )
         except OSError as err:
             msg = (

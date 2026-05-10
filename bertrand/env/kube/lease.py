@@ -173,7 +173,6 @@ class Lease(NamespacedKubeMetadata[kube_client.V1Lease]):
             Typed watch events containing wrapped Leases.
         """
         async for event in _watch_namespaced_resource(
-            kube,
             expected=kube_client.V1Lease,
             wrapper=lambda payload: cls(_obj=payload),
             timeout=timeout,

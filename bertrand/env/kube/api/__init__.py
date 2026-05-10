@@ -29,9 +29,6 @@ from .spec import (
     ImagePullSecretSpec as ImagePullSecretSpec,
 )
 from .spec import (
-    ObjectReference as ObjectReference,
-)
-from .spec import (
     PodSecurityContextSpec as PodSecurityContextSpec,
 )
 from .spec import (
@@ -59,12 +56,6 @@ from .spec import (
     ServicePortSpec as ServicePortSpec,
 )
 from .spec import (
-    ServicePortView as ServicePortView,
-)
-from .spec import (
-    TaintView as TaintView,
-)
-from .spec import (
     TolerationSpec as TolerationSpec,
 )
 from .spec import (
@@ -72,6 +63,15 @@ from .spec import (
 )
 from .spec import (
     VolumeSpec as VolumeSpec,
+)
+from .view import (
+    ObjectReference as ObjectReference,
+)
+from .view import (
+    ServicePortView as ServicePortView,
+)
+from .view import (
+    TaintView as TaintView,
 )
 from .watch import (
     WatchEvent as WatchEvent,

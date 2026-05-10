@@ -7,15 +7,12 @@ import math
 from collections.abc import AsyncIterator, Callable, Iterator, Mapping
 from contextlib import suppress
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal, cast
+from typing import Literal, cast
 
 import kubernetes
 from kubernetes.client.rest import ApiException
 
 from ._helpers import _label_selector, _typed_wrapper
-
-if TYPE_CHECKING:
-    from .client import Kube
 
 type WatchEventType = Literal["ADDED", "MODIFIED", "DELETED", "BOOKMARK", "ERROR"]
 _WATCH_EVENT_TYPES: frozenset[str] = frozenset(
@@ -101,7 +98,6 @@ def _watch_error_status(value: object) -> tuple[int | None, str]:
 
 
 async def watch[T](
-    kube: Kube,
     fn: Callable[..., object],
     *,
     wrapper: Callable[[object], T],
@@ -147,7 +143,6 @@ async def watch[T](
     OSError
         If Kubernetes returns malformed watch data or any non-410 API failure.
     """
-    _ = kube
     if timeout <= 0:
         msg = f"{context} watch timed out before request could start"
         raise TimeoutError(msg)
@@ -239,7 +234,6 @@ async def watch[T](
 
 
 async def _watch_cluster_resource[T, W](
-    kube: Kube,
     *,
     timeout: float,
     labels: Mapping[str, str] | None,
@@ -252,7 +246,6 @@ async def _watch_cluster_resource[T, W](
     payload_context: str,
 ) -> AsyncIterator[WatchEvent[W]]:
     async for event in watch(
-        kube,
         watch_fn,
         wrapper=lambda payload: _typed_wrapper(
             payload,
@@ -270,7 +263,6 @@ async def _watch_cluster_resource[T, W](
 
 
 async def _watch_namespaced_resource[T, W](
-    kube: Kube,
     *,
     timeout: float,
     namespace: str | None,
@@ -293,10 +285,9 @@ async def _watch_namespaced_resource[T, W](
     else:
         fn = watch_all
         api_kwargs = {}
-        context = all_context
+    context = all_context
 
     async for event in watch(
-        kube,
         fn,
         wrapper=lambda payload: _typed_wrapper(
             payload,
