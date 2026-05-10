@@ -147,7 +147,9 @@ def _remaining(deadline: float) -> float:
 async def _ensure_registry_ready_node_label(*, kube: Kube, timeout: float) -> None:
     nodes = await Node.list(kube=kube, timeout=timeout)
     if not nodes:
-        raise OSError("cluster image-store rollout blocked: Kubernetes node list is empty")
+        raise OSError(
+            "cluster image-store rollout blocked: Kubernetes node list is empty"
+        )
 
     hints = {
         platform.node().strip(),
@@ -161,12 +163,7 @@ async def _ensure_registry_ready_node_label(*, kube: Kube, timeout: float) -> No
         # differ across runtimes even on the same host.
         name = node.name
         hostname = node.hostname
-        addresses = (
-            (address.address or "").strip()
-            for address in (
-                (node.obj.status.addresses or []) if node.obj.status is not None else []
-            )
-        )
+        addresses = node.addresses
         if (
             (name and name in hints)
             or (hostname and hostname in hints)
@@ -202,9 +199,12 @@ async def _assert_registry_ready_nodes(*, kube: Kube, timeout: float) -> None:
         node.name
         for node in nodes
         if node.name
-        and node.labels.get(CLUSTER_REGISTRY_READY_LABEL) == CLUSTER_REGISTRY_READY_VALUE
+        and node.labels.get(CLUSTER_REGISTRY_READY_LABEL)
+        == CLUSTER_REGISTRY_READY_VALUE
     }
-    missing = sorted(node.name for node in nodes if node.name and node.name not in ready)
+    missing = sorted(
+        node.name for node in nodes if node.name and node.name not in ready
+    )
     if missing:
         raise OSError(
             "cluster image-store rollout blocked: registry trust label is missing on "
@@ -259,7 +259,9 @@ async def _cluster_image_exists(image: str, *, timeout: float) -> bool:
 
 def _copy_context_item(source: Path, target: Path) -> None:
     if not source.exists():
-        raise FileNotFoundError(f"cluster image build context source does not exist: {source}")
+        raise FileNotFoundError(
+            f"cluster image build context source does not exist: {source}"
+        )
     target.parent.mkdir(parents=True, exist_ok=True)
     if source.is_dir():
         shutil.copytree(source, target)
@@ -365,7 +367,7 @@ def render_containerfile(
         If the tag is unknown, or if the tag uses a custom containerfile and
         therefore cannot be rendered from the internal template.
     """
-    build = model.build.get(tag)
+    build = model.image.get(tag)
     if build is None:
         raise ValueError(f"unknown build tag '{tag}'")
     if build.containerfile is not None:
@@ -477,16 +479,21 @@ async def image_args(
 
     python = config.get(PyProject)
     if python is None:
-        raise OSError(f"missing 'python' configuration for environment at {config.root}")
+        raise OSError(
+            f"missing 'python' configuration for environment at {config.root}"
+        )
     bertrand = config.get(Bertrand)
     if bertrand is None:
-        raise OSError(f"missing 'bertrand' configuration for environment at {config.root}")
-    build = bertrand.build.get(tag)
+        raise OSError(
+            f"missing 'bertrand' configuration for environment at {config.root}"
+        )
+    build = bertrand.image.get(tag)
     if build is None:
         raise ValueError(f"unknown build tag '{tag}' for environment at {config.root}")
 
     try:
-        await CacheVolume.gc(config, env_id, timeout=INFINITY)
+        with await Kube.host(timeout=INFINITY) as kube:
+            await CacheVolume.gc(kube, config, env_id, timeout=INFINITY)
     except Exception:
         pass
 
@@ -500,7 +507,9 @@ async def image_args(
         containerfile = config.root / METADATA_DIR / "images" / tag / "Containerfile"
         containerfile.parent.mkdir(parents=True, exist_ok=True)
         build_mounts: list[str] = [
-            (f"--mount=type=cache,id={volume.name},target={volume.target},sharing=locked")
+            (
+                f"--mount=type=cache,id={volume.name},target={volume.target},sharing=locked"
+            )
             for volume in await CacheVolume.from_config(config, tag, env_id)
         ]
         atomic_write_text(
@@ -648,7 +657,9 @@ class Image(BaseModel):
                 retire = True
 
         if ids:
-            await Container.remove(ids, force=force, timeout=deadline - time.monotonic())
+            await Container.remove(
+                ids, force=force, timeout=deadline - time.monotonic()
+            )
         if retire:
             return False
 
@@ -720,10 +731,14 @@ class Image(BaseModel):
         cid_file = config.root / bundle.cid_file
         try:
             if not cid_file.exists() or not cid_file.is_file():
-                raise OSError(f"nerdctl create did not produce a cid file at {cid_file}")
+                raise OSError(
+                    f"nerdctl create did not produce a cid file at {cid_file}"
+                )
             container_id = cid_file.read_text(encoding="utf-8").strip()
             if not container_id:
-                raise OSError(f"nerdctl create produced an empty cid file at {cid_file}")
+                raise OSError(
+                    f"nerdctl create produced an empty cid file at {cid_file}"
+                )
             inspected = await Container.inspect([container_id])
             if len(inspected) != 1:
                 raise OSError(

@@ -504,7 +504,7 @@ class BuildKitImageBuild:
             target = context / target
             target.parent.mkdir(parents=True, exist_ok=True)
             if source.is_dir():
-                shutil.copytree(source, target)
+                shutil.copytree(source, target, dirs_exist_ok=target.exists())
             else:
                 shutil.copy2(source, target)
         atomic_write_text(

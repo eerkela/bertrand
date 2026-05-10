@@ -1,4 +1,5 @@
 """TODO"""
+
 from __future__ import annotations
 
 import importlib.resources as importlib_resources
@@ -87,7 +88,9 @@ def _check_glob(pattern: str) -> str:
     if pattern.startswith("/"):
         raise ValueError(f"glob pattern cannot be absolute: '{pattern}'")
     if any(part in ("..", ".") for part in pattern.split("/")):
-        raise ValueError(f"glob pattern cannot contain '.' or '..' segments: '{pattern}'")
+        raise ValueError(
+            f"glob pattern cannot contain '.' or '..' segments: '{pattern}'"
+        )
     return pattern
 
 
@@ -151,9 +154,7 @@ def _check_oci_image_ref(value: str) -> str:
         port = ""
     if not host or (port and not port.isdigit()):
         raise ValueError(f"invalid registry host/port in OCI image reference: '{ref}'")
-    if not all(
-        OCI_HOST_LABEL_RE.fullmatch(part) for part in host.split(".")
-    ):
+    if not all(OCI_HOST_LABEL_RE.fullmatch(part) for part in host.split(".")):
         raise ValueError(f"invalid registry host in OCI image reference: '{ref}'")
     if host != "localhost" and "." not in host and not port:
         raise ValueError(
@@ -164,48 +165,41 @@ def _check_oci_image_ref(value: str) -> str:
     # enforce at least one of tag or digest to ensure portability
     if match.group("tag") is None and match.group("digest") is None:
         raise ValueError(
-            "OCI image reference must include a tag or sha256 digest pin "
-            f"(got '{ref}')"
+            f"OCI image reference must include a tag or sha256 digest pin (got '{ref}')"
         )
     return ref
 
 
 type NonEmpty[SequenceT: Sequence[Any]] = Annotated[SequenceT, Field(min_length=1)]
 type Unique[SequenceT: Sequence[Any]] = Annotated[
-    SequenceT,
-    AfterValidator(lambda x: len(set(x)) == len(x))
+    SequenceT, AfterValidator(lambda x: len(set(x)) == len(x))
 ]
 type Trimmed = Annotated[str, StringConstraints(strip_whitespace=True)]
 type NoCRLF = Annotated[  # pylint: disable=invalid-name
-    str,
-    StringConstraints(strip_whitespace=True, pattern=r"^[^\r\n]*$")
+    str, StringConstraints(strip_whitespace=True, pattern=r"^[^\r\n]*$")
 ]
 type NoWhiteSpace = Annotated[
-    str,
-    StringConstraints(strip_whitespace=True, pattern=r"^\S*$")
+    str, StringConstraints(strip_whitespace=True, pattern=r"^\S*$")
 ]
-type SnakeCase = Annotated[str, StringConstraints(
-    strip_whitespace=True,
-    pattern=SNAKE_CASE_RE.pattern
-)]
-type LowerSnakeCase = Annotated[str, StringConstraints(
-    strip_whitespace=True,
-    pattern=LOWER_SNAKE_CASE_RE.pattern
-)]
-type UpperSnakeCase = Annotated[str, StringConstraints(
-    strip_whitespace=True,
-    pattern=UPPER_SNAKE_CASE_RE.pattern
-)]
-type TOMLKey = Annotated[str, StringConstraints(
-    strip_whitespace=True,
-    min_length=1,
-    pattern=TOML_KEY_RE.pattern
-)]
-type KubeName = Annotated[str, StringConstraints(
-    strip_whitespace=True,
-    min_length=1,
-    pattern=KUBE_NAME_RE.pattern
-)]
+type SnakeCase = Annotated[
+    str, StringConstraints(strip_whitespace=True, pattern=SNAKE_CASE_RE.pattern)
+]
+type LowerSnakeCase = Annotated[
+    str, StringConstraints(strip_whitespace=True, pattern=LOWER_SNAKE_CASE_RE.pattern)
+]
+type UpperSnakeCase = Annotated[
+    str, StringConstraints(strip_whitespace=True, pattern=UPPER_SNAKE_CASE_RE.pattern)
+]
+type TOMLKey = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, min_length=1, pattern=TOML_KEY_RE.pattern),
+]
+type KubeName = Annotated[
+    str,
+    StringConstraints(
+        strip_whitespace=True, min_length=1, pattern=KUBE_NAME_RE.pattern
+    ),
+]
 type UUIDHex = Annotated[str, AfterValidator(_check_uuid)]
 type Glob = Annotated[NonEmpty[NoWhiteSpace], AfterValidator(_check_glob)]
 type AbsolutePath = Annotated[Path, AfterValidator(_check_absolute_path)]
@@ -213,19 +207,18 @@ type AbsolutePosixPath = Annotated[PosixPath, AfterValidator(_check_absolute_pat
 type RelativePath = Annotated[Path, AfterValidator(_check_relative_path)]
 type RelativePosixPath = Annotated[PosixPath, AfterValidator(_check_relative_path)]
 type RegexPattern = Annotated[NonEmpty[NoCRLF], AfterValidator(_check_regex_pattern)]
-type ResourceName = Annotated[str, StringConstraints(
-    strip_whitespace=True,
-    min_length=1,
-    pattern=RESOURCE_NAME_RE.pattern
-)]
+type ResourceName = Annotated[
+    str,
+    StringConstraints(
+        strip_whitespace=True, min_length=1, pattern=RESOURCE_NAME_RE.pattern
+    ),
+]
 type URL = Annotated[  # pylint: disable=invalid-name
-    NonEmpty[NoCRLF],
-    AfterValidator(_check_url)
+    NonEmpty[NoCRLF], AfterValidator(_check_url)
 ]
 type URLLabel = Annotated[NonEmpty[Trimmed], AfterValidator(_check_url_label)]
 type OCIImageRef = Annotated[
-    NonEmpty[NoWhiteSpace],
-    AfterValidator(_check_oci_image_ref)
+    NonEmpty[NoWhiteSpace], AfterValidator(_check_oci_image_ref)
 ]
 
 
@@ -251,11 +244,9 @@ def locate_template(namespace: str, name: str) -> Path:
         If the template file does not exist or is not a file.
     """
     env = importlib_resources.files("bertrand.env")
-    with importlib_resources.as_file(env.joinpath(
-        "templates",
-        namespace,
-        f"{name}.j2"
-    )) as source:
+    with importlib_resources.as_file(
+        env.joinpath("templates", namespace, f"{name}.j2")
+    ) as source:
         if not source.exists() or not source.is_file():
             raise FileNotFoundError(
                 f"missing Bertrand template {namespace}/{name}: {source}"
@@ -318,6 +309,7 @@ class Resource:
         resource by searching for the given paths within the worktree, and will add
         the resource to its context if ALL paths are found.
     """
+
     # pylint: disable=unused-argument, redundant-returns-doc
     name: ClassVar[ResourceName]
     paths: ClassVar[frozenset[RelativePath]]
@@ -575,6 +567,7 @@ def resource[ResourceT: Resource](
         If any resource name is not sanitized, or if any path is absolute or contains
         `..` segments.
     """
+
     def _decorator(cls: type[ResourceT]) -> type[ResourceT]:
         self = cls()
 
@@ -618,9 +611,13 @@ class _ResourceLike(Protocol[_ResourceModel_co]):
     """A type helper that allows `Config.get()` to infer a resource's validated model
     type by inspecting its `validate()` method.
     """
+
     # pylint: disable=missing-function-docstring
     name: ClassVar[ResourceName]
-    async def validate(self, config: Config, fragment: Any) -> _ResourceModel_co | None: ...
+
+    async def validate(
+        self, config: Config, fragment: Any
+    ) -> _ResourceModel_co | None: ...
 
 
 @dataclass
@@ -629,6 +626,7 @@ class Config:
     normalized config data parsed from those resources, without coupling to any
     particular schema.
     """
+
     @dataclass(frozen=True)
     class Init:
         """A context object representing normalized CLI input to the `bertrand init`
@@ -649,6 +647,7 @@ class Config:
             is detached from any branch (in which case it will be an arbitrary path).
             The relative path will never contain `..` segments.
         """
+
         repo: GitRepository
         worktree: RelativePath
 
@@ -746,11 +745,13 @@ class Config:
                 kube=kube,
                 timeout=timeout,
             )
-            self.resources.update({
-                r.name: None
-                for r in RESOURCES
-                if r.paths and all((worktree / p).exists() for p in r.paths)
-            })
+            self.resources.update(
+                {
+                    r.name: None
+                    for r in RESOURCES
+                    if r.paths and all((worktree / p).exists() for p in r.paths)
+                }
+            )
             return self
 
     def _merge_fragment(
@@ -820,10 +821,14 @@ class Config:
                 timeout=self.timeout,
             ):
                 # invoke `init()` hooks for all resources to get baseline snapshot
-                snapshot = {} if self.init is None else {
-                    r: await RESOURCE_NAMES[r].init(self, self.init)
-                    for r in sorted(self.resources)
-                }
+                snapshot = (
+                    {}
+                    if self.init is None
+                    else {
+                        r: await RESOURCE_NAMES[r].init(self, self.init)
+                        for r in sorted(self.resources)
+                    }
+                )
 
                 # invoke parse hooks for all resources in deterministic order
                 key_owner: dict[tuple[str, ...], ResourceName] = {}
@@ -832,7 +837,9 @@ class Config:
                     try:
                         fragment = await r.parse(self)
                     except Exception as err:
-                        raise OSError(f"failed to parse resource {r.name!r}: {err}") from err
+                        raise OSError(
+                            f"failed to parse resource {r.name!r}: {err}"
+                        ) from err
                     if not isinstance(fragment, dict):
                         raise OSError(
                             f"parse hook for resource {r.name!r} must return a string "
@@ -858,7 +865,7 @@ class Config:
                                 table,
                                 snapshot.setdefault(lookup.name, {}),
                                 key_owner=key_owner,
-                                path_prefix=(lookup.name,)
+                                path_prefix=(lookup.name,),
                             )
 
                 # validate each parsed fragment against its corresponding resource
@@ -922,13 +929,15 @@ class Config:
             True if the referenced resource is present in the environment, False
             otherwise.
         """
-        if isinstance(key, Resource) or (isinstance(key, type) and issubclass(key, Resource)):
+        if isinstance(key, Resource) or (
+            isinstance(key, type) and issubclass(key, Resource)
+        ):
             key = key.name
         return key in self.resources
 
     def get(
         self,
-        r: _ResourceLike[_ResourceModel_co] | type[_ResourceLike[_ResourceModel_co]]
+        r: _ResourceLike[_ResourceModel_co] | type[_ResourceLike[_ResourceModel_co]],
     ) -> _ResourceModel_co | None:
         """Retrieve the parsed config model for the given resource ID, assuming it is
         present in the environment.
@@ -990,7 +999,9 @@ class Config:
             If any render hooks fail.
         """
         if not self:
-            raise RuntimeError("sync() artifact rendering requires an active config context")
+            raise RuntimeError(
+                "sync() artifact rendering requires an active config context"
+            )
 
         # invoke render hooks for all resources in deterministic order
         async with ClusterLock(
@@ -1003,7 +1014,9 @@ class Config:
                 try:
                     await r.render(self, tag)
                 except Exception as err:
-                    raise OSError(f"failed to render resource '{r.name}': {err}") from err
+                    raise OSError(
+                        f"failed to render resource '{r.name}': {err}"
+                    ) from err
 
     async def build(self, tag: TOMLKey) -> None:
         """Invoke Bertrand's PEP517 backend from within an image or container context.
@@ -1024,6 +1037,7 @@ class Config:
         """
         from .bertrand import Bertrand
         from .python import PyProject
+
         if not inside_image():
             raise RuntimeError("build() requires access to a container filesystem")
         if not self:
@@ -1038,10 +1052,10 @@ class Config:
         # confirm tag is declared and has a matching optional-dependencies group, which
         # is the simplest and most efficient way to get pip to install the correct set
         # of Python dependencies for this build, without needing a multi-stage build
-        if tag not in bertrand.build:
+        if tag not in bertrand.image:
             raise OSError(
                 f"build() received unknown active tag '{tag}' (declared tags: "
-                f"{', '.join(sorted(repr(name) for name in bertrand.build))})"
+                f"{', '.join(sorted(repr(name) for name in bertrand.image))})"
             )
         groups = python.project.optional_dependencies
         if tag not in groups:
@@ -1059,8 +1073,10 @@ class Config:
             "--inexact",  # preserve existing compatible dependencies where possible
             "--no-default-groups",  # don't install any extras
             "--no-dev",  # don't install extra dependency groups
-            "--extra", tag,  # only install the group matching the active tag
-            "--no-build-isolation-package", python.project.name,  # no isolation
+            "--extra",
+            tag,  # only install the group matching the active tag
+            "--no-build-isolation-package",
+            python.project.name,  # no isolation
         ]
         if not inside_container():
             sync_cmd.append("--no-editable")  # image build context -> non-editable

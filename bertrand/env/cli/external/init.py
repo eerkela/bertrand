@@ -14,25 +14,18 @@ import os
 import platform
 import shutil
 import sys
-import uuid
 from dataclasses import dataclass
 from importlib import resources as importlib_resources
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, Self
+from typing import TYPE_CHECKING, Annotated, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, PositiveInt
+from pydantic import BaseModel, ConfigDict, PositiveInt, StringConstraints
 
 from bertrand.env.config import RESOURCE_NAMES, Config, Resource
-from bertrand.env.config.core import (
-    NonEmpty,
-    Trimmed,
-    UUIDHex,
-    _check_uuid,
-)
+from bertrand.env.config.repository import resolve_repo_id
 from bertrand.env.git import (
     BERTRAND_NAMESPACE,
     INFINITY,
-    METADATA_REPO_ID,
     GitRepository,
     GroupStatus,
     HostLock,
@@ -160,6 +153,10 @@ type _InitStage = Literal[
     "install_kube_runtime",
     "installed",
 ]
+type _InitText = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, min_length=1),
+]
 
 
 if TYPE_CHECKING:
@@ -176,13 +173,13 @@ class _InitState(BaseModel):
     model_config = ConfigDict(extra="forbid")
     version: PositiveInt
     stage: _InitStage = "fresh"
-    user: NonEmpty[Trimmed] | None = None
+    user: _InitText | None = None
     uid: int | None = None
     gid: int | None = None
-    package_manager: NonEmpty[Trimmed] | None = None
-    distro_id: NonEmpty[Trimmed] | None = None
-    distro_version: NonEmpty[Trimmed] | None = None
-    distro_codename: NonEmpty[Trimmed] | None = None
+    package_manager: _InitText | None = None
+    distro_id: _InitText | None = None
+    distro_version: _InitText | None = None
+    distro_codename: _InitText | None = None
 
     @staticmethod
     def backend_trustworthy() -> bool:
@@ -459,18 +456,7 @@ MANAGED_GIT_HOOKS: tuple[_GitHook, ...] = (
     ),
 )
 REPO_LOCK_DIR = RUN_DIR / "init"
-REPO_ID_NAMESPACE = uuid.UUID("7b1506f4-4a3f-4b46-94bb-471e0f59d1a0")
 PROTECTED_DISABLE_RESOURCES: frozenset[str] = frozenset({"bertrand", "python"})
-
-
-def _resolve_repo_id(repo: GitRepository) -> UUIDHex:
-    repo_id_file = repo.root / METADATA_REPO_ID
-    if repo_id_file.is_file():
-        try:
-            return _check_uuid(repo_id_file.read_text(encoding="utf-8").strip())
-        except (OSError, ValueError):
-            pass
-    return uuid.uuid5(REPO_ID_NAMESPACE, repo.root.as_posix()).hex
 
 
 def _parse_resource_specs(
@@ -514,7 +500,7 @@ class _RepoState:
     repo: GitRepository
     target: Path
     worktree: Path
-    repo_id: UUIDHex
+    repo_id: str
     mount_alias: Path | None
     deadline: float
 
@@ -1106,7 +1092,7 @@ async def bertrand_init(
             raw_path,
             timeout=deadline - loop.time(),
         )
-        recovered_repo_id: UUIDHex | None = None
+        recovered_repo_id: str | None = None
         if resurrected is not None:
             recovered_repo_id, _ = resurrected
 
@@ -1140,7 +1126,7 @@ async def bertrand_init(
 
             # resolve deterministic repository identity from managed metadata if
             # available, otherwise derive from the canonical repository root.
-            repo_id = recovered_repo_id or _resolve_repo_id(repo)
+            repo_id = recovered_repo_id or resolve_repo_id(repo)
             repo_context = _RepoContext(
                 enable=enabled,
                 disable=disabled,

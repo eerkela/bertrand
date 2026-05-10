@@ -1,18 +1,17 @@
-"""A configuration resource for Bertrand itself, which defines the build matrix and
-other podman-related settings that affect how Bertrand images and containers are built.
+"""Define Bertrand's project configuration resource.
 
 The metadata for this resource is expected to be found under the `[bertrand]` key in
 project configuration, which is usually provided by `pyproject.toml`.  It is
 responsible for rendering the basic directory structure and container/repository
 artifacts needed by Bertrand's core functionality.
 """
+
 from __future__ import annotations
 
 import ipaddress
 import re
-from collections.abc import Callable
 from pathlib import Path
-from typing import Annotated, Any, Literal, Self
+from typing import TYPE_CHECKING, Annotated, Any, Literal, Self
 
 import jinja2
 import packaging.version
@@ -27,12 +26,9 @@ from pydantic import (
     model_validator,
 )
 
-from ..git import (
-    METADATA_DIR,
-    Scalar,
-    atomic_write_text,
-)
-from ..version import VERSION
+from bertrand.env.git import METADATA_DIR, Scalar, atomic_write_text
+from bertrand.env.version import VERSION
+
 from .conan import (
     ConanConf,
     ConanConfig,
@@ -60,6 +56,9 @@ from .core import (
 )
 from .python import PyProject, _validate_dependency_groups
 
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
 # Configuration options that affect CLI behavior
 DEFAULT_TAG: str = "default"
 SHELLS: dict[str, tuple[str, ...]] = {
@@ -68,7 +67,8 @@ SHELLS: dict[str, tuple[str, ...]] = {
 }
 DEFAULT_SHELL: str = "bash"
 if DEFAULT_SHELL not in SHELLS:
-    raise RuntimeError(f"default shell is unsupported: {DEFAULT_SHELL}")
+    msg = f"default shell is unsupported: {DEFAULT_SHELL}"
+    raise RuntimeError(msg)
 EDITORS: dict[str, list[str]] = {
     # NOTE: values are ordered lists of host commands/paths where the editor may be
     # found when servicing RPC requests.  The first entry that passes a `which` check
@@ -82,18 +82,18 @@ EDITORS: dict[str, list[str]] = {
         "code-insiders.cmd",
         "code.exe",
         "code-insiders.exe",
-
         # Linux common absolute install paths
         "/usr/bin/code",
         "/usr/local/bin/code",
         "/snap/bin/code",
         "/usr/share/code/bin/code",
         "/usr/share/code-insiders/bin/code-insiders",
-
         # macOS app bundle shims
         "/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code",
-        "/Applications/Visual Studio Code - Insiders.app/Contents/Resources/app/bin/code-insiders",
-
+        (
+            "/Applications/Visual Studio Code - Insiders.app/Contents/Resources/app"
+            "/bin/code-insiders"
+        ),
         # WSL/Windows common locations
         "/mnt/c/Program Files/Microsoft VS Code/bin/code.cmd",
         "/mnt/c/Program Files/Microsoft VS Code Insiders/bin/code-insiders.cmd",
@@ -101,7 +101,8 @@ EDITORS: dict[str, list[str]] = {
 }
 DEFAULT_EDITOR: str = "vscode"
 if DEFAULT_EDITOR not in EDITORS:
-    raise RuntimeError(f"default editor is unsupported: {DEFAULT_EDITOR}")
+    msg = f"default editor is unsupported: {DEFAULT_EDITOR}"
+    raise RuntimeError(msg)
 INSTRUMENTS: dict[str, Callable[[dict[str, Any]], Callable[[list[str]], list[str]]]] = {
     # NOTE: instruments are identified by a unique name, which limits what can appear
     # in a tag's `instruments` field as part of a configured build matrix.  The values
@@ -149,17 +150,17 @@ LINUX_CAPABILITIES: frozenset[str] | None = _load_linux_capabilities()
 
 def _check_shell(shell: str) -> str:
     if shell not in SHELLS:
-        raise ValueError(
-            f"unsupported shell: '{shell}' (supported shells: {', '.join(SHELLS)})"
-        )
+        msg = f"unsupported shell: '{shell}' (supported shells: {', '.join(SHELLS)})"
+        raise ValueError(msg)
     return shell
 
 
 def _check_editor(editor: str) -> str:
     if editor not in EDITORS:
-        raise ValueError(
+        msg = (
             f"unsupported editor: '{editor}' (supported editors: {', '.join(EDITORS)})"
         )
+        raise ValueError(msg)
     return editor
 
 
@@ -178,21 +179,25 @@ def _check_ip_address(address: str) -> str:
     try:
         return str(ipaddress.ip_address(address))
     except ValueError as err:
-        raise ValueError(f"invalid IP address: {address}") from err
+        msg = f"invalid IP address: {address}"
+        raise ValueError(msg) from err
 
 
 def _check_network_alias(alias: str) -> str:
     alias = alias.lower()
     if alias.startswith(".") or alias.endswith(".") or ".." in alias:
-        raise ValueError(
-            f"invalid network alias '{alias}' (cannot start/end with '.', or contain '..')"
+        msg = (
+            f"invalid network alias '{alias}' "
+            "(cannot start/end with '.', or contain '..')"
         )
+        raise ValueError(msg)
     for label in alias.split("."):
         if not NETWORK_ALIAS_LABEL_RE.fullmatch(label):
-            raise ValueError(
+            msg = (
                 f"invalid network alias label '{label}' in '{alias}' (labels must "
                 "match [a-z0-9-], max length 63, and cannot start/end with '-')"
             )
+            raise ValueError(msg)
     return alias
 
 
@@ -200,13 +205,17 @@ def _check_capability(capability: str) -> str:
     if capability == "ALL":
         return capability
     if not CAPABILITY_TOKEN_RE.fullmatch(capability):
-        raise ValueError(
-            f"invalid capability token '{capability}' (expected exact CAP_* token or ALL)"
+        msg = (
+            f"invalid capability token '{capability}' "
+            "(expected exact CAP_* token or ALL)"
         )
+        raise ValueError(msg)
     if LINUX_CAPABILITIES is not None and capability not in LINUX_CAPABILITIES:
-        raise ValueError(
-            f"unknown Linux capability '{capability}' according to local capability header"
+        msg = (
+            f"unknown Linux capability '{capability}' "
+            "according to local capability header"
         )
+        raise ValueError(msg)
     return capability
 
 
@@ -214,14 +223,18 @@ def _check_security_opt(option: str) -> str:
     if option == "no-new-privileges":
         return option
     if "=" not in option:
-        raise ValueError(
-            f"invalid security-opt '{option}' (expected 'no-new-privileges' or 'key=value')"
+        msg = (
+            f"invalid security-opt '{option}' "
+            "(expected 'no-new-privileges' or 'key=value')"
         )
+        raise ValueError(msg)
     key, value = option.split("=", maxsplit=1)
     if not key or not value:
-        raise ValueError(f"invalid security-opt '{option}' (missing key or value)")
+        msg = f"invalid security-opt '{option}' (missing key or value)"
+        raise ValueError(msg)
     if not SECURITY_OPT_KEY_RE.fullmatch(key):
-        raise ValueError(f"invalid security-opt key '{key}' in '{option}'")
+        msg = f"invalid security-opt key '{key}' in '{option}'"
+        raise ValueError(msg)
     return option
 
 
@@ -237,44 +250,42 @@ def _check_userns_uint(
     userns: str,
     key: str,
     value: str,
-    allow_zero: bool
+    allow_zero: bool,
 ) -> None:
     if not value.isdigit():
-        raise ValueError(
-            f"invalid userns '{userns}': {key} must be a non-negative integer"
-        )
+        msg = f"invalid userns '{userns}': {key} must be a non-negative integer"
+        raise ValueError(msg)
     number = int(value)
     if not allow_zero and number <= 0:
-        raise ValueError(
-            f"invalid userns '{userns}': {key} must be greater than zero"
-        )
+        msg = f"invalid userns '{userns}': {key} must be greater than zero"
+        raise ValueError(msg)
 
 
 def _check_userns_options(
     *,
     userns: str,
     mode: Literal["keep-id", "auto"],
-    options: str
+    options: str,
 ) -> None:
     if not options:
-        raise ValueError(f"invalid userns '{userns}': '{mode}' options cannot be empty")
+        msg = f"invalid userns '{userns}': '{mode}' options cannot be empty"
+        raise ValueError(msg)
 
     seen: set[str] = set()
     tokens = options.split(",")
     for token in tokens:
         if not token or "=" not in token:
-            raise ValueError(
+            msg = (
                 f"invalid userns '{userns}': expected comma-separated key=value options"
             )
+            raise ValueError(msg)
         key, value = token.split("=", maxsplit=1)
         if not key or not value:
-            raise ValueError(
-                f"invalid userns '{userns}': expected non-empty key=value options"
-            )
+            msg = f"invalid userns '{userns}': expected non-empty key=value options"
+            raise ValueError(msg)
         if key in seen:
-            raise ValueError(
-                f"invalid userns '{userns}': duplicate option key '{key}'"
-            )
+            msg = f"invalid userns '{userns}': duplicate option key '{key}'"
+            raise ValueError(msg)
         seen.add(key)
 
         if mode == "keep-id":
@@ -282,12 +293,18 @@ def _check_userns_options(
                 _check_userns_uint(userns=userns, key=key, value=value, allow_zero=True)
                 continue
             if key == "size":
-                _check_userns_uint(userns=userns, key=key, value=value, allow_zero=False)
+                _check_userns_uint(
+                    userns=userns,
+                    key=key,
+                    value=value,
+                    allow_zero=False,
+                )
                 continue
-            raise ValueError(
+            msg = (
                 f"invalid userns '{userns}': unsupported keep-id option '{key}' "
                 "(allowed: uid, gid, size)"
             )
+            raise ValueError(msg)
 
         if key == "size":
             _check_userns_uint(userns=userns, key=key, value=value, allow_zero=False)
@@ -295,20 +312,25 @@ def _check_userns_options(
         if key in ("uidmapping", "gidmapping"):
             match = USERNS_MAPPING_RE.fullmatch(value)
             if match is None:
-                raise ValueError(
+                msg = (
                     f"invalid userns '{userns}': {key} must be "
-                    "'<container-id>:<host-id>:<size>' or '<container-id>:@<host-id>:<size>'"
+                    "'<container-id>:<host-id>:<size>' or "
+                    "'<container-id>:@<host-id>:<size>'"
                 )
+                raise ValueError(msg)
             length = int(match.group("length"))
             if length <= 0:
-                raise ValueError(
-                    f"invalid userns '{userns}': {key} mapping size must be greater than zero"
+                msg = (
+                    f"invalid userns '{userns}': {key} mapping size must be "
+                    "greater than zero"
                 )
+                raise ValueError(msg)
             continue
-        raise ValueError(
+        msg = (
             f"invalid userns '{userns}': unsupported auto option '{key}' "
             "(allowed: size, uidmapping, gidmapping)"
         )
+        raise ValueError(msg)
 
 
 def _check_userns(userns: str) -> str:
@@ -317,22 +339,25 @@ def _check_userns(userns: str) -> str:
     if userns.startswith("ns:"):
         if NS_PATH_RE.fullmatch(userns):
             return userns
-        raise ValueError(f"invalid userns '{userns}' (expected 'ns:<path>' with no spaces)")
+        msg = f"invalid userns '{userns}' (expected 'ns:<path>' with no spaces)"
+        raise ValueError(msg)
     if userns.startswith("container:"):
         ref = _extract_container_ref(userns)
         if ref is None:
-            raise ValueError(
-                f"invalid userns '{userns}' (expected 'container:<tag>' with non-empty tag)"
+            msg = (
+                f"invalid userns '{userns}' "
+                "(expected 'container:<tag>' with non-empty tag)"
             )
+            raise ValueError(msg)
         if not USERNS_CONTAINER_REF_RE.fullmatch(ref):
-            raise ValueError(
-                f"invalid userns '{userns}' (container tag must use [A-Za-z0-9._-]+)"
-            )
+            msg = f"invalid userns '{userns}' (container tag must use [A-Za-z0-9._-]+)"
+            raise ValueError(msg)
         sanitized = SANITIZE_RE.sub("-", ref).strip("-")
         if ref != sanitized:
-            raise ValueError(
+            msg = (
                 f"invalid userns '{userns}' (container tag sanitizes to '{sanitized}')"
             )
+            raise ValueError(msg)
         return userns
     if ":" in userns:
         mode, _, options = userns.partition(":")
@@ -343,13 +368,13 @@ def _check_userns(userns: str) -> str:
             _check_userns_options(userns=userns, mode="auto", options=options)
             return userns
         if mode == "nomap":
-            raise ValueError(
-                f"invalid userns '{userns}' ('nomap' does not accept options)"
-            )
-    raise ValueError(
+            msg = f"invalid userns '{userns}' ('nomap' does not accept options)"
+            raise ValueError(msg)
+    msg = (
         f"invalid userns '{userns}' (expected one of: host|keep-id[:<opts>]|"
         "auto[:<opts>]|nomap|container:<tag>|ns:<path>)"
     )
+    raise ValueError(msg)
 
 
 def _check_namespace_mode(
@@ -357,36 +382,39 @@ def _check_namespace_mode(
     *,
     option: str,
     literals: tuple[str, ...],
-    allow_empty: bool = False
+    allow_empty: bool = False,
 ) -> str:
     if mode == "" and allow_empty:
         return mode
     if not mode:
-        raise ValueError(f"{option} entry cannot be empty")
+        msg = f"{option} entry cannot be empty"
+        raise ValueError(msg)
     if mode in literals:
         return mode
     if mode.startswith("ns:"):
         if NS_PATH_RE.fullmatch(mode):
             return mode
-        raise ValueError(f"invalid {option} '{mode}' (expected 'ns:<path>' with no spaces)")
+        msg = f"invalid {option} '{mode}' (expected 'ns:<path>' with no spaces)"
+        raise ValueError(msg)
     ref = _extract_container_ref(mode)
     if ref is not None:
         if not USERNS_CONTAINER_REF_RE.fullmatch(ref):
-            raise ValueError(
-                f"invalid {option} '{mode}' (container tag must use [A-Za-z0-9._-]+)"
-            )
+            msg = f"invalid {option} '{mode}' (container tag must use [A-Za-z0-9._-]+)"
+            raise ValueError(msg)
         sanitized = SANITIZE_RE.sub("-", ref).strip("-")
         if ref != sanitized:
-            raise ValueError(
+            msg = (
                 f"invalid {option} '{mode}' (container tag sanitizes to '{sanitized}')"
             )
+            raise ValueError(msg)
         return mode
     expected = "|".join(literals)
     empty = '""|' if allow_empty else ""
-    raise ValueError(
+    msg = (
         f"invalid {option} '{mode}' (expected one of: {empty}{expected}|"
         "container:<tag>|ns:<path>)"
     )
+    raise ValueError(msg)
 
 
 def _check_ipc(ipc: str) -> str:
@@ -394,7 +422,7 @@ def _check_ipc(ipc: str) -> str:
         ipc,
         option="ipc",
         literals=("none", "host", "private", "shareable"),
-        allow_empty=True
+        allow_empty=True,
     )
 
 
@@ -403,7 +431,7 @@ def _check_pid(pid: str) -> str:
         pid,
         option="pid",
         literals=("host", "private"),
-        allow_empty=False
+        allow_empty=False,
     )
 
 
@@ -412,16 +440,17 @@ def _check_uts(uts: str) -> str:
         uts,
         option="uts",
         literals=("host", "private"),
-        allow_empty=False
+        allow_empty=False,
     )
 
 
 def _check_device_permission(permission: str) -> str:
     if permission not in DEVICE_PERMISSIONS:
-        raise ValueError(
+        msg = (
             f"invalid device permissions '{permission}' (expected one of: "
             f"{'|'.join(sorted(DEVICE_PERMISSIONS, key=lambda x: len(x)))}"
         )
+        raise ValueError(msg)
     return permission
 
 
@@ -429,37 +458,40 @@ def _check_health_log_destination(value: str) -> str:
     if value in ("local", "events_logger"):
         return value
     if "\\" in value:
-        raise ValueError(
+        msg = (
             f"invalid healthcheck.log.destination '{value}' "
             "(expected POSIX-style path separators)"
         )
+        raise ValueError(msg)
     if any(part in (".", "..") for part in value.split("/")):
-        raise ValueError(
+        msg = (
             f"invalid healthcheck.log.destination '{value}' "
             "(path cannot contain '.' or '..' segments)"
         )
+        raise ValueError(msg)
     path = PosixPath(value)
     if path.is_absolute():
-        raise ValueError(
+        msg = (
             f"invalid healthcheck.log.destination '{value}' "
             "(path must be project-root-relative)"
         )
+        raise ValueError(msg)
     return path.as_posix()
 
 
 def _check_build_context_path(path: PosixPath) -> PosixPath:
     if path.is_absolute():
-        raise ValueError(f"build context path cannot be absolute: '{path}'")
+        msg = f"build context path cannot be absolute: '{path}'"
+        raise ValueError(msg)
     if path == PosixPath("."):
         return path
     parts = path.parts
     if not parts:
-        raise ValueError("build context path cannot be empty")
+        msg = "build context path cannot be empty"
+        raise ValueError(msg)
     if any(p == "." or p == ".." for p in parts):
-        raise ValueError(
-            "build context path cannot contain '.' or '..' segments: "
-            f"'{path}'"
-        )
+        msg = f"build context path cannot contain '.' or '..' segments: '{path}'"
+        raise ValueError(msg)
     return path
 
 
@@ -467,51 +499,68 @@ type Shell = Annotated[NonEmpty[NoWhiteSpace], AfterValidator(_check_shell)]
 type Editor = Annotated[NonEmpty[NoWhiteSpace], AfterValidator(_check_editor)]
 type IgnoreList = Annotated[list[Glob], AfterValidator(_check_ignore_list)]
 type IPAddress = Annotated[NonEmpty[NoWhiteSpace], AfterValidator(_check_ip_address)]
-type HostName = Annotated[str, StringConstraints(
-    strip_whitespace=True,
-    min_length=1,
-    max_length=253,
-    pattern=
-        r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
-        r"(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$"
-)]
+type HostName = Annotated[
+    str,
+    StringConstraints(
+        strip_whitespace=True,
+        min_length=1,
+        max_length=253,
+        pattern=r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
+        r"(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$",
+    ),
+]
 type HostIP = Literal["host-gateway"] | IPAddress  # pylint: disable=invalid-name
-type NetworkAlias = Annotated[NonEmpty[NoWhiteSpace], AfterValidator(_check_network_alias)]
-type Memory = Annotated[str, StringConstraints(strip_whitespace=True, pattern=r"^\d+[bkmg]?$")]
+type NetworkAlias = Annotated[
+    NonEmpty[NoWhiteSpace],
+    AfterValidator(_check_network_alias),
+]
+type Memory = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, pattern=r"^\d+[bkmg]?$"),
+]
 type ULimitName = Annotated[
     str,
     StringConstraints(
         strip_whitespace=True,
         min_length=1,
-        pattern=r"^[a-z][a-z0-9_]*$"
+        pattern=r"^[a-z][a-z0-9_]*$",
     ),
 ]
 type Capability = Annotated[NonEmpty[NoWhiteSpace], AfterValidator(_check_capability)]
-type SecurityOpt = Annotated[NonEmpty[NoWhiteSpace], AfterValidator(_check_security_opt)]
+type SecurityOpt = Annotated[
+    NonEmpty[NoWhiteSpace],
+    AfterValidator(_check_security_opt),
+]
 type UserNS = Annotated[  # pylint: disable=invalid-name
     NonEmpty[NoWhiteSpace],
-    AfterValidator(_check_userns)
+    AfterValidator(_check_userns),
 ]
 type IPCMode = Annotated[NonEmpty[NoWhiteSpace], AfterValidator(_check_ipc)]
 type PIDMode = Annotated[NonEmpty[NoWhiteSpace], AfterValidator(_check_pid)]
 type UTSMode = Annotated[NonEmpty[NoWhiteSpace], AfterValidator(_check_uts)]
-type InstrumentTool = Annotated[str, StringConstraints(
-    strip_whitespace=True,
-    min_length=1,
-    pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]*$"
-)]
+type InstrumentTool = Annotated[
+    str,
+    StringConstraints(
+        strip_whitespace=True,
+        min_length=1,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]*$",
+    ),
+]
 type DevicePermission = Annotated[
     NonEmpty[NoWhiteSpace],
-    AfterValidator(_check_device_permission)
+    AfterValidator(_check_device_permission),
 ]
-type Timeout = Annotated[str, StringConstraints(
-    strip_whitespace=True,
-    min_length=1,
-    pattern=r"^\d+(\.\d+)?[smhd]?$"
-)]
+type Timeout = Annotated[
+    str,
+    StringConstraints(
+        strip_whitespace=True,
+        min_length=1,
+        pattern=r"^\d+(\.\d+)?[smhd]?$",
+    ),
+]
 type HealthLogDestination = Annotated[
     NonEmpty[NoCRLF],
-    AfterValidator(_check_health_log_destination)
+    AfterValidator(_check_health_log_destination),
 ]
 type BuildContextPath = Annotated[PosixPath, AfterValidator(_check_build_context_path)]
 
@@ -532,10 +581,11 @@ def _dump_ignore_list(patterns: list[str]) -> str:
 
 @resource("bertrand")
 class Bertrand(Resource):
-    """A resource describing the configuration state needed by Bertrand itself, which
-    will be implicitly added to any `bertrand init` command as a base resource, and
-    can be universally configured from any config provider (e.g. `pyproject.toml`) via
-    the `"bertrand"` snapshot key.
+    """Describe the configuration state needed by Bertrand itself.
+
+    This resource will be implicitly added to any `bertrand init` command as a base
+    resource, and can be universally configured from any config provider (e.g.
+    `pyproject.toml`) via the `"bertrand"` snapshot key.
 
     Bertrand is responsible for:
         1.  Initializing the minimal worktree layout needed by Bertrand's tools,
@@ -546,112 +596,154 @@ class Bertrand(Resource):
             networking, device passthrough, secrets, etc.), dependencies, and possible
             kubernetes orchestration.
     """
+
     # pylint: disable=missing-function-docstring, unused-argument, missing-return-doc
 
     class Model(BaseModel):
         """Validate the `[bertrand]` table."""
+
         model_config = ConfigDict(extra="forbid")
-        shell: Annotated[Shell, Field(
-            default=DEFAULT_SHELL,
-            examples=list(SHELLS),
-            description=
-                "Default shell to use when entering a container via `bertrand enter`.  "
-                "This is not a literal shell command, but rather an identifier that "
-                "maps to a backend command to prevent remote code execution."
-        )]
-        editor: Annotated[Editor, Field(
-            default=DEFAULT_EDITOR,
-            examples=list(EDITORS),
-            description=
-                "Default text editor to use when invoking `bertrand code`.  This is "
-                "not a literal shell command, but rather an identifier that maps to a "
-                "backend command to prevent remote code execution."
-        )]
-        ignore: Annotated[IgnoreList, Field(
-            default_factory=lambda: [
-                ".bertrand/*",
-                "**/.bertrand/",
-                "__pycache__/",
-                "*.py[cod]",
-                "*.egg-info/",
-                ".dist/",
-                ".build/",
-                ".eggs/",
-                ".venv/",
-                "venv/",
-                "*.o",
-                "*.obj",
-                "*.a",
-                "*.lib",
-                "*.so",
-                "*.dylib",
-                "*.dll",
-                ".vscode/",
-            ],
-            examples=[[
-                ".bertrand/*",
-                "**/.bertrand/",
-                "__pycache__/",
-                "*.py[cod]",
-                "*.egg-info/",
-                ".dist/",
-                ".build/",
-                ".eggs/",
-                ".venv/",
-                "venv/",
-                "*.o",
-                "*.obj",
-                "*.a",
-                "*.lib",
-                "*.so",
-                "*.dylib",
-                "*.dll",
-                ".vscode/",
-            ]],
-            description=
-                "List of patterns to ignore within this project, which are shared "
-                "between both `.gitignore` and `.containerignore`.  Patterns are "
-                "interpreted using the same rules as those files."
-        )]
-        git_ignore: Annotated[IgnoreList, Field(
-            default_factory=list,
-            alias="git-ignore",
-            examples=[[]],
-            description=
-                "List of `.gitignore`-specific patterns, which are merged with the "
-                "global `ignore` patterns when generating `.gitignore`."
-        )]
-        container_ignore: Annotated[IgnoreList, Field(
-            default_factory=lambda: [
-                ".git/",
-                ".gitignore",
-            ],
-            alias="container-ignore",
-            examples=[[".git/", ".gitignore",]],
-            description=
-                "List of `.containerignore`-specific patterns, which are merged with "
-                "the global `ignore` patterns when generating `.containerignore`."
-        )]
+        shell: Annotated[
+            Shell,
+            Field(
+                default=DEFAULT_SHELL,
+                examples=list(SHELLS),
+                description=(
+                    "Default shell to use when entering a container via `bertrand "
+                    "enter`.  This is not a literal shell command, but rather an "
+                    "identifier that maps to a backend command to prevent remote code "
+                    "execution."
+                ),
+            ),
+        ]
+        editor: Annotated[
+            Editor,
+            Field(
+                default=DEFAULT_EDITOR,
+                examples=list(EDITORS),
+                description=(
+                    "Default text editor to use when invoking `bertrand code`.  "
+                    "This is not a literal shell command, but rather an identifier "
+                    "that maps to a backend command to prevent remote code execution."
+                ),
+            ),
+        ]
+        ignore: Annotated[
+            IgnoreList,
+            Field(
+                default_factory=lambda: [
+                    ".bertrand/*",
+                    "**/.bertrand/",
+                    "__pycache__/",
+                    "*.py[cod]",
+                    "*.egg-info/",
+                    ".dist/",
+                    ".build/",
+                    ".eggs/",
+                    ".venv/",
+                    "venv/",
+                    "*.o",
+                    "*.obj",
+                    "*.a",
+                    "*.lib",
+                    "*.so",
+                    "*.dylib",
+                    "*.dll",
+                    ".vscode/",
+                ],
+                examples=[
+                    [
+                        ".bertrand/*",
+                        "**/.bertrand/",
+                        "__pycache__/",
+                        "*.py[cod]",
+                        "*.egg-info/",
+                        ".dist/",
+                        ".build/",
+                        ".eggs/",
+                        ".venv/",
+                        "venv/",
+                        "*.o",
+                        "*.obj",
+                        "*.a",
+                        "*.lib",
+                        "*.so",
+                        "*.dylib",
+                        "*.dll",
+                        ".vscode/",
+                    ]
+                ],
+                description=(
+                    "List of patterns to ignore within this project, which are shared "
+                    "between both `.gitignore` and `.containerignore`.  Patterns are "
+                    "interpreted using the same rules as those files."
+                ),
+            ),
+        ]
+        git_ignore: Annotated[
+            IgnoreList,
+            Field(
+                default_factory=list,
+                alias="git-ignore",
+                examples=[[]],
+                description=(
+                    "List of `.gitignore`-specific patterns, which are merged with the "
+                    "global `ignore` patterns when generating `.gitignore`."
+                ),
+            ),
+        ]
+        container_ignore: Annotated[
+            IgnoreList,
+            Field(
+                default_factory=lambda: [
+                    ".git/",
+                    ".gitignore",
+                ],
+                alias="container-ignore",
+                examples=[
+                    [
+                        ".git/",
+                        ".gitignore",
+                    ]
+                ],
+                description=(
+                    "List of `.containerignore`-specific patterns, which are "
+                    "merged with the global `ignore` patterns when generating "
+                    "`.containerignore`."
+                ),
+            ),
+        ]
 
         class Network(BaseModel):
             """Validate the `[bertrand.network]` table."""
+
             model_config = ConfigDict(extra="forbid")
 
             class Table(BaseModel):
                 """Validate common fields in `[bertrand.network.*]` tables."""
+
                 model_config = ConfigDict(extra="forbid")
                 mode: Annotated[
                     str,
                     StringConstraints(
                         strip_whitespace=True,
                         min_length=1,
-                        pattern=
-                            rf"^(none|host|private|slirp4netns|pasta|{NS_PATH_RE.pattern})$",
+                        pattern=(
+                            "^(none|host|private|slirp4netns|pasta|"
+                            f"{NS_PATH_RE.pattern})$"
+                        ),
                     ),
                     Field(
                         default="private",
-                        examples=["none", "host", "private", "slirp4netns", "pasta", "ns:<path>"],
-                        description=
+                        examples=[
+                            "none",
+                            "host",
+                            "private",
+                            "slirp4netns",
+                            "pasta",
+                            "ns:<path>",
+                        ],
+                        description=(
                             "The networking driver to use within containers for this "
                             "project.  Equivalent to `podman build|create --network`\n"
                             "   `none`: disable networking within the container.\n"
@@ -659,109 +751,133 @@ class Bertrand(Resource):
                             "performance, no isolation, potentially insecure).\n"
                             "   `private`: (default) create a new, private network "
                             "namespace for the container.\n"
-                            "   `slirp4netns`: use slirp4netns for rootless networking.  "
-                            "This is often the default for many rootless container "
-                            "runtimes, but may be slower than other options and has "
-                            "some limitations.  See the podman documentation for more "
-                            "details.\n"
+                            "   `slirp4netns`: use slirp4netns for rootless "
+                            "networking.  This is often the default for many rootless "
+                            "container runtimes, but may be slower than other options "
+                            "and has some limitations.  See the podman documentation "
+                            "for more details.\n"
                             "   `pasta`: use pasta for rootless networking.  This is "
-                            "slightly faster than slirp4netns in some scenarios, but is "
-                            "still slower than rootful host networking.  See the podman "
-                            "documentation for more details.\n"
-                            "   `ns:<path>`: join an existing network namespace specified "
-                            "by the given <path>.\n"
-                            "Bertrand intentionally omits `bridge`, `<network name|ID>`, "
-                            "and `container:id` from its configuration layer in order to "
-                            "keep projects portable across hosts.",
-                    )
+                            "slightly faster than slirp4netns in some scenarios, but "
+                            "is still slower than rootful host networking.  See the "
+                            "podman documentation for more details.\n"
+                            "   `ns:<path>`: join an existing network namespace "
+                            "specified by the given <path>.\n"
+                            "Bertrand intentionally omits `bridge`, `<network "
+                            "name|ID>`, and `container:id` from its configuration "
+                            "layer in order to keep projects portable across hosts."
+                        ),
+                    ),
                 ]
-                options: Annotated[list[str], Field(
-                    default_factory=list,
-                    examples=[[
-                        "--ipv4-only",
-                        "-a", "10.0.2.0",
-                        "-n", "24",
-                        "-g", "10.0.2.2",
-                        "--dns-forward", "10.0.2.3",
-                        "-m", "1500",
-                        "--no-ndp",
-                        "--no-dhcpv6",
-                        "--no-dhcp",
-                    ]],
-                    description=
-                        "Additional `--network` mode options, encoded as "
+                options: Annotated[
+                    list[str],
+                    Field(
+                        default_factory=list,
+                        examples=[
+                            [
+                                "--ipv4-only",
+                                "-a",
+                                "10.0.2.0",
+                                "-n",
+                                "24",
+                                "-g",
+                                "10.0.2.2",
+                                "--dns-forward",
+                                "10.0.2.3",
+                                "-m",
+                                "1500",
+                                "--no-ndp",
+                                "--no-dhcpv6",
+                                "--no-dhcp",
+                            ]
+                        ],
+                        description="Additional `--network` mode options, encoded as "
                         "`mode:opt1,opt2,...`.  These are forwarded to the selected "
                         "network backend.  In Bertrand's global networking contract, "
                         "options are only valid for `slirp4netns` and `pasta` modes.  "
                         "See the podman documentation for more details.",
-                )]
-                dns: Annotated[list[IPAddress | Literal["none"]], Field(
-                    default_factory=list,
-                    description=
-                        "Set custom DNS servers.  Equivalent to "
-                        "`podman build|create --dns`.  The special value `none` disables "
-                        "creation of `/etc/resolv.conf` by Podman, so the image's "
-                        "`/etc/resolv.conf` is used unchanged.  For builds, this setting "
-                        "only affects `RUN` instructions and does not change "
-                        "`/etc/resolv.conf` in the final image.",
-                )]
-                dns_search: Annotated[list[NonEmpty[NoWhiteSpace]], Field(
-                    default_factory=list,
-                    alias="dns-search",
-                    description=
-                        "Set custom DNS search domains.  Equivalent to "
+                    ),
+                ]
+                dns: Annotated[
+                    list[IPAddress | Literal["none"]],
+                    Field(
+                        default_factory=list,
+                        description=(
+                            "Set custom DNS servers.  Equivalent to "
+                            "`podman build|create --dns`.  The special value `none` "
+                            "disables "
+                            "creation of `/etc/resolv.conf` by Podman, so the image's "
+                            "`/etc/resolv.conf` is used unchanged.  For builds, this "
+                            "setting only affects `RUN` instructions and does not "
+                            "change `/etc/resolv.conf` in the final image."
+                        ),
+                    ),
+                ]
+                dns_search: Annotated[
+                    list[NonEmpty[NoWhiteSpace]],
+                    Field(
+                        default_factory=list,
+                        alias="dns-search",
+                        description="Set custom DNS search domains.  Equivalent to "
                         "`podman build|create --dns-search`.  For builds, this setting "
                         "only affects `RUN` instructions and does not change "
                         "`/etc/resolv.conf` in the final image.",
-                )]
-                dns_options: Annotated[list[NonEmpty[NoWhiteSpace]], Field(
-                    default_factory=list,
-                    alias="dns-options",
-                    description=
-                        "Set custom DNS resolver options.  Equivalent to "
+                    ),
+                ]
+                dns_options: Annotated[
+                    list[NonEmpty[NoWhiteSpace]],
+                    Field(
+                        default_factory=list,
+                        alias="dns-options",
+                        description="Set custom DNS resolver options.  Equivalent to "
                         "`podman build|create --dns-option`.  For builds, this setting "
                         "only affects `RUN` instructions and does not change "
                         "`/etc/resolv.conf` in the final image.",
-                )]
-                add_host: Annotated[dict[HostName, HostIP], Field(
-                    default_factory=dict,
-                    alias="add-host",
-                    description=
-                        "Mapping of additional host entries to add to container "
-                        "`/etc/hosts`.  Equivalent to `podman build|create --add-host`.  "
-                        "Keys are hostnames, and values are IPv4/IPv6 addresses or the "
-                        "special value `host-gateway`.",
-                )]
+                    ),
+                ]
+                add_host: Annotated[
+                    dict[HostName, HostIP],
+                    Field(
+                        default_factory=dict,
+                        alias="add-host",
+                        description=(
+                            "Mapping of additional host entries to add to container "
+                            "`/etc/hosts`.  Equivalent to "
+                            "`podman build|create --add-host`.  Keys are hostnames, "
+                            "and values are IPv4/IPv6 addresses or the special value "
+                            "`host-gateway`."
+                        ),
+                    ),
+                ]
 
                 @model_validator(mode="after")
                 def _validate_none_mode(self) -> Self:
                     if self.mode == "none" and (
-                        self.options or
-                        self.dns or
-                        self.dns_search or
-                        self.dns_options
+                        self.options or self.dns or self.dns_search or self.dns_options
                     ):
-                        raise ValueError(
+                        msg = (
                             "network mode 'none' requires empty options, dns, "
                             "dns-search, and dns-options"
                         )
+                        raise ValueError(msg)
                     return self
 
                 @model_validator(mode="after")
                 def _validate_driver_options_mode(self) -> Self:
                     if self.options and self.mode not in ("slirp4netns", "pasta"):
-                        raise ValueError(
+                        msg = (
                             "network options are only allowed for 'slirp4netns' and "
                             "'pasta' modes"
                         )
+                        raise ValueError(msg)
                     return self
 
                 @model_validator(mode="after")
                 def _validate_dns_none(self) -> Self:
                     if "none" in self.dns and len(self.dns) > 1:
-                        raise ValueError(
+                        msg = (
                             "dns entry 'none' cannot be combined with other DNS servers"
                         )
+                        raise ValueError(msg)
                     return self
 
             class Build(Table):
@@ -782,114 +898,173 @@ class Bertrand(Resource):
                     # here when runtime networking coverage expands.
                     return self
 
-            build: Annotated[Build, Field(
-                default_factory=Build.model_construct,
-                description=
-                    "Global networking policy to use during build-time `RUN` "
-                    "instructions.",
-            )]
-            run: Annotated[Run, Field(
-                default_factory=Run.model_construct,
-                description=
-                    "Global networking policy to use during container creation and "
-                    "runtime execution.",
-            )]
+            build: Annotated[
+                Build,
+                Field(
+                    default_factory=Build.model_construct,
+                    description=(
+                        "Global networking policy to use during build-time `RUN` "
+                        "instructions."
+                    ),
+                ),
+            ]
+            run: Annotated[
+                Run,
+                Field(
+                    default_factory=Run.model_construct,
+                    description=(
+                        "Global networking policy to use during container creation and "
+                        "runtime execution."
+                    ),
+                ),
+            ]
 
-        network: Annotated[Network, Field(
-            default_factory=Network.model_construct,
-            description="Networking configuration to use within this project.",
-        )]
+        network: Annotated[
+            Network,
+            Field(
+                default_factory=Network.model_construct,
+                description="Networking configuration to use within this project.",
+            ),
+        ]
 
-        class Build(BaseModel):
-            """Validate entries in the `[tool.bertrand.build]` table."""
+        class Image(BaseModel):
+            """Validate entries in the `[tool.bertrand.image]` table."""
+
             model_config = ConfigDict(extra="forbid")
-            containerfile: Annotated[RelativePosixPath | None, Field(
-                default=None,
-                examples=["path/to/Containerfile", None],
-                description=
-                    "Relative path to a Containerfile defining the build steps for "
-                    "this image.  This is intended to allow advanced users to define "
-                    "custom build steps for their projects outside of Bertrand's "
-                    "normal bootstrap procedure.  For the vast majority of users, this "
-                    "should be omitted, and relevant setup should be done through "
-                    "standard build tools and package managers defined elsewhere in "
-                    "project configuration.  If omitted, Bertrand will automatically "
-                    "generate a minimal Containerfile based on this information.",
-            )]
-            target: Annotated[TOMLKey | None, Field(
-                default=None,
-                examples=["stage-name", None],
-                description=
-                    "Optional target stage in a multi-stage Containerfile.  If "
-                    "omitted, the final stage will be used by default.  Cannot be "
-                    "used unless `containerfile` is also provided.",
-            )]
-            from_: Annotated[list[OCIImageRef], Field(
-                alias="from",
-                default_factory=list,
-                examples=[
-                    ["ghcr.io/acme/toolchain:1.2.3"],
-                    ["ghcr.io/acme/toolchain@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"],
-                    ["ghcr.io/acme/toolchain:1.2.3@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"],
-                ],
-                description=
-                    "List of OCI image dependencies to inject into the generated "
-                    "Containerfile.  References must be fully-qualified registry refs "
-                    "without transport prefixes, such as `ghcr.io/acme/toolchain:1.2.3`, "
-                    "`ghcr.io/acme/toolchain@sha256:<digest>`, or "
-                    "`ghcr.io/acme/toolchain:1.2.3@sha256:<digest>`.  Shorthand refs "
-                    "like `ubuntu:24.04` and transport-prefixed refs like "
-                    "`docker://ghcr.io/acme/toolchain:1.2.3` are rejected for "
-                    "portability.  This is incompatible with custom `containerfile`s, "
-                    "and is intended to supplement language-specific package managers "
-                    "for multilingual projects that make use of advanced features like "
-                    "dynamic compilation, which require a supporting toolchain.",
-            )]
-            args: Annotated[dict[NonEmpty[SnakeCase], Scalar], Field(
-                default_factory=dict,
-                examples=[
-                    "\n".join((
-                        f"[tool.bertrand.build.{DEFAULT_TAG}]",
-                        "args = { DEBUG = true, JIT = true }",
-                    )),
-                    "\n".join((
-                        f"[tool.bertrand.build.{DEFAULT_TAG}.args]",
-                        "DEBUG = true",
-                        "JIT = true",
-                        "..."
-                    ))
-                ],
-                description=
-                    "Mapping of build-time ARG variables to their values, which are "
-                    "passed to the listed Containerfile.  Bertrand-generated "
-                    "Containerfiles include only a small number of ARG instructions "
-                    "to constrain the base image, but custom Containerfiles are "
-                    "unrestricted.",
-            )]
+            containerfile: Annotated[
+                RelativePosixPath | None,
+                Field(
+                    default=None,
+                    examples=["path/to/Containerfile", None],
+                    description=(
+                        "Relative path to a Containerfile defining the build steps for "
+                        "this image.  This is intended to allow advanced users to "
+                        "define "
+                        "custom build steps for their projects outside of Bertrand's "
+                        "normal bootstrap procedure.  For the vast majority of users, "
+                        "this "
+                        "should be omitted, and relevant setup should be done through "
+                        "standard build tools and package managers defined elsewhere "
+                        "in project configuration.  If omitted, Bertrand will "
+                        "automatically "
+                        "generate a minimal Containerfile based on this information."
+                    ),
+                ),
+            ]
+            target: Annotated[
+                TOMLKey | None,
+                Field(
+                    default=None,
+                    examples=["stage-name", None],
+                    description=(
+                        "Optional target stage in a multi-stage Containerfile.  If "
+                        "omitted, the final stage will be used by default.  Cannot be "
+                        "used unless `containerfile` is also provided."
+                    ),
+                ),
+            ]
+            from_: Annotated[
+                list[OCIImageRef],
+                Field(
+                    alias="from",
+                    default_factory=list,
+                    examples=[
+                        ["ghcr.io/acme/toolchain:1.2.3"],
+                        [
+                            "ghcr.io/acme/toolchain@sha256:"
+                            "0123456789abcdef0123456789abcdef"
+                            "0123456789abcdef0123456789abcdef"
+                        ],
+                        [
+                            "ghcr.io/acme/toolchain:1.2.3@sha256:"
+                            "0123456789abcdef0123456789abcdef"
+                            "0123456789abcdef0123456789abcdef"
+                        ],
+                    ],
+                    description=(
+                        "List of OCI image dependencies to inject into the generated "
+                        "Containerfile.  References must be fully-qualified registry "
+                        "refs without transport prefixes, such as "
+                        "`ghcr.io/acme/toolchain:1.2.3`, "
+                        "`ghcr.io/acme/toolchain@sha256:<digest>`, or "
+                        "`ghcr.io/acme/toolchain:1.2.3@sha256:<digest>`.  "
+                        "Shorthand refs "
+                        "like `ubuntu:24.04` and transport-prefixed refs like "
+                        "`docker://ghcr.io/acme/toolchain:1.2.3` are rejected for "
+                        "portability.  This is incompatible with custom "
+                        "`containerfile`s, and is intended to supplement "
+                        "language-specific package managers for multilingual "
+                        "projects that make use of advanced features like "
+                        "dynamic compilation, which require a supporting toolchain."
+                    ),
+                ),
+            ]
+            args: Annotated[
+                dict[NonEmpty[SnakeCase], Scalar],
+                Field(
+                    default_factory=dict,
+                    examples=[
+                        "\n".join(
+                            (
+                                f"[tool.bertrand.image.{DEFAULT_TAG}]",
+                                "args = { DEBUG = true, JIT = true }",
+                            )
+                        ),
+                        "\n".join(
+                            (
+                                f"[tool.bertrand.image.{DEFAULT_TAG}.args]",
+                                "DEBUG = true",
+                                "JIT = true",
+                                "...",
+                            )
+                        ),
+                    ],
+                    description=(
+                        "Mapping of build-time ARG variables to their values, which "
+                        "are "
+                        "passed to the listed Containerfile.  Bertrand-generated "
+                        "Containerfiles include only a small number of ARG "
+                        "instructions "
+                        "to constrain the base image, but custom Containerfiles are "
+                        "unrestricted."
+                    ),
+                ),
+            ]
 
             class Secret(BaseModel):
-                """Validate an entry in `[[tool.bertrand.build.<tag>.secrets]]`."""
+                """Validate an entry in `[[tool.bertrand.image.<tag>.secrets]]`."""
+
                 model_config = ConfigDict(extra="forbid")
-                id: Annotated[KubeName, Field(
-                    examples=["pypi_token", "private_pkg_key"],
-                    description=
-                        "Host-agnostic capability ID for a build secret.  The ID is "
-                        "resolved using a Kubernetes Secret in the \"bertrand\" "
-                        "namespace, which provides the secret's payload.",
-                )]
-                required: Annotated[bool, Field(
-                    default=True,
-                    description=
-                        "Whether this capability must be available to start the build.  "
-                        "If true and unresolved, the build fails before execution.",
-                )]
+                id: Annotated[
+                    KubeName,
+                    Field(
+                        examples=["pypi_token", "private_pkg_key"],
+                        description=(
+                            "Host-agnostic capability ID for a build secret.  The ID "
+                            "is resolved using a Kubernetes Secret in the \"bertrand\" "
+                            "namespace, which provides the secret's payload."
+                        ),
+                    ),
+                ]
+                required: Annotated[
+                    bool,
+                    Field(
+                        default=True,
+                        description=(
+                            "Whether this capability must be available to start the "
+                            "build.  If true and unresolved, the build fails before "
+                            "execution."
+                        ),
+                    ),
+                ]
 
             @staticmethod
             def _check_unique_secrets(requests: list[Secret]) -> list[Secret]:
                 seen: set[KubeName] = set()
                 for req in requests:
                     if req.id in seen:
-                        raise ValueError(f"duplicate secret id: '{req.id}'")
+                        msg = f"duplicate secret id: '{req.id}'"
+                        raise ValueError(msg)
                     seen.add(req.id)
                 return requests
 
@@ -899,45 +1074,63 @@ class Bertrand(Resource):
                 Field(
                     default_factory=list,
                     examples=[
-                        "\n".join((
-                            f"[tool.bertrand.build.{DEFAULT_TAG}]",
-                            "secrets = [{ id = \"pypi_token\", required = true }]",
-                        )),
-                        "\n".join((
-                            f"[[tool.bertrand.build.{DEFAULT_TAG}.secrets]]",
-                            "id = \"private_pkg_key\"",
-                            "required = false",
-                        )),
+                        "\n".join(
+                            (
+                                f"[tool.bertrand.image.{DEFAULT_TAG}]",
+                                "secrets = [{ id = \"pypi_token\", required = true }]",
+                            )
+                        ),
+                        "\n".join(
+                            (
+                                f"[[tool.bertrand.image.{DEFAULT_TAG}.secrets]]",
+                                "id = \"private_pkg_key\"",
+                                "required = false",
+                            )
+                        ),
                     ],
-                    description=
+                    description=(
                         "Build-time secrets resolved from the local Kubernetes cluster."
-                )
+                    ),
+                ),
             ]
 
             class SSH(BaseModel):
-                """Validate an entry in `[[tool.bertrand.build.<tag>.ssh]]`."""
+                """Validate an entry in `[[tool.bertrand.image.<tag>.ssh]]`."""
+
                 model_config = ConfigDict(extra="forbid")
-                id: Annotated[KubeName, Field(
-                    examples=["git_deploy_key", "github_readonly"],
-                    description=
-                        "Host-agnostic capability ID for a build-time SSH credential.  "
-                        "The ID is resolved using a Kubernetes Secret in the "
-                        "\"bertrand\" namespace, which provides the credential payload.",
-                )]
-                required: Annotated[bool, Field(
-                    default=True,
-                    description=
-                        "Whether this SSH capability must be available to start the "
-                        "build.  If true and unresolved, the build fails before "
-                        "execution.",
-                )]
+                id: Annotated[
+                    KubeName,
+                    Field(
+                        examples=["git_deploy_key", "github_readonly"],
+                        description=(
+                            "Host-agnostic capability ID for a build-time SSH "
+                            "credential.  "
+                            "The ID is resolved using a Kubernetes Secret in the "
+                            "\"bertrand\" namespace, which provides the credential "
+                            "payload."
+                        ),
+                    ),
+                ]
+                required: Annotated[
+                    bool,
+                    Field(
+                        default=True,
+                        description=(
+                            "Whether this SSH capability must be available to start "
+                            "the "
+                            "build.  If true and unresolved, the build fails before "
+                            "execution."
+                        ),
+                    ),
+                ]
 
             @staticmethod
             def _check_unique_ssh(requests: list[SSH]) -> list[SSH]:
                 seen: set[KubeName] = set()
                 for req in requests:
                     if req.id in seen:
-                        raise ValueError(f"duplicate ssh id: '{req.id}'")
+                        msg = f"duplicate ssh id: '{req.id}'"
+                        raise ValueError(msg)
                     seen.add(req.id)
                 return requests
 
@@ -947,54 +1140,63 @@ class Bertrand(Resource):
                 Field(
                     default_factory=list,
                     examples=[
-                        "\n".join((
-                            f"[tool.bertrand.build.{DEFAULT_TAG}]",
-                            "ssh = [{ id = \"git_deploy_key\", required = true }]",
-                        )),
-                        "\n".join((
-                            f"[[tool.bertrand.build.{DEFAULT_TAG}.ssh]]",
-                            "id = \"github_readonly\"",
-                            "required = false",
-                        )),
+                        "\n".join(
+                            (
+                                f"[tool.bertrand.image.{DEFAULT_TAG}]",
+                                "ssh = [{ id = \"git_deploy_key\", required = true }]",
+                            )
+                        ),
+                        "\n".join(
+                            (
+                                f"[[tool.bertrand.image.{DEFAULT_TAG}.ssh]]",
+                                "id = \"github_readonly\"",
+                                "required = false",
+                            )
+                        ),
                     ],
-                    description=
+                    description=(
                         "Build-time SSH credentials to apply to `RUN` instructions in "
-                        "the associated Containerfile.",
-                )
+                        "the associated Containerfile."
+                    ),
+                ),
             ]
 
             class Device(BaseModel):
-                """Validate an entry in `[[tool.bertrand.build.<tag>.devices]]`."""
+                """Validate an entry in `[[tool.bertrand.image.<tag>.devices]]`."""
+
                 model_config = ConfigDict(extra="forbid")
-                id: Annotated[KubeName, Field(
-                    examples=["gpu", "cuda0"],
-                    description=
-                        "Host-agnostic capability ID for a build-time device "
-                        "capability.  The ID is resolved using a Kubernetes Secret in "
-                        "the \"bertrand\" namespace, which provides the host device "
-                        "endpoint without exposing it through project configuration.",
-                )]
-                required: Annotated[bool, Field(
-                    default=True,
-                    description=
-                        "Whether this device capability must be available to start the "
-                        "build.  If true and unresolved, the build fails before "
-                        "execution.",
-                )]
-                permissions: Annotated[DevicePermission, Field(
-                    default="rwm",
-                    examples=["rwm", "rw", "r"],
-                    description=
-                        "Container-side access permissions for this build-time device "
-                        "request.",
-                )]
+                id: Annotated[
+                    KubeName,
+                    Field(
+                        examples=["gpu", "cuda0"],
+                        description=(
+                            "Host-agnostic capability ID for a build-time CDI "
+                            "device capability. The ID is resolved using a "
+                            "Kubernetes Secret-backed Bertrand capability, whose "
+                            "payload supplies the CDI selector."
+                        ),
+                    ),
+                ]
+                required: Annotated[
+                    bool,
+                    Field(
+                        default=True,
+                        description=(
+                            "Whether this device capability must be available to "
+                            "start the build.  If true and unresolved, the build "
+                            "fails before "
+                            "execution."
+                        ),
+                    ),
+                ]
 
             @staticmethod
             def _check_unique_devices(requests: list[Device]) -> list[Device]:
                 seen: set[KubeName] = set()
                 for req in requests:
                     if req.id in seen:
-                        raise ValueError(f"duplicate device id: '{req.id}'")
+                        msg = f"duplicate device id: '{req.id}'"
+                        raise ValueError(msg)
                     seen.add(req.id)
                 return requests
 
@@ -1004,38 +1206,43 @@ class Bertrand(Resource):
                 Field(
                     default_factory=list,
                     examples=[
-                        "\n".join((
-                            f"[tool.bertrand.build.{DEFAULT_TAG}]",
-                            "devices = [{ id = \"gpu\", required = true, permissions = \"rwm\" }]",
-                        )),
-                        "\n".join((
-                            f"[[tool.bertrand.build.{DEFAULT_TAG}.devices]]",
-                            "id = \"fpga0\"",
-                            "required = false",
-                            "permissions = \"rw\"",
-                        )),
+                        "\n".join(
+                            (
+                                f"[tool.bertrand.image.{DEFAULT_TAG}]",
+                                "devices = [{ id = \"gpu\", required = true }]",
+                            )
+                        ),
+                        "\n".join(
+                            (
+                                f"[[tool.bertrand.image.{DEFAULT_TAG}.devices]]",
+                                "id = \"fpga0\"",
+                                "required = false",
+                            )
+                        ),
                     ],
-                    description=
-                        "Build-time device capabilities resolved from the local "
-                        "Kubernetes cluster.",
-                )
+                    description=(
+                        "Build-time CDI device capabilities resolved from the local "
+                        "Kubernetes cluster."
+                    ),
+                ),
             ]
 
-            # TODO: review + document conan configuration 
+            # TODO: review + document conan configuration
 
             class Conan(BaseModel):
-                """Validate the `[tool.bertrand.build.<tag>.conan]` table."""
+                """Validate the `[tool.bertrand.image.<tag>.conan]` table."""
+
                 model_config = ConfigDict(extra="forbid")
                 build_type: Annotated[
                     Literal["", "Release", "Debug"],
-                    Field(default="", alias="build-type")
+                    Field(default="", alias="build-type"),
                 ]
                 conf: Annotated[ConanConf, Field(default_factory=dict)]
                 options: Annotated[ConanOptions, Field(default_factory=dict)]
                 requires: Annotated[
                     list[ConanConfig.Model.Require],
                     AfterValidator(ConanConfig.Model._check_requires),
-                    Field(default_factory=list)
+                    Field(default_factory=list),
                 ]
 
             conan: Annotated[Conan, Field(default_factory=Conan.model_construct)]
@@ -1044,81 +1251,116 @@ class Bertrand(Resource):
             def _validate_containerfile(self) -> Self:
                 if self.containerfile is None:
                     if self.target is not None:
-                        raise ValueError("`target` cannot be set without `containerfile`")
+                        msg = "`target` cannot be set without `containerfile`"
+                        raise ValueError(msg)
                 else:
                     if self.from_:
-                        raise ValueError(
-                            "`from` cannot be set with a custom `containerfile`"
-                        )
+                        msg = "`from` cannot be set with a custom `containerfile`"
+                        raise ValueError(msg)
                 return self
 
             def resolve_containerfile(self, root: Path, tag: TOMLKey) -> None:
+                """Validate the custom Containerfile path for one build tag.
+
+                Raises
+                ------
+                OSError
+                    If the Containerfile path is missing, not a file, or not UTF-8.
+                """
                 if self.containerfile is None:
                     return
                 path = root / self.containerfile
                 if not path.exists():
-                    raise OSError(f"path does not exist for tag '{tag}': {path}")
+                    msg = f"path does not exist for tag '{tag}': {path}"
+                    raise OSError(msg)
                 if not path.is_file():
-                    raise OSError(f"path is not a file for tag '{tag}': {path}")
+                    msg = f"path is not a file for tag '{tag}': {path}"
+                    raise OSError(msg)
                 try:
                     path.read_text(encoding="utf-8")
                 except UnicodeDecodeError as err:
-                    raise OSError(
-                        f"file is not UTF-8 encoded for tag '{tag}': {path}"
-                    ) from err
+                    msg = f"file is not UTF-8 encoded for tag '{tag}': {path}"
+                    raise OSError(msg) from err
 
-        build: Annotated[dict[TOMLKey, Build], Field(default_factory=lambda: {
-            DEFAULT_TAG: Bertrand.Model.Build.model_construct()
-        })]
+        image: Annotated[
+            dict[TOMLKey, Image],
+            Field(
+                default_factory=lambda: {
+                    DEFAULT_TAG: Bertrand.Model.Image.model_construct()
+                }
+            ),
+        ]
 
         class Workload(BaseModel):
-            """Validate entries in the `[tool.bertrand.image]` table."""
+            """Validate entries in the `[tool.bertrand.workload]` table."""
+
             model_config = ConfigDict(extra="forbid")
-            containerfile: Annotated[RelativePosixPath | None, Field(
-                default=None,
-                examples=["path/to/Containerfile", None],
-                description=
-                    "Relative path to a Containerfile defining the build steps for "
-                    "this image.  This is intended to allow advanced users to define "
-                    "custom build steps for their projects outside of Bertrand's "
-                    "normal bootstrap procedure.  For the vast majority of users, this "
-                    "should be omitted, and relevant setup should be done through "
-                    "standard build tools and package managers defined elsewhere in "
-                    "project configuration.  If omitted, Bertrand will automatically "
-                    "generate a minimal Containerfile based on this information.",
-            )]
-            build_args: Annotated[dict[NonEmpty[UpperSnakeCase], Scalar], Field(
-                default_factory=dict,
-                alias="build-args",
-                examples=["\n".join((
-                    f"[tool.bertrand.image.{DEFAULT_TAG}.build-args]",
-                    "CPUS = 8",
-                    "DEBUG = true",
-                    "PYTHON_VERSION = \"3.12.4\"",
-                    "..."
-                ))],
-                description=
-                    "Mapping of build-time ARG variables to their values, which are "
-                    "passed to the listed Containerfile.  Keys must be "
-                    "SCREAMING_SNAKE_CASE, and not start with a number or end with an "
-                    "underscore."
-            )]
-            cmd: Annotated[list[NonEmpty[Trimmed]], Field(
-                default_factory=list,
-                examples=[
-                    ["echo", "Hello, world!"],
-                    ["greet"],
-                ],
-                description=
-                    "The default entry point for containers built from this image, "
-                    "defined as a list of strings representing the command and its "
-                    "arguments.  If no override is supplied to `bertrand run`, then "
-                    "this command will be used instead.  If it is also empty, then the "
-                    "run will fail."
-            )]
+            containerfile: Annotated[
+                RelativePosixPath | None,
+                Field(
+                    default=None,
+                    examples=["path/to/Containerfile", None],
+                    description=(
+                        "Relative path to a Containerfile defining the build steps for "
+                        "this image.  This is intended to allow advanced users to "
+                        "define "
+                        "custom build steps for their projects outside of Bertrand's "
+                        "normal bootstrap procedure.  For the vast majority of users, "
+                        "this "
+                        "should be omitted, and relevant setup should be done through "
+                        "standard build tools and package managers defined elsewhere "
+                        "in project configuration.  If omitted, Bertrand will "
+                        "automatically "
+                        "generate a minimal Containerfile based on this information."
+                    ),
+                ),
+            ]
+            build_args: Annotated[
+                dict[NonEmpty[UpperSnakeCase], Scalar],
+                Field(
+                    default_factory=dict,
+                    alias="build-args",
+                    examples=[
+                        "\n".join(
+                            (
+                                f"[tool.bertrand.workload.{DEFAULT_TAG}.build-args]",
+                                "CPUS = 8",
+                                "DEBUG = true",
+                                "PYTHON_VERSION = \"3.12.4\"",
+                                "...",
+                            )
+                        )
+                    ],
+                    description=(
+                        "Mapping of build-time ARG variables to their values, which "
+                        "are "
+                        "passed to the listed Containerfile.  Keys must be "
+                        "SCREAMING_SNAKE_CASE, and not start with a number or end "
+                        "with an underscore."
+                    ),
+                ),
+            ]
+            cmd: Annotated[
+                list[NonEmpty[Trimmed]],
+                Field(
+                    default_factory=list,
+                    examples=[
+                        ["echo", "Hello, world!"],
+                        ["greet"],
+                    ],
+                    description=(
+                        "The default entry point for containers built from this image, "
+                        "defined as a list of strings representing the command and its "
+                        "arguments.  If no override is supplied to `bertrand run`, "
+                        "then this command will be used instead.  If it is also "
+                        "empty, then the run will fail."
+                    ),
+                ),
+            ]
 
             class Port(BaseModel):
-                """Validate entries in the `[bertrand.image.<tag>.ports]` table."""
+                """Validate entries in the workload ports table."""
+
                 model_config = ConfigDict(extra="forbid")
                 container: Annotated[int, Field(ge=1, le=65535)]
                 host: Annotated[int, Field(ge=1, le=65535)]
@@ -1131,62 +1373,71 @@ class Bertrand(Resource):
                 for port in ports:
                     key = (port.host_ip, port.host, port.protocol)
                     if key in seen:
-                        raise ValueError(
+                        msg = (
                             "duplicate published port binding for "
                             f"{port.host_ip}:{port.host}/{port.protocol}"
                         )
+                        raise ValueError(msg)
                     seen.add(key)
                 return ports
 
             @staticmethod
-            def _check_network_aliases(aliases: list[NetworkAlias]) -> list[NetworkAlias]:
+            def _check_network_aliases(
+                aliases: list[NetworkAlias],
+            ) -> list[NetworkAlias]:
                 seen: set[NetworkAlias] = set()
                 for alias in aliases:
                     if alias in seen:
-                        raise ValueError(f"duplicate network alias: '{alias}'")
+                        msg = f"duplicate network alias: '{alias}'"
+                        raise ValueError(msg)
                     seen.add(alias)
                 return aliases
 
             ports: Annotated[
-                list[Port],
-                AfterValidator(_check_ports),
-                Field(default_factory=list)
+                list[Port], AfterValidator(_check_ports), Field(default_factory=list)
             ]
             network_aliases: Annotated[
                 list[NetworkAlias],
                 AfterValidator(_check_network_aliases),
-                Field(default_factory=list, alias="network-aliases")
+                Field(default_factory=list, alias="network-aliases"),
             ]
-            cpus: Annotated[NonNegativeFloat, Field(
-                default=0.0,
-                description=
-                    "The number of CPUs to allocate to containers built from this "
-                    "image.  0.0 (the default) removes the limit and allows the "
-                    "container to use all available resources.  Fractional values are "
-                    "allowed to specify partial CPU allocation (e.g. 0.5 for half a "
-                    "CPU)."
-            )]
+            cpus: Annotated[
+                NonNegativeFloat,
+                Field(
+                    default=0.0,
+                    description=(
+                        "The number of CPUs to allocate to containers built from this "
+                        "image.  0.0 (the default) removes the limit and allows the "
+                        "container to use all available resources.  Fractional "
+                        "values are allowed to specify partial CPU allocation "
+                        "(e.g. 0.5 for half a CPU)."
+                    ),
+                ),
+            ]
 
             # TODO: maybe the memory limit needs to be split between build and run
             # time?
-            memory: Annotated[Memory, Field(
-                default="0",
-                examples=["1024b", "128k", "512m", "2g"],
-                description=
-                    "The amount of memory to allocate to containers built from this "
-                    "image.  0 (the default) removes the limit and allows the "
-                    "container to use all available resources.  If the machine "
-                    "supports swap memory, then the value may be larger than the "
-                    "physical memory.  Equivalent to `podman build|create -m`."
-            )]
-            pids_limit: Annotated[
-                int,
-                Field(default=0, ge=-1, alias="pids-limit")
+            memory: Annotated[
+                Memory,
+                Field(
+                    default="0",
+                    examples=["1024b", "128k", "512m", "2g"],
+                    description=(
+                        "The amount of memory to allocate to containers built from "
+                        "this "
+                        "image.  0 (the default) removes the limit and allows the "
+                        "container to use all available resources.  If the machine "
+                        "supports swap memory, then the value may be larger than the "
+                        "physical memory.  Equivalent to `podman build|create -m`."
+                    ),
+                ),
             ]
+            pids_limit: Annotated[int, Field(default=0, ge=-1, alias="pids-limit")]
             shm_size: Annotated[Memory, Field(default="64m", alias="shm-size")]
 
             class ULimit(BaseModel):
-                """Validate entries in the `[tool.bertrand.image.<tag>.ulimit]` table."""
+                """Validate entries in `[tool.bertrand.workload.<tag>.ulimit]`."""
+
                 model_config = ConfigDict(extra="forbid")
                 name: ULimitName
                 soft: Annotated[int | None, Field(default=None, ge=-1)]
@@ -1196,19 +1447,24 @@ class Bertrand(Resource):
                 def _validate_limits(self) -> Self:
                     if self.name == "host":
                         if self.soft is not None or self.hard is not None:
-                            raise ValueError(
-                                "ulimit name 'host' cannot define 'soft' or 'hard' values"
+                            msg = (
+                                "ulimit name 'host' cannot define 'soft' or "
+                                "'hard' values"
                             )
+                            raise ValueError(msg)
                         return self
                     if self.soft is None or self.hard is None:
-                        raise ValueError(
-                            "non-'host' ulimit entries must define both 'soft' and 'hard'"
+                        msg = (
+                            "non-'host' ulimit entries must define both 'soft' "
+                            "and 'hard'"
                         )
+                        raise ValueError(msg)
                     if self.hard >= 0 and self.soft > self.hard:
-                        raise ValueError(
-                            f"ulimit soft value {self.soft} cannot be greater than hard "
-                            f"value {self.hard}"
+                        msg = (
+                            f"ulimit soft value {self.soft} cannot be greater "
+                            f"than hard value {self.hard}"
                         )
+                        raise ValueError(msg)
                     return self
 
             @staticmethod
@@ -1216,7 +1472,8 @@ class Bertrand(Resource):
                 seen: set[str] = set()
                 for entry in entries:
                     if entry.name in seen:
-                        raise ValueError(f"duplicate ulimit name: '{entry.name}'")
+                        msg = f"duplicate ulimit name: '{entry.name}'"
+                        raise ValueError(msg)
                     seen.add(entry.name)
                 return entries
 
@@ -1225,38 +1482,40 @@ class Bertrand(Resource):
                 seen: set[str] = set()
                 for item in value:
                     if item in seen:
-                        raise ValueError(f"duplicate {where}: '{item}'")
+                        msg = f"duplicate {where}: '{item}'"
+                        raise ValueError(msg)
                     seen.add(item)
                 return value
 
             ulimit: Annotated[
-                list[ULimit],
-                AfterValidator(_check_ulimit),
-                Field(default_factory=list)
+                list[ULimit], AfterValidator(_check_ulimit), Field(default_factory=list)
             ]
             cap_add: Annotated[
                 list[Capability],
-                AfterValidator(lambda x: Bertrand.Model.Workload._check_unique(
-                    x,
-                    where="cap-add capability"
-                )),
-                Field(default_factory=list, alias="cap-add")
+                AfterValidator(
+                    lambda x: Bertrand.Model.Workload._check_unique(
+                        x, where="cap-add capability"
+                    )
+                ),
+                Field(default_factory=list, alias="cap-add"),
             ]
             cap_drop: Annotated[
                 list[Capability],
-                AfterValidator(lambda x: Bertrand.Model.Workload._check_unique(
-                    x,
-                    where="cap-drop capability"
-                )),
-                Field(default_factory=list, alias="cap-drop")
+                AfterValidator(
+                    lambda x: Bertrand.Model.Workload._check_unique(
+                        x, where="cap-drop capability"
+                    )
+                ),
+                Field(default_factory=list, alias="cap-drop"),
             ]
             security_opt: Annotated[
                 list[SecurityOpt],
-                AfterValidator(lambda x: Bertrand.Model.Workload._check_unique(
-                    x,
-                    where="security-opt entry"
-                )),
-                Field(default_factory=list, alias="security-opt")
+                AfterValidator(
+                    lambda x: Bertrand.Model.Workload._check_unique(
+                        x, where="security-opt entry"
+                    )
+                ),
+                Field(default_factory=list, alias="security-opt"),
             ]
             userns: Annotated[UserNS, Field(default="host")]
             ipc: Annotated[IPCMode, Field(default="private")]
@@ -1265,9 +1524,8 @@ class Bertrand(Resource):
             ssh: Annotated[list[KubeName], Field(default_factory=list)]
 
             class InstrumentEntry(BaseModel):
-                """Validate entries in the `[tool.bertrand.image.<tag>.instruments]`
-                AoT.
-                """
+                """Validate entries in the image instrument table."""
+
                 model_config = ConfigDict(extra="allow")
                 tool: InstrumentTool
 
@@ -1276,22 +1534,21 @@ class Bertrand(Resource):
             @model_validator(mode="after")
             def _validate_capability_conflicts(self) -> Self:
                 if "ALL" in self.cap_add and len(self.cap_add) > 1:
-                    raise ValueError(
-                        "cap-add cannot combine 'ALL' with specific capabilities"
-                    )
+                    msg = "cap-add cannot combine 'ALL' with specific capabilities"
+                    raise ValueError(msg)
                 if "ALL" in self.cap_drop and len(self.cap_drop) > 1:
-                    raise ValueError(
-                        "cap-drop cannot combine 'ALL' with specific capabilities"
-                    )
-                overlap = set(cap for cap in self.cap_add if cap != "ALL")
+                    msg = "cap-drop cannot combine 'ALL' with specific capabilities"
+                    raise ValueError(msg)
+                overlap = {cap for cap in self.cap_add if cap != "ALL"}
                 overlap = overlap.intersection(
                     cap for cap in self.cap_drop if cap != "ALL"
                 )
                 if overlap:
-                    raise ValueError(
+                    msg = (
                         "cap-add and cap-drop cannot contain the same capability: "
                         f"{', '.join(sorted(overlap))}"
                     )
+                    raise ValueError(msg)
                 return self
 
             # TODO: SSH capability design (config-layer contract):
@@ -1313,26 +1570,33 @@ class Bertrand(Resource):
             #   `RUN --mount=type=ssh,id=id ...`
 
             class Devices(BaseModel):
-                """Validate the `[tool.bertrand.image.<tag>.devices]` table."""
+                """Validate the `[tool.bertrand.workload.<tag>.devices]` table."""
+
                 model_config = ConfigDict(extra="forbid")
 
                 class Request(BaseModel):
-                    """Validate one entry in `[[tool.bertrand.image.<tag>.devices.*]]`."""
+                    """Validate one image device capability request."""
+
                     model_config = ConfigDict(extra="forbid")
                     id: KubeName
                     required: bool = True
                     container_path: Annotated[
                         AbsolutePosixPath | None,
-                        Field(default=None, alias="container-path")
+                        Field(default=None, alias="container-path"),
                     ]
                     permissions: Annotated[DevicePermission, Field(default="rwm")]
 
                 @staticmethod
-                def _check_unique_ids(requests: list[Request], *, where: str) -> list[Request]:
+                def _check_unique_ids(
+                    requests: list[Request],
+                    *,
+                    where: str,
+                ) -> list[Request]:
                     seen: set[KubeName] = set()
                     for req in requests:
                         if req.id in seen:
-                            raise ValueError(f"duplicate {where} device id: '{req.id}'")
+                            msg = f"duplicate {where} device id: '{req.id}'"
+                            raise ValueError(msg)
                         seen.add(req.id)
                     return requests
 
@@ -1340,21 +1604,19 @@ class Bertrand(Resource):
                     list[Request],
                     AfterValidator(
                         lambda x: Bertrand.Model.Workload.Devices._check_unique_ids(
-                            x,
-                            where="build"
+                            x, where="build"
                         )
                     ),
-                    Field(default_factory=list)
+                    Field(default_factory=list),
                 ]
                 run: Annotated[
                     list[Request],
                     AfterValidator(
                         lambda x: Bertrand.Model.Workload.Devices._check_unique_ids(
-                            x,
-                            where="run"
+                            x, where="run"
                         )
                     ),
-                    Field(default_factory=list)
+                    Field(default_factory=list),
                 ]
 
             # TODO: Device capability design (config-layer contract):
@@ -1375,21 +1637,28 @@ class Bertrand(Resource):
             devices: Annotated[Devices, Field(default_factory=Devices.model_construct)]
 
             class Secrets(BaseModel):
-                """Validate the `[tool.bertrand.image.<tag>.secrets]` table."""
+                """Validate the `[tool.bertrand.workload.<tag>.secrets]` table."""
+
                 model_config = ConfigDict(extra="forbid")
 
                 class Request(BaseModel):
                     """Validate an individual secret capability request."""
+
                     model_config = ConfigDict(extra="forbid")
                     id: KubeName
                     required: bool = True
 
                 @staticmethod
-                def _check_unique_ids(requests: list[Request], *, where: str) -> list[Request]:
+                def _check_unique_ids(
+                    requests: list[Request],
+                    *,
+                    where: str,
+                ) -> list[Request]:
                     seen: set[KubeName] = set()
                     for req in requests:
                         if req.id in seen:
-                            raise ValueError(f"duplicate {where} secret id: '{req.id}'")
+                            msg = f"duplicate {where} secret id: '{req.id}'"
+                            raise ValueError(msg)
                         seen.add(req.id)
                     return requests
 
@@ -1397,21 +1666,19 @@ class Bertrand(Resource):
                     list[Request],
                     AfterValidator(
                         lambda x: Bertrand.Model.Workload.Secrets._check_unique_ids(
-                            x,
-                            where="build"
+                            x, where="build"
                         )
                     ),
-                    Field(default_factory=list)
+                    Field(default_factory=list),
                 ]
                 run: Annotated[
                     list[Request],
                     AfterValidator(
                         lambda x: Bertrand.Model.Workload.Secrets._check_unique_ids(
-                            x,
-                            where="run"
+                            x, where="run"
                         )
                     ),
-                    Field(default_factory=list)
+                    Field(default_factory=list),
                 ]
 
             # TODO: Secrets capability design (config-layer contract):
@@ -1432,77 +1699,87 @@ class Bertrand(Resource):
             secrets: Annotated[Secrets, Field(default_factory=Secrets.model_construct)]
 
             class Conan(BaseModel):
-                """Validate the `[tool.bertrand.image.<tag>.conan]` table."""
+                """Validate the `[tool.bertrand.workload.<tag>.conan]` table."""
+
                 model_config = ConfigDict(extra="forbid")
                 build_type: Annotated[
                     Literal["", "Release", "Debug"],
-                    Field(default="", alias="build-type")
+                    Field(default="", alias="build-type"),
                 ]
                 conf: Annotated[ConanConf, Field(default_factory=dict)]
                 options: Annotated[ConanOptions, Field(default_factory=dict)]
                 requires: Annotated[
                     list[ConanConfig.Model.Require],
                     AfterValidator(ConanConfig.Model._check_requires),
-                    Field(default_factory=list)
+                    Field(default_factory=list),
                 ]
 
             conan: Annotated[Conan, Field(default_factory=Conan.model_construct)]
 
             class Build(BaseModel):
-                """Validate the `[tool.bertrand.image.<tag>.build]` table."""
+                """Validate the `[tool.bertrand.workload.<tag>.build]` table."""
+
                 model_config = ConfigDict(extra="forbid")
                 context: Annotated[BuildContextPath, Field(default=PosixPath("."))]
                 target: Annotated[
                     NoWhiteSpace,
                     StringConstraints(pattern=r"^[a-zA-Z0-9_-]*$"),
-                    Field(default="")
+                    Field(default=""),
                 ]
                 pull: Annotated[
                     Literal["missing", "always", "never", "newer"],
-                    Field(default="missing")
+                    Field(default="missing"),
                 ]
 
             build: Annotated[Build, Field(default_factory=Build.model_construct)]
 
             class Stop(BaseModel):
-                """Validate the `[tool.bertrand.image.<tag>.stop]` table."""
+                """Validate the `[tool.bertrand.workload.<tag>.stop]` table."""
+
                 model_config = ConfigDict(extra="forbid")
                 signal: Annotated[
                     str,
-                    StringConstraints(strip_whitespace=True, min_length=1, pattern=r"^\S+$"),
-                    Field(default="SIGTERM")
+                    StringConstraints(
+                        strip_whitespace=True,
+                        min_length=1,
+                        pattern=r"^\S+$",
+                    ),
+                    Field(default="SIGTERM"),
                 ]
                 timeout: Annotated[NonNegativeInt, Field(default=10)]
 
             stop: Annotated[Stop, Field(default_factory=Stop.model_construct)]
 
             class Restart(BaseModel):
-                """Validate the `[tool.bertrand.image.<tag>.restart]` table."""
+                """Validate the `[tool.bertrand.workload.<tag>.restart]` table."""
+
                 model_config = ConfigDict(extra="forbid")
                 policy: Annotated[
                     Literal["no", "on-failure", "always", "unless-stopped"],
-                    Field(default="no")
+                    Field(default="no"),
                 ]
-                max_retries: Annotated[NonNegativeInt, Field(default=0, alias="max-retries")]
+                max_retries: Annotated[
+                    NonNegativeInt, Field(default=0, alias="max-retries")
+                ]
 
             restart: Annotated[Restart, Field(default_factory=Restart.model_construct)]
 
             class Healthcheck(BaseModel):
-                """Validate the `[tool.bertrand.image.<tag>.healthcheck]` table."""
+                """Validate the `[tool.bertrand.workload.<tag>.healthcheck]` table."""
+
                 model_config = ConfigDict(extra="forbid")
                 cmd: Annotated[list[str], Field(default_factory=list)]
                 on_failure: Annotated[
                     Literal["none", "kill", "stop"],
-                    Field(default="kill", alias="on-failure")
+                    Field(default="kill", alias="on-failure"),
                 ]
                 retries: Annotated[NonNegativeInt, Field(default=3)]
                 interval: Annotated[Timeout, Field(default="30s")]
                 timeout: Annotated[Timeout, Field(default="30s")]
 
                 class Startup(BaseModel):
-                    """Validate the `[tool.bertrand.image.<tag>.healthcheck.startup]`
-                    table.
-                    """
+                    """Validate the image startup healthcheck table."""
+
                     model_config = ConfigDict(extra="forbid")
                     cmd: Annotated[list[str], Field(default_factory=list)]
                     period: Annotated[Timeout, Field(default="0s")]
@@ -1510,57 +1787,74 @@ class Bertrand(Resource):
                     interval: Annotated[Timeout, Field(default="30s")]
                     timeout: Annotated[Timeout, Field(default="30s")]
 
-                startup: Annotated[Startup, Field(default_factory=Startup.model_construct)]
+                startup: Annotated[
+                    Startup, Field(default_factory=Startup.model_construct)
+                ]
 
                 class Log(BaseModel):
-                    """Validate the `[tool.bertrand.image.<tag>.healthcheck.log]`
-                    table.
-                    """
+                    """Validate the image healthcheck log table."""
+
                     model_config = ConfigDict(extra="forbid")
                     destination: Annotated[HealthLogDestination, Field(default="local")]
-                    max_count: Annotated[NonNegativeInt, Field(default=0, alias="max-count")]
-                    max_size: Annotated[NonNegativeInt, Field(default=0, alias="max-size")]
+                    max_count: Annotated[
+                        NonNegativeInt, Field(default=0, alias="max-count")
+                    ]
+                    max_size: Annotated[
+                        NonNegativeInt, Field(default=0, alias="max-size")
+                    ]
 
                 log: Annotated[Log, Field(default_factory=Log.model_construct)]
 
             healthcheck: Annotated[
-                Healthcheck,
-                Field(default_factory=Healthcheck.model_construct)
+                Healthcheck, Field(default_factory=Healthcheck.model_construct)
             ]
 
             def resolve_containerfile(self, root: Path, tag: TOMLKey) -> None:
+                """Validate the custom Containerfile path for one image tag.
+
+                Raises
+                ------
+                OSError
+                    If the Containerfile path is missing, not a file, or not UTF-8.
+                """
                 if self.containerfile is None:
                     return
                 path = root / self.containerfile
                 if not path.exists():
-                    raise OSError(f"path does not exist for tag '{tag}': {path}")
+                    msg = f"path does not exist for tag '{tag}': {path}"
+                    raise OSError(msg)
                 if not path.is_file():
-                    raise OSError(f"path is not a file for tag '{tag}': {path}")
+                    msg = f"path is not a file for tag '{tag}': {path}"
+                    raise OSError(msg)
                 try:
                     path.read_text(encoding="utf-8")
                 except UnicodeDecodeError as err:
-                    raise OSError(
-                        f"file is not UTF-8 encoded for tag '{tag}': {path}"
-                    ) from err
+                    msg = f"file is not UTF-8 encoded for tag '{tag}': {path}"
+                    raise OSError(msg) from err
 
-        workload: Annotated[dict[TOMLKey, Workload], Field(default_factory=lambda: {
-            DEFAULT_TAG: Bertrand.Model.Workload.model_construct()
-        })]
+        workload: Annotated[
+            dict[TOMLKey, Workload],
+            Field(
+                default_factory=lambda: {
+                    DEFAULT_TAG: Bertrand.Model.Workload.model_construct()
+                }
+            ),
+        ]
 
         @model_validator(mode="after")
-        def _validate_build(self) -> Self:
+        def _validate_image(self) -> Self:
             seen: set[str] = set()
-            for tag in self.build:
+            for tag in self.image:
                 if tag in seen:
-                    raise ValueError(
-                        f"duplicate build tag in 'tool.bertrand.build': '{tag}'"
-                    )
+                    msg = f"duplicate image tag in 'tool.bertrand.image': '{tag}'"
+                    raise ValueError(msg)
                 seen.add(tag)
             if DEFAULT_TAG not in seen:
-                raise ValueError(
-                    "missing required default build tag in 'tool.bertrand.build': "
+                msg = (
+                    "missing required default image tag in 'tool.bertrand.image': "
                     f"'{DEFAULT_TAG}'"
                 )
+                raise ValueError(msg)
             return self
 
         # @model_validator(mode="after")
@@ -1587,7 +1881,10 @@ class Bertrand(Resource):
         #     for tag in self.image:
         #         # if the current tag is a service, get its position in the list
         #         curr_pos = next(
-        #             (pos for pos, name in enumerate(self.services) if name == tag.tag),
+        #             (
+        #                 pos for pos, name in enumerate(self.services)
+        #                 if name == tag.tag
+        #             ),
         #             None
         #         )
 
@@ -1612,7 +1909,10 @@ class Bertrand(Resource):
 
         #             # get referenced service position + tag
         #             ref_pos = next(
-        #                 (pos for pos, name in enumerate(self.services) if name == ref),
+        #                 (
+        #                     pos for pos, name in enumerate(self.services)
+        #                     if name == ref
+        #                 ),
         #                 None
         #             )
         #             if ref_pos is None:
@@ -1645,16 +1945,33 @@ class Bertrand(Resource):
         #     return self
 
     async def init(self, config: Config, cli: Config.Init) -> dict[str, Any]:
+        """Return the default Bertrand configuration fragment.
+
+        Returns
+        -------
+        dict[str, Any]
+            Default configuration data serialized with TOML aliases.
+        """
+        del config, cli
         return self.Model.model_construct().model_dump(by_alias=True)
 
     async def validate(self, config: Config, fragment: Any) -> Model | None:
+        """Validate a Bertrand configuration fragment.
+
+        Returns
+        -------
+        Model | None
+            Parsed Bertrand configuration.
+        """
         result = self.Model.model_validate(fragment)
         _validate_dependency_groups(pyproject=config.get(PyProject), bertrand=result)
-        for tag, build in result.build.items():
-            build.resolve_containerfile(config.root, tag)
+        for tag, image in result.image.items():
+            image.resolve_containerfile(config.root, tag)
         return result
 
     async def render(self, config: Config, tag: TOMLKey | None) -> None:
+        """Render Bertrand-managed project files."""
+        del tag
         bertrand = config.get(Bertrand)
         if bertrand is None:
             return
@@ -1674,21 +1991,20 @@ class Bertrand(Resource):
         (config.root / "docs").mkdir(parents=True, exist_ok=True)
 
         # render ignore files
-        ignore = [str(METADATA_DIR / "*")]  # always ignore Bertrand's metadata directory
+        # Always ignore Bertrand's metadata directory.
+        ignore = [str(METADATA_DIR / "*")]
         ignore.extend(bertrand.ignore)
         containerignore = ignore.copy()
         containerignore.extend(bertrand.container_ignore)
         atomic_write_text(
             config.root / ".containerignore",
             _dump_ignore_list(containerignore),
-            encoding="utf-8"
+            encoding="utf-8",
         )
         gitignore = ignore.copy()
         gitignore.extend(bertrand.git_ignore)
         atomic_write_text(
-            config.root / ".gitignore",
-            _dump_ignore_list(gitignore),
-            encoding="utf-8"
+            config.root / ".gitignore", _dump_ignore_list(gitignore), encoding="utf-8"
         )
 
         # initialize CI publish action
@@ -1697,14 +2013,24 @@ class Bertrand(Resource):
         )
         publish_target = config.root / ".github" / "workflows" / "publish.yml"
         publish_target.parent.mkdir(parents=True, exist_ok=True)
-        publish_target.write_text(publish_template.render(
-            python_major=python_version.major,
-            python_minor=python_version.minor,
-            python_patch=python_version.micro,
-            bertrand_major=bertrand_version.major,
-            bertrand_minor=bertrand_version.minor,
-            bertrand_patch=bertrand_version.micro,
-        ), encoding="utf-8")
+        publish_target.write_text(
+            publish_template.render(
+                python_major=python_version.major,
+                python_minor=python_version.minor,
+                python_patch=python_version.micro,
+                bertrand_major=bertrand_version.major,
+                bertrand_minor=bertrand_version.minor,
+                bertrand_patch=bertrand_version.micro,
+            ),
+            encoding="utf-8",
+        )
 
     async def schema(self) -> dict[str, Any]:
+        """Return the JSON schema for Bertrand configuration.
+
+        Returns
+        -------
+        dict[str, Any]
+            JSON schema for validation-mode Bertrand configuration.
+        """
         return self.Model.model_json_schema(by_alias=True, mode="validation")

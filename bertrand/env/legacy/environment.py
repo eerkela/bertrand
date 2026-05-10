@@ -135,7 +135,9 @@ class Environment:
             keep = {image.id for image in self._json.images.values()}
             pending: dict[str, bool] = {}
             for ret in self._json.retired:
-                pending[ret.image.id] = pending.get(ret.image.id, ret.force) or ret.force
+                pending[ret.image.id] = (
+                    pending.get(ret.image.id, ret.force) or ret.force
+                )
             for ret in self._json.retired:
                 if ret.image.id in keep:
                     continue
@@ -144,7 +146,9 @@ class Environment:
                     continue
                 ret.force = force
                 try:
-                    if not await ret.image.remove(force=force, timeout=self.lock.timeout):
+                    if not await ret.image.remove(
+                        force=force, timeout=self.lock.timeout
+                    ):
                         retired.append(ret)
                 except Exception:
                     retired.append(ret)
@@ -244,10 +248,14 @@ class Environment:
             )
         bertrand = self.config.get(Bertrand)
         if bertrand is None:
-            raise OSError(f"missing 'bertrand' configuration for environment at {self.config.root}")
-        build = bertrand.build.get(tag)
+            raise OSError(
+                f"missing 'bertrand' configuration for environment at {self.config.root}"
+            )
+        build = bertrand.image.get(tag)
         if build is None:
-            raise ValueError(f"unknown build tag '{tag}' for environment at {self.config.root}")
+            raise ValueError(
+                f"unknown build tag '{tag}' for environment at {self.config.root}"
+            )
 
         bundle = await image_args(self.config, env_id=self.id, tag=tag)
         candidate = Image.model_construct(

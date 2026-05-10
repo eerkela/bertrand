@@ -6,6 +6,7 @@ artifacts from a standardized `[tool.conan]` schema stored in project configurat
 The available options are exhaustively listed in a self-documenting fashion, and may
 be customized accordingly.
 """
+
 from __future__ import annotations
 
 import json
@@ -97,7 +98,7 @@ def _check_conan_requirement(requirement: str) -> str:
 
 
 def _check_conan_conf(
-    conf: dict[ConanConfNamespace, dict[ConanConfName, ConanConfValue]]
+    conf: dict[ConanConfNamespace, dict[ConanConfName, ConanConfValue]],
 ) -> None:
     for namespace, values in conf.items():
         for key, value in values.items():
@@ -133,41 +134,36 @@ def _check_conan_allowed_pattern(pattern: str) -> str:
 
 
 type ConanRequirement = Annotated[
-    NonEmpty[NoCRLF],
-    AfterValidator(_check_conan_requirement)
+    NonEmpty[NoCRLF], AfterValidator(_check_conan_requirement)
 ]
-type ConanOptionName = Annotated[str, StringConstraints(
-    strip_whitespace=True,
-    min_length=1,
-    pattern=r"^[A-Za-z_][A-Za-z0-9_]*$"
-)]
-type ConanConfNamespace = Annotated[str, StringConstraints(
-    strip_whitespace=True,
-    min_length=1,
-    pattern=r"^[^:\s]+$"
-)]
-type ConanConfName = Annotated[str, StringConstraints(
-    strip_whitespace=True,
-    min_length=1,
-    pattern=r"^[^:\s]+$"
-)]
+type ConanOptionName = Annotated[
+    str,
+    StringConstraints(
+        strip_whitespace=True, min_length=1, pattern=r"^[A-Za-z_][A-Za-z0-9_]*$"
+    ),
+]
+type ConanConfNamespace = Annotated[
+    str, StringConstraints(strip_whitespace=True, min_length=1, pattern=r"^[^:\s]+$")
+]
+type ConanConfName = Annotated[
+    str, StringConstraints(strip_whitespace=True, min_length=1, pattern=r"^[^:\s]+$")
+]
 type ConanConf = Annotated[
     dict[ConanConfNamespace, dict[ConanConfName, ConanConfValue]],
-    AfterValidator(_check_conan_conf)
+    AfterValidator(_check_conan_conf),
 ]
 type ConanConfValue = Scalar | list[ConanConfValue] | dict[str, ConanConfValue]
-type ConanRemoteName = Annotated[str, StringConstraints(
-    strip_whitespace=True,
-    min_length=1,
-    pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]*$"
-)]
+type ConanRemoteName = Annotated[
+    str,
+    StringConstraints(
+        strip_whitespace=True, min_length=1, pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]*$"
+    ),
+]
 type ConanAllowedPattern = Annotated[
-    NonEmpty[NoWhiteSpace],
-    AfterValidator(_check_conan_allowed_pattern)
+    NonEmpty[NoWhiteSpace], AfterValidator(_check_conan_allowed_pattern)
 ]
 type ConanOptionPattern = Annotated[
-    NonEmpty[NoWhiteSpace],
-    AfterValidator(_check_conan_allowed_pattern)
+    NonEmpty[NoWhiteSpace], AfterValidator(_check_conan_allowed_pattern)
 ]
 type ConanOptions = dict[ConanOptionPattern, dict[ConanOptionName, Scalar]]
 
@@ -178,6 +174,7 @@ class ConanConfig(Resource):
     files (e.g. `[tool.conan]` in `pyproject.toml`) and renders derived `conanfile.py`,
     `remotes.json`, and default profile artifacts.
     """
+
     # pylint: disable=missing-function-docstring, unused-argument, missing-return-doc
 
     GENERATORS: tuple[str, ...] = (
@@ -196,62 +193,75 @@ class ConanConfig(Resource):
 
     class Model(BaseModel):
         """Validate the global `[tool.conan]` table."""
+
         model_config = ConfigDict(extra="forbid")
-        build_type: Annotated[Literal["Release", "Debug"], Field(
-            default="Release",
-            alias="build-type",
-            examples=["Release", "Debug"],
-            description=
-                "Global default build type for Conan builds, which can be overridden "
+        build_type: Annotated[
+            Literal["Release", "Debug"],
+            Field(
+                default="Release",
+                alias="build-type",
+                examples=["Release", "Debug"],
+                description="Global default build type for Conan builds, which can be overridden "
                 "by individual images.",
-        )]
-        conf: Annotated[ConanConf, Field(
-            default_factory=dict,
-            description=
-                "Global mapping of namespace tables to conf entries, which get "
+            ),
+        ]
+        conf: Annotated[
+            ConanConf,
+            Field(
+                default_factory=dict,
+                description="Global mapping of namespace tables to conf entries, which get "
                 "converted into '<namespace>:<name>=<value>' format in the generated "
                 "Conan profile.  Individual images can specify additional entries "
                 "that merge with these global defaults.",
-        )]
-        options: Annotated[ConanOptions, Field(
-            default_factory=dict,
-            description=
-                "Global mapping of namespace tables to package options, which get "
+            ),
+        ]
+        options: Annotated[
+            ConanOptions,
+            Field(
+                default_factory=dict,
+                description="Global mapping of namespace tables to package options, which get "
                 "converted into '<package-pattern>:<option>=<value>' format in the "
                 "generated Conan profile.  Individual images can specify additional "
                 "options that merge with these global defaults.",
-        )]
+            ),
+        ]
 
         class Require(BaseModel):
             """Validate entries in `[[tool.conan.requires]]`."""
+
             model_config = ConfigDict(extra="forbid")
-            package: Annotated[ConanRequirement, Field(
-                description="A Conan package specifier."
-            )]
-            kind: Annotated[Literal["host", "tool"], Field(
-                default="host",
-                examples=["host", "tool"],
-                description=
-                    "The kind of requirement, which controls how the requirement gets "
+            package: Annotated[
+                ConanRequirement, Field(description="A Conan package specifier.")
+            ]
+            kind: Annotated[
+                Literal["host", "tool"],
+                Field(
+                    default="host",
+                    examples=["host", "tool"],
+                    description="The kind of requirement, which controls how the requirement gets "
                     "injected into the generated Conan profile.  'tool' requirements "
                     "apply only to the build context, whereas 'host' requirements "
-                    "specify runtime dependencies."
-            )]
-            options: Annotated[dict[ConanOptionName, Scalar], Field(
-                default_factory=dict,
-                description=
-                    "Mapping of option names to their values for this requirement, "
+                    "specify runtime dependencies.",
+                ),
+            ]
+            options: Annotated[
+                dict[ConanOptionName, Scalar],
+                Field(
+                    default_factory=dict,
+                    description="Mapping of option names to their values for this requirement, "
                     "which get converted into '<package>:<option>=<value>' format in "
                     "the generated Conan profile.  These options merge with any global "
                     "options specified in the `options` field, and take precedence "
-                    "over any conflicting values."
-            )]
+                    "over any conflicting values.",
+                ),
+            ]
 
         class Remote(BaseModel):
             """Validate entries in `[[tool.conan.remotes]]`."""
+
             @staticmethod
             def _check_allowed_packages(
-                value: list[ConanAllowedPattern]
+                value: list[ConanAllowedPattern],
             ) -> list[ConanAllowedPattern]:
                 seen: set[ConanAllowedPattern] = set()
                 for pattern in value:
@@ -263,46 +273,57 @@ class ConanConfig(Resource):
                 return value
 
             model_config = ConfigDict(extra="forbid")
-            name: Annotated[ConanRemoteName, Field(
-                description="Unique name for this Conan remote.",
-            )]
-            url: Annotated[URL, Field(
-                description="Public URL for this Conan remote.",
-            )]
-            verify_ssl: Annotated[bool, Field(
-                default=True,
-                alias="verify-ssl",
-                description=
-                    "Whether to verify SSL certificates when communicating with this "
+            name: Annotated[
+                ConanRemoteName,
+                Field(
+                    description="Unique name for this Conan remote.",
+                ),
+            ]
+            url: Annotated[
+                URL,
+                Field(
+                    description="Public URL for this Conan remote.",
+                ),
+            ]
+            verify_ssl: Annotated[
+                bool,
+                Field(
+                    default=True,
+                    alias="verify-ssl",
+                    description="Whether to verify SSL certificates when communicating with this "
                     "remote.  Should generally be left enabled unless the remote is "
                     "known to have an invalid certificate, or is only accessible over "
                     "insecure HTTP.",
-            )]
-            enabled: Annotated[bool, Field(
-                default=True,
-                description=
-                    "Whether to include this remote in Conan operations.  This can be "
+                ),
+            ]
+            enabled: Annotated[
+                bool,
+                Field(
+                    default=True,
+                    description="Whether to include this remote in Conan operations.  This can be "
                     "used to temporarily disable a remote without removing it from "
                     "config.",
-            )]
-            recipes_only: Annotated[bool, Field(
-                default=False,
-                alias="recipes-only",
-                description=
-                    "If true, only recipes will be loaded from this remote, and no "
+                ),
+            ]
+            recipes_only: Annotated[
+                bool,
+                Field(
+                    default=False,
+                    alias="recipes-only",
+                    description="If true, only recipes will be loaded from this remote, and no "
                     "binaries will be downloaded.",
-            )]
+                ),
+            ]
             allowed_packages: Annotated[
                 list[ConanAllowedPattern],
                 AfterValidator(_check_allowed_packages),
                 Field(
                     default_factory=list,
                     alias="allowed-packages",
-                    description=
-                        "List of recipes that are allowed to be downloaded from this "
-                        "remote. If the list is empty or not present, all packages "
-                        "are allowed. Uses fnmatch rules.",
-                )
+                    description="List of recipes that are allowed to be downloaded from this "
+                    "remote. If the list is empty or not present, all packages "
+                    "are allowed. Uses fnmatch rules.",
+                ),
             ]
 
         @staticmethod
@@ -329,23 +350,29 @@ class ConanConfig(Resource):
                 seen.add(remote.name)
             return value
 
-        requires: Annotated[list[Require], AfterValidator(_check_requires), Field(
-            default_factory=list,
-            description=
-                "Global list of Conan dependencies to install for the project, which "
+        requires: Annotated[
+            list[Require],
+            AfterValidator(_check_requires),
+            Field(
+                default_factory=list,
+                description="Global list of Conan dependencies to install for the project, which "
                 "can be extended for individual images.",
-        )]
-        remotes: Annotated[list[Remote], AfterValidator(_check_remotes), Field(
-            default_factory=list,
-            description=
-                "List of Conan remotes to use when resolving Conan dependencies for "
+            ),
+        ]
+        remotes: Annotated[
+            list[Remote],
+            AfterValidator(_check_remotes),
+            Field(
+                default_factory=list,
+                description="List of Conan remotes to use when resolving Conan dependencies for "
                 "this project.  NOTE: Conan remotes are resolved in declaration "
                 "order.  Prefer private remotes first, then optional public fallback "
                 "remotes last.  Credentials are host-local and must never be stored "
                 "here; resolve through env/secret channels (e.g. "
                 "CONAN_LOGIN_USERNAME_<REMOTE>, CONAN_PASSWORD_<REMOTE>, with remote "
                 "names normalized to SCREAMING_SNAKE_CASE)",
-        )]
+            ),
+        ]
 
     async def init(self, config: Config, cli: Config.Init) -> dict[str, Any]:
         return self.Model.model_construct().model_dump(by_alias=True)
@@ -355,16 +382,19 @@ class ConanConfig(Resource):
 
     async def volumes(self, config: Config, tag: TOMLKey) -> list[Resource.Volume]:
         from .bertrand import Bertrand
+
         model = config.get(ConanConfig)
         if model is None:
             return []
 
         bertrand = config.get(Bertrand)
-        active = None if bertrand is None else bertrand.build.get(tag)
+        active = None if bertrand is None else bertrand.image.get(tag)
         fingerprint = {
             "conan": model.model_dump(by_alias=True, mode="json"),
             "tag-conan": (
-                {} if active is None else active.conan.model_dump(by_alias=True, mode="json")
+                {}
+                if active is None
+                else active.conan.model_dump(by_alias=True, mode="json")
             ),
             "build-args": {} if active is None else dict(sorted(active.args.items())),
         }
@@ -382,6 +412,7 @@ class ConanConfig(Resource):
     async def _render_conanfile(self, config: Config, tag: TOMLKey) -> None:
         from .bertrand import Bertrand
         from .python import PyProject
+
         python = config.get(PyProject)
         bertrand = config.get(Bertrand)
         conan = config.get(ConanConfig)
@@ -392,7 +423,7 @@ class ConanConfig(Resource):
         active = None
         requires = list(conan.requires)
         if bertrand is not None:
-            active = bertrand.build.get(tag)
+            active = bertrand.image.get(tag)
             if active is not None:
                 requires.extend(active.conan.requires)
 
@@ -449,11 +480,14 @@ class ConanConfig(Resource):
                 lines.append(f"    license = {project.license!r}")
             if project.description is not None:
                 lines.append(f"    description = {project.description!r}")
-            url = next((str(project.urls[key]) for key in (
-                "homepage",
-                "repository",
-                "documentation"
-            ) if key in project.urls), None)
+            url = next(
+                (
+                    str(project.urls[key])
+                    for key in ("homepage", "repository", "documentation")
+                    if key in project.urls
+                ),
+                None,
+            )
             if url is not None:
                 lines.append(f"    url = {url!r}")
             topics: list[str] = []
@@ -469,7 +503,9 @@ class ConanConfig(Resource):
         lines.append("    settings = \"os\", \"arch\", \"compiler\", \"build_type\"")
         lines.append(f"    generators = {self.GENERATORS!r}")
         lines.append(f"    requires = {tuple(req.package for req in requires)!r}")
-        lines.append(f"    tool_requires = {tuple(req.package for req in tool_requires)!r}")
+        lines.append(
+            f"    tool_requires = {tuple(req.package for req in tool_requires)!r}"
+        )
         if default_options:
             lines.append("    default_options = {")
             for key, value in default_options.items():
@@ -478,9 +514,7 @@ class ConanConfig(Resource):
         lines.append("")
 
         atomic_write_text(
-            CONTAINER_TMP_MOUNT / "conanfile.py",
-            "\n".join(lines),
-            encoding="utf-8"
+            CONTAINER_TMP_MOUNT / "conanfile.py", "\n".join(lines), encoding="utf-8"
         )
 
     @staticmethod
@@ -528,6 +562,7 @@ class ConanConfig(Resource):
 
     async def _render_conanprofile(self, config: Config, tag: TOMLKey) -> None:
         from .bertrand import Bertrand
+
         bertrand = config.get(Bertrand)
         conan = config.get(ConanConfig)
         assert conan is not None
@@ -547,7 +582,7 @@ class ConanConfig(Resource):
             conan.conf,
         )
         if bertrand is not None:
-            active = bertrand.build.get(tag)
+            active = bertrand.image.get(tag)
             if active is not None:
                 if active.conan.build_type:
                     build_type = active.conan.build_type
@@ -576,18 +611,18 @@ class ConanConfig(Resource):
         ]
         if conf_text:
             lines.extend(conf_text.splitlines())
-        lines.extend([
-            "",
-            "[buildenv]",
-            "CC=ccache /opt/llvm/bin/clang",
-            "CXX=ccache /opt/llvm/bin/clang++",
-            "",
-        ])
+        lines.extend(
+            [
+                "",
+                "[buildenv]",
+                "CC=ccache /opt/llvm/bin/clang",
+                "CXX=ccache /opt/llvm/bin/clang++",
+                "",
+            ]
+        )
 
         atomic_write_text(
-            CONAN_HOME / "profiles" / "default",
-            "\n".join(lines),
-            encoding="utf-8"
+            CONAN_HOME / "profiles" / "default", "\n".join(lines), encoding="utf-8"
         )
 
     async def _render_conanremotes(self, config: Config, tag: TOMLKey) -> None:
@@ -616,11 +651,7 @@ class ConanConfig(Resource):
         if not text.endswith("\n"):
             text += "\n"
 
-        atomic_write_text(
-            CONAN_HOME / "remotes.json",
-            text,
-            encoding="utf-8"
-        )
+        atomic_write_text(CONAN_HOME / "remotes.json", text, encoding="utf-8")
 
     async def render(self, config: Config, tag: TOMLKey | None) -> None:
         if tag is None or config.get(ConanConfig) is None:

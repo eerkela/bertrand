@@ -5,9 +5,11 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import math
 import re
 import tempfile
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
@@ -62,6 +64,7 @@ IMAGE_TAG_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$")
 IMAGE_REPOSITORY_ROUTE_POLL_INTERVAL_SECONDS = 0.5
 IMAGE_REPOSITORY_ROUTE_REQUEST_TIMEOUT_SECONDS = 2.0
 IMAGE_REPOSITORY_ROUTE_READY_STATUS = frozenset({200, 401})
+IMAGE_REPOSITORY_DELETE_SUCCESS_STATUS = frozenset({202, 404})
 
 
 def _config_hash(data: Mapping[str, str]) -> str:
@@ -71,6 +74,15 @@ def _config_hash(data: Mapping[str, str]) -> str:
 
 def _registry_route_status(url: str, timeout: float) -> int:
     request = urllib.request.Request(url, method="GET")
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return int(response.status)
+    except urllib.error.HTTPError as err:
+        return int(err.code)
+
+
+def _registry_manifest_delete(url: str, timeout: float | None) -> int:
+    request = urllib.request.Request(url, method="DELETE")
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             return int(response.status)
@@ -125,6 +137,8 @@ class ImageRepositoryStatus:
     rollout_ready : bool
         Whether the Deployment controller has observed the desired generation and at
         least one replica is updated and available.
+    delete_enabled : bool
+        Whether the live registry pod template enables manifest deletion.
     desired_config_hash : str
         BuildKit registry-routing config hash expected by this repository object.
     installed_config_hash : str
@@ -162,6 +176,7 @@ class ImageRepositoryStatus:
     observed_generation: int
     generation: int
     rollout_ready: bool
+    delete_enabled: bool
     desired_config_hash: str
     installed_config_hash: str
     config_current: bool
@@ -530,6 +545,13 @@ class ImageRepository:
                 ports=(expected_port,),
             )
             deployment_status = _deployment_status(deployment, minimum=1)
+            delete_enabled = (
+                deployment is not None
+                and deployment.container_env("registry").get(
+                    "REGISTRY_STORAGE_DELETE_ENABLED"
+                )
+                == "true"
+            )
             pvc_status = _pvc_status(
                 pvc,
                 required_labels={
@@ -576,6 +598,7 @@ class ImageRepository:
                 observed_generation=deployment_status.observed_generation,
                 generation=deployment_status.generation,
                 rollout_ready=deployment_status.rollout_ready,
+                delete_enabled=delete_enabled,
                 desired_config_hash=desired_config_hash,
                 installed_config_hash=installed_config_hash,
                 config_current=config_current,
@@ -585,6 +608,7 @@ class ImageRepository:
                 ready=(
                     service_status.ready
                     and deployment_status.rollout_ready
+                    and delete_enabled
                     and pvc_status.ready
                     and config_current
                     and node_trust_ready
@@ -701,7 +725,11 @@ class ImageRepository:
                         EnvVarSpec(
                             name="REGISTRY_HTTP_ADDR",
                             value=f"0.0.0.0:{self.port}",
-                        )
+                        ),
+                        EnvVarSpec(
+                            name="REGISTRY_STORAGE_DELETE_ENABLED",
+                            value="true",
+                        ),
                     ],
                     readiness_probe=ProbeSpec.http(
                         path="/v2/",
@@ -772,6 +800,73 @@ class ImageRepository:
             msg = f"invalid image repository path: {name!r}"
             raise ValueError(msg)
         return f"{self.pull_host}/bertrand/{path}:{normalized_tag}"
+
+    def _digest_delete_url(self, digest_ref: str) -> str:
+        ref = digest_ref.strip()
+        prefix = f"{self.pull_host}/"
+        if not ref.startswith(prefix):
+            msg = (
+                f"image digest ref {digest_ref!r} does not belong to registry "
+                f"{self.pull_host!r}"
+            )
+            raise ValueError(msg)
+        payload = ref[len(prefix) :]
+        repo_path, sep, digest = payload.rpartition("@")
+        if not sep or not repo_path or not digest:
+            msg = f"image reference must include an immutable digest: {digest_ref!r}"
+            raise ValueError(msg)
+        if not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
+            msg = f"unsupported image digest in ref {digest_ref!r}"
+            raise ValueError(msg)
+        encoded_path = urllib.parse.quote(repo_path, safe="/")
+        encoded_digest = urllib.parse.quote(digest, safe=":")
+        return f"{self.pull_server}/v2/{encoded_path}/manifests/{encoded_digest}"
+
+    async def delete_manifest(
+        self,
+        digest_ref: str,
+        *,
+        timeout: float = INFINITY,
+    ) -> None:
+        """Delete one image manifest by immutable registry digest reference.
+
+        Parameters
+        ----------
+        digest_ref : str
+            Fully qualified immutable image reference rooted at this repository,
+            for example ``localhost:32000/bertrand/app@sha256:...``.
+        timeout : float, optional
+            Maximum request budget in seconds. If infinite, wait indefinitely.
+
+        Raises
+        ------
+        TimeoutError
+            If `timeout` is non-positive or the registry request times out.
+        OSError
+            If the registry rejects the delete request.
+        """
+        if timeout <= 0:
+            msg = "image manifest delete timeout must be non-negative"
+            raise TimeoutError(msg)
+        url = self._digest_delete_url(digest_ref)
+        request_timeout = None if math.isinf(timeout) else timeout
+        try:
+            status = await asyncio.to_thread(
+                _registry_manifest_delete,
+                url,
+                request_timeout,
+            )
+        except TimeoutError:
+            raise
+        except (OSError, urllib.error.URLError) as err:
+            msg = f"failed to delete image manifest {digest_ref!r}: {err}"
+            raise OSError(msg) from err
+        if status not in IMAGE_REPOSITORY_DELETE_SUCCESS_STATUS:
+            msg = (
+                f"failed to delete image manifest {digest_ref!r}: registry returned "
+                f"HTTP status {status}"
+            )
+            raise OSError(msg)
 
 
 IMAGES = ImageRepository(

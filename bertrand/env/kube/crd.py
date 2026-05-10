@@ -395,6 +395,43 @@ class CustomResourceClient:
             timeout=timeout,
         )
 
+    async def delete(
+        self,
+        kube: Kube,
+        *,
+        namespace: str,
+        name: str,
+        timeout: float,
+    ) -> None:
+        """Delete one namespaced custom object.
+
+        Parameters
+        ----------
+        kube : Kube
+            Active Kubernetes API context.
+        namespace : str
+            Namespace that owns the custom object.
+        name : str
+            Custom object name to delete.
+        timeout : float
+            Maximum request budget in seconds. If infinite, wait indefinitely.
+        """
+        await kube.run(
+            lambda request_timeout: kube.custom.delete_namespaced_custom_object(
+                group=self.spec.group,
+                version=self.spec.version,
+                namespace=namespace,
+                plural=self.spec.plural,
+                name=name,
+                _request_timeout=request_timeout,
+            ),
+            timeout=timeout,
+            context=(
+                f"failed to delete custom object {self.spec.plural}/{name} "
+                f"in namespace {namespace!r}"
+            ),
+        )
+
     async def _snapshot(
         self,
         kube: Kube,

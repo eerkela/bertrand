@@ -543,7 +543,7 @@ class CacheVolume:
 
         expected = {
             volume.name
-            for tag in bertrand.build
+            for tag in bertrand.image
             for volume in await CacheVolume.from_config(config, tag, env_id)
         }
 

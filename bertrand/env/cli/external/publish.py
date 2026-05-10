@@ -113,7 +113,7 @@ async def bertrand_publish(
         if bertrand is None:
             msg = "could not determine configured tags for publish"
             raise OSError(msg)
-        if not bertrand.build:
+        if not bertrand.image:
             msg = "publish requires at least one configured tag"
             raise OSError(msg)
 
@@ -142,14 +142,14 @@ async def bertrand_publish(
                 raise OSError(msg)
 
             built: dict[str, Image] = {}
-            for current_tag in bertrand.build:
+            for current_tag in bertrand.image:
                 try:
                     built[current_tag] = await env.build(current_tag, quiet=False)
                 except Exception as err:
                     msg = f"failed to build tag '{current_tag}' for publish"
                     raise OSError(msg) from err
 
-            for current_tag in bertrand.build:
+            for current_tag in bertrand.image:
                 suffix = "" if current_tag == DEFAULT_TAG else f"-{current_tag}"
                 image = built[current_tag]
                 ref = f"{repo}:{publish_version}{suffix}-{arch}"
@@ -158,7 +158,7 @@ async def bertrand_publish(
             return arch
 
         arches = _parse_manifest_arches(manifest_arches)
-        for current_tag in bertrand.build:
+        for current_tag in bertrand.image:
             suffix = "" if current_tag == DEFAULT_TAG else f"-{current_tag}"
             manifest_ref = f"{repo}:{publish_version}{suffix}"
             source_refs = [f"{manifest_ref}-{arch}" for arch in arches]

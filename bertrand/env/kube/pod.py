@@ -358,6 +358,35 @@ class Pod(NamespacedKubeMetadata[kubernetes.client.V1Pod]):
             out.append(claim_name)
         return tuple(out)
 
+    @property
+    def image_refs(self) -> tuple[str, ...]:
+        """Return image references used by this Pod.
+
+        Returns
+        -------
+        tuple[str, ...]
+            Distinct image references from regular, init, and ephemeral containers,
+            preserving pod-spec order.
+        """
+        spec = self._obj.spec
+        seen: set[str] = set()
+        out: builtins.list[str] = []
+        if spec is None:
+            return ()
+        groups = (
+            spec.init_containers or [],
+            spec.containers or [],
+            spec.ephemeral_containers or [],
+        )
+        for containers in groups:
+            for container in containers:
+                image = (container.image or "").strip()
+                if not image or image in seen:
+                    continue
+                seen.add(image)
+                out.append(image)
+        return tuple(out)
+
     async def logs(
         self,
         kube: Kube,

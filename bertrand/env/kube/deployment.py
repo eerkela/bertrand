@@ -452,6 +452,37 @@ class Deployment(NamespacedKubeMetadata[kubernetes.client.V1Deployment]):
             return MappingProxyType({})
         return MappingProxyType(metadata.annotations)
 
+    def container_env(self, name: str) -> Mapping[str, str]:
+        """Return literal environment values for one pod-template container.
+
+        Parameters
+        ----------
+        name : str
+            Container name to inspect.
+
+        Returns
+        -------
+        Mapping[str, str]
+            Read-only mapping of literal environment values for the named
+            container. Variables sourced from `valueFrom` are omitted.
+        """
+        target = name.strip()
+        if not target:
+            return MappingProxyType({})
+        spec = self._obj.spec
+        template = spec.template if spec is not None else None
+        pod_spec = template.spec if template is not None else None
+        for container in (pod_spec.containers or []) if pod_spec is not None else []:
+            if (container.name or "").strip() != target:
+                continue
+            values = {
+                item.name: item.value
+                for item in container.env or []
+                if item.name and item.value is not None
+            }
+            return MappingProxyType(values)
+        return MappingProxyType({})
+
     @property
     def generation(self) -> int:
         """Return this Deployment's metadata generation.
