@@ -8,7 +8,6 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Self
 
 from bertrand.env.config.core import _check_uuid
-from bertrand.env.kube.api import Kube
 from bertrand.env.kube.pod import Pod
 from bertrand.env.kube.volume import (
     PersistentVolume,
@@ -18,7 +17,10 @@ from bertrand.env.kube.volume import (
 from bertrand.env.run import BERTRAND_ENV, BERTRAND_NAMESPACE, REPO_ID_ENV
 
 if TYPE_CHECKING:
+    import builtins
     from pathlib import PosixPath
+
+    from bertrand.env.kube.api import Kube
 
 REPO_VOLUME_ENV: str = "BERTRAND_REPO_VOLUME"
 DEFAULT_VOLUME_SIZE = "16Mi"
@@ -92,10 +94,11 @@ class RepoVolume:
             raise OSError(msg)
 
     @classmethod
-    async def create(
+    async def ensure(
         cls,
-        repo_id: str,
+        kube: Kube,
         *,
+        repo_id: str,
         timeout: float,
         size_request: str,
     ) -> Self:
@@ -103,6 +106,8 @@ class RepoVolume:
 
         Parameters
         ----------
+        kube : Kube
+            Active Kubernetes API context.
         repo_id : str
             Repository UUID used to derive the claim name and ownership labels.
         timeout : float
@@ -135,53 +140,60 @@ class RepoVolume:
         claim_name = cls._kube_name(repo_id)
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
-        with await Kube.host(timeout=deadline - loop.time()) as kube:
-            storage = await StorageClass.select(
-                kube=kube,
-                timeout=deadline - loop.time(),
-                preferences=CEPHFS_STORAGE_CLASS_PREFERENCES,
-                require_expansion=True,
+        storage = await StorageClass.select(
+            kube=kube,
+            timeout=deadline - loop.time(),
+            preferences=CEPHFS_STORAGE_CLASS_PREFERENCES,
+            require_expansion=True,
+        )
+        if not storage.is_cephfs:
+            msg = (
+                f"storage class {storage.name!r} uses provisioner "
+                f"{storage.provisioner!r}, but Bertrand repository volumes "
+                "require a CephFS CSI provisioner"
             )
-            if not storage.is_cephfs:
-                msg = (
-                    f"storage class {storage.name!r} uses provisioner "
-                    f"{storage.provisioner!r}, but Bertrand repository volumes "
-                    "require a CephFS CSI provisioner"
-                )
-                raise OSError(msg)
-            storage_class = storage.name
+            raise OSError(msg)
+        storage_class = storage.name
 
-            pvc = await PersistentVolumeClaim.upsert(
-                kube=kube,
-                namespace=BERTRAND_NAMESPACE,
-                name=claim_name,
-                access_modes=("ReadWriteMany",),
-                storage_class=storage_class,
-                storage_request=size_request,
-                labels={
-                    BERTRAND_ENV: "1",
-                    REPO_VOLUME_ENV: "1",
-                    REPO_ID_ENV: repo_id,
-                },
-                timeout=deadline - loop.time(),
-            )
+        pvc = await PersistentVolumeClaim.upsert(
+            kube=kube,
+            namespace=BERTRAND_NAMESPACE,
+            name=claim_name,
+            access_modes=("ReadWriteMany",),
+            storage_class=storage_class,
+            storage_request=size_request,
+            labels={
+                BERTRAND_ENV: "1",
+                REPO_VOLUME_ENV: "1",
+                REPO_ID_ENV: repo_id,
+            },
+            timeout=deadline - loop.time(),
+        )
 
-            cls._assert_managed_pvc(
-                pvc,
-                claim_name=claim_name,
-                repo_id=repo_id,
-                storage_class=storage_class,
-                require_rwx=True,
-            )
+        cls._assert_managed_pvc(
+            pvc,
+            claim_name=claim_name,
+            repo_id=repo_id,
+            storage_class=storage_class,
+            require_rwx=True,
+        )
 
-            return cls(repo_id=repo_id, pvc=pvc)
+        return cls(repo_id=repo_id, pvc=pvc)
 
     @classmethod
-    async def get(cls, repo_id: str | None, *, timeout: float) -> list[Self]:
+    async def list(
+        cls,
+        kube: Kube,
+        repo_id: str | None,
+        *,
+        timeout: float,
+    ) -> builtins.list[Self]:
         """List repository volumes currently present in the cluster.
 
         Parameters
         ----------
+        kube : Kube
+            Active Kubernetes API context.
         repo_id : str | None
             Optional repository UUID to filter for.
         timeout : float
@@ -206,43 +218,44 @@ class RepoVolume:
         if timeout <= 0:
             msg = "timeout must be non-negative"
             raise TimeoutError(msg)
-        with await Kube.host(timeout=timeout) as kube:
-            pvcs = await PersistentVolumeClaim.list(
-                kube=kube,
-                namespaces=(BERTRAND_NAMESPACE,),
-                timeout=timeout,
-                labels=labels,
+        pvcs = await PersistentVolumeClaim.list(
+            kube=kube,
+            namespaces=(BERTRAND_NAMESPACE,),
+            timeout=timeout,
+            labels=labels,
+        )
+        out: list[Self] = []
+        for pvc in pvcs:
+            labels = pvc.labels
+            repo_id = labels.get(REPO_ID_ENV, "")
+            if not repo_id:
+                msg = f"cluster PVC {pvc.name!r} is missing label {REPO_ID_ENV!r}"
+                raise OSError(msg)
+            repo_id = _check_uuid(repo_id)
+            cls._assert_managed_pvc(
+                pvc,
+                claim_name=cls._kube_name(repo_id),
+                repo_id=repo_id,
+                storage_class=None,
+                require_rwx=False,
             )
-            out: list[Self] = []
-            for pvc in pvcs:
-                labels = pvc.labels
-                repo_id = labels.get(REPO_ID_ENV, "")
-                if not repo_id:
-                    msg = f"cluster PVC {pvc.name!r} is missing label {REPO_ID_ENV!r}"
-                    raise OSError(msg)
-                repo_id = _check_uuid(repo_id)
-                cls._assert_managed_pvc(
-                    pvc,
-                    claim_name=cls._kube_name(repo_id),
-                    repo_id=repo_id,
-                    storage_class=None,
-                    require_rwx=False,
-                )
-                out.append(cls(repo_id=repo_id, pvc=pvc))
+            out.append(cls(repo_id=repo_id, pvc=pvc))
 
-            out.sort(
-                key=lambda m: (
-                    m.repo_id,
-                    m.pvc.name,
-                )
+        out.sort(
+            key=lambda m: (
+                m.repo_id,
+                m.pvc.name,
             )
-            return out
+        )
+        return out
 
-    async def delete(self, *, timeout: float, force: bool) -> None:
+    async def delete(self, kube: Kube, *, timeout: float, force: bool) -> None:
         """Delete this repository volume claim from the cluster.
 
         Parameters
         ----------
+        kube : Kube
+            Active Kubernetes API context.
         timeout : float
             Maximum deletion budget in seconds.
         force : bool
@@ -260,36 +273,37 @@ class RepoVolume:
             raise TimeoutError(msg)
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
-        with await Kube.host(timeout=deadline - loop.time()) as kube:
-            if not force:
-                pods = await Pod.list(
-                    kube=kube,
-                    namespaces=(BERTRAND_NAMESPACE,),
-                    timeout=deadline - loop.time(),
-                    labels={BERTRAND_ENV: "1", REPO_ID_ENV: self.repo_id},
+        if not force:
+            pods = await Pod.list(
+                kube=kube,
+                namespaces=(BERTRAND_NAMESPACE,),
+                timeout=deadline - loop.time(),
+                labels={BERTRAND_ENV: "1", REPO_ID_ENV: self.repo_id},
+            )
+            active = {
+                claim_name
+                for pod in pods
+                if pod.is_active
+                for claim_name in pod.persistent_volume_claim_names
+            }
+            active.discard("")
+            name = self.pvc.name
+            if name in active:
+                msg = (
+                    f"cannot delete repository volume {name!r} while "
+                    "it is being used by active pods"
                 )
-                active = {
-                    claim_name
-                    for pod in pods
-                    if pod.is_active
-                    for claim_name in pod.persistent_volume_claim_names
-                }
-                active.discard("")
-                name = self.pvc.name
-                if name in active:
-                    msg = (
-                        f"cannot delete repository volume {name!r} while "
-                        "it is being used by active pods"
-                    )
-                    raise OSError(msg)
+                raise OSError(msg)
 
-            await self.pvc.delete(kube=kube, timeout=deadline - loop.time())
+        await self.pvc.delete(kube=kube, timeout=deadline - loop.time())
 
-    async def resolve_ceph_path(self, *, timeout: float) -> PosixPath:
+    async def resolve_ceph_path(self, kube: Kube, *, timeout: float) -> PosixPath:
         """Resolve this repo claim's CephFS path from bound PVC/PV metadata.
 
         Parameters
         ----------
+        kube : Kube
+            Active Kubernetes API context.
         timeout : float
             Maximum resolution budget in seconds.
 
@@ -322,37 +336,36 @@ class RepoVolume:
 
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
-        with await Kube.host(timeout=deadline - loop.time()) as kube:
-            pvc = await self.pvc.wait_bound(
-                kube=kube,
-                timeout=deadline - loop.time(),
-            )
-            volume_name = pvc.volume_name
-            volume = await PersistentVolume.wait_present(
-                kube=kube,
-                timeout=deadline - loop.time(),
-                name=volume_name,
-            )
+        pvc = await self.pvc.wait_bound(
+            kube=kube,
+            timeout=deadline - loop.time(),
+        )
+        volume_name = pvc.volume_name
+        volume = await PersistentVolume.wait_present(
+            kube=kube,
+            timeout=deadline - loop.time(),
+            name=volume_name,
+        )
 
-            driver = volume.csi_driver
-            if not driver:
-                msg = (
-                    f"PersistentVolume {volume_name!r} is not CSI-backed and cannot be "
-                    "mounted as a Ceph repository volume"
-                )
-                raise OSError(msg)
-            if "cephfs" not in driver.lower():
-                msg = (
-                    f"PersistentVolume {volume_name!r} uses CSI driver {driver!r}, "
-                    "expected a CephFS driver"
-                )
-                raise OSError(msg)
+        driver = volume.csi_driver
+        if not driver:
+            msg = (
+                f"PersistentVolume {volume_name!r} is not CSI-backed and cannot be "
+                "mounted as a Ceph repository volume"
+            )
+            raise OSError(msg)
+        if "cephfs" not in driver.lower():
+            msg = (
+                f"PersistentVolume {volume_name!r} uses CSI driver {driver!r}, "
+                "expected a CephFS driver"
+            )
+            raise OSError(msg)
 
-            ceph_path = volume.ceph_path
-            if ceph_path is None:
-                msg = (
-                    "repository PersistentVolume is missing CephFS path attributes "
-                    "(expected one of 'subvolumePath', 'rootPath', or 'path')"
-                )
-                raise OSError(msg)
-            return ceph_path
+        ceph_path = volume.ceph_path
+        if ceph_path is None:
+            msg = (
+                "repository PersistentVolume is missing CephFS path attributes "
+                "(expected one of 'subvolumePath', 'rootPath', or 'path')"
+            )
+            raise OSError(msg)
+        return ceph_path

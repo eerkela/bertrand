@@ -3,12 +3,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ..kube import Environment
+from ..legacy.environment import Environment
+from ..legacy.nerdctl import ContainerState, nerdctl_ids
 from ..run import (
     ENV_ID_ENV,
     IMAGE_TAG_ENV,
-    ContainerState,
-    nerdctl_ids,
 )
 
 # TODO: devolve these helpers to a separate helper.py module, or refactor to make them

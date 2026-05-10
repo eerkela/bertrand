@@ -4,8 +4,8 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
-from ..kube import Environment
-from ..run import nerdctl
+from ..legacy.environment import Environment
+from ..legacy.nerdctl import nerdctl
 
 
 async def bertrand_pause(
@@ -48,4 +48,3 @@ async def bertrand_pause(
                 ["container", "pause", *ids],
                 timeout=deadline - time.time()
             )
-

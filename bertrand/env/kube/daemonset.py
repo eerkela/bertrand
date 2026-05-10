@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from types import MappingProxyType
 from typing import TYPE_CHECKING, Self
 
 import kubernetes
@@ -13,12 +12,15 @@ from .api import (
     ContainerSpec,
     ImagePullSecretSpec,
     Kube,
+    NamespacedKubeMetadata,
     PodSecurityContextSpec,
     TolerationSpec,
     VolumeSpec,
     WatchEvent,
     _label_selector,
     _pod_template_manifest,
+    _validate_delete_status,
+    _wait_until_deleted,
 )
 
 DAEMONSET_WAIT_POLL_INTERVAL_SECONDS = 0.5
@@ -26,11 +28,10 @@ DAEMONSET_WAIT_POLL_INTERVAL_SECONDS = 0.5
 if TYPE_CHECKING:
     import builtins
     from collections.abc import AsyncIterator, Collection, Mapping
-    from datetime import datetime
 
 
 @dataclass(frozen=True)
-class DaemonSet:
+class DaemonSet(NamespacedKubeMetadata[kubernetes.client.V1DaemonSet]):
     """General-purpose wrapper around one Kubernetes DaemonSet object."""
 
     _obj: kubernetes.client.V1DaemonSet
@@ -428,96 +429,6 @@ class DaemonSet:
         return cls(_obj=patched)
 
     @property
-    def name(self) -> str:
-        """Return this DaemonSet's name.
-
-        Returns
-        -------
-        str
-            Trimmed `metadata.name`, or an empty string when unavailable.
-        """
-        metadata = self._obj.metadata
-        return (metadata.name or "").strip() if metadata is not None else ""
-
-    @property
-    def namespace(self) -> str:
-        """Return this DaemonSet's namespace.
-
-        Returns
-        -------
-        str
-            Trimmed `metadata.namespace`, or an empty string when unavailable.
-        """
-        metadata = self._obj.metadata
-        return (metadata.namespace or "").strip() if metadata is not None else ""
-
-    @property
-    def labels(self) -> Mapping[str, str]:
-        """Return this DaemonSet's labels.
-
-        Returns
-        -------
-        Mapping[str, str]
-            Read-only view of `metadata.labels`, or an empty mapping when unavailable.
-        """
-        metadata = self._obj.metadata
-        if metadata is None or metadata.labels is None:
-            return MappingProxyType({})
-        return MappingProxyType(metadata.labels)
-
-    @property
-    def annotations(self) -> Mapping[str, str]:
-        """Return this DaemonSet's annotations.
-
-        Returns
-        -------
-        Mapping[str, str]
-            Read-only view of `metadata.annotations`, or an empty mapping when
-            unavailable.
-        """
-        metadata = self._obj.metadata
-        if metadata is None or metadata.annotations is None:
-            return MappingProxyType({})
-        return MappingProxyType(metadata.annotations)
-
-    @property
-    def resource_version(self) -> str:
-        """Return this DaemonSet's resource version.
-
-        Returns
-        -------
-        str
-            Kubernetes `metadata.resourceVersion`, or an empty string when
-            unavailable.
-        """
-        metadata = self._obj.metadata
-        return (metadata.resource_version or "").strip() if metadata is not None else ""
-
-    @property
-    def uid(self) -> str:
-        """Return this DaemonSet's UID.
-
-        Returns
-        -------
-        str
-            Kubernetes `metadata.uid`, or an empty string when unavailable.
-        """
-        metadata = self._obj.metadata
-        return (metadata.uid or "").strip() if metadata is not None else ""
-
-    @property
-    def created_at(self) -> datetime | None:
-        """Return this DaemonSet's creation timestamp.
-
-        Returns
-        -------
-        datetime | None
-            Kubernetes `metadata.creationTimestamp`, or `None` when unavailable.
-        """
-        metadata = self._obj.metadata
-        return metadata.creation_timestamp if metadata is not None else None
-
-    @property
     def generation(self) -> int:
         """Return this DaemonSet's metadata generation.
 
@@ -613,6 +524,62 @@ class DaemonSet:
         status = self._obj.status
         return int(status.observed_generation or 0) if status is not None else 0
 
+    def has_available_pods(self, minimum: int = 1) -> bool:
+        """Return whether this DaemonSet has enough available pods.
+
+        Parameters
+        ----------
+        minimum : int, optional
+            Minimum acceptable available pod count.
+
+        Returns
+        -------
+        bool
+            Whether `status.numberAvailable` is at least `minimum`.
+
+        Raises
+        ------
+        ValueError
+            If `minimum` is negative.
+        """
+        if minimum < 0:
+            msg = "DaemonSet availability minimum cannot be negative"
+            raise ValueError(msg)
+        return self.number_available >= minimum
+
+    def rollout_ready(self, minimum: int = 1) -> bool:
+        """Return whether this DaemonSet rollout status is ready.
+
+        Parameters
+        ----------
+        minimum : int, optional
+            Minimum acceptable available pod count.
+
+        Returns
+        -------
+        bool
+            Whether the controller has observed the current generation, every desired
+            pod is updated, and enough pods are available.
+
+        Raises
+        ------
+        ValueError
+            If `minimum` is negative.
+        """
+        if minimum < 0:
+            msg = "DaemonSet rollout minimum cannot be negative"
+            raise ValueError(msg)
+        desired = self.desired_number_scheduled
+        required = max(minimum, desired)
+        generation_observed = (
+            self.generation <= 0 or self.observed_generation >= self.generation
+        )
+        return (
+            generation_observed
+            and self.updated_number_scheduled >= desired
+            and self.number_available >= required
+        )
+
     async def refresh(self, kube: Kube, *, timeout: float) -> Self | None:
         """Re-read this DaemonSet by name and namespace.
 
@@ -627,20 +594,13 @@ class DaemonSet:
         -------
         DaemonSet | None
             Fresh wrapper for the same DaemonSet, or `None` if it no longer exists.
-
-        Raises
-        ------
-        OSError
-            If this wrapper does not contain enough metadata to identify the
-            DaemonSet, or if Kubernetes returns malformed data.
         """
-        namespace = self.namespace
-        name = self.name
-        if not namespace or not name:
-            msg = "cannot refresh DaemonSet with missing metadata.name/namespace"
-            raise OSError(msg)
+        namespace, name = self._require_namespace_name("refresh DaemonSet")
         return await type(self).get(
-            kube, namespace=namespace, name=name, timeout=timeout
+            kube,
+            namespace=namespace,
+            timeout=timeout,
+            name=name,
         )
 
     async def delete(self, kube: Kube, *, timeout: float) -> None:
@@ -652,35 +612,20 @@ class DaemonSet:
             Active Kubernetes API context.
         timeout : float
             Maximum request budget in seconds. If infinite, wait indefinitely.
-
-        Raises
-        ------
-        OSError
-            If this wrapper does not contain enough metadata to identify the
-            DaemonSet, if the delete request fails, or if Kubernetes returns
-            malformed data.
         """
-        namespace = self.namespace
-        name = self.name
-        if not namespace or not name:
-            msg = "cannot delete DaemonSet with missing metadata.name/namespace"
-            raise OSError(msg)
+        namespace, name = self._require_namespace_name("delete DaemonSet")
         payload = await kube.run(
             lambda request_timeout: kube.apps.delete_namespaced_daemon_set(
                 name=name,
                 namespace=namespace,
-                body=kubernetes.client.V1DeleteOptions(),
                 _request_timeout=request_timeout,
             ),
             timeout=timeout,
             context=f"failed to delete DaemonSet {namespace}/{name}",
         )
-        if payload is not None and not isinstance(payload, kubernetes.client.V1Status):
-            msg = (
-                "malformed Kubernetes response while deleting DaemonSet "
-                f"{namespace}/{name}"
-            )
-            raise OSError(msg)
+        _validate_delete_status(
+            payload, label=self._object_label(name=name, namespace=namespace)
+        )
 
     async def wait_deleted(self, kube: Kube, *, timeout: float) -> None:
         """Wait until this DaemonSet is deleted from the cluster.
@@ -694,34 +639,18 @@ class DaemonSet:
 
         Raises
         ------
-        OSError
-            If this wrapper does not contain enough metadata to identify the
-            DaemonSet, or if a refresh request returns malformed data.
         TimeoutError
             If the DaemonSet still exists when `timeout` expires.
         """
-        namespace = self.namespace
-        name = self.name
-        if not namespace or not name:
-            msg = (
-                "cannot wait for DaemonSet deletion with missing "
-                "metadata.name/namespace"
+        namespace, name = self._require_namespace_name("wait for DaemonSet deletion")
+        try:
+            await _wait_until_deleted(
+                label=self._object_label(name=name, namespace=namespace),
+                timeout=timeout,
+                refresh=lambda remaining: self.refresh(kube, timeout=remaining),
             )
-            raise OSError(msg)
-        if timeout <= 0:
-            msg = f"timed out waiting for DaemonSet {namespace}/{name} deletion"
-            raise TimeoutError(msg)
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + timeout
-        while True:
-            remaining = deadline - loop.time()
-            if remaining <= 0:
-                msg = f"timed out waiting for DaemonSet {namespace}/{name} deletion"
-                raise TimeoutError(msg)
-            live = await self.refresh(kube, timeout=remaining)
-            if live is None:
-                return
-            await asyncio.sleep(min(DAEMONSET_WAIT_POLL_INTERVAL_SECONDS, remaining))
+        except TimeoutError as err:
+            raise TimeoutError(str(err)) from err
 
     async def wait_available(
         self,
@@ -753,30 +682,36 @@ class DaemonSet:
         TimeoutError
             If the DaemonSet does not become available before `timeout`.
         OSError
-            If this wrapper cannot be refreshed or disappears while waiting.
+            If the DaemonSet disappears while waiting.
         """
         if minimum < 0:
             msg = "DaemonSet availability minimum cannot be negative"
             raise ValueError(msg)
+        namespace, name = self._require_namespace_name(
+            "wait for DaemonSet availability"
+        )
         if timeout <= 0:
-            msg = f"timed out waiting for DaemonSet {self.namespace}/{self.name}"
+            msg = f"timed out waiting for DaemonSet {namespace}/{name} availability"
             raise TimeoutError(msg)
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
         current: Self = self
         while True:
-            if current.number_available >= minimum:
-                return current
             remaining = deadline - loop.time()
             if remaining <= 0:
-                msg = f"timed out waiting for DaemonSet {self.namespace}/{self.name}"
+                msg = f"timed out waiting for DaemonSet {namespace}/{name} availability"
                 raise TimeoutError(msg)
-            await asyncio.sleep(min(DAEMONSET_WAIT_POLL_INTERVAL_SECONDS, remaining))
-            refreshed = await current.refresh(kube, timeout=deadline - loop.time())
+            refreshed = await current.refresh(kube, timeout=remaining)
             if refreshed is None:
-                msg = f"DaemonSet {self.namespace}/{self.name} disappeared"
+                msg = (
+                    f"DaemonSet {namespace}/{name} disappeared while waiting for "
+                    "availability"
+                )
                 raise OSError(msg)
+            if refreshed.has_available_pods(minimum):
+                return refreshed
             current = refreshed
+            await asyncio.sleep(min(DAEMONSET_WAIT_POLL_INTERVAL_SECONDS, remaining))
 
     async def wait_rollout(
         self,
@@ -785,7 +720,7 @@ class DaemonSet:
         timeout: float,
         minimum: int = 1,
     ) -> Self:
-        """Wait until this DaemonSet's rollout is observed and available.
+        """Wait until this DaemonSet completes rollout.
 
         Parameters
         ----------
@@ -799,26 +734,21 @@ class DaemonSet:
         Returns
         -------
         DaemonSet
-            Refreshed DaemonSet wrapper whose observed generation and scheduled pod
-            counts indicate rollout completion.
+            Refreshed DaemonSet wrapper that satisfied the rollout condition.
 
         Raises
         ------
-        OSError
-            If this wrapper cannot be refreshed or disappears while waiting.
-        TimeoutError
-            If the DaemonSet does not complete rollout before `timeout`.
         ValueError
             If `minimum` is negative.
+        TimeoutError
+            If the DaemonSet does not complete rollout before `timeout`.
+        OSError
+            If the DaemonSet disappears while waiting.
         """
         if minimum < 0:
             msg = "DaemonSet rollout minimum cannot be negative"
             raise ValueError(msg)
-        namespace = self.namespace
-        name = self.name
-        if not namespace or not name:
-            msg = "cannot wait on DaemonSet with missing metadata.name/namespace"
-            raise OSError(msg)
+        namespace, name = self._require_namespace_name("wait for DaemonSet rollout")
         if timeout <= 0:
             msg = f"timed out waiting for DaemonSet {namespace}/{name} rollout"
             raise TimeoutError(msg)
@@ -838,15 +768,10 @@ class DaemonSet:
                     "rollout"
                 )
                 raise OSError(msg)
-            desired = refreshed.desired_number_scheduled
-            required = max(minimum, desired)
-            generation_observed = (
+            if (
                 target_generation <= 0
                 or refreshed.observed_generation >= target_generation
-            )
-            updated = refreshed.updated_number_scheduled >= desired
-            available = refreshed.number_available >= required
-            if generation_observed and updated and available:
+            ) and refreshed.rollout_ready(minimum):
                 return refreshed
             current = refreshed
             await asyncio.sleep(min(DAEMONSET_WAIT_POLL_INTERVAL_SECONDS, remaining))

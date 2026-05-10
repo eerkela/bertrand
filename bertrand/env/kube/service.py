@@ -2,26 +2,32 @@
 
 from __future__ import annotations
 
-import asyncio
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Literal, Self, cast
 
 import kubernetes
 
-from .api import Kube, ServicePortSpec, ServicePortView, _label_selector
+from .api import (
+    Kube,
+    NamespacedKubeMetadata,
+    ServicePortSpec,
+    ServicePortView,
+    _label_selector,
+    _validate_delete_status,
+    _wait_until_deleted,
+)
 
 if TYPE_CHECKING:
     import builtins
     from collections.abc import Collection, Mapping
-    from datetime import datetime
 
 SERVICE_WAIT_INTERVAL = 0.5
 type ServiceType = Literal["ClusterIP", "NodePort", "LoadBalancer", "ExternalName"]
 
 
 @dataclass(frozen=True)
-class Service:
+class Service(NamespacedKubeMetadata[kubernetes.client.V1Service]):
     """General-purpose wrapper around one Kubernetes Service object.
 
     Parameters
@@ -313,96 +319,6 @@ class Service:
         return cls(_obj=patched)
 
     @property
-    def name(self) -> str:
-        """Return the Service name.
-
-        Returns
-        -------
-        str
-            Trimmed `metadata.name`, or an empty string when unavailable.
-        """
-        metadata = self._obj.metadata
-        return (metadata.name or "").strip() if metadata is not None else ""
-
-    @property
-    def namespace(self) -> str:
-        """Return the Service namespace.
-
-        Returns
-        -------
-        str
-            Trimmed `metadata.namespace`, or an empty string when unavailable.
-        """
-        metadata = self._obj.metadata
-        return (metadata.namespace or "").strip() if metadata is not None else ""
-
-    @property
-    def labels(self) -> Mapping[str, str]:
-        """Return the Service labels.
-
-        Returns
-        -------
-        Mapping[str, str]
-            Read-only view of `metadata.labels`, or an empty mapping when unavailable.
-        """
-        metadata = self._obj.metadata
-        if metadata is None or metadata.labels is None:
-            return MappingProxyType({})
-        return MappingProxyType(metadata.labels)
-
-    @property
-    def annotations(self) -> Mapping[str, str]:
-        """Return the Service annotations.
-
-        Returns
-        -------
-        Mapping[str, str]
-            Read-only view of `metadata.annotations`, or an empty mapping when
-            unavailable.
-        """
-        metadata = self._obj.metadata
-        if metadata is None or metadata.annotations is None:
-            return MappingProxyType({})
-        return MappingProxyType(metadata.annotations)
-
-    @property
-    def resource_version(self) -> str:
-        """Return the Service resource version.
-
-        Returns
-        -------
-        str
-            Kubernetes `metadata.resourceVersion`, or an empty string when
-            unavailable.
-        """
-        metadata = self._obj.metadata
-        return (metadata.resource_version or "").strip() if metadata is not None else ""
-
-    @property
-    def uid(self) -> str:
-        """Return the Service UID.
-
-        Returns
-        -------
-        str
-            Kubernetes `metadata.uid`, or an empty string when unavailable.
-        """
-        metadata = self._obj.metadata
-        return (metadata.uid or "").strip() if metadata is not None else ""
-
-    @property
-    def created_at(self) -> datetime | None:
-        """Return the Service creation timestamp.
-
-        Returns
-        -------
-        datetime | None
-            Kubernetes `metadata.creationTimestamp`, or `None` when unavailable.
-        """
-        metadata = self._obj.metadata
-        return metadata.creation_timestamp if metadata is not None else None
-
-    @property
     def selector(self) -> Mapping[str, str]:
         """Return the Service selector.
 
@@ -453,6 +369,72 @@ class Service:
             for port in spec.ports or ()
         )
 
+    def selects(self, selector: Mapping[str, str]) -> bool:
+        """Return whether this Service has exactly the expected selector.
+
+        Parameters
+        ----------
+        selector : Mapping[str, str]
+            Expected selector labels.
+
+        Returns
+        -------
+        bool
+            Whether the Service selector exactly matches `selector`.
+        """
+        return dict(self.selector) == dict(selector)
+
+    def exposes(self, port: ServicePortSpec) -> bool:
+        """Return whether this Service exposes a matching port.
+
+        Parameters
+        ----------
+        port : ServicePortSpec
+            Expected Service port declaration.
+
+        Returns
+        -------
+        bool
+            Whether any current Service port matches `port`.
+        """
+        return any(
+            actual.name == port.name
+            and actual.port == port.port
+            and actual.target_port == port.target_port
+            and actual.protocol == port.protocol
+            and actual.node_port == port.node_port
+            for actual in self.ports
+        )
+
+    def matches(
+        self,
+        *,
+        service_type: ServiceType,
+        selector: Mapping[str, str],
+        ports: Collection[ServicePortSpec],
+    ) -> bool:
+        """Return whether this Service matches the expected shape.
+
+        Parameters
+        ----------
+        service_type : ServiceType
+            Expected Kubernetes Service type.
+        selector : Mapping[str, str]
+            Expected selector labels.
+        ports : Collection[ServicePortSpec]
+            Expected Service ports.
+
+        Returns
+        -------
+        bool
+            Whether the Service type, selector, and ports all match.
+        """
+        return (
+            self.type == service_type
+            and self.selects(selector)
+            and all(self.exposes(port) for port in ports)
+        )
+
     async def refresh(self, kube: Kube, *, timeout: float) -> Self | None:
         """Re-read this Service by its metadata namespace and name.
 
@@ -467,18 +449,8 @@ class Service:
         -------
         Service | None
             Fresh wrapper for the same Service, or `None` if it no longer exists.
-
-        Raises
-        ------
-        OSError
-            If this wrapper does not contain enough metadata to identify the
-            Service, or if Kubernetes returns malformed data.
         """
-        namespace = self.namespace
-        name = self.name
-        if not namespace or not name:
-            msg = "cannot refresh Service with missing metadata.name/namespace"
-            raise OSError(msg)
+        namespace, name = self._require_namespace_name("refresh Service")
         return await type(self).get(
             kube,
             namespace=namespace,
@@ -495,35 +467,20 @@ class Service:
             Active Kubernetes API context.
         timeout : float
             Maximum request budget in seconds. If infinite, wait indefinitely.
-
-        Raises
-        ------
-        OSError
-            If this wrapper does not contain enough metadata to identify the
-            Service, if the delete request fails, or if Kubernetes returns
-            malformed data.
         """
-        namespace = self.namespace
-        name = self.name
-        if not namespace or not name:
-            msg = "cannot delete Service with missing metadata.name/namespace"
-            raise OSError(msg)
+        namespace, name = self._require_namespace_name("delete Service")
         payload = await kube.run(
             lambda request_timeout: kube.core.delete_namespaced_service(
                 name=name,
                 namespace=namespace,
-                body=kubernetes.client.V1DeleteOptions(),
                 _request_timeout=request_timeout,
             ),
             timeout=timeout,
-            context=f"failed to delete Service {namespace}/{name}",
+            context=f"failed to delete cluster Service {namespace}/{name}",
         )
-        if payload is not None and not isinstance(payload, kubernetes.client.V1Status):
-            msg = (
-                "malformed Kubernetes response while deleting Service "
-                f"{namespace}/{name}"
-            )
-            raise OSError(msg)
+        _validate_delete_status(
+            payload, label=self._object_label(name=name, namespace=namespace)
+        )
 
     async def wait_deleted(self, kube: Kube, *, timeout: float) -> None:
         """Wait until this Service is deleted from the cluster.
@@ -537,30 +494,15 @@ class Service:
 
         Raises
         ------
-        OSError
-            If this wrapper does not contain enough metadata to identify the
-            Service, or if a refresh request returns malformed data.
         TimeoutError
             If the Service still exists when `timeout` expires.
         """
-        namespace = self.namespace
-        name = self.name
-        if not namespace or not name:
-            msg = (
-                "cannot wait for Service deletion with missing metadata.name/namespace"
+        namespace, name = self._require_namespace_name("wait for Service deletion")
+        try:
+            await _wait_until_deleted(
+                label=self._object_label(name=name, namespace=namespace),
+                timeout=timeout,
+                refresh=lambda remaining: self.refresh(kube, timeout=remaining),
             )
-            raise OSError(msg)
-        if timeout <= 0:
-            msg = f"timed out waiting for Service {namespace}/{name} deletion"
-            raise TimeoutError(msg)
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + timeout
-        while True:
-            remaining = deadline - loop.time()
-            if remaining <= 0:
-                msg = f"timed out waiting for Service {namespace}/{name} deletion"
-                raise TimeoutError(msg)
-            live = await self.refresh(kube, timeout=remaining)
-            if live is None:
-                return
-            await asyncio.sleep(min(SERVICE_WAIT_INTERVAL, remaining))
+        except TimeoutError as err:
+            raise TimeoutError(str(err)) from err

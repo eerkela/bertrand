@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from types import MappingProxyType
 from typing import TYPE_CHECKING, Literal, Self
 
 import kubernetes
@@ -13,19 +12,23 @@ from .api import (
     ContainerSpec,
     ImagePullSecretSpec,
     Kube,
+    NamespacedKubeMetadata,
     PodSecurityContextSpec,
     TolerationSpec,
     VolumeSpec,
     WatchEvent,
     _label_selector,
     _pod_template_manifest,
+    _validate_delete_status,
+    _wait_until_deleted,
 )
-from .pod import Pod
 
 if TYPE_CHECKING:
     import builtins
     from collections.abc import AsyncIterator, Collection, Mapping
     from datetime import datetime
+
+    from bertrand.env.kube.pod import Pod
 
 JOB_WAIT_POLL_INTERVAL_SECONDS = 0.5
 type RestartPolicy = Literal["Never", "OnFailure"]
@@ -33,7 +36,7 @@ type DeletionPropagationPolicy = Literal["Background", "Foreground", "Orphan"]
 
 
 @dataclass(frozen=True)
-class Job:
+class Job(NamespacedKubeMetadata[kubernetes.client.V1Job]):
     """General-purpose wrapper around one Kubernetes Job object.
 
     Parameters
@@ -452,96 +455,6 @@ class Job:
         return cls(_obj=created)
 
     @property
-    def name(self) -> str:
-        """Return the Job name.
-
-        Returns
-        -------
-        str
-            Trimmed `metadata.name`, or an empty string when unavailable.
-        """
-        metadata = self._obj.metadata
-        return (metadata.name or "").strip() if metadata is not None else ""
-
-    @property
-    def namespace(self) -> str:
-        """Return the Job namespace.
-
-        Returns
-        -------
-        str
-            Trimmed `metadata.namespace`, or an empty string when unavailable.
-        """
-        metadata = self._obj.metadata
-        return (metadata.namespace or "").strip() if metadata is not None else ""
-
-    @property
-    def labels(self) -> Mapping[str, str]:
-        """Return the Job labels.
-
-        Returns
-        -------
-        Mapping[str, str]
-            Read-only view of `metadata.labels`, or an empty mapping when unavailable.
-        """
-        metadata = self._obj.metadata
-        if metadata is None or metadata.labels is None:
-            return MappingProxyType({})
-        return MappingProxyType(metadata.labels)
-
-    @property
-    def annotations(self) -> Mapping[str, str]:
-        """Return the Job annotations.
-
-        Returns
-        -------
-        Mapping[str, str]
-            Read-only view of `metadata.annotations`, or an empty mapping when
-            unavailable.
-        """
-        metadata = self._obj.metadata
-        if metadata is None or metadata.annotations is None:
-            return MappingProxyType({})
-        return MappingProxyType(metadata.annotations)
-
-    @property
-    def resource_version(self) -> str:
-        """Return the Job resource version.
-
-        Returns
-        -------
-        str
-            Kubernetes `metadata.resourceVersion`, or an empty string when
-            unavailable.
-        """
-        metadata = self._obj.metadata
-        return (metadata.resource_version or "").strip() if metadata is not None else ""
-
-    @property
-    def uid(self) -> str:
-        """Return the Job UID.
-
-        Returns
-        -------
-        str
-            Kubernetes `metadata.uid`, or an empty string when unavailable.
-        """
-        metadata = self._obj.metadata
-        return (metadata.uid or "").strip() if metadata is not None else ""
-
-    @property
-    def created_at(self) -> datetime | None:
-        """Return the Job creation timestamp.
-
-        Returns
-        -------
-        datetime | None
-            Kubernetes `metadata.creationTimestamp`, or `None` when unavailable.
-        """
-        metadata = self._obj.metadata
-        return metadata.creation_timestamp if metadata is not None else None
-
-    @property
     def active(self) -> int:
         """Return the active pod count.
 
@@ -671,36 +584,24 @@ class Job:
         -------
         list[Pod]
             Pods selected by Kubernetes' standard Job ownership labels.
-
-        Raises
-        ------
-        OSError
-            If this wrapper is missing metadata, or Kubernetes returns malformed pod
-            data.
         """
-        namespace = self.namespace
-        name = self.name
-        if not namespace or not name:
-            msg = "cannot list Job pods with missing metadata.name/namespace"
-            raise OSError(msg)
-        try:
-            pods = await Pod.list(
-                kube,
-                namespaces=(namespace,),
-                labels={"batch.kubernetes.io/job-name": name},
-                timeout=timeout,
-            )
-            if pods:
-                return pods
-            return await Pod.list(
-                kube,
-                namespaces=(namespace,),
-                labels={"job-name": name},
-                timeout=timeout,
-            )
-        except OSError as err:
-            msg = f"failed to list pods for Job {namespace}/{name}: {err}"
-            raise OSError(msg) from err
+        from bertrand.env.kube.pod import Pod
+
+        namespace, name = self._require_namespace_name("list Job pods")
+        pods = await Pod.list(
+            kube,
+            namespaces=(namespace,),
+            labels={"batch.kubernetes.io/job-name": name},
+            timeout=timeout,
+        )
+        if pods:
+            return pods
+        return await Pod.list(
+            kube,
+            namespaces=(namespace,),
+            labels={"job-name": name},
+            timeout=timeout,
+        )
 
     async def refresh(self, kube: Kube, *, timeout: float) -> Self | None:
         """Re-read this Job by its metadata namespace and name.
@@ -716,18 +617,8 @@ class Job:
         -------
         Job | None
             Fresh wrapper for the same Job, or `None` if it no longer exists.
-
-        Raises
-        ------
-        OSError
-            If this wrapper does not contain enough metadata to identify the Job,
-            or if Kubernetes returns malformed data.
         """
-        namespace = self.namespace
-        name = self.name
-        if not namespace or not name:
-            msg = "cannot refresh Job with missing metadata.name/namespace"
-            raise OSError(msg)
+        namespace, name = self._require_namespace_name("refresh Job")
         return await type(self).get(
             kube,
             namespace=namespace,
@@ -755,17 +646,10 @@ class Job:
 
         Raises
         ------
-        OSError
-            If this wrapper is missing metadata, the delete request fails, or
-            Kubernetes returns malformed data.
         ValueError
             If `propagation_policy` is invalid.
         """
-        namespace = self.namespace
-        name = self.name
-        if not namespace or not name:
-            msg = "cannot delete Job with missing metadata.name/namespace"
-            raise OSError(msg)
+        namespace, name = self._require_namespace_name("delete Job")
         if propagation_policy not in ("Background", "Foreground", "Orphan"):
             msg = f"invalid Job deletion propagation policy: {propagation_policy!r}"
             raise ValueError(msg)
@@ -781,9 +665,9 @@ class Job:
             timeout=timeout,
             context=f"failed to delete Job {namespace}/{name}",
         )
-        if payload is not None and not isinstance(payload, kubernetes.client.V1Status):
-            msg = f"malformed Kubernetes response while deleting Job {namespace}/{name}"
-            raise OSError(msg)
+        _validate_delete_status(
+            payload, label=self._object_label(name=name, namespace=namespace)
+        )
 
     async def wait_deleted(self, kube: Kube, *, timeout: float) -> None:
         """Wait until this Job is deleted from the cluster.
@@ -797,31 +681,18 @@ class Job:
 
         Raises
         ------
-        OSError
-            If this wrapper does not contain enough metadata to identify the Job,
-            or if a refresh request returns malformed data.
         TimeoutError
             If the Job still exists when `timeout` expires.
         """
-        namespace = self.namespace
-        name = self.name
-        if not namespace or not name:
-            msg = "cannot wait for Job deletion with missing metadata.name/namespace"
-            raise OSError(msg)
-        if timeout <= 0:
-            msg = f"timed out waiting for Job {namespace}/{name} deletion"
-            raise TimeoutError(msg)
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + timeout
-        while True:
-            remaining = deadline - loop.time()
-            if remaining <= 0:
-                msg = f"timed out waiting for Job {namespace}/{name} deletion"
-                raise TimeoutError(msg)
-            live = await self.refresh(kube, timeout=remaining)
-            if live is None:
-                return
-            await asyncio.sleep(min(JOB_WAIT_POLL_INTERVAL_SECONDS, remaining))
+        namespace, name = self._require_namespace_name("wait for Job deletion")
+        try:
+            await _wait_until_deleted(
+                label=self._object_label(name=name, namespace=namespace),
+                timeout=timeout,
+                refresh=lambda remaining: self.refresh(kube, timeout=remaining),
+            )
+        except TimeoutError as err:
+            raise TimeoutError(str(err)) from err
 
     async def wait_complete(self, kube: Kube, *, timeout: float) -> Self:
         """Wait until this Job succeeds or fails.
@@ -840,17 +711,12 @@ class Job:
 
         Raises
         ------
-        OSError
-            If this wrapper is missing metadata, the Job disappears, or the Job
-            reports a terminal failure condition.
         TimeoutError
             If the Job does not complete before `timeout`.
+        OSError
+            If the Job fails or disappears while waiting.
         """
-        namespace = self.namespace
-        name = self.name
-        if not namespace or not name:
-            msg = "cannot wait for Job completion with missing metadata.name/namespace"
-            raise OSError(msg)
+        namespace, name = self._require_namespace_name("wait for Job completion")
         if timeout <= 0:
             msg = f"timed out waiting for Job {namespace}/{name} completion"
             raise TimeoutError(msg)

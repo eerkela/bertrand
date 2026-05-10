@@ -5,8 +5,9 @@ import math
 import sys
 from pathlib import Path
 
-from ..kube import Container, Environment
-from ..run import TIMEOUT, nerdctl
+from ..legacy.container import Container
+from ..legacy.environment import Environment
+from ..legacy.nerdctl import TIMEOUT, nerdctl
 
 
 async def bertrand_restart(

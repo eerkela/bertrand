@@ -13,16 +13,18 @@ from kubernetes import client as kube_client
 from .api import (
     CustomResourceSpec,
     Kube,
+    KubeMetadata,
     WatchEvent,
     WatchExpired,
     _label_selector,
+    _validate_delete_status,
+    _wait_until_deleted,
 )
 
 CRD_WAIT_POLL_INTERVAL_SECONDS = 0.5
 
 if TYPE_CHECKING:
     import builtins
-    from datetime import datetime
 
 
 @dataclass(frozen=True)
@@ -951,7 +953,7 @@ class NamespacedCustomObject:
 
 
 @dataclass(frozen=True)
-class CustomResourceDefinition:
+class CustomResourceDefinition(KubeMetadata[kube_client.V1CustomResourceDefinition]):
     """General-purpose wrapper around one Kubernetes CRD object."""
 
     _obj: kube_client.V1CustomResourceDefinition
@@ -1215,84 +1217,6 @@ class CustomResourceDefinition:
         return cls(_obj=patched)
 
     @property
-    def name(self) -> str:
-        """Return this CRD's name.
-
-        Returns
-        -------
-        str
-            Trimmed `metadata.name`, or an empty string when unavailable.
-        """
-        metadata = self._obj.metadata
-        return (metadata.name or "").strip() if metadata is not None else ""
-
-    @property
-    def labels(self) -> Mapping[str, str]:
-        """Return this CRD's labels.
-
-        Returns
-        -------
-        Mapping[str, str]
-            Read-only view of `metadata.labels`, or an empty mapping when unavailable.
-        """
-        metadata = self._obj.metadata
-        if metadata is None or metadata.labels is None:
-            return MappingProxyType({})
-        return MappingProxyType(metadata.labels)
-
-    @property
-    def annotations(self) -> Mapping[str, str]:
-        """Return this CRD's annotations.
-
-        Returns
-        -------
-        Mapping[str, str]
-            Read-only view of `metadata.annotations`, or an empty mapping when
-            unavailable.
-        """
-        metadata = self._obj.metadata
-        if metadata is None or metadata.annotations is None:
-            return MappingProxyType({})
-        return MappingProxyType(metadata.annotations)
-
-    @property
-    def resource_version(self) -> str:
-        """Return this CRD's resource version.
-
-        Returns
-        -------
-        str
-            Kubernetes `metadata.resourceVersion`, or an empty string when
-            unavailable.
-        """
-        metadata = self._obj.metadata
-        return (metadata.resource_version or "").strip() if metadata is not None else ""
-
-    @property
-    def uid(self) -> str:
-        """Return this CRD's UID.
-
-        Returns
-        -------
-        str
-            Kubernetes `metadata.uid`, or an empty string when unavailable.
-        """
-        metadata = self._obj.metadata
-        return (metadata.uid or "").strip() if metadata is not None else ""
-
-    @property
-    def created_at(self) -> datetime | None:
-        """Return this CRD's creation timestamp.
-
-        Returns
-        -------
-        datetime | None
-            Kubernetes `metadata.creationTimestamp`, or `None` when unavailable.
-        """
-        metadata = self._obj.metadata
-        return metadata.creation_timestamp if metadata is not None else None
-
-    @property
     def is_established(self) -> bool:
         """Return whether this CRD is established.
 
@@ -1321,17 +1245,8 @@ class CustomResourceDefinition:
         -------
         CustomResourceDefinition | None
             Fresh wrapper for the same CRD, or `None` if it no longer exists.
-
-        Raises
-        ------
-        OSError
-            If this wrapper does not contain enough metadata to identify the CRD,
-            or if Kubernetes returns malformed data.
         """
-        name = self.name
-        if not name:
-            msg = "cannot refresh CRD with missing metadata.name"
-            raise OSError(msg)
+        name = self._require_name("refresh CRD")
         return await type(self).get(kube, name=name, timeout=timeout)
 
     async def delete(self, kube: Kube, *, timeout: float) -> None:
@@ -1343,31 +1258,19 @@ class CustomResourceDefinition:
             Active Kubernetes API context.
         timeout : float
             Maximum request budget in seconds. If infinite, wait indefinitely.
-
-        Raises
-        ------
-        OSError
-            If this wrapper does not contain enough metadata to identify the CRD, if
-            the delete request fails, or if Kubernetes returns malformed data.
         """
-        name = self.name
-        if not name:
-            msg = "cannot delete CRD with missing metadata.name"
-            raise OSError(msg)
+        name = self._require_name("delete CRD")
         payload = await kube.run(
             lambda request_timeout: (
                 kube.apiextensions.delete_custom_resource_definition(
                     name=name,
-                    body=kube_client.V1DeleteOptions(),
                     _request_timeout=request_timeout,
                 )
             ),
             timeout=timeout,
-            context=f"failed to delete CustomResourceDefinition {name}",
+            context=f"failed to delete CRD {name}",
         )
-        if payload is not None and not isinstance(payload, kube_client.V1Status):
-            msg = f"malformed Kubernetes response while deleting CRD {name}"
-            raise OSError(msg)
+        _validate_delete_status(payload, label=self._object_label(name))
 
     async def wait_deleted(self, kube: Kube, *, timeout: float) -> None:
         """Wait until this CRD is deleted from the cluster.
@@ -1381,30 +1284,18 @@ class CustomResourceDefinition:
 
         Raises
         ------
-        OSError
-            If this wrapper does not contain enough metadata to identify the CRD, or
-            if a refresh request returns malformed data.
         TimeoutError
             If the CRD still exists when `timeout` expires.
         """
-        name = self.name
-        if not name:
-            msg = "cannot wait for CRD deletion with missing metadata.name"
-            raise OSError(msg)
-        if timeout <= 0:
-            msg = f"timed out waiting for CRD {name!r} deletion"
-            raise TimeoutError(msg)
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + timeout
-        while True:
-            remaining = deadline - loop.time()
-            if remaining <= 0:
-                msg = f"timed out waiting for CRD {name!r} deletion"
-                raise TimeoutError(msg)
-            live = await self.refresh(kube, timeout=remaining)
-            if live is None:
-                return
-            await asyncio.sleep(min(CRD_WAIT_POLL_INTERVAL_SECONDS, remaining))
+        name = self._require_name("wait for CRD deletion")
+        try:
+            await _wait_until_deleted(
+                label=self._object_label(name),
+                timeout=timeout,
+                refresh=lambda remaining: self.refresh(kube, timeout=remaining),
+            )
+        except TimeoutError as err:
+            raise TimeoutError(str(err)) from err
 
     async def wait_established(self, kube: Kube, *, timeout: float) -> Self:
         """Wait until this CRD reports `Established=True`.

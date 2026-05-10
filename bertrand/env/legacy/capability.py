@@ -1,0 +1,175 @@
+"""Legacy build capability flag helpers for old nerdctl image builds."""
+
+from __future__ import annotations
+
+import shutil
+import sys
+import uuid
+from pathlib import Path
+from typing import Literal
+
+from bertrand.env.config.core import KubeName, _check_kube_name, _check_uuid
+from bertrand.env.kube.capability.base import Capability
+from bertrand.env.run import CACHE_DIR, atomic_write_bytes
+
+type DevicePermission = Literal["r", "w", "m", "rw", "rm", "wm", "rwm"]
+
+CAPABILITY_DIR = CACHE_DIR / "capabilities"
+DEVICE_PERMISSIONS = frozenset({"r", "w", "m", "rw", "rm", "wm", "rwm"})
+
+
+def _stage_secret_payload(staged: Path, capability_id: KubeName, payload: bytes) -> Path:
+    target = staged / "secrets" / capability_id
+    target.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write_bytes(target, payload)
+    target.chmod(0o600)
+    return target
+
+
+def cleanup_secret_staged(path: Path | None) -> None:
+    """Delete staged legacy build-time secret payload files."""
+    if path is None:
+        return
+    shutil.rmtree(path, ignore_errors=True)
+
+
+async def _resolve_build_flag(
+    kube,
+    *,
+    mode: Literal["secret", "ssh"],
+    capability_id: KubeName,
+    required: bool,
+    env_id: str,
+    timeout: float,
+    staged: Path,
+) -> list[str]:
+    capability = await Capability.resolve(
+        kube,
+        kind=mode,
+        capability_id=capability_id,
+        env_id=env_id,
+        required=required,
+        timeout=timeout,
+    )
+    if capability is None:
+        print(
+            f"bertrand: optional {mode} {capability_id!r} was not found; continuing without it",
+            file=sys.stderr,
+        )
+        return []
+
+    target = _stage_secret_payload(
+        staged,
+        capability_id=_check_kube_name(capability_id),
+        payload=capability.payload,
+    )
+    if mode == "secret":
+        return ["--secret", f"id={capability_id},src={target}"]
+    return ["--ssh", f"id={capability_id},src={target}"]
+
+
+async def build_secret_flags(
+    kube,
+    *,
+    env_id: str,
+    build: object,
+    timeout: float,
+) -> tuple[tuple[str, ...], Path | None]:
+    """Build legacy secret and SSH CLI flags for one nerdctl build request."""
+    secrets = tuple(getattr(build, "secrets", ()))
+    ssh = tuple(getattr(build, "ssh", ()))
+    if not secrets and not ssh:
+        return (), None
+
+    validated_env = _check_uuid(env_id)
+    staged = CAPABILITY_DIR / uuid.uuid4().hex
+    flags: list[str] = []
+    try:
+        for request in secrets:
+            flags.extend(
+                await _resolve_build_flag(
+                    kube,
+                    mode="secret",
+                    capability_id=request.id,
+                    required=request.required,
+                    env_id=validated_env,
+                    timeout=timeout,
+                    staged=staged,
+                )
+            )
+        for request in ssh:
+            flags.extend(
+                await _resolve_build_flag(
+                    kube,
+                    mode="ssh",
+                    capability_id=request.id,
+                    required=request.required,
+                    env_id=validated_env,
+                    timeout=timeout,
+                    staged=staged,
+                )
+            )
+        return tuple(flags), staged
+    except Exception:
+        cleanup_secret_staged(staged)
+        raise
+
+
+class DeviceConfigMap:
+    """Legacy device flag resolver kept for old nerdctl build commands."""
+
+    @classmethod
+    async def build_flags(
+        cls,
+        kube,
+        *,
+        env_id: str,
+        build: object,
+        timeout: float,
+    ) -> tuple[str, ...]:
+        """Build legacy device CLI flags for one build request."""
+        requests = tuple(getattr(build, "devices", ()))
+        if not requests:
+            return ()
+
+        validated_env = _check_uuid(env_id)
+        seen: set[KubeName] = set()
+        flags: list[str] = []
+        for request in requests:
+            capability_id = _check_kube_name(request.id)
+            if capability_id in seen:
+                msg = f"duplicate device capability ID: {capability_id!r}"
+                raise ValueError(msg)
+            seen.add(capability_id)
+
+            permissions = str(request.permissions)
+            if permissions not in DEVICE_PERMISSIONS:
+                msg = (
+                    f"invalid device permissions {permissions!r}; must be a non-empty "
+                    "combination of 'r', 'w', and 'm'"
+                )
+                raise ValueError(msg)
+
+            capability = await Capability.resolve(
+                kube,
+                kind="device",
+                capability_id=capability_id,
+                env_id=validated_env,
+                required=request.required,
+                timeout=timeout,
+            )
+            if capability is None:
+                print(
+                    f"bertrand: optional device selector {capability_id!r} was not found; "
+                    "continuing without it",
+                    file=sys.stderr,
+                )
+                continue
+            selector = capability.payload.decode("utf-8").strip()
+            if not selector:
+                msg = f"device capability {capability_id!r} cannot be empty"
+                raise OSError(msg)
+            flags.extend(["--device", f"{selector}:{permissions}"])
+
+        return tuple(flags)
+

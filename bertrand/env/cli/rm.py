@@ -4,7 +4,7 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
-from ..kube import Environment
+from ..legacy.environment import Environment
 
 
 async def bertrand_rm(

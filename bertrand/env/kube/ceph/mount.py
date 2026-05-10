@@ -7,6 +7,7 @@ import contextlib
 import json
 import os
 import platform
+import shutil
 import sys
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -26,6 +27,7 @@ from bertrand.env.config.core import UUIDHex, _check_uuid
 from bertrand.env.run import (
     HOST_MOUNTS,
     INFINITY,
+    METADATA_REPO_ID,
     REPO_ALIASES_EXT,
     REPO_DIR,
     REPO_LOCK_EXT,
@@ -43,6 +45,10 @@ from bertrand.env.run import (
 if TYPE_CHECKING:
     from collections.abc import Sequence
     from types import TracebackType
+
+    from bertrand.env.kube.api import Kube
+    from bertrand.env.kube.ceph.auth import RepoCredentials
+    from bertrand.env.kube.ceph.volume import RepoVolume
 
 DEFAULT_REPO_FS_NAME = "ceph"
 if not DEFAULT_REPO_FS_NAME:
@@ -377,6 +383,9 @@ class MountInfo:
         if not monitors:
             msg = "repository mount requires at least one Ceph monitor endpoint"
             raise ValueError(msg)
+        if any("," in monitor for monitor in monitors):
+            msg = "repository Ceph monitor endpoints cannot contain comma separators"
+            raise ValueError(msg)
 
         ceph_secretfile = ceph_secretfile.expanduser().resolve()
         if not ceph_secretfile.exists():
@@ -429,14 +438,14 @@ class MountInfo:
                     )
                     raise OSError(msg)
 
-            if not mounted.ceph_path is not None:
+            if mounted.ceph_path is None:
                 msg = (
                     f"repository mount target {mounted.mount_point!r} is mounted with "
                     f"unsupported source {mounted.source!r}, expected parseable Ceph "
                     "mount"
                 )
                 raise OSError(msg)
-            if ceph_path is not None and mounted.ceph_path != ceph_path:
+            if mounted.ceph_path != ceph_path:
                 msg = (
                     f"repository mount target {mounted.mount_point!r} is attached to "
                     f"{mounted.source!r}, expected Ceph source suffix ':{ceph_path}'"
@@ -959,3 +968,406 @@ class MountInfo:
             )
             raise OSError(msg)
         return self.Aliases(self, timeout=timeout, gc=gc)
+
+
+@dataclass(frozen=True)
+class RepositoryMount:
+    """Converged host mount for a CephFS-backed repository volume.
+
+    Attributes
+    ----------
+    repo_id : UUIDHex
+        Stable repository identity.
+    volume : RepoVolume
+        Cluster PersistentVolumeClaim wrapper backing the repository.
+    ceph_path : PosixPath
+        Absolute CephFS path backing the claim.
+    credentials : RepoCredentials
+        CephX credentials used to mount the repository path.
+    alias : Path
+        Host path linked to the hidden managed mount.
+    mount : MountInfo
+        Active hidden host mount.
+    """
+
+    repo_id: UUIDHex
+    volume: RepoVolume
+    ceph_path: PosixPath
+    credentials: RepoCredentials
+    alias: Path
+    mount: MountInfo
+
+
+async def ensure_repository_mount(
+    kube: Kube,
+    *,
+    repo_id: UUIDHex,
+    target: Path,
+    timeout: float,
+    size_request: str,
+    volumes: Sequence[RepoVolume] | None = None,
+) -> RepositoryMount:
+    """Converge a repository claim, credentials, hidden mount, and host alias.
+
+    Parameters
+    ----------
+    kube : Kube
+        Active Kubernetes API context.
+    repo_id : UUIDHex
+        Stable repository identity.
+    target : Path
+        Desired host alias path for the managed repository mount.
+    timeout : float
+        Maximum convergence budget in seconds.
+    size_request : str
+        Storage request used when a new repository claim must be created.
+    volumes : Sequence[RepoVolume] | None, optional
+        Optional preloaded repository volumes for `repo_id`.
+
+    Returns
+    -------
+    RepositoryMount
+        Converged repository storage and host mount state.
+
+    Raises
+    ------
+    OSError
+        If an existing repository claim or hidden mount is ambiguous or incompatible.
+    TimeoutError
+        If `timeout` is non-positive.
+    """
+    from bertrand.env.kube.ceph.auth import RepoCredentials
+    from bertrand.env.kube.ceph.volume import RepoVolume
+
+    repo_id = _check_uuid(repo_id)
+    target = abspath(target)
+    if timeout <= 0:
+        msg = "timed out before repository mount convergence started"
+        raise TimeoutError(msg)
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+
+    candidates = (
+        list(volumes)
+        if volumes is not None
+        else await RepoVolume.list(kube, repo_id, timeout=deadline - loop.time())
+    )
+    if len(candidates) > 1:
+        names = ", ".join(sorted(volume.pvc.name for volume in candidates))
+        msg = (
+            "repository identity maps to multiple cluster claims and cannot be "
+            f"disambiguated safely for {repo_id!r}: {names}"
+        )
+        raise OSError(msg)
+
+    hidden_mount = REPO_DIR / repo_id / REPO_MOUNT_EXT
+    if candidates:
+        volume = candidates[0]
+        ceph_path = await volume.resolve_ceph_path(
+            kube,
+            timeout=deadline - loop.time(),
+        )
+        mounted = MountInfo.search(hidden_mount)
+        if mounted is not None and not (
+            mounted.ceph_path is not None and mounted.ceph_path == ceph_path
+        ):
+            msg = (
+                f"repository hidden mount {hidden_mount!r} is occupied by "
+                f"{mounted.source!r}, expected Ceph source suffix ':{ceph_path}'"
+            )
+            raise OSError(msg)
+    else:
+        volume = await RepoVolume.ensure(
+            kube,
+            repo_id=repo_id,
+            timeout=deadline - loop.time(),
+            size_request=size_request,
+        )
+        ceph_path = await volume.resolve_ceph_path(
+            kube,
+            timeout=deadline - loop.time(),
+        )
+
+    credentials: RepoCredentials = await RepoCredentials.ensure(
+        repo_id=repo_id,
+        ceph_path=ceph_path,
+        timeout=deadline - loop.time(),
+    )
+    staged_alias = target.parent / f".{target.name}.bertrand.mount.{repo_id}"
+    target_occupied = target.exists() or target.is_symlink()
+    if not target_occupied or symlink_points_to(target, hidden_mount):
+        alias = target
+    else:
+        alias = staged_alias
+
+    with credentials.secretfile() as ceph_secretfile:
+        mount = await MountInfo.mount(
+            repo_id=repo_id,
+            ceph_path=ceph_path,
+            timeout=deadline - loop.time(),
+            monitors=credentials.monitors,
+            ceph_user=credentials.user,
+            ceph_secretfile=ceph_secretfile,
+        )
+    async with mount.aliases(timeout=deadline - loop.time(), gc=True) as aliases:
+        aliases.link(alias)
+
+    atomic_write_text(
+        hidden_mount / METADATA_REPO_ID,
+        repo_id,
+        encoding="utf-8",
+    )
+    return RepositoryMount(
+        repo_id=repo_id,
+        volume=volume,
+        ceph_path=ceph_path,
+        credentials=credentials,
+        alias=alias,
+        mount=mount,
+    )
+
+
+async def finalize_repository_mount(
+    *,
+    repo_id: UUIDHex,
+    target: Path,
+    alias: Path,
+    timeout: float,
+    replace_existing: bool,
+) -> Path:
+    """Promote a staged repository mount alias into its final location.
+
+    Parameters
+    ----------
+    repo_id : UUIDHex
+        Stable repository identity.
+    target : Path
+        Final user-facing repository path.
+    alias : Path
+        Current managed alias path returned by repository mount convergence.
+    timeout : float
+        Maximum finalization budget in seconds.
+    replace_existing : bool
+        Whether an occupied destination may be displaced during cutover.
+
+    Returns
+    -------
+    Path
+        Final alias path after successful cutover.
+
+    Raises
+    ------
+    OSError
+        If the staged alias, final alias, or interrupted swap state is invalid.
+    PermissionError
+        If the destination is occupied and `replace_existing` is false.
+    TimeoutError
+        If `timeout` is non-positive.
+    """
+    repo_id = _check_uuid(repo_id)
+    target = abspath(target)
+    alias = abspath(alias)
+    if timeout <= 0:
+        msg = "timed out before repository mount finalization started"
+        raise TimeoutError(msg)
+
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    hidden_mount = REPO_DIR / repo_id / REPO_MOUNT_EXT
+    staged_alias = target.parent / f".{target.name}.bertrand.mount.{repo_id}"
+    swap_path = target.parent / f".{target.name}.bertrand.swap.{repo_id}"
+
+    if alias == target:
+        if not symlink_points_to(target, hidden_mount):
+            msg = (
+                f"cannot finalize repository at {target}: alias path {target} does "
+                f"not target expected mount path {hidden_mount}"
+            )
+            raise OSError(msg)
+    elif swap_path.exists() or swap_path.is_symlink():
+        if target.exists() or target.is_symlink():
+            if not symlink_points_to(target, hidden_mount):
+                msg = (
+                    f"cannot resume repository cutover at {target}: alias path "
+                    f"{target} does not target expected mount path {hidden_mount}"
+                )
+                raise OSError(msg)
+        else:
+            if not alias.exists() and not alias.is_symlink():
+                msg = (
+                    f"cannot resume repository cutover at {target}: neither staged "
+                    "alias nor destination path exists while swap path is present"
+                )
+                raise OSError(msg)
+            if not symlink_points_to(alias, hidden_mount):
+                msg = (
+                    f"cannot resume repository cutover at {target}: alias path "
+                    f"{alias} does not target expected mount path {hidden_mount}"
+                )
+                raise OSError(msg)
+            alias.rename(target)
+    elif target.exists() or target.is_symlink():
+        if not alias.exists() and not alias.is_symlink():
+            msg = (
+                f"cannot cut over repository at {target}: staged alias does not exist "
+                f"({alias})"
+            )
+            raise OSError(msg)
+        if not symlink_points_to(alias, hidden_mount):
+            msg = (
+                f"cannot cut over repository at {target}: alias path {alias} does "
+                f"not target expected mount path {hidden_mount}"
+            )
+            raise OSError(msg)
+        if not replace_existing:
+            msg = "repository cutover declined by user"
+            raise PermissionError(msg)
+        target.rename(swap_path)
+        try:
+            alias.rename(target)
+        except OSError as err:
+            if (
+                (swap_path.exists() or swap_path.is_symlink())
+                and not target.exists()
+                and not target.is_symlink()
+            ):
+                swap_path.rename(target)
+            msg = f"failed to atomically swap repository path at {target}"
+            raise OSError(msg) from err
+    else:
+        if not alias.exists() and not alias.is_symlink():
+            msg = (
+                f"cannot finalize repository cutover at {target}: staged alias does "
+                f"not exist ({alias})"
+            )
+            raise OSError(msg)
+        if not symlink_points_to(alias, hidden_mount):
+            msg = (
+                f"cannot finalize repository cutover at {target}: alias path "
+                f"{alias} does not target expected mount path {hidden_mount}"
+            )
+            raise OSError(msg)
+        alias.rename(target)
+
+    if not symlink_points_to(target, hidden_mount):
+        msg = (
+            f"repository cutover failed for destination path {target}: alias path "
+            f"{target} does not target expected mount path {hidden_mount}"
+        )
+        raise OSError(msg)
+
+    if swap_path.exists() or swap_path.is_symlink():
+        try:
+            if not swap_path.is_symlink() and swap_path.is_dir():
+                shutil.rmtree(swap_path)
+            else:
+                swap_path.unlink()
+        except OSError as err:
+            print(
+                "bertrand: warning: failed to delete conversion swap path "
+                f"at {swap_path}: {err}",
+                file=sys.stderr,
+            )
+
+    for stale_alias in (alias, staged_alias):
+        if (
+            stale_alias != target
+            and (stale_alias.exists() or stale_alias.is_symlink())
+            and symlink_points_to(stale_alias, hidden_mount)
+        ):
+            mount = MountInfo(mount_point=hidden_mount)
+            async with mount.aliases(
+                timeout=deadline - loop.time(),
+                gc=True,
+            ) as aliases:
+                aliases.unlink(stale_alias)
+
+    return target
+
+
+async def resurrect_repository_mount(
+    kube: Kube,
+    path: Path,
+    *,
+    timeout: float,
+) -> tuple[UUIDHex, MountInfo] | None:
+    """Restore a managed repository mount discovered through alias ancestry.
+
+    Parameters
+    ----------
+    kube : Kube
+        Active Kubernetes API context.
+    path : Path
+        Host path to inspect for managed alias ancestry.
+    timeout : float
+        Maximum resurrection budget in seconds.
+
+    Returns
+    -------
+    tuple[UUIDHex, MountInfo] | None
+        `(repo_id, mount)` when a managed alias ancestor is found and mounted, or
+        None when no managed alias ancestry is present.
+
+    Raises
+    ------
+    OSError
+        If managed alias ancestry exists but cannot be mapped to exactly one
+        repository volume or remounted safely.
+    TimeoutError
+        If `timeout` is non-positive.
+    """
+    from bertrand.env.kube.ceph.auth import RepoCredentials
+    from bertrand.env.kube.ceph.volume import RepoVolume
+
+    if timeout <= 0:
+        msg = "timed out before repository mount resurrection started"
+        raise TimeoutError(msg)
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+
+    # Search for managed Bertrand symlink alias pointing to a mounted volume.
+    repo_id, mount = MountInfo.resolve(path)
+    if repo_id is None:
+        return None
+    if mount is not None:
+        return repo_id, mount
+
+    # Managed alias ancestry is authoritative: if the mount is missing, recover it
+    # from cluster state or fail closed to avoid silently drifting ownership.
+    volumes = await RepoVolume.list(
+        kube,
+        repo_id,
+        timeout=deadline - loop.time(),
+    )
+    if not volumes:
+        msg = (
+            "repository alias ancestry was detected for repository "
+            f"{repo_id}, but no matching cluster claim exists"
+        )
+        raise OSError(msg)
+    if len(volumes) != 1:
+        names = ", ".join(sorted(volume.pvc.name for volume in volumes))
+        msg = (
+            "repository alias ancestry maps to multiple cluster claims and cannot be "
+            f"disambiguated safely for {repo_id!r}: {names}"
+        )
+        raise OSError(msg)
+
+    # Resolve Ceph path + credentials for the claim, then regenerate the local mount.
+    volume = volumes[0]
+    ceph_path = await volume.resolve_ceph_path(kube, timeout=deadline - loop.time())
+    credentials: RepoCredentials = await RepoCredentials.ensure(
+        repo_id=repo_id,
+        ceph_path=ceph_path,
+        timeout=deadline - loop.time(),
+    )
+    with credentials.secretfile() as ceph_secretfile:
+        mount = await MountInfo.mount(
+            repo_id=repo_id,
+            ceph_path=ceph_path,
+            timeout=deadline - loop.time(),
+            monitors=credentials.monitors,
+            ceph_user=credentials.user,
+            ceph_secretfile=ceph_secretfile,
+        )
+    return repo_id, mount

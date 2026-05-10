@@ -13,12 +13,15 @@ from .api import (
     ContainerSpec,
     ImagePullSecretSpec,
     Kube,
+    NamespacedKubeMetadata,
     PodSecurityContextSpec,
     TolerationSpec,
     VolumeSpec,
     WatchEvent,
     _label_selector,
     _pod_template_manifest,
+    _validate_delete_status,
+    _wait_until_deleted,
 )
 
 DEPLOYMENT_WAIT_POLL_INTERVAL_SECONDS = 0.5
@@ -26,11 +29,10 @@ DEPLOYMENT_WAIT_POLL_INTERVAL_SECONDS = 0.5
 if TYPE_CHECKING:
     import builtins
     from collections.abc import AsyncIterator, Collection, Mapping
-    from datetime import datetime
 
 
 @dataclass(frozen=True)
-class Deployment:
+class Deployment(NamespacedKubeMetadata[kubernetes.client.V1Deployment]):
     """General-purpose wrapper around one Kubernetes Deployment object.
 
     Parameters
@@ -464,59 +466,6 @@ class Deployment:
         return cls(_obj=patched)
 
     @property
-    def name(self) -> str:
-        """Return this Deployment's name.
-
-        Returns
-        -------
-        str
-            Trimmed `metadata.name`, or an empty string when unavailable.
-        """
-        metadata = self._obj.metadata
-        return (metadata.name or "").strip() if metadata is not None else ""
-
-    @property
-    def namespace(self) -> str:
-        """Return this Deployment's namespace.
-
-        Returns
-        -------
-        str
-            Trimmed `metadata.namespace`, or an empty string when unavailable.
-        """
-        metadata = self._obj.metadata
-        return (metadata.namespace or "").strip() if metadata is not None else ""
-
-    @property
-    def labels(self) -> Mapping[str, str]:
-        """Return this Deployment's labels.
-
-        Returns
-        -------
-        Mapping[str, str]
-            Read-only view of `metadata.labels`, or an empty mapping when unavailable.
-        """
-        metadata = self._obj.metadata
-        if metadata is None or metadata.labels is None:
-            return MappingProxyType({})
-        return MappingProxyType(metadata.labels)
-
-    @property
-    def annotations(self) -> Mapping[str, str]:
-        """Return this Deployment's annotations.
-
-        Returns
-        -------
-        Mapping[str, str]
-            Read-only view of `metadata.annotations`, or an empty mapping when
-            unavailable.
-        """
-        metadata = self._obj.metadata
-        if metadata is None or metadata.annotations is None:
-            return MappingProxyType({})
-        return MappingProxyType(metadata.annotations)
-
-    @property
     def pod_annotations(self) -> Mapping[str, str]:
         """Return this Deployment's pod template annotations.
 
@@ -532,43 +481,6 @@ class Deployment:
         if metadata is None or metadata.annotations is None:
             return MappingProxyType({})
         return MappingProxyType(metadata.annotations)
-
-    @property
-    def resource_version(self) -> str:
-        """Return this Deployment's resource version.
-
-        Returns
-        -------
-        str
-            Kubernetes `metadata.resourceVersion`, or an empty string when
-            unavailable.
-        """
-        metadata = self._obj.metadata
-        return (metadata.resource_version or "").strip() if metadata is not None else ""
-
-    @property
-    def uid(self) -> str:
-        """Return this Deployment's UID.
-
-        Returns
-        -------
-        str
-            Kubernetes `metadata.uid`, or an empty string when unavailable.
-        """
-        metadata = self._obj.metadata
-        return (metadata.uid or "").strip() if metadata is not None else ""
-
-    @property
-    def created_at(self) -> datetime | None:
-        """Return this Deployment's creation timestamp.
-
-        Returns
-        -------
-        datetime | None
-            Kubernetes `metadata.creationTimestamp`, or `None` when unavailable.
-        """
-        metadata = self._obj.metadata
-        return metadata.creation_timestamp if metadata is not None else None
 
     @property
     def generation(self) -> int:
@@ -671,6 +583,60 @@ class Deployment:
             return MappingProxyType({})
         return MappingProxyType(labels)
 
+    def has_available_replicas(self, minimum: int = 1) -> bool:
+        """Return whether this Deployment has enough available replicas.
+
+        Parameters
+        ----------
+        minimum : int, optional
+            Minimum acceptable available replica count.
+
+        Returns
+        -------
+        bool
+            Whether `status.availableReplicas` is at least `minimum`.
+
+        Raises
+        ------
+        ValueError
+            If `minimum` is less than one.
+        """
+        if minimum < 1:
+            msg = "minimum available Deployment replicas must be positive"
+            raise ValueError(msg)
+        return self.available_replicas >= minimum
+
+    def rollout_ready(self, minimum: int = 1) -> bool:
+        """Return whether this Deployment's rollout status is ready.
+
+        Parameters
+        ----------
+        minimum : int, optional
+            Minimum acceptable updated and available replica count.
+
+        Returns
+        -------
+        bool
+            Whether the controller has observed the current generation and at least
+            `minimum` replicas are updated and available.
+
+        Raises
+        ------
+        ValueError
+            If `minimum` is less than one.
+        """
+        if minimum < 1:
+            msg = "minimum rolled out Deployment replicas must be positive"
+            raise ValueError(msg)
+        generation_observed = (
+            self.generation <= 0 or self.observed_generation >= self.generation
+        )
+        return (
+            generation_observed
+            and self.updated_replicas >= minimum
+            and self.available_replicas >= minimum
+        )
+
     async def refresh(self, kube: Kube, *, timeout: float) -> Self | None:
         """Re-read this Deployment by its metadata namespace and name.
 
@@ -685,18 +651,8 @@ class Deployment:
         -------
         Deployment | None
             Fresh wrapper for the same Deployment, or `None` if it no longer exists.
-
-        Raises
-        ------
-        OSError
-            If this wrapper does not contain enough metadata to identify the
-            Deployment, or if Kubernetes returns malformed data.
         """
-        namespace = self.namespace
-        name = self.name
-        if not namespace or not name:
-            msg = "cannot refresh Deployment with missing metadata.name/namespace"
-            raise OSError(msg)
+        namespace, name = self._require_namespace_name("refresh Deployment")
         return await type(self).get(
             kube,
             namespace=namespace,
@@ -713,35 +669,20 @@ class Deployment:
             Active Kubernetes API context.
         timeout : float
             Maximum request budget in seconds. If infinite, wait indefinitely.
-
-        Raises
-        ------
-        OSError
-            If this wrapper does not contain enough metadata to identify the
-            Deployment, if the delete request fails, or if Kubernetes returns
-            malformed data.
         """
-        namespace = self.namespace
-        name = self.name
-        if not namespace or not name:
-            msg = "cannot delete Deployment with missing metadata.name/namespace"
-            raise OSError(msg)
+        namespace, name = self._require_namespace_name("delete Deployment")
         payload = await kube.run(
             lambda request_timeout: kube.apps.delete_namespaced_deployment(
                 name=name,
                 namespace=namespace,
-                body=kubernetes.client.V1DeleteOptions(),
                 _request_timeout=request_timeout,
             ),
             timeout=timeout,
             context=f"failed to delete Deployment {namespace}/{name}",
         )
-        if payload is not None and not isinstance(payload, kubernetes.client.V1Status):
-            msg = (
-                "malformed Kubernetes response while deleting Deployment "
-                f"{namespace}/{name}"
-            )
-            raise OSError(msg)
+        _validate_delete_status(
+            payload, label=self._object_label(name=name, namespace=namespace)
+        )
 
     async def wait_deleted(self, kube: Kube, *, timeout: float) -> None:
         """Wait until this Deployment is deleted from the cluster.
@@ -755,34 +696,18 @@ class Deployment:
 
         Raises
         ------
-        OSError
-            If this wrapper does not contain enough metadata to identify the
-            Deployment, or if a refresh request returns malformed data.
         TimeoutError
             If the Deployment still exists when `timeout` expires.
         """
-        namespace = self.namespace
-        name = self.name
-        if not namespace or not name:
-            msg = (
-                "cannot wait for Deployment deletion with missing "
-                "metadata.name/namespace"
+        namespace, name = self._require_namespace_name("wait for Deployment deletion")
+        try:
+            await _wait_until_deleted(
+                label=self._object_label(name=name, namespace=namespace),
+                timeout=timeout,
+                refresh=lambda remaining: self.refresh(kube, timeout=remaining),
             )
-            raise OSError(msg)
-        if timeout <= 0:
-            msg = f"timed out waiting for Deployment {namespace}/{name} deletion"
-            raise TimeoutError(msg)
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + timeout
-        while True:
-            remaining = deadline - loop.time()
-            if remaining <= 0:
-                msg = f"timed out waiting for Deployment {namespace}/{name} deletion"
-                raise TimeoutError(msg)
-            live = await self.refresh(kube, timeout=remaining)
-            if live is None:
-                return
-            await asyncio.sleep(min(DEPLOYMENT_WAIT_POLL_INTERVAL_SECONDS, remaining))
+        except TimeoutError as err:
+            raise TimeoutError(str(err)) from err
 
     async def wait_available(
         self,
@@ -811,19 +736,17 @@ class Deployment:
         ------
         ValueError
             If `minimum` is less than one.
-        OSError
-            If this wrapper is missing metadata or the Deployment disappears.
         TimeoutError
             If the Deployment does not become available before `timeout`.
+        OSError
+            If the Deployment disappears while waiting.
         """
         if minimum < 1:
             msg = "minimum available Deployment replicas must be positive"
             raise ValueError(msg)
-        namespace = self.namespace
-        name = self.name
-        if not namespace or not name:
-            msg = "cannot wait on Deployment with missing metadata.name/namespace"
-            raise OSError(msg)
+        namespace, name = self._require_namespace_name(
+            "wait for Deployment availability"
+        )
         if timeout <= 0:
             msg = f"timed out waiting for Deployment {namespace}/{name} availability"
             raise TimeoutError(msg)
@@ -877,19 +800,15 @@ class Deployment:
         ------
         ValueError
             If `minimum` is less than one.
-        OSError
-            If this wrapper is missing metadata or the Deployment disappears.
         TimeoutError
             If the Deployment rollout does not complete before `timeout`.
+        OSError
+            If the Deployment disappears while waiting.
         """
         if minimum < 1:
             msg = "minimum rolled out Deployment replicas must be positive"
             raise ValueError(msg)
-        namespace = self.namespace
-        name = self.name
-        if not namespace or not name:
-            msg = "cannot wait on Deployment with missing metadata.name/namespace"
-            raise OSError(msg)
+        namespace, name = self._require_namespace_name("wait for Deployment rollout")
         if timeout <= 0:
             msg = f"timed out waiting for Deployment {namespace}/{name} rollout"
             raise TimeoutError(msg)
@@ -948,11 +867,7 @@ class Deployment:
         if replicas < 0:
             msg = "Deployment replicas cannot be negative"
             raise ValueError(msg)
-        namespace = self.namespace
-        name = self.name
-        if not namespace or not name:
-            msg = "cannot scale Deployment with missing metadata.name/namespace"
-            raise OSError(msg)
+        namespace, name = self._require_namespace_name("scale Deployment")
         payload = await kube.run(
             lambda request_timeout: kube.apps.patch_namespaced_deployment_scale(
                 name=name,

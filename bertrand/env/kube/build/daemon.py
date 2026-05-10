@@ -332,29 +332,25 @@ class BuildKit:
             )
             cache = await BUILDKIT_CACHE.status(kube, timeout=deadline - loop.time())
 
-            service_selector_ready = (
-                service is not None and dict(service.selector) == self.selector
+            expected_port = ServicePortSpec(
+                name="grpc",
+                port=self.port,
+                target_port=self.port,
             )
-            service_port_ready = service is not None and any(
-                port.name == "grpc"
-                and port.port == self.port
-                and port.target_port == self.port
-                and port.protocol == "TCP"
-                and port.node_port is None
-                for port in service.ports
+            service_selector_ready = service is not None and service.selects(
+                self.selector
             )
-            service_ready = (
-                service is not None
-                and service.type == "ClusterIP"
-                and service_selector_ready
-                and service_port_ready
+            service_port_ready = service is not None and service.exposes(expected_port)
+            service_ready = service is not None and service.matches(
+                service_type="ClusterIP",
+                selector=self.selector,
+                ports=(expected_port,),
             )
             installed_hash = ""
             available = 0
             updated = 0
             observed = 0
             generation = 0
-            generation_observed = False
             if deployment is not None:
                 installed_hash = deployment.pod_annotations.get(
                     BUILDKIT_CONFIG_HASH_ANNOTATION,
@@ -364,14 +360,10 @@ class BuildKit:
                 updated = deployment.updated_replicas
                 observed = deployment.observed_generation
                 generation = deployment.generation
-                generation_observed = generation <= 0 or observed >= generation
 
             config_current = config_hash is None or installed_hash == config_hash
-            deployment_ready = (
-                deployment is not None
-                and generation_observed
-                and available >= 1
-                and updated >= 1
+            deployment_ready = deployment is not None and deployment.rollout_ready(
+                minimum=1
             )
             return BuildKitStatus(
                 namespace=self.namespace,

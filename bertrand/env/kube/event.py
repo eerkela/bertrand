@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from types import MappingProxyType
 from typing import TYPE_CHECKING, Self
 
 from kubernetes import client as kube_client
 
-from .api import ObjectReference, _label_selector
+from .api import NamespacedKubeMetadata, ObjectReference, _label_selector
 
 if TYPE_CHECKING:
     import builtins
@@ -39,7 +38,7 @@ def _object_identity(
 
 
 @dataclass(frozen=True)
-class Event:
+class Event(NamespacedKubeMetadata[kube_client.EventsV1Event]):
     """Read-only wrapper around one Kubernetes Event object.
 
     Parameters
@@ -247,96 +246,6 @@ class Event:
             msg = "malformed Kubernetes Event watch payload"
             raise OSError(msg)
         return cls(_obj=payload)
-
-    @property
-    def name(self) -> str:
-        """Return the Event name.
-
-        Returns
-        -------
-        str
-            Trimmed `metadata.name`, or an empty string when unavailable.
-        """
-        metadata = self._obj.metadata
-        return (metadata.name or "").strip() if metadata is not None else ""
-
-    @property
-    def namespace(self) -> str:
-        """Return the Event namespace.
-
-        Returns
-        -------
-        str
-            Trimmed `metadata.namespace`, or an empty string when unavailable.
-        """
-        metadata = self._obj.metadata
-        return (metadata.namespace or "").strip() if metadata is not None else ""
-
-    @property
-    def resource_version(self) -> str:
-        """Return the Event resource version.
-
-        Returns
-        -------
-        str
-            Kubernetes `metadata.resourceVersion`, or an empty string when
-            unavailable.
-        """
-        metadata = self._obj.metadata
-        return (metadata.resource_version or "").strip() if metadata is not None else ""
-
-    @property
-    def uid(self) -> str:
-        """Return the Event UID.
-
-        Returns
-        -------
-        str
-            Kubernetes `metadata.uid`, or an empty string when unavailable.
-        """
-        metadata = self._obj.metadata
-        return (metadata.uid or "").strip() if metadata is not None else ""
-
-    @property
-    def created_at(self) -> datetime | None:
-        """Return the Event creation timestamp.
-
-        Returns
-        -------
-        datetime | None
-            Kubernetes `metadata.creationTimestamp`, or `None` when unavailable.
-        """
-        metadata = self._obj.metadata
-        return metadata.creation_timestamp if metadata is not None else None
-
-    @property
-    def labels(self) -> Mapping[str, str]:
-        """Return the Event labels.
-
-        Returns
-        -------
-        Mapping[str, str]
-            Read-only view of `metadata.labels`, or an empty mapping when unavailable.
-        """
-        metadata = self._obj.metadata
-        if metadata is None or metadata.labels is None:
-            return MappingProxyType({})
-        return MappingProxyType(metadata.labels)
-
-    @property
-    def annotations(self) -> Mapping[str, str]:
-        """Return the Event annotations.
-
-        Returns
-        -------
-        Mapping[str, str]
-            Read-only view of `metadata.annotations`, or an empty mapping when
-            unavailable.
-        """
-        metadata = self._obj.metadata
-        if metadata is None or metadata.annotations is None:
-            return MappingProxyType({})
-        return MappingProxyType(metadata.annotations)
 
     @property
     def reason(self) -> str:

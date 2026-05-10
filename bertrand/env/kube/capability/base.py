@@ -44,7 +44,7 @@ class CapabilityRef:
     kind : CapabilityKind
         Capability category. Ordinary build secrets, SSH credentials, and device
         selectors intentionally occupy separate identities.
-    id : KubeName
+    capability_id : KubeName
         Host-agnostic capability ID from project configuration.
     scope : CapabilityScope
         Resolution scope for the capability.
@@ -54,7 +54,7 @@ class CapabilityRef:
     """
 
     kind: CapabilityKind
-    id: KubeName
+    capability_id: KubeName
     scope: CapabilityScope
     value: str | None = None
 
@@ -69,7 +69,11 @@ class CapabilityRef:
         kind = _check_kind(self.kind)
         scope = _check_scope(self.scope)
         object.__setattr__(self, "kind", kind)
-        object.__setattr__(self, "id", _check_kube_name(self.id))
+        object.__setattr__(
+            self,
+            "capability_id",
+            _check_kube_name(self.capability_id),
+        )
         object.__setattr__(self, "scope", scope)
 
         if scope == "shared":
@@ -104,7 +108,12 @@ class CapabilityRef:
         CapabilityRef
             Validated environment-scoped reference.
         """
-        return cls(kind=kind, id=capability_id, scope="env", value=env_id)
+        return cls(
+            kind=kind,
+            capability_id=capability_id,
+            scope="env",
+            value=env_id,
+        )
 
     @classmethod
     def node(
@@ -129,7 +138,12 @@ class CapabilityRef:
         CapabilityRef
             Validated node-scoped reference.
         """
-        return cls(kind=kind, id=capability_id, scope="node", value=node)
+        return cls(
+            kind=kind,
+            capability_id=capability_id,
+            scope="node",
+            value=node,
+        )
 
     @classmethod
     def shared(cls, kind: CapabilityKind, capability_id: KubeName) -> Self:
@@ -147,7 +161,7 @@ class CapabilityRef:
         CapabilityRef
             Validated shared reference.
         """
-        return cls(kind=kind, id=capability_id, scope="shared")
+        return cls(kind=kind, capability_id=capability_id, scope="shared")
 
     @property
     def name(self) -> KubeName:
@@ -159,7 +173,7 @@ class CapabilityRef:
             Stable Secret name derived from kind, ID, scope, and scope value.
         """
         digest = hashlib.sha256()
-        for part in (self.kind, self.id, self.scope, self.value or ""):
+        for part in (self.kind, self.capability_id, self.scope, self.value or ""):
             encoded = part.encode("utf-8")
             digest.update(len(encoded).to_bytes(8, "big"))
             digest.update(encoded)
@@ -192,7 +206,7 @@ class CapabilityRef:
         Mapping[str, str]
             Annotations containing the capability ID and scope value.
         """
-        annotations = {CAPABILITY_ID_V1: self.id}
+        annotations = {CAPABILITY_ID_V1: self.capability_id}
         if self.value is not None:
             annotations[CAPABILITY_SCOPE_VALUE_V1] = self.value
         return annotations
@@ -295,7 +309,7 @@ class Capability:
         out: builtins.list[Self] = []
         for secret in secrets:
             capability = cls._from_secret(secret=secret)
-            if expected_id is not None and capability.ref.id != expected_id:
+            if expected_id is not None and capability.ref.capability_id != expected_id:
                 continue
             out.append(capability)
         return out
@@ -439,7 +453,8 @@ class Capability:
             return self.payload.decode("utf-8")
         except UnicodeDecodeError as err:
             msg = (
-                f"cluster capability {self.ref.id!r} payload must decode as UTF-8 text"
+                f"cluster capability {self.ref.capability_id!r} payload must decode "
+                "as UTF-8 text"
             )
             raise OSError(msg) from err
 
@@ -518,7 +533,7 @@ class Capability:
         try:
             ref = CapabilityRef(
                 kind=_check_kind(kind),
-                id=_check_kube_name(capability_id),
+                capability_id=_check_kube_name(capability_id),
                 scope=_check_scope(scope),
                 value=value,
             )

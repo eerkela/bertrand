@@ -4,7 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from ..config import DEFAULT_TAG
-from ..kube import Environment
+from ..legacy.environment import Environment
 from ..run import INFINITY
 
 

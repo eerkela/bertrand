@@ -2,23 +2,26 @@
 
 from __future__ import annotations
 
-import asyncio
 from dataclasses import dataclass
-from types import MappingProxyType
 from typing import TYPE_CHECKING, Literal, Self
 
 from kubernetes import client as kube_client
 
-from .api import PolicyRuleSpec, _label_selector
+from .api import (
+    KubeMetadata,
+    NamespacedKubeMetadata,
+    PolicyRuleSpec,
+    _label_selector,
+    _validate_delete_status,
+    _wait_until_deleted,
+)
 
 if TYPE_CHECKING:
     import builtins
     from collections.abc import Collection, Mapping
-    from datetime import datetime
 
     from .api import Kube
 
-RBAC_WAIT_POLL_INTERVAL_SECONDS = 0.5
 type RoleBindingRoleKind = Literal["Role", "ClusterRole"]
 
 
@@ -33,8 +36,13 @@ def _rule_manifests(rules: Collection[PolicyRuleSpec]) -> list[dict[str, object]
     ]
 
 
+def _is_conflict(err: OSError) -> bool:
+    detail = str(err).lower()
+    return "status 409" in detail or "already exists" in detail
+
+
 @dataclass(frozen=True)
-class ClusterRole:
+class ClusterRole(KubeMetadata[kube_client.V1ClusterRole]):
     """General-purpose wrapper around one Kubernetes ClusterRole object.
 
     Parameters
@@ -210,8 +218,7 @@ class ClusterRole:
                 context=f"failed to create ClusterRole {name}",
             )
         except OSError as err:
-            detail = str(err).lower()
-            if "status 409" not in detail and "already exists" not in detail:
+            if not _is_conflict(err):
                 raise
         else:
             if not isinstance(created, kube_client.V1ClusterRole):
@@ -235,84 +242,6 @@ class ClusterRole:
             raise OSError(msg)
         return cls(_obj=patched)
 
-    @property
-    def name(self) -> str:
-        """Return the ClusterRole name.
-
-        Returns
-        -------
-        str
-            Trimmed `metadata.name`, or an empty string when unavailable.
-        """
-        metadata = self._obj.metadata
-        return (metadata.name or "").strip() if metadata is not None else ""
-
-    @property
-    def labels(self) -> Mapping[str, str]:
-        """Return the ClusterRole labels.
-
-        Returns
-        -------
-        Mapping[str, str]
-            Read-only view of `metadata.labels`, or an empty mapping when unavailable.
-        """
-        metadata = self._obj.metadata
-        if metadata is None or metadata.labels is None:
-            return MappingProxyType({})
-        return MappingProxyType(metadata.labels)
-
-    @property
-    def annotations(self) -> Mapping[str, str]:
-        """Return the ClusterRole annotations.
-
-        Returns
-        -------
-        Mapping[str, str]
-            Read-only view of `metadata.annotations`, or an empty mapping when
-            unavailable.
-        """
-        metadata = self._obj.metadata
-        if metadata is None or metadata.annotations is None:
-            return MappingProxyType({})
-        return MappingProxyType(metadata.annotations)
-
-    @property
-    def resource_version(self) -> str:
-        """Return the ClusterRole resource version.
-
-        Returns
-        -------
-        str
-            Kubernetes `metadata.resourceVersion`, or an empty string when
-            unavailable.
-        """
-        metadata = self._obj.metadata
-        return (metadata.resource_version or "").strip() if metadata is not None else ""
-
-    @property
-    def uid(self) -> str:
-        """Return the ClusterRole UID.
-
-        Returns
-        -------
-        str
-            Kubernetes `metadata.uid`, or an empty string when unavailable.
-        """
-        metadata = self._obj.metadata
-        return (metadata.uid or "").strip() if metadata is not None else ""
-
-    @property
-    def created_at(self) -> datetime | None:
-        """Return the ClusterRole creation timestamp.
-
-        Returns
-        -------
-        datetime | None
-            Kubernetes `metadata.creationTimestamp`, or `None` when unavailable.
-        """
-        metadata = self._obj.metadata
-        return metadata.creation_timestamp if metadata is not None else None
-
     async def refresh(self, kube: Kube, *, timeout: float) -> Self | None:
         """Re-read this ClusterRole by its metadata name.
 
@@ -327,17 +256,8 @@ class ClusterRole:
         -------
         ClusterRole | None
             Fresh wrapper for the same ClusterRole, or `None` if it no longer exists.
-
-        Raises
-        ------
-        OSError
-            If this wrapper does not contain enough metadata to identify the
-            ClusterRole, or if Kubernetes returns malformed data.
         """
-        name = self.name
-        if not name:
-            msg = "cannot refresh ClusterRole with missing metadata.name"
-            raise OSError(msg)
+        name = self._require_name("refresh ClusterRole")
         return await type(self).get(kube, name=name, timeout=timeout)
 
     async def delete(self, kube: Kube, *, timeout: float) -> None:
@@ -349,30 +269,17 @@ class ClusterRole:
             Active Kubernetes API context.
         timeout : float
             Maximum request budget in seconds. If infinite, wait indefinitely.
-
-        Raises
-        ------
-        OSError
-            If this wrapper does not contain enough metadata to identify the
-            ClusterRole, if the delete request fails, or if Kubernetes returns
-            malformed data.
         """
-        name = self.name
-        if not name:
-            msg = "cannot delete ClusterRole with missing metadata.name"
-            raise OSError(msg)
+        name = self._require_name("delete ClusterRole")
         payload = await kube.run(
             lambda request_timeout: kube.rbac.delete_cluster_role(
                 name=name,
-                body=kube_client.V1DeleteOptions(),
                 _request_timeout=request_timeout,
             ),
             timeout=timeout,
             context=f"failed to delete ClusterRole {name}",
         )
-        if payload is not None and not isinstance(payload, kube_client.V1Status):
-            msg = f"malformed Kubernetes response while deleting ClusterRole {name}"
-            raise OSError(msg)
+        _validate_delete_status(payload, label=self._object_label(name))
 
     async def wait_deleted(self, kube: Kube, *, timeout: float) -> None:
         """Wait until this ClusterRole is deleted from the cluster.
@@ -386,34 +293,22 @@ class ClusterRole:
 
         Raises
         ------
-        OSError
-            If this wrapper does not contain enough metadata to identify the
-            ClusterRole, or if a refresh request returns malformed data.
         TimeoutError
             If the ClusterRole still exists when `timeout` expires.
         """
-        name = self.name
-        if not name:
-            msg = "cannot wait for ClusterRole deletion with missing metadata.name"
-            raise OSError(msg)
-        if timeout <= 0:
-            msg = f"timed out waiting for ClusterRole {name} deletion"
-            raise TimeoutError(msg)
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + timeout
-        while True:
-            remaining = deadline - loop.time()
-            if remaining <= 0:
-                msg = f"timed out waiting for ClusterRole {name} deletion"
-                raise TimeoutError(msg)
-            live = await self.refresh(kube, timeout=remaining)
-            if live is None:
-                return
-            await asyncio.sleep(min(RBAC_WAIT_POLL_INTERVAL_SECONDS, remaining))
+        name = self._require_name("wait for ClusterRole deletion")
+        try:
+            await _wait_until_deleted(
+                label=self._object_label(name),
+                timeout=timeout,
+                refresh=lambda remaining: self.refresh(kube, timeout=remaining),
+            )
+        except TimeoutError as err:
+            raise TimeoutError(str(err)) from err
 
 
 @dataclass(frozen=True)
-class ClusterRoleBinding:
+class ClusterRoleBinding(KubeMetadata[kube_client.V1ClusterRoleBinding]):
     """General-purpose wrapper around one Kubernetes ClusterRoleBinding object.
 
     Parameters
@@ -610,8 +505,7 @@ class ClusterRoleBinding:
                 context=f"failed to create ClusterRoleBinding {name}",
             )
         except OSError as err:
-            detail = str(err).lower()
-            if "status 409" not in detail and "already exists" not in detail:
+            if not _is_conflict(err):
                 raise
         else:
             if not isinstance(created, kube_client.V1ClusterRoleBinding):
@@ -639,84 +533,6 @@ class ClusterRoleBinding:
             raise OSError(msg)
         return cls(_obj=patched)
 
-    @property
-    def name(self) -> str:
-        """Return the ClusterRoleBinding name.
-
-        Returns
-        -------
-        str
-            Trimmed `metadata.name`, or an empty string when unavailable.
-        """
-        metadata = self._obj.metadata
-        return (metadata.name or "").strip() if metadata is not None else ""
-
-    @property
-    def labels(self) -> Mapping[str, str]:
-        """Return the ClusterRoleBinding labels.
-
-        Returns
-        -------
-        Mapping[str, str]
-            Read-only view of `metadata.labels`, or an empty mapping when unavailable.
-        """
-        metadata = self._obj.metadata
-        if metadata is None or metadata.labels is None:
-            return MappingProxyType({})
-        return MappingProxyType(metadata.labels)
-
-    @property
-    def annotations(self) -> Mapping[str, str]:
-        """Return the ClusterRoleBinding annotations.
-
-        Returns
-        -------
-        Mapping[str, str]
-            Read-only view of `metadata.annotations`, or an empty mapping when
-            unavailable.
-        """
-        metadata = self._obj.metadata
-        if metadata is None or metadata.annotations is None:
-            return MappingProxyType({})
-        return MappingProxyType(metadata.annotations)
-
-    @property
-    def resource_version(self) -> str:
-        """Return the ClusterRoleBinding resource version.
-
-        Returns
-        -------
-        str
-            Kubernetes `metadata.resourceVersion`, or an empty string when
-            unavailable.
-        """
-        metadata = self._obj.metadata
-        return (metadata.resource_version or "").strip() if metadata is not None else ""
-
-    @property
-    def uid(self) -> str:
-        """Return the ClusterRoleBinding UID.
-
-        Returns
-        -------
-        str
-            Kubernetes `metadata.uid`, or an empty string when unavailable.
-        """
-        metadata = self._obj.metadata
-        return (metadata.uid or "").strip() if metadata is not None else ""
-
-    @property
-    def created_at(self) -> datetime | None:
-        """Return the ClusterRoleBinding creation timestamp.
-
-        Returns
-        -------
-        datetime | None
-            Kubernetes `metadata.creationTimestamp`, or `None` when unavailable.
-        """
-        metadata = self._obj.metadata
-        return metadata.creation_timestamp if metadata is not None else None
-
     async def refresh(self, kube: Kube, *, timeout: float) -> Self | None:
         """Re-read this ClusterRoleBinding by its metadata name.
 
@@ -732,17 +548,8 @@ class ClusterRoleBinding:
         ClusterRoleBinding | None
             Fresh wrapper for the same ClusterRoleBinding, or `None` if it no longer
             exists.
-
-        Raises
-        ------
-        OSError
-            If this wrapper does not contain enough metadata to identify the
-            ClusterRoleBinding, or if Kubernetes returns malformed data.
         """
-        name = self.name
-        if not name:
-            msg = "cannot refresh ClusterRoleBinding with missing metadata.name"
-            raise OSError(msg)
+        name = self._require_name("refresh ClusterRoleBinding")
         return await type(self).get(kube, name=name, timeout=timeout)
 
     async def delete(self, kube: Kube, *, timeout: float) -> None:
@@ -754,33 +561,17 @@ class ClusterRoleBinding:
             Active Kubernetes API context.
         timeout : float
             Maximum request budget in seconds. If infinite, wait indefinitely.
-
-        Raises
-        ------
-        OSError
-            If this wrapper does not contain enough metadata to identify the
-            ClusterRoleBinding, if the delete request fails, or if Kubernetes returns
-            malformed data.
         """
-        name = self.name
-        if not name:
-            msg = "cannot delete ClusterRoleBinding with missing metadata.name"
-            raise OSError(msg)
+        name = self._require_name("delete ClusterRoleBinding")
         payload = await kube.run(
             lambda request_timeout: kube.rbac.delete_cluster_role_binding(
                 name=name,
-                body=kube_client.V1DeleteOptions(),
                 _request_timeout=request_timeout,
             ),
             timeout=timeout,
             context=f"failed to delete ClusterRoleBinding {name}",
         )
-        if payload is not None and not isinstance(payload, kube_client.V1Status):
-            msg = (
-                "malformed Kubernetes response while deleting ClusterRoleBinding "
-                f"{name}"
-            )
-            raise OSError(msg)
+        _validate_delete_status(payload, label=self._object_label(name))
 
     async def wait_deleted(self, kube: Kube, *, timeout: float) -> None:
         """Wait until this ClusterRoleBinding is deleted from the cluster.
@@ -794,36 +585,22 @@ class ClusterRoleBinding:
 
         Raises
         ------
-        OSError
-            If this wrapper does not contain enough metadata to identify the
-            ClusterRoleBinding, or if a refresh request returns malformed data.
         TimeoutError
             If the ClusterRoleBinding still exists when `timeout` expires.
         """
-        name = self.name
-        if not name:
-            msg = (
-                "cannot wait for ClusterRoleBinding deletion with missing metadata.name"
+        name = self._require_name("wait for ClusterRoleBinding deletion")
+        try:
+            await _wait_until_deleted(
+                label=self._object_label(name),
+                timeout=timeout,
+                refresh=lambda remaining: self.refresh(kube, timeout=remaining),
             )
-            raise OSError(msg)
-        if timeout <= 0:
-            msg = f"timed out waiting for ClusterRoleBinding {name} deletion"
-            raise TimeoutError(msg)
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + timeout
-        while True:
-            remaining = deadline - loop.time()
-            if remaining <= 0:
-                msg = f"timed out waiting for ClusterRoleBinding {name} deletion"
-                raise TimeoutError(msg)
-            live = await self.refresh(kube, timeout=remaining)
-            if live is None:
-                return
-            await asyncio.sleep(min(RBAC_WAIT_POLL_INTERVAL_SECONDS, remaining))
+        except TimeoutError as err:
+            raise TimeoutError(str(err)) from err
 
 
 @dataclass(frozen=True)
-class Role:
+class Role(NamespacedKubeMetadata[kube_client.V1Role]):
     """General-purpose wrapper around one Kubernetes Role object.
 
     Parameters
@@ -1048,8 +825,7 @@ class Role:
                 context=f"failed to create Role {namespace}/{name}",
             )
         except OSError as err:
-            detail = str(err).lower()
-            if "status 409" not in detail and "already exists" not in detail:
+            if not _is_conflict(err):
                 raise
         else:
             if not isinstance(created, kube_client.V1Role):
@@ -1075,96 +851,6 @@ class Role:
             raise OSError(msg)
         return cls(_obj=patched)
 
-    @property
-    def name(self) -> str:
-        """Return the Role name.
-
-        Returns
-        -------
-        str
-            Trimmed `metadata.name`, or an empty string when unavailable.
-        """
-        metadata = self._obj.metadata
-        return (metadata.name or "").strip() if metadata is not None else ""
-
-    @property
-    def namespace(self) -> str:
-        """Return the Role namespace.
-
-        Returns
-        -------
-        str
-            Trimmed `metadata.namespace`, or an empty string when unavailable.
-        """
-        metadata = self._obj.metadata
-        return (metadata.namespace or "").strip() if metadata is not None else ""
-
-    @property
-    def labels(self) -> Mapping[str, str]:
-        """Return the Role labels.
-
-        Returns
-        -------
-        Mapping[str, str]
-            Read-only view of `metadata.labels`, or an empty mapping when unavailable.
-        """
-        metadata = self._obj.metadata
-        if metadata is None or metadata.labels is None:
-            return MappingProxyType({})
-        return MappingProxyType(metadata.labels)
-
-    @property
-    def annotations(self) -> Mapping[str, str]:
-        """Return the Role annotations.
-
-        Returns
-        -------
-        Mapping[str, str]
-            Read-only view of `metadata.annotations`, or an empty mapping when
-            unavailable.
-        """
-        metadata = self._obj.metadata
-        if metadata is None or metadata.annotations is None:
-            return MappingProxyType({})
-        return MappingProxyType(metadata.annotations)
-
-    @property
-    def resource_version(self) -> str:
-        """Return the Role resource version.
-
-        Returns
-        -------
-        str
-            Kubernetes `metadata.resourceVersion`, or an empty string when
-            unavailable.
-        """
-        metadata = self._obj.metadata
-        return (metadata.resource_version or "").strip() if metadata is not None else ""
-
-    @property
-    def uid(self) -> str:
-        """Return the Role UID.
-
-        Returns
-        -------
-        str
-            Kubernetes `metadata.uid`, or an empty string when unavailable.
-        """
-        metadata = self._obj.metadata
-        return (metadata.uid or "").strip() if metadata is not None else ""
-
-    @property
-    def created_at(self) -> datetime | None:
-        """Return the Role creation timestamp.
-
-        Returns
-        -------
-        datetime | None
-            Kubernetes `metadata.creationTimestamp`, or `None` when unavailable.
-        """
-        metadata = self._obj.metadata
-        return metadata.creation_timestamp if metadata is not None else None
-
     async def refresh(self, kube: Kube, *, timeout: float) -> Self | None:
         """Re-read this Role by its metadata namespace and name.
 
@@ -1179,23 +865,13 @@ class Role:
         -------
         Role | None
             Fresh wrapper for the same Role, or `None` if it no longer exists.
-
-        Raises
-        ------
-        OSError
-            If this wrapper does not contain enough metadata to identify the Role,
-            or if Kubernetes returns malformed data.
         """
-        namespace = self.namespace
-        name = self.name
-        if not namespace or not name:
-            msg = "cannot refresh Role with missing metadata.name/namespace"
-            raise OSError(msg)
+        namespace, name = self._require_namespace_name("refresh Role")
         return await type(self).get(
             kube,
             namespace=namespace,
-            name=name,
             timeout=timeout,
+            name=name,
         )
 
     async def delete(self, kube: Kube, *, timeout: float) -> None:
@@ -1207,33 +883,20 @@ class Role:
             Active Kubernetes API context.
         timeout : float
             Maximum request budget in seconds. If infinite, wait indefinitely.
-
-        Raises
-        ------
-        OSError
-            If this wrapper does not contain enough metadata to identify the Role,
-            if the delete request fails, or if Kubernetes returns malformed data.
         """
-        namespace = self.namespace
-        name = self.name
-        if not namespace or not name:
-            msg = "cannot delete Role with missing metadata.name/namespace"
-            raise OSError(msg)
+        namespace, name = self._require_namespace_name("delete Role")
         payload = await kube.run(
             lambda request_timeout: kube.rbac.delete_namespaced_role(
                 name=name,
                 namespace=namespace,
-                body=kube_client.V1DeleteOptions(),
                 _request_timeout=request_timeout,
             ),
             timeout=timeout,
             context=f"failed to delete Role {namespace}/{name}",
         )
-        if payload is not None and not isinstance(payload, kube_client.V1Status):
-            msg = (
-                f"malformed Kubernetes response while deleting Role {namespace}/{name}"
-            )
-            raise OSError(msg)
+        _validate_delete_status(
+            payload, label=self._object_label(name=name, namespace=namespace)
+        )
 
     async def wait_deleted(self, kube: Kube, *, timeout: float) -> None:
         """Wait until this Role is deleted from the cluster.
@@ -1247,35 +910,22 @@ class Role:
 
         Raises
         ------
-        OSError
-            If this wrapper does not contain enough metadata to identify the Role,
-            or if a refresh request returns malformed data.
         TimeoutError
             If the Role still exists when `timeout` expires.
         """
-        namespace = self.namespace
-        name = self.name
-        if not namespace or not name:
-            msg = "cannot wait for Role deletion with missing metadata.name/namespace"
-            raise OSError(msg)
-        if timeout <= 0:
-            msg = f"timed out waiting for Role {namespace}/{name} deletion"
-            raise TimeoutError(msg)
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + timeout
-        while True:
-            remaining = deadline - loop.time()
-            if remaining <= 0:
-                msg = f"timed out waiting for Role {namespace}/{name} deletion"
-                raise TimeoutError(msg)
-            live = await self.refresh(kube, timeout=remaining)
-            if live is None:
-                return
-            await asyncio.sleep(min(RBAC_WAIT_POLL_INTERVAL_SECONDS, remaining))
+        namespace, name = self._require_namespace_name("wait for Role deletion")
+        try:
+            await _wait_until_deleted(
+                label=self._object_label(name=name, namespace=namespace),
+                timeout=timeout,
+                refresh=lambda remaining: self.refresh(kube, timeout=remaining),
+            )
+        except TimeoutError as err:
+            raise TimeoutError(str(err)) from err
 
 
 @dataclass(frozen=True)
-class RoleBinding:
+class RoleBinding(NamespacedKubeMetadata[kube_client.V1RoleBinding]):
     """General-purpose wrapper around one Kubernetes RoleBinding object.
 
     Parameters
@@ -1535,8 +1185,7 @@ class RoleBinding:
                 context=f"failed to create RoleBinding {namespace}/{name}",
             )
         except OSError as err:
-            detail = str(err).lower()
-            if "status 409" not in detail and "already exists" not in detail:
+            if not _is_conflict(err):
                 raise
         else:
             if not isinstance(created, kube_client.V1RoleBinding):
@@ -1565,96 +1214,6 @@ class RoleBinding:
             raise OSError(msg)
         return cls(_obj=patched)
 
-    @property
-    def name(self) -> str:
-        """Return the RoleBinding name.
-
-        Returns
-        -------
-        str
-            Trimmed `metadata.name`, or an empty string when unavailable.
-        """
-        metadata = self._obj.metadata
-        return (metadata.name or "").strip() if metadata is not None else ""
-
-    @property
-    def namespace(self) -> str:
-        """Return the RoleBinding namespace.
-
-        Returns
-        -------
-        str
-            Trimmed `metadata.namespace`, or an empty string when unavailable.
-        """
-        metadata = self._obj.metadata
-        return (metadata.namespace or "").strip() if metadata is not None else ""
-
-    @property
-    def labels(self) -> Mapping[str, str]:
-        """Return the RoleBinding labels.
-
-        Returns
-        -------
-        Mapping[str, str]
-            Read-only view of `metadata.labels`, or an empty mapping when unavailable.
-        """
-        metadata = self._obj.metadata
-        if metadata is None or metadata.labels is None:
-            return MappingProxyType({})
-        return MappingProxyType(metadata.labels)
-
-    @property
-    def annotations(self) -> Mapping[str, str]:
-        """Return the RoleBinding annotations.
-
-        Returns
-        -------
-        Mapping[str, str]
-            Read-only view of `metadata.annotations`, or an empty mapping when
-            unavailable.
-        """
-        metadata = self._obj.metadata
-        if metadata is None or metadata.annotations is None:
-            return MappingProxyType({})
-        return MappingProxyType(metadata.annotations)
-
-    @property
-    def resource_version(self) -> str:
-        """Return the RoleBinding resource version.
-
-        Returns
-        -------
-        str
-            Kubernetes `metadata.resourceVersion`, or an empty string when
-            unavailable.
-        """
-        metadata = self._obj.metadata
-        return (metadata.resource_version or "").strip() if metadata is not None else ""
-
-    @property
-    def uid(self) -> str:
-        """Return the RoleBinding UID.
-
-        Returns
-        -------
-        str
-            Kubernetes `metadata.uid`, or an empty string when unavailable.
-        """
-        metadata = self._obj.metadata
-        return (metadata.uid or "").strip() if metadata is not None else ""
-
-    @property
-    def created_at(self) -> datetime | None:
-        """Return the RoleBinding creation timestamp.
-
-        Returns
-        -------
-        datetime | None
-            Kubernetes `metadata.creationTimestamp`, or `None` when unavailable.
-        """
-        metadata = self._obj.metadata
-        return metadata.creation_timestamp if metadata is not None else None
-
     async def refresh(self, kube: Kube, *, timeout: float) -> Self | None:
         """Re-read this RoleBinding by its metadata namespace and name.
 
@@ -1669,23 +1228,13 @@ class RoleBinding:
         -------
         RoleBinding | None
             Fresh wrapper for the same RoleBinding, or `None` if it no longer exists.
-
-        Raises
-        ------
-        OSError
-            If this wrapper does not contain enough metadata to identify the
-            RoleBinding, or if Kubernetes returns malformed data.
         """
-        namespace = self.namespace
-        name = self.name
-        if not namespace or not name:
-            msg = "cannot refresh RoleBinding with missing metadata.name/namespace"
-            raise OSError(msg)
+        namespace, name = self._require_namespace_name("refresh RoleBinding")
         return await type(self).get(
             kube,
             namespace=namespace,
-            name=name,
             timeout=timeout,
+            name=name,
         )
 
     async def delete(self, kube: Kube, *, timeout: float) -> None:
@@ -1697,35 +1246,20 @@ class RoleBinding:
             Active Kubernetes API context.
         timeout : float
             Maximum request budget in seconds. If infinite, wait indefinitely.
-
-        Raises
-        ------
-        OSError
-            If this wrapper does not contain enough metadata to identify the
-            RoleBinding, if the delete request fails, or if Kubernetes returns
-            malformed data.
         """
-        namespace = self.namespace
-        name = self.name
-        if not namespace or not name:
-            msg = "cannot delete RoleBinding with missing metadata.name/namespace"
-            raise OSError(msg)
+        namespace, name = self._require_namespace_name("delete RoleBinding")
         payload = await kube.run(
             lambda request_timeout: kube.rbac.delete_namespaced_role_binding(
                 name=name,
                 namespace=namespace,
-                body=kube_client.V1DeleteOptions(),
                 _request_timeout=request_timeout,
             ),
             timeout=timeout,
             context=f"failed to delete RoleBinding {namespace}/{name}",
         )
-        if payload is not None and not isinstance(payload, kube_client.V1Status):
-            msg = (
-                "malformed Kubernetes response while deleting RoleBinding "
-                f"{namespace}/{name}"
-            )
-            raise OSError(msg)
+        _validate_delete_status(
+            payload, label=self._object_label(name=name, namespace=namespace)
+        )
 
     async def wait_deleted(self, kube: Kube, *, timeout: float) -> None:
         """Wait until this RoleBinding is deleted from the cluster.
@@ -1739,31 +1273,15 @@ class RoleBinding:
 
         Raises
         ------
-        OSError
-            If this wrapper does not contain enough metadata to identify the
-            RoleBinding, or if a refresh request returns malformed data.
         TimeoutError
             If the RoleBinding still exists when `timeout` expires.
         """
-        namespace = self.namespace
-        name = self.name
-        if not namespace or not name:
-            msg = (
-                "cannot wait for RoleBinding deletion with missing "
-                "metadata.name/namespace"
+        namespace, name = self._require_namespace_name("wait for RoleBinding deletion")
+        try:
+            await _wait_until_deleted(
+                label=self._object_label(name=name, namespace=namespace),
+                timeout=timeout,
+                refresh=lambda remaining: self.refresh(kube, timeout=remaining),
             )
-            raise OSError(msg)
-        if timeout <= 0:
-            msg = f"timed out waiting for RoleBinding {namespace}/{name} deletion"
-            raise TimeoutError(msg)
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + timeout
-        while True:
-            remaining = deadline - loop.time()
-            if remaining <= 0:
-                msg = f"timed out waiting for RoleBinding {namespace}/{name} deletion"
-                raise TimeoutError(msg)
-            live = await self.refresh(kube, timeout=remaining)
-            if live is None:
-                return
-            await asyncio.sleep(min(RBAC_WAIT_POLL_INTERVAL_SECONDS, remaining))
+        except TimeoutError as err:
+            raise TimeoutError(str(err)) from err

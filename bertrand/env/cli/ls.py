@@ -4,8 +4,9 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
-from ..kube import Environment
-from ..run import BERTRAND_ENV, ENV_ID_ENV, IMAGE_TAG_ENV, nerdctl
+from ..legacy.environment import Environment
+from ..legacy.nerdctl import nerdctl
+from ..run import BERTRAND_ENV, ENV_ID_ENV, IMAGE_TAG_ENV
 
 
 async def bertrand_ls(

@@ -12,12 +12,18 @@ from typing import TYPE_CHECKING, Self
 
 import kubernetes
 
-from .api import Kube, _label_selector
+from .api import (
+    Kube,
+    KubeMetadata,
+    NamespacedKubeMetadata,
+    _label_selector,
+    _validate_delete_status,
+    _wait_until_deleted,
+)
 
 if TYPE_CHECKING:
     import builtins
     from collections.abc import Collection, Mapping
-    from datetime import datetime
 
 PVC_GROW_RETRIES = 4
 VOLUME_WAIT_POLL_INTERVAL_SECONDS = 0.5
@@ -42,7 +48,7 @@ STORAGE_FACTORS: dict[str, Decimal] = {
 
 
 @dataclass(frozen=True)
-class StorageClass:
+class StorageClass(KubeMetadata[kubernetes.client.V1StorageClass]):
     """General-purpose wrapper around one Kubernetes StorageClass object.
 
     Parameters
@@ -202,84 +208,6 @@ class StorageClass:
         raise OSError(msg)
 
     @property
-    def name(self) -> str:
-        """Return the StorageClass name.
-
-        Returns
-        -------
-        str
-            Trimmed `metadata.name`, or an empty string when unavailable.
-        """
-        metadata = self._obj.metadata
-        return (metadata.name or "").strip() if metadata is not None else ""
-
-    @property
-    def labels(self) -> Mapping[str, str]:
-        """Return the StorageClass labels.
-
-        Returns
-        -------
-        Mapping[str, str]
-            Read-only view of `metadata.labels`, or an empty mapping when unavailable.
-        """
-        metadata = self._obj.metadata
-        if metadata is None or metadata.labels is None:
-            return MappingProxyType({})
-        return MappingProxyType(metadata.labels)
-
-    @property
-    def annotations(self) -> Mapping[str, str]:
-        """Return the StorageClass annotations.
-
-        Returns
-        -------
-        Mapping[str, str]
-            Read-only view of `metadata.annotations`, or an empty mapping when
-            unavailable.
-        """
-        metadata = self._obj.metadata
-        if metadata is None or metadata.annotations is None:
-            return MappingProxyType({})
-        return MappingProxyType(metadata.annotations)
-
-    @property
-    def resource_version(self) -> str:
-        """Return the StorageClass resource version.
-
-        Returns
-        -------
-        str
-            Kubernetes `metadata.resourceVersion`, or an empty string when
-            unavailable.
-        """
-        metadata = self._obj.metadata
-        return (metadata.resource_version or "").strip() if metadata is not None else ""
-
-    @property
-    def uid(self) -> str:
-        """Return the StorageClass UID.
-
-        Returns
-        -------
-        str
-            Kubernetes `metadata.uid`, or an empty string when unavailable.
-        """
-        metadata = self._obj.metadata
-        return (metadata.uid or "").strip() if metadata is not None else ""
-
-    @property
-    def created_at(self) -> datetime | None:
-        """Return the StorageClass creation timestamp.
-
-        Returns
-        -------
-        datetime | None
-            Kubernetes `metadata.creationTimestamp`, or `None` when unavailable.
-        """
-        metadata = self._obj.metadata
-        return metadata.creation_timestamp if metadata is not None else None
-
-    @property
     def provisioner(self) -> str:
         """Return the StorageClass provisioner.
 
@@ -326,7 +254,9 @@ class StorageClass:
 
 
 @dataclass(frozen=True)
-class PersistentVolumeClaim:
+class PersistentVolumeClaim(
+    NamespacedKubeMetadata[kubernetes.client.V1PersistentVolumeClaim]
+):
     """General-purpose wrapper around one Kubernetes PersistentVolumeClaim object.
 
     Parameters
@@ -701,11 +631,7 @@ class PersistentVolumeClaim:
             If the claim cannot be identified or resize convergence fails.
         """
         new_size = parse_pvc_size(requested)
-        namespace = self.namespace
-        name = self.name
-        if not namespace or not name:
-            msg = "cannot resize PVC with missing metadata.name/namespace"
-            raise OSError(msg)
+        namespace, name = self._require_namespace_name("resize PVC")
         patch = {"spec": {"resources": {"requests": {"storage": requested}}}}
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
@@ -779,18 +705,9 @@ class PersistentVolumeClaim:
             Active Kubernetes API context.
         timeout : float
             Maximum request budget in seconds. If infinite, wait indefinitely.
-
-        Raises
-        ------
-        OSError
-            If this wrapper is missing metadata or the delete request fails.
         """
-        namespace = self.namespace
-        name = self.name
-        if not namespace or not name:
-            msg = "cannot delete PVC with missing metadata.name/namespace"
-            raise OSError(msg)
-        await kube.run(
+        namespace, name = self._require_namespace_name("delete PVC")
+        payload = await kube.run(
             lambda request_timeout: kube.core.delete_namespaced_persistent_volume_claim(
                 name=name,
                 namespace=namespace,
@@ -798,7 +715,10 @@ class PersistentVolumeClaim:
                 _request_timeout=request_timeout,
             ),
             timeout=timeout,
-            context=f"failed to delete PVC {name!r}",
+            context=f"failed to delete PVC {namespace}/{name}",
+        )
+        _validate_delete_status(
+            payload, label=self._object_label(name=name, namespace=namespace)
         )
 
     async def refresh(self, kube: Kube, *, timeout: float) -> Self | None:
@@ -815,17 +735,8 @@ class PersistentVolumeClaim:
         -------
         PersistentVolumeClaim | None
             Fresh wrapper for the same claim, or `None` if it no longer exists.
-
-        Raises
-        ------
-        OSError
-            If this wrapper is missing metadata or Kubernetes returns malformed data.
         """
-        namespace = self.namespace
-        name = self.name
-        if not namespace or not name:
-            msg = "cannot refresh PVC with missing metadata.name/namespace"
-            raise OSError(msg)
+        namespace, name = self._require_namespace_name("refresh PVC")
         return await type(self).get(
             kube,
             namespace=namespace,
@@ -850,19 +761,12 @@ class PersistentVolumeClaim:
 
         Raises
         ------
-        OSError
-            If this wrapper is missing metadata or the claim disappears.
         TimeoutError
             If the claim does not bind before `timeout`.
+        OSError
+            If the claim disappears while waiting.
         """
-        namespace = self.namespace
-        name = self.name
-        if not namespace or not name:
-            msg = (
-                "cannot wait for bound state of PVC with missing "
-                "metadata.name/namespace"
-            )
-            raise OSError(msg)
+        namespace, name = self._require_namespace_name("wait for PVC binding")
         if timeout <= 0:
             msg = f"timed out waiting for PVC {namespace}/{name} binding"
             raise TimeoutError(msg)
@@ -893,119 +797,18 @@ class PersistentVolumeClaim:
 
         Raises
         ------
-        OSError
-            If this wrapper is missing metadata or Kubernetes returns malformed data.
         TimeoutError
             If the claim still exists when `timeout` expires.
         """
-        namespace = self.namespace
-        name = self.name
-        if not namespace or not name:
-            msg = "cannot wait for deletion of PVC with missing metadata.name/namespace"
-            raise OSError(msg)
-        if timeout <= 0:
-            msg = f"timed out waiting for PVC {namespace}/{name} deletion"
-            raise TimeoutError(msg)
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + timeout
-        while True:
-            remaining = deadline - loop.time()
-            if remaining <= 0:
-                msg = f"timed out waiting for PVC {namespace}/{name} deletion"
-                raise TimeoutError(msg)
-            live = await self.refresh(kube, timeout=remaining)
-            if live is None:
-                return
-            await asyncio.sleep(min(VOLUME_WAIT_POLL_INTERVAL_SECONDS, remaining))
-
-    @property
-    def name(self) -> str:
-        """Return the PersistentVolumeClaim name.
-
-        Returns
-        -------
-        str
-            Trimmed `metadata.name`, or an empty string when unavailable.
-        """
-        metadata = self._obj.metadata
-        return (metadata.name or "").strip() if metadata is not None else ""
-
-    @property
-    def namespace(self) -> str:
-        """Return the PersistentVolumeClaim namespace.
-
-        Returns
-        -------
-        str
-            Trimmed `metadata.namespace`, or an empty string when unavailable.
-        """
-        metadata = self._obj.metadata
-        return (metadata.namespace or "").strip() if metadata is not None else ""
-
-    @property
-    def labels(self) -> Mapping[str, str]:
-        """Return the PersistentVolumeClaim labels.
-
-        Returns
-        -------
-        Mapping[str, str]
-            Claim labels, or an empty mapping when unavailable.
-        """
-        metadata = self._obj.metadata
-        if metadata is None or metadata.labels is None:
-            return MappingProxyType({})
-        return MappingProxyType(metadata.labels)
-
-    @property
-    def annotations(self) -> Mapping[str, str]:
-        """Return the PersistentVolumeClaim annotations.
-
-        Returns
-        -------
-        Mapping[str, str]
-            Claim annotations, or an empty mapping when unavailable.
-        """
-        metadata = self._obj.metadata
-        if metadata is None or metadata.annotations is None:
-            return MappingProxyType({})
-        return MappingProxyType(metadata.annotations)
-
-    @property
-    def resource_version(self) -> str:
-        """Return the PersistentVolumeClaim resource version.
-
-        Returns
-        -------
-        str
-            Kubernetes `metadata.resourceVersion`, or an empty string when
-            unavailable.
-        """
-        metadata = self._obj.metadata
-        return (metadata.resource_version or "").strip() if metadata is not None else ""
-
-    @property
-    def uid(self) -> str:
-        """Return the PersistentVolumeClaim UID.
-
-        Returns
-        -------
-        str
-            Kubernetes `metadata.uid`, or an empty string when unavailable.
-        """
-        metadata = self._obj.metadata
-        return (metadata.uid or "").strip() if metadata is not None else ""
-
-    @property
-    def created_at(self) -> datetime | None:
-        """Return the PersistentVolumeClaim creation timestamp.
-
-        Returns
-        -------
-        datetime | None
-            Kubernetes `metadata.creationTimestamp`, or `None` when unavailable.
-        """
-        metadata = self._obj.metadata
-        return metadata.creation_timestamp if metadata is not None else None
+        namespace, name = self._require_namespace_name("wait for PVC deletion")
+        try:
+            await _wait_until_deleted(
+                label=self._object_label(name=name, namespace=namespace),
+                timeout=timeout,
+                refresh=lambda remaining: self.refresh(kube, timeout=remaining),
+            )
+        except TimeoutError as err:
+            raise TimeoutError(str(err)) from err
 
     @property
     def phase(self) -> str:
@@ -1090,9 +893,24 @@ class PersistentVolumeClaim:
         modes = (spec.access_modes or []) if spec is not None else []
         return tuple(mode.strip() for mode in modes if mode and mode.strip())
 
+    def has_access_mode(self, mode: str) -> bool:
+        """Return whether this claim declares an access mode.
+
+        Parameters
+        ----------
+        mode : str
+            Access mode to check.
+
+        Returns
+        -------
+        bool
+            Whether `mode` is present in `spec.accessModes`.
+        """
+        return mode.strip() in self.access_modes
+
 
 @dataclass(frozen=True)
-class PersistentVolume:
+class PersistentVolume(KubeMetadata[kubernetes.client.V1PersistentVolume]):
     """General-purpose wrapper around one Kubernetes PersistentVolume object.
 
     Parameters
@@ -1211,17 +1029,8 @@ class PersistentVolume:
         -------
         PersistentVolume | None
             Fresh wrapper for the same volume, or `None` if it no longer exists.
-
-        Raises
-        ------
-        OSError
-            If this wrapper is missing `metadata.name` or Kubernetes returns malformed
-            data.
         """
-        name = self.name
-        if not name:
-            msg = "cannot refresh PersistentVolume with missing metadata.name"
-            raise OSError(msg)
+        name = self._require_name("refresh PersistentVolume")
         return await type(self).get(kube, timeout=timeout, name=name)
 
     @classmethod
@@ -1267,84 +1076,6 @@ class PersistentVolume:
             if live is not None:
                 return live
             await asyncio.sleep(min(VOLUME_WAIT_POLL_INTERVAL_SECONDS, remaining))
-
-    @property
-    def name(self) -> str:
-        """Return the PersistentVolume name.
-
-        Returns
-        -------
-        str
-            Trimmed `metadata.name`, or an empty string when unavailable.
-        """
-        metadata = self._obj.metadata
-        return (metadata.name or "").strip() if metadata is not None else ""
-
-    @property
-    def labels(self) -> Mapping[str, str]:
-        """Return the PersistentVolume labels.
-
-        Returns
-        -------
-        Mapping[str, str]
-            Read-only view of `metadata.labels`, or an empty mapping when unavailable.
-        """
-        metadata = self._obj.metadata
-        if metadata is None or metadata.labels is None:
-            return MappingProxyType({})
-        return MappingProxyType(metadata.labels)
-
-    @property
-    def annotations(self) -> Mapping[str, str]:
-        """Return the PersistentVolume annotations.
-
-        Returns
-        -------
-        Mapping[str, str]
-            Read-only view of `metadata.annotations`, or an empty mapping when
-            unavailable.
-        """
-        metadata = self._obj.metadata
-        if metadata is None or metadata.annotations is None:
-            return MappingProxyType({})
-        return MappingProxyType(metadata.annotations)
-
-    @property
-    def resource_version(self) -> str:
-        """Return the PersistentVolume resource version.
-
-        Returns
-        -------
-        str
-            Kubernetes `metadata.resourceVersion`, or an empty string when
-            unavailable.
-        """
-        metadata = self._obj.metadata
-        return (metadata.resource_version or "").strip() if metadata is not None else ""
-
-    @property
-    def uid(self) -> str:
-        """Return the PersistentVolume UID.
-
-        Returns
-        -------
-        str
-            Kubernetes `metadata.uid`, or an empty string when unavailable.
-        """
-        metadata = self._obj.metadata
-        return (metadata.uid or "").strip() if metadata is not None else ""
-
-    @property
-    def created_at(self) -> datetime | None:
-        """Return the PersistentVolume creation timestamp.
-
-        Returns
-        -------
-        datetime | None
-            Kubernetes `metadata.creationTimestamp`, or `None` when unavailable.
-        """
-        metadata = self._obj.metadata
-        return metadata.creation_timestamp if metadata is not None else None
 
     @property
     def phase(self) -> str:

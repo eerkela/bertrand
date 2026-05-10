@@ -54,8 +54,8 @@ from ..run import (
     WORKTREE_MOUNT,
     atomic_write_text,
     inside_image,
-    nerdctl,
 )
+from .nerdctl import nerdctl
 from .network import format_cpus, format_network
 from .volume import format_volumes
 

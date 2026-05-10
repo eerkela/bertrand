@@ -2,25 +2,27 @@
 
 from __future__ import annotations
 
-import asyncio
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Self
 
 from kubernetes import client as kube_client
 
-from .api import Kube, _label_selector
+from .api import (
+    Kube,
+    NamespacedKubeMetadata,
+    _label_selector,
+    _validate_delete_status,
+    _wait_until_deleted,
+)
 
 if TYPE_CHECKING:
     import builtins
     from collections.abc import Collection, Mapping
-    from datetime import datetime
-
-CONFIGMAP_WAIT_POLL_INTERVAL_SECONDS = 0.5
 
 
 @dataclass(frozen=True)
-class ConfigMap:
+class ConfigMap(NamespacedKubeMetadata[kube_client.V1ConfigMap]):
     """General-purpose wrapper around one Kubernetes ConfigMap object.
 
     Parameters
@@ -290,30 +292,6 @@ class ConfigMap:
         return cls(_obj=updated)
 
     @property
-    def name(self) -> str:
-        """Return this ConfigMap's name.
-
-        Returns
-        -------
-        str
-            Trimmed `metadata.name`, or an empty string when unavailable.
-        """
-        metadata = self._obj.metadata
-        return (metadata.name or "").strip() if metadata is not None else ""
-
-    @property
-    def namespace(self) -> str:
-        """Return this ConfigMap's namespace.
-
-        Returns
-        -------
-        str
-            Trimmed `metadata.namespace`, or an empty string when unavailable.
-        """
-        metadata = self._obj.metadata
-        return (metadata.namespace or "").strip() if metadata is not None else ""
-
-    @property
     def data(self) -> Mapping[str, str]:
         """Return this ConfigMap's text data.
 
@@ -335,72 +313,6 @@ class ConfigMap:
         """
         return MappingProxyType(self._obj.binary_data or {})
 
-    @property
-    def labels(self) -> Mapping[str, str]:
-        """Return this ConfigMap's labels.
-
-        Returns
-        -------
-        Mapping[str, str]
-            Read-only view of `metadata.labels`, or an empty mapping when unavailable.
-        """
-        metadata = self._obj.metadata
-        if metadata is None or metadata.labels is None:
-            return MappingProxyType({})
-        return MappingProxyType(metadata.labels)
-
-    @property
-    def annotations(self) -> Mapping[str, str]:
-        """Return this ConfigMap's annotations.
-
-        Returns
-        -------
-        Mapping[str, str]
-            Read-only view of `metadata.annotations`, or an empty mapping when
-            unavailable.
-        """
-        metadata = self._obj.metadata
-        if metadata is None or metadata.annotations is None:
-            return MappingProxyType({})
-        return MappingProxyType(metadata.annotations)
-
-    @property
-    def resource_version(self) -> str:
-        """Return this ConfigMap's resource version.
-
-        Returns
-        -------
-        str
-            Kubernetes `metadata.resourceVersion`, or an empty string when
-            unavailable.
-        """
-        metadata = self._obj.metadata
-        return (metadata.resource_version or "").strip() if metadata is not None else ""
-
-    @property
-    def uid(self) -> str:
-        """Return this ConfigMap's UID.
-
-        Returns
-        -------
-        str
-            Kubernetes `metadata.uid`, or an empty string when unavailable.
-        """
-        metadata = self._obj.metadata
-        return (metadata.uid or "").strip() if metadata is not None else ""
-
-    @property
-    def created_at(self) -> datetime | None:
-        """Return this ConfigMap's creation timestamp.
-
-        Returns
-        -------
-        datetime | None
-            Kubernetes `metadata.creationTimestamp`, or `None` when unavailable.
-        """
-        metadata = self._obj.metadata
-        return metadata.creation_timestamp if metadata is not None else None
-
     async def refresh(self, kube: Kube, *, timeout: float) -> Self | None:
         """Re-read this ConfigMap by its metadata namespace and name.
 
@@ -415,20 +327,10 @@ class ConfigMap:
         -------
         ConfigMap | None
             Fresh wrapper for the same ConfigMap, or `None` if it no longer exists.
-
-        Raises
-        ------
-        OSError
-            If this wrapper does not contain enough metadata to identify the
-            ConfigMap, or if Kubernetes returns malformed data.
         """
-        namespace = self.namespace
-        name = self.name
-        if not namespace or not name:
-            msg = "cannot refresh ConfigMap with missing metadata.name/namespace"
-            raise OSError(msg)
+        namespace, name = self._require_namespace_name("refresh ConfigMap")
         return await type(self).get(
-            kube=kube,
+            kube,
             namespace=namespace,
             timeout=timeout,
             name=name,
@@ -443,26 +345,19 @@ class ConfigMap:
             Active Kubernetes API context.
         timeout : float
             Maximum request budget in seconds. If infinite, wait indefinitely.
-
-        Raises
-        ------
-        OSError
-            If this wrapper does not contain enough metadata to identify the
-            ConfigMap, or if the delete request fails.
         """
-        namespace = self.namespace
-        name = self.name
-        if not namespace or not name:
-            msg = "cannot delete ConfigMap with missing metadata.name/namespace"
-            raise OSError(msg)
-        await kube.run(
+        namespace, name = self._require_namespace_name("delete ConfigMap")
+        payload = await kube.run(
             lambda request_timeout: kube.core.delete_namespaced_config_map(
                 name=name,
                 namespace=namespace,
                 _request_timeout=request_timeout,
             ),
             timeout=timeout,
-            context=f"failed to delete cluster ConfigMap {name!r}",
+            context=f"failed to delete cluster ConfigMap {namespace}/{name}",
+        )
+        _validate_delete_status(
+            payload, label=self._object_label(name=name, namespace=namespace)
         )
 
     async def wait_deleted(self, kube: Kube, *, timeout: float) -> None:
@@ -477,31 +372,15 @@ class ConfigMap:
 
         Raises
         ------
-        OSError
-            If this wrapper does not contain enough metadata to identify the
-            ConfigMap, or if a refresh request returns malformed data.
         TimeoutError
             If the ConfigMap still exists when `timeout` expires.
         """
-        namespace = self.namespace
-        name = self.name
-        if not namespace or not name:
-            msg = (
-                "cannot wait for ConfigMap deletion with missing "
-                "metadata.name/namespace"
+        namespace, name = self._require_namespace_name("wait for ConfigMap deletion")
+        try:
+            await _wait_until_deleted(
+                label=self._object_label(name=name, namespace=namespace),
+                timeout=timeout,
+                refresh=lambda remaining: self.refresh(kube, timeout=remaining),
             )
-            raise OSError(msg)
-        if timeout <= 0:
-            msg = f"timed out waiting for ConfigMap {namespace}/{name} deletion"
-            raise TimeoutError(msg)
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + timeout
-        while True:
-            remaining = deadline - loop.time()
-            if remaining <= 0:
-                msg = f"timed out waiting for ConfigMap {namespace}/{name} deletion"
-                raise TimeoutError(msg)
-            live = await self.refresh(kube, timeout=remaining)
-            if live is None:
-                return
-            await asyncio.sleep(min(CONFIGMAP_WAIT_POLL_INTERVAL_SECONDS, remaining))
+        except TimeoutError as err:
+            raise TimeoutError(str(err)) from err

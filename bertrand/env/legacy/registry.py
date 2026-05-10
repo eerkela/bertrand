@@ -26,10 +26,10 @@ from ..run import (
     STATE_DIR,
     Lock,
     atomic_write_text,
-    nerdctl_ids,
 )
 from .container import Container
 from .image import Image
+from .nerdctl import nerdctl_ids
 
 REGISTRY_FILE = STATE_DIR / "registry.json"
 REGISTRY_LOCK = STATE_DIR / "registry.lock"

@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
-import asyncio
 from dataclasses import dataclass
-from types import MappingProxyType
 from typing import TYPE_CHECKING, Self
 
 from kubernetes import client as kube_client
 
-from .api import _label_selector
+from .api import (
+    NamespacedKubeMetadata,
+    _label_selector,
+    _validate_delete_status,
+    _wait_until_deleted,
+)
 
 if TYPE_CHECKING:
     import builtins
@@ -22,7 +25,7 @@ LEASE_WAIT_POLL_INTERVAL_SECONDS = 0.5
 
 
 @dataclass(frozen=True)
-class Lease:
+class Lease(NamespacedKubeMetadata[kube_client.V1Lease]):
     """General-purpose wrapper around one Kubernetes Lease object.
 
     Parameters
@@ -366,96 +369,6 @@ class Lease:
         return cls(_obj=patched)
 
     @property
-    def name(self) -> str:
-        """Return the Lease name.
-
-        Returns
-        -------
-        str
-            Trimmed `metadata.name`, or an empty string when unavailable.
-        """
-        metadata = self._obj.metadata
-        return (metadata.name or "").strip() if metadata is not None else ""
-
-    @property
-    def namespace(self) -> str:
-        """Return the Lease namespace.
-
-        Returns
-        -------
-        str
-            Trimmed `metadata.namespace`, or an empty string when unavailable.
-        """
-        metadata = self._obj.metadata
-        return (metadata.namespace or "").strip() if metadata is not None else ""
-
-    @property
-    def labels(self) -> Mapping[str, str]:
-        """Return the Lease labels.
-
-        Returns
-        -------
-        Mapping[str, str]
-            Read-only view of `metadata.labels`, or an empty mapping when unavailable.
-        """
-        metadata = self._obj.metadata
-        if metadata is None or metadata.labels is None:
-            return MappingProxyType({})
-        return MappingProxyType(metadata.labels)
-
-    @property
-    def annotations(self) -> Mapping[str, str]:
-        """Return the Lease annotations.
-
-        Returns
-        -------
-        Mapping[str, str]
-            Read-only view of `metadata.annotations`, or an empty mapping when
-            unavailable.
-        """
-        metadata = self._obj.metadata
-        if metadata is None or metadata.annotations is None:
-            return MappingProxyType({})
-        return MappingProxyType(metadata.annotations)
-
-    @property
-    def resource_version(self) -> str:
-        """Return the Lease resource version.
-
-        Returns
-        -------
-        str
-            Kubernetes `metadata.resourceVersion`, or an empty string when
-            unavailable.
-        """
-        metadata = self._obj.metadata
-        return (metadata.resource_version or "").strip() if metadata is not None else ""
-
-    @property
-    def uid(self) -> str:
-        """Return the Lease UID.
-
-        Returns
-        -------
-        str
-            Kubernetes `metadata.uid`, or an empty string when unavailable.
-        """
-        metadata = self._obj.metadata
-        return (metadata.uid or "").strip() if metadata is not None else ""
-
-    @property
-    def created_at(self) -> datetime | None:
-        """Return the Lease creation timestamp.
-
-        Returns
-        -------
-        datetime | None
-            Kubernetes `metadata.creationTimestamp`, or `None` when unavailable.
-        """
-        metadata = self._obj.metadata
-        return metadata.creation_timestamp if metadata is not None else None
-
-    @property
     def holder_identity(self) -> str:
         """Return the current Lease holder identity.
 
@@ -517,23 +430,13 @@ class Lease:
         -------
         Lease | None
             Fresh wrapper for the same Lease, or `None` if it no longer exists.
-
-        Raises
-        ------
-        OSError
-            If this wrapper does not contain enough metadata to identify the Lease,
-            or if Kubernetes returns malformed data.
         """
-        namespace = self.namespace
-        name = self.name
-        if not namespace or not name:
-            msg = "cannot refresh Lease with missing metadata.name/namespace"
-            raise OSError(msg)
+        namespace, name = self._require_namespace_name("refresh Lease")
         return await type(self).get(
             kube,
             namespace=namespace,
-            name=name,
             timeout=timeout,
+            name=name,
         )
 
     async def delete(self, kube: Kube, *, timeout: float) -> None:
@@ -545,33 +448,20 @@ class Lease:
             Active Kubernetes API context.
         timeout : float
             Maximum request budget in seconds. If infinite, wait indefinitely.
-
-        Raises
-        ------
-        OSError
-            If this wrapper does not contain enough metadata to identify the Lease,
-            if the delete request fails, or if Kubernetes returns malformed data.
         """
-        namespace = self.namespace
-        name = self.name
-        if not namespace or not name:
-            msg = "cannot delete Lease with missing metadata.name/namespace"
-            raise OSError(msg)
+        namespace, name = self._require_namespace_name("delete Lease")
         payload = await kube.run(
             lambda request_timeout: kube.coordination.delete_namespaced_lease(
                 name=name,
                 namespace=namespace,
-                body=kube_client.V1DeleteOptions(),
                 _request_timeout=request_timeout,
             ),
             timeout=timeout,
             context=f"failed to delete Lease {namespace}/{name}",
         )
-        if payload is not None and not isinstance(payload, kube_client.V1Status):
-            msg = (
-                f"malformed Kubernetes response while deleting Lease {namespace}/{name}"
-            )
-            raise OSError(msg)
+        _validate_delete_status(
+            payload, label=self._object_label(name=name, namespace=namespace)
+        )
 
     async def wait_deleted(self, kube: Kube, *, timeout: float) -> None:
         """Wait until this Lease is deleted from the cluster.
@@ -585,28 +475,15 @@ class Lease:
 
         Raises
         ------
-        OSError
-            If this wrapper does not contain enough metadata to identify the Lease,
-            or if a refresh request returns malformed data.
         TimeoutError
             If the Lease still exists when `timeout` expires.
         """
-        namespace = self.namespace
-        name = self.name
-        if not namespace or not name:
-            msg = "cannot wait for Lease deletion with missing metadata.name/namespace"
-            raise OSError(msg)
-        if timeout <= 0:
-            msg = f"timed out waiting for Lease {namespace}/{name} deletion"
-            raise TimeoutError(msg)
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + timeout
-        while True:
-            remaining = deadline - loop.time()
-            if remaining <= 0:
-                msg = f"timed out waiting for Lease {namespace}/{name} deletion"
-                raise TimeoutError(msg)
-            live = await self.refresh(kube, timeout=remaining)
-            if live is None:
-                return
-            await asyncio.sleep(min(LEASE_WAIT_POLL_INTERVAL_SECONDS, remaining))
+        namespace, name = self._require_namespace_name("wait for Lease deletion")
+        try:
+            await _wait_until_deleted(
+                label=self._object_label(name=name, namespace=namespace),
+                timeout=timeout,
+                refresh=lambda remaining: self.refresh(kube, timeout=remaining),
+            )
+        except TimeoutError as err:
+            raise TimeoutError(str(err)) from err

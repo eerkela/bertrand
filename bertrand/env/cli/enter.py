@@ -6,9 +6,10 @@ import time
 from pathlib import Path
 
 from ..config import DEFAULT_TAG, SHELLS, Bertrand
-from ..kube import Environment
+from ..legacy.environment import Environment
+from ..legacy.nerdctl import NERDCTL_BIN, TIMEOUT, nerdctl
 from ..rpc import start_rpc_sidecar, stop_rpc_sidecar
-from ..run import NERDCTL_BIN, TIMEOUT, CommandError, nerdctl
+from ..run import CommandError
 from ._helper import _recover_spec
 
 

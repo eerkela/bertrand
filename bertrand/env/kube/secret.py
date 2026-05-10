@@ -2,27 +2,28 @@
 
 from __future__ import annotations
 
-import asyncio
 import base64
 import binascii
 from dataclasses import dataclass
-from types import MappingProxyType
 from typing import TYPE_CHECKING, Self
 
 from kubernetes import client as kube_client
 
-from .api import Kube, _label_selector
+from .api import (
+    Kube,
+    NamespacedKubeMetadata,
+    _label_selector,
+    _validate_delete_status,
+    _wait_until_deleted,
+)
 
 if TYPE_CHECKING:
     import builtins
     from collections.abc import Collection, Mapping
-    from datetime import datetime
-
-SECRET_WAIT_POLL_INTERVAL_SECONDS = 0.5
 
 
 @dataclass(frozen=True)
-class Secret:
+class Secret(NamespacedKubeMetadata[kube_client.V1Secret]):
     """General-purpose wrapper around one Kubernetes Secret object.
 
     Parameters
@@ -260,114 +261,6 @@ class Secret:
         return cls(_obj=updated)
 
     @property
-    def namespace(self) -> str:
-        """Return this secret's namespace.
-
-        Returns
-        -------
-        str
-            Trimmed namespace from `metadata`.
-
-        Raises
-        ------
-        OSError
-            If `metadata.namespace` is missing or malformed.
-        """
-        metadata = self._obj.metadata or kube_client.V1ObjectMeta()
-        namespace = (metadata.namespace or "").strip()
-        if not namespace:
-            msg = "secret metadata is missing namespace"
-            raise OSError(msg)
-        return namespace
-
-    @property
-    def name(self) -> str:
-        """Return this secret's name.
-
-        Returns
-        -------
-        str
-            Trimmed name from `metadata`.
-
-        Raises
-        ------
-        OSError
-            If `metadata.name` is missing or malformed.
-        """
-        metadata = self._obj.metadata or kube_client.V1ObjectMeta()
-        name = (metadata.name or "").strip()
-        if not name:
-            msg = "secret metadata is missing name"
-            raise OSError(msg)
-        return name
-
-    @property
-    def labels(self) -> Mapping[str, str]:
-        """Return this secret's labels.
-
-        Returns
-        -------
-        Mapping[str, str]
-            Read-only view of `metadata.labels`, or an empty mapping when unavailable.
-        """
-        metadata = self._obj.metadata
-        if metadata is None or metadata.labels is None:
-            return MappingProxyType({})
-        return MappingProxyType(metadata.labels)
-
-    @property
-    def annotations(self) -> Mapping[str, str]:
-        """Return this secret's annotations.
-
-        Returns
-        -------
-        Mapping[str, str]
-            Read-only view of `metadata.annotations`, or an empty mapping when
-            unavailable.
-        """
-        metadata = self._obj.metadata
-        if metadata is None or metadata.annotations is None:
-            return MappingProxyType({})
-        return MappingProxyType(metadata.annotations)
-
-    @property
-    def resource_version(self) -> str:
-        """Return this secret's resource version.
-
-        Returns
-        -------
-        str
-            Kubernetes `metadata.resourceVersion`, or an empty string when
-            unavailable.
-        """
-        metadata = self._obj.metadata
-        return (metadata.resource_version or "").strip() if metadata is not None else ""
-
-    @property
-    def uid(self) -> str:
-        """Return this secret's UID.
-
-        Returns
-        -------
-        str
-            Kubernetes `metadata.uid`, or an empty string when unavailable.
-        """
-        metadata = self._obj.metadata
-        return (metadata.uid or "").strip() if metadata is not None else ""
-
-    @property
-    def created_at(self) -> datetime | None:
-        """Return this secret's creation timestamp.
-
-        Returns
-        -------
-        datetime | None
-            Kubernetes `metadata.creationTimestamp`, or `None` when unavailable.
-        """
-        metadata = self._obj.metadata
-        return metadata.creation_timestamp if metadata is not None else None
-
-    @property
     def value(self) -> bytes:
         """Decode the binary payload stored in the secret's `value`.
 
@@ -409,13 +302,13 @@ class Secret:
         -------
         Secret | None
             Latest secret wrapper if it still exists, otherwise `None`.
-
         """
+        namespace, name = self._require_namespace_name("refresh secret")
         return await type(self).get(
-            kube=kube,
-            namespace=self.namespace,
+            kube,
+            namespace=namespace,
             timeout=timeout,
-            name=self.name,
+            name=name,
         )
 
     async def delete(self, kube: Kube, *, timeout: float) -> None:
@@ -427,17 +320,19 @@ class Secret:
             Active Kubernetes API context.
         timeout : float
             Maximum request budget in seconds. If infinite, wait indefinitely.
-
         """
-        name = self.name
-        await kube.run(
+        namespace, name = self._require_namespace_name("delete secret")
+        payload = await kube.run(
             lambda request_timeout: kube.core.delete_namespaced_secret(
                 name=name,
-                namespace=self.namespace,
+                namespace=namespace,
                 _request_timeout=request_timeout,
             ),
             timeout=timeout,
-            context=f"failed to delete cluster secret {name!r}",
+            context=f"failed to delete cluster secret {namespace}/{name}",
+        )
+        _validate_delete_status(
+            payload, label=self._object_label(name=name, namespace=namespace)
         )
 
     async def wait_deleted(self, kube: Kube, *, timeout: float) -> None:
@@ -452,28 +347,15 @@ class Secret:
 
         Raises
         ------
-        OSError
-            If this wrapper does not contain enough metadata to identify the secret,
-            or if a refresh request returns malformed data.
         TimeoutError
             If the secret still exists when `timeout` expires.
         """
-        namespace = self.namespace
-        name = self.name
-        if not namespace or not name:
-            msg = "cannot wait for secret deletion with missing metadata.name/namespace"
-            raise OSError(msg)
-        if timeout <= 0:
-            msg = f"timed out waiting for secret {namespace}/{name} deletion"
-            raise TimeoutError(msg)
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + timeout
-        while True:
-            remaining = deadline - loop.time()
-            if remaining <= 0:
-                msg = f"timed out waiting for secret {namespace}/{name} deletion"
-                raise TimeoutError(msg)
-            live = await self.refresh(kube, timeout=remaining)
-            if live is None:
-                return
-            await asyncio.sleep(min(SECRET_WAIT_POLL_INTERVAL_SECONDS, remaining))
+        namespace, name = self._require_namespace_name("wait for secret deletion")
+        try:
+            await _wait_until_deleted(
+                label=self._object_label(name=name, namespace=namespace),
+                timeout=timeout,
+                refresh=lambda remaining: self.refresh(kube, timeout=remaining),
+            )
+        except TimeoutError as err:
+            raise TimeoutError(str(err)) from err

@@ -6,18 +6,16 @@ import asyncio
 import os
 import platform
 from dataclasses import dataclass
-from types import MappingProxyType
 from typing import TYPE_CHECKING, Literal, Self
 
 import kubernetes
 
-from .api import Kube, TaintView, WatchEvent, _label_selector
+from .api import Kube, KubeMetadata, TaintView, WatchEvent, _label_selector
 from .pod import Pod
 
 if TYPE_CHECKING:
     import builtins
     from collections.abc import AsyncIterator, Collection, Mapping
-    from datetime import datetime
 
 NODE_SYSTEM_NAMESPACES = frozenset(
     {
@@ -38,7 +36,7 @@ type TaintEffect = Literal["NoSchedule", "PreferNoSchedule", "NoExecute"]
 
 
 @dataclass(frozen=True)
-class Node:
+class Node(KubeMetadata[kubernetes.client.V1Node]):
     """General-purpose wrapper around one Kubernetes Node object.
 
     Parameters
@@ -249,86 +247,6 @@ class Node:
             f"available nodes: {names}"
         )
         raise OSError(msg)
-
-    @property
-    def name(self) -> str:
-        """Return the Node name.
-
-        Returns
-        -------
-        str
-            Trimmed `metadata.name`, or an empty string when unavailable.
-        """
-        metadata = self._obj.metadata
-        if metadata is None:
-            return ""
-        return (metadata.name or "").strip()
-
-    @property
-    def labels(self) -> Mapping[str, str]:
-        """Return the Node labels.
-
-        Returns
-        -------
-        Mapping[str, str]
-            Read-only view of `metadata.labels`, or an empty mapping when unavailable.
-        """
-        metadata = self._obj.metadata
-        if metadata is None or metadata.labels is None:
-            return MappingProxyType({})
-        return MappingProxyType(metadata.labels)
-
-    @property
-    def annotations(self) -> Mapping[str, str]:
-        """Return the Node annotations.
-
-        Returns
-        -------
-        Mapping[str, str]
-            Read-only view of `metadata.annotations`, or an empty mapping when
-            unavailable.
-        """
-        metadata = self._obj.metadata
-        if metadata is None or metadata.annotations is None:
-            return MappingProxyType({})
-        return MappingProxyType(metadata.annotations)
-
-    @property
-    def resource_version(self) -> str:
-        """Return the Node resource version.
-
-        Returns
-        -------
-        str
-            Kubernetes `metadata.resourceVersion`, or an empty string when
-            unavailable.
-        """
-        metadata = self._obj.metadata
-        return (metadata.resource_version or "").strip() if metadata is not None else ""
-
-    @property
-    def uid(self) -> str:
-        """Return the Node UID.
-
-        Returns
-        -------
-        str
-            Kubernetes `metadata.uid`, or an empty string when unavailable.
-        """
-        metadata = self._obj.metadata
-        return (metadata.uid or "").strip() if metadata is not None else ""
-
-    @property
-    def created_at(self) -> datetime | None:
-        """Return the Node creation timestamp.
-
-        Returns
-        -------
-        datetime | None
-            Kubernetes `metadata.creationTimestamp`, or `None` when unavailable.
-        """
-        metadata = self._obj.metadata
-        return metadata.creation_timestamp if metadata is not None else None
 
     @property
     def hostname(self) -> str:

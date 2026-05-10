@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, Literal, cast
 from bertrand.env.config.core import _check_kube_name, _check_uuid
 from bertrand.env.kube.api import ContainerSpec, Kube, VolumeMountSpec, VolumeSpec
 from bertrand.env.kube.build.daemon import BUILDKIT, BUILDKIT_IMAGE, BuildKit
-from bertrand.env.kube.capability import Capability, CapabilityKind
+from bertrand.env.kube.capability.base import Capability, CapabilityKind
 from bertrand.env.kube.job import Job
 from bertrand.env.kube.node import Node
 from bertrand.env.run import (
@@ -379,28 +379,11 @@ class BuildKitImageBuild:
 
         with tempfile.TemporaryDirectory(prefix=f"{self.context_prefix}-") as tmp:
             root = Path(tmp).resolve()
-            context = root / "context"
-            metadata = root / "metadata"
-            context.mkdir()
-            metadata.mkdir()
+            try:
+                context, metadata = self._stage_context(root)
+            except FileNotFoundError as err:
+                raise FileNotFoundError(str(err)) from err
             local_node = await Node.local(kube, timeout=deadline - loop.time())
-            for source, target in self.context_copies:
-                if not source.exists():
-                    msg = (
-                        f"BuildKit image build context source does not exist: {source}"
-                    )
-                    raise FileNotFoundError(msg)
-                target = context / target
-                target.parent.mkdir(parents=True, exist_ok=True)
-                if source.is_dir():
-                    shutil.copytree(source, target)
-                else:
-                    shutil.copy2(source, target)
-            atomic_write_text(
-                context / "Containerfile",
-                self.dockerfile,
-                encoding="utf-8",
-            )
             (
                 capability_volumes,
                 capability_mounts,
@@ -482,6 +465,28 @@ class BuildKitImageBuild:
                     raise TimeoutError(msg) from err
                 raise OSError(msg) from err
 
+    def _stage_context(self, root: Path) -> tuple[Path, Path]:
+        context = root / "context"
+        metadata = root / "metadata"
+        context.mkdir()
+        metadata.mkdir()
+        for source, target in self.context_copies:
+            if not source.exists():
+                msg = f"BuildKit image build context source does not exist: {source}"
+                raise FileNotFoundError(msg)
+            target = context / target
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if source.is_dir():
+                shutil.copytree(source, target)
+            else:
+                shutil.copy2(source, target)
+        atomic_write_text(
+            context / "Containerfile",
+            self.dockerfile,
+            encoding="utf-8",
+        )
+        return context, metadata
+
     async def _capability_mounts(
         self,
         kube: Kube,
@@ -502,64 +507,43 @@ class BuildKitImageBuild:
         mounts: list[VolumeMountSpec] = []
         secret_paths: dict[str, str] = {}
         ssh_paths: dict[str, str] = {}
+        groups: tuple[
+            tuple[CapabilityKind, Mapping[KubeName, bool], str, dict[str, str]],
+            ...,
+        ] = (
+            ("secret", self.secrets, BUILD_JOB_SECRET_MOUNT, secret_paths),
+            ("ssh", self.ssh, BUILD_JOB_SSH_MOUNT, ssh_paths),
+        )
 
-        for capability_id, required in sorted(self.secrets.items()):
-            capability = await Capability.resolve(
-                kube,
-                kind="secret",
-                capability_id=capability_id,
-                env_id=env_id,
-                required=required,
-                timeout=deadline - loop.time(),
-            )
-            if capability is None:
-                continue
-            volume_name = _capability_volume_name("secret", capability_id)
-            mount_path = f"{BUILD_JOB_SECRET_MOUNT}/{capability_id}"
-            volumes.append(
-                VolumeSpec.secret(
-                    volume_name,
-                    secret_name=capability.ref.name,
-                    default_mode=0o400,
+        for kind, requests, mount_root, paths in groups:
+            for capability_id, required in sorted(requests.items()):
+                capability = await Capability.resolve(
+                    kube,
+                    kind=kind,
+                    capability_id=capability_id,
+                    env_id=env_id,
+                    required=required,
+                    timeout=deadline - loop.time(),
                 )
-            )
-            mounts.append(
-                VolumeMountSpec(
-                    name=volume_name,
-                    mount_path=mount_path,
-                    read_only=True,
+                if capability is None:
+                    continue
+                volume_name = _capability_volume_name(kind, capability_id)
+                mount_path = f"{mount_root}/{capability_id}"
+                volumes.append(
+                    VolumeSpec.secret(
+                        volume_name,
+                        secret_name=capability.ref.name,
+                        default_mode=0o400,
+                    )
                 )
-            )
-            secret_paths[capability_id] = f"{mount_path}/{CAPABILITY_VALUE_KEY}"
-
-        for capability_id, required in sorted(self.ssh.items()):
-            capability = await Capability.resolve(
-                kube,
-                kind="ssh",
-                capability_id=capability_id,
-                env_id=env_id,
-                required=required,
-                timeout=deadline - loop.time(),
-            )
-            if capability is None:
-                continue
-            volume_name = _capability_volume_name("ssh", capability_id)
-            mount_path = f"{BUILD_JOB_SSH_MOUNT}/{capability_id}"
-            volumes.append(
-                VolumeSpec.secret(
-                    volume_name,
-                    secret_name=capability.ref.name,
-                    default_mode=0o400,
+                mounts.append(
+                    VolumeMountSpec(
+                        name=volume_name,
+                        mount_path=mount_path,
+                        read_only=True,
+                    )
                 )
-            )
-            mounts.append(
-                VolumeMountSpec(
-                    name=volume_name,
-                    mount_path=mount_path,
-                    read_only=True,
-                )
-            )
-            ssh_paths[capability_id] = f"{mount_path}/{CAPABILITY_VALUE_KEY}"
+                paths[capability_id] = f"{mount_path}/{CAPABILITY_VALUE_KEY}"
 
         return volumes, mounts, secret_paths, ssh_paths
 

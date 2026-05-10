@@ -520,34 +520,30 @@ class ImageRepository:
             )
             nodes = await Node.list(kube=kube, timeout=deadline - loop.time())
 
-            service_selector_ready = (
-                service is not None and dict(service.selector) == self.selector
+            expected_port = ServicePortSpec(
+                name="registry",
+                port=self.port,
+                target_port=self.port,
+                node_port=self.node_port,
             )
-            service_port_ready = service is not None and any(
-                port.name == "registry"
-                and port.port == self.port
-                and port.target_port == self.port
-                and port.protocol == "TCP"
-                and port.node_port == self.node_port
-                for port in service.ports
+            service_selector_ready = service is not None and service.selects(
+                self.selector
             )
-            service_ready = (
-                service is not None
-                and service.type == "NodePort"
-                and service_selector_ready
-                and service_port_ready
+            service_port_ready = service is not None and service.exposes(expected_port)
+            service_ready = service is not None and service.matches(
+                service_type="NodePort",
+                selector=self.selector,
+                ports=(expected_port,),
             )
             available = 0
             updated = 0
             observed = 0
             generation = 0
-            generation_observed = False
             if deployment is not None:
                 available = deployment.available_replicas
                 updated = deployment.updated_replicas
                 observed = deployment.observed_generation
                 generation = deployment.generation
-                generation_observed = generation <= 0 or observed >= generation
 
             pvc_bound = pvc.is_bound if pvc is not None else False
             pvc_phase = pvc.phase if pvc is not None else ""
@@ -564,7 +560,8 @@ class ImageRepository:
                 pvc_managed
                 and pvc_bound
                 and bool(storage_class)
-                and "ReadWriteMany" in access_modes
+                and pvc is not None
+                and pvc.has_access_mode("ReadWriteMany")
             )
             desired_config_hash = self.buildkit_config_hash
             installed_config_hash = (
@@ -583,11 +580,8 @@ class ImageRepository:
             trusted_set = frozenset(trusted)
             untrusted = [name for name in named_nodes if name not in trusted_set]
             node_trust_ready = bool(named_nodes) and not untrusted
-            deployment_ready = (
-                deployment is not None
-                and generation_observed
-                and available >= 1
-                and updated >= 1
+            deployment_ready = deployment is not None and deployment.rollout_ready(
+                minimum=1
             )
             return ImageRepositoryStatus(
                 namespace=self.namespace,

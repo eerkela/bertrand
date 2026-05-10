@@ -8,8 +8,11 @@ from __future__ import annotations
 
 import asyncio
 import math
+import os
+import shutil
 from collections.abc import (
     AsyncIterator,
+    Awaitable,
     Callable,
     Collection,
     Iterator,
@@ -20,18 +23,42 @@ from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
-from typing import Literal, Self, cast
+from typing import TYPE_CHECKING, Literal, Protocol, Self, cast
 from urllib.parse import urlparse
 
 import kubernetes
 from kubernetes.client.rest import ApiException
 
-from bertrand.env.run import BERTRAND_NAMESPACE, STATE_DIR, atomic_write_text, run
+from bertrand.env.run import (
+    BERTRAND_NAMESPACE,
+    INFINITY,
+    RUN_DIR,
+    STATE_DIR,
+    CommandError,
+    CompletedProcess,
+    GroupStatus,
+    Lock,
+    TimeoutExpired,
+    atomic_write_text,
+    can_escalate,
+    confirm,
+    install_packages,
+    run,
+    sudo,
+    until,
+)
+
+if TYPE_CHECKING:
+    from datetime import datetime
 
 CLUSTER_REGISTRY_READY_LABEL = "bertrand.dev/registry-ready"
 CLUSTER_REGISTRY_READY_VALUE = "true"
 KUBE_CONFIG_FILE = STATE_DIR / "kubeconfig"
 MICROK8S_KUBECONFIG_CONTEXT = "microk8s"
+MICROK8S_CHANNEL = "1.33/stable"
+MICROK8S_GROUP = "microk8s"
+KUBE_LOCK_FILE = RUN_DIR / "microk8s.lock"
+KUBE_WAIT_POLL_INTERVAL_SECONDS = 0.5
 type PortProtocol = Literal["TCP", "UDP", "SCTP"]
 type WatchEventType = Literal["ADDED", "MODIFIED", "DELETED", "BOOKMARK", "ERROR"]
 _WATCH_EVENT_TYPES: frozenset[str] = frozenset(
@@ -137,6 +164,199 @@ class WatchEvent[T]:
 
 class WatchExpired(OSError):  # noqa: N818
     """Raised when Kubernetes expires a watch resource version."""
+
+
+class _KubeObject(Protocol):
+    @property
+    def metadata(self) -> kubernetes.client.V1ObjectMeta | None: ...
+
+
+class KubeMetadata[T: _KubeObject]:
+    """Shared metadata view for typed Kubernetes API wrappers.
+
+    This base is intended for wrapper classes that hold a typed Kubernetes client
+    model in a private `_obj` field.  It centralizes read-only access to standard
+    Kubernetes object metadata while keeping raw client models private.
+
+    Attributes
+    ----------
+    _obj : T
+        Typed Kubernetes client model with standard `metadata`.
+    """
+
+    _obj: T
+
+    @property
+    def name(self) -> str:
+        """Return the Kubernetes object name.
+
+        Returns
+        -------
+        str
+            Trimmed `metadata.name`, or an empty string when unavailable.
+        """
+        metadata = self._obj.metadata
+        return (metadata.name or "").strip() if metadata is not None else ""
+
+    @property
+    def labels(self) -> Mapping[str, str]:
+        """Return the Kubernetes object labels.
+
+        Returns
+        -------
+        Mapping[str, str]
+            Live read-only view of `metadata.labels`, or an empty mapping when
+            unavailable.
+        """
+        metadata = self._obj.metadata
+        if metadata is None or metadata.labels is None:
+            return MappingProxyType({})
+        return MappingProxyType(metadata.labels)
+
+    @property
+    def annotations(self) -> Mapping[str, str]:
+        """Return the Kubernetes object annotations.
+
+        Returns
+        -------
+        Mapping[str, str]
+            Live read-only view of `metadata.annotations`, or an empty mapping when
+            unavailable.
+        """
+        metadata = self._obj.metadata
+        if metadata is None or metadata.annotations is None:
+            return MappingProxyType({})
+        return MappingProxyType(metadata.annotations)
+
+    @property
+    def resource_version(self) -> str:
+        """Return the Kubernetes object resource version.
+
+        Returns
+        -------
+        str
+            Kubernetes `metadata.resourceVersion`, or an empty string when
+            unavailable.
+        """
+        metadata = self._obj.metadata
+        return (metadata.resource_version or "").strip() if metadata is not None else ""
+
+    @property
+    def uid(self) -> str:
+        """Return the Kubernetes object UID.
+
+        Returns
+        -------
+        str
+            Kubernetes `metadata.uid`, or an empty string when unavailable.
+        """
+        metadata = self._obj.metadata
+        return (metadata.uid or "").strip() if metadata is not None else ""
+
+    @property
+    def created_at(self) -> datetime | None:
+        """Return the Kubernetes object creation timestamp.
+
+        Returns
+        -------
+        datetime | None
+            Kubernetes `metadata.creationTimestamp`, or `None` when unavailable.
+        """
+        metadata = self._obj.metadata
+        return metadata.creation_timestamp if metadata is not None else None
+
+    def _object_label(
+        self,
+        name: str | None = None,
+        namespace: str | None = None,
+    ) -> str:
+        namespace = (namespace or "").strip()
+        name = (name or self.name).strip()
+        if namespace and name:
+            return f"{type(self).__name__} {namespace}/{name}"
+        if name:
+            return f"{type(self).__name__} {name}"
+        return type(self).__name__
+
+    def _require_name(self, action: str) -> str:
+        name = self.name
+        if not name:
+            msg = f"cannot {action} with missing metadata.name"
+            raise OSError(msg)
+        return name
+
+
+class NamespacedKubeMetadata[T: _KubeObject](KubeMetadata[T]):
+    """Shared namespace-aware metadata view for typed Kubernetes wrappers.
+
+    This base extends `KubeMetadata` for namespaced Kubernetes resources.
+
+    Attributes
+    ----------
+    _obj : T
+        Typed Kubernetes client model with standard `metadata.namespace`.
+    """
+
+    @property
+    def namespace(self) -> str:
+        """Return the Kubernetes object namespace.
+
+        Returns
+        -------
+        str
+            Trimmed `metadata.namespace`, or an empty string when unavailable.
+        """
+        metadata = self._obj.metadata
+        return (metadata.namespace or "").strip() if metadata is not None else ""
+
+    def _object_label(
+        self,
+        name: str | None = None,
+        namespace: str | None = None,
+    ) -> str:
+        namespace = (namespace or self.namespace).strip()
+        name = (name or self.name).strip()
+        if namespace and name:
+            return f"{type(self).__name__} {namespace}/{name}"
+        if name:
+            return f"{type(self).__name__} {name}"
+        return type(self).__name__
+
+    def _require_namespace_name(self, action: str) -> tuple[str, str]:
+        namespace = self.namespace
+        name = self.name
+        if not namespace or not name:
+            msg = f"cannot {action} with missing metadata.name/namespace"
+            raise OSError(msg)
+        return namespace, name
+
+
+def _validate_delete_status(payload: object, *, label: str) -> None:
+    if payload is not None and not isinstance(payload, kubernetes.client.V1Status):
+        msg = f"malformed Kubernetes response while deleting {label}"
+        raise OSError(msg)
+
+
+async def _wait_until_deleted(
+    *,
+    label: str,
+    timeout: float,
+    refresh: Callable[[float], Awaitable[object | None]],
+) -> None:
+    if timeout <= 0:
+        msg = f"timed out waiting for {label} deletion"
+        raise TimeoutError(msg)
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while True:
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            msg = f"timed out waiting for {label} deletion"
+            raise TimeoutError(msg)
+        live = await refresh(remaining)
+        if live is None:
+            return
+        await asyncio.sleep(min(KUBE_WAIT_POLL_INTERVAL_SECONDS, remaining))
 
 
 @dataclass(frozen=True)
@@ -291,6 +511,373 @@ async def _microk8s_config_payload(*, timeout: float) -> str:
         msg = "microk8s config returned an empty kubeconfig payload"
         raise OSError(msg)
     return text if text.endswith("\n") else f"{text}\n"
+
+
+async def kubectl(
+    argv: list[str],
+    *,
+    check: bool = True,
+    capture_output: bool | None = False,
+    stdin: str | None = None,
+    timeout: float = INFINITY,
+    attempts: int = 1,
+    delay: float = 0.1,
+    cwd: Path | None = None,
+    env: Mapping[str, str] | None = None,
+) -> CompletedProcess:
+    """Invoke `microk8s kubectl` against the local MicroK8s cluster.
+
+    Parameters
+    ----------
+    argv : list[str]
+        `kubectl` arguments without the `microk8s kubectl` prefix.
+    check : bool, optional
+        Whether nonzero command exits raise `CommandError`.
+    capture_output : bool | None, optional
+        Whether to capture, inherit, or tee subprocess output.
+    stdin : str | None, optional
+        Optional text to pass to command stdin.
+    timeout : float, optional
+        Maximum command runtime in seconds.
+    attempts : int, optional
+        Number of command attempts.
+    delay : float, optional
+        Delay between attempts in seconds.
+    cwd : Path | None, optional
+        Optional working directory.
+    env : Mapping[str, str] | None, optional
+        Optional environment overrides.
+
+    Returns
+    -------
+    CompletedProcess
+        Completed command result.
+    """
+    return await run(
+        ["microk8s", "kubectl", *argv],
+        check=check,
+        capture_output=capture_output,
+        stdin=stdin,
+        timeout=timeout,
+        attempts=attempts,
+        delay=delay,
+        cwd=cwd,
+        env=env,
+    )
+
+
+async def enable_microk8s_addon(name: str, *, timeout: float) -> None:
+    """Enable one MicroK8s addon idempotently.
+
+    Parameters
+    ----------
+    name : str
+        Addon name passed to `microk8s enable`.
+    timeout : float
+        Maximum runtime command timeout in seconds.
+
+    Raises
+    ------
+    TimeoutError
+        If `timeout` is non-positive.
+    OSError
+        If addon convergence fails.
+    """
+    if timeout <= 0:
+        msg = "MicroK8s addon timeout must be non-negative."
+        raise TimeoutError(msg)
+    try:
+        await run(
+            ["microk8s", "enable", name],
+            capture_output=True,
+            timeout=timeout,
+        )
+    except CommandError as err:
+        detail = f"{err.stdout}\n{err.stderr}".strip().lower()
+        if "already enabled" in detail or "alreadyenabled" in detail:
+            return
+        msg = f"failed to enable MicroK8s addon {name!r}:\n{err}"
+        raise OSError(msg) from err
+
+
+async def _snap_ready() -> bool:
+    if not shutil.which("snap"):
+        return False
+    return (
+        await run(
+            ["snap", "--version"],
+            check=False,
+            capture_output=True,
+        )
+    ).returncode == 0
+
+
+async def _install_snap(
+    package_manager: str,
+    *,
+    assume_yes: bool,
+    component: str,
+) -> None:
+    if await _snap_ready():
+        return
+    if not confirm(
+        f"Bertrand requires 'snapd' to install {component}. Would you like to "
+        f"install it now using {package_manager} (requires sudo)?\n[y/N] ",
+        assume_yes=assume_yes,
+    ):
+        msg = "Installation declined by user."
+        raise PermissionError(msg)
+
+    try:
+        await install_packages(
+            package_manager,
+            ["snapd"],
+            assume_yes=assume_yes,
+            timeout=INFINITY,
+        )
+    except (CommandError, TimeoutExpired, OSError, ValueError, PermissionError) as err:
+        msg = (
+            f"Bertrand uses a snap-based runtime path for {component}, but failed to "
+            f"install 'snapd' via {package_manager!r}. This host is unsupported for "
+            "the current Bertrand runtime installation model unless snapd can be "
+            f"installed and made operational.\n{err}"
+        )
+        raise OSError(msg) from err
+    if not await _snap_ready():
+        msg = (
+            "Bertrand uses a snap-based runtime path, but 'snap' is still unavailable "
+            "after installing snapd."
+        )
+        raise OSError(msg)
+
+
+async def _microk8s_installed() -> bool:
+    if not shutil.which("snap"):
+        return False
+    return (
+        await run(["snap", "list", "microk8s"], check=False, capture_output=True)
+    ).returncode == 0
+
+
+async def _microk8s_ready() -> bool:
+    if not await _microk8s_installed():
+        return False
+    return (
+        await run(
+            ["microk8s", "--help"],
+            check=False,
+            capture_output=True,
+        )
+    ).returncode == 0
+
+
+async def install_microk8s(
+    *,
+    package_manager: str,
+    user: str,
+    distro_id: str,
+    assume_yes: bool,
+) -> None:
+    """Install or refresh MicroK8s runtime access.
+
+    Parameters
+    ----------
+    package_manager : str
+        Host package manager to use for installing dependencies.
+    user : str
+        Host username to configure for runtime group access.
+    distro_id : str
+        Host Linux distribution ID, retained for diagnostics.
+    assume_yes : bool
+        Whether to automatically answer yes to prompts.
+
+    Raises
+    ------
+    PermissionError
+        If installation requires root privileges and they are unavailable or declined.
+    OSError
+        If MicroK8s cannot be installed, found, or made ready.
+    """
+    _ = distro_id
+    group = GroupStatus.get(user, MICROK8S_GROUP)
+    if await _microk8s_ready():
+        await group.activate(assume_yes=assume_yes)
+        return
+
+    await _install_snap(package_manager, assume_yes=assume_yes, component="MicroK8s")
+    if not await _microk8s_ready():
+        if not confirm(
+            "Bertrand requires MicroK8s as its kubernetes control plane. Would "
+            f"you like to install/refresh MicroK8s now at channel {MICROK8S_CHANNEL!r} "
+            "(requires sudo)?\n[y/N] ",
+            assume_yes=assume_yes,
+        ):
+            msg = "MicroK8s installation declined by user."
+            raise PermissionError(msg)
+        if os.geteuid() != 0 and not can_escalate():
+            msg = "MicroK8s installation requires root privileges; sudo not available."
+            raise PermissionError(msg)
+        if await _microk8s_installed():
+            cmd = ["snap", "refresh", "microk8s", "--channel", MICROK8S_CHANNEL]
+        else:
+            cmd = [
+                "snap",
+                "install",
+                "microk8s",
+                "--classic",
+                "--channel",
+                MICROK8S_CHANNEL,
+            ]
+        await run(sudo(cmd, non_interactive=assume_yes))
+        if not await _microk8s_ready():
+            msg = (
+                "MicroK8s installation completed, but the runtime is still not "
+                "available. Check `snap list microk8s` and `microk8s --help` for "
+                "diagnostics."
+            )
+            raise OSError(msg)
+
+    await group.activate(assume_yes=assume_yes)
+
+
+async def assert_microk8s_installed(*, user: str) -> None:
+    """Raise with actionable diagnostics when MicroK8s runtime is unusable.
+
+    Parameters
+    ----------
+    user : str
+        Host username to check for runtime group access.
+
+    Raises
+    ------
+    OSError
+        If MicroK8s is not installed, not usable, or group access is missing.
+    """
+    if not await _microk8s_ready():
+        msg = (
+            "MicroK8s is installed but not usable after init bootstrap. Run "
+            "`snap list microk8s` and `microk8s --help` for diagnostics."
+        )
+        raise OSError(msg)
+    group = GroupStatus.get(user, MICROK8S_GROUP)
+    if not group.configured:
+        msg = (
+            f"user {user!r} is not in {MICROK8S_GROUP!r}. Rerun `bertrand init` "
+            "to configure MicroK8s access."
+        )
+        raise OSError(msg)
+
+
+async def _microk8s_cluster_ready(*, timeout: float) -> bool:
+    return (
+        await run(
+            ["microk8s", "kubectl", "get", "--raw=/readyz"],
+            check=False,
+            capture_output=True,
+            timeout=timeout,
+        )
+    ).returncode == 0
+
+
+async def _add_bertrand_kube_namespace(*, timeout: float) -> None:
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    ready = await kubectl(
+        ["get", "namespace", BERTRAND_NAMESPACE, "-o", "name"],
+        check=False,
+        capture_output=True,
+        timeout=deadline - loop.time(),
+    )
+    if ready.returncode == 0:
+        return
+    try:
+        await kubectl(
+            ["create", "namespace", BERTRAND_NAMESPACE],
+            capture_output=True,
+            timeout=deadline - loop.time(),
+        )
+    except CommandError as err:
+        stdout = err.stdout.strip() if err.stdout else ""
+        stderr = err.stderr.strip() if err.stderr else ""
+        out = "\n".join((stdout, stderr)).lower()
+        if "already exists" in out or "alreadyexists" in out:
+            return
+        raise
+
+
+async def start_microk8s(*, timeout: float) -> None:
+    """Ensure that MicroK8s is running and Bertrand's namespace exists.
+
+    Parameters
+    ----------
+    timeout : float
+        Maximum startup/readiness budget in seconds.
+
+    Raises
+    ------
+    TimeoutError
+        If readiness checks do not succeed before `timeout`.
+    OSError
+        If MicroK8s is missing, startup fails, or namespace bootstrap fails.
+    """
+    if timeout <= 0:
+        msg = "MicroK8s timeout must be non-negative."
+        raise TimeoutError(msg)
+    if not shutil.which("microk8s"):
+        msg = (
+            "MicroK8s CLI was not found in PATH. Run `bertrand init` to install "
+            "the managed runtime."
+        )
+        raise OSError(msg)
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+
+    if await _microk8s_cluster_ready(timeout=deadline - loop.time()):
+        await _add_bertrand_kube_namespace(timeout=deadline - loop.time())
+        return
+
+    try:
+        async with Lock(KUBE_LOCK_FILE, timeout=deadline - loop.time(), mode="local"):
+            if await _microk8s_cluster_ready(timeout=deadline - loop.time()):
+                await _add_bertrand_kube_namespace(timeout=deadline - loop.time())
+                return
+
+            await run(
+                ["microk8s", "start"],
+                capture_output=True,
+                timeout=deadline - loop.time(),
+            )
+
+            async def ready(remaining: float) -> None:
+                if await _microk8s_cluster_ready(timeout=remaining):
+                    return
+                msg = "MicroK8s is not ready yet"
+                raise TimeoutError(msg)
+
+            try:
+                await until(
+                    ready,
+                    timeout=deadline - loop.time(),
+                    interval=0.1,
+                    action="waiting for MicroK8s to become ready",
+                )
+            except TimeoutError as err:
+                msg = (
+                    f"timed out waiting for MicroK8s to become ready after {timeout} "
+                    "seconds"
+                )
+                raise TimeoutError(msg) from err
+            await _add_bertrand_kube_namespace(timeout=deadline - loop.time())
+            return
+    except TimeoutExpired as err:
+        msg = f"timed out waiting for MicroK8s to become ready after {timeout} seconds"
+        raise TimeoutError(msg) from err
+    except CommandError as err:
+        msg = (
+            "Failed to start MicroK8s. You may need to re-run `bertrand init` to "
+            f"ensure proper setup and group membership.\n{err}"
+        )
+        raise OSError(msg) from err
 
 
 async def ensure_microk8s_kubeconfig(*, timeout: float) -> Path:

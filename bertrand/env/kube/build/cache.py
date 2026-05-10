@@ -6,7 +6,7 @@ import asyncio
 import hashlib
 import json
 from dataclasses import dataclass
-from typing import Self
+from typing import TYPE_CHECKING, Self
 
 from bertrand.env.config import RESOURCE_NAMES, Bertrand, Config, Resource
 from bertrand.env.config.core import (
@@ -15,11 +15,13 @@ from bertrand.env.config.core import (
     KubeName,
     _check_uuid,
 )
-from bertrand.env.kube.api import Kube
 from bertrand.env.kube.ceph.volume import CEPHFS_STORAGE_CLASS_PREFERENCES
 from bertrand.env.kube.pod import Pod
 from bertrand.env.kube.volume import PersistentVolumeClaim, StorageClass
 from bertrand.env.run import BERTRAND_ENV, BERTRAND_NAMESPACE, ENV_ID_ENV
+
+if TYPE_CHECKING:
+    from bertrand.env.kube.api import Kube
 
 BUILDKIT_CACHE_CLAIM = "bertrand-buildkit-cache"
 BUILDKIT_CACHE_ENV: str = "BERTRAND_BUILDKIT_CACHE"
@@ -411,10 +413,11 @@ class CacheVolume:
     @classmethod
     async def ensure(
         cls,
+        kube: Kube,
+        *,
         config: Config,
         tag: str,
         env_id: str,
-        *,
         timeout: float,
         storage_class: str,
         size_request: str,
@@ -423,6 +426,8 @@ class CacheVolume:
 
         Parameters
         ----------
+        kube : Kube
+            Active Kubernetes API context.
         config : Config
             Active configuration context with resolved resources.
         tag : str
@@ -457,44 +462,52 @@ class CacheVolume:
             raise ValueError(msg)
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
-        with await Kube.host(timeout=deadline - loop.time()) as kube:
-            storage = await StorageClass.select(
-                kube=kube,
-                timeout=deadline - loop.time(),
-                preferences=(storage_class,),
-                require_expansion=True,
-            )
-            storage_name = storage.name
+        storage = await StorageClass.select(
+            kube=kube,
+            timeout=deadline - loop.time(),
+            preferences=(storage_class,),
+            require_expansion=True,
+        )
+        storage_name = storage.name
 
-            for volume in await CacheVolume.from_config(config, tag, env_id):
-                pvc = await PersistentVolumeClaim.upsert(
-                    kube=kube,
-                    namespace=BERTRAND_NAMESPACE,
-                    name=volume.name,
-                    access_modes=("ReadWriteOnce",),
-                    storage_class=storage_name,
-                    storage_request=size_request,
-                    labels={
-                        BERTRAND_ENV: "1",
-                        CACHE_VOLUME_ENV: "1",
-                        ENV_ID_ENV: env_id,
-                    },
-                    timeout=deadline - loop.time(),
-                )
-                cls._assert_managed_cache(
-                    pvc,
-                    claim_name=volume.name,
-                    env_id=env_id,
-                    storage_class=storage_class,
-                    require_rwo=True,
-                )
+        for volume in await CacheVolume.from_config(config, tag, env_id):
+            pvc = await PersistentVolumeClaim.upsert(
+                kube=kube,
+                namespace=BERTRAND_NAMESPACE,
+                name=volume.name,
+                access_modes=("ReadWriteOnce",),
+                storage_class=storage_name,
+                storage_request=size_request,
+                labels={
+                    BERTRAND_ENV: "1",
+                    CACHE_VOLUME_ENV: "1",
+                    ENV_ID_ENV: env_id,
+                },
+                timeout=deadline - loop.time(),
+            )
+            cls._assert_managed_cache(
+                pvc,
+                claim_name=volume.name,
+                env_id=env_id,
+                storage_class=storage_class,
+                require_rwo=True,
+            )
 
     @classmethod
-    async def gc(cls, config: Config, env_id: str, *, timeout: float) -> None:
+    async def gc(
+        cls,
+        kube: Kube,
+        config: Config,
+        env_id: str,
+        *,
+        timeout: float,
+    ) -> None:
         """Garbage-collect stale labeled cache PVCs for an environment.
 
         Parameters
         ----------
+        kube : Kube
+            Active Kubernetes API context.
         config : Config
             Active configuration context used to compute expected cache PVCs.
         env_id : str
@@ -517,52 +530,51 @@ class CacheVolume:
         bertrand = config.get(Bertrand)
         if bertrand is None:
             return
-        with await Kube.host(timeout=deadline - loop.time()) as kube:
-            actual = await PersistentVolumeClaim.list(
+        actual = await PersistentVolumeClaim.list(
+            kube=kube,
+            namespaces=(BERTRAND_NAMESPACE,),
+            timeout=deadline - loop.time(),
+            labels={BERTRAND_ENV: "1", CACHE_VOLUME_ENV: "1", ENV_ID_ENV: env_id},
+        )
+        if not actual:
+            return
+
+        active = {
+            claim_name
+            for pod in await Pod.list(
                 kube=kube,
                 namespaces=(BERTRAND_NAMESPACE,),
                 timeout=deadline - loop.time(),
-                labels={BERTRAND_ENV: "1", CACHE_VOLUME_ENV: "1", ENV_ID_ENV: env_id},
+                labels={BERTRAND_ENV: "1", ENV_ID_ENV: env_id},
             )
-            if not actual:
-                return
+            if pod.is_active
+            for claim_name in pod.persistent_volume_claim_names
+        }
+        active.discard("")
 
-            active = {
-                claim_name
-                for pod in await Pod.list(
-                    kube=kube,
-                    namespaces=(BERTRAND_NAMESPACE,),
-                    timeout=deadline - loop.time(),
-                    labels={BERTRAND_ENV: "1", ENV_ID_ENV: env_id},
-                )
-                if pod.is_active
-                for claim_name in pod.persistent_volume_claim_names
-            }
-            active.discard("")
+        expected = {
+            volume.name
+            for tag in bertrand.build
+            for volume in await CacheVolume.from_config(config, tag, env_id)
+        }
 
-            expected = {
-                volume.name
-                for tag in bertrand.build
-                for volume in await CacheVolume.from_config(config, tag, env_id)
-            }
-
-            stale = [
-                pvc
-                for pvc in actual
-                if pvc.name and pvc.name not in expected and pvc.name not in active
-            ]
-            for pvc in stale:
-                claim_name = pvc.name
-                if not claim_name:
-                    continue
-                cls._assert_managed_cache(
-                    pvc,
-                    claim_name=claim_name,
-                    env_id=env_id,
-                    storage_class=None,
-                    require_rwo=False,
-                )
-                await pvc.delete(kube=kube, timeout=deadline - loop.time())
+        stale = [
+            pvc
+            for pvc in actual
+            if pvc.name and pvc.name not in expected and pvc.name not in active
+        ]
+        for pvc in stale:
+            claim_name = pvc.name
+            if not claim_name:
+                continue
+            cls._assert_managed_cache(
+                pvc,
+                claim_name=claim_name,
+                env_id=env_id,
+                storage_class=None,
+                require_rwo=False,
+            )
+            await pvc.delete(kube=kube, timeout=deadline - loop.time())
 
 
 BUILDKIT_CACHE = BuildKitCache(

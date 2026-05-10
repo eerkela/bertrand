@@ -12,32 +12,34 @@ common functionality themselves, and can stand alone with respect to the rest of
 a git hook could cause ordinary git operations to fail if `bertrand` is not installed
 in the current environment.
 """
+
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import errno
 import grp
 import hashlib
 import json
 import os
-import platform
 import pwd
 import re
 import shlex
 import shutil
-import signal
 import socket
 import subprocess
 import sys
 import tempfile
 import threading
 import uuid
-from collections.abc import Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path, PosixPath
-from types import TracebackType
-from typing import Any, Literal, Self, TextIO
+from typing import TYPE_CHECKING, Any, Literal, Self, TextIO, cast
+
+if TYPE_CHECKING:
+    from types import TracebackType
 
 if os.name == "nt":
     import msvcrt
@@ -48,7 +50,7 @@ else:
 
 
 #######################
-####    GENERAL    ####
+#      GENERAL        #
 #######################
 
 
@@ -86,26 +88,27 @@ CONTAINER_TMP_MOUNT: PosixPath = PosixPath("/tmp/bertrand")
 # In-container environment variables for relevant configuration, which are set either
 # at build time or upon starting the container context, and used to control the
 # behavior of the bertrand CLI both inside and outside the container.
-BERTRAND_ENV: str = "BERTRAND"                  # "1" to mark as a Bertrand context
-REPO_ID_ENV: str = "BERTRAND_REPO_ID"             # unique repository UUID
-ENV_ID_ENV: str = "BERTRAND_ENV_ID"             # unique Bertrand environment UUID
-IMAGE_ID_ENV: str = "BERTRAND_IMAGE_ID"         # unique OCI image ID
-CONTAINER_ID_ENV: str = "BERTRAND_CONTAINER_ID" # unique OCI container ID
-IMAGE_TAG_ENV: str = "BERTRAND_IMAGE_TAG"       # original tag in build matrix
-RPC_SOCKET_ENV: str = "BERTRAND_RPC_SOCKET"     # absolute path to container-side RPC socket
-PROJECT_ENV: str = "BERTRAND_PROJECT"           # host path to mounted project root
-WORKTREE_ENV: str = "BERTRAND_WORKTREE"         # relative path to mounted worktree
-CONTAINER_RUNTIME_ENV: str = "BERTRAND_RUNTIME" # relative path to worktree's artifact directory
+BERTRAND_ENV: str = "BERTRAND"  # "1" to mark as a Bertrand context
+REPO_ID_ENV: str = "BERTRAND_REPO_ID"  # unique repository UUID
+ENV_ID_ENV: str = "BERTRAND_ENV_ID"  # unique Bertrand environment UUID
+IMAGE_ID_ENV: str = "BERTRAND_IMAGE_ID"  # unique OCI image ID
+CONTAINER_ID_ENV: str = "BERTRAND_CONTAINER_ID"  # unique OCI container ID
+IMAGE_TAG_ENV: str = "BERTRAND_IMAGE_TAG"  # original tag in build matrix
+# absolute path to container-side RPC socket
+RPC_SOCKET_ENV: str = "BERTRAND_RPC_SOCKET"
+PROJECT_ENV: str = "BERTRAND_PROJECT"  # host path to mounted project root
+WORKTREE_ENV: str = "BERTRAND_WORKTREE"  # relative path to mounted worktree
+# relative path to worktree's artifact directory
+CONTAINER_RUNTIME_ENV: str = "BERTRAND_RUNTIME"
 
 
 # common type aliases for serialization
 type Scalar = str | bool | int | float
-type JSONValue = None | Scalar | Sequence["JSONValue"] | Mapping[str, "JSONValue"]
+type JSONValue = Scalar | Sequence[JSONValue] | Mapping[str, JSONValue] | None
 
 
 def inside_image() -> bool:
-    """Check if we're currently running inside a Bertrand image build context
-    (Containerfile or Bertrand container instance).
+    """Check if the current process is in a Bertrand image context.
 
     Returns
     -------
@@ -132,14 +135,22 @@ def inside_container() -> bool:
     bool
         True if we're running inside a container process, False otherwise.
     """
-    return all(key in os.environ for key in (CONTAINER_ID_ENV, IMAGE_ID_ENV, ENV_ID_ENV))
+    return all(
+        key in os.environ for key in (CONTAINER_ID_ENV, IMAGE_ID_ENV, ENV_ID_ENV)
+    )
 
 
 class CompletedProcess(subprocess.CompletedProcess[str]):
-    """A subclass of `subprocess.CompletedProcess` that prints the command and its
-    output when converted to a string.
-    """
+    """Format completed subprocess results with command context."""
+
     def __str__(self) -> str:
+        """Return a formatted command result.
+
+        Returns
+        -------
+        str
+            The formatted command result.
+        """
         out = [
             f"Exit code {self.returncode} from command:\n\n"
             f"    {' '.join(shlex.quote(a) for a in self.args)}"
@@ -150,10 +161,16 @@ class CompletedProcess(subprocess.CompletedProcess[str]):
 
 
 class CommandError(subprocess.CalledProcessError):
-    """A subclass of `subprocess.CalledProcessError` that prints the command and its
-    output when converted to a string.
-    """
+    """Format failed subprocess results with command context."""
+
     def __str__(self) -> str:
+        """Return a formatted command failure.
+
+        Returns
+        -------
+        str
+            The formatted command failure.
+        """
         out = [
             f"Exit code {self.returncode} from command:\n\n"
             f"    {' '.join(shlex.quote(a) for a in self.cmd)}"
@@ -163,11 +180,17 @@ class CommandError(subprocess.CalledProcessError):
         return "\n\n".join(out)
 
 
-class TimeoutExpired(subprocess.TimeoutExpired):
-    """A subclass of `subprocess.TimeoutExpired` that prints the command and any captured
-    output when converted to a string.
-    """
+class TimeoutExpired(subprocess.TimeoutExpired, TimeoutError):  # noqa: N818
+    """Format subprocess timeouts as standard timeout errors."""
+
     def __str__(self) -> str:
+        """Return a formatted subprocess timeout.
+
+        Returns
+        -------
+        str
+            The formatted timeout error.
+        """
         out = [
             f"Command timed out after {self.timeout} seconds:\n\n"
             f"    {' '.join(shlex.quote(a) for a in self.cmd)}"
@@ -194,12 +217,14 @@ class User:
     home : Path
         The path to the user's home directory.
     """
+
     uid: int = field(init=False)
     gid: int = field(init=False)
     name: str = field(init=False)
     home: Path = field(init=False)
 
     def __post_init__(self) -> None:
+        """Resolve the effective host user identity."""
         euid = os.geteuid()
         sudo_uid = os.environ.get("SUDO_UID")
         sudo_user = os.environ.get("SUDO_USER")
@@ -218,8 +243,7 @@ class User:
 
 
 def abspath(path: Path) -> Path:
-    """Normalize a filesystem path by converting it to an absolute path without any
-    `.`, `..`, `~`, or `//` components, but without resolving symlinks.
+    """Normalize a filesystem path without resolving symlinks.
 
     Parameters
     ----------
@@ -231,7 +255,7 @@ def abspath(path: Path) -> Path:
     Path
         The normalized path.
     """
-    return Path(os.path.abspath(path.expanduser()))
+    return Path(os.path.abspath(path.expanduser()))  # noqa: PTH100
 
 
 def symlink_points_to(path: Path, target: Path) -> bool:
@@ -259,7 +283,7 @@ def symlink_points_to(path: Path, target: Path) -> bool:
     return False
 
 
-def atomic_symlink(source: Path, target: Path, private: bool = False) -> None:
+def atomic_symlink(source: Path, target: Path, *, private: bool = False) -> None:
     """Atomically create a symbolic link, avoiding race conditions and partial writes.
 
     Parameters
@@ -280,7 +304,7 @@ def atomic_symlink(source: Path, target: Path, private: bool = False) -> None:
     tmp.replace(target)
 
 
-def atomic_write_bytes(path: Path, data: bytes, private: bool = False) -> None:
+def atomic_write_bytes(path: Path, data: bytes, *, private: bool = False) -> None:
     """Atomically write bytes to a file, avoiding race conditions and partial writes.
 
     Parameters
@@ -307,6 +331,7 @@ def atomic_write_text(
     path: Path,
     text: str,
     encoding: str | None = None,
+    *,
     private: bool = False,
 ) -> None:
     """Atomically write text to a file, avoiding race conditions and partial writes.
@@ -334,7 +359,8 @@ def atomic_write_text(
 
 
 def can_escalate() -> bool:
-    """
+    """Check whether the current system supports privilege escalation.
+
     Returns
     -------
     bool
@@ -378,35 +404,27 @@ def mkdir_private(path: Path) -> None:
         The path to create.
     """
     path.mkdir(parents=True, exist_ok=True)
-    try:
+    with contextlib.suppress(OSError):
         path.chmod(0o700)
-    except OSError:
-        pass
 
 
 async def _run_no_capture(
     argv: list[str],
     proc: asyncio.subprocess.Process,
     timeout: float,
-    input: str | None,
+    stdin: str | None,
 ) -> CompletedProcess | CommandError | None:
-    input_bytes = None if input is None else input.encode(
-        "utf-8",
-        errors="replace"
-    )
+    stdin_bytes = None if stdin is None else stdin.encode("utf-8", errors="replace")
     try:
         await asyncio.wait_for(
-            proc.communicate(input_bytes),
+            proc.communicate(stdin_bytes),
             timeout=None if timeout == INFINITY else timeout,
         )
     except TimeoutError as err:
         proc.kill()
         await proc.communicate()
         raise TimeoutExpired(
-            cmd=argv,
-            timeout=timeout or 0.0,
-            output=None,
-            stderr=None
+            cmd=argv, timeout=timeout or 0.0, output=None, stderr=None
         ) from err
 
     if proc.returncode is None:
@@ -423,15 +441,12 @@ async def _run_capture(
     argv: list[str],
     proc: asyncio.subprocess.Process,
     timeout: float,
-    input: str | None,
+    stdin: str | None,
 ) -> CompletedProcess | CommandError | None:
-    input_bytes = None if input is None else input.encode(
-        "utf-8",
-        errors="replace"
-    )
+    stdin_bytes = None if stdin is None else stdin.encode("utf-8", errors="replace")
     try:
         stdout_raw, stderr_raw = await asyncio.wait_for(
-            proc.communicate(input_bytes),
+            proc.communicate(stdin_bytes),
             timeout=None if timeout == INFINITY else timeout,
         )
     except TimeoutError as err:
@@ -452,21 +467,15 @@ async def _run_capture(
     stdout_text = stdout_raw.decode("utf-8", errors="replace")
     stderr_text = stderr_raw.decode("utf-8", errors="replace")
     if proc.returncode == 0:
-        return CompletedProcess(
-            argv,
-            proc.returncode,
-            stdout_text,
-            stderr_text
-        )
-    return CommandError(
-        proc.returncode,
-        argv,
-        stdout_text,
-        stderr_text
-    )
+        return CompletedProcess(argv, proc.returncode, stdout_text, stderr_text)
+    return CommandError(proc.returncode, argv, stdout_text, stderr_text)
 
 
-async def _tee(src: asyncio.StreamReader | None, sink: TextIO, buf_list: list[str]) -> None:
+async def _tee(
+    src: asyncio.StreamReader | None,
+    sink: TextIO,
+    buf_list: list[str],
+) -> None:
     if src is None:
         return
     while True:
@@ -502,24 +511,16 @@ async def _run_tee(
     argv: list[str],
     proc: asyncio.subprocess.Process,
     timeout: float,
-    input: str | None,
+    stdin: str | None,
 ) -> CompletedProcess | CommandError | None:
     stdout_lines: list[str] = []
     stderr_lines: list[str] = []
     tasks: list[asyncio.Task[None]] = [
-        asyncio.create_task(_tee(
-            proc.stdout,
-            sys.stdout,
-            stdout_lines
-        )),
-        asyncio.create_task(_tee(
-            proc.stderr,
-            sys.stderr,
-            stderr_lines
-        )),
+        asyncio.create_task(_tee(proc.stdout, sys.stdout, stdout_lines)),
+        asyncio.create_task(_tee(proc.stderr, sys.stderr, stderr_lines)),
     ]
-    if input is not None:
-        tasks.append(asyncio.create_task(_write_stdin(proc.stdin, input)))
+    if stdin is not None:
+        tasks.append(asyncio.create_task(_write_stdin(proc.stdin, stdin)))
 
     try:
         try:
@@ -552,12 +553,7 @@ async def _run_tee(
     stdout_text = "".join(stdout_lines)
     stderr_text = "".join(stderr_lines)
     if proc.returncode == 0:
-        return CompletedProcess(
-            argv,
-            proc.returncode,
-            stdout_text,
-            stderr_text
-        )
+        return CompletedProcess(argv, proc.returncode, stdout_text, stderr_text)
     return CommandError(proc.returncode, argv, stdout_text, stderr_text)
 
 
@@ -566,15 +562,14 @@ async def run(
     *,
     check: bool = True,
     capture_output: bool | None = False,
-    input: str | None = None,
+    stdin: str | None = None,
     timeout: float = INFINITY,
     attempts: int = 1,
-    delay: float = 0.1,    
+    delay: float = 0.1,
     cwd: Path | None = None,
     env: Mapping[str, str] | None = None,
 ) -> CompletedProcess:
-    """An asynchronous subprocess wrapper that defaults to text mode and properly
-    formats errors.
+    """Run a subprocess asynchronously with text-mode error formatting.
 
     Parameters
     ----------
@@ -591,7 +586,7 @@ async def run(
         None, then output will be "tee'd" to both the console and the returned objects
         simultaneously.  Note that teeing output in this way may break TTY behavior for
         some commands, and is not recommended for interactive use.
-    input : str | None, optional
+    stdin : str | None, optional
         Input to send to the command's stdin (default is None).
     timeout : float, optional
         An optional timeout in seconds to wait for the command to complete before
@@ -626,13 +621,15 @@ async def run(
         only reflect the last attempt, and any previous errors will be ignored.
     TimeoutExpired
         If the command does not complete within the specified timeout.
-    OSError
-        If we failed to open the subprocess or its output streams.
+    ValueError
+        If `attempts` is less than one or `delay` is negative.
     """
     if attempts < 1:
-        raise ValueError("attempts must be at least 1")
+        msg = "attempts must be at least 1"
+        raise ValueError(msg)
     if delay < 0:
-        raise ValueError("delay must be non-negative")
+        msg = "delay must be non-negative"
+        raise ValueError(msg)
 
     # get overall deadline across attempts
     if timeout <= 0.0:
@@ -645,7 +642,7 @@ async def run(
     while attempts > 0:
         proc = await asyncio.create_subprocess_exec(
             *argv,
-            stdin=asyncio.subprocess.PIPE if input is not None else None,
+            stdin=asyncio.subprocess.PIPE if stdin is not None else None,
             stdout=None if capture_output is False else asyncio.subprocess.PIPE,
             stderr=None if capture_output is False else asyncio.subprocess.PIPE,
             cwd=cwd,
@@ -661,7 +658,7 @@ async def run(
                 argv,
                 proc,
                 timeout,
-                input
+                stdin,
             )
 
         # capture_output=True -> full capture with no tee
@@ -670,7 +667,7 @@ async def run(
                 argv,
                 proc,
                 timeout,
-                input
+                stdin,
             )
 
         # capture_output=None -> tee streams while capturing for return/errors
@@ -679,7 +676,7 @@ async def run(
                 argv,
                 proc,
                 timeout,
-                input
+                stdin,
             )
 
         if isinstance(result, CompletedProcess):
@@ -697,7 +694,7 @@ async def run(
             argv,
             last_error.returncode,
             last_error.output or "",
-            last_error.stderr or ""
+            last_error.stderr or "",
         )
     err = (
         "unspecified error: command did not complete successfully, but no error "
@@ -706,6 +703,69 @@ async def run(
     if check:
         raise CommandError(-1, argv, None, err)
     return CompletedProcess(argv, -1, "", err)
+
+
+async def until[T](
+    probe: Callable[[float], Awaitable[T]],
+    *,
+    timeout: float,
+    interval: float,
+    action: str,
+) -> T:
+    """Retry an async probe until it succeeds or a timeout expires.
+
+    Parameters
+    ----------
+    probe : Callable[[float], Awaitable[T]]
+        Async function to call with the remaining timeout budget for each attempt.
+        Any returned value, including None, is treated as success.
+    timeout : float
+        Maximum number of seconds to retry before failing.
+    interval : float
+        Number of seconds to wait between failed probe attempts.  A value of zero
+        yields to the event loop before retrying.
+    action : str
+        Human-readable action used in the timeout error message.
+
+    Returns
+    -------
+    T
+        The value returned by `probe`.
+
+    Raises
+    ------
+    TimeoutError
+        If `timeout` expires before `probe` succeeds.
+    ValueError
+        If `interval` is negative.
+    """
+    if timeout <= 0:
+        msg = f"timed out {action}"
+        raise TimeoutError(msg)
+    if interval < 0:
+        msg = "interval must be non-negative"
+        raise ValueError(msg)
+
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    last_error: TimeoutError | subprocess.TimeoutExpired | None = None
+
+    while True:
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            msg = f"timed out {action}"
+            raise TimeoutError(msg) from last_error
+
+        try:
+            return await probe(remaining)
+        except (TimeoutError, subprocess.TimeoutExpired) as err:
+            last_error = err
+
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            msg = f"timed out {action}"
+            raise TimeoutError(msg) from last_error
+        await asyncio.sleep(min(interval, remaining))
 
 
 def sudo(argv: list[str], *, non_interactive: bool = False) -> list[str]:
@@ -749,8 +809,7 @@ def sudo(argv: list[str], *, non_interactive: bool = False) -> list[str]:
 
 
 def pid_alive(pid: int) -> bool:
-    """Check whether a process with the given PID is currently alive on the host
-    system.
+    """Check whether a process with the given PID is currently alive on the host system.
 
     Parameters
     ----------
@@ -863,26 +922,24 @@ async def install_packages(
     FileNotFoundError
         If the package manager's executable or its refresh command (if applicable) is
         not found in the system PATH.
-    CommandError
-        If the package manager command fails for any reason, including if the command
-        is not found, if the user cancels a password prompt, or if the installation
-        fails for any reason.
     TimeoutExpired
         If the package manager command does not complete within the specified timeout.
     """
     if os.name != "posix":
-        raise OSError("package manager operations require a POSIX system.")
+        msg = "package manager operations require a POSIX system."
+        raise OSError(msg)
     if os.geteuid() != 0 and not can_escalate():
-        raise PermissionError(
+        msg = (
             f"package installation using {package_manager!r} requires root "
             "privileges; sudo not available."
         )
+        raise PermissionError(msg)
     if timeout <= 0.0:
         raise TimeoutExpired(
             cmd=[package_manager],
             timeout=timeout,
             output=None,
-            stderr="timed out before command could be started"
+            stderr="timed out before command could be started",
         )
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout
@@ -890,16 +947,17 @@ async def install_packages(
     # get package manager spec
     spec = _INSTALL_SPECS.get(package_manager)
     if spec is None:
-        raise ValueError(
+        msg = (
             f"unsupported package manager {package_manager!r} (supported: "
             f"{sorted(_INSTALL_SPECS)})"
         )
+        raise ValueError(msg)
     if not shutil.which(spec.install[0]):
-        raise FileNotFoundError(
-            f"package manager {package_manager!r} not found: {spec.install[0]}"
-        )
+        msg = f"package manager {package_manager!r} not found: {spec.install[0]}"
+        raise FileNotFoundError(msg)
     if spec.refresh is not None and not shutil.which(spec.refresh[0]):
-        raise FileNotFoundError(f"refresh command not found: {spec.refresh[0]}")
+        msg = f"refresh command not found: {spec.refresh[0]}"
+        raise FileNotFoundError(msg)
 
     # generate environment for non-interactive installs, if needed
     env: dict[str, str] | None = None
@@ -915,7 +973,7 @@ async def install_packages(
         await run(
             sudo(cmd, non_interactive=assume_yes),
             env=env,
-            timeout=deadline - loop.time()
+            timeout=deadline - loop.time(),
         )
 
     # install requested packages
@@ -924,9 +982,7 @@ async def install_packages(
         cmd.extend(spec.yes_install)
     cmd.extend(packages)
     await run(
-        sudo(cmd, non_interactive=assume_yes),
-        env=env,
-        timeout=deadline - loop.time()
+        sudo(cmd, non_interactive=assume_yes), env=env, timeout=deadline - loop.time()
     )
 
 
@@ -944,6 +1000,7 @@ class GroupStatus:
         group is included in the user's current group list, which is determined at
         login and may need to be refreshed via `newgrp` or a logout/login cycle).
     """
+
     user: str
     group: str
     configured: bool
@@ -968,28 +1025,19 @@ class GroupStatus:
         try:
             group_info = grp.getgrnam(group)
         except KeyError:
-            return cls(
-                user=user,
-                group=group,
-                configured=False,
-                active=False
-            )
+            return cls(user=user, group=group, configured=False, active=False)
         try:
             primary_gid = pwd.getpwnam(user).pw_gid
         except KeyError:
             primary_gid = None
         configured = user in group_info.gr_mem or primary_gid == group_info.gr_gid
-        active = group_info.gr_gid in os.getgroups() or os.getegid() == group_info.gr_gid
-        return cls(
-            user=user,
-            group=group,
-            configured=configured,
-            active=active
+        active = (
+            group_info.gr_gid in os.getgroups() or os.getegid() == group_info.gr_gid
         )
+        return cls(user=user, group=group, configured=configured, active=active)
 
     async def activate(self, *, assume_yes: bool) -> None:
-        """Ensure that the user is a member of the group, prompting or warning as
-        needed.
+        """Ensure host group membership.
 
         Parameters
         ----------
@@ -1001,8 +1049,6 @@ class GroupStatus:
         PermissionError
             If the user declines to update their group membership, or if the update
             requires root privileges and they are not available.
-        CommandError
-            If the group membership command fails for any reason.
         OSError
             If group membership still isn't properly configured after attempting to
             update it.
@@ -1019,14 +1065,15 @@ class GroupStatus:
                 "Bertrand to add this membership now (requires sudo)?\n[y/N] ",
                 assume_yes=assume_yes,
             ):
-                raise PermissionError(
-                    f"{status.group} group membership update declined by user."
-                )
+                msg = f"{status.group} group membership update declined by user."
+                raise PermissionError(msg)
             if os.geteuid() != 0 and not can_escalate():
-                raise PermissionError(
-                    f"Updating {status.group} group membership requires root privileges; "
+                msg = (
+                    f"Updating {status.group} group membership requires root "
+                    "privileges; "
                     "sudo not available."
                 )
+                raise PermissionError(msg)
             await run(
                 sudo(
                     ["usermod", "-a", "-G", status.group, status.user],
@@ -1035,16 +1082,18 @@ class GroupStatus:
             )
             status = GroupStatus.get(status.user, status.group)
             if not status.configured:
-                raise OSError(f"failed to add user '{status.user}' to group '{status.group}'")
+                msg = f"failed to add user '{status.user}' to group '{status.group}'"
+                raise OSError(msg)
 
         # warn if group membership is not active in current session
         if not status.active:
             print(
                 f"bertrand: added {status.user!r} to the {status.group!r} group, but "
-                f"sudo is still required for this session.  Run `newgrp {status.group}` "
+                "sudo is still required for this session.  Run "
+                f"`newgrp {status.group}` "
                 "or log out and back in to pick up the new group privileges before "
                 "proceeding.",
-                file=sys.stderr
+                file=sys.stderr,
             )
 
 
@@ -1062,34 +1111,37 @@ async def download_file(url: str, target: Path, *, retries: int = 3) -> None:
     ------
     OSError
         If neither curl nor wget is available on the system.
-    CommandError
-        If the download command fails for any reason, including if the command is not
-        found, if the download fails, or if the download is interrupted.
     """
     target.parent.mkdir(parents=True, exist_ok=True)
     if shutil.which("curl"):
-        await run([
-            "curl",
-            "-fL",
-            "--retry", str(retries),
-            "--output", str(target),
-            url,
-        ])
+        await run(
+            [
+                "curl",
+                "-fL",
+                "--retry",
+                str(retries),
+                "--output",
+                str(target),
+                url,
+            ]
+        )
     elif shutil.which("wget"):
-        await run([
-            "wget",
-            f"--tries={retries}",
-            "--output-document",
-            str(target),
-            url,
-        ])
+        await run(
+            [
+                "wget",
+                f"--tries={retries}",
+                "--output-document",
+                str(target),
+                url,
+            ]
+        )
     else:
-        raise OSError("No download tool available (expected curl or wget).")
+        msg = "No download tool available (expected curl or wget)."
+        raise OSError(msg)
 
 
 def file_digest(path: Path) -> str:
-    """Compute a SHA-256 hex digest of a file's contents, reading in chunks to avoid
-    memory issues on large files.
+    """Compute a SHA-256 hex digest for a file.
 
     Parameters
     ----------
@@ -1112,8 +1164,7 @@ def file_digest(path: Path) -> str:
 
 
 def tail_lines(path: Path, *, count: int = 40) -> str:
-    """Return the last `count` lines of a text file, or an empty string if the file
-    cannot be read for any reason.
+    r"""Return the last `count` lines of a text file.
 
     Parameters
     ----------
@@ -1139,7 +1190,7 @@ def tail_lines(path: Path, *, count: int = 40) -> str:
 
 
 ####################
-####    KUBE    ####
+# KUBE    ####
 ####################
 
 
@@ -1150,21 +1201,6 @@ def tail_lines(path: Path, *, count: int = 40) -> str:
 # Kubernetes engine/`containerd` CLI config.
 BERTRAND_NAMESPACE = "bertrand"
 BERTRAND_GROUP = "bertrand"
-MICROK8S_CHANNEL = "1.33/stable"
-MICROK8S_GROUP = "microk8s"
-MICROCEPH_CHANNEL = "quincy/stable"
-MICROCEPH_GROUP = "microceph"
-MICROK8S_NAMESPACE = "k8s.io"
-MICROK8S_CONTAINERD_SOCKET = Path("/var/snap/microk8s/common/run/containerd.sock")
-MICROK8S_CONTAINERD_ADDRESS = f"unix://{MICROK8S_CONTAINERD_SOCKET.as_posix()}"
-NERDCTL_VERSION = "2.2.2"
-NERDCTL_BASE_URL = (
-    f"https://github.com/containerd/nerdctl/releases/download/v{NERDCTL_VERSION}"
-)
-NERDCTL_CHECKSUM: dict[str, str] = {  # checksums for nerdctl download
-    "amd64": "8a477f35533c6cc1120c19558d8142967c74f25a4b952b481f48104e030de914",
-    "arm64": "55d68d2613b5f065021146bac21f620cde9e7fdd4bd3eff74cd324f5462e107a",
-}
 
 
 # Host paths for Bertrand's shared runtime state.
@@ -1175,28 +1211,13 @@ REPO_ALIASES_EXT = Path("aliases.json")
 REPO_LOCK_EXT = Path("lock")
 REPO_MOUNT_EXT = Path("mount")
 BIN_DIR = STATE_DIR / "bin"
-CACHE_DIR = STATE_DIR / "cache"  # TODO: delete in favor of RUN_DIR / "cache"?
+CACHE_DIR = (
+    STATE_DIR / "cache"
+)  # TODO: delete in favor of RUN_DIR / "cache"?  # noqa: FIX002
 RUN_DIR = STATE_DIR / "run"
 RUN_TMPFS_MOUNT_UNIT_NAME = "bertrand-run.mount"
 RUN_TMPFS_MOUNT_UNIT_PATH = Path("/etc/systemd/system") / RUN_TMPFS_MOUNT_UNIT_NAME
 TOOLS_DIR = STATE_DIR / "tools"
-NERDCTL_INSTALL_DIR = TOOLS_DIR / f"nerdctl-{NERDCTL_VERSION}"
-NERDCTL_BIN = NERDCTL_INSTALL_DIR / "bin" / "nerdctl"
-BUILDCTL_BIN = NERDCTL_INSTALL_DIR / "bin" / "buildctl"
-BUILDKITD_BIN: Path = NERDCTL_INSTALL_DIR / "bin" / "buildkitd"
-BUILDKIT_SOCKET = RUN_DIR / "buildkitd.sock"
-BUILDKIT_ADDRESS = f"unix://{BUILDKIT_SOCKET.as_posix()}"
-BUILDKIT_PID_FILE = RUN_DIR / "buildkitd.pid"
-BUILDKIT_LOG_FILE = RUN_DIR / "buildkitd.log"
-BUILDKIT_LOCK_FILE = RUN_DIR / "buildkitd.lock"
-KUBE_LOCK_FILE = RUN_DIR / "microk8s.lock"
-CEPH_LOCK_FILE = RUN_DIR / "microceph.lock"
-KUBE_CEPH_LINK_LOCK_FILE = RUN_DIR / "kube-ceph-link.lock"
-NERDCTL_REQUIRED_PATHS = (
-    NERDCTL_BIN,
-    BUILDCTL_BIN,
-    BUILDKITD_BIN,
-)
 
 
 def _state_root_configured(group_gid: int) -> bool:
@@ -1215,28 +1236,22 @@ def _state_root_configured(group_gid: int) -> bool:
     )
 
 
-async def _configure_state_acl(
-    *,
-    deadline: float,
-    assume_yes: bool
-) -> None:
+async def _configure_state_acl(*, deadline: float, assume_yes: bool) -> None:
     loop = asyncio.get_running_loop()
     if not shutil.which("setfacl") or not shutil.which("getfacl"):
-        raise OSError(
+        msg = (
             "Strict Bertrand state ACL setup requires `setfacl` and `getfacl`, "
             "but they were not found.  Install the host `acl` package and rerun "
             "`bertrand init`."
         )
+        raise OSError(msg)
     for cmd in (
         ["setfacl", "-m", f"group:{BERTRAND_GROUP}:rwx", str(STATE_DIR)],
         ["setfacl", "-m", "mask::rwx", str(STATE_DIR)],
         ["setfacl", "-d", "-m", f"group:{BERTRAND_GROUP}:rwx", str(STATE_DIR)],
         ["setfacl", "-d", "-m", "mask::rwx", str(STATE_DIR)],
     ):
-        await run(
-            sudo(cmd, non_interactive=assume_yes),
-            timeout=deadline - loop.time()
-        )
+        await run(sudo(cmd, non_interactive=assume_yes), timeout=deadline - loop.time())
 
     # ensure mountpoint directory exists before enabling the managed tmpfs unit
     await run(
@@ -1244,9 +1259,12 @@ async def _configure_state_acl(
             [
                 "install",
                 "-d",
-                "-m", f"{STATE_DIR_MODE:o}",
-                "-o", "root",
-                "-g", BERTRAND_GROUP,
+                "-m",
+                f"{STATE_DIR_MODE:o}",
+                "-o",
+                "root",
+                "-g",
+                BERTRAND_GROUP,
                 str(RUN_DIR),
             ],
             non_interactive=assume_yes,
@@ -1272,21 +1290,23 @@ async def _state_acl_configured(group: str) -> bool:
 
 
 def _run_mount_unit_text(*, group_gid: int) -> str:
-    return "\n".join((
-        "[Unit]",
-        "Description=Bertrand tmpfs runtime state",
-        "After=local-fs.target",
-        "",
-        "[Mount]",
-        "What=tmpfs",
-        f"Where={RUN_DIR}",
-        "Type=tmpfs",
-        f"Options=mode={STATE_DIR_MODE:o},uid=0,gid={group_gid},nosuid,nodev,noexec",
-        "",
-        "[Install]",
-        "WantedBy=multi-user.target",
-        "",
-    ))
+    return "\n".join(
+        (
+            "[Unit]",
+            "Description=Bertrand tmpfs runtime state",
+            "After=local-fs.target",
+            "",
+            "[Mount]",
+            "What=tmpfs",
+            f"Where={RUN_DIR}",
+            "Type=tmpfs",
+            f"Options=mode={STATE_DIR_MODE:o},uid=0,gid={group_gid},nosuid,nodev,noexec",
+            "",
+            "[Install]",
+            "WantedBy=multi-user.target",
+            "",
+        )
+    )
 
 
 def _run_mount_unit_configured(*, group_gid: int) -> bool:
@@ -1332,10 +1352,11 @@ async def _configure_run_tmpfs_mount(
     timeout: float,
 ) -> None:
     if not shutil.which("systemctl"):
-        raise OSError(
+        msg = (
             "Bertrand requires systemd (`systemctl`) to manage the runtime tmpfs "
             f"mount at {RUN_DIR}."
         )
+        raise OSError(msg)
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout
 
@@ -1355,9 +1376,12 @@ async def _configure_run_tmpfs_mount(
             sudo(
                 [
                     "install",
-                    "-m", "0644",
-                    "-o", "root",
-                    "-g", "root",
+                    "-m",
+                    "0644",
+                    "-o",
+                    "root",
+                    "-g",
+                    "root",
                     str(temp_unit),
                     str(RUN_TMPFS_MOUNT_UNIT_PATH),
                 ],
@@ -1369,10 +1393,8 @@ async def _configure_run_tmpfs_mount(
     # unconditionally remove temp file
     finally:
         if fd is not None:
-            try:
+            with contextlib.suppress(OSError):
                 os.close(fd)
-            except OSError:
-                pass
         if temp_unit is not None:
             temp_unit.unlink(missing_ok=True)
 
@@ -1392,8 +1414,7 @@ async def ensure_bertrand_group(
     timeout: float,
     assume_yes: bool,
 ) -> grp.struct_group:
-    """Add a shared user group for Bertrand if it doesn't already exist, prompting as
-    needed.
+    """Ensure Bertrand's shared host group exists.
 
     Parameters
     ----------
@@ -1415,6 +1436,8 @@ async def ensure_bertrand_group(
         available or the user declines to use them.
     OSError
         If the shared group cannot be created for any other reason.
+    CommandError
+        If group creation fails for an unrecognized reason.
     """
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout
@@ -1428,16 +1451,19 @@ async def ensure_bertrand_group(
     # create user group
     if not confirm(
         f"Bertrand uses a shared host group named {BERTRAND_GROUP!r} for unprivileged "
-        "access to global runtime state.  Create this system group now (requires sudo)?\n"
+        "access to global runtime state.  Create this system group now "
+        "(requires sudo)?\n"
         "[y/N] ",
         assume_yes=assume_yes,
     ):
-        raise PermissionError("Bertrand shared-group bootstrap declined by user.")
+        msg = "Bertrand shared-group bootstrap declined by user."
+        raise PermissionError(msg)
     if os.geteuid() != 0 and not can_escalate():
-        raise PermissionError(
+        msg = (
             f"Creating group {BERTRAND_GROUP!r} requires root privileges; sudo not "
             "available."
         )
+        raise PermissionError(msg)
     try:
         await run(
             sudo(
@@ -1450,15 +1476,14 @@ async def ensure_bertrand_group(
     except CommandError as err:
         out = f"{err.stdout}\n{err.stderr}".lower().strip()
         if "already exists" not in out and "alreadyexist" not in out:
-            raise err
+            raise
 
     # confirm success
     try:
         return grp.getgrnam(BERTRAND_GROUP)
     except KeyError as err:
-        raise OSError(
-            f"Failed to create shared Bertrand group {BERTRAND_GROUP!r}."
-        ) from err
+        msg = f"Failed to create shared Bertrand group {BERTRAND_GROUP!r}."
+        raise OSError(msg) from err
 
 
 async def ensure_bertrand_state(
@@ -1497,7 +1522,8 @@ async def ensure_bertrand_state(
         be converged and verified.
     """
     if os.name != "posix":
-        raise OSError("Bertrand state bootstrap requires a POSIX host.")
+        msg = "Bertrand state bootstrap requires a POSIX host."
+        raise OSError(msg)
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout
 
@@ -1507,10 +1533,10 @@ async def ensure_bertrand_state(
         assume_yes=assume_yes,
     )
     if (
-        not _state_root_configured(group_gid=group_info.gr_gid) or
-        not await _state_acl_configured(group=BERTRAND_GROUP) or
-        not _run_mount_unit_configured(group_gid=group_info.gr_gid) or
-        not _run_dir_tmpfs_mounted()
+        not _state_root_configured(group_gid=group_info.gr_gid)
+        or not await _state_acl_configured(group=BERTRAND_GROUP)
+        or not _run_mount_unit_configured(group_gid=group_info.gr_gid)
+        or not _run_dir_tmpfs_mounted()
     ):
         if not confirm(
             "Bertrand requires shared host state under "
@@ -1519,20 +1545,25 @@ async def ensure_bertrand_state(
             "now (requires sudo)?\n[y/N] ",
             assume_yes=assume_yes,
         ):
-            raise PermissionError("Bertrand shared-state bootstrap declined by user.")
+            msg = "Bertrand shared-state bootstrap declined by user."
+            raise PermissionError(msg)
         if os.geteuid() != 0 and not can_escalate():
-            raise PermissionError(
+            msg = (
                 "Configuring Bertrand shared-state directories requires root "
                 "privileges; sudo not available."
             )
+            raise PermissionError(msg)
         await run(
             sudo(
                 [
                     "install",
                     "-d",
-                    "-m", f"{STATE_DIR_MODE:o}",
-                    "-o", "root",
-                    "-g", BERTRAND_GROUP,
+                    "-m",
+                    f"{STATE_DIR_MODE:o}",
+                    "-o",
+                    "root",
+                    "-g",
+                    BERTRAND_GROUP,
                     str(STATE_DIR),
                 ],
                 non_interactive=assume_yes,
@@ -1556,22 +1587,26 @@ async def ensure_bertrand_state(
 
     # confirm required layout
     if not _state_root_configured(group_gid=group_info.gr_gid):
-        raise OSError(f"Failed to configure shared Bertrand state directory: {STATE_DIR}")
+        msg = f"Failed to configure shared Bertrand state directory: {STATE_DIR}"
+        raise OSError(msg)
     if not await _state_acl_configured(group=BERTRAND_GROUP):
-        raise OSError(
+        msg = (
             f"Failed to configure strict ACL inheritance for shared Bertrand state: "
             f"{STATE_DIR}"
         )
+        raise OSError(msg)
     if not _run_mount_unit_configured(group_gid=group_info.gr_gid):
-        raise OSError(
+        msg = (
             "Failed to install Bertrand systemd tmpfs mount unit for runtime state: "
             f"{RUN_TMPFS_MOUNT_UNIT_PATH}"
         )
+        raise OSError(msg)
     if not _run_dir_tmpfs_mounted():
-        raise OSError(
+        msg = (
             f"Failed to activate Bertrand tmpfs runtime mount at {RUN_DIR}.  Check "
             f"`systemctl status {RUN_TMPFS_MOUNT_UNIT_NAME}` for diagnostics."
         )
+        raise OSError(msg)
 
     # activate bertrand group access for user
     group = GroupStatus.get(user, BERTRAND_GROUP)
@@ -1579,1448 +1614,8 @@ async def ensure_bertrand_state(
     return group
 
 
-async def _snap_ready() -> bool:
-    if not shutil.which("snap"):
-        return False
-    return (await run(
-        ["snap", "--version"],
-        check=False,
-        capture_output=True,
-    )).returncode == 0
-
-
-async def _install_snap(
-    package_manager: str,
-    *,
-    assume_yes: bool,
-    component: str,
-) -> None:
-    if await _snap_ready():
-        return
-    if not confirm(
-        f"Bertrand requires 'snapd' to install {component}.  Would you like to "
-        f"install it now using {package_manager} (requires sudo)?\n[y/N] ",
-        assume_yes=assume_yes,
-    ):
-        raise PermissionError("Installation declined by user.")
-
-    try:
-        await install_packages(
-            package_manager,
-            ["snapd"],
-            assume_yes=assume_yes,
-            timeout=INFINITY,
-        )
-    except (CommandError, TimeoutExpired, OSError, ValueError, PermissionError) as err:
-        raise OSError(
-            f"Bertrand uses a snap-based runtime path for {component}, but failed to "
-            f"install 'snapd' via {package_manager!r}.  This host is unsupported for "
-            "the current Bertrand runtime installation model unless snapd can be "
-            "installed and made operational.\n"
-            f"{err}"
-        ) from err
-    if not await _snap_ready():
-        raise OSError(
-            "Bertrand uses a snap-based runtime path, but 'snap' is still unavailable "
-            "after installing snapd.  This host is unsupported for the current runtime "
-            "installation model unless snapd can be installed and made operational."
-        )
-
-
-async def _microceph_installed() -> bool:
-    if not shutil.which("snap"):
-        return False
-    return (await run(
-        ["snap", "list", "microceph"],
-        check=False,
-        capture_output=True
-    )).returncode == 0
-
-
-async def _microk8s_installed() -> bool:
-    if not shutil.which("snap"):
-        return False
-    return (await run(
-        ["snap", "list", "microk8s"],
-        check=False,
-        capture_output=True
-    )).returncode == 0
-
-
-async def _microceph_ready() -> bool:
-    if not await _microceph_installed() or not shutil.which("microceph"):
-        return False
-    return (await run(
-        ["microceph", "--help"],
-        check=False,
-        capture_output=True,
-    )).returncode == 0
-
-
-async def _microk8s_ready() -> bool:
-    if not await _microk8s_installed():
-        return False
-    return (await run(
-        ["microk8s", "--help"],
-        check=False,
-        capture_output=True,
-    )).returncode == 0
-
-
-async def install_microceph(
-    *,
-    package_manager: str,
-    user: str,
-    distro_id: str,
-    assume_yes: bool,
-) -> None:
-    """Install/refresh MicroCeph and configure runtime group access using Bertrand's
-    snap-based best-effort Linux runtime path.
-
-    Parameters
-    ----------
-    package_manager : str
-        The host package manager to use for installing dependencies.
-    user : str
-        The host username to configure for runtime group access.
-    distro_id : str
-        The host Linux distribution ID, used for diagnostics when running in
-        non-Ubuntu/Debian best-effort mode.
-    assume_yes : bool
-        Whether to automatically answer yes to all prompts during installation, for
-        non-interactive use.
-    """
-    group = GroupStatus.get(user, MICROCEPH_GROUP)
-
-    # short-circuit if MicroCeph is already installed and ready
-    if await _microceph_ready():
-        await group.activate(assume_yes=assume_yes)
-        return
-
-    # install snap package manager
-    await _install_snap(package_manager, assume_yes=assume_yes, component="MicroCeph")
-
-    # install or refresh MicroCeph snap package
-    if not await _microceph_ready():
-        if not confirm(
-            "Bertrand requires MicroCeph as its kubernetes storage backend.  "
-            "Would you like to install/refresh MicroCeph now at channel "
-            f"{MICROCEPH_CHANNEL!r} (requires sudo)?\n[y/N] ",
-            assume_yes=assume_yes,
-        ):
-            raise PermissionError("MicroCeph installation declined by user.")
-        if os.geteuid() != 0 and not can_escalate():
-            raise PermissionError(
-                "MicroCeph installation requires root privileges; sudo not available."
-            )
-        if await _microceph_installed():
-            cmd = ["snap", "refresh", "microceph", "--channel", MICROCEPH_CHANNEL]
-        else:
-            cmd = [
-                "snap",
-                "install",
-                "microceph",
-                "--classic",
-                "--channel",
-                MICROCEPH_CHANNEL
-            ]
-        await run(sudo(cmd, non_interactive=assume_yes))
-        if not await _microceph_ready():
-            raise OSError(
-                "MicroCeph installation completed, but the runtime is still not available.  "
-                "Please check `snap list microceph` and `microceph --help` for diagnostics."
-            )
-
-    # add to microceph group to ensure unprivileged access to CLI and storage
-    await group.activate(assume_yes=assume_yes)
-
-
-async def install_microk8s(
-    *,
-    package_manager: str,
-    user: str,
-    distro_id: str,
-    assume_yes: bool,
-) -> None:
-    """Install/refresh MicroK8s and configure runtime group access using Bertrand's
-    snap-based best-effort Linux runtime path.
-
-    Parameters
-    ----------
-    package_manager : str
-        The host package manager to use for installing dependencies.
-    user : str
-        The host username to configure for runtime group access.
-    distro_id : str
-        The host Linux distribution ID, used for diagnostics when running in
-        non-Ubuntu/Debian best-effort mode.
-    assume_yes : bool
-        Whether to automatically answer yes to all prompts during installation, for
-        non-interactive use.
-    """
-    group = GroupStatus.get(user, MICROK8S_GROUP)
-
-    # short-circuit if MicroK8s is already installed and ready
-    if await _microk8s_ready():
-        await group.activate(assume_yes=assume_yes)
-        return
-
-    # install snap package manager
-    await _install_snap(package_manager, assume_yes=assume_yes, component="MicroK8s")
-
-    # install or refresh MicroK8s snap package
-    if not await _microk8s_ready():
-        if not confirm(
-            "Bertrand requires MicroK8s as its kubernetes control plane.  Would "
-            f"you like to install/refresh MicroK8s now at channel {MICROK8S_CHANNEL!r} "
-            "(requires sudo)?\n[y/N] ",
-            assume_yes=assume_yes,
-        ):
-            raise PermissionError("MicroK8s installation declined by user.")
-        if os.geteuid() != 0 and not can_escalate():
-            raise PermissionError(
-                "MicroK8s installation requires root privileges; sudo not available."
-            )
-        if await _microk8s_installed():
-            cmd = ["snap", "refresh", "microk8s", "--channel", MICROK8S_CHANNEL]
-        else:
-            cmd = [
-                "snap",
-                "install",
-                "microk8s",
-                "--classic",
-                "--channel",
-                MICROK8S_CHANNEL
-            ]
-        await run(sudo(cmd, non_interactive=assume_yes))
-        if not await _microk8s_ready():
-            raise OSError(
-                "MicroK8s installation completed, but the runtime is still not "
-                "available.  Please check `snap list microk8s` and `microk8s --help` "
-                "for diagnostics."
-            )
-
-    # add to microk8s group to ensure unprivileged access to socket, CLI, storage
-    await group.activate(assume_yes=assume_yes)
-
-
-async def install_nerdctl() -> None:
-    """Install `nerdctl` to provide a Docker-like interface for MicroK8s' `containerd`
-    container runtime.
-    """
-    if all(path.exists() for path in NERDCTL_REQUIRED_PATHS):
-        return
-
-    # confirm arch is supported and get checksum
-    arch = NORMALIZE_ARCH.get(platform.machine().strip().lower())
-    if not arch:
-        raise OSError(
-            "Unsupported CPU architecture for pinned nerdctl artifact: "
-            f"{platform.machine()!r} (supported: {sorted(NORMALIZE_ARCH)})"
-        )
-    archive_name = f"nerdctl-full-{NERDCTL_VERSION}-linux-{arch}.tar.gz"
-    archive_path = CACHE_DIR / archive_name
-    archive_url = f"{NERDCTL_BASE_URL}/{archive_name}"
-    expected_sha = NERDCTL_CHECKSUM[arch]
-
-    # download and verify pinned archive
-    CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    needs_download = True
-    if archive_path.exists() and file_digest(archive_path) == expected_sha:
-        needs_download = False
-    if needs_download:
-        await download_file(archive_url, archive_path)
-        actual_sha = file_digest(archive_path)
-        if actual_sha != expected_sha:
-            try:
-                archive_path.unlink()
-            except OSError:
-                pass
-            raise OSError(
-                f"Checksum mismatch for {archive_name}: expected {expected_sha}, "
-                f"got {actual_sha}."
-            )
-
-    # extract archive to final location
-    TOOLS_DIR.mkdir(parents=True, exist_ok=True)
-    staged = TOOLS_DIR / f".nerdctl-{uuid.uuid4().hex}.tmp"
-    if staged.exists():
-        shutil.rmtree(staged, ignore_errors=True)
-    staged.mkdir(parents=True, exist_ok=True)
-    try:
-        await run(["tar", "-xzf", str(archive_path), "-C", str(staged)])
-        if not (staged / "bin" / "nerdctl").exists():
-            raise OSError(
-                "Pinned nerdctl archive extracted successfully, but expected binary "
-                f"was not found at {(staged / 'bin' / 'nerdctl')}."
-            )
-        if NERDCTL_INSTALL_DIR.exists():
-            shutil.rmtree(NERDCTL_INSTALL_DIR, ignore_errors=True)
-        staged.replace(NERDCTL_INSTALL_DIR)
-    finally:
-        if staged.exists():
-            shutil.rmtree(staged, ignore_errors=True)
-
-    # confirm success
-    if not all(path.exists() for path in NERDCTL_REQUIRED_PATHS):
-        raise OSError(
-            "Managed nerdctl toolchain installation completed, but required binaries "
-            "are still missing."
-        )
-
-
-async def assert_microceph_installed(*, user: str) -> None:
-    """Raise with actionable diagnostics when MicroCeph runtime is unusable.
-
-    Parameters
-    ----------
-    user : str
-        The host username to check for runtime group access.
-
-    Raises
-    ------
-    OSError
-        If MicroCeph is not installed, not usable, or if the user does not have proper
-        group access after installation.
-    """
-    if not await _microceph_ready():
-        raise OSError(
-            "MicroCeph is installed but not usable after init bootstrap.  Run "
-            "`snap list microceph` and `microceph --help` for diagnostics."
-        )
-
-    group = GroupStatus.get(user, MICROCEPH_GROUP)
-    if not group.configured:
-        raise OSError(
-            f"user '{user}' is not in '{MICROCEPH_GROUP}'.  Rerun `bertrand init` "
-            "to configure MicroCeph access."
-        )
-
-
-async def assert_microk8s_installed(*, user: str) -> None:
-    """Raise with actionable diagnostics when MicroK8s runtime is unusable.
-
-    Parameters
-    ----------
-    user : str
-        The host username to check for runtime group access.
-
-    Raises
-    ------
-    OSError
-        If MicroK8s is not installed, not usable, or if the user does not have proper
-        group access after installation.
-    """
-    if not await _microk8s_ready():
-        raise OSError(
-            "MicroK8s is installed but not usable after init bootstrap.  Run "
-            "`snap list microk8s` and `microk8s --help` for diagnostics."
-        )
-    group = GroupStatus.get(user, MICROK8S_GROUP)
-    if not group.configured:
-        raise OSError(
-            f"user {user!r} is not in {MICROK8S_GROUP!r}.  Rerun `bertrand init` "
-            "to configure MicroK8s access."
-        )
-
-
-async def assert_nerdctl_installed() -> None:
-    """Raise with actionable diagnostics when the managed nerdctl toolchain is
-    unusable.
-
-    Raises
-    ------
-    OSError
-        If the managed nerdctl toolchain is not installed or incomplete after init
-        bootstrap.
-    """
-    if not all(path.exists() for path in NERDCTL_REQUIRED_PATHS):
-        raise OSError(
-            "Managed nerdctl toolchain is not installed or incomplete after init "
-            "bootstrap.  Please ensure that the following binaries are present:\n"
-            f"{'\n'.join(str(path) for path in NERDCTL_REQUIRED_PATHS)}."
-        )
-
-
-type ContainerState = Literal[
-    "created",
-    "restarting",
-    "running",
-    "removing",
-    "paused",
-    "exited",
-    "dead"
-]
-
-
-async def kubectl(
-    argv: list[str],
-    *,
-    check: bool = True,
-    capture_output: bool | None = False,
-    input: str | None = None,
-    timeout: float = INFINITY,
-    attempts: int = 1,
-    delay: float = 0.1,
-    cwd: Path | None = None,
-    env: Mapping[str, str] | None = None,
-) -> CompletedProcess:
-    """Invoke the `microk8s kubectl` command against the local MicroK8s cluster.
-
-    Parameters
-    ----------
-    argv : list[str]
-        The `kubectl` subcommand to run, plus arguments, minus the `microk8s kubectl`
-        prefix itself.  The command requires that the MicroK8s cluster is up and
-        running locally.
-    check : bool, optional
-        Whether to raise a `CommandError` if the command fails (default is True).  If
-        false, then any errors will be ignored.
-    capture_output : bool | None, optional
-        If true, then all output will be redirected to the returned `CompletedProcess`
-        or `CommandError`, and excluded from the inherited stdout/stderr streams.  If
-        false (the default), then the opposite is the case, and the returned
-        `CompletedProcess` or `CommandError` will not include any captured output.  If
-        None, then output will be "tee'd" to both the console and the returned objects
-        simultaneously.  Note that teeing output in this way may break TTY behavior for
-        some commands, and is not recommended for interactive use.
-    input : str | None, optional
-        Input to send to the command's stdin (default is None).
-    timeout : float, optional
-        An optional timeout in seconds to wait for the command to complete before
-        raising a `TimeoutExpired` exception.  Default is infinite, which means to wait
-        indefinitely.  If zero or negative, a `TimeoutExpired` exception will be raised
-        immediately.  Note that this does not reset between `attempts`, so only the
-        overall time spent on retries counts against the timeout.
-    attempts : int, optional
-        The total number of times to attempt the command.  Defaults to 1, which means
-        no retries.  If greater than 1, then any command that exits with a nonzero
-        exit code will be re-run after a short delay, up to the specified number
-        of times in total.
-    delay : float, optional
-        The delay in seconds to wait between retries when `attempts` is greater than 1.
-        Default is 0.1 seconds.  Must be non-negative.
-    cwd : Path | None, optional
-        An optional working directory to run the command in.  If None (the default),
-        then the current working directory will be used.
-    env : Mapping[str, str] | None, optional
-        An optional environment dictionary to use for the command.  If None (the
-        default), then the current process's environment will be used.
-
-    Returns
-    -------
-    CompletedProcess
-        The completed process result.
-
-    Raises
-    ------
-    CommandError
-        If the command fails and `check` is True.
-    TimeoutExpired
-        If the command does not complete within the specified timeout.
-    OSError
-        If we failed to open the subprocess or its output streams.
-    """
-    cmd = ["microk8s", "kubectl"]
-    cmd.extend(argv)
-    return await run(
-        cmd,
-        check=check,
-        capture_output=capture_output,
-        input=input,
-        timeout=timeout,
-        attempts=attempts,
-        delay=delay,
-        cwd=cwd,
-        env=env,
-    )
-
-
-async def enable_microk8s_addon(name: str, *, timeout: float) -> None:
-    """Enable one MicroK8s addon idempotently.
-
-    Parameters
-    ----------
-    name : str
-        Addon name passed to `microk8s enable`.
-    timeout : float
-        Maximum runtime command timeout in seconds.  If infinite, wait indefinitely.
-
-    Returns
-    -------
-    None
-        This function executes for side effects only.
-
-    Raises
-    ------
-    TimeoutError
-        If `timeout` is non-positive.
-    OSError
-        If addon convergence fails for a reason other than "already enabled".
-    """
-    if timeout <= 0:
-        raise TimeoutError("MicroK8s addon timeout must be non-negative.")
-    try:
-        await run(
-            ["microk8s", "enable", name],
-            capture_output=True,
-            timeout=timeout,
-        )
-    except CommandError as err:
-        detail = f"{err.stdout}\n{err.stderr}".strip().lower()
-        if "already enabled" in detail or "alreadyenabled" in detail:
-            return
-        raise OSError(f"failed to enable MicroK8s addon {name!r}:\n{err}") from err
-
-
-async def ceph(
-    argv: list[str],
-    *,
-    check: bool = True,
-    capture_output: bool | None = False,
-    input: str | None = None,
-    timeout: float = INFINITY,
-    attempts: int = 1,
-    delay: float = 0.1,
-    cwd: Path | None = None,
-    env: Mapping[str, str] | None = None,
-) -> CompletedProcess:
-    """Invoke the MicroCeph-backed Ceph CLI (`microceph.ceph`).
-
-    Parameters
-    ----------
-    argv : list[str]
-        The Ceph subcommand to run, plus arguments, minus the `microceph.ceph`
-        prefix itself.
-    check : bool, optional
-        Whether to raise a `CommandError` if the command fails (default is True).  If
-        false, then any errors will be ignored.
-    capture_output : bool | None, optional
-        If true, then all output will be redirected to the returned `CompletedProcess`
-        or `CommandError`, and excluded from the inherited stdout/stderr streams.  If
-        false (the default), then the opposite is the case, and the returned
-        `CompletedProcess` or `CommandError` will not include any captured output.  If
-        None, then output will be "tee'd" to both the console and the returned objects
-        simultaneously.  Note that teeing output in this way may break TTY behavior for
-        some commands, and is not recommended for interactive use.
-    input : str | None, optional
-        Input to send to the command's stdin (default is None).
-    timeout : float, optional
-        An optional timeout in seconds to wait for the command to complete before
-        raising a `TimeoutExpired` exception.  Default is infinite, which means to wait
-        indefinitely.  If zero or negative, a `TimeoutExpired` exception will be raised
-        immediately.  Note that this does not reset between `attempts`, so only the
-        overall time spent on retries counts against the timeout.
-    attempts : int, optional
-        The total number of times to attempt the command.  Defaults to 1, which means
-        no retries.  If greater than 1, then any command that exits with a nonzero
-        exit code will be re-run after a short delay, up to the specified number
-        of times in total.
-    delay : float, optional
-        The delay in seconds to wait between retries when `attempts` is greater than 1.
-        Default is 0.1 seconds.  Must be non-negative.
-    cwd : Path | None, optional
-        An optional working directory to run the command in.  If None (the default),
-        then the current working directory will be used.
-    env : Mapping[str, str] | None, optional
-        An optional environment dictionary to use for the command.  If None (the
-        default), then the current process's environment will be used.
-
-    Returns
-    -------
-    CompletedProcess
-        The completed process result.
-
-    Raises
-    ------
-    CommandError
-        If the command fails and `check` is True.
-    TimeoutExpired
-        If the command does not complete within the specified timeout.
-    OSError
-        If we failed to open the subprocess or its output streams.
-    """
-    cmd = ["microceph.ceph"]
-    cmd.extend(argv)
-    return await run(
-        cmd,
-        check=check,
-        capture_output=capture_output,
-        input=input,
-        timeout=timeout,
-        attempts=attempts,
-        delay=delay,
-        cwd=cwd,
-        env=env,
-    )
-
-
-async def buildctl(
-    argv: list[str],
-    *,
-    check: bool = True,
-    capture_output: bool | None = False,
-    input: str | None = None,
-    timeout: float = INFINITY,
-    attempts: int = 1,
-    delay: float = 0.1,
-    cwd: Path | None = None,
-    env: Mapping[str, str] | None = None,
-) -> CompletedProcess:
-    """Invoke the managed buildctl binary against Bertrand's BuildKit daemon.
-
-    Parameters
-    ----------
-    argv : list[str]
-        The `buildctl` subcommand to run, plus arguments, minus the `buildctl` binary
-        itself.  The command will always target Bertrand's pinned BuildKit daemon,
-        which must be started separately via the `start_buildkit()` helper before
-        calling this function.
-    check : bool, optional
-        Whether to raise a `CommandError` if the command fails (default is True).  If
-        false, then any errors will be ignored.
-    capture_output : bool | None, optional
-        If true, then all output will be redirected to the returned `CompletedProcess`
-        or `CommandError`, and excluded from the inherited stdout/stderr streams.  If
-        false (the default), then the opposite is the case, and the returned
-        `CompletedProcess` or `CommandError` will not include any captured output.  If
-        None, then output will be "tee'd" to both the console and the returned objects
-        simultaneously.  Note that teeing output in this way may break TTY behavior for
-        some commands, and is not recommended for interactive use.
-    input : str | None, optional
-        Input to send to the command's stdin (default is None).
-    timeout : float, optional
-        An optional timeout in seconds to wait for the command to complete before
-        raising a `TimeoutExpired` exception.  Default is infinite, which means to wait
-        indefinitely.  If zero or negative, a `TimeoutExpired` exception will be raised
-        immediately.  Note that this does not reset between `attempts`, so only the
-        overall time spent on retries counts against the timeout.
-    attempts : int, optional
-        The total number of times to attempt the command.  Defaults to 1, which means
-        no retries.  If greater than 1, then any command that exits with a nonzero
-        exit code will be re-run after a short delay, up to the specified number
-        of times in total.
-    delay : float, optional
-        The delay in seconds to wait between retries when `attempts` is greater than 1.
-        Default is 0.1 seconds.  Must be non-negative.
-    cwd : Path | None, optional
-        An optional working directory to run the command in.  If None (the default),
-        then the current working directory will be used.
-    env : Mapping[str, str] | None, optional
-        An optional environment dictionary to use for the command.  If None (the
-        default), then the current process's environment will be used.
-
-    Returns
-    -------
-    CompletedProcess
-        The completed process result.
-
-    Raises
-    ------
-    CommandError
-        If the command fails and `check` is True.
-    TimeoutExpired
-        If the command does not complete within the specified timeout.
-    OSError
-        If we failed to open the subprocess or its output streams.
-    """
-    cmd = [str(BUILDCTL_BIN), "--addr", BUILDKIT_ADDRESS]
-    cmd.extend(argv)
-    return await run(
-        cmd,
-        check=check,
-        capture_output=capture_output,
-        input=input,
-        timeout=timeout,
-        attempts=attempts,
-        delay=delay,
-        cwd=cwd,
-        env=env,
-    )
-
-
-async def nerdctl(
-    argv: list[str],
-    *,
-    check: bool = True,
-    capture_output: bool | None = False,
-    input: str | None = None,
-    timeout: float = INFINITY,
-    attempts: int = 1,
-    delay: float = 0.1,
-    cwd: Path | None = None,
-    env: Mapping[str, str] | None = None,
-) -> CompletedProcess:
-    """Invoke the managed nerdctl binary against Bertrand's MicroK8s containerd.
-
-    Parameters
-    ----------
-    argv : list[str]
-        The `nerdctl` subcommand to run, plus arguments, minus the `nerdctl` binary
-        itself.  The command will always target the MicroK8s containerd instance.
-    check : bool, optional
-        Whether to raise a `CommandError` if the command fails (default is True).  If
-        false, then any errors will be ignored.
-    capture_output : bool | None, optional
-        If true, then all output will be redirected to the returned `CompletedProcess`
-        or `CommandError`, and excluded from the inherited stdout/stderr streams.  If
-        false (the default), then the opposite is the case, and the returned
-        `CompletedProcess` or `CommandError` will not include any captured output.  If
-        None, then output will be "tee'd" to both the console and the returned objects
-        simultaneously.  Note that teeing output in this way may break TTY behavior for
-        some commands, and is not recommended for interactive use.
-    input : str | None, optional
-        Input to send to the command's stdin (default is None).
-    timeout : float, optional
-        An optional timeout in seconds to wait for the command to complete before
-        raising a `TimeoutExpired` exception.  Default is infinite, which means to wait
-        indefinitely.  If zero or negative, a `TimeoutExpired` exception will be raised
-        immediately.  Note that this does not reset between `attempts`, so only the
-        overall time spent on retries counts against the timeout.
-    attempts : int, optional
-        The total number of times to attempt the command.  Defaults to 1, which means
-        no retries.  If greater than 1, then any command that exits with a nonzero
-        exit code will be re-run after a short delay, up to the specified number
-        of times in total.
-    delay : float, optional
-        The delay in seconds to wait between retries when `attempts` is greater than 1.
-        Default is 0.1 seconds.  Must be non-negative.
-    cwd : Path | None, optional
-        An optional working directory to run the command in.  If None (the default),
-        then the current working directory will be used.
-    env : Mapping[str, str] | None, optional
-        An optional environment dictionary to use for the command.  If None (the
-        default), then the current process's environment will be used.
-
-    Returns
-    -------
-    CompletedProcess
-        The completed process result.
-
-    Raises
-    ------
-    CommandError
-        If the command fails and `check` is True.
-    TimeoutExpired
-        If the command does not complete within the specified timeout.
-    OSError
-        If we failed to open the subprocess or its output streams.
-    """
-    cmd = [
-        str(NERDCTL_BIN),
-        "--address", MICROK8S_CONTAINERD_ADDRESS,
-        "--namespace", BERTRAND_NAMESPACE,
-        *argv,
-    ]
-    merged_env = os.environ.copy()
-    if env is not None:
-        merged_env.update(env)
-    merged_env["BUILDKIT_HOST"] = BUILDKIT_ADDRESS
-    return await run(
-        cmd,
-        check=check,
-        capture_output=capture_output,
-        input=input,
-        timeout=timeout,
-        attempts=attempts,
-        delay=delay,
-        cwd=cwd,
-        env=merged_env,
-    )
-
-
-async def nerdctl_ids(
-    mode: Literal["container", "image", "volume", "network", "secret"],
-    labels: Mapping[str, str],
-    *,
-    status: Sequence[ContainerState] | None = None,
-    timeout: float = INFINITY,
-) -> list[str]:
-    """Retrieve a list of nerdctl container/image/volume IDs that match the given
-    labels and status filters, if applicable.
-
-    Parameters
-    ----------
-    mode : Literal["container", "image", "volume", "network", "secret"]
-        The type of nerdctl objects to query for.
-    labels : Mapping[str, str]
-        A mapping of label keys and values to filter the results by.  Only objects that
-        have all of the specified labels with matching values will be included in the
-        results.
-    status : Sequence[ContainerState] | None, optional
-        An optional sequence of container statuses to filter by when `mode` is
-        "container".  If None (the default), then containers of all statuses will be
-        included in the results.
-    timeout : float, optional
-        The maximum time in seconds to wait for the nerdctl command to complete before
-        raising a `TimeoutExpired` exception.
-
-    Returns
-    -------
-    list[str]
-        A list of nerdctl container/image/volume IDs that match the specified filters.
-
-    Raises
-    ------
-    ValueError
-        If `mode` is not one of the allowed literals.
-    TimeoutError
-        If the nerdctl command does not complete within the specified timeout.
-    TimeoutExpired
-        If the nerdctl command does not complete within the specified timeout.
-    CommandError
-        If the nerdctl command fails for any reason other than a timeout.
-    KeyboardInterrupt
-        If the operation is interrupted by the user.
-    SystemExit
-        If some other fatal error is encountered.
-    """
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
-
-    # form basic command based on mode
-    cmd: list[str] = []
-    if mode == "container":
-        cmd.extend([
-            "container",
-            "ls",
-            "-a",
-            "-q",
-            "--no-trunc",
-            "--filter", f"label={BERTRAND_ENV}=1"
-        ])
-    elif mode == "image":
-        cmd.extend([
-            "image",
-            "ls",
-            "-a",
-            "-q",
-            "--no-trunc",
-            "--filter", f"label={BERTRAND_ENV}=1"
-        ])
-    elif mode == "volume":
-        cmd.extend(["volume", "ls", "-q", "--filter", f"label={BERTRAND_ENV}=1"])
-    elif mode == "network":
-        cmd.extend(["network", "ls", "-q", "--filter", f"label={BERTRAND_ENV}=1"])
-    elif mode == "secret":
-        cmd.extend(["secret", "ls", "-q", "--filter", f"label={BERTRAND_ENV}=1"])
-    else:
-        raise ValueError(f"invalid mode: {mode}")
-
-    # append additional labels to filter results
-    for k, v in labels.items():
-        cmd.extend(["--filter", f"label={k}={v}"])
-
-    # parse results, returning an empty/partial list on failure (best-effort)
-    out: list[str] = []
-    seen: set[str] = set()
-    try:
-        # return all statuses by default
-        if status is None:
-            result = await nerdctl(
-                cmd,
-                capture_output=True,
-                check=False,
-                timeout=deadline - loop.time()
-            )
-            if result.returncode == 0:
-                for raw_id in result.stdout.splitlines():
-                    container_id = raw_id.strip()
-                    if not container_id or container_id in seen:
-                        continue
-                    seen.add(container_id)
-                    out.append(container_id)
-            return out
-
-        # filter by status
-        for stat in status:
-            result = await nerdctl(
-                [*cmd, "--filter", f"status={stat}"],
-                capture_output=True,
-                check=False,
-                timeout=deadline - loop.time()
-            )
-            if result.returncode != 0:
-                continue
-            for raw_id in result.stdout.splitlines():
-                container_id = raw_id.strip()
-                if not container_id or container_id in seen:
-                    continue
-                seen.add(container_id)
-                out.append(container_id)
-    except (TimeoutError, TimeoutExpired, KeyboardInterrupt, SystemExit):
-        raise
-    except Exception:
-        pass
-    return out
-
-
-def _buildkit_pid() -> int | None:
-    """Read the managed BuildKit daemon PID from disk, if available.
-
-    Returns
-    -------
-    int | None
-        The parsed PID value, or None if the PID file is missing or malformed.
-    """
-    try:
-        value = BUILDKIT_PID_FILE.read_text(encoding="utf-8").strip()
-        if not value:
-            return None
-        return int(value)
-    except (OSError, ValueError):
-        return None
-
-
-async def _buildkit_workers_ready(*, timeout: float) -> bool:
-    if not BUILDKIT_SOCKET.exists():
-        return False
-    return (await buildctl(
-        ["debug", "workers"],
-        check=False,
-        capture_output=True,
-        timeout=timeout,
-    )).returncode == 0
-
-
-async def start_buildkit(*, timeout: float) -> None:
-    """Ensure that the managed BuildKit daemon is running and ready.
-
-    Parameters
-    ----------
-    timeout : float
-        The maximum time to wait for the BuildKit daemon to become ready in seconds.
-        If the daemon is already running, then this function will return immediately
-        without waiting.  If the daemon is not running, then this function will attempt
-        to start it, and wait until it becomes responsive to `buildctl` commands, or
-        until the timeout is reached.  If infinite, then this function will wait
-        indefinitely for the daemon to become ready.
-
-    Raises
-    ------
-    OSError
-        If the managed binaries are missing.
-    TimeoutError
-        If the BuildKit daemon did not become ready within the specified timeout.
-
-    Notes
-    -----
-    A BuildKit daemon must be lazily started before attempting to build a Bertrand
-    image.  Once this function has been called, subsequent `nerdctl build` commands
-    will work normally, and will place the resulting images directly into the microK8s
-    image store, under the "bertrand" namespace.
-    """
-    if timeout <= 0:
-        raise TimeoutError("BuildKit timeout must be non-negative.")
-    if not BUILDCTL_BIN.exists() or not BUILDKITD_BIN.exists():
-        raise OSError(
-            "Managed BuildKit binaries are missing.  Run `bertrand init` to install "
-            "the pinned toolchain."
-        )
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
-    if await _buildkit_workers_ready(timeout=deadline - loop.time()):  # optimistic
-        return
-
-    # lock to prevent concurrent startups
-    async with Lock(
-        BUILDKIT_LOCK_FILE,
-        timeout=deadline - loop.time(),
-        mode="local"
-    ):
-        # check again after acquiring lock
-        if await _buildkit_workers_ready(timeout=deadline - loop.time()):
-            return
-
-        # clean up stale buildkit state from previous runs
-        pid: int | None = _buildkit_pid()
-        if pid is None or not pid_alive(pid):
-            try:
-                BUILDKIT_PID_FILE.unlink()
-            except FileNotFoundError:
-                pass
-            except OSError:
-                pass
-        BUILDKIT_SOCKET.unlink(missing_ok=True)
-
-        # start buildkitd and write PID file
-        BUILDKIT_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
-        with BUILDKIT_LOG_FILE.open("ab") as log:
-            process = await asyncio.create_subprocess_exec(
-                str(BUILDKITD_BIN),
-                "--addr",
-                BUILDKIT_ADDRESS,
-                "--containerd-worker=true",
-                "--containerd-worker-addr",
-                str(MICROK8S_CONTAINERD_SOCKET),
-                "--containerd-worker-namespace",
-                BERTRAND_NAMESPACE,
-                stdin=asyncio.subprocess.DEVNULL,
-                stdout=log,
-                stderr=log,
-                start_new_session=True,
-            )
-        pid = process.pid
-        atomic_write_text(
-            BUILDKIT_PID_FILE,
-            f"{pid}\n",
-            encoding="utf-8",
-        )
-
-        # wait for buildkitd to become reachable
-        timestamp = loop.time()
-        while pid_alive(pid) and timestamp <= deadline:
-            if await _buildkit_workers_ready(timeout=deadline - timestamp):
-                return
-            await asyncio.sleep(0.1)
-            timestamp = loop.time()
-
-    # timed out waiting for buildkitd to start
-    detail = tail_lines(BUILDKIT_LOG_FILE, count=40)
-    message = (
-        f"Failed to start BuildKit daemon at {BUILDKIT_ADDRESS}.  Check log at "
-        f"{BUILDKIT_LOG_FILE}."
-    )
-    if detail:
-        message += f"\n\nLast buildkitd log lines:\n{detail}"
-    raise OSError(message)
-
-
-async def stop_buildkit(*, timeout: float) -> None:
-    """Stop the managed BuildKit daemon if it is running.
-
-    Parameters
-    ----------
-    timeout : float, optional
-        Maximum number of seconds to wait for daemon shutdown.  This includes lock
-        acquisition and process termination.  If infinite, wait indefinitely.
-
-    Raises
-    ------
-    TimeoutError
-        If `timeout` is non-positive.
-    OSError
-        If BuildKit remains alive after SIGTERM/SIGKILL or lock acquisition fails.
-    """
-    if timeout <= 0:
-        raise TimeoutError("BuildKit timeout must be non-negative.")
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
-
-    # optimistic no-op for stale/missing PID state.
-    pid = _buildkit_pid()
-    if pid is None or not pid_alive(pid):
-        BUILDKIT_PID_FILE.unlink(missing_ok=True)
-        BUILDKIT_SOCKET.unlink(missing_ok=True)
-        return
-
-    async with Lock(
-        BUILDKIT_LOCK_FILE,
-        timeout=deadline - loop.time(),
-        mode="local"
-    ):
-        pid = _buildkit_pid()
-        if pid is None or not pid_alive(pid):
-            BUILDKIT_PID_FILE.unlink(missing_ok=True)
-            BUILDKIT_SOCKET.unlink(missing_ok=True)
-            return
-
-        # graceful shutdown first
-        try:
-            os.kill(pid, signal.SIGTERM)
-        except ProcessLookupError:
-            pass
-        while pid_alive(pid) and loop.time() <= deadline:
-            await asyncio.sleep(0.1)
-
-        # forceful shutdown fallback
-        if pid_alive(pid):
-            try:
-                os.kill(pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-            while pid_alive(pid) and loop.time() <= deadline:
-                await asyncio.sleep(0.1)
-            if pid_alive(pid):
-                raise OSError(
-                    f"failed to stop BuildKit daemon with PID {pid} before timeout"
-                )
-
-        BUILDKIT_PID_FILE.unlink(missing_ok=True)
-        BUILDKIT_SOCKET.unlink(missing_ok=True)
-
-
-async def _microceph_cluster_ready(*, timeout: float) -> bool:
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
-    result = await run(
-        ["microceph", "status"],
-        check=False,
-        capture_output=True,
-        timeout=deadline - loop.time(),
-    )
-    if result.returncode != 0 or not shutil.which("microceph.ceph"):
-        return False
-    return (await run(
-        ["microceph.ceph", "status", "--format", "json"],
-        check=False,
-        capture_output=True,
-        timeout=deadline - loop.time(),
-    )).returncode == 0
-
-
-async def start_microceph(*, timeout: float) -> None:
-    """Ensure that a local MicroCeph cluster is bootstrapped and ready.
-
-    Parameters
-    ----------
-    timeout : float
-        Maximum time in seconds to wait for startup/readiness checks.  If infinite,
-        then this function will wait indefinitely until MicroCeph is ready.
-
-    Raises
-    ------
-    OSError
-        If MicroCeph is missing or cluster bootstrap fails.
-    TimeoutError
-        If readiness checks do not succeed before `timeout`.
-    """
-    if timeout <= 0:
-        raise TimeoutError("MicroCeph timeout must be non-negative.")
-    if not shutil.which("microceph"):
-        raise OSError(
-            "MicroCeph CLI was not found in PATH.  Run `bertrand init` to install "
-            "the managed runtime."
-        )
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
-
-    # optimistic: cluster already up (no locking)
-    if await _microceph_cluster_ready(timeout=deadline - loop.time()):
-        return
-
-    try:
-        async with Lock(
-            CEPH_LOCK_FILE,
-            timeout=deadline - loop.time(),
-            mode="local"
-        ):
-            # defensive: check again after acquiring lock
-            if await _microceph_cluster_ready(timeout=deadline - loop.time()):
-                return
-
-            # bootstrap cluster if not already initialized
-            try:
-                await run(
-                    ["microceph", "cluster", "bootstrap"],
-                    capture_output=True,
-                    timeout=deadline - loop.time(),
-                )
-            except CommandError as err:
-                out = f"{err.stdout}\n{err.stderr}".strip().lower()
-                if not (
-                    "already initialized" in out or
-                    "already exists" in out or
-                    "already part of a cluster" in out or
-                    "already bootstrapped" in out
-                ):
-                    raise OSError(f"failed to bootstrap MicroCeph cluster:\n{err}") from err
-
-            # poll cluster readiness after bootstrap/startup
-            timestamp = loop.time()
-            while timestamp <= deadline:
-                if await _microceph_cluster_ready(
-                    timeout=deadline - timestamp
-                ):
-                    return
-                await asyncio.sleep(0.1)
-                timestamp = loop.time()
-
-        raise TimeoutError(
-            f"timed out waiting for MicroCeph to become ready after {timeout} seconds"
-        )
-    except TimeoutExpired as err:
-        raise TimeoutError(
-            f"timed out waiting for MicroCeph to become ready after {timeout} seconds"
-        ) from err
-    except CommandError as err:
-        raise OSError(
-            "Failed to start MicroCeph.  You may need to re-run `bertrand init` to "
-            "ensure proper setup and group membership.\n"
-            f"{err}"
-        ) from err
-
-
-async def _microk8s_cluster_ready(*, timeout: float) -> bool:
-    return (await run(
-        ["microk8s", "kubectl", "get", "--raw=/readyz"],
-        check=False,
-        capture_output=True,
-        timeout=timeout,
-    )).returncode == 0
-
-
-async def _add_bertrand_kube_namespace(*, timeout: float) -> None:
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
-    ready = await kubectl(
-        ["get", "namespace", BERTRAND_NAMESPACE, "-o", "name"],
-        check=False,
-        capture_output=True,
-        timeout=deadline - loop.time(),
-    )
-    if ready.returncode != 0:
-        try:
-            await kubectl(
-                ["create", "namespace", BERTRAND_NAMESPACE],
-                capture_output=True,
-                timeout=deadline - loop.time(),
-            )
-        except CommandError as err:
-            stdout = err.stdout.strip() if err.stdout else ""
-            stderr = err.stderr.strip() if err.stderr else ""
-            out = "\n".join((stdout, stderr)).lower()
-            if "already exists" in out or "alreadyexists" in out:  # race-tolerant
-                return
-            raise err
-
-
-async def start_microk8s(*, timeout: float) -> None:
-    """Ensure that MicroK8s is running and Bertrand's namespace is available.
-
-    Parameters
-    ----------
-    timeout : float
-        Maximum time in seconds to wait for startup/readiness checks.  If infinite,
-        then this function will wait indefinitely until MicroK8s is ready.
-
-    Raises
-    ------
-    OSError
-        If MicroK8s is missing, startup fails, escalation is declined, or namespace
-        bootstrap fails.
-    TimeoutError
-        If readiness checks do not succeed before `timeout`.
-    """
-    if timeout <= 0:
-        raise TimeoutError("MicroK8s timeout must be non-negative.")
-    if not shutil.which("microk8s"):
-        raise OSError(
-            "MicroK8s CLI was not found in PATH.  Run `bertrand init` to install "
-            "the managed runtime."
-        )
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
-
-    # optimistic: cluster already up (no locking)
-    if await _microk8s_cluster_ready(timeout=deadline - loop.time()):
-        await _add_bertrand_kube_namespace(timeout=deadline - loop.time())
-        return
-
-    try:
-        async with Lock(
-            KUBE_LOCK_FILE,
-            timeout=deadline - loop.time(),
-            mode="local"
-        ):
-            # defensive: check again after acquiring lock
-            if await _microk8s_cluster_ready(timeout=deadline - loop.time()):
-                await _add_bertrand_kube_namespace(timeout=deadline - loop.time())
-                return
-
-            # try user-mode startup first
-            await run(
-                ["microk8s", "start"],
-                capture_output=True,
-                timeout=deadline - loop.time(),
-            )
-
-            # poll API readiness after successful start
-            timestamp = loop.time()
-            while timestamp <= deadline:
-                if await _microk8s_cluster_ready(timeout=deadline - timestamp):
-                    await _add_bertrand_kube_namespace(timeout=deadline - loop.time())
-                    return
-                await asyncio.sleep(0.1)
-                timestamp = loop.time()
-
-        raise TimeoutError(
-            f"timed out waiting for MicroK8s to become ready after {timeout} seconds"
-        )
-    except TimeoutExpired as err:
-        raise TimeoutError(
-            f"timed out waiting for MicroK8s to become ready after {timeout} seconds"
-        ) from err
-    except CommandError as err:
-        raise OSError(
-            "Failed to start MicroK8s.  You may need to re-run `bertrand init` to "
-            "ensure proper setup and group membership.\n"
-            f"{err}"
-        ) from err
-
-
-async def _ceph_csi_storage_classes(*, timeout: float) -> list[str]:
-    # get all storage classes available for PVC requests
-    try:
-        result = await kubectl(
-            ["get", "storageclass", "-o", "json"],
-            capture_output=True,
-            timeout=timeout,
-        )
-    except CommandError as err:
-        raise OSError(
-            "failed to query Kubernetes storage classes while linking MicroK8s to "
-            f"MicroCeph:\n{err}"
-        ) from err
-    try:
-        payload = json.loads(result.stdout)
-    except (TypeError, ValueError) as err:
-        raise OSError(
-            "failed to parse storage class payload while linking MicroK8s to "
-            f"MicroCeph: {err}"
-        ) from err
-    items = payload.get("items")
-    if not isinstance(items, list):
-        raise OSError(
-            "storage class payload is malformed: expected top-level 'items' list"
-        )
-
-    # filter for unique storage classes with rook-ceph provisioner
-    out: list[str] = []
-    for item in items:
-        if not isinstance(item, dict):
-            continue
-        metadata = item.get("metadata")
-        name = ""
-        if isinstance(metadata, dict):
-            raw_name = metadata.get("name")
-            if isinstance(raw_name, str):
-                name = raw_name.strip()
-        provisioner = item.get("provisioner")
-        if (
-            not isinstance(provisioner, str) or
-            "csi.ceph.com" not in provisioner.strip().lower()
-        ):
-            continue
-        if name:
-            out.append(name)
-
-    # deterministic ordering
-    return sorted(set(out))
-
-
-async def link_kube_ceph(*, timeout: float) -> None:
-    """Converge MicroK8s rook-ceph integration with the local MicroCeph cluster.
-
-    Parameters
-    ----------
-    timeout : float
-        Maximum time in seconds to wait for linkage convergence.  If infinite, wait
-        indefinitely.
-
-    Raises
-    ------
-    OSError
-        If runtimes are not available, addon/link subcommands fail, or no Ceph CSI
-        storage classes materialize after linkage.
-    TimeoutError
-        If linkage does not converge before the timeout.
-    """
-    if timeout <= 0:
-        raise TimeoutError("kube-ceph link timeout must be non-negative.")
-    if not shutil.which("microk8s"):
-        raise OSError(
-            "MicroK8s CLI was not found in PATH.  Run `bertrand init` to install the "
-            "managed runtime."
-        )
-    if not shutil.which("microceph"):
-        raise OSError(
-            "MicroCeph CLI was not found in PATH.  Run `bertrand init` to install the "
-            "managed runtime."
-        )
-
-    # linking requires both clusters to be up
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
-    async with Lock(
-        KUBE_CEPH_LINK_LOCK_FILE,
-        timeout=deadline - loop.time(),
-        mode="local",
-    ):
-        # recheck cluster preconditions and fast path under lock
-        if not await _microk8s_cluster_ready(timeout=deadline - loop.time()):
-            raise OSError(
-                "MicroK8s must be started before linking to MicroCeph.  Run "
-                "`start_microk8s(...)` first."
-            )
-        if not await _microceph_cluster_ready(timeout=deadline - loop.time()):
-            raise OSError(
-                "MicroCeph must be started before linking to MicroK8s.  Run "
-                "`start_microceph(...)` first."
-            )
-        if await _ceph_csi_storage_classes(timeout=deadline - loop.time()):
-            return  # already linked
-
-        # converge rook-ceph addon state
-        try:
-            await run(
-                ["microk8s", "enable", "rook-ceph"],
-                capture_output=True,
-                timeout=deadline - loop.time(),
-            )
-        except CommandError as err:
-            detail = f"{err.stdout}\n{err.stderr}".lower()
-            if not (
-                "already enabled" in detail or
-                "is already enabled" in detail or
-                "already exists" in detail or
-                "alreadyexist" in detail
-            ):
-                raise OSError(
-                    "failed to enable MicroK8s rook-ceph addon while linking to "
-                    f"MicroCeph:\n{err}"
-                ) from err
-
-        # converge external Ceph import state
-        try:
-            await run(
-                ["microk8s", "connect-external-ceph"],
-                capture_output=True,
-                timeout=deadline - loop.time(),
-            )
-        except CommandError as err:
-            detail = f"{err.stdout}\n{err.stderr}".lower()
-            if not (
-                "already connected" in detail or
-                "already imported" in detail or
-                "already configured" in detail or
-                "already exists" in detail or
-                "alreadyexist" in detail
-            ):
-                raise OSError(
-                    "failed to link MicroK8s rook-ceph to the external MicroCeph "
-                    "cluster.  Check `microk8s connect-external-ceph --help` and "
-                    f"runtime status for diagnostics.\n{err}"
-                ) from err
-
-        # wait for Ceph CSI classes to materialize
-        timestamp = loop.time()
-        while timestamp <= deadline:
-            if await _ceph_csi_storage_classes(timeout=deadline - timestamp):
-                return
-            await asyncio.sleep(0.1)
-            timestamp = loop.time()
-
-    # timed out waiting for storage classes to materialize after linkage
-    raise OSError(
-        "MicroK8s rook-ceph linkage completed, but no Ceph CSI storage classes were "
-        "discovered.  Check `microk8s kubectl get storageclass` and "
-        "`microk8s connect-external-ceph --help` for diagnostics."
-    )
-
-
 #####################
-####    LOCKS    ####
+# LOCKS    ####
 #####################
 
 
@@ -3049,10 +1644,25 @@ LOCK_GUARD = threading.RLock()
 LOCKS: dict[tuple[str, LockMode, int], Lock] = {}
 
 
+async def _kubectl(
+    argv: list[str],
+    *,
+    capture_output: bool | None = False,
+    stdin: str | None = None,
+    timeout: float = INFINITY,
+) -> CompletedProcess:
+    return await run(
+        ["microk8s", "kubectl", *argv],
+        capture_output=capture_output,
+        stdin=stdin,
+        timeout=timeout,
+    )
+
+
 def _to_rfc3339(value: datetime) -> str:
-    return value.astimezone(UTC).isoformat(
-        timespec="microseconds"
-    ).replace("+00:00", "Z")
+    return (
+        value.astimezone(UTC).isoformat(timespec="microseconds").replace("+00:00", "Z")
+    )
 
 
 def _parse_rfc3339(value: str) -> datetime | None:
@@ -3071,13 +1681,13 @@ def _parse_rfc3339(value: str) -> datetime | None:
 @dataclass
 class _LocalFileLock:
     """Local OS file-lock backend."""
+
     path: Path
     privileges: int = LOCK_DEFAULT_PRIVILEGES
     _fd: int | None = field(default=None, init=False)
 
     async def acquire(self, deadline: float) -> bool:
-        """Acquire an OS file lock, retrying until it is acquired or the timeout is
-        reached.
+        """Acquire an OS file lock.
 
         Parameters
         ----------
@@ -3090,6 +1700,7 @@ class _LocalFileLock:
         bool
             `True` if the lock was successfully acquired, or `False` if the deadline
             was reached before the lock could be acquired.
+
         """
         loop = asyncio.get_running_loop()
         while not await self.try_acquire():
@@ -3106,19 +1717,18 @@ class _LocalFileLock:
         bool
             `True` if the lock was successfully acquired, or `False` if the lock is
             currently held by another process.
+
+        Raises
+        ------
+        OSError
+            If the local lock file cannot be opened or locked.
         """
         self.path.parent.mkdir(parents=True, exist_ok=True)
         if self._fd is None:
-            self._fd = os.open(
-                self.path,
-                os.O_RDWR | os.O_CREAT,
-                self.privileges
-            )
+            self._fd = os.open(self.path, os.O_RDWR | os.O_CREAT, self.privileges)
             if hasattr(os, "fchmod"):
-                try:
+                with contextlib.suppress(OSError):
                     os.fchmod(self._fd, self.privileges)
-                except OSError:
-                    pass
 
         # Windows file lock on a 1-byte region
         if os.name == "nt":
@@ -3128,10 +1738,9 @@ class _LocalFileLock:
             try:
                 msvcrt.locking(self._fd, msvcrt.LK_NBLCK, 1)
             except OSError as err:
-                if (
-                    err.errno in (errno.EACCES, errno.EDEADLK) or
-                    getattr(err, "winerror", None) in {33, 36}
-                ):
+                if err.errno in (errno.EACCES, errno.EDEADLK) or getattr(
+                    err, "winerror", None
+                ) in {33, 36}:
                     return False
                 raise
             return True
@@ -3156,34 +1765,30 @@ class _LocalFileLock:
         try:
             if os.name == "nt":
                 os.lseek(fd, 0, os.SEEK_SET)
-                try:
+                with contextlib.suppress(OSError):
                     msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
-                except OSError:
-                    pass
             else:
-                try:
+                with contextlib.suppress(OSError):
                     fcntl.flock(fd, fcntl.LOCK_UN)
-                except OSError:
-                    pass
         finally:
             os.close(fd)
-            try:
+            with contextlib.suppress(OSError):
                 self.path.unlink()
-            except OSError:
-                pass
 
     def pop_error(self) -> Exception | None:
-        """Return any exception encountered during lock release.  Not applicable for
-        local file locks.
+        """Return a deferred lock-release error.
+
+        Returns
+        -------
+        Exception | None
+            Always `None` for local file locks.
         """
         return None
 
 
 class _ClusterLeaseLock:
-    """Cluster-wide lock backend implemented via Kubernetes Lease resources in the
-    local MicroK8s cluster, which must be up and running before attempting to acquire
-    the lock.
-    """
+    """Implement cluster-wide locks with Kubernetes Lease resources."""
+
     HOST_RE = re.compile(r"[^a-z0-9-]+")
 
     _namespace: str
@@ -3203,9 +1808,7 @@ class _ClusterLeaseLock:
     ) -> None:
         self._namespace = namespace
         self._lease_duration = lease_duration
-        digest = hashlib.sha256(
-            str(path).encode("utf-8")
-        ).hexdigest()
+        digest = hashlib.sha256(str(path).encode("utf-8")).hexdigest()
         self._lease_name = f"bertrand-lock-{digest[:LEASE_NAME_HEX_LENGTH]}"
         host = self.HOST_RE.sub("-", socket.gethostname().lower()).strip("-")
         if not host:
@@ -3224,7 +1827,7 @@ class _ClusterLeaseLock:
 
     async def _get_lease(self, timeout: float) -> _LeaseState | None:
         try:
-            result = await kubectl(
+            result = await _kubectl(
                 ["-n", self._namespace, "get", "lease", self._lease_name, "-o", "json"],
                 capture_output=True,
                 timeout=timeout,
@@ -3234,27 +1837,27 @@ class _ClusterLeaseLock:
             stderr = (err.stderr or "").lower()
             if "not found" in stderr or "notfound" in stderr:
                 return None
-            raise OSError(
-                f"failed to read cluster lease '{self._lease_name}': {err}"
-            ) from err
+            msg = f"failed to read cluster lease '{self._lease_name}': {err}"
+            raise OSError(msg) from err
         except json.JSONDecodeError as err:
-            raise OSError(
-                f"cluster lease '{self._lease_name}' returned malformed JSON payload"
-            ) from err
+            msg = f"cluster lease '{self._lease_name}' returned malformed JSON payload"
+            raise OSError(msg) from err
 
         metadata = payload.get("metadata")
         spec = payload.get("spec")
         if not isinstance(metadata, dict) or not isinstance(spec, dict):
-            raise OSError(
+            msg = (
                 f"cluster lease '{self._lease_name}' payload is malformed:\n"
                 f"{json.dumps(payload, indent=2)}"
             )
+            raise OSError(msg)
         resource_version = metadata.get("resourceVersion")
         if not isinstance(resource_version, str) or not resource_version.strip():
-            raise OSError(
+            msg = (
                 f"cluster lease '{self._lease_name}' is missing resourceVersion:\n"
                 f"{json.dumps(payload, indent=2)}"
             )
+            raise OSError(msg)
 
         holder = spec.get("holderIdentity")
         if not isinstance(holder, str):
@@ -3297,37 +1900,41 @@ class _ClusterLeaseLock:
 
     async def _create_lease(self, now: datetime, timeout: float) -> bool:
         try:
-            await kubectl(
+            await _kubectl(
                 ["create", "-f", "-"],
                 capture_output=True,
-                input=self._lease_payload(now, None),
+                stdin=self._lease_payload(now, None),
                 timeout=timeout,
             )
-            return True
+            return True  # noqa: TRY300
         except CommandError as err:
             stderr = (err.stderr or "").lower()
-            if "already exists" in stderr or "alreadyexists" in stderr or "conflict" in stderr:
+            if (
+                "already exists" in stderr
+                or "alreadyexists" in stderr
+                or "conflict" in stderr
+            ):
                 return False
-            raise OSError(
-                f"failed to create cluster lease '{self._lease_name}':\n{err}"
-            ) from err
+            msg = f"failed to create cluster lease '{self._lease_name}':\n{err}"
+            raise OSError(msg) from err
 
-    async def _replace_lease(self, lease: _LeaseState, now: datetime, timeout: float) -> bool:
+    async def _replace_lease(
+        self, lease: _LeaseState, now: datetime, timeout: float
+    ) -> bool:
         try:
-            await kubectl(
+            await _kubectl(
                 ["replace", "-f", "-"],
                 capture_output=True,
-                input=self._lease_payload(now, lease),
+                stdin=self._lease_payload(now, lease),
                 timeout=timeout,
             )
-            return True
+            return True  # noqa: TRY300
         except CommandError as err:
             stderr = (err.stderr or "").lower()
             if "conflict" in stderr or "not found" in stderr or "notfound" in stderr:
                 return False
-            raise OSError(
-                f"failed to update cluster lease '{self._lease_name}':\n{err}"
-            ) from err
+            msg = f"failed to update cluster lease '{self._lease_name}':\n{err}"
+            raise OSError(msg) from err
 
     async def _renew_loop(self) -> None:
         interval = max(1.0, min(LEASE_RENEW_SECONDS, self._lease_duration / 2))
@@ -3337,31 +1944,35 @@ class _ClusterLeaseLock:
                 if stop is None:
                     return
                 await asyncio.wait_for(stop.wait(), timeout=interval)
-                return  # stop was signaled
+                return  # stop was signaled  # noqa: TRY300
             except TimeoutError:
                 pass  # time to renew
 
             try:
                 lease = await self._get_lease(timeout=LEASE_QUERY_TIMEOUT)
                 if lease is None:
-                    raise OSError(f"cluster lease '{self._lease_name}' disappeared")
+                    msg = f"cluster lease '{self._lease_name}' disappeared"
+                    raise OSError(msg)  # noqa: TRY301
                 if lease.holder != self._holder:
-                    raise OSError(
+                    msg = (
                         f"cluster lease '{self._lease_name}' ownership was lost to "
                         f"{lease.holder!r}"
                     )
+                    raise OSError(msg)  # noqa: TRY301
                 ok = await self._replace_lease(
                     lease,
                     datetime.now(UTC),
                     timeout=LEASE_QUERY_TIMEOUT,
                 )
                 if not ok:
-                    raise OSError(
-                        f"cluster lease '{self._lease_name}' renewal encountered a conflict"
+                    msg = (
+                        f"cluster lease '{self._lease_name}' renewal encountered a "
+                        "conflict"
                     )
+                    raise OSError(msg)  # noqa: TRY301
             except asyncio.CancelledError:
                 raise
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001
                 self._renew_error = err
                 return
 
@@ -3391,13 +2002,11 @@ class _ClusterLeaseLock:
             if await self.try_acquire(deadline - timestamp):
                 return True
             timestamp = loop.time()
-            await asyncio.sleep(
-                min(LEASE_POLL_SECONDS, max(0.0, deadline - timestamp))
-            )
+            await asyncio.sleep(min(LEASE_POLL_SECONDS, max(0.0, deadline - timestamp)))
 
         return False
 
-    # TODO: timeout should be mandatory, and standardized more with respect to the
+    # TODO: timeout should be mandatory, and standardized more with respect to the  # noqa: FIX002
     # run helpers, and permit infinite timeout
 
     async def try_acquire(self, timeout: float = LEASE_QUERY_TIMEOUT) -> bool:
@@ -3415,15 +2024,21 @@ class _ClusterLeaseLock:
             `True` if the lock was successfully acquired, or `False` if the lock is
             currently held by another process or if the timeout was reached before the
             lock could be acquired.
+
+        Raises
+        ------
+        OSError
+            If lease state cannot be queried, created, or updated.
         """
         # get current lease state, if any
         try:
             lease = await self._get_lease(timeout=timeout)
         except TimeoutExpired as err:
-            raise OSError(
+            msg = (
                 "timed out while querying Kubernetes lease state; ensure "
                 "MicroK8s is reachable and responding"
-            ) from err
+            )
+            raise OSError(msg) from err
 
         now = datetime.now(UTC)
 
@@ -3432,10 +2047,11 @@ class _ClusterLeaseLock:
             try:
                 created = await self._create_lease(now, timeout=timeout)
             except TimeoutExpired as err:
-                raise OSError(
+                msg = (
                     "timed out while creating Kubernetes lease; ensure "
                     "MicroK8s is reachable and responding"
-                ) from err
+                )
+                raise OSError(msg) from err
             if created:
                 self._begin_renew_loop()
                 return True
@@ -3443,30 +2059,25 @@ class _ClusterLeaseLock:
 
         # existing lease; update or steal if expired
         if lease.holder == self._holder or (
-            lease.holder is None or
-            lease.renew_time is None or
-            (now - lease.renew_time).total_seconds() > max(1, lease.duration_seconds)
+            lease.holder is None
+            or lease.renew_time is None
+            or (now - lease.renew_time).total_seconds() > max(1, lease.duration_seconds)
         ):
             try:
-                updated = await self._replace_lease(
-                    lease,
-                    now,
-                    timeout=timeout
-                )
+                updated = await self._replace_lease(lease, now, timeout=timeout)
             except TimeoutExpired as err:
-                raise OSError(
+                msg = (
                     "timed out while updating Kubernetes lease; ensure "
                     "MicroK8s is reachable and responding"
-                ) from err
+                )
+                raise OSError(msg) from err
             if updated:
                 self._begin_renew_loop()
                 return True
         return False
 
     async def release(self) -> None:
-        """Release the cluster lease if it is currently held, and stop the renewal
-        loop.
-        """
+        """Release the cluster lease and stop renewal."""
         if self._renew_stop is not None:
             self._renew_stop.set()
         if self._renew_task is not None:
@@ -3475,14 +2086,13 @@ class _ClusterLeaseLock:
                 await self._renew_task
             except asyncio.CancelledError:
                 pass
-            except Exception:
+            except Exception:  # noqa: BLE001
                 pass
         self._renew_stop = None
         self._renew_task = None
 
     def pop_error(self) -> Exception | None:
-        """Return any exception encountered during lease renewal, if applicable, and
-        clear the deferred error state.
+        """Return and clear deferred lease renewal errors.
 
         Returns
         -------
@@ -3496,8 +2106,7 @@ class _ClusterLeaseLock:
 
 
 class Lock:
-    """A re-entrant, asynchronous lock that supports both local filesystem and
-    cluster-wide mutual exclusion.
+    """Provide a re-entrant asynchronous lock.
 
     Parameters
     ----------
@@ -3528,6 +2137,7 @@ class Lock:
         If the lock cannot be acquired within the specified timeout period upon entering
         the context manager.
     """
+
     path: Path
     timeout: float
     mode: LockMode
@@ -3537,24 +2147,27 @@ class Lock:
     _owner: asyncio.Task[Any] | None
     _depth: int
 
-    def __new__(
+    def __new__(  # noqa: D102
         cls,
         path: Path,
         timeout: float,
         mode: LockMode,
         *,
         privileges: int = LOCK_DEFAULT_PRIVILEGES,
-    ) -> Lock:
+    ) -> Self:
         if timeout <= 0:
-            raise TimeoutError(f"could not acquire lock within {timeout} seconds")
+            msg = f"could not acquire lock within {timeout} seconds"
+            raise TimeoutError(msg)
         path = path.expanduser().resolve()
         if mode == "local" and (privileges < 0 or privileges > 0o777):
-            raise ValueError(f"invalid local lock file mode: {oct(privileges)}")
+            msg = f"invalid local lock file mode: {oct(privileges)}"
+            raise ValueError(msg)
         if mode == "local" and path.exists() and path.is_dir():
-            raise OSError(
+            msg = (
                 "local lock path must be a file, but a directory already exists: "
                 f"{path}"
             )
+            raise OSError(msg)
         privileges = privileges if mode == "local" else LOCK_DEFAULT_PRIVILEGES
 
         # allow re-entrancy with unique lock instances per owning task
@@ -3570,15 +2183,15 @@ class Lock:
                 self._key = key
                 self._backend = (
                     _LocalFileLock(path, privileges=privileges)
-                    if mode == "local" else
-                    _ClusterLeaseLock(path)
+                    if mode == "local"
+                    else _ClusterLeaseLock(path)
                 )
                 self._owner = None
                 self._depth = 0
                 LOCKS[key] = self
             elif self.timeout < timeout:
                 self.timeout = timeout
-        return self
+        return cast("Self", self)
 
     @staticmethod
     def _get_owner() -> asyncio.Task[Any]:
@@ -3587,11 +2200,23 @@ class Lock:
         except RuntimeError:
             task = None
         if task is None:
-            raise RuntimeError("Lock requires an active asyncio Task")
+            msg = "Lock requires an active asyncio Task"
+            raise RuntimeError(msg)
         return task
 
     async def lock(self) -> Self:
-        """Acquire this lock, waiting for this lock's timeout if needed."""
+        """Acquire this lock, waiting for this lock's timeout if needed.
+
+        Returns
+        -------
+        Self
+            This lock instance after acquisition.
+
+        Raises
+        ------
+        TimeoutError
+            If the lock cannot be acquired before its timeout.
+        """
         owner = self._get_owner()
         loop = asyncio.get_running_loop()
         deadline = loop.time() + self.timeout
@@ -3607,18 +2232,20 @@ class Lock:
                     self._depth += 1
                     return self
             if loop.time() >= deadline:
-                raise TimeoutError(f"could not acquire lock within {self.timeout} seconds")
+                msg = f"could not acquire lock within {self.timeout} seconds"
+                raise TimeoutError(msg)
             await asyncio.sleep(LOCK_POLL_SECONDS)
 
         # slow path: acquire via backend
         try:
             if not await self._backend.acquire(deadline):
-                raise TimeoutError(f"could not acquire lock within {self.timeout} seconds")
-            return self
+                msg = f"could not acquire lock within {self.timeout} seconds"
+                raise TimeoutError(msg)  # noqa: TRY301
+            return self  # noqa: TRY300
         except Exception:
             try:
                 await self._backend.release()
-            except Exception:
+            except Exception:  # noqa: BLE001
                 pass
             finally:
                 with LOCK_GUARD:
@@ -3628,6 +2255,7 @@ class Lock:
 
     async def try_lock(self) -> bool:
         """Attempt to acquire this lock immediately, without waiting on contention.
+
         Note that this ignores the lock's timeout, since it is a non-blocking
         operation.
 
@@ -3653,10 +2281,8 @@ class Lock:
         try:
             acquired = await self._backend.try_acquire()
         except Exception:
-            try:
+            with contextlib.suppress(Exception):
                 await self._backend.release()
-            except Exception:
-                pass
             with LOCK_GUARD:
                 if self._owner == owner:
                     self._owner = None
@@ -3683,20 +2309,26 @@ class Lock:
             error condition and the caller wishes to preserve the original exception.
             Defaults to `False`, in which case backend errors will be raised after
             releasing the lock and clearing lock state.
+
+        Raises
+        ------
+        RuntimeError
+            If the current task does not hold this lock.
         """
         owner = self._get_owner()
         with LOCK_GUARD:
             if self._owner != owner or self._depth < 1:
-                raise RuntimeError("lock is not held by the current owner")
+                msg = "lock is not held by the current owner"
+                raise RuntimeError(msg)
             self._depth -= 1
             if self._depth > 0:
                 return  # re-entrant case
 
         try:
             await self._backend.release()
-        except Exception as err:  # pylint: disable=broad-except
+        except Exception:  # pylint: disable=broad-except
             if not ignore_errors:
-                raise err
+                raise
         finally:
             with LOCK_GUARD:
                 self._owner = None
@@ -3709,33 +2341,27 @@ class Lock:
             if deferred_error is not None:
                 raise deferred_error
 
-    async def __aenter__(self) -> Self:
+    async def __aenter__(self) -> Self:  # noqa: D105
         return await self.lock()
 
-    async def __aexit__(
+    async def __aexit__(  # noqa: D105
         self,
         exc_type: type[BaseException] | None,
         exc_value: BaseException | None,
-        traceback: TracebackType | None
+        traceback: TracebackType | None,
     ) -> None:
         await self.unlock(ignore_errors=exc_value is not None)
 
-    def __bool__(self) -> bool:
+    def __bool__(self) -> bool:  # noqa: D105
         with LOCK_GUARD:
             return self._depth > 0
 
-    def __repr__(self) -> str:
-        return (
-            "Lock("
-            f"path={repr(self.path)}, "
-            f"timeout={self.timeout}, "
-            f"mode={repr(self.mode)}"
-            ")"
-        )
+    def __repr__(self) -> str:  # noqa: D105
+        return f"Lock(path={self.path!r}, timeout={self.timeout}, mode={self.mode!r})"
 
 
 ###################
-####    GIT    ####
+# GIT    ####
 ###################
 
 
@@ -3765,13 +2391,15 @@ GIT_REQUIRE_RELATIVE_PATHS = (
 @dataclass(frozen=True)
 class GitRefUpdate:
     """A single reference update received from git on stdin."""
+
     old: str
     new: str
     ref: str
 
     @property
     def is_head(self) -> bool:
-        """
+        """Return whether this update targets a branch ref.
+
         Returns
         -------
         bool
@@ -3781,17 +2409,19 @@ class GitRefUpdate:
 
     @property
     def branch(self) -> str:
-        """
+        """Return the short branch name for this update.
+
         Returns
         -------
         str
             The short branch name for `refs/heads/*` updates.
         """
-        return self.ref[len(GIT_REF_HEADS_PREFIX):]
+        return self.ref[len(GIT_REF_HEADS_PREFIX) :]
 
     @property
     def created(self) -> bool:
-        """
+        """Return whether this update created a ref.
+
         Returns
         -------
         bool
@@ -3801,7 +2431,8 @@ class GitRefUpdate:
 
     @property
     def destroyed(self) -> bool:
-        """
+        """Return whether this update deleted a ref.
+
         Returns
         -------
         bool
@@ -3836,23 +2467,22 @@ class GitRefUpdate:
                 continue
             parts = line.split()
             if len(parts) != 3:
-                raise ValueError(
+                msg = (
                     f"malformed git transaction line {index}: expected "
                     f"'<old> <new> <ref>', got: {raw!r}"
                 )
+                raise ValueError(msg)
             old, new, ref = (part.strip() for part in parts)
             if not ref:
-                raise ValueError(
-                    f"malformed git transaction line {index}: ref must not be empty"
-                )
+                msg = f"malformed git transaction line {index}: ref must not be empty"
+                raise ValueError(msg)
             updates.append(cls(old=old, new=new, ref=ref))
         return updates
 
 
 @dataclass(frozen=True)
 class GitRepository:
-    """An object-oriented wrapper around a git repository, which simplifies access to
-    its branches, worktrees, and other properties.
+    """Wrap a Git repository.
 
     Attributes
     ----------
@@ -3861,6 +2491,7 @@ class GitRepository:
         be by running `git rev-parse --git-common-dir` in the current working
         directory.
     """
+
     @dataclass(frozen=True)
     class Worktree:
         """A parsed entry from `git worktree list --porcelain`.
@@ -3873,21 +2504,25 @@ class GitRepository:
             The short branch name if this worktree is attached to `refs/heads/*`,
             otherwise None.
         """
+
         path: Path
         branch: str | None = None
 
-        def __post_init__(self) -> None:
+        def __post_init__(self) -> None:  # noqa: D105
             object.__setattr__(self, "path", self.path.expanduser().resolve())
             if not self.path.exists():
-                raise FileNotFoundError(f"worktree path does not exist: {self.path}")
+                msg = f"worktree path does not exist: {self.path}"
+                raise FileNotFoundError(msg)
             if not self.path.is_dir():
-                raise NotADirectoryError(f"invalid worktree path: {self.path}")
+                msg = f"invalid worktree path: {self.path}"
+                raise NotADirectoryError(msg)
 
     git_dir: Path
 
     @property
     def root(self) -> Path:
-        """
+        """Return the repository root.
+
         Returns
         -------
         Path
@@ -3896,7 +2531,7 @@ class GitRepository:
         """
         return self.git_dir.parent
 
-    def __post_init__(self) -> None:
+    def __post_init__(self) -> None:  # noqa: D105
         object.__setattr__(self, "git_dir", self.git_dir.expanduser().resolve())
 
     @classmethod
@@ -3914,17 +2549,12 @@ class GitRepository:
         GitRepository | None
             The discovered Git repository, assuming a `path` is inside a Git repository
 
-        Raises
-        ------
-        CommandError
-            If the git command fails, which may indicate that the current directory is
-            not within a Git repository.
         """
         result = await run(
             ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
             cwd=path,
             check=False,
-            capture_output=True
+            capture_output=True,
         )
         if result.returncode == 0:
             return cls(git_dir=Path(result.stdout.strip()))
@@ -3932,8 +2562,7 @@ class GitRepository:
 
     @classmethod
     async def resolve(cls, path: Path) -> tuple[GitRepository, Path]:
-        """Given a path, resolve an ancestor git repository and compute the
-        corresponding worktree path within it.
+        """Resolve a repository and worktree path.
 
         Parameters
         ----------
@@ -3969,7 +2598,7 @@ class GitRepository:
             if not await cls.supports_relative_paths():
                 raise OSError(GIT_REQUIRE_RELATIVE_PATHS)
             repo = cls(path / ".git")
-            return repo, Path(".")
+            return repo, Path()
 
         # existing bare repository
         if await repo.is_bare():
@@ -3977,39 +2606,42 @@ class GitRepository:
                 raise OSError(GIT_REQUIRE_RELATIVE_PATHS)
             worktree = path.relative_to(repo.root)
             if not worktree.parts:
-                return repo, Path(".")
+                return repo, Path()
             if not any(wt.path == path for wt in await repo.worktrees()):
-                raise OSError(
+                msg = (
                     f"worktree at {worktree} is not registered as a git worktree of "
                     f"bare repository: {repo.root}"
                 )
+                raise OSError(msg)
             return repo, worktree
 
         # existing non-bare repository
         worktree = path.relative_to(repo.root)
         if worktree.parts and not any(wt.path == path for wt in await repo.worktrees()):
-            raise OSError(
+            msg = (
                 f"nested worktree at {worktree} is not registered as a git worktree "
                 f"of non-bare repository: {repo.root}"
             )
+            raise OSError(msg)
         return repo, worktree
 
-    def __bool__(self) -> bool:
+    def __bool__(self) -> bool:  # noqa: D105
         return (
-            self.git_dir.exists() and
-            self.git_dir.is_dir() and
-            subprocess.run(
+            self.git_dir.exists()
+            and self.git_dir.is_dir()
+            and subprocess.run(
                 ["git", "--git-dir", str(self.git_dir), "rev-parse", "--git-dir"],
                 check=False,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
-            ).returncode == 0
+            ).returncode
+            == 0
         )
 
-    def __hash__(self) -> int:
+    def __hash__(self) -> int:  # noqa: D105
         return hash(self.git_dir)
 
-    def __eq__(self, other: object) -> bool:
+    def __eq__(self, other: object) -> bool:  # noqa: D105
         if isinstance(other, GitRepository):
             return self.git_dir == other.git_dir
         return NotImplemented
@@ -4027,10 +2659,6 @@ class GitRepository:
             Whether to create a bare repository (default is True).  If false, then a
             standard repository with a working tree will be created instead.
 
-        Raises
-        ------
-        CommandError
-            If the git command fails.
         """
         self.git_dir.mkdir(parents=True, exist_ok=True)
         cmd = ["git", "init", "--quiet"]
@@ -4065,15 +2693,17 @@ class GitRepository:
         ------
         TimeoutError
             If `timeout` is negative.
-        CommandError
-            If clone/fetch commands fail.
+        OSError
+            If the source repository has not been initialized.
         """
         if timeout <= 0:
-            raise TimeoutError("timeout must be non-negative")
+            msg = "timeout must be non-negative"
+            raise TimeoutError(msg)
         if not source:
-            raise OSError(
+            msg = (
                 f"cannot mirror from uninitialized source repository: {source.git_dir}"
             )
+            raise OSError(msg)
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
 
@@ -4096,7 +2726,8 @@ class GitRepository:
             await run(
                 [
                     "git",
-                    "--git-dir", str(self.git_dir),
+                    "--git-dir",
+                    str(self.git_dir),
                     "fetch",
                     "--prune",
                     str(source.root),
@@ -4112,7 +2743,7 @@ class GitRepository:
         *,
         check: bool = True,
         capture_output: bool | None = False,
-        input: str | None = None,
+        stdin: str | None = None,
         timeout: float = INFINITY,
         attempts: int = 1,
         delay: float = 0.1,
@@ -4137,7 +2768,7 @@ class GitRepository:
             the console and the returned objects simultaneously.  Note that teeing
             output in this way may break TTY behavior for some commands, and is not
             recommended for interactive use.
-        input : str | None, optional
+        stdin : str | None, optional
             Input to send to the command's stdin (default is None).
         timeout : float, optional
             An optional timeout in seconds to wait for the command to complete before
@@ -4165,20 +2796,12 @@ class GitRepository:
         CompletedProcess
             The completed process result.
 
-        Raises
-        ------
-        CommandError
-            If the command fails and `check` is True.
-        TimeoutExpired
-            If the command does not complete within the specified timeout.
-        OSError
-            If we failed to open the subprocess or its output streams.
         """
         return await run(
             ["git", "--git-dir", str(self.git_dir), *argv],
             check=check,
             capture_output=capture_output,
-            input=input,
+            stdin=stdin,
             timeout=timeout,
             attempts=attempts,
             delay=delay,
@@ -4197,12 +2820,6 @@ class GitRepository:
             at `self.root`. Bare repositories are checked by scanning every registered
             worktree. Bare repositories with zero worktrees are considered clean.
 
-        Raises
-        ------
-        CommandError
-            If the git command fails.
-        OSError
-            If worktree inspection fails.
         """
         if not await self.is_bare():
             result = await self.run(
@@ -4244,8 +2861,6 @@ class GitRepository:
         ------
         ValueError
             If git returned an empty path.
-        CommandError
-            If the git command fails.
         """
         path_str = path.as_posix()
         result = await self.run(
@@ -4255,7 +2870,8 @@ class GitRepository:
         )
         text = result.stdout.strip()
         if not text:
-            raise ValueError(f"empty --git-path output for {path_str!r}")
+            msg = f"empty --git-path output for {path_str!r}"
+            raise ValueError(msg)
         resolved = Path(text).expanduser()
         if not resolved.is_absolute():
             base = cwd if cwd is not None else self.root
@@ -4270,11 +2886,13 @@ class GitRepository:
             return True
         if value == "false":
             return False
-        raise ValueError(f"invalid git boolean output: {stdout!r}")
+        msg = f"invalid git boolean output: {stdout!r}"
+        raise ValueError(msg)
 
     @staticmethod
     async def supports_relative_paths() -> bool:
-        """
+        """Return whether this Git supports relative worktree paths.
+
         Returns
         -------
         bool
@@ -4299,7 +2917,8 @@ class GitRepository:
 
     @staticmethod
     async def default_branch() -> str:
-        """
+        """Return the default Git branch name.
+
         Returns
         -------
         str
@@ -4307,22 +2926,19 @@ class GitRepository:
 
         Raises
         ------
-        CommandError
-            If git commands fail while probing default branch behavior.
         ValueError
             If the default branch could not be determined from git output.
         """
-        branch = await run(
-            ["git", "var", "GIT_DEFAULT_BRANCH"],
-            capture_output=True
-        )
+        branch = await run(["git", "var", "GIT_DEFAULT_BRANCH"], capture_output=True)
         result = branch.stdout.strip()
         if not result:
-            raise ValueError("default Git branch name could not be determined")
+            msg = "default Git branch name could not be determined"
+            raise ValueError(msg)
         return result
 
     async def head_branch(self) -> str | None:
-        """
+        """Return the current HEAD branch.
+
         Returns
         -------
         str | None
@@ -4331,7 +2947,7 @@ class GitRepository:
         Raises
         ------
         CommandError
-            If the git command fails with an error.
+            If Git returns an unexpected symbolic-ref failure.
         ValueError
             If we failed to parse the output or got an empty branch name.
         """
@@ -4344,16 +2960,20 @@ class GitRepository:
         if result.returncode == 0:
             text = result.stdout.strip()
             if not text:
-                raise ValueError("empty symbolic-ref output for HEAD")
+                msg = "empty symbolic-ref output for HEAD"
+                raise ValueError(msg)
             return text
         if result.returncode != 1:
-            raise CommandError(result.returncode, result.args, result.stdout, result.stderr)
+            raise CommandError(
+                result.returncode, result.args, result.stdout, result.stderr
+            )
 
         # detached HEAD: let caller decide what to do
         return None
 
     async def is_bare(self) -> bool:
-        """
+        """Return whether this repository is bare.
+
         Returns
         -------
         bool
@@ -4361,8 +2981,6 @@ class GitRepository:
 
         Raises
         ------
-        CommandError
-            If the git command fails.
         ValueError
             If we failed to parse the output.
         """
@@ -4375,10 +2993,12 @@ class GitRepository:
             return True
         if value == "false":
             return False
-        raise ValueError(f"invalid --is-bare-repository output: {result.stdout!r}")
+        msg = f"invalid --is-bare-repository output: {result.stdout!r}"
+        raise ValueError(msg)
 
     async def branches(self) -> frozenset[str]:
-        """
+        """Return repository branch names.
+
         Returns
         -------
         frozenset[str]
@@ -4386,10 +3006,6 @@ class GitRepository:
             includes branches under `refs/heads/`, and not other refs like tags or
             remotes.
 
-        Raises
-        ------
-        CommandError
-            If the git command fails.
         """
         result = await self.run(
             ["for-each-ref", "--format=%(refname:short)", "refs/heads"],
@@ -4425,10 +3041,10 @@ class GitRepository:
                 branch = None
                 continue
             if line.startswith("worktree "):
-                path = Path(line[len("worktree "):]).expanduser().resolve()
+                path = Path(line[len("worktree ") :]).expanduser().resolve()
                 continue
             if line.startswith(f"branch {GIT_REF_HEADS_PREFIX}"):
-                branch = line[len("branch ") + len(GIT_REF_HEADS_PREFIX):]
+                branch = line[len("branch ") + len(GIT_REF_HEADS_PREFIX) :]
         if path is not None:
             out.append(self.Worktree(path=path, branch=branch))
         return tuple(out)
@@ -4440,34 +3056,34 @@ class GitRepository:
                 continue
             existing = current.setdefault(wt.branch, wt.path)
             if existing != wt.path:
-                raise FileExistsError(
+                msg = (
                     f"multiple worktrees mapped to branch '{wt.branch}': "
                     f"{existing} and {wt.path}"
                 )
+                raise FileExistsError(msg)
         return current
 
     def _intended_worktree_changes(
-        self,
-        updates: Sequence[GitRefUpdate]
+        self, updates: Sequence[GitRefUpdate]
     ) -> tuple[list[str], list[str], list[tuple[str, str]]]:
         # get creation/destruction intent from transaction updates
-        _created: dict[str, list[str]] = {}
-        _destroyed: dict[str, list[str]] = {}
+        created_: dict[str, list[str]] = {}
+        destroyed_: dict[str, list[str]] = {}
         created: list[str] = []
         destroyed: list[str] = []
         for update in updates:
             if update.created:
                 created.append(update.branch)
-                _created.setdefault(update.new, []).append(update.branch)
+                created_.setdefault(update.new, []).append(update.branch)
             elif update.destroyed:
                 destroyed.append(update.branch)
-                _destroyed.setdefault(update.old, []).append(update.branch)
+                destroyed_.setdefault(update.old, []).append(update.branch)
 
         # infer rename hints from unambiguous create + destroy pairs on the same object
         renamed: list[tuple[str, str]] = []
-        for oid in sorted(set(_created) & set(_destroyed)):
-            c = _created[oid]
-            d = _destroyed[oid]
+        for oid in sorted(set(created_) & set(destroyed_)):
+            c = created_[oid]
+            d = destroyed_[oid]
             if len(c) == 1 and len(d) == 1:
                 old_branch = d[0]
                 new_branch = c[0]
@@ -4486,11 +3102,16 @@ class GitRepository:
         # sort branches by conflict priority, then filter out any whose slash-separated
         # paths would create a nested worktree conflicts
         winners: list[str] = []
-        for branch in sorted(desired, key=lambda b: (
-            0 if b in current else 1,  # prioritize existing
-            0 if b not in created else 1,  # ... then prioritize non-created branches
-            b,  # ... then break ties lexically
-        )):
+        for branch in sorted(
+            desired,
+            key=lambda b: (
+                0 if b in current else 1,  # prioritize existing
+                0
+                if b not in created
+                else 1,  # ... then prioritize non-created branches
+                b,  # ... then break ties lexically
+            ),
+        ):
             conflict: str | None = None
             for winner in winners:
                 if branch == winner:
@@ -4507,7 +3128,7 @@ class GitRepository:
             print(
                 f"bertrand: skipping branch '{branch}' due nested path conflict with "
                 f"'{conflict}'",
-                file=sys.stderr
+                file=sys.stderr,
             )
 
         return {branch: desired[branch] for branch in winners}
@@ -4540,7 +3161,7 @@ class GitRepository:
         return self.git_dir == owner.expanduser().resolve()
 
     async def _strip_env(self, env: dict[str, str] | None = None) -> dict[str, str]:
-        """Remove repo-local git environment variables from the given environment mapping.
+        """Remove repo-local git environment variables.
 
         Parameters
         ----------
@@ -4555,15 +3176,16 @@ class GitRepository:
         """
         env = dict(os.environ if env is None else env)
         local = await self.run(
-            ["rev-parse", "--local-env-vars"],
-            check=False,
-            capture_output=True,
-            env=env
+            ["rev-parse", "--local-env-vars"], check=False, capture_output=True, env=env
         )
         if local.returncode == 0:
             keys = [key.strip() for key in local.stdout.splitlines() if key.strip()]
         else:
-            keys = ["GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR"]  # best-effort fallback
+            keys = [
+                "GIT_DIR",
+                "GIT_WORK_TREE",
+                "GIT_COMMON_DIR",
+            ]  # best-effort fallback
         for key in keys:
             env.pop(key, None)
         return env
@@ -4596,13 +3218,12 @@ class GitRepository:
         ------
         FileExistsError
             If the target path already exists.
-        CommandError
-            If the git command fails.
         """
         if target is None:
             target = self.root / branch
         if target.exists():
-            raise FileExistsError("path already exists")
+            msg = "path already exists"
+            raise FileExistsError(msg)
         target.parent.mkdir(parents=True, exist_ok=True)
         cmd = ["worktree", "add", "--relative-paths"]
         if create_branch:
@@ -4621,8 +3242,7 @@ class GitRepository:
         source: Path | None = None,
         target: Path | None = None,
     ) -> None:
-        """Move the worktree for the given branch from the source path to the target
-        path.
+        """Move the worktree for a branch.
 
         Parameters
         ----------
@@ -4652,23 +3272,27 @@ class GitRepository:
                     source = wt.path
                     break
             if source is None:
-                raise FileNotFoundError(f"no worktree found for branch '{branch}'")
+                msg = f"no worktree found for branch '{branch}'"
+                raise FileNotFoundError(msg)
         if not source.exists():
-            raise FileNotFoundError(f"worktree path does not exist: {source}")
+            msg = f"worktree path does not exist: {source}"
+            raise FileNotFoundError(msg)
         if not source.is_dir():
-            raise NotADirectoryError(f"worktree is not a directory: {source}")
+            msg = f"worktree is not a directory: {source}"
+            raise NotADirectoryError(msg)
 
         if target is None:
             target = self.root / branch
         if target == source:
             return
         if target.exists():
-            raise FileExistsError(f"target path already exists: {target}")
+            msg = f"target path already exists: {target}"
+            raise FileExistsError(msg)
 
         target.parent.mkdir(parents=True, exist_ok=True)
         await self.run(
             ["worktree", "move", "--relative-paths", str(source), str(target)],
-            capture_output=True
+            capture_output=True,
         )
         self._clean_worktree_parents(source)
 
@@ -4711,19 +3335,21 @@ class GitRepository:
                     target = wt.path
                     break
             if target is None:
-                raise FileNotFoundError(f"no worktree found for branch '{branch}'")
+                msg = f"no worktree found for branch '{branch}'"
+                raise FileNotFoundError(msg)
         if not target.exists():
-            raise FileNotFoundError(f"worktree path does not exist: {target}")
+            msg = f"worktree path does not exist: {target}"
+            raise FileNotFoundError(msg)
         if not target.is_dir():
-            raise NotADirectoryError(f"worktree is not a directory: {target}")
+            msg = f"worktree is not a directory: {target}"
+            raise NotADirectoryError(msg)
 
         # verify that the worktree is clean and objectively belongs to this repository
         # before attempting deletion
         env = await self._strip_env()
         if not await self._worktree_belongs_to_repo(target, env):
-            raise RuntimeError(
-                f"worktree path does not belong to this repository: {target}"
-            )
+            msg = f"worktree path does not belong to this repository: {target}"
+            raise RuntimeError(msg)
         clean = await run(
             ["git", "-C", str(target), "status", "--porcelain"],
             capture_output=True,
@@ -4739,8 +3365,7 @@ class GitRepository:
         return True
 
     async def sync_worktrees(self, updates: Sequence[GitRefUpdate] = ()) -> None:
-        """Converge worktrees to the authoritative branch set using a hybrid
-        intent-first delta pass.
+        """Converge worktrees to the authoritative branch set.
 
         Parameters
         ----------
@@ -4776,7 +3401,7 @@ class GitRepository:
                 await self.move_worktree(new_branch, source=source, target=target)
                 current.pop(old_branch, None)
                 current[new_branch] = target
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001
                 print(
                     f"bertrand: failed to move worktree for branch '{new_branch}' from "
                     f"{source} to {target}:\n{err}"
@@ -4790,7 +3415,7 @@ class GitRepository:
             try:
                 if await self.destroy_worktree(branch, target=path):
                     current.pop(branch, None)
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001
                 print(
                     f"bertrand: failed to destroy worktree for branch '{branch}' at "
                     f"{path}:\n{err}"
@@ -4804,7 +3429,7 @@ class GitRepository:
             try:
                 await self.create_worktree(branch, target=target, create_branch=True)
                 current[branch] = target
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001
                 print(
                     f"bertrand: failed to create worktree for branch '{branch}' at "
                     f"{target}:\n{err}"
@@ -4817,7 +3442,7 @@ class GitRepository:
             try:
                 if await self.destroy_worktree(branch, target=path):
                     current.pop(branch, None)
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001
                 print(
                     f"bertrand: failed to destroy worktree for branch '{branch}' at "
                     f"{path}:\n{err}"
@@ -4833,7 +3458,7 @@ class GitRepository:
             try:
                 await self.move_worktree(branch, source=source, target=target)
                 current[branch] = target
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001
                 print(
                     f"bertrand: failed to move worktree for branch '{branch}' from "
                     f"{source} to {target}:\n{err}"
@@ -4846,7 +3471,7 @@ class GitRepository:
             try:
                 await self.create_worktree(branch, target=target, create_branch=False)
                 current[branch] = target
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001
                 print(
                     f"bertrand: failed to create worktree for branch '{branch}' at "
                     f"{target}:\n{err}"

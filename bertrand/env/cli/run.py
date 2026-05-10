@@ -5,8 +5,8 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from ..config import DEFAULT_TAG
-from ..kube import Environment
-from ..run import TIMEOUT
+from ..legacy.environment import Environment
+from ..legacy.nerdctl import TIMEOUT
 
 
 async def bertrand_start(

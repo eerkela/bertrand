@@ -14,7 +14,8 @@ from typing import TYPE_CHECKING, Annotated, Self
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from bertrand.env.config.core import UUIDHex, _check_uuid
-from bertrand.env.run import RUN_DIR, CommandError, ceph, start_microceph
+from bertrand.env.kube.ceph.api import ceph, start_microceph
+from bertrand.env.run import RUN_DIR, CommandError
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -188,8 +189,21 @@ class RepoCredentials:
     key: str
     monitors: tuple[str, ...]
 
+    @staticmethod
+    def _identity(repo_id: UUIDHex) -> tuple[UUIDHex, str, str]:
+        repo_id = _check_uuid(repo_id)
+        user = f"{REPO_ENTITY_PREFIX}{repo_id}"
+        entity = f"{REPO_ENTITY_NAMESPACE}.{user}"
+        if not entity.startswith(f"{REPO_ENTITY_NAMESPACE}."):
+            msg = (
+                f"Ceph entity must be namespaced as {REPO_ENTITY_NAMESPACE!r}: "
+                f"{entity!r}"
+            )
+            raise ValueError(msg)
+        return repo_id, user, entity
+
     @classmethod
-    async def create(
+    async def ensure(
         cls,
         repo_id: UUIDHex,
         *,
@@ -235,21 +249,13 @@ class RepoCredentials:
         if timeout <= 0:
             msg = "timeout must be non-negative"
             raise TimeoutError(msg)
-        repo_id = _check_uuid(repo_id)
+        repo_id, user, entity = cls._identity(repo_id)
         if not ceph_path.parts:
             msg = "Ceph repository path cannot be empty"
             raise ValueError(msg)
         if not ceph_path.is_absolute():
             ceph_path = PosixPath("/") / ceph_path
 
-        user = f"{REPO_ENTITY_PREFIX}{repo_id}"
-        entity = f"{REPO_ENTITY_NAMESPACE}.{user}"
-        if not entity.startswith(f"{REPO_ENTITY_NAMESPACE}."):
-            msg = (
-                f"Ceph entity must be namespaced as {REPO_ENTITY_NAMESPACE!r}: "
-                f"{entity!r}"
-            )
-            raise ValueError(msg)
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
 
@@ -309,22 +315,12 @@ class RepoCredentials:
         ------
         TimeoutError
             If `timeout` is non-positive.
-        ValueError
-            If `repo_id` is invalid.
         """
         if timeout <= 0:
             msg = "timeout must be non-negative"
             raise TimeoutError(msg)
 
-        repo_id = _check_uuid(repo_id)
-        user = f"{REPO_ENTITY_PREFIX}{repo_id}"
-        entity = f"{REPO_ENTITY_NAMESPACE}.{user}"
-        if not entity.startswith(f"{REPO_ENTITY_NAMESPACE}."):
-            msg = (
-                f"Ceph entity must be namespaced as {REPO_ENTITY_NAMESPACE!r}: "
-                f"{entity!r}"
-            )
-            raise ValueError(msg)
+        repo_id, user, entity = cls._identity(repo_id)
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
 
@@ -370,8 +366,6 @@ class RepoCredentials:
             If MicroCeph rejects credential deletion.
         TimeoutError
             If `timeout` is non-positive.
-        ValueError
-            If this credential identity is invalid.
 
         Notes
         -----
@@ -382,15 +376,7 @@ class RepoCredentials:
         if timeout <= 0:
             msg = "timeout must be non-negative"
             raise TimeoutError(msg)
-        repo_id = self.repo_id
-        user = f"{REPO_ENTITY_PREFIX}{repo_id}"
-        entity = f"{REPO_ENTITY_NAMESPACE}.{user}"
-        if not entity.startswith(f"{REPO_ENTITY_NAMESPACE}."):
-            msg = (
-                f"Ceph entity must be namespaced as {REPO_ENTITY_NAMESPACE!r}: "
-                f"{entity!r}"
-            )
-            raise ValueError(msg)
+        _, _, entity = self._identity(self.repo_id)
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
 

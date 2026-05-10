@@ -2,19 +2,21 @@
 
 from __future__ import annotations
 
-import asyncio
 from dataclasses import dataclass
-from types import MappingProxyType
 from typing import TYPE_CHECKING, Self
 
 from kubernetes import client as kube_client
 
-from .api import _label_selector
+from .api import (
+    KubeMetadata,
+    _label_selector,
+    _validate_delete_status,
+    _wait_until_deleted,
+)
 
 if TYPE_CHECKING:
     import builtins
     from collections.abc import Mapping
-    from datetime import datetime
 
     from .api import Kube
 
@@ -22,7 +24,7 @@ NAMESPACE_WAIT_POLL_INTERVAL_SECONDS = 0.5
 
 
 @dataclass(frozen=True)
-class Namespace:
+class Namespace(KubeMetadata[kube_client.V1Namespace]):
     """General-purpose wrapper around one Kubernetes Namespace object.
 
     Parameters
@@ -213,84 +215,6 @@ class Namespace:
         return cls(_obj=patched)
 
     @property
-    def name(self) -> str:
-        """Return the Namespace name.
-
-        Returns
-        -------
-        str
-            Trimmed `metadata.name`, or an empty string when unavailable.
-        """
-        metadata = self._obj.metadata
-        return (metadata.name or "").strip() if metadata is not None else ""
-
-    @property
-    def labels(self) -> Mapping[str, str]:
-        """Return the Namespace labels.
-
-        Returns
-        -------
-        Mapping[str, str]
-            Read-only view of `metadata.labels`, or an empty mapping when unavailable.
-        """
-        metadata = self._obj.metadata
-        if metadata is None or metadata.labels is None:
-            return MappingProxyType({})
-        return MappingProxyType(metadata.labels)
-
-    @property
-    def annotations(self) -> Mapping[str, str]:
-        """Return the Namespace annotations.
-
-        Returns
-        -------
-        Mapping[str, str]
-            Read-only view of `metadata.annotations`, or an empty mapping when
-            unavailable.
-        """
-        metadata = self._obj.metadata
-        if metadata is None or metadata.annotations is None:
-            return MappingProxyType({})
-        return MappingProxyType(metadata.annotations)
-
-    @property
-    def resource_version(self) -> str:
-        """Return the Namespace resource version.
-
-        Returns
-        -------
-        str
-            Kubernetes `metadata.resourceVersion`, or an empty string when
-            unavailable.
-        """
-        metadata = self._obj.metadata
-        return (metadata.resource_version or "").strip() if metadata is not None else ""
-
-    @property
-    def uid(self) -> str:
-        """Return the Namespace UID.
-
-        Returns
-        -------
-        str
-            Kubernetes `metadata.uid`, or an empty string when unavailable.
-        """
-        metadata = self._obj.metadata
-        return (metadata.uid or "").strip() if metadata is not None else ""
-
-    @property
-    def created_at(self) -> datetime | None:
-        """Return the Namespace creation timestamp.
-
-        Returns
-        -------
-        datetime | None
-            Kubernetes `metadata.creationTimestamp`, or `None` when unavailable.
-        """
-        metadata = self._obj.metadata
-        return metadata.creation_timestamp if metadata is not None else None
-
-    @property
     def phase(self) -> str:
         """Return the Namespace lifecycle phase.
 
@@ -316,17 +240,8 @@ class Namespace:
         -------
         Namespace | None
             Fresh wrapper for the same Namespace, or `None` if it no longer exists.
-
-        Raises
-        ------
-        OSError
-            If this wrapper does not contain enough metadata to identify the
-            Namespace, or if Kubernetes returns malformed data.
         """
-        name = self.name
-        if not name:
-            msg = "cannot refresh Namespace with missing metadata.name"
-            raise OSError(msg)
+        name = self._require_name("refresh Namespace")
         return await type(self).get(kube, name=name, timeout=timeout)
 
     async def delete(self, kube: Kube, *, timeout: float) -> None:
@@ -338,30 +253,17 @@ class Namespace:
             Active Kubernetes API context.
         timeout : float
             Maximum request budget in seconds. If infinite, wait indefinitely.
-
-        Raises
-        ------
-        OSError
-            If this wrapper does not contain enough metadata to identify the
-            Namespace, if the delete request fails, or if Kubernetes returns
-            malformed data.
         """
-        name = self.name
-        if not name:
-            msg = "cannot delete Namespace with missing metadata.name"
-            raise OSError(msg)
+        name = self._require_name("delete Namespace")
         payload = await kube.run(
             lambda request_timeout: kube.core.delete_namespace(
                 name=name,
-                body=kube_client.V1DeleteOptions(),
                 _request_timeout=request_timeout,
             ),
             timeout=timeout,
             context=f"failed to delete Namespace {name}",
         )
-        if payload is not None and not isinstance(payload, kube_client.V1Status):
-            msg = f"malformed Kubernetes response while deleting Namespace {name}"
-            raise OSError(msg)
+        _validate_delete_status(payload, label=self._object_label(name))
 
     async def wait_deleted(self, kube: Kube, *, timeout: float) -> None:
         """Wait until this Namespace is deleted from the cluster.
@@ -375,27 +277,15 @@ class Namespace:
 
         Raises
         ------
-        OSError
-            If this wrapper does not contain enough metadata to identify the
-            Namespace, or if a refresh request returns malformed data.
         TimeoutError
             If the Namespace still exists when `timeout` expires.
         """
-        name = self.name
-        if not name:
-            msg = "cannot wait for Namespace deletion with missing metadata.name"
-            raise OSError(msg)
-        if timeout <= 0:
-            msg = f"timed out waiting for Namespace {name} deletion"
-            raise TimeoutError(msg)
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + timeout
-        while True:
-            remaining = deadline - loop.time()
-            if remaining <= 0:
-                msg = f"timed out waiting for Namespace {name} deletion"
-                raise TimeoutError(msg)
-            live = await self.refresh(kube, timeout=remaining)
-            if live is None:
-                return
-            await asyncio.sleep(min(NAMESPACE_WAIT_POLL_INTERVAL_SECONDS, remaining))
+        name = self._require_name("wait for Namespace deletion")
+        try:
+            await _wait_until_deleted(
+                label=self._object_label(name),
+                timeout=timeout,
+                refresh=lambda remaining: self.refresh(kube, timeout=remaining),
+            )
+        except TimeoutError as err:
+            raise TimeoutError(str(err)) from err

@@ -6,9 +6,9 @@ import time
 from pathlib import Path
 
 from ..config import DEFAULT_TAG
-from ..kube import Environment
+from ..legacy.environment import Environment
+from ..legacy.nerdctl import NERDCTL_BIN, TIMEOUT, nerdctl
 from ..rpc import start_rpc_sidecar, stop_rpc_sidecar
-from ..run import NERDCTL_BIN, TIMEOUT, nerdctl
 
 
 async def bertrand_code(

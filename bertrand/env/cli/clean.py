@@ -13,10 +13,10 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from ..kube import MountInfo
+from ..kube.ceph.mount import MountInfo
+from ..legacy.nerdctl import NERDCTL_BIN, nerdctl, nerdctl_ids, stop_buildkit
 from ..run import (
     BERTRAND_ENV,
-    NERDCTL_BIN,
     REPO_DIR,
     REPO_MOUNT_EXT,
     RUN_DIR,
@@ -24,10 +24,7 @@ from ..run import (
     RUN_TMPFS_MOUNT_UNIT_PATH,
     STATE_DIR,
     confirm,
-    nerdctl,
-    nerdctl_ids,
     run,
-    stop_buildkit,
 )
 
 

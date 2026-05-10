@@ -8,7 +8,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from ..kube import Environment
+from ..legacy.environment import Environment
 from ..run import INFINITY, TimeoutExpired, atomic_write_text, confirm
 from ..version import __version__
 from ._helper import _recover_spec

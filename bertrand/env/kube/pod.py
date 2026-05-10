@@ -4,17 +4,22 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from types import MappingProxyType
 from typing import TYPE_CHECKING, Self
 
 import kubernetes
 
-from .api import Kube, WatchEvent, _label_selector
+from .api import (
+    Kube,
+    NamespacedKubeMetadata,
+    WatchEvent,
+    _label_selector,
+    _validate_delete_status,
+    _wait_until_deleted,
+)
 
 if TYPE_CHECKING:
     import builtins
     from collections.abc import AsyncIterator, Collection, Mapping
-    from datetime import datetime
 
 POD_MIRROR_ANNOTATION = "kubernetes.io/config.mirror"
 POD_SUPPORTED_CONTROLLER_KINDS = frozenset(
@@ -32,7 +37,7 @@ POD_WAIT_POLL_INTERVAL_SECONDS = 0.5
 
 
 @dataclass(frozen=True)
-class Pod:
+class Pod(NamespacedKubeMetadata[kubernetes.client.V1Pod]):
     """General-purpose wrapper around one Kubernetes Pod object.
 
     Parameters
@@ -241,96 +246,6 @@ class Pod:
         return cls(_obj=payload)
 
     @property
-    def name(self) -> str:
-        """Return the Pod name.
-
-        Returns
-        -------
-        str
-            Trimmed `metadata.name`, or an empty string when unavailable.
-        """
-        metadata = self._obj.metadata
-        return (metadata.name or "").strip() if metadata is not None else ""
-
-    @property
-    def namespace(self) -> str:
-        """Return the Pod namespace.
-
-        Returns
-        -------
-        str
-            Trimmed `metadata.namespace`, or an empty string when unavailable.
-        """
-        metadata = self._obj.metadata
-        return (metadata.namespace or "").strip() if metadata is not None else ""
-
-    @property
-    def labels(self) -> Mapping[str, str]:
-        """Return the Pod labels.
-
-        Returns
-        -------
-        Mapping[str, str]
-            Read-only view of `metadata.labels`, or an empty mapping when unavailable.
-        """
-        metadata = self._obj.metadata
-        if metadata is None or metadata.labels is None:
-            return MappingProxyType({})
-        return MappingProxyType(metadata.labels)
-
-    @property
-    def annotations(self) -> Mapping[str, str]:
-        """Return the Pod annotations.
-
-        Returns
-        -------
-        Mapping[str, str]
-            Read-only view of `metadata.annotations`, or an empty mapping when
-            unavailable.
-        """
-        metadata = self._obj.metadata
-        if metadata is None or metadata.annotations is None:
-            return MappingProxyType({})
-        return MappingProxyType(metadata.annotations)
-
-    @property
-    def resource_version(self) -> str:
-        """Return the Pod resource version.
-
-        Returns
-        -------
-        str
-            Kubernetes `metadata.resourceVersion`, or an empty string when
-            unavailable.
-        """
-        metadata = self._obj.metadata
-        return (metadata.resource_version or "").strip() if metadata is not None else ""
-
-    @property
-    def uid(self) -> str:
-        """Return the Pod UID.
-
-        Returns
-        -------
-        str
-            Kubernetes `metadata.uid`, or an empty string when unavailable.
-        """
-        metadata = self._obj.metadata
-        return (metadata.uid or "").strip() if metadata is not None else ""
-
-    @property
-    def created_at(self) -> datetime | None:
-        """Return the Pod creation timestamp.
-
-        Returns
-        -------
-        datetime | None
-            Kubernetes `metadata.creationTimestamp`, or `None` when unavailable.
-        """
-        metadata = self._obj.metadata
-        return metadata.creation_timestamp if metadata is not None else None
-
-    @property
     def phase(self) -> str:
         """Return the current Pod phase.
 
@@ -498,17 +413,12 @@ class Pod:
 
         Raises
         ------
-        OSError
-            If this pod has no resolvable metadata namespace and name, the log
-            request fails, or Kubernetes returns malformed log data.
         ValueError
             If `tail_lines` is not positive.
+        OSError
+            If Kubernetes returns malformed log data.
         """
-        namespace = self.namespace
-        name = self.name
-        if not namespace or not name:
-            msg = "cannot read logs for pod with missing metadata.name/namespace"
-            raise OSError(msg)
+        namespace, name = self._require_namespace_name("read pod logs")
         if tail_lines is not None and tail_lines <= 0:
             msg = "pod log tail_lines must be positive"
             raise ValueError(msg)
@@ -550,17 +460,8 @@ class Pod:
         -------
         Pod | None
             Fresh pod wrapper, or `None` if the pod no longer exists.
-
-        Raises
-        ------
-        OSError
-            If this pod has no resolvable metadata namespace and name.
         """
-        namespace = self.namespace
-        name = self.name
-        if not namespace or not name:
-            msg = "cannot refresh pod with missing metadata.name/namespace"
-            raise OSError(msg)
+        namespace, name = self._require_namespace_name("refresh pod")
         return await type(self).get(
             kube,
             namespace=namespace,
@@ -576,34 +477,22 @@ class Pod:
         kube : Kube
             Active Kubernetes API context.
         timeout : float
-            Maximum runtime budget in seconds.  If infinite, wait indefinitely.
+            Maximum runtime budget in seconds. If infinite, wait indefinitely.
 
         Raises
         ------
-        OSError
-            If this pod has no resolvable metadata namespace and name.
         TimeoutError
             If deletion does not converge within `timeout`.
         """
-        namespace = self.namespace
-        name = self.name
-        if not namespace or not name:
-            msg = "cannot wait for deletion of pod with missing metadata.name/namespace"
-            raise OSError(msg)
-        if timeout <= 0:
-            msg = f"timed out waiting for pod {namespace}/{name} deletion"
-            raise TimeoutError(msg)
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + timeout
-        while True:
-            remaining = deadline - loop.time()
-            if remaining <= 0:
-                msg = f"timed out waiting for pod {namespace}/{name} deletion"
-                raise TimeoutError(msg)
-            live = await self.refresh(kube, timeout=remaining)
-            if live is None:
-                return
-            await asyncio.sleep(min(POD_WAIT_POLL_INTERVAL_SECONDS, remaining))
+        namespace, name = self._require_namespace_name("wait for pod deletion")
+        try:
+            await _wait_until_deleted(
+                label=self._object_label(name=name, namespace=namespace),
+                timeout=timeout,
+                refresh=lambda remaining: self.refresh(kube, timeout=remaining),
+            )
+        except TimeoutError as err:
+            raise TimeoutError(str(err)) from err
 
     async def wait_terminal(self, kube: Kube, *, timeout: float) -> Self:
         """Wait until this pod reaches a terminal phase.
@@ -622,20 +511,12 @@ class Pod:
 
         Raises
         ------
-        OSError
-            If this pod has no resolvable metadata namespace and name, or if it is
-            deleted before reaching a terminal phase.
         TimeoutError
             If terminal phase convergence does not complete within `timeout`.
+        OSError
+            If the pod is deleted before reaching a terminal phase.
         """
-        namespace = self.namespace
-        name = self.name
-        if not namespace or not name:
-            msg = (
-                "cannot wait for terminal phase of pod with missing "
-                "metadata.name/namespace"
-            )
-            raise OSError(msg)
+        namespace, name = self._require_namespace_name("wait for pod terminal phase")
         if timeout <= 0:
             msg = f"timed out waiting for pod {namespace}/{name} terminal phase"
             raise TimeoutError(msg)
@@ -671,17 +552,8 @@ class Pod:
             Active Kubernetes API context.
         timeout : float
             Maximum runtime budget in seconds.  If infinite, wait indefinitely.
-
-        Raises
-        ------
-        OSError
-            If pod metadata is incomplete or eviction fails.
         """
-        namespace = self.namespace
-        name = self.name
-        if not namespace or not name:
-            msg = "cannot evict pod with missing metadata.name/namespace"
-            raise OSError(msg)
+        namespace, name = self._require_namespace_name("evict pod")
 
         # policy/v1 eviction is preferred over delete because it respects
         # PodDisruptionBudgets and communicates scheduling intent explicitly.
@@ -711,17 +583,8 @@ class Pod:
             Active Kubernetes API context.
         timeout : float
             Maximum runtime budget in seconds.  If infinite, wait indefinitely.
-
-        Raises
-        ------
-        OSError
-            If this pod has no resolvable metadata namespace and name.
         """
-        namespace = self.namespace
-        name = self.name
-        if not namespace or not name:
-            msg = "cannot delete pod with missing metadata.name/namespace"
-            raise OSError(msg)
+        namespace, name = self._require_namespace_name("delete pod")
 
         payload = await kube.run(
             lambda request_timeout: kube.core.delete_namespaced_pod(
@@ -733,9 +596,6 @@ class Pod:
             timeout=timeout,
             context=f"failed to delete pod {namespace}/{name}",
         )
-        if payload is not None and not isinstance(
-            payload,
-            kubernetes.client.V1Status,
-        ):
-            msg = f"malformed Kubernetes response while deleting pod {namespace}/{name}"
-            raise OSError(msg)
+        _validate_delete_status(
+            payload, label=self._object_label(name=name, namespace=namespace)
+        )
