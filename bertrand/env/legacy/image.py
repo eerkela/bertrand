@@ -43,7 +43,7 @@ from ..config.core import (
     Trimmed,
     locate_template,
 )
-from ..run import (
+from ..git import (
     BERTRAND_ENV,
     ENV_ID_ENV,
     IMAGE_ID_ENV,

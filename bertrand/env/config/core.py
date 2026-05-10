@@ -1,7 +1,6 @@
 """TODO"""
 from __future__ import annotations
 
-import asyncio
 import importlib.resources as importlib_resources
 import re
 import string
@@ -9,13 +8,13 @@ import uuid
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path, PosixPath
-from types import TracebackType
 from typing import (
     Annotated,
     Any,
     ClassVar,
     Protocol,
     Self,
+    TYPE_CHECKING,
     TypeVar,
     cast,
 )
@@ -31,15 +30,14 @@ from pydantic import (
     ValidationError,
 )
 
-from ..run import (
-    METADATA_LOCK,
-    INFINITY,
-    GitRepository,
-    Lock,
-    inside_container,
-    inside_image,
-    run,
-)
+from bertrand.env.kube.lease import ClusterLock
+
+from ..git import INFINITY, GitRepository, inside_container, inside_image, run
+
+if TYPE_CHECKING:
+    from types import TracebackType
+
+    from bertrand.env.kube.api import Kube
 
 CACHE_MOUNT: PosixPath = PosixPath("/tmp/.cache")
 SNAKE_CASE_RE = re.compile(r"^([a-zA-Z]([a-zA-Z0-9_]*[a-zA-Z0-9])?)?$")
@@ -77,6 +75,10 @@ def _check_uuid(value: str) -> str:
         return uuid.UUID(value).hex
     except ValueError as err:
         raise ValueError(f"invalid UUID hex string: {value}") from err
+
+
+def _metadata_lock_key(repo: GitRepository, worktree: Path) -> str:
+    return f"config:{repo.root}:{worktree}:metadata"
 
 
 def _check_glob(pattern: str) -> str:
@@ -652,6 +654,7 @@ class Config:
 
     repo: GitRepository
     worktree: RelativePath
+    kube: Kube = field(repr=False)
     timeout: float
     resources: dict[ResourceName, BaseModel | None] = field(
         default_factory=lambda: {"bertrand": None}
@@ -675,6 +678,7 @@ class Config:
         cls,
         worktree: Path,
         *,
+        kube: Kube,
         repo: GitRepository | None = None,
         timeout: float = INFINITY,
     ) -> Self:
@@ -686,6 +690,8 @@ class Config:
         ----------
         worktree : Path
             The root path of the environment directory.
+        kube : Kube
+            Active Kubernetes API context used for cluster-wide metadata locking.
         repo : GitRepository | None, optional
             An optional parent git repository containing the worktree, which determines
             the project root for the environment.  If not provided, then it will be
@@ -729,14 +735,15 @@ class Config:
                 f"{repo.root}"
             )
 
-        async with Lock(
-            worktree / METADATA_LOCK,
+        async with ClusterLock(
+            kube,
+            _metadata_lock_key(repo, worktree),
             timeout=timeout,
-            mode="cluster"
         ):
             self = cls(
                 repo=repo,
                 worktree=worktree.relative_to(repo.root),
+                kube=kube,
                 timeout=timeout,
             )
             self.resources.update({
@@ -807,10 +814,10 @@ class Config:
 
         old_resources = self.resources.copy()
         try:
-            async with Lock(
-                self.root / METADATA_LOCK,
+            async with ClusterLock(
+                self.kube,
+                _metadata_lock_key(self.repo, self.root),
                 timeout=self.timeout,
-                mode="cluster"
             ):
                 # invoke `init()` hooks for all resources to get baseline snapshot
                 snapshot = {} if self.init is None else {
@@ -986,10 +993,10 @@ class Config:
             raise RuntimeError("sync() artifact rendering requires an active config context")
 
         # invoke render hooks for all resources in deterministic order
-        async with Lock(
-            self.root / METADATA_LOCK,
+        async with ClusterLock(
+            self.kube,
+            _metadata_lock_key(self.repo, self.root),
             timeout=self.timeout,
-            mode="cluster"
         ):
             for name in sorted(self.resources):
                 r = RESOURCE_NAMES[name]
@@ -1059,10 +1066,10 @@ class Config:
             sync_cmd.append("--no-editable")  # image build context -> non-editable
 
         # render output artifacts, update lockfile, and invoke PEP517/660 backend
-        async with Lock(
-            self.root / METADATA_LOCK,
+        async with ClusterLock(
+            self.kube,
+            _metadata_lock_key(self.repo, self.root),
             timeout=self.timeout,
-            mode="cluster"
         ):
             await self.sync(tag)  # render artifacts to container filesystem
             await run(["uv", "lock"], cwd=self.root)  # update lockfile

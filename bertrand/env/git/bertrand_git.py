@@ -12,7 +12,6 @@ common functionality themselves, and can stand alone with respect to the rest of
 a git hook could cause ordinary git operations to fail if `bertrand` is not installed
 in the current environment.
 """
-
 from __future__ import annotations
 
 import asyncio
@@ -20,21 +19,16 @@ import contextlib
 import errno
 import grp
 import hashlib
-import json
 import os
 import pwd
-import re
 import shlex
 import shutil
-import socket
 import subprocess
 import sys
-import tempfile
 import threading
 import uuid
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
 from pathlib import Path, PosixPath
 from typing import TYPE_CHECKING, Any, Literal, Self, TextIO, cast
 
@@ -46,18 +40,19 @@ if os.name == "nt":
 else:
     import fcntl
 
-# pylint: disable=redefined-builtin, broad-exception-caught
 
-
-#######################
-#      GENERAL        #
-#######################
-
-
-# NOTE: These utilities don't specifically have to do with Git or the kubernetes
-# runtime, but are included here because they don't have any dependencies, and can be
-# reused by Git hooks to improve functionality without breaking isolation.  The same
-# utilities are exported to the main CLI, so there's no risk of duplication.
+# NOTE: The Git-related utilities are intended to be imported by Git hooks via
+# `from bertrand_git import ...` (notice no relative paths/leading dot).  The
+# `bertrand init` command ensures that this file is copied into the `.git/hooks/`
+# directory alongside the hooks themselves, so that the import will always resolve
+# properly.  Note that it IS NOT SAFE to import code from third-party libraries within
+# hooks, or share code between them, since the hook names may be rewritten in order to
+# conform to Git's expectations.  This is therefore the ONLY file that Bertrand
+# guarantees to be importable from hooks, and it must not have any dependencies except
+# the Python standard library.  Other utilities may be packaged within it in order to
+# avoid duplication across hooks, but only if they conform to the same standards.
+# Because this file has no dependencies, these utilities will also be exported to the
+# main Bertrand CLI, so there's no further risk of duplication.
 
 
 # generic utils
@@ -70,6 +65,18 @@ NORMALIZE_ARCH = {
     "aarch64": "arm64",
     "arm64": "arm64",
 }
+GIT_REF_HEADS_PREFIX = "refs/heads/"
+GIT_REF_STATES: frozenset[GitRefState] = frozenset({"prepared", "committed", "aborted"})
+GIT_REQUIRE_RELATIVE_PATHS = (
+    "git worktree relative path support is required for bare repository mode, but "
+    "this git version does not support '--relative-paths' for worktree creation and "
+    "move operations.  Please upgrade git to a version that supports this feature "
+    "(git 2.52+)."
+)
+LOCK_POLL_SECONDS = 0.1
+LOCK_DEFAULT_PRIVILEGES = 0o600
+LOCK_GUARD = threading.RLock()
+HOST_LOCKS: dict[tuple[str, int], HostLock] = {}
 
 
 # In-container path definitions for metadata and runtime control.
@@ -102,9 +109,26 @@ WORKTREE_ENV: str = "BERTRAND_WORKTREE"  # relative path to mounted worktree
 CONTAINER_RUNTIME_ENV: str = "BERTRAND_RUNTIME"
 
 
+# Shared runtime identifiers and host paths.  These intentionally stay in this
+# hook-safe module so installed Git hooks can use them without importing the rest of
+# Bertrand.  Host-state convergence lives in `bertrand.env.host`.
+BERTRAND_NAMESPACE = "bertrand"
+BERTRAND_GROUP = "bertrand"
+STATE_DIR = Path("/var/lib/bertrand")
+REPO_DIR = STATE_DIR / "repositories"
+REPO_ALIASES_EXT = Path("aliases.json")
+REPO_LOCK_EXT = Path("lock")
+REPO_MOUNT_EXT = Path("mount")
+BIN_DIR = STATE_DIR / "bin"
+CACHE_DIR = STATE_DIR / "cache"
+RUN_DIR = STATE_DIR / "run"
+TOOLS_DIR = STATE_DIR / "tools"
+
+
 # common type aliases for serialization
 type Scalar = str | bool | int | float
 type JSONValue = Scalar | Sequence[JSONValue] | Mapping[str, JSONValue] | None
+type GitRefState = Literal["prepared", "committed", "aborted"]
 
 
 def inside_image() -> bool:
@@ -138,68 +162,6 @@ def inside_container() -> bool:
     return all(
         key in os.environ for key in (CONTAINER_ID_ENV, IMAGE_ID_ENV, ENV_ID_ENV)
     )
-
-
-class CompletedProcess(subprocess.CompletedProcess[str]):
-    """Format completed subprocess results with command context."""
-
-    def __str__(self) -> str:
-        """Return a formatted command result.
-
-        Returns
-        -------
-        str
-            The formatted command result.
-        """
-        out = [
-            f"Exit code {self.returncode} from command:\n\n"
-            f"    {' '.join(shlex.quote(a) for a in self.args)}"
-        ]
-        if self.stderr:
-            out.append(self.stderr.strip())
-        return "\n\n".join(out)
-
-
-class CommandError(subprocess.CalledProcessError):
-    """Format failed subprocess results with command context."""
-
-    def __str__(self) -> str:
-        """Return a formatted command failure.
-
-        Returns
-        -------
-        str
-            The formatted command failure.
-        """
-        out = [
-            f"Exit code {self.returncode} from command:\n\n"
-            f"    {' '.join(shlex.quote(a) for a in self.cmd)}"
-        ]
-        if self.stderr:
-            out.append(self.stderr.strip())
-        return "\n\n".join(out)
-
-
-class TimeoutExpired(subprocess.TimeoutExpired, TimeoutError):  # noqa: N818
-    """Format subprocess timeouts as standard timeout errors."""
-
-    def __str__(self) -> str:
-        """Return a formatted subprocess timeout.
-
-        Returns
-        -------
-        str
-            The formatted timeout error.
-        """
-        out = [
-            f"Command timed out after {self.timeout} seconds:\n\n"
-            f"    {' '.join(shlex.quote(a) for a in self.cmd)}"
-        ]
-        if self.output:
-            out.append(self.output.strip())
-        if self.stderr:
-            out.append(str(self.stderr.strip()))
-        return "\n\n".join(out)
 
 
 @dataclass(frozen=True)
@@ -256,6 +218,19 @@ def abspath(path: Path) -> Path:
         The normalized path.
     """
     return Path(os.path.abspath(path.expanduser()))  # noqa: PTH100
+
+
+def mkdir_private(path: Path) -> None:
+    """Create a directory with private permissions (0700) if it does not already exist.
+
+    Parameters
+    ----------
+    path : Path
+        The path to create.
+    """
+    path.mkdir(parents=True, exist_ok=True)
+    with contextlib.suppress(OSError):
+        path.chmod(0o700)
 
 
 def symlink_points_to(path: Path, target: Path) -> bool:
@@ -358,6 +333,117 @@ def atomic_write_text(
     tmp.replace(path)
 
 
+def file_digest(path: Path) -> str:
+    """Compute a SHA-256 hex digest for a file.
+
+    Parameters
+    ----------
+    path : Path
+        The path to the file to compute the digest of.
+
+    Returns
+    -------
+    str
+        The SHA-256 hex digest of the file's raw binary contents.
+    """
+    digest = hashlib.sha256()
+    with path.open("rb") as f:
+        while True:
+            chunk = f.read(1024 * 1024)  # 1 MiB chunks
+            if not chunk:
+                break
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def tail_lines(path: Path, *, count: int = 40) -> str:
+    r"""Return the last `count` lines of a text file.
+
+    Parameters
+    ----------
+    path : Path
+        The path to the text file to read.
+    count : int, optional
+        The number of lines to return from the end of the file.  Default is 40.  If
+        less than 1, then an empty string will be returned.
+
+    Returns
+    -------
+    str
+        The last `count` lines of the file, with newlines normalized to '\n'.
+    """
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return ""
+    if count < 1:
+        return ""
+    tail = lines[-count:]
+    return "\n".join(tail)
+
+
+class CompletedProcess(subprocess.CompletedProcess[str]):
+    """Format completed subprocess results with command context."""
+
+    def __str__(self) -> str:
+        """Return a formatted command result.
+
+        Returns
+        -------
+        str
+            The formatted command result.
+        """
+        out = [
+            f"Exit code {self.returncode} from command:\n\n"
+            f"    {' '.join(shlex.quote(a) for a in self.args)}"
+        ]
+        if self.stderr:
+            out.append(self.stderr.strip())
+        return "\n\n".join(out)
+
+
+class CommandError(subprocess.CalledProcessError):
+    """Format failed subprocess results with command context."""
+
+    def __str__(self) -> str:
+        """Return a formatted command failure.
+
+        Returns
+        -------
+        str
+            The formatted command failure.
+        """
+        out = [
+            f"Exit code {self.returncode} from command:\n\n"
+            f"    {' '.join(shlex.quote(a) for a in self.cmd)}"
+        ]
+        if self.stderr:
+            out.append(self.stderr.strip())
+        return "\n\n".join(out)
+
+
+class TimeoutExpired(subprocess.TimeoutExpired, TimeoutError):  # noqa: N818
+    """Format subprocess timeouts as standard timeout errors."""
+
+    def __str__(self) -> str:
+        """Return a formatted subprocess timeout.
+
+        Returns
+        -------
+        str
+            The formatted timeout error.
+        """
+        out = [
+            f"Command timed out after {self.timeout} seconds:\n\n"
+            f"    {' '.join(shlex.quote(a) for a in self.cmd)}"
+        ]
+        if self.output:
+            out.append(self.output.strip())
+        if self.stderr:
+            out.append(str(self.stderr.strip()))
+        return "\n\n".join(out)
+
+
 def can_escalate() -> bool:
     """Check whether the current system supports privilege escalation.
 
@@ -393,19 +479,6 @@ def confirm(prompt: str, *, assume_yes: bool = False) -> bool:
     except EOFError:
         return False
     return response in {"y", "yes"}
-
-
-def mkdir_private(path: Path) -> None:
-    """Create a directory with private permissions (0700) if it does not already exist.
-
-    Parameters
-    ----------
-    path : Path
-        The path to create.
-    """
-    path.mkdir(parents=True, exist_ok=True)
-    with contextlib.suppress(OSError):
-        path.chmod(0o700)
 
 
 async def _run_no_capture(
@@ -705,6 +778,46 @@ async def run(
     return CompletedProcess(argv, -1, "", err)
 
 
+def sudo(argv: list[str], *, non_interactive: bool = False) -> list[str]:
+    """Return a command with privilege escalation prepended when needed.
+
+    Parameters
+    ----------
+    argv : list[str]
+        The command and its arguments.
+    non_interactive : bool, optional
+        If True, add non-interactive flags for the selected escalator so it fails
+        immediately instead of prompting for a password.
+
+    Returns
+    -------
+    list[str]
+        A new list containing either the original command (when no escalation is
+        needed/available) or the escalated command.
+
+    Notes
+    -----
+    Escalation is only attempted on POSIX systems for non-root users.  The selection
+    order is `sudo`, then `doas`.
+    """
+    # no-op outside POSIX, when already root, or when no supported escalator is found
+    if os.name != "posix" or os.geteuid() == 0:
+        return argv.copy()
+    escalator = None
+    if shutil.which("sudo"):
+        escalator = "sudo"
+    elif shutil.which("doas"):
+        escalator = "doas"
+    if escalator is None:
+        return argv.copy()
+
+    out = [escalator]
+    if non_interactive:
+        out.append("-n")
+    out.extend(argv)
+    return out
+
+
 async def until[T](
     probe: Callable[[float], Awaitable[T]],
     *,
@@ -766,46 +879,6 @@ async def until[T](
             msg = f"timed out {action}"
             raise TimeoutError(msg) from last_error
         await asyncio.sleep(min(interval, remaining))
-
-
-def sudo(argv: list[str], *, non_interactive: bool = False) -> list[str]:
-    """Return a command with privilege escalation prepended when needed.
-
-    Parameters
-    ----------
-    argv : list[str]
-        The command and its arguments.
-    non_interactive : bool, optional
-        If True, add non-interactive flags for the selected escalator so it fails
-        immediately instead of prompting for a password.
-
-    Returns
-    -------
-    list[str]
-        A new list containing either the original command (when no escalation is
-        needed/available) or the escalated command.
-
-    Notes
-    -----
-    Escalation is only attempted on POSIX systems for non-root users.  The selection
-    order is `sudo`, then `doas`.
-    """
-    # no-op outside POSIX, when already root, or when no supported escalator is found
-    if os.name != "posix" or os.geteuid() == 0:
-        return argv.copy()
-    escalator = None
-    if shutil.which("sudo"):
-        escalator = "sudo"
-    elif shutil.which("doas"):
-        escalator = "doas"
-    if escalator is None:
-        return argv.copy()
-
-    out = [escalator]
-    if non_interactive:
-        out.append("-n")
-    out.extend(argv)
-    return out
 
 
 def pid_alive(pid: int) -> bool:
@@ -986,6 +1059,49 @@ async def install_packages(
     )
 
 
+async def download_file(url: str, target: Path, *, retries: int = 3) -> None:
+    """Download a file from a URL to a target path, using curl or wget if available.
+
+    Parameters
+    ----------
+    url : str
+        The URL to download from.
+    target : Path
+        The target path to save the downloaded file to.
+
+    Raises
+    ------
+    OSError
+        If neither curl nor wget is available on the system.
+    """
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if shutil.which("curl"):
+        await run(
+            [
+                "curl",
+                "-fL",
+                "--retry",
+                str(retries),
+                "--output",
+                str(target),
+                url,
+            ]
+        )
+    elif shutil.which("wget"):
+        await run(
+            [
+                "wget",
+                f"--tries={retries}",
+                "--output-document",
+                str(target),
+                url,
+            ]
+        )
+    else:
+        msg = "No download tool available (expected curl or wget)."
+        raise OSError(msg)
+
+
 @dataclass(frozen=True)
 class GroupStatus:
     """A simple struct representing a user's membership status in a host group.
@@ -1097,632 +1213,93 @@ class GroupStatus:
             )
 
 
-async def download_file(url: str, target: Path, *, retries: int = 3) -> None:
-    """Download a file from a URL to a target path, using curl or wget if available.
-
-    Parameters
-    ----------
-    url : str
-        The URL to download from.
-    target : Path
-        The target path to save the downloaded file to.
-
-    Raises
-    ------
-    OSError
-        If neither curl nor wget is available on the system.
-    """
-    target.parent.mkdir(parents=True, exist_ok=True)
-    if shutil.which("curl"):
-        await run(
-            [
-                "curl",
-                "-fL",
-                "--retry",
-                str(retries),
-                "--output",
-                str(target),
-                url,
-            ]
-        )
-    elif shutil.which("wget"):
-        await run(
-            [
-                "wget",
-                f"--tries={retries}",
-                "--output-document",
-                str(target),
-                url,
-            ]
-        )
-    else:
-        msg = "No download tool available (expected curl or wget)."
-        raise OSError(msg)
-
-
-def file_digest(path: Path) -> str:
-    """Compute a SHA-256 hex digest for a file.
+class HostLock:
+    """Provide a re-entrant asynchronous file lock.
 
     Parameters
     ----------
     path : Path
-        The path to the file to compute the digest of.
-
-    Returns
-    -------
-    str
-        The SHA-256 hex digest of the file's raw binary contents.
-    """
-    digest = hashlib.sha256()
-    with path.open("rb") as f:
-        while True:
-            chunk = f.read(1024 * 1024)  # 1 MiB chunks
-            if not chunk:
-                break
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def tail_lines(path: Path, *, count: int = 40) -> str:
-    r"""Return the last `count` lines of a text file.
-
-    Parameters
-    ----------
-    path : Path
-        The path to the text file to read.
-    count : int, optional
-        The number of lines to return from the end of the file.  Default is 40.  If
-        less than 1, then an empty string will be returned.
-
-    Returns
-    -------
-    str
-        The last `count` lines of the file, with newlines normalized to '\n'.
-    """
-    try:
-        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
-    except OSError:
-        return ""
-    if count < 1:
-        return ""
-    tail = lines[-count:]
-    return "\n".join(tail)
-
-
-####################
-# KUBE    ####
-####################
-
-
-# NOTE: these utilities are meant as CLI wrappers around `run()`, which target
-# Bertrand's managed MicroK8s runtime, assuming it is present on the system.
-
-
-# Kubernetes engine/`containerd` CLI config.
-BERTRAND_NAMESPACE = "bertrand"
-BERTRAND_GROUP = "bertrand"
-
-
-# Host paths for Bertrand's shared runtime state.
-STATE_DIR_MODE = 0o2770
-STATE_DIR = Path("/var/lib/bertrand")
-REPO_DIR = STATE_DIR / "repositories"
-REPO_ALIASES_EXT = Path("aliases.json")
-REPO_LOCK_EXT = Path("lock")
-REPO_MOUNT_EXT = Path("mount")
-BIN_DIR = STATE_DIR / "bin"
-CACHE_DIR = (
-    STATE_DIR / "cache"
-)  # TODO: delete in favor of RUN_DIR / "cache"?  # noqa: FIX002
-RUN_DIR = STATE_DIR / "run"
-RUN_TMPFS_MOUNT_UNIT_NAME = "bertrand-run.mount"
-RUN_TMPFS_MOUNT_UNIT_PATH = Path("/etc/systemd/system") / RUN_TMPFS_MOUNT_UNIT_NAME
-TOOLS_DIR = STATE_DIR / "tools"
-
-
-def _state_root_configured(group_gid: int) -> bool:
-    try:
-        if STATE_DIR.is_symlink():
-            return False
-        if not STATE_DIR.is_dir():
-            return False
-        stat_info = STATE_DIR.stat()
-    except OSError:
-        return False
-    return (
-        stat_info.st_uid == 0
-        and stat_info.st_gid == group_gid
-        and (stat_info.st_mode & 0o7777) == STATE_DIR_MODE
-    )
-
-
-async def _configure_state_acl(*, deadline: float, assume_yes: bool) -> None:
-    loop = asyncio.get_running_loop()
-    if not shutil.which("setfacl") or not shutil.which("getfacl"):
-        msg = (
-            "Strict Bertrand state ACL setup requires `setfacl` and `getfacl`, "
-            "but they were not found.  Install the host `acl` package and rerun "
-            "`bertrand init`."
-        )
-        raise OSError(msg)
-    for cmd in (
-        ["setfacl", "-m", f"group:{BERTRAND_GROUP}:rwx", str(STATE_DIR)],
-        ["setfacl", "-m", "mask::rwx", str(STATE_DIR)],
-        ["setfacl", "-d", "-m", f"group:{BERTRAND_GROUP}:rwx", str(STATE_DIR)],
-        ["setfacl", "-d", "-m", "mask::rwx", str(STATE_DIR)],
-    ):
-        await run(sudo(cmd, non_interactive=assume_yes), timeout=deadline - loop.time())
-
-    # ensure mountpoint directory exists before enabling the managed tmpfs unit
-    await run(
-        sudo(
-            [
-                "install",
-                "-d",
-                "-m",
-                f"{STATE_DIR_MODE:o}",
-                "-o",
-                "root",
-                "-g",
-                BERTRAND_GROUP,
-                str(RUN_DIR),
-            ],
-            non_interactive=assume_yes,
-        ),
-        timeout=deadline - loop.time(),
-    )
-
-
-async def _state_acl_configured(group: str) -> bool:
-    if not shutil.which("getfacl"):
-        return False
-    result = await run(
-        ["getfacl", "-cp", str(STATE_DIR)],
-        check=False,
-        capture_output=True,
-    )
-    if result.returncode != 0:
-        return False
-    lines = {line.strip() for line in result.stdout.splitlines() if line.strip()}
-    access = f"group:{group}:rwx"
-    default = f"default:group:{group}:rwx"
-    return access in lines and default in lines
-
-
-def _run_mount_unit_text(*, group_gid: int) -> str:
-    return "\n".join(
-        (
-            "[Unit]",
-            "Description=Bertrand tmpfs runtime state",
-            "After=local-fs.target",
-            "",
-            "[Mount]",
-            "What=tmpfs",
-            f"Where={RUN_DIR}",
-            "Type=tmpfs",
-            f"Options=mode={STATE_DIR_MODE:o},uid=0,gid={group_gid},nosuid,nodev,noexec",
-            "",
-            "[Install]",
-            "WantedBy=multi-user.target",
-            "",
-        )
-    )
-
-
-def _run_mount_unit_configured(*, group_gid: int) -> bool:
-    try:
-        current = RUN_TMPFS_MOUNT_UNIT_PATH.read_text(encoding="utf-8")
-        return current == _run_mount_unit_text(group_gid=group_gid)
-    except OSError:
-        return False
-
-
-def _run_dir_tmpfs_mounted() -> bool:
-    try:
-        lines = HOST_MOUNTS.read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return False
-    needle = os.path.normpath(str(RUN_DIR))
-    for line in lines:
-        parts = line.strip().split()
-        if len(parts) < 10:
-            continue
-        try:
-            sep = parts.index("-")
-        except ValueError:
-            continue
-        if sep + 2 >= len(parts):
-            continue
-        mount_point = (
-            parts[4]
-            .replace("\\040", " ")
-            .replace("\\011", "\t")
-            .replace("\\012", "\n")
-            .replace("\\134", "\\")
-        )
-        if os.path.normpath(mount_point) == needle:
-            return parts[sep + 1] == "tmpfs"
-    return False
-
-
-async def _configure_run_tmpfs_mount(
-    *,
-    group_gid: int,
-    assume_yes: bool,
-    timeout: float,
-) -> None:
-    if not shutil.which("systemctl"):
-        msg = (
-            "Bertrand requires systemd (`systemctl`) to manage the runtime tmpfs "
-            f"mount at {RUN_DIR}."
-        )
-        raise OSError(msg)
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
-
-    # atomically create unit file
-    fd: int | None = None
-    temp_unit: Path | None = None
-    try:
-        fd, name = tempfile.mkstemp(prefix="bertrand-run-mount.", suffix=".mount")
-        temp_unit = Path(name)
-        os.write(fd, _run_mount_unit_text(group_gid=group_gid).encode("utf-8"))
-        os.fsync(fd)
-        os.close(fd)
-        fd = None
-
-        # install unit with correct permissions for systemd access
-        await run(
-            sudo(
-                [
-                    "install",
-                    "-m",
-                    "0644",
-                    "-o",
-                    "root",
-                    "-g",
-                    "root",
-                    str(temp_unit),
-                    str(RUN_TMPFS_MOUNT_UNIT_PATH),
-                ],
-                non_interactive=assume_yes,
-            ),
-            timeout=deadline - loop.time(),
-        )
-
-    # unconditionally remove temp file
-    finally:
-        if fd is not None:
-            with contextlib.suppress(OSError):
-                os.close(fd)
-        if temp_unit is not None:
-            temp_unit.unlink(missing_ok=True)
-
-    # enable and start unit
-    for cmd in (
-        ["systemctl", "daemon-reload"],
-        ["systemctl", "enable", "--now", RUN_TMPFS_MOUNT_UNIT_NAME],
-    ):
-        await run(
-            sudo(cmd, non_interactive=assume_yes),
-            timeout=deadline - loop.time(),
-        )
-
-
-async def ensure_bertrand_group(
-    *,
-    timeout: float,
-    assume_yes: bool,
-) -> grp.struct_group:
-    """Ensure Bertrand's shared host group exists.
-
-    Parameters
-    ----------
+        Local file path used for host-level locking.
     timeout : float
-        An optional timeout in seconds to wait for any required system commands to
-        complete before raising a `TimeoutExpired` exception.
-    assume_yes : bool
-        If True, automatically confirm any prompts for creating the shared group.
-
-    Returns
-    -------
-    grp.struct_group
-        The shared Bertrand group information.
+        The maximum number of seconds to wait for the lock to be acquired before
+        raising a `TimeoutError`.  Note that due to the shared lock instances across
+        the process, this timeout may be widened by later lock construction for the
+        same lock file.  Non-positive timeouts are permitted for opportunistic
+        `try_lock()` calls, but blocking `lock()` calls will reject them.
+    privileges : int
+        The file mode to apply when creating the lock file. Defaults to `0o600`.
 
     Raises
     ------
-    PermissionError
-        If creating the shared group requires root privileges, but they are not
-        available or the user declines to use them.
+    ValueError
+        If `privileges` is not a valid file mode.
     OSError
-        If the shared group cannot be created for any other reason.
-    CommandError
-        If group creation fails for an unrecognized reason.
+        If the lock path is invalid.
     """
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
-
-    # fast path
-    try:
-        return grp.getgrnam(BERTRAND_GROUP)
-    except KeyError:
-        pass
-
-    # create user group
-    if not confirm(
-        f"Bertrand uses a shared host group named {BERTRAND_GROUP!r} for unprivileged "
-        "access to global runtime state.  Create this system group now "
-        "(requires sudo)?\n"
-        "[y/N] ",
-        assume_yes=assume_yes,
-    ):
-        msg = "Bertrand shared-group bootstrap declined by user."
-        raise PermissionError(msg)
-    if os.geteuid() != 0 and not can_escalate():
-        msg = (
-            f"Creating group {BERTRAND_GROUP!r} requires root privileges; sudo not "
-            "available."
-        )
-        raise PermissionError(msg)
-    try:
-        await run(
-            sudo(
-                ["groupadd", "--system", BERTRAND_GROUP],
-                non_interactive=assume_yes,
-            ),
-            capture_output=True,
-            timeout=deadline - loop.time(),
-        )
-    except CommandError as err:
-        out = f"{err.stdout}\n{err.stderr}".lower().strip()
-        if "already exists" not in out and "alreadyexist" not in out:
-            raise
-
-    # confirm success
-    try:
-        return grp.getgrnam(BERTRAND_GROUP)
-    except KeyError as err:
-        msg = f"Failed to create shared Bertrand group {BERTRAND_GROUP!r}."
-        raise OSError(msg) from err
-
-
-async def ensure_bertrand_state(
-    *,
-    user: str,
-    assume_yes: bool,
-    timeout: float,
-) -> GroupStatus:
-    """Ensure Bertrand's shared host state roots and group access are configured.
-
-    Parameters
-    ----------
-    user : str
-        The host username to configure for runtime group access.
-    assume_yes : bool
-        Whether to automatically answer yes to all prompts during installation, for
-        non-interactive use.
-    timeout : float
-        An optional timeout in seconds to wait for any required system commands to
-        complete before raising a `TimeoutExpired` exception.
-
-    Returns
-    -------
-    GroupStatus
-        The user's group membership status for the Bertrand group after bootstrapping
-        the configuration directories.
-
-    Raises
-    ------
-    PermissionError
-        If configuration is required, but the user declines elevation or no escalation
-        path is available.
-    OSError
-        If the host is not POSIX-compliant, if shared state root configuration fails,
-        if strict ACL configuration fails, or if the tmpfs submount at `RUN_DIR` cannot
-        be converged and verified.
-    """
-    if os.name != "posix":
-        msg = "Bertrand state bootstrap requires a POSIX host."
-        raise OSError(msg)
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
-
-    # identify misconfigured root state layout
-    group_info = await ensure_bertrand_group(
-        timeout=deadline - loop.time(),
-        assume_yes=assume_yes,
-    )
-    if (
-        not _state_root_configured(group_gid=group_info.gr_gid)
-        or not await _state_acl_configured(group=BERTRAND_GROUP)
-        or not _run_mount_unit_configured(group_gid=group_info.gr_gid)
-        or not _run_dir_tmpfs_mounted()
-    ):
-        if not confirm(
-            "Bertrand requires shared host state under "
-            f"{STATE_DIR} with root-owned {BERTRAND_GROUP!r} access and strict ACL "
-            f"inheritance, with a tmpfs runtime mount at {RUN_DIR}.  Configure it "
-            "now (requires sudo)?\n[y/N] ",
-            assume_yes=assume_yes,
-        ):
-            msg = "Bertrand shared-state bootstrap declined by user."
-            raise PermissionError(msg)
-        if os.geteuid() != 0 and not can_escalate():
-            msg = (
-                "Configuring Bertrand shared-state directories requires root "
-                "privileges; sudo not available."
-            )
-            raise PermissionError(msg)
-        await run(
-            sudo(
-                [
-                    "install",
-                    "-d",
-                    "-m",
-                    f"{STATE_DIR_MODE:o}",
-                    "-o",
-                    "root",
-                    "-g",
-                    BERTRAND_GROUP,
-                    str(STATE_DIR),
-                ],
-                non_interactive=assume_yes,
-            ),
-            timeout=deadline - loop.time(),
-        )
-
-        # configure ACLs to allow child paths to inherit group access without needing
-        # to be individually configured
-        await _configure_state_acl(
-            deadline=deadline,
-            assume_yes=assume_yes,
-        )
-
-        # configure and activate tmpfs mount for runtime state
-        await _configure_run_tmpfs_mount(
-            group_gid=group_info.gr_gid,
-            assume_yes=assume_yes,
-            timeout=deadline - loop.time(),
-        )
-
-    # confirm required layout
-    if not _state_root_configured(group_gid=group_info.gr_gid):
-        msg = f"Failed to configure shared Bertrand state directory: {STATE_DIR}"
-        raise OSError(msg)
-    if not await _state_acl_configured(group=BERTRAND_GROUP):
-        msg = (
-            f"Failed to configure strict ACL inheritance for shared Bertrand state: "
-            f"{STATE_DIR}"
-        )
-        raise OSError(msg)
-    if not _run_mount_unit_configured(group_gid=group_info.gr_gid):
-        msg = (
-            "Failed to install Bertrand systemd tmpfs mount unit for runtime state: "
-            f"{RUN_TMPFS_MOUNT_UNIT_PATH}"
-        )
-        raise OSError(msg)
-    if not _run_dir_tmpfs_mounted():
-        msg = (
-            f"Failed to activate Bertrand tmpfs runtime mount at {RUN_DIR}.  Check "
-            f"`systemctl status {RUN_TMPFS_MOUNT_UNIT_NAME}` for diagnostics."
-        )
-        raise OSError(msg)
-
-    # activate bertrand group access for user
-    group = GroupStatus.get(user, BERTRAND_GROUP)
-    await group.activate(assume_yes=assume_yes)
-    return group
-
-
-#####################
-# LOCKS    ####
-#####################
-
-
-# NOTE: Kubernetes complicates the implementation of locks, since the worktree mount
-# in each Bertrand environment will be mirrored across all nodes in the cluster,
-# meaning we can't use ordinary file locks.  Instead, we need a kubernetes-native
-# lease resource for cluster-wide locks, but that requires the cluster to already be
-# up and running, and that process may itself require local locks to coordinate
-# installation/startup.  We therefore need a split model, where directories that are
-# meant to be mounted cluster-wide must use a different locking strategy compared to
-# host-local components, and neither can require outside dependencies, in order to
-# remain fully portable.
-
-
-type LockMode = Literal["local", "cluster"]
-
-
-LEASE_DURATION_SECONDS = 30
-LEASE_RENEW_SECONDS = 10
-LEASE_POLL_SECONDS = 0.25
-LEASE_QUERY_TIMEOUT = 5.0
-LOCK_POLL_SECONDS = 0.1
-LEASE_NAME_HEX_LENGTH = 48
-LOCK_DEFAULT_PRIVILEGES = 0o600
-LOCK_GUARD = threading.RLock()
-LOCKS: dict[tuple[str, LockMode, int], Lock] = {}
-
-
-async def _kubectl(
-    argv: list[str],
-    *,
-    capture_output: bool | None = False,
-    stdin: str | None = None,
-    timeout: float = INFINITY,
-) -> CompletedProcess:
-    return await run(
-        ["microk8s", "kubectl", *argv],
-        capture_output=capture_output,
-        stdin=stdin,
-        timeout=timeout,
-    )
-
-
-def _to_rfc3339(value: datetime) -> str:
-    return (
-        value.astimezone(UTC).isoformat(timespec="microseconds").replace("+00:00", "Z")
-    )
-
-
-def _parse_rfc3339(value: str) -> datetime | None:
-    raw = value.strip()
-    if raw.endswith("Z"):
-        raw = f"{raw[:-1]}+00:00"
-    try:
-        out = datetime.fromisoformat(raw)
-    except ValueError:
-        return None
-    if out.tzinfo is None:
-        return None
-    return out.astimezone(UTC)
-
-
-@dataclass
-class _LocalFileLock:
-    """Local OS file-lock backend."""
 
     path: Path
-    privileges: int = LOCK_DEFAULT_PRIVILEGES
-    _fd: int | None = field(default=None, init=False)
+    timeout: float
+    privileges: int
+    _key: tuple[str, int]
+    _fd: int | None
+    _owner: asyncio.Task[Any] | None
+    _depth: int
 
-    async def acquire(self, deadline: float) -> bool:
-        """Acquire an OS file lock.
+    def __new__(  # noqa: D102
+        cls,
+        path: Path,
+        timeout: float,
+        *,
+        privileges: int = LOCK_DEFAULT_PRIVILEGES,
+    ) -> Self:
+        path = path.expanduser().resolve()
+        if privileges < 0 or privileges > 0o777:
+            msg = f"invalid host lock file mode: {oct(privileges)}"
+            raise ValueError(msg)
+        if path.exists() and path.is_dir():
+            msg = (
+                f"host lock path must be a file, but a directory already exists: {path}"
+            )
+            raise OSError(msg)
 
-        Parameters
-        ----------
-        deadline : float
-            The absolute time (in seconds from the event loop's time) at which to stop
-            trying to acquire the lock.
+        # allow re-entrancy with unique lock instances per owning task
+        with LOCK_GUARD:
+            key = (str(path), privileges)
+            self = HOST_LOCKS.get(key)
+            if self is None:
+                self = super().__new__(cls)
+                self.path = path
+                self.timeout = timeout
+                self.privileges = privileges
+                self._key = key
+                self._fd = None
+                self._owner = None
+                self._depth = 0
+                HOST_LOCKS[key] = self
+            elif self.timeout < timeout:
+                self.timeout = timeout
+        return cast("Self", self)
 
-        Returns
-        -------
-        bool
-            `True` if the lock was successfully acquired, or `False` if the deadline
-            was reached before the lock could be acquired.
+    @staticmethod
+    def _get_owner() -> asyncio.Task[Any]:
+        try:
+            task = asyncio.current_task()
+        except RuntimeError:
+            task = None
+        if task is None:
+            msg = "HostLock requires an active asyncio Task"
+            raise RuntimeError(msg)
+        return task
 
-        """
+    async def _acquire_file(self, deadline: float) -> bool:
         loop = asyncio.get_running_loop()
-        while not await self.try_acquire():
+        while not await self._try_acquire_file():
             if loop.time() >= deadline:
                 return False
             await asyncio.sleep(LOCK_POLL_SECONDS)
         return True
 
-    async def try_acquire(self) -> bool:
-        """Attempt to acquire the local file lock once, without waiting.
-
-        Returns
-        -------
-        bool
-            `True` if the lock was successfully acquired, or `False` if the lock is
-            currently held by another process.
-
-        Raises
-        ------
-        OSError
-            If the local lock file cannot be opened or locked.
-        """
+    async def _try_acquire_file(self) -> bool:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         if self._fd is None:
             self._fd = os.open(self.path, os.O_RDWR | os.O_CREAT, self.privileges)
@@ -1756,8 +1333,7 @@ class _LocalFileLock:
             raise
         return True
 
-    async def release(self) -> None:
-        """Release the local file lock, if it is currently held."""
+    async def _release_file(self) -> None:
         if self._fd is None:
             return
         fd = self._fd
@@ -1775,437 +1351,8 @@ class _LocalFileLock:
             with contextlib.suppress(OSError):
                 self.path.unlink()
 
-    def pop_error(self) -> Exception | None:
-        """Return a deferred lock-release error.
-
-        Returns
-        -------
-        Exception | None
-            Always `None` for local file locks.
-        """
-        return None
-
-
-class _ClusterLeaseLock:
-    """Implement cluster-wide locks with Kubernetes Lease resources."""
-
-    HOST_RE = re.compile(r"[^a-z0-9-]+")
-
-    _namespace: str
-    _lease_duration: int
-    _lease_name: str
-    _holder: str
-    _renew_stop: asyncio.Event | None
-    _renew_task: asyncio.Task[None] | None
-    _renew_error: Exception | None
-
-    def __init__(
-        self,
-        path: Path,
-        *,
-        namespace: str = BERTRAND_NAMESPACE,
-        lease_duration: int = LEASE_DURATION_SECONDS,
-    ) -> None:
-        self._namespace = namespace
-        self._lease_duration = lease_duration
-        digest = hashlib.sha256(str(path).encode("utf-8")).hexdigest()
-        self._lease_name = f"bertrand-lock-{digest[:LEASE_NAME_HEX_LENGTH]}"
-        host = self.HOST_RE.sub("-", socket.gethostname().lower()).strip("-")
-        if not host:
-            host = "host"
-        self._holder = f"{host}-{os.getpid()}-{uuid.uuid4().hex[:8]}"
-        self._renew_stop = None
-        self._renew_task = None
-        self._renew_error = None
-
-    @dataclass(frozen=True)
-    class _LeaseState:
-        resource_version: str
-        holder: str | None
-        renew_time: datetime | None
-        duration_seconds: int
-
-    async def _get_lease(self, timeout: float) -> _LeaseState | None:
-        try:
-            result = await _kubectl(
-                ["-n", self._namespace, "get", "lease", self._lease_name, "-o", "json"],
-                capture_output=True,
-                timeout=timeout,
-            )
-            payload = json.loads(result.stdout)
-        except CommandError as err:
-            stderr = (err.stderr or "").lower()
-            if "not found" in stderr or "notfound" in stderr:
-                return None
-            msg = f"failed to read cluster lease '{self._lease_name}': {err}"
-            raise OSError(msg) from err
-        except json.JSONDecodeError as err:
-            msg = f"cluster lease '{self._lease_name}' returned malformed JSON payload"
-            raise OSError(msg) from err
-
-        metadata = payload.get("metadata")
-        spec = payload.get("spec")
-        if not isinstance(metadata, dict) or not isinstance(spec, dict):
-            msg = (
-                f"cluster lease '{self._lease_name}' payload is malformed:\n"
-                f"{json.dumps(payload, indent=2)}"
-            )
-            raise OSError(msg)
-        resource_version = metadata.get("resourceVersion")
-        if not isinstance(resource_version, str) or not resource_version.strip():
-            msg = (
-                f"cluster lease '{self._lease_name}' is missing resourceVersion:\n"
-                f"{json.dumps(payload, indent=2)}"
-            )
-            raise OSError(msg)
-
-        holder = spec.get("holderIdentity")
-        if not isinstance(holder, str):
-            holder = None
-
-        renew_time: datetime | None = None
-        renew_raw = spec.get("renewTime")
-        if isinstance(renew_raw, str):
-            renew_time = _parse_rfc3339(renew_raw)
-
-        duration: int = self._lease_duration
-        duration_raw = spec.get("leaseDurationSeconds")
-        if isinstance(duration_raw, int) and duration_raw > 0:
-            duration = duration_raw
-
-        return self._LeaseState(
-            resource_version=resource_version,
-            holder=holder,
-            renew_time=renew_time,
-            duration_seconds=duration,
-        )
-
-    def _lease_payload(self, now: datetime, lease: _LeaseState | None) -> str:
-        payload: dict[str, Any] = {
-            "apiVersion": "coordination.k8s.io/v1",
-            "kind": "Lease",
-            "metadata": {
-                "name": self._lease_name,
-                "namespace": self._namespace,
-            },
-            "spec": {
-                "holderIdentity": self._holder,
-                "leaseDurationSeconds": self._lease_duration,
-                "renewTime": _to_rfc3339(now),
-            },
-        }
-        if lease is not None:
-            payload["metadata"]["resourceVersion"] = lease.resource_version
-        return json.dumps(payload, separators=(",", ":"))
-
-    async def _create_lease(self, now: datetime, timeout: float) -> bool:
-        try:
-            await _kubectl(
-                ["create", "-f", "-"],
-                capture_output=True,
-                stdin=self._lease_payload(now, None),
-                timeout=timeout,
-            )
-            return True  # noqa: TRY300
-        except CommandError as err:
-            stderr = (err.stderr or "").lower()
-            if (
-                "already exists" in stderr
-                or "alreadyexists" in stderr
-                or "conflict" in stderr
-            ):
-                return False
-            msg = f"failed to create cluster lease '{self._lease_name}':\n{err}"
-            raise OSError(msg) from err
-
-    async def _replace_lease(
-        self, lease: _LeaseState, now: datetime, timeout: float
-    ) -> bool:
-        try:
-            await _kubectl(
-                ["replace", "-f", "-"],
-                capture_output=True,
-                stdin=self._lease_payload(now, lease),
-                timeout=timeout,
-            )
-            return True  # noqa: TRY300
-        except CommandError as err:
-            stderr = (err.stderr or "").lower()
-            if "conflict" in stderr or "not found" in stderr or "notfound" in stderr:
-                return False
-            msg = f"failed to update cluster lease '{self._lease_name}':\n{err}"
-            raise OSError(msg) from err
-
-    async def _renew_loop(self) -> None:
-        interval = max(1.0, min(LEASE_RENEW_SECONDS, self._lease_duration / 2))
-        while True:
-            try:
-                stop = self._renew_stop
-                if stop is None:
-                    return
-                await asyncio.wait_for(stop.wait(), timeout=interval)
-                return  # stop was signaled  # noqa: TRY300
-            except TimeoutError:
-                pass  # time to renew
-
-            try:
-                lease = await self._get_lease(timeout=LEASE_QUERY_TIMEOUT)
-                if lease is None:
-                    msg = f"cluster lease '{self._lease_name}' disappeared"
-                    raise OSError(msg)  # noqa: TRY301
-                if lease.holder != self._holder:
-                    msg = (
-                        f"cluster lease '{self._lease_name}' ownership was lost to "
-                        f"{lease.holder!r}"
-                    )
-                    raise OSError(msg)  # noqa: TRY301
-                ok = await self._replace_lease(
-                    lease,
-                    datetime.now(UTC),
-                    timeout=LEASE_QUERY_TIMEOUT,
-                )
-                if not ok:
-                    msg = (
-                        f"cluster lease '{self._lease_name}' renewal encountered a "
-                        "conflict"
-                    )
-                    raise OSError(msg)  # noqa: TRY301
-            except asyncio.CancelledError:
-                raise
-            except Exception as err:  # noqa: BLE001
-                self._renew_error = err
-                return
-
-    def _begin_renew_loop(self) -> None:
-        self._renew_error = None
-        self._renew_stop = asyncio.Event()
-        self._renew_task = asyncio.create_task(self._renew_loop())
-
-    async def acquire(self, deadline: float) -> bool:
-        """Attempt to acquire the lock until the specified deadline.
-
-        Parameters
-        ----------
-        deadline : float
-            The absolute time (in seconds from the event loop's time) at which to stop
-            trying to acquire the lock.
-
-        Returns
-        -------
-        bool
-            `True` if the lock was successfully acquired, or `False` if the deadline
-            was reached before the lock could be acquired.
-        """
-        loop = asyncio.get_running_loop()
-        timestamp = loop.time()
-        while timestamp <= deadline:
-            if await self.try_acquire(deadline - timestamp):
-                return True
-            timestamp = loop.time()
-            await asyncio.sleep(min(LEASE_POLL_SECONDS, max(0.0, deadline - timestamp)))
-
-        return False
-
-    # TODO: timeout should be mandatory, and standardized more with respect to the  # noqa: FIX002
-    # run helpers, and permit infinite timeout
-
-    async def try_acquire(self, timeout: float = LEASE_QUERY_TIMEOUT) -> bool:
-        """Attempt to acquire or steal the cluster lease once, without retrying.
-
-        Parameters
-        ----------
-        timeout : float
-            The maximum number of seconds to wait for Kubernetes API calls before
-            giving up and raising an `OSError`.
-
-        Returns
-        -------
-        bool
-            `True` if the lock was successfully acquired, or `False` if the lock is
-            currently held by another process or if the timeout was reached before the
-            lock could be acquired.
-
-        Raises
-        ------
-        OSError
-            If lease state cannot be queried, created, or updated.
-        """
-        # get current lease state, if any
-        try:
-            lease = await self._get_lease(timeout=timeout)
-        except TimeoutExpired as err:
-            msg = (
-                "timed out while querying Kubernetes lease state; ensure "
-                "MicroK8s is reachable and responding"
-            )
-            raise OSError(msg) from err
-
-        now = datetime.now(UTC)
-
-        # fresh lease
-        if lease is None:
-            try:
-                created = await self._create_lease(now, timeout=timeout)
-            except TimeoutExpired as err:
-                msg = (
-                    "timed out while creating Kubernetes lease; ensure "
-                    "MicroK8s is reachable and responding"
-                )
-                raise OSError(msg) from err
-            if created:
-                self._begin_renew_loop()
-                return True
-            return False
-
-        # existing lease; update or steal if expired
-        if lease.holder == self._holder or (
-            lease.holder is None
-            or lease.renew_time is None
-            or (now - lease.renew_time).total_seconds() > max(1, lease.duration_seconds)
-        ):
-            try:
-                updated = await self._replace_lease(lease, now, timeout=timeout)
-            except TimeoutExpired as err:
-                msg = (
-                    "timed out while updating Kubernetes lease; ensure "
-                    "MicroK8s is reachable and responding"
-                )
-                raise OSError(msg) from err
-            if updated:
-                self._begin_renew_loop()
-                return True
-        return False
-
-    async def release(self) -> None:
-        """Release the cluster lease and stop renewal."""
-        if self._renew_stop is not None:
-            self._renew_stop.set()
-        if self._renew_task is not None:
-            self._renew_task.cancel()
-            try:
-                await self._renew_task
-            except asyncio.CancelledError:
-                pass
-            except Exception:  # noqa: BLE001
-                pass
-        self._renew_stop = None
-        self._renew_task = None
-
-    def pop_error(self) -> Exception | None:
-        """Return and clear deferred lease renewal errors.
-
-        Returns
-        -------
-        Exception | None
-            The exception encountered during lease renewal, or `None` if no errors were
-            encountered.
-        """
-        error = self._renew_error
-        self._renew_error = None
-        return error
-
-
-class Lock:
-    """Provide a re-entrant asynchronous lock.
-
-    Parameters
-    ----------
-    path : Path
-        The path used to derive lock identity and resources.  In local mode, this is
-        the lock file path.  In cluster mode, this path is hashed into a stable lease
-        name, and nothing will be written on the local filesystem.  Using a standard,
-        exclusive path location means that the same lock can be configured for either
-        mode without changing any other parameters.
-    timeout : float
-        The maximum number of seconds to wait for the lock to be acquired before
-        raising a `TimeoutError`.  Note that due to the shared lock instances across
-        the process, this timeout may be ignored in favor of a larger timeout from a
-        previous lock acquisition with the same path/mode pair.
-    mode : Literal["local", "cluster"]
-        The backend used to perform cross-process synchronization.  "local" uses host
-        OS file locking primitives, while "cluster" uses a Kubernetes Lease in the
-        local MicroK8s runtime.
-    privileges : int
-        The file mode to apply when creating a local lock file.  This is ignored for
-        cluster locks.  Defaults to `0o600`.
-
-    Raises
-    ------
-    OSError
-        If the lock path is invalid for the selected lock backend.
-    TimeoutError
-        If the lock cannot be acquired within the specified timeout period upon entering
-        the context manager.
-    """
-
-    path: Path
-    timeout: float
-    mode: LockMode
-    privileges: int
-    _key: tuple[str, LockMode, int]
-    _backend: _LocalFileLock | _ClusterLeaseLock
-    _owner: asyncio.Task[Any] | None
-    _depth: int
-
-    def __new__(  # noqa: D102
-        cls,
-        path: Path,
-        timeout: float,
-        mode: LockMode,
-        *,
-        privileges: int = LOCK_DEFAULT_PRIVILEGES,
-    ) -> Self:
-        if timeout <= 0:
-            msg = f"could not acquire lock within {timeout} seconds"
-            raise TimeoutError(msg)
-        path = path.expanduser().resolve()
-        if mode == "local" and (privileges < 0 or privileges > 0o777):
-            msg = f"invalid local lock file mode: {oct(privileges)}"
-            raise ValueError(msg)
-        if mode == "local" and path.exists() and path.is_dir():
-            msg = (
-                "local lock path must be a file, but a directory already exists: "
-                f"{path}"
-            )
-            raise OSError(msg)
-        privileges = privileges if mode == "local" else LOCK_DEFAULT_PRIVILEGES
-
-        # allow re-entrancy with unique lock instances per owning task
-        with LOCK_GUARD:
-            key = (str(path), mode, privileges)
-            self = LOCKS.get(key)
-            if self is None:
-                self = super().__new__(cls)
-                self.path = path
-                self.timeout = timeout
-                self.mode = mode
-                self.privileges = privileges
-                self._key = key
-                self._backend = (
-                    _LocalFileLock(path, privileges=privileges)
-                    if mode == "local"
-                    else _ClusterLeaseLock(path)
-                )
-                self._owner = None
-                self._depth = 0
-                LOCKS[key] = self
-            elif self.timeout < timeout:
-                self.timeout = timeout
-        return cast("Self", self)
-
-    @staticmethod
-    def _get_owner() -> asyncio.Task[Any]:
-        try:
-            task = asyncio.current_task()
-        except RuntimeError:
-            task = None
-        if task is None:
-            msg = "Lock requires an active asyncio Task"
-            raise RuntimeError(msg)
-        return task
-
     async def lock(self) -> Self:
-        """Acquire this lock, waiting for this lock's timeout if needed.
+        """Acquire this file lock, waiting for this lock's timeout if needed.
 
         Returns
         -------
@@ -2217,6 +1364,10 @@ class Lock:
         TimeoutError
             If the lock cannot be acquired before its timeout.
         """
+        if self.timeout <= 0:
+            msg = f"could not acquire lock within {self.timeout} seconds"
+            raise TimeoutError(msg)
+
         owner = self._get_owner()
         loop = asyncio.get_running_loop()
         deadline = loop.time() + self.timeout
@@ -2238,13 +1389,13 @@ class Lock:
 
         # slow path: acquire via backend
         try:
-            if not await self._backend.acquire(deadline):
+            if not await self._acquire_file(deadline):
                 msg = f"could not acquire lock within {self.timeout} seconds"
                 raise TimeoutError(msg)  # noqa: TRY301
             return self  # noqa: TRY300
         except Exception:
             try:
-                await self._backend.release()
+                await self._release_file()
             except Exception:  # noqa: BLE001
                 pass
             finally:
@@ -2279,10 +1430,10 @@ class Lock:
 
         # slow path: single backend attempt only
         try:
-            acquired = await self._backend.try_acquire()
+            acquired = await self._try_acquire_file()
         except Exception:
             with contextlib.suppress(Exception):
-                await self._backend.release()
+                await self._release_file()
             with LOCK_GUARD:
                 if self._owner == owner:
                     self._owner = None
@@ -2325,7 +1476,7 @@ class Lock:
                 return  # re-entrant case
 
         try:
-            await self._backend.release()
+            await self._release_file()
         except Exception:  # pylint: disable=broad-except
             if not ignore_errors:
                 raise
@@ -2333,13 +1484,7 @@ class Lock:
             with LOCK_GUARD:
                 self._owner = None
                 self._depth = 0
-                LOCKS.pop(self._key, None)
-
-        # report deferred errors, if any
-        if not ignore_errors:
-            deferred_error = self._backend.pop_error()
-            if deferred_error is not None:
-                raise deferred_error
+                HOST_LOCKS.pop(self._key, None)
 
     async def __aenter__(self) -> Self:  # noqa: D105
         return await self.lock()
@@ -2357,35 +1502,7 @@ class Lock:
             return self._depth > 0
 
     def __repr__(self) -> str:  # noqa: D105
-        return f"Lock(path={self.path!r}, timeout={self.timeout}, mode={self.mode!r})"
-
-
-###################
-# GIT    ####
-###################
-
-
-# NOTE: These utilities are intended to be imported by Git hooks via
-# `from bertrand_git import ...` (notice no relative paths/leading dot).  The
-# `bertrand init` command ensures that this file is copied into the `.git/hooks/`
-# directory alongside the hooks themselves, so that the import will always resolve
-# properly.  Note that it IS NOT SAFE to import code from third-party libraries or
-# across hooks, since the hook names may be rewritten in order to conform to Git's
-# expectations.  This is the ONLY file that Bertrand guarantees to be importable from
-# downstream hooks.
-
-
-type GitRefState = Literal["prepared", "committed", "aborted"]
-
-
-GIT_REF_HEADS_PREFIX = "refs/heads/"
-GIT_REF_STATES: frozenset[GitRefState] = frozenset({"prepared", "committed", "aborted"})
-GIT_REQUIRE_RELATIVE_PATHS = (
-    "git worktree relative path support is required for bare repository mode, but "
-    "this git version does not support '--relative-paths' for worktree creation and "
-    "move operations.  Please upgrade git to a version that supports this feature "
-    "(git 2.52+)."
-)
+        return f"HostLock(path={self.path!r}, timeout={self.timeout})"
 
 
 @dataclass(frozen=True)

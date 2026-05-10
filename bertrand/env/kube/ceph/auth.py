@@ -14,8 +14,9 @@ from typing import TYPE_CHECKING, Annotated, Self
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from bertrand.env.config.core import UUIDHex, _check_uuid
+from bertrand.env.git import CommandError
+from bertrand.env.host import RUN_DIR
 from bertrand.env.kube.ceph.api import ceph, start_microceph
-from bertrand.env.run import RUN_DIR, CommandError
 
 if TYPE_CHECKING:
     from collections.abc import Iterator

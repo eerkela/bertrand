@@ -6,7 +6,7 @@ from pathlib import Path
 
 from ..legacy.environment import Environment
 from ..legacy.nerdctl import nerdctl
-from ..run import BERTRAND_ENV, ENV_ID_ENV, IMAGE_TAG_ENV
+from ..git import BERTRAND_ENV, ENV_ID_ENV, IMAGE_TAG_ENV
 
 
 async def bertrand_ls(

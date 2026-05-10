@@ -9,7 +9,7 @@ from ..config import DEFAULT_TAG, SHELLS, Bertrand
 from ..legacy.environment import Environment
 from ..legacy.nerdctl import NERDCTL_BIN, TIMEOUT, nerdctl
 from ..rpc import start_rpc_sidecar, stop_rpc_sidecar
-from ..run import CommandError
+from ..git import CommandError
 from ._helper import _recover_spec
 
 

@@ -29,15 +29,13 @@ from urllib.parse import urlparse
 import kubernetes
 from kubernetes.client.rest import ApiException
 
-from bertrand.env.run import (
+from bertrand.env.git import (
     BERTRAND_NAMESPACE,
     INFINITY,
-    RUN_DIR,
-    STATE_DIR,
     CommandError,
     CompletedProcess,
     GroupStatus,
-    Lock,
+    HostLock,
     TimeoutExpired,
     atomic_write_text,
     can_escalate,
@@ -47,6 +45,7 @@ from bertrand.env.run import (
     sudo,
     until,
 )
+from bertrand.env.host import RUN_DIR, STATE_DIR
 
 if TYPE_CHECKING:
     from datetime import datetime
@@ -837,7 +836,7 @@ async def start_microk8s(*, timeout: float) -> None:
         return
 
     try:
-        async with Lock(KUBE_LOCK_FILE, timeout=deadline - loop.time(), mode="local"):
+        async with HostLock(KUBE_LOCK_FILE, timeout=deadline - loop.time()):
             if await _microk8s_cluster_ready(timeout=deadline - loop.time()):
                 await _add_bertrand_kube_namespace(timeout=deadline - loop.time())
                 return

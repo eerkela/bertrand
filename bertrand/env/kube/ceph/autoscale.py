@@ -24,6 +24,7 @@ from pydantic import (
     field_validator,
 )
 
+from bertrand.env.git import BERTRAND_ENV, BERTRAND_NAMESPACE, INFINITY
 from bertrand.env.kube.api import (
     CLUSTER_REGISTRY_READY_LABEL,
     CLUSTER_REGISTRY_READY_VALUE,
@@ -53,7 +54,6 @@ from bertrand.env.kube.deployment import Deployment
 from bertrand.env.kube.node import Node
 from bertrand.env.kube.rbac import ClusterRole, ClusterRoleBinding
 from bertrand.env.kube.service_account import ServiceAccount
-from bertrand.env.run import BERTRAND_ENV, BERTRAND_NAMESPACE, INFINITY
 
 if TYPE_CHECKING:
     from collections.abc import Collection, Mapping
@@ -504,7 +504,8 @@ def ceph_autoscaler_image_build() -> BuildKitImageBuild:
         repo_root / "bertrand/env/kube/node.py",
         repo_root / "bertrand/env/kube/rbac.py",
         repo_root / "bertrand/env/kube/service_account.py",
-        repo_root / "bertrand/env/run.py",
+        repo_root / "bertrand/env/git/__init__.py",
+        repo_root / "bertrand/env/git/bertrand_git.py",
     ):
         payload = path.read_bytes()
         h.update(len(payload).to_bytes(8, "big"))

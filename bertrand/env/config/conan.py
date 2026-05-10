@@ -20,7 +20,7 @@ from conan.errors import ConanException
 from conan.internal.model.conf import ConfDefinition
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, StringConstraints
 
-from ..run import CONTAINER_TMP_MOUNT, Scalar, atomic_write_text, run
+from ..git import CONTAINER_TMP_MOUNT, Scalar, atomic_write_text, run
 from ..version import VERSION
 from .core import (
     URL,

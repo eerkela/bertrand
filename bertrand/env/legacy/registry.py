@@ -17,16 +17,17 @@ from pydantic import (
 
 from ..config import Config
 from ..config.core import AbsolutePath, TOMLKey, UUIDHex
-from ..run import (
+from ..kube.api import Kube
+from ..kube.lease import ClusterLock
+from ..git import (
     ENV_ID_ENV,
     IMAGE_ID_ENV,
     INFINITY,
     METADATA_FILE,
-    METADATA_LOCK,
-    STATE_DIR,
-    Lock,
+    HostLock,
     atomic_write_text,
 )
+from ..host import STATE_DIR
 from .container import Container
 from .image import Image
 from .nerdctl import nerdctl_ids
@@ -37,6 +38,10 @@ REGISTRY_PURGE_BATCH: int = 16
 REGISTRY_PURGE_EVERY: int = 64
 VERSION: int = 1
 TIMEOUT = INFINITY
+
+
+def _metadata_lock_key(root: Path) -> str:
+    return f"legacy-environment:{root.expanduser().resolve()}:metadata"
 
 
 # NOTE: restore inline comments, which were deleted after reorganization.
@@ -197,7 +202,7 @@ class Registry(BaseModel):
     purge_cursor: UUIDHex | None = None
 
     @staticmethod
-    def lock(*, timeout: float) -> Lock:
+    def lock(*, timeout: float) -> HostLock:
         """Acquire the registry lock to synchronize access to the registry file.
 
         Parameters
@@ -207,12 +212,12 @@ class Registry(BaseModel):
 
         Returns
         -------
-        Lock
+        HostLock
             An async context manager that must be entered to acquire the lock, and
             releases it on exit.
         """
         STATE_DIR.mkdir(parents=True, exist_ok=True)
-        return Lock(REGISTRY_LOCK, timeout=timeout, mode="local")
+        return HostLock(REGISTRY_LOCK, timeout=timeout)
 
     # NOTE: lock ordering must remain registry -> environment to avoid deadlocks.
 
@@ -220,6 +225,7 @@ class Registry(BaseModel):
     async def _check_env(
         root: AbsolutePath,
         env_id: UUIDHex | None = None,
+        kube: Kube | None = None,
     ) -> EnvironmentMetadata | None:
         try:
             root = root.expanduser().resolve()
@@ -227,7 +233,11 @@ class Registry(BaseModel):
             if env_file.exists() and env_file.is_file():
                 metadata = read_metadata(root)
                 if metadata is not None:
-                    await Config.load(root)
+                    if kube is None:
+                        with await Kube.host(timeout=TIMEOUT) as kube_context:
+                            await Config.load(root, kube=kube_context)
+                    else:
+                        await Config.load(root, kube=kube)
                     if env_id is None or metadata.id == env_id:
                         return metadata
         except Exception:
@@ -288,12 +298,17 @@ class Registry(BaseModel):
                     purge_cursor=None,
                     environments={},
                 )
-                for root in await cls._discover_environment_mounts():
-                    async with Lock(root / METADATA_LOCK, timeout=TIMEOUT, mode="cluster"):
-                        env = await cls._check_env(root)
-                        if env is None:
-                            continue
-                    self.environments.setdefault(env.id, root.expanduser().resolve())
+                with await Kube.host(timeout=TIMEOUT) as kube:
+                    for root in await cls._discover_environment_mounts():
+                        async with ClusterLock(
+                            kube,
+                            _metadata_lock_key(root),
+                            timeout=TIMEOUT,
+                        ):
+                            env = await cls._check_env(root, kube=kube)
+                            if env is None:
+                                continue
+                        self.environments.setdefault(env.id, root.expanduser().resolve())
                 changed = True
 
         if changed:
@@ -355,8 +370,13 @@ class Registry(BaseModel):
                 continue
 
             try:
-                async with Lock(root / METADATA_LOCK, timeout=TIMEOUT, mode="cluster"):
-                    env = await self._check_env(root, env_id=env_id)
+                with await Kube.host(timeout=TIMEOUT) as kube:
+                    async with ClusterLock(
+                        kube,
+                        _metadata_lock_key(root),
+                        timeout=TIMEOUT,
+                    ):
+                        env = await self._check_env(root, env_id=env_id, kube=kube)
                 if env is None:
                     self.environments.pop(env_id, None)
             except TimeoutError:
@@ -444,12 +464,17 @@ class Registry(BaseModel):
         frequency, but this method can be called to trigger a full purge on demand.
         """
         normalized: dict[UUIDHex, AbsolutePath] = {}
-        for env_id, root in self.environments.items():
-            async with Lock(root / METADATA_LOCK, timeout=TIMEOUT, mode="cluster"):
-                env = await self._check_env(root, env_id=env_id)
-                if env is None:
-                    continue
-                normalized.setdefault(env.id, root)
+        with await Kube.host(timeout=TIMEOUT) as kube:
+            for env_id, root in self.environments.items():
+                async with ClusterLock(
+                    kube,
+                    _metadata_lock_key(root),
+                    timeout=TIMEOUT,
+                ):
+                    env = await self._check_env(root, env_id=env_id, kube=kube)
+                    if env is None:
+                        continue
+                    normalized.setdefault(env.id, root)
 
         self.environments = normalized
         self.ops_since_purge = 0

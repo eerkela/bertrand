@@ -27,7 +27,7 @@ from pydantic import (
     model_validator,
 )
 
-from ..run import (
+from ..git import (
     METADATA_DIR,
     Scalar,
     atomic_write_text,

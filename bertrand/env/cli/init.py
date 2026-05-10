@@ -7,14 +7,12 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import grp
 import hashlib
 import inspect
 import json
 import os
 import platform
 import shutil
-import subprocess
 import sys
 import uuid
 from dataclasses import dataclass
@@ -30,6 +28,31 @@ from bertrand.env.config.core import (
     Trimmed,
     UUIDHex,
     _check_uuid,
+)
+from bertrand.env.git import (
+    BERTRAND_NAMESPACE,
+    INFINITY,
+    METADATA_REPO_ID,
+    GitRepository,
+    GroupStatus,
+    HostLock,
+    User,
+    abspath,
+    atomic_write_text,
+    can_escalate,
+    confirm,
+    install_packages,
+    run,
+    symlink_points_to,
+)
+from bertrand.env.host import (
+    BERTRAND_GROUP,
+    REPO_DIR,
+    REPO_MOUNT_EXT,
+    RUN_DIR,
+    STATE_DIR,
+    ensure_host_state,
+    host_state_backend_trustworthy,
 )
 from bertrand.env.kube.api import (
     Kube,
@@ -57,28 +80,6 @@ from bertrand.env.kube.ceph.mount import (
 )
 from bertrand.env.kube.ceph.volume import DEFAULT_VOLUME_SIZE, RepoVolume
 from bertrand.env.kube.namespace import Namespace
-from bertrand.env.run import (
-    BERTRAND_GROUP,
-    BERTRAND_NAMESPACE,
-    INFINITY,
-    METADATA_REPO_ID,
-    REPO_DIR,
-    REPO_MOUNT_EXT,
-    RUN_DIR,
-    STATE_DIR,
-    GitRepository,
-    GroupStatus,
-    Lock,
-    User,
-    abspath,
-    atomic_write_text,
-    can_escalate,
-    confirm,
-    ensure_bertrand_state,
-    install_packages,
-    run,
-    symlink_points_to,
-)
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -192,39 +193,7 @@ class _InitState(BaseModel):
         bool
             True if the backend is trustworthy and can be reused, False otherwise.
         """
-        if (
-            not shutil.which("setfacl")
-            or not shutil.which("getfacl")
-            or not STATE_DIR.is_dir()
-            or STATE_DIR.is_symlink()
-        ):
-            return False
-        try:
-            group_info = grp.getgrnam(BERTRAND_GROUP)
-            stat_info = STATE_DIR.stat()
-        except (KeyError, OSError):
-            return False
-        if (
-            stat_info.st_uid != 0
-            or stat_info.st_gid != group_info.gr_gid
-            or (stat_info.st_mode & 0o7777) != 0o2770
-        ):
-            return False
-        result = subprocess.run(
-            ["getfacl", "-cp", str(STATE_DIR)],
-            check=False,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-        )
-        if result.returncode != 0:
-            return False
-        acl_lines = {
-            line.strip() for line in result.stdout.splitlines() if line.strip()
-        }
-        access = f"group:{BERTRAND_GROUP}:rwx"
-        default = f"default:group:{BERTRAND_GROUP}:rwx"
-        return access in acl_lines and default in acl_lines
+        return host_state_backend_trustworthy()
 
     @classmethod
     def load(cls) -> Self:
@@ -380,7 +349,7 @@ async def _bootstrap_state_dir(state: _InitState, context: _InitContext) -> None
     if state.user is None:
         msg = "init state user is missing; rerun `bertrand init`."
         raise OSError(msg)
-    await ensure_bertrand_state(
+    await ensure_host_state(
         user=state.user,
         assume_yes=context.assume_yes,
         timeout=INFINITY,
@@ -553,12 +522,11 @@ class _RepoState:
         self.target = abspath(self.target)
 
     @classmethod
-    def lock(cls, root: Path, timeout: float) -> Lock:
+    def lock(cls, root: Path, timeout: float) -> HostLock:
         digest = hashlib.sha256(str(root).encode("utf-8"))
-        return Lock(
+        return HostLock(
             REPO_LOCK_DIR / f"{digest.hexdigest()}.lock",
             timeout=timeout,
-            mode="local",
             privileges=INIT_LOCK_MODE,
         )
 
@@ -710,7 +678,7 @@ async def _ensure_repo_hooks(
             hook_text = (
                 importlib_resources.files("bertrand.env")
                 .joinpath(
-                    "run",
+                    "git",
                     hook.source,
                 )
                 .read_text(encoding="utf-8")
@@ -801,6 +769,7 @@ async def _render_config_artifacts(
         root = state.repo.root / worktree
         config = await Config.load(
             root,
+            kube=state.kube,
             repo=state.repo,
             timeout=state.deadline - loop.time(),
         )
@@ -1042,10 +1011,9 @@ async def bertrand_init(
         raise TimeoutError(msg)
 
     # bootstrap host runtime control plane (persistent, system-wide)
-    async with Lock(
+    async with HostLock(
         INIT_LOCK,
         timeout=timeout,
-        mode="local",
         privileges=INIT_LOCK_MODE,
     ):
         context = _InitContext(assume_yes=yes)

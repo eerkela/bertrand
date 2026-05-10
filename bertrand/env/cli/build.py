@@ -5,7 +5,7 @@ from pathlib import Path
 
 from ..config import DEFAULT_TAG
 from ..legacy.environment import Environment
-from ..run import INFINITY
+from ..git import INFINITY
 
 
 async def bertrand_build(

@@ -14,7 +14,7 @@ from bertrand.env.kube.volume import (
     PersistentVolumeClaim,
     StorageClass,
 )
-from bertrand.env.run import BERTRAND_ENV, BERTRAND_NAMESPACE, REPO_ID_ENV
+from bertrand.env.git import BERTRAND_ENV, BERTRAND_NAMESPACE, REPO_ID_ENV
 
 if TYPE_CHECKING:
     import builtins

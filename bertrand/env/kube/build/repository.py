@@ -35,7 +35,7 @@ from bertrand.env.kube.deployment import Deployment
 from bertrand.env.kube.node import Node
 from bertrand.env.kube.service import Service
 from bertrand.env.kube.volume import PersistentVolumeClaim, StorageClass
-from bertrand.env.run import (
+from bertrand.env.git import (
     BERTRAND_ENV,
     BERTRAND_NAMESPACE,
     INFINITY,

@@ -8,7 +8,7 @@ from ..config import DEFAULT_TAG, Bertrand, PyProject
 from ..legacy.environment import Environment
 from ..legacy.image import Image
 from ..legacy.nerdctl import TIMEOUT, nerdctl
-from ..run import NORMALIZE_ARCH
+from ..git import NORMALIZE_ARCH
 
 
 def _normalize_version(value: str) -> str:

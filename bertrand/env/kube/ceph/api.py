@@ -12,14 +12,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from bertrand.env.kube.api import kubectl
-from bertrand.env.run import (
+from bertrand.env.git import (
     INFINITY,
-    RUN_DIR,
     CommandError,
     CompletedProcess,
     GroupStatus,
-    Lock,
+    HostLock,
     TimeoutExpired,
     can_escalate,
     confirm,
@@ -28,6 +26,8 @@ from bertrand.env.run import (
     sudo,
     until,
 )
+from bertrand.env.host import RUN_DIR
+from bertrand.env.kube.api import kubectl
 
 if TYPE_CHECKING:
     import subprocess
@@ -399,7 +399,7 @@ async def start_microceph(*, timeout: float) -> None:
         return
 
     try:
-        async with Lock(CEPH_LOCK_FILE, timeout=deadline - loop.time(), mode="local"):
+        async with HostLock(CEPH_LOCK_FILE, timeout=deadline - loop.time()):
             if await _microceph_cluster_ready(timeout=deadline - loop.time()):
                 return
             try:
@@ -537,10 +537,9 @@ async def link_kube_ceph(*, timeout: float) -> None:
 
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout
-    async with Lock(
+    async with HostLock(
         KUBE_CEPH_LINK_LOCK_FILE,
         timeout=deadline - loop.time(),
-        mode="local",
     ):
         if not await _microk8s_cluster_ready(timeout=deadline - loop.time()):
             msg = "MicroK8s must be started before linking to MicroCeph."

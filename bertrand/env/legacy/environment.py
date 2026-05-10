@@ -10,14 +10,13 @@ from typing import Any, Self
 
 from ..config import Bertrand, Config
 from ..config.core import TOMLKey
-from ..run import (
+from ..git import (
     ENV_ID_ENV,
     INFINITY,
     METADATA_DIR,
-    METADATA_LOCK,
-    Lock,
 )
 from bertrand.env.kube.api import Kube
+from bertrand.env.kube.lease import ClusterLock
 from .capability import DeviceConfigMap, build_secret_flags, cleanup_secret_staged
 from .container import Container
 from .image import Image, image_args
@@ -39,12 +38,13 @@ class Environment:
     config : Config
         The configuration object for this environment, responsible for loading and
         resolving toolchain metadata from the worktree.
-    lock : Lock
+    lock : ClusterLock
         The environment lock used to synchronize metadata access.
     """
 
     config: Config
-    lock: Lock = field(repr=False)
+    kube: Kube = field(repr=False)
+    lock: ClusterLock = field(repr=False)
     _json: EnvironmentMetadata = field(
         default_factory=lambda: EnvironmentMetadata.model_construct(
             version=0,
@@ -82,9 +82,15 @@ class Environment:
             acquired, and full configuration loading is deferred until entering the
             context manager.
         """
+        kube = await Kube.host(timeout=timeout)
         return cls(
-            config=await Config.load(worktree, repo=repo, timeout=timeout),
-            lock=Lock(worktree / METADATA_LOCK, timeout=timeout, mode="cluster"),
+            config=await Config.load(worktree, kube=kube, repo=repo, timeout=timeout),
+            kube=kube,
+            lock=ClusterLock(
+                kube,
+                f"legacy-environment:{worktree.expanduser().resolve()}:metadata",
+                timeout=timeout,
+            ),
         )
 
     async def __aenter__(self) -> Self:
@@ -148,6 +154,7 @@ class Environment:
             if not self.config and (self.config.root / METADATA_DIR).exists():
                 write_metadata(self.config.root, self._json)
             await self.lock.unlock(ignore_errors=exc_value is not None)
+            self.kube.client.close()
 
     def __bool__(self) -> bool:
         return bool(self.config)

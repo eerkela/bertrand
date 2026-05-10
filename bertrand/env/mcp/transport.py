@@ -16,7 +16,7 @@ from mcp.types import ToolAnnotations
 from pydantic import BaseModel, ConfigDict
 
 from ..config import MOUNT
-from ..run import atomic_write_text
+from ..git import atomic_write_text
 
 # pylint: disable=broad-exception-caught
 

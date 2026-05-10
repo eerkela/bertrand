@@ -32,7 +32,7 @@ from pydantic import (
 
 from ..config.bertrand import Editor
 from ..config.core import AbsolutePath
-from ..run import (
+from ..git import (
     CONTAINER_SOCKET,
     JSONValue,
     TimeoutExpired,

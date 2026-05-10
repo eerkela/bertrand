@@ -29,7 +29,7 @@ from pydantic import (
 )
 from tomlkit.exceptions import TOMLKitError
 
-from ..run import atomic_write_text
+from ..git import atomic_write_text
 from ..version import VERSION
 from .core import (
     RESOURCE_NAMES,

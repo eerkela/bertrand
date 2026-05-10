@@ -20,7 +20,7 @@ from bertrand.env.kube.build.daemon import BUILDKIT, BUILDKIT_IMAGE, BuildKit
 from bertrand.env.kube.capability.base import Capability, CapabilityKind
 from bertrand.env.kube.job import Job
 from bertrand.env.kube.node import Node
-from bertrand.env.run import (
+from bertrand.env.git import (
     BERTRAND_ENV,
     BERTRAND_NAMESPACE,
     INFINITY,

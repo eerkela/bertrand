@@ -3,29 +3,33 @@
 This cleanup intentionally removes Bertrand-owned runtime artifacts only.  It does
 not uninstall MicroK8s, MicroCeph, system packages, or host user groups.
 """
+
 from __future__ import annotations
 
 import asyncio
 import os
 import shutil
 import sys
-from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from pathlib import Path
+from typing import TYPE_CHECKING
 
-from ..kube.ceph.mount import MountInfo
-from ..legacy.nerdctl import NERDCTL_BIN, nerdctl, nerdctl_ids, stop_buildkit
-from ..run import (
+from bertrand.env.git import (
     BERTRAND_ENV,
+    confirm,
+)
+from bertrand.env.host import (
     REPO_DIR,
     REPO_MOUNT_EXT,
     RUN_DIR,
-    RUN_TMPFS_MOUNT_UNIT_NAME,
-    RUN_TMPFS_MOUNT_UNIT_PATH,
     STATE_DIR,
-    confirm,
-    run,
+    disable_run_tmpfs_mount,
 )
+from bertrand.env.kube.ceph.mount import MountInfo
+from bertrand.env.legacy.nerdctl import NERDCTL_BIN, nerdctl, nerdctl_ids, stop_buildkit
+
+if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
+    from pathlib import Path
 
 
 @dataclass
@@ -43,6 +47,7 @@ class CleanState:
     captured_aliases : set[Path]
         Managed aliases discovered during cleanup for residual verification.
     """
+
     assume_yes: bool
     force: bool
     deadline: float
@@ -74,7 +79,7 @@ async def _clean_nerdctl_objects(state: CleanState) -> None:
         )
         for i in range(0, len(ids), chunk_size):
             await nerdctl(
-                [*remove_prefix, *ids[i:i + chunk_size]],
+                [*remove_prefix, *ids[i : i + chunk_size]],
                 check=False,
                 timeout=state.deadline - loop.time(),
             )
@@ -84,12 +89,14 @@ async def _clean_repo_mounts_aliases(state: CleanState) -> None:
     if not REPO_DIR.exists():
         return
     if not REPO_DIR.is_dir():
-        raise OSError(f"repository root is not a directory: {REPO_DIR}")
+        msg = f"repository root is not a directory: {REPO_DIR}"
+        raise OSError(msg)
 
     # collect all repository mounts on the host system
     repo_roots = sorted(
         (
-            entry for entry in REPO_DIR.iterdir()
+            entry
+            for entry in REPO_DIR.iterdir()
             if entry.is_dir() and not entry.is_symlink()
         ),
         key=lambda item: item.as_posix(),
@@ -132,21 +139,7 @@ async def _clean_repo_mounts_aliases(state: CleanState) -> None:
 async def _disable_unmount_run_tmpfs(state: CleanState) -> None:
     loop = asyncio.get_running_loop()
 
-    # disable Bertrand's managed tmpfs unit when systemd is available
-    if shutil.which("systemctl"):
-        await run(
-            ["systemctl", "disable", "--now", RUN_TMPFS_MOUNT_UNIT_NAME],
-            check=False,
-            capture_output=True,
-            timeout=state.deadline - loop.time(),
-        )
-        RUN_TMPFS_MOUNT_UNIT_PATH.unlink(missing_ok=True)
-        await run(
-            ["systemctl", "daemon-reload"],
-            check=False,
-            capture_output=True,
-            timeout=state.deadline - loop.time(),
-        )
+    await disable_run_tmpfs_mount(timeout=state.deadline - loop.time())
 
     # always attempt runtime tmpfs unmount, even without systemd
     run_mount = MountInfo.search(RUN_DIR)
@@ -155,10 +148,7 @@ async def _disable_unmount_run_tmpfs(state: CleanState) -> None:
 
 
 def _runtime_residue(state: CleanState) -> tuple[list[str], list[str]]:
-    """Collect managed runtime residue still visible on the host."""
-    residual_mounts = sorted(
-        str(mount) for mount in MountInfo.under(REPO_DIR)
-    )
+    residual_mounts = sorted(str(mount) for mount in MountInfo.under(REPO_DIR))
     if MountInfo.search(RUN_DIR) is not None:
         residual_mounts.append(str(RUN_DIR))
     residual_aliases = sorted(
@@ -170,11 +160,6 @@ def _runtime_residue(state: CleanState) -> tuple[list[str], list[str]]:
 
 
 async def _finalize_cleanup(state: CleanState) -> None:
-    """Run terminal cleanup verification and state-directory teardown.
-
-    This stage is always strict, even when `--force` is enabled.  In force mode,
-    it performs one last remediation attempt before enforcing final invariants.
-    """
     loop = asyncio.get_running_loop()
     issues: list[str] = []
 
@@ -183,7 +168,8 @@ async def _finalize_cleanup(state: CleanState) -> None:
     if (residual_mounts or residual_aliases) and state.force:
         await _clean_repo_mounts_aliases(state)
         if loop.time() >= state.deadline:
-            raise TimeoutError("bertrand clean stage 'finalize_cleanup' timed out")
+            msg = "bertrand clean stage 'finalize_cleanup' timed out"
+            raise TimeoutError(msg)
         await _disable_unmount_run_tmpfs(state)
         residual_mounts, residual_aliases = _runtime_residue(state)
     if residual_mounts:
@@ -207,7 +193,8 @@ async def _finalize_cleanup(state: CleanState) -> None:
 
     # raise errors together at the end for a non-zero exit code
     if issues:
-        raise OSError(f"runtime cleanup did not converge:\n- {'\n- '.join(issues)}")
+        msg = f"runtime cleanup did not converge:\n- {'\n- '.join(issues)}"
+        raise OSError(msg)
 
 
 CLEAN_STAGES: tuple[tuple[str, Callable[[CleanState], Awaitable[None]]], ...] = (
@@ -237,20 +224,24 @@ async def bertrand_clean(*, timeout: float, assume_yes: bool, force: bool) -> No
     ------
     TimeoutError
         If cleanup does not complete before `timeout`.
+    asyncio.CancelledError
+        If cleanup is cancelled while a stage is running.
     PermissionError
         If the user lacks root privileges or they decline cleanup.
     OSError
         If cleanup fails to converge.
     """
     if timeout <= 0:
-        raise TimeoutError("timed out before cleanup started")
+        msg = "timed out before cleanup started"
+        raise TimeoutError(msg)
 
     # require root privileges for global cleanup
     if os.geteuid() != 0:
-        raise PermissionError(
+        msg = (
             "Global Bertrand cleanup requires root privileges.  Re-run this command "
             "with sudo."
         )
+        raise PermissionError(msg)
     if not confirm(
         "This will remove Bertrand-managed containers, images, volumes, and "
         f"networks (label `{BERTRAND_ENV}=1`) and then delete local Bertrand state in "
@@ -258,7 +249,8 @@ async def bertrand_clean(*, timeout: float, assume_yes: bool, force: bool) -> No
         "MicroK8s or revert host system settings.  Do you want to proceed?\n[y/N] ",
         assume_yes=assume_yes,
     ):
-        raise PermissionError("Cleanup declined by user.")
+        msg = "Cleanup declined by user."
+        raise PermissionError(msg)
 
     # execute clean convergence stages in sequence
     loop = asyncio.get_running_loop()
@@ -268,17 +260,17 @@ async def bertrand_clean(*, timeout: float, assume_yes: bool, force: bool) -> No
         deadline=loop.time() + timeout,
     )
     for i, (name, stage) in enumerate(CLEAN_STAGES):
+        if loop.time() >= state.deadline:
+            msg = f"bertrand clean stage '{name}' timed out before execution"
+            raise TimeoutError(msg)
         try:
-            if loop.time() >= state.deadline:
-                raise TimeoutError(
-                    f"bertrand clean stage '{name}' timed out before execution"
-                )
             await stage(state)
         except asyncio.CancelledError:
             raise
         except Exception as err:
             if not state.force or i == len(CLEAN_STAGES) - 1:
-                raise OSError(f"bertrand clean stage {name!r} failed: {err}") from err
+                msg = f"bertrand clean stage {name!r} failed: {err}"
+                raise OSError(msg) from err
             print(
                 f"bertrand: warning: clean stage {name!r} failed; continuing due to "
                 f"--force: {err}",

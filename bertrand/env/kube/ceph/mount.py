@@ -24,16 +24,12 @@ from pydantic import (
 )
 
 from bertrand.env.config.core import UUIDHex, _check_uuid
-from bertrand.env.run import (
+from bertrand.env.git import (
     HOST_MOUNTS,
     INFINITY,
     METADATA_REPO_ID,
-    REPO_ALIASES_EXT,
-    REPO_DIR,
-    REPO_LOCK_EXT,
-    REPO_MOUNT_EXT,
     CommandError,
-    Lock,
+    HostLock,
     abspath,
     atomic_symlink,
     atomic_write_text,
@@ -41,6 +37,7 @@ from bertrand.env.run import (
     sudo,
     symlink_points_to,
 )
+from bertrand.env.host import REPO_ALIASES_EXT, REPO_DIR, REPO_LOCK_EXT, REPO_MOUNT_EXT
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -401,10 +398,9 @@ class MountInfo:
         deadline = loop.time() + timeout
         root.mkdir(parents=True, exist_ok=True)
 
-        async with Lock(
+        async with HostLock(
             root / REPO_LOCK_EXT,
             timeout=deadline - loop.time(),
-            mode="local",
         ):
             mounted = cls.search(mount_path)
             if mounted is None:
@@ -629,7 +625,7 @@ class MountInfo:
         aliases: set[Path] = field(default_factory=set)
         _root: Path = field(init=False)
         _mount_path: Path = field(init=False)
-        _lock: Lock | None = field(default=None)
+        _lock: HostLock | None = field(default=None)
         _deadline: float = field(default=INFINITY)
         _depth: int = field(default=0)
 
@@ -672,10 +668,9 @@ class MountInfo:
             loop = asyncio.get_running_loop()
             self._deadline = loop.time() + self.timeout
             self._root.mkdir(parents=True, exist_ok=True)
-            self._lock = Lock(
+            self._lock = HostLock(
                 self._root / REPO_LOCK_EXT,
                 timeout=self._deadline - loop.time(),
-                mode="local",
             )
             await self._lock.lock()  # block until acquire or deadline
 
@@ -817,7 +812,7 @@ class MountInfo:
                 remaining = deadline - loop.time()
                 if remaining <= 0:
                     break
-                lock = Lock(root / REPO_LOCK_EXT, timeout=0, mode="local")
+                lock = HostLock(root / REPO_LOCK_EXT, timeout=0)
                 locked = False
                 try:
                     locked = await lock.try_lock()

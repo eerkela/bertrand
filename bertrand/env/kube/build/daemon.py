@@ -21,7 +21,7 @@ from bertrand.env.kube.api import (
 from bertrand.env.kube.build.cache import BUILDKIT_CACHE, BuildKitCacheStatus
 from bertrand.env.kube.deployment import Deployment
 from bertrand.env.kube.service import Service
-from bertrand.env.run import BERTRAND_NAMESPACE, INFINITY
+from bertrand.env.git import BERTRAND_NAMESPACE, INFINITY
 
 BUILDKIT_NAME = "bertrand-buildkit"
 BUILDKIT_IMAGE = "moby/buildkit:v0.29.0"

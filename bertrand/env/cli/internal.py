@@ -6,10 +6,12 @@ import asyncio
 import os
 
 from ..config import Config
+from ..kube.api import Kube
 from ..rpc import CodeOpen, rpc
-from ..run import (
+from ..git import (
     CONTAINER_TMP_MOUNT,
     IMAGE_TAG_ENV,
+    INFINITY,
     WORKTREE_MOUNT,
     inside_container,
 )
@@ -199,8 +201,16 @@ class Internal:
                 "could not determine active image tag in container environment: "
                 f"'{IMAGE_TAG_ENV}'"
             )
-        with Config.load(WORKTREE_MOUNT) as config:
-            config.build(tag)
+
+        async def build() -> None:
+            with await Kube.host(timeout=INFINITY) as kube:
+                async with await Config.load(
+                    WORKTREE_MOUNT,
+                    kube=kube,
+                ) as config:
+                    await config.build(tag)
+
+        asyncio.run(build())
 
     @staticmethod
     def check(args: argparse.Namespace) -> None:
@@ -220,8 +230,16 @@ class Internal:
             If any check command exits non-zero.
         """
         _require_active_image_tag()
-        with Config.load(WORKTREE_MOUNT) as config:
-            files = config.sources()
+
+        async def sources() -> object:
+            with await Kube.host(timeout=INFINITY) as kube:
+                async with await Config.load(
+                    WORKTREE_MOUNT,
+                    kube=kube,
+                ) as config:
+                    return config.sources()
+
+        files = asyncio.run(sources())
         artifact_root = str(CONTAINER_TMP_MOUNT)
         clang_tidy_config = CONTAINER_TMP_MOUNT / ".clang-tidy"
 
@@ -264,8 +282,16 @@ class Internal:
             If formatting exits non-zero.
         """
         _require_active_image_tag()
-        with Config.load(WORKTREE_MOUNT) as config:
-            files = config.sources()
+
+        async def sources() -> object:
+            with await Kube.host(timeout=INFINITY) as kube:
+                async with await Config.load(
+                    WORKTREE_MOUNT,
+                    kube=kube,
+                ) as config:
+                    return config.sources()
+
+        files = asyncio.run(sources())
         clang_format_config = CONTAINER_TMP_MOUNT / ".clang-format"
 
         # Python formatting

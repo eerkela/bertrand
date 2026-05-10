@@ -12,7 +12,7 @@ from typing import Annotated, Any, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, NonNegativeInt, model_validator
 
-from ..run import CONTAINER_TMP_MOUNT, atomic_write_text
+from ..git import CONTAINER_TMP_MOUNT, atomic_write_text
 from .core import Config, NoCRLF, NonEmpty, RegexPattern, Resource, dump_yaml, resource
 
 

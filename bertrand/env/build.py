@@ -10,7 +10,7 @@ from typing import Mapping, Sequence
 
 import setuptools.build_meta
 
-from .run import run
+from .git import run
 
 
 ARTIFACT_ROOT = Path("/tmp/bertrand/artifacts")

@@ -37,7 +37,7 @@ from pydantic import (
 from ..config import Bertrand, Config
 from ..config.core import AbsolutePath, NonEmpty, NoWhiteSpace, TOMLKey, Trimmed
 from ..rpc.listener import RPC_TIMEOUT
-from ..run import (
+from ..git import (
     BERTRAND_ENV,
     CONTAINER_ID_ENV,
     CONTAINER_RUNTIME_ENV,

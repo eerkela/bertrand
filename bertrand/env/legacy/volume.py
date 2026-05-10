@@ -10,7 +10,7 @@ from typing import Any
 
 from bertrand.env.config.core import RESOURCE_NAMES, Resource
 from bertrand.env.legacy.nerdctl import nerdctl
-from bertrand.env.run import BERTRAND_ENV, ENV_ID_ENV
+from bertrand.env.git import BERTRAND_ENV, ENV_ID_ENV
 
 CACHE_VOLUME_ENV: str = "BERTRAND_CACHE_VOLUME"
 SANITIZE_RE = re.compile(r"[^a-zA-Z0-9._]+")

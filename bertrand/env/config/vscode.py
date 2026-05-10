@@ -11,7 +11,7 @@ from pathlib import PosixPath
 
 import jinja2
 
-from ..run import WORKTREE_MOUNT
+from ..git import WORKTREE_MOUNT
 from .core import (
     Config,
     Resource,

@@ -5,7 +5,7 @@ from pathlib import Path
 
 from ..legacy.environment import Environment
 from ..legacy.nerdctl import ContainerState, nerdctl_ids
-from ..run import (
+from ..git import (
     ENV_ID_ENV,
     IMAGE_TAG_ENV,
 )

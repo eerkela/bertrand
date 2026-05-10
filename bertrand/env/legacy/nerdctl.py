@@ -13,17 +13,14 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Literal
 
-from bertrand.env.run import (
+from bertrand.env.git import (
     BERTRAND_ENV,
     BERTRAND_NAMESPACE,
-    CACHE_DIR,
     INFINITY,
     NORMALIZE_ARCH,
-    RUN_DIR,
-    TOOLS_DIR,
     CommandError,
     CompletedProcess,
-    Lock,
+    HostLock,
     TimeoutExpired,
     atomic_write_text,
     download_file,
@@ -31,7 +28,8 @@ from bertrand.env.run import (
     pid_alive,
     run,
 )
-from bertrand.env.run.bertrand_git import tail_lines
+from bertrand.env.git.bertrand_git import tail_lines
+from bertrand.env.host import CACHE_DIR, RUN_DIR, TOOLS_DIR
 
 type ContainerState = Literal[
     "created",
@@ -317,7 +315,7 @@ async def start_buildkit(*, timeout: float) -> None:
     if await _buildkit_workers_ready(timeout=deadline - loop.time()):
         return
 
-    async with Lock(BUILDKIT_LOCK_FILE, timeout=deadline - loop.time(), mode="local"):
+    async with HostLock(BUILDKIT_LOCK_FILE, timeout=deadline - loop.time()):
         if await _buildkit_workers_ready(timeout=deadline - loop.time()):
             return
 
@@ -376,7 +374,7 @@ async def stop_buildkit(*, timeout: float) -> None:
         BUILDKIT_SOCKET.unlink(missing_ok=True)
         return
 
-    async with Lock(BUILDKIT_LOCK_FILE, timeout=deadline - loop.time(), mode="local"):
+    async with HostLock(BUILDKIT_LOCK_FILE, timeout=deadline - loop.time()):
         pid = _buildkit_pid()
         if pid is None or not pid_alive(pid):
             BUILDKIT_PID_FILE.unlink(missing_ok=True)
@@ -399,4 +397,3 @@ async def stop_buildkit(*, timeout: float) -> None:
 
         BUILDKIT_PID_FILE.unlink(missing_ok=True)
         BUILDKIT_SOCKET.unlink(missing_ok=True)
-

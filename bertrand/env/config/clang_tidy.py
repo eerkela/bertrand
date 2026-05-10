@@ -19,7 +19,7 @@ from pydantic import (
     model_validator,
 )
 
-from ..run import CONTAINER_TMP_MOUNT, Scalar, atomic_write_text
+from ..git import CONTAINER_TMP_MOUNT, Scalar, atomic_write_text
 from .core import (
     Config,
     RegexPattern,

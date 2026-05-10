@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from .env.cli import External, Internal
-from .env.run import inside_image
+from .env.git import inside_image
 
 # # create swap memory for large builds
 # swapfile = env_root / "swapfile"

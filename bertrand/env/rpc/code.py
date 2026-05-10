@@ -23,8 +23,10 @@ from ..config import (
     Config,
 )
 from ..config.bertrand import Editor
-from ..run import (
+from ..kube.api import Kube
+from ..git import (
     IMAGE_TAG_ENV,
+    INFINITY,
     PROJECT_ENV,
     PROJECT_MOUNT,
     WORKTREE_ENV,
@@ -270,11 +272,14 @@ class CodeOpen:
             )
 
         # load editor selection from worktree config
-        async with await Config.load(WORKTREE_MOUNT, repo=GitRepository(
-            git_dir=PROJECT_MOUNT / ".git",
-        )) as config:
-            await config.sync(image_tag)  # ensure config is up-to-date
-            bertrand = config.get(Bertrand)
+        with await Kube.host(timeout=INFINITY) as kube:
+            async with await Config.load(
+                WORKTREE_MOUNT,
+                kube=kube,
+                repo=GitRepository(git_dir=PROJECT_MOUNT / ".git"),
+            ) as config:
+                await config.sync(image_tag)  # ensure config is up-to-date
+                bertrand = config.get(Bertrand)
             if not bertrand:
                 raise RuntimeError(
                     f"Bertrand configuration is missing from the worktree config at "

@@ -1,5 +1,5 @@
 # ruff: noqa: F401
-"""General-purpose command and lock utilities.
+"""Git hook-safe utilities shared by Bertrand's runtime.
 
 Note that the structure of this subpackage is a bit odd, since it also houses Git
 hooks that need to run without access to the rest of the Bertrand codebase, in order
@@ -9,10 +9,7 @@ environment.
 
 from .bertrand_git import (
     BERTRAND_ENV,
-    BERTRAND_GROUP,
     BERTRAND_NAMESPACE,
-    BIN_DIR,
-    CACHE_DIR,
     CONTAINER_ID_ENV,
     CONTAINER_RUNTIME_ENV,
     CONTAINER_RUNTIME_MOUNT,
@@ -31,17 +28,8 @@ from .bertrand_git import (
     NORMALIZE_ARCH,
     PROJECT_ENV,
     PROJECT_MOUNT,
-    REPO_ALIASES_EXT,
-    REPO_DIR,
     REPO_ID_ENV,
-    REPO_LOCK_EXT,
-    REPO_MOUNT_EXT,
     ROOT_DIR,
-    RUN_DIR,
-    RUN_TMPFS_MOUNT_UNIT_NAME,
-    RUN_TMPFS_MOUNT_UNIT_PATH,
-    STATE_DIR,
-    TOOLS_DIR,
     WORKTREE_ENV,
     WORKTREE_MOUNT,
     CommandError,
@@ -49,9 +37,8 @@ from .bertrand_git import (
     GitRefUpdate,
     GitRepository,
     GroupStatus,
+    HostLock,
     JSONValue,
-    Lock,
-    LockMode,
     Scalar,
     TimeoutExpired,
     User,
@@ -61,7 +48,6 @@ from .bertrand_git import (
     atomic_write_text,
     can_escalate,
     confirm,
-    ensure_bertrand_state,
     inside_container,
     inside_image,
     install_packages,
