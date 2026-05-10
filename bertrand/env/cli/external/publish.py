@@ -1,55 +1,64 @@
 """The external CLI endpoint for building Bertrand images."""
+
 from __future__ import annotations
 
 import re
-from pathlib import Path
+from typing import TYPE_CHECKING
 
-from ..config import DEFAULT_TAG, Bertrand, PyProject
-from ..legacy.environment import Environment
-from ..legacy.image import Image
-from ..legacy.nerdctl import TIMEOUT, nerdctl
-from ..git import NORMALIZE_ARCH
+from bertrand.env.config import DEFAULT_TAG, Bertrand, PyProject
+from bertrand.env.git import NORMALIZE_ARCH
+from bertrand.env.legacy.environment import Environment
+from bertrand.env.legacy.nerdctl import TIMEOUT, nerdctl
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+    from bertrand.env.legacy.image import Image
 
 
 def _normalize_version(value: str) -> str:
     out = value.strip()
     if not out:
-        raise ValueError("version cannot be empty")
+        msg = "version cannot be empty"
+        raise ValueError(msg)
     if out.startswith("v") and len(out) > 1:
         out = out[1:]
     if not out:
-        raise ValueError("version cannot be empty")
+        msg = "version cannot be empty"
+        raise ValueError(msg)
     return out
 
 
 def _normalize_arch(value: str) -> str:
     arch = value.strip().lower()
     if not arch:
-        raise ValueError("architecture cannot be empty")
-    return NORMALIZE_ARCH.get(
-        arch,
-        re.sub(r"[^a-z0-9._-]+", "-", arch).strip("-")
-    )
+        msg = "architecture cannot be empty"
+        raise ValueError(msg)
+    return NORMALIZE_ARCH.get(arch, re.sub(r"[^a-z0-9._-]+", "-", arch).strip("-"))
 
 
 def _parse_manifest_arches(value: str | None) -> list[str]:
     if value is None:
-        raise ValueError("--manifest requires --manifest-arches")
+        msg = "--manifest requires --manifest-arches"
+        raise ValueError(msg)
     raw = value.strip()
     if not raw:
-        raise ValueError("--manifest-arches cannot be empty")
+        msg = "--manifest-arches cannot be empty"
+        raise ValueError(msg)
     out: list[str] = []
     seen: set[str] = set()
     for token in raw.split(","):
         arch = _normalize_arch(token)
         if not arch:
-            raise ValueError(f"invalid architecture in --manifest-arches: {token!r}")
+            msg = f"invalid architecture in --manifest-arches: {token!r}"
+            raise ValueError(msg)
         if arch in seen:
             continue
         seen.add(arch)
         out.append(arch)
     if not out:
-        raise ValueError("--manifest-arches must include at least one architecture")
+        msg = "--manifest-arches must include at least one architecture"
+        raise ValueError(msg)
     return out
 
 
@@ -92,46 +101,53 @@ async def bertrand_publish(
     """
     repo = repo.strip().lower()
     if not repo:
-        raise ValueError("OCI repository must be non-empty when provided")
+        msg = "OCI repository must be non-empty when provided"
+        raise ValueError(msg)
 
     async with await Environment.load(worktree, timeout=TIMEOUT) as env:
         bertrand = env.config.get(Bertrand)
         python = env.config.get(PyProject)
         if python is None:
-            raise OSError("could not determine project version for publish")
+            msg = "could not determine project version for publish"
+            raise OSError(msg)
         if bertrand is None:
-            raise OSError("could not determine configured tags for publish")
+            msg = "could not determine configured tags for publish"
+            raise OSError(msg)
         if not bertrand.build:
-            raise OSError("publish requires at least one configured tag")
+            msg = "publish requires at least one configured tag"
+            raise OSError(msg)
 
         project_version = _normalize_version(python.project.version)
         publish_version = project_version
         if version is not None:
             publish_version = _normalize_version(version)
             if publish_version != project_version:
-                raise OSError(
+                msg = (
                     f"publish version '{version}' does not match project version "
                     f"'{project_version}'"
                 )
+                raise OSError(msg)
 
         if not manifest:
-            arch = _normalize_arch((await nerdctl(
-                ["info", "--format", "{{.Host.Arch}}"],
-                capture_output=True,
-            )).stdout)
+            arch = _normalize_arch(
+                (
+                    await nerdctl(
+                        ["info", "--format", "{{.Host.Arch}}"],
+                        capture_output=True,
+                    )
+                ).stdout
+            )
             if not arch:
-                raise OSError(
-                    "could not determine host architecture from `nerdctl info` output"
-                )
+                msg = "could not determine host architecture from `nerdctl info` output"
+                raise OSError(msg)
 
             built: dict[str, Image] = {}
             for current_tag in bertrand.build:
                 try:
                     built[current_tag] = await env.build(current_tag, quiet=False)
                 except Exception as err:
-                    raise OSError(
-                        f"failed to build tag '{current_tag}' for publish"
-                    ) from err
+                    msg = f"failed to build tag '{current_tag}' for publish"
+                    raise OSError(msg) from err
 
             for current_tag in bertrand.build:
                 suffix = "" if current_tag == DEFAULT_TAG else f"-{current_tag}"
@@ -158,20 +174,23 @@ async def bertrand_publish(
                     check=False,
                     capture_output=True,
                 )
-                await nerdctl(
-                    ["manifest", "create", manifest_ref],
-                    capture_output=True
-                )
+                await nerdctl(["manifest", "create", manifest_ref], capture_output=True)
                 for ref in source_refs:
                     await nerdctl(
                         ["manifest", "add", manifest_ref, f"docker://{ref}"],
                         attempts=3,
-                        capture_output=True
+                        capture_output=True,
                     )
                 await nerdctl(
-                    ["manifest", "push", "--all", manifest_ref, f"docker://{manifest_ref}"],
+                    [
+                        "manifest",
+                        "push",
+                        "--all",
+                        manifest_ref,
+                        f"docker://{manifest_ref}",
+                    ],
                     attempts=3,
-                    capture_output=True
+                    capture_output=True,
                 )
             finally:
                 await nerdctl(

@@ -1,11 +1,15 @@
 """The external CLI endpoint for building Bertrand images."""
+
 from __future__ import annotations
 
-from pathlib import Path
+from typing import TYPE_CHECKING
 
-from ..config import DEFAULT_TAG
-from ..legacy.environment import Environment
-from ..git import INFINITY
+from bertrand.env.config import DEFAULT_TAG
+from bertrand.env.git import INFINITY
+from bertrand.env.legacy.environment import Environment
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 async def bertrand_build(
@@ -34,16 +38,10 @@ async def bertrand_build(
     This command does not materialize or start any containers; it only builds images,
     which corresponds to Ahead-of-Time (AoT) compilation of the container
     environment.
-
-    Raises
-    ------
-    ValueError
-        If the specified tag is invalid.
-    OSError
-        If build orchestration fails.
     """
     if workload is not None:
-        raise NotImplementedError("kubernetes workloads are not yet supported")
+        msg = "kubernetes workloads are not yet supported"
+        raise NotImplementedError(msg)
     if tag is None:
         tag = DEFAULT_TAG
 

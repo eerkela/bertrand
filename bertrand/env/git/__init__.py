@@ -48,6 +48,8 @@ from .bertrand_git import (
     atomic_write_text,
     can_escalate,
     confirm,
+    download_file,
+    file_digest,
     inside_container,
     inside_image,
     install_packages,
@@ -56,5 +58,6 @@ from .bertrand_git import (
     run,
     sudo,
     symlink_points_to,
+    tail_lines,
     until,
 )

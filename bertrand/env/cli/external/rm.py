@@ -1,10 +1,15 @@
-"""TODO"""
+"""External CLI endpoint for removing Bertrand runtime objects."""
+
 from __future__ import annotations
 
 import time
-from pathlib import Path
+from typing import TYPE_CHECKING
 
-from ..legacy.environment import Environment
+from bertrand.env.legacy.environment import Environment
+from bertrand.env.legacy.registry import EnvironmentMetadata
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 async def bertrand_rm(
@@ -15,8 +20,9 @@ async def bertrand_rm(
     deadline: float,
     force: bool,
 ) -> None:
-    """Delete Bertrand entities on the system, scoped to images and containers within
-    an environment.
+    """Delete Bertrand runtime images and containers.
+
+    This command is scoped to images and containers within a Bertrand environment.
 
     Parameters
     ----------
@@ -37,20 +43,25 @@ async def bertrand_rm(
     worktree itself.
     """
     if workload is not None:
-        raise NotImplementedError("kubernetes workloads are not yet supported")
+        msg = "kubernetes workloads are not yet supported"
+        raise NotImplementedError(msg)
 
     async with await Environment.load(worktree, timeout=deadline - time.time()) as env:
         if tag is None:
             while env.images:
                 _, image = env.images.popitem()
-                env._json.retired.append(EnvironmentMetadata.RetiredImage(
-                    force=force,
-                    image=image,
-                ))
+                env._json.retired.append(
+                    EnvironmentMetadata.RetiredImage(
+                        force=force,
+                        image=image,
+                    )
+                )
         else:
             image = env.images.pop(tag)
             if image is not None:
-                env._json.retired.append(EnvironmentMetadata.RetiredImage(
-                    force=force,
-                    image=image,
-                ))
+                env._json.retired.append(
+                    EnvironmentMetadata.RetiredImage(
+                        force=force,
+                        image=image,
+                    )
+                )

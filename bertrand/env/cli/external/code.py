@@ -1,14 +1,18 @@
-"""TODO"""
+"""External CLI endpoint for opening Bertrand worktrees in an editor."""
+
 from __future__ import annotations
 
-import asyncio
 import time
-from pathlib import Path
+from typing import TYPE_CHECKING
 
-from ..config import DEFAULT_TAG
-from ..legacy.environment import Environment
-from ..legacy.nerdctl import NERDCTL_BIN, TIMEOUT, nerdctl
-from ..rpc import start_rpc_sidecar, stop_rpc_sidecar
+from bertrand.env.config import DEFAULT_TAG
+from bertrand.env.legacy.container import start_rpc_sidecar, stop_rpc_sidecar
+from bertrand.env.legacy.environment import Environment
+from bertrand.env.legacy.nerdctl import NERDCTL_BIN, TIMEOUT, nerdctl
+
+if TYPE_CHECKING:
+    import asyncio
+    from pathlib import Path
 
 
 async def bertrand_code(
@@ -18,8 +22,10 @@ async def bertrand_code(
     *,
     editor: str | None,
 ) -> None:
-    """Launch a host-side editor by running a blocking in-container `bertrand code`
-    command in an ephemeral container, with a socket-coupled RPC sidecar.
+    """Launch a host-side editor.
+
+    Runs a blocking in-container `bertrand code` command in an ephemeral container,
+    with a socket-coupled RPC sidecar.
 
     Parameters
     ----------
@@ -41,13 +47,15 @@ async def bertrand_code(
         If image/container/RPC sidecar orchestration fails.
     """
     if workload is not None:
-        raise NotImplementedError("kubernetes workloads are not yet supported")
+        msg = "kubernetes workloads are not yet supported"
+        raise NotImplementedError(msg)
     if tag is None:
         tag = DEFAULT_TAG
     if editor is not None:
         editor = editor.strip()
         if not editor:
-            raise ValueError("editor override must not be empty")
+            msg = "editor override must not be empty"
+            raise ValueError(msg)
 
     async with await Environment.load(worktree, timeout=TIMEOUT) as env:
         image = await env.build(tag, quiet=False)
@@ -83,10 +91,11 @@ async def bertrand_code(
             )
             exit_code = wait.stdout.strip()
             if exit_code and exit_code != "0":
-                raise OSError(
+                msg = (
                     f"container exited with non-zero status while running "
                     f"'bertrand code': {exit_code}"
                 )
+                raise OSError(msg)
         finally:
             await stop_rpc_sidecar(sidecar)
             await nerdctl(

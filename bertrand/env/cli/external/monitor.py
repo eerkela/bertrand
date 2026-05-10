@@ -1,11 +1,17 @@
-"""TODO"""
+"""External CLI endpoint for monitoring Bertrand runtime objects."""
+
 from __future__ import annotations
 
 import time
-from pathlib import Path
+from typing import TYPE_CHECKING
 
-from ..legacy.environment import Environment
-from ..legacy.nerdctl import nerdctl
+from bertrand.env.legacy.environment import Environment
+from bertrand.env.legacy.nerdctl import nerdctl
+
+from ._helper import _cli_containers, _parse_output_format
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 async def bertrand_monitor(
@@ -15,7 +21,7 @@ async def bertrand_monitor(
     *,
     deadline: float,
     interval: int,
-    format: str,
+    output_format: str,
 ) -> None:
     """Gather resource utilization statistics for scoped Bertrand containers.
 
@@ -31,7 +37,7 @@ async def bertrand_monitor(
         Timestamp before which this command should complete, relative to the epoch.
     interval : int
         Poll interval in seconds. Zero performs a single snapshot.
-    format : str
+    output_format : str
         Output format: `json`, `table`, or `table <template>`.
 
     Raises
@@ -40,15 +46,15 @@ async def bertrand_monitor(
         If interval/format inputs are invalid.
     """
     if workload is not None:
-        raise NotImplementedError("kubernetes workloads are not yet supported")
+        msg = "kubernetes workloads are not yet supported"
+        raise NotImplementedError(msg)
     if interval < 0:
-        raise ValueError("interval must be non-negative")
-    format_mode, table_template = _parse_output_format(
-        format,
-        allow_id=False
-    )
+        msg = "interval must be non-negative"
+        raise ValueError(msg)
+    format_mode, table_template = _parse_output_format(output_format, allow_id=False)
     if format_mode == "json" and interval:
-        raise ValueError("cannot use 'json' and 'interval' together")
+        msg = "cannot use 'json' and 'interval' together"
+        raise ValueError(msg)
 
     async with await Environment.load(worktree, timeout=deadline - time.time()) as env:
         ids = await _cli_containers(env, tag, timeout=deadline - time.time())
@@ -70,8 +76,8 @@ async def bertrand_monitor(
             await nerdctl(cmd, timeout=deadline - time.time())
         else:
             template = (
-                table_template or
-                "{{.Name}}\t{{.AVGCPU}}\t{{.CPUPerc}}\t{{.PIDs}}\t{{.MemUsage}}\t"
+                table_template
+                or "{{.Name}}\t{{.AVGCPU}}\t{{.CPUPerc}}\t{{.PIDs}}\t{{.MemUsage}}\t"
                 "{{.NetIO}}\t{{.BlockIO}}"
             )
             cmd.append(f"--format=table {template}")

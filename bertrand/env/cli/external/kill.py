@@ -1,12 +1,18 @@
-"""TODO"""
+"""External CLI endpoint for stopping Bertrand containers."""
+
 from __future__ import annotations
 
 import math
 import time
-from pathlib import Path
+from typing import TYPE_CHECKING
 
-from ..legacy.environment import Environment
-from ..legacy.nerdctl import nerdctl
+from bertrand.env.legacy.environment import Environment
+from bertrand.env.legacy.nerdctl import nerdctl
+
+from ._helper import _cli_containers
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 async def bertrand_stop(
@@ -29,29 +35,21 @@ async def bertrand_stop(
     deadline : float
         Timestamp before which this command should complete, relative to the epoch.
 
-    Raises
-    ------
-    OSError
-        If runtime stop operations fail.
     """
     if workload is not None:
-        raise NotImplementedError("kubernetes workloads are not yet supported")
+        msg = "kubernetes workloads are not yet supported"
+        raise NotImplementedError(msg)
 
     async with await Environment.load(worktree, timeout=deadline - time.time()) as env:
         ids = await _cli_containers(
             env,
             tag,
             status=("running", "restarting", "paused"),
-            timeout=deadline - time.time()
+            timeout=deadline - time.time(),
         )
         if ids:
             timeout = deadline - time.time()
             await nerdctl(
-                [
-                    "container",
-                    "stop",
-                    "-t", str(int(math.ceil(timeout))),
-                    *ids
-                ],
-                timeout=timeout
+                ["container", "stop", "-t", str(math.ceil(timeout)), *ids],
+                timeout=timeout,
             )

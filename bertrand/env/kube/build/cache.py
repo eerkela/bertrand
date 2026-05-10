@@ -15,10 +15,10 @@ from bertrand.env.config.core import (
     KubeName,
     _check_uuid,
 )
+from bertrand.env.git import BERTRAND_ENV, BERTRAND_NAMESPACE, ENV_ID_ENV
 from bertrand.env.kube.ceph.volume import CEPHFS_STORAGE_CLASS_PREFERENCES
 from bertrand.env.kube.pod import Pod
 from bertrand.env.kube.volume import PersistentVolumeClaim, StorageClass
-from bertrand.env.git import BERTRAND_ENV, BERTRAND_NAMESPACE, ENV_ID_ENV
 
 if TYPE_CHECKING:
     from bertrand.env.kube.api import Kube

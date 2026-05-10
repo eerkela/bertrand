@@ -1,16 +1,21 @@
-"""TODO"""
+"""External CLI endpoint for entering Bertrand containers."""
+
 from __future__ import annotations
 
 import sys
 import time
-from pathlib import Path
+from typing import TYPE_CHECKING
 
-from ..config import DEFAULT_TAG, SHELLS, Bertrand
-from ..legacy.environment import Environment
-from ..legacy.nerdctl import NERDCTL_BIN, TIMEOUT, nerdctl
-from ..rpc import start_rpc_sidecar, stop_rpc_sidecar
-from ..git import CommandError
+from bertrand.env.config import DEFAULT_TAG, SHELLS, Bertrand
+from bertrand.env.git import CommandError
+from bertrand.env.legacy.container import start_rpc_sidecar, stop_rpc_sidecar
+from bertrand.env.legacy.environment import Environment
+from bertrand.env.legacy.nerdctl import NERDCTL_BIN, TIMEOUT, nerdctl
+
 from ._helper import _recover_spec
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 async def bertrand_enter(
@@ -20,8 +25,9 @@ async def bertrand_enter(
     *,
     shell: str | None,
 ) -> None:
-    """Replace the current process with an interactive shell inside the specified
-    container, starting or rebuilding it as necessary.
+    """Replace the current process with an interactive container shell.
+
+    The target container is started or rebuilt as necessary.
 
     Parameters
     ----------
@@ -44,7 +50,8 @@ async def bertrand_enter(
         If image/container/RPC sidecar orchestration fails.
     """
     if workload is not None:
-        raise NotImplementedError("kubernetes workloads are not yet supported")
+        msg = "kubernetes workloads are not yet supported"
+        raise NotImplementedError(msg)
 
     if not sys.stdin.isatty() or not sys.stdout.isatty():
         cmd = ["bertrand", "enter", _recover_spec(worktree, workload, tag)]
@@ -54,26 +61,29 @@ async def bertrand_enter(
             returncode=1,
             cmd=cmd,
             output="",
-            stderr="'bertrand enter' requires both stdin and stdout to be a TTY."
+            stderr="'bertrand enter' requires both stdin and stdout to be a TTY.",
         )
 
     async with await Environment.load(worktree, timeout=TIMEOUT) as env:
         bertrand = env.config.get(Bertrand)
         if not bertrand:
-            raise OSError(
+            msg = (
                 f"Bertrand configuration is missing from the worktree config at "
                 f"{worktree}.  This should never occur; if you see this message, "
                 "try re-running `bertrand init` to regenerate your project "
                 "configuration, or report an issue if the problem persists."
             )
+            raise OSError(msg)
 
         shell_cmd = SHELLS.get(bertrand.shell)
         if shell_cmd is None:
-            raise ValueError(f"unrecognized shell: {bertrand.shell}")
+            msg = f"unrecognized shell: {bertrand.shell}"
+            raise ValueError(msg)
         if shell is not None:
             shell_cmd = SHELLS.get(shell)
             if shell_cmd is None:
-                raise ValueError(f"unrecognized shell override: {shell}")
+                msg = f"unrecognized shell override: {shell}"
+                raise ValueError(msg)
 
         image = await env.build(tag or DEFAULT_TAG, quiet=False)
         container = await image.create(

@@ -1,13 +1,19 @@
-"""TODO"""
+"""External CLI endpoint for restarting Bertrand containers."""
+
 from __future__ import annotations
 
 import math
 import sys
-from pathlib import Path
+from typing import TYPE_CHECKING
 
-from ..legacy.container import Container
-from ..legacy.environment import Environment
-from ..legacy.nerdctl import TIMEOUT, nerdctl
+from bertrand.env.legacy.container import Container
+from bertrand.env.legacy.environment import Environment
+from bertrand.env.legacy.nerdctl import TIMEOUT, nerdctl
+
+from ._helper import _cli_containers, _recover_spec
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 async def bertrand_restart(
@@ -28,27 +34,23 @@ async def bertrand_restart(
     tag : str | None
         Optional member tag to scope the command.
 
-    Raises
-    ------
-    OSError
-        If rebuild/restart operations fail.
     """
     if workload is not None:
-        raise NotImplementedError("kubernetes workloads are not yet supported")
+        msg = "kubernetes workloads are not yet supported"
+        raise NotImplementedError(msg)
 
     async with await Environment.load(worktree, timeout=TIMEOUT) as env:
         tags: list[str]
-        if tag is None:
-            tags = list(env.images)
-        else:
-            tags = [tag]
+        tags = list(env.images) if tag is None else [tag]
         for current_tag in tags:
-            containers = await Container.inspect(await _cli_containers(
-                env,
-                current_tag,
-                status=("running", "restarting", "paused"),
-                timeout=env.lock.timeout
-            ))
+            containers = await Container.inspect(
+                await _cli_containers(
+                    env,
+                    current_tag,
+                    status=("running", "restarting", "paused"),
+                    timeout=env.lock.timeout,
+                )
+            )
             if not containers:
                 continue
 
@@ -61,36 +63,38 @@ async def bertrand_restart(
                             [
                                 "container",
                                 "restart",
-                                "-t", str(int(math.ceil(env.lock.timeout))),
-                                container.Id
+                                "-t",
+                                str(math.ceil(env.lock.timeout)),
+                                container.Id,
                             ],
-                            timeout=env.lock.timeout
+                            timeout=env.lock.timeout,
                         )
                     else:
                         await nerdctl(
                             [
                                 "container",
                                 "stop",
-                                "-t", str(int(math.ceil(env.lock.timeout))),
-                                container.Id
+                                "-t",
+                                str(math.ceil(env.lock.timeout)),
+                                container.Id,
                             ],
-                            timeout=env.lock.timeout
+                            timeout=env.lock.timeout,
                         )
                         if container.Path:
                             defer.append([container.Path, *container.Args])
                         else:
+                            spec = _recover_spec(worktree, workload, current_tag)
                             print(
                                 "bertrand: could not recover container argv during "
-                                f"restart of {_recover_spec(worktree, workload, current_tag)}: "
-                                f"{container.Id}",
-                                file=sys.stderr
+                                f"restart of {spec}: {container.Id}",
+                                file=sys.stderr,
                             )
-                except Exception as err:
+                except Exception as err:  # noqa: BLE001
+                    spec = _recover_spec(worktree, workload, current_tag)
                     print(
                         f"bertrand: failed to stop container during restart of "
-                        f"{_recover_spec(worktree, workload, current_tag)}: {container.Id}\n"
-                        f"{err}",
-                        file=sys.stderr
+                        f"{spec}: {container.Id}\n{err}",
+                        file=sys.stderr,
                     )
 
             for cmd in defer:

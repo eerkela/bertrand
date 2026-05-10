@@ -1,12 +1,18 @@
-"""TODO"""
+"""External CLI endpoint for listing Bertrand runtime objects."""
+
 from __future__ import annotations
 
 import time
-from pathlib import Path
+from typing import TYPE_CHECKING
 
-from ..legacy.environment import Environment
-from ..legacy.nerdctl import nerdctl
-from ..git import BERTRAND_ENV, ENV_ID_ENV, IMAGE_TAG_ENV
+from bertrand.env.git import BERTRAND_ENV, ENV_ID_ENV, IMAGE_TAG_ENV
+from bertrand.env.legacy.environment import Environment
+from bertrand.env.legacy.nerdctl import nerdctl
+
+from ._helper import _cli_containers, _cli_images, _parse_output_format
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 async def bertrand_ls(
@@ -16,7 +22,7 @@ async def bertrand_ls(
     *,
     deadline: float,
     image: bool,
-    format: str,
+    output_format: str,
 ) -> None:
     """Gather status information for containers/images in a Bertrand environment.
 
@@ -32,35 +38,20 @@ async def bertrand_ls(
         Timestamp before which this command should complete, relative to the epoch.
     image : bool
         If True, list images. Otherwise, list containers.
-    format : str
+    output_format : str
         Output format: `id`, `json`, `table`, or `table <template>`.
-
-    Raises
-    ------
-    ValueError
-        If format input is invalid.
     """
     if workload is not None:
-        raise NotImplementedError("kubernetes workloads are not yet supported")
-    format_mode, table_template = _parse_output_format(
-        format,
-        allow_id=True
-    )
+        msg = "kubernetes workloads are not yet supported"
+        raise NotImplementedError(msg)
+    format_mode, table_template = _parse_output_format(output_format, allow_id=True)
 
     async with await Environment.load(worktree, timeout=deadline - time.time()) as env:
         if format_mode == "id":
             if image:
-                ids = await _cli_images(
-                    env,
-                    tag,
-                    timeout=deadline - time.time()
-                )
+                ids = await _cli_images(env, tag, timeout=deadline - time.time())
             else:
-                ids = await _cli_containers(
-                    env,
-                    tag,
-                    timeout=deadline - time.time()
-                )
+                ids = await _cli_containers(env, tag, timeout=deadline - time.time())
             for id_ in ids:
                 print(id_)
             return
@@ -70,17 +61,20 @@ async def bertrand_ls(
                 "image",
                 "ls",
                 "-a",
-                "--filter", f"label={BERTRAND_ENV}=1",
-                "--filter", f"label={ENV_ID_ENV}={env.id}",
-                "--filter", f"label={IMAGE_TAG_ENV}={tag}",
+                "--filter",
+                f"label={BERTRAND_ENV}=1",
+                "--filter",
+                f"label={ENV_ID_ENV}={env.id}",
+                "--filter",
+                f"label={IMAGE_TAG_ENV}={tag}",
             ]
             if format_mode == "json":
                 cmd.append("--no-trunc")
                 cmd.append("--format=json")
             else:
                 template = (
-                    table_template or
-                    "{{.Names}}\t{{.CreatedAt}}\t{{.Containers}}\t{{.ReadOnly}}\t"
+                    table_template
+                    or "{{.Names}}\t{{.CreatedAt}}\t{{.Containers}}\t{{.ReadOnly}}\t"
                     "{{.Size}}\t{{.History}}"
                 )
                 cmd.append(f"--format=table {template}")
@@ -90,17 +84,20 @@ async def bertrand_ls(
                 "ls",
                 "-a",
                 "--size",
-                "--filter", f"label={BERTRAND_ENV}=1",
-                "--filter", f"label={ENV_ID_ENV}={env.id}",
-                "--filter", f"label={IMAGE_TAG_ENV}={tag}",
+                "--filter",
+                f"label={BERTRAND_ENV}=1",
+                "--filter",
+                f"label={ENV_ID_ENV}={env.id}",
+                "--filter",
+                f"label={IMAGE_TAG_ENV}={tag}",
             ]
             if format_mode == "json":
                 cmd.append("--no-trunc")
                 cmd.append("--format=json")
             else:
                 template = (
-                    table_template or
-                    "{{.Names}}\t{{.CreatedAt}}\t{{.State}}\t{{.Command}}\t"
+                    table_template
+                    or "{{.Names}}\t{{.CreatedAt}}\t{{.State}}\t{{.Command}}\t"
                     "{{.RunningFor}}\t{{.Status}}\t{{.Restarts}}\t{{.Size}}\t"
                     "{{.Mounts}}\t{{.Networks}}\t{{.Ports}}"
                 )

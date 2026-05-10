@@ -1,8 +1,9 @@
-"""Run Bertrand from the command line to get include directory, version number, etc.
-"""
+"""Run Bertrand from the command line."""
+
 from __future__ import annotations
 
-from .env.cli import External, Internal
+from .env.cli.external.main import External
+from .env.cli.internal.main import Internal
 from .env.git import inside_image
 
 # # create swap memory for large builds

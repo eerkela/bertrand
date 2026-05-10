@@ -1,29 +1,34 @@
 """Bertrand's in-container CLI endpoints."""
+
 from __future__ import annotations
 
 import argparse
 import asyncio
 import os
+import subprocess
+from typing import TYPE_CHECKING, cast
 
-from ..config import Config
-from ..kube.api import Kube
-from ..rpc import CodeOpen, rpc
-from ..git import (
+if TYPE_CHECKING:
+    from collections.abc import Callable, Iterable
+
+from bertrand.env.config import Config
+from bertrand.env.git import (
     CONTAINER_TMP_MOUNT,
     IMAGE_TAG_ENV,
     INFINITY,
     WORKTREE_MOUNT,
     inside_container,
 )
-from ..version import __version__
+from bertrand.env.kube.api import Kube
+from bertrand.env.rpc import CodeOpen, rpc
+from bertrand.env.version import __version__
 
 
 def _require_active_image_tag() -> str:
     tag = os.environ.get(IMAGE_TAG_ENV, "").strip()
     if not tag:
-        raise OSError(
-            f"missing active image tag in container environment: '{IMAGE_TAG_ENV}'"
-        )
+        msg = f"missing active image tag in container environment: '{IMAGE_TAG_ENV}'"
+        raise OSError(msg)
     return tag
 
 
@@ -63,34 +68,29 @@ class Internal:
         def version(self) -> None:
             """Add the 'version' query to the parser."""
             self.root.add_argument(
-                "-v", "--version",
-                action="version",
-                version=__version__
+                "-v", "--version", action="version", version=__version__
             )
 
         def code(self) -> None:
             """Add the 'code' command to the parser."""
             command = self.commands.add_parser(
                 "code",
-                help=
-                    "Launch a text editor rooted at this container's environment "
-                    "directory and mount its internal toolchain using remote "
-                    "development extensions over the host RPC sidecar.",
+                help="Launch a text editor rooted at this container's environment "
+                "directory and mount its internal toolchain using remote "
+                "development extensions over the host RPC sidecar.",
             )
             command.add_argument(
                 "--editor",
                 default=None,
                 metavar="EDITOR",
-                help=
-                    "Override the configured host editor alias for this request.  "
-                    "Validation is performed at runtime by RPC/config resolution.",
+                help="Override the configured host editor alias for this request.  "
+                "Validation is performed at runtime by RPC/config resolution.",
             )
             command.add_argument(
                 "--block",
                 action="store_true",
-                help=
-                    "Block until the launched host editor exits.  If omitted, this "
-                    "command returns after the editor launch request is submitted.",
+                help="Block until the launched host editor exits.  If omitted, this "
+                "command returns after the editor launch request is submitted.",
             )
             command.set_defaults(handler=Internal.code)
 
@@ -98,9 +98,8 @@ class Internal:
             """Add the 'build' command to the parser."""
             command = self.commands.add_parser(
                 "build",
-                help=
-                    "Build and install the current workspace into this container "
-                    "using Bertrand's default 'uv install' command.",
+                help="Build and install the current workspace into this container "
+                "using Bertrand's default 'uv install' command.",
             )
             command.set_defaults(handler=Internal.build)
 
@@ -108,9 +107,8 @@ class Internal:
             """Add the 'check' command to the parser."""
             command = self.commands.add_parser(
                 "check",
-                help=
-                    "Run cross-language static checks for the current workspace: "
-                    "Ruff, Ty, and clang-tidy (requires compile_commands.json).",
+                help="Run cross-language static checks for the current workspace: "
+                "Ruff, Ty, and clang-tidy (requires compile_commands.json).",
             )
             command.set_defaults(handler=Internal.check)
 
@@ -126,9 +124,8 @@ class Internal:
             """Add the 'format' command to the parser."""
             command = self.commands.add_parser(
                 "format",
-                help=
-                    "Run cross-language formatting for the current workspace: "
-                    "Ruff and clang-format (requires compile_commands.json).",
+                help="Run cross-language formatting for the current workspace: "
+                "Ruff and clang-format (requires compile_commands.json).",
             )
             command.set_defaults(handler=Internal.format)
 
@@ -143,21 +140,23 @@ class Internal:
             return self.root.parse_args()
 
     @staticmethod
-    def version(args: argparse.Namespace) -> None:
-        """Execute the `bertrand --version` CLI command from within a containerized
-        environment.
+    def version(_args: argparse.Namespace) -> None:
+        """Execute the `bertrand --version` CLI command.
+
+        This command runs from within a containerized environment.
 
         Parameters
         ----------
-        args : argparse.Namespace
+        _args : argparse.Namespace
             The parsed command-line arguments.
         """
         print(__version__)
 
     @staticmethod
     def code(args: argparse.Namespace) -> None:
-        """Execute the `bertrand code` CLI command from within a containerized
-        environment.
+        """Execute the `bertrand code` CLI command.
+
+        This command runs from within a containerized environment.
 
         Parameters
         ----------
@@ -170,24 +169,30 @@ class Internal:
             If not invoked from within a containerized environment.
         """
         if not inside_container():
-            raise RuntimeError(
+            msg = (
                 "`bertrand code` requires a live container context.  Run "
                 "`bertrand enter` first."
             )
+            raise RuntimeError(msg)
         with asyncio.Runner() as runner:
-            runner.run(rpc(CodeOpen(
-                editor=args.editor or None,
-                block=args.block,
-            )))
+            runner.run(
+                rpc(
+                    CodeOpen(
+                        editor=args.editor or None,
+                        block=args.block,
+                    )
+                )
+            )
 
     @staticmethod
-    def build(args: argparse.Namespace) -> None:
-        """Execute the `bertrand build` CLI command from within a containerized
-        environment.
+    def build(_args: argparse.Namespace) -> None:
+        """Execute the `bertrand build` CLI command.
+
+        This command runs from within a containerized environment.
 
         Parameters
         ----------
-        args : argparse.Namespace
+        _args : argparse.Namespace
             The parsed command-line arguments.
 
         Raises
@@ -197,10 +202,11 @@ class Internal:
         """
         tag = os.environ.get(IMAGE_TAG_ENV, "").strip()
         if not tag:
-            raise OSError(
+            msg = (
                 "could not determine active image tag in container environment: "
                 f"'{IMAGE_TAG_ENV}'"
             )
+            raise OSError(msg)
 
         async def build() -> None:
             with await Kube.host(timeout=INFINITY) as kube:
@@ -213,31 +219,34 @@ class Internal:
         asyncio.run(build())
 
     @staticmethod
-    def check(args: argparse.Namespace) -> None:
-        """Execute the `bertrand check` CLI command from within a containerized
-        environment.
+    def check(_args: argparse.Namespace) -> None:
+        """Execute the `bertrand check` CLI command.
+
+        This command runs from within a containerized environment.
 
         Parameters
         ----------
-        args : argparse.Namespace
+        _args : argparse.Namespace
             The parsed command-line arguments.
 
         Raises
         ------
-        OSError
-            If source discovery fails, e.g. due to malformed `compile_commands.json`.
         SystemExit
             If any check command exits non-zero.
         """
         _require_active_image_tag()
 
-        async def sources() -> object:
+        async def sources() -> list[object]:
             with await Kube.host(timeout=INFINITY) as kube:
                 async with await Config.load(
                     WORKTREE_MOUNT,
                     kube=kube,
                 ) as config:
-                    return config.sources()
+                    source_resolver = cast(
+                        "Callable[[], Iterable[object]]",
+                        object.__getattribute__(config, "sources"),
+                    )
+                    return list(source_resolver())
 
         files = asyncio.run(sources())
         artifact_root = str(CONTAINER_TMP_MOUNT)
@@ -254,7 +263,8 @@ class Internal:
             result = subprocess.run(
                 [
                     "clang-tidy",
-                    "-p", artifact_root,
+                    "-p",
+                    artifact_root,
                     f"--config-file={clang_tidy_config}",
                     str(source),
                 ],
@@ -265,58 +275,71 @@ class Internal:
                 raise SystemExit(result.returncode)
 
     @staticmethod
-    def format(args: argparse.Namespace) -> None:
-        """Execute the `bertrand format` CLI command from within a containerized
-        environment.
+    def format(_args: argparse.Namespace) -> None:
+        """Execute the `bertrand format` CLI command.
+
+        This command runs from within a containerized environment.
 
         Parameters
         ----------
-        args : argparse.Namespace
+        _args : argparse.Namespace
             The parsed command-line arguments.
 
         Raises
         ------
-        OSError
-            If source discovery fails, e.g. due to malformed `compile_commands.json`.
         SystemExit
             If formatting exits non-zero.
         """
         _require_active_image_tag()
 
-        async def sources() -> object:
+        async def sources() -> list[object]:
             with await Kube.host(timeout=INFINITY) as kube:
                 async with await Config.load(
                     WORKTREE_MOUNT,
                     kube=kube,
                 ) as config:
-                    return config.sources()
+                    source_resolver = cast(
+                        "Callable[[], Iterable[object]]",
+                        object.__getattribute__(config, "sources"),
+                    )
+                    return list(source_resolver())
 
         files = asyncio.run(sources())
         clang_format_config = CONTAINER_TMP_MOUNT / ".clang-format"
 
         # Python formatting
-        result = subprocess.run(["ruff", "format", "."], check=False, cwd=WORKTREE_MOUNT)
+        result = subprocess.run(
+            ["ruff", "format", "."],
+            check=False,
+            cwd=WORKTREE_MOUNT,
+        )
         if result.returncode != 0:
             raise SystemExit(result.returncode)
 
         # C++ formatting over resolved compilation sources.
         for source in files:
             result = subprocess.run(
-                ["clang-format", f"--style=file:{clang_format_config}", "-i", str(source)],
+                [
+                    "clang-format",
+                    f"--style=file:{clang_format_config}",
+                    "-i",
+                    str(source),
+                ],
                 check=False,
-                cwd=WORKTREE_MOUNT
+                cwd=WORKTREE_MOUNT,
             )
             if result.returncode != 0:
                 raise SystemExit(result.returncode)
 
     @staticmethod
-    def test(args: argparse.Namespace) -> None:
-        """Execute the `bertrand test` CLI command from within a containerized
-        environment.
+    def test(_args: argparse.Namespace) -> None:
+        """Execute the `bertrand test` CLI command.
+
+        This command runs from within a containerized environment.
 
         Parameters
         ----------
-        args : argparse.Namespace
+        _args : argparse.Namespace
             The parsed command-line arguments.
 
         Raises
@@ -329,6 +352,7 @@ class Internal:
             raise SystemExit(result.returncode)
 
     def __call__(self) -> None:
+        """Parse and dispatch the selected internal command."""
         parser = Internal.Parser()
         args = parser()
         if args.command is None:

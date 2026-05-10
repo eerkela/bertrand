@@ -1,19 +1,21 @@
-"""TODO"""
+"""External CLI endpoint for pausing Bertrand containers."""
+
 from __future__ import annotations
 
 import time
-from pathlib import Path
+from typing import TYPE_CHECKING
 
-from ..legacy.environment import Environment
-from ..legacy.nerdctl import nerdctl
+from bertrand.env.legacy.environment import Environment
+from bertrand.env.legacy.nerdctl import nerdctl
+
+from ._helper import _cli_containers
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 async def bertrand_pause(
-    worktree: Path,
-    workload: str | None,
-    tag: str | None,
-    *,
-    deadline: float
+    worktree: Path, workload: str | None, tag: str | None, *, deadline: float
 ) -> None:
     """Pause running Bertrand containers within an environment.
 
@@ -28,23 +30,14 @@ async def bertrand_pause(
     deadline : float
         Timestamp before which this command should complete, relative to the epoch.
 
-    Raises
-    ------
-    OSError
-        If runtime pause operations fail.
     """
     if workload is not None:
-        raise NotImplementedError("kubernetes workloads are not yet supported")
+        msg = "kubernetes workloads are not yet supported"
+        raise NotImplementedError(msg)
 
     async with await Environment.load(worktree, timeout=deadline - time.time()) as env:
         ids = await _cli_containers(
-            env,
-            tag,
-            status=("running", "restarting"),
-            timeout=deadline - time.time()
+            env, tag, status=("running", "restarting"), timeout=deadline - time.time()
         )
         if ids:
-            await nerdctl(
-                ["container", "pause", *ids],
-                timeout=deadline - time.time()
-            )
+            await nerdctl(["container", "pause", *ids], timeout=deadline - time.time())

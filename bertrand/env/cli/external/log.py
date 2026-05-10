@@ -1,11 +1,17 @@
-"""TODO"""
+"""External CLI endpoint for showing Bertrand logs."""
+
 from __future__ import annotations
 
 import time
-from pathlib import Path
+from typing import TYPE_CHECKING
 
-from ..legacy.environment import Environment
-from ..legacy.nerdctl import nerdctl
+from bertrand.env.legacy.environment import Environment
+from bertrand.env.legacy.nerdctl import nerdctl
+
+from ._helper import _cli_containers, _cli_images
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 async def bertrand_log(
@@ -41,11 +47,10 @@ async def bertrand_log(
     ------
     ValueError
         If `since`/`until` are used in image-history mode.
-    OSError
-        If runtime log/history operations fail.
     """
     if workload is not None:
-        raise NotImplementedError("kubernetes workloads are not yet supported")
+        msg = "kubernetes workloads are not yet supported"
+        raise NotImplementedError(msg)
 
     async with await Environment.load(worktree, timeout=deadline - time.time()) as env:
         if image:
@@ -60,15 +65,13 @@ async def bertrand_log(
                 ),
             ]
             if since is not None:
-                raise ValueError("cannot use 'since' with image logs")
+                msg = "cannot use 'since' with image logs"
+                raise ValueError(msg)
             if until is not None:
-                raise ValueError("cannot use 'until' with image logs")
+                msg = "cannot use 'until' with image logs"
+                raise ValueError(msg)
         else:
-            ids = await _cli_containers(
-                env,
-                tag,
-                timeout=deadline - time.time()
-            )
+            ids = await _cli_containers(env, tag, timeout=deadline - time.time())
             cmd = [
                 "container",
                 "logs",

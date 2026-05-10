@@ -1,12 +1,16 @@
-"""TODO"""
+"""External CLI endpoint for starting Bertrand containers."""
+
 from __future__ import annotations
 
-from collections.abc import Sequence
-from pathlib import Path
+from typing import TYPE_CHECKING
 
-from ..config import DEFAULT_TAG
-from ..legacy.environment import Environment
-from ..legacy.nerdctl import TIMEOUT
+from bertrand.env.config import DEFAULT_TAG
+from bertrand.env.legacy.environment import Environment
+from bertrand.env.legacy.nerdctl import TIMEOUT
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
+    from pathlib import Path
 
 
 async def bertrand_start(
@@ -29,15 +33,10 @@ async def bertrand_start(
     cmd : Sequence[str]
         Optional command to override the default container entry point.
 
-    Raises
-    ------
-    ValueError
-        If tag or command input is invalid.
-    OSError
-        If image build or container lifecycle startup fails.
     """
     if workload is not None:
-        raise NotImplementedError("kubernetes workloads are not yet supported")
+        msg = "kubernetes workloads are not yet supported"
+        raise NotImplementedError(msg)
     if tag is None:
         tag = DEFAULT_TAG
 

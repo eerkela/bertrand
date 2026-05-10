@@ -3,11 +3,9 @@
 from __future__ import annotations
 
 import re
-
 from dataclasses import dataclass, field
 from importlib import metadata as importlib_metadata
 from pathlib import Path, PurePosixPath
-
 
 CONTAINERFILE_ARG = re.compile(
     r"^\s*ARG\s+(?P<key>[A-Z][A-Z0-9_]*)\s*=\s*(?P<value>\S+)\s*$"
@@ -28,9 +26,11 @@ CONTAINERFILE_ARGS: dict[str, str] = {
 
 @dataclass(frozen=True)
 class Versions:
-    """Pinned versions for Bertrand and each component of its containerized toolchain,
-    resolved from distribution metadata.
+    """Pinned Bertrand and containerized toolchain versions.
+
+    Versions are resolved from distribution metadata.
     """
+
     bertrand: str = field(init=False)
     ninja: str = field(init=False)
     llvm: str = field(init=False)
@@ -44,65 +44,84 @@ class Versions:
     cxx_std: str = field(init=False)
 
     def __post_init__(self) -> None:
+        """Populate resolved version fields after dataclass construction.
+
+        Raises
+        ------
+        OSError
+            If package metadata or the canonical Containerfile cannot be resolved.
+        """
         # get Bertrand package version
         try:
             object.__setattr__(
                 self,
                 "bertrand",
-                importlib_metadata.version("bertrand").strip()
+                importlib_metadata.version("bertrand").strip(),
             )
         except importlib_metadata.PackageNotFoundError as err:
-            raise OSError(
-                "missing distribution metadata for 'bertrand'.  Version lookup requires "
-                "an installed package context."
-            ) from err
+            msg = (
+                "missing distribution metadata for 'bertrand'.  Version lookup "
+                "requires an installed package context."
+            )
+            raise OSError(msg) from err
         if not self.bertrand:
-            raise OSError("installed distribution version for 'bertrand' is empty")
+            msg = "installed distribution version for 'bertrand' is empty"
+            raise OSError(msg)
 
         # get distribution metadata
         try:
             dist = importlib_metadata.distribution("bertrand")
         except importlib_metadata.PackageNotFoundError as err:
-            raise OSError(
-                "missing distribution metadata for 'bertrand'.  Toolchain version lookup "
-                "requires an installed package context."
-            ) from err
+            msg = (
+                "missing distribution metadata for 'bertrand'.  Toolchain version "
+                "lookup requires an installed package context."
+            )
+            raise OSError(msg) from err
         records = dist.files
         if records is None:
-            raise OSError(
-                "distribution metadata for 'bertrand' does not expose installed files.  "
-                "Cannot locate canonical Containerfile."
+            msg = (
+                "distribution metadata for 'bertrand' does not expose installed "
+                "files.  Cannot locate canonical Containerfile."
             )
+            raise OSError(msg)
 
         # search for original toolchain Containerfile record
         matches = [
-            entry for entry in records if PurePosixPath(str(entry)).name == "Containerfile"
+            entry
+            for entry in records
+            if PurePosixPath(str(entry)).name == "Containerfile"
         ]
         if not matches:
-            raise OSError(
-                "could not find canonical toolchain Containerfile in installed 'bertrand' "
-                "distribution files.  Ensure packaging includes the root Containerfile."
-            )
+            path = Path(__file__).resolve().parents[2] / "Containerfile"
+            if not path.is_file():
+                msg = (
+                    "could not find canonical toolchain Containerfile in installed "
+                    "'bertrand' distribution files or source checkout.  Ensure "
+                    "packaging includes the root Containerfile."
+                )
+                raise OSError(msg)
         if len(matches) > 1:
             locations = ", ".join(sorted(str(match) for match in matches))
-            raise OSError(
+            msg = (
                 "ambiguous toolchain Containerfile entries in installed 'bertrand' "
                 f"distribution: {locations}"
             )
+            raise OSError(msg)
+        if matches:
+            path = Path(str(dist.locate_file(matches[0])))
 
         # read the Containerfile text from disk
-        path = Path(str(dist.locate_file(matches[0])))
         try:
             text = path.read_text(encoding="utf-8")
         except FileNotFoundError as err:
-            raise OSError(
+            msg = (
                 "canonical toolchain Containerfile record was present in distribution "
                 f"metadata, but the file does not exist on disk: {path}"
-            ) from err
+            )
+            raise OSError(msg) from err
         except OSError as err:
-            raise OSError(
-                f"failed to read canonical toolchain Containerfile at {path}: {err}"
-            ) from err
+            msg = f"failed to read canonical toolchain Containerfile at {path}: {err}"
+            raise OSError(msg) from err
 
         # parse the Containerfile text for ARG values representing toolchain component
         # versions
@@ -116,11 +135,12 @@ class Versions:
                 continue
             old = getattr(self, norm_key, value)
             if old != value:
-                raise OSError(
+                msg = (
                     "conflicting toolchain ARG values in canonical Containerfile for "
                     f"'{key}': '{old}' vs '{value}' (line {line_number})"
                 )
-            setattr(self, norm_key, value)
+                raise OSError(msg)
+            object.__setattr__(self, norm_key, value)
 
 
 # global version singletons
