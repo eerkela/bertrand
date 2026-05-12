@@ -232,6 +232,37 @@ class Pod(NamespacedKubeMetadata[kubernetes.client.V1Pod]):
         return (spec.node_name or "").strip() if spec is not None else ""
 
     @property
+    def pod_ip(self) -> str:
+        """Return this Pod's cluster IP address.
+
+        Returns
+        -------
+        str
+            Pod IP reported by Kubernetes, or an empty string when unavailable.
+        """
+        status = self._obj.status
+        return (status.pod_ip or "").strip() if status is not None else ""
+
+    @property
+    def is_ready(self) -> bool:
+        """Return whether this Pod currently reports Ready.
+
+        Returns
+        -------
+        bool
+            ``True`` when the Pod is active and has a Ready condition with status
+            ``True``.
+        """
+        if not self.is_active:
+            return False
+        status = self._obj.status
+        for condition in (status.conditions or []) if status is not None else []:
+            if (condition.type or "").strip() != "Ready":
+                continue
+            return (condition.status or "").strip().lower() == "true"
+        return False
+
+    @property
     def is_terminating(self) -> bool:
         """Return whether the Pod is terminating.
 

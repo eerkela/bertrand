@@ -1,36 +1,37 @@
-"""Long-lived BuildKit daemon for Bertrand's Kubernetes image build runtime.
-
-The daemon is represented as one stable Deployment and Service pair.
-"""
+"""Per-node BuildKit daemon pool for Bertrand's Kubernetes image builds."""
 
 from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from bertrand.env.git import BERTRAND_NAMESPACE, INFINITY
+from bertrand.env.host import CACHE_DIR
 from bertrand.env.kube.api import (
     ContainerPortSpec,
     ContainerSpec,
-    DeploymentStrategySpec,
     Kube,
     ProbeSpec,
     SecurityContextSpec,
-    ServicePortSpec,
+    TolerationSpec,
     VolumeMountSpec,
     VolumeSpec,
 )
-from bertrand.env.kube.build._status import _deployment_status, _service_status
-from bertrand.env.kube.build.cache import BUILDKIT_CACHE, BuildKitCacheStatus
-from bertrand.env.kube.deployment import Deployment
+from bertrand.env.kube.daemonset import DaemonSet
+from bertrand.env.kube.node import Node
 from bertrand.env.kube.pod import Pod
-from bertrand.env.kube.service import Service
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
+    from pathlib import Path
 
 BUILDKIT_NAME = "bertrand-buildkit"
 BUILDKIT_IMAGE = "moby/buildkit:v0.29.0"
 BUILDKIT_PORT = 1234
 BUILDKIT_LISTEN_ADDR = f"tcp://0.0.0.0:{BUILDKIT_PORT}"
 BUILDKIT_CACHE_MOUNT = "/var/lib/buildkit"
+BUILDKIT_CACHE_PATH = CACHE_DIR / "buildkit"
 BUILDKIT_CACHE_VOLUME = "buildkit-state"
 BUILDKIT_CONFIG_DIR = "/etc/buildkit"
 BUILDKIT_CONFIG_FILE = f"{BUILDKIT_CONFIG_DIR}/buildkitd.toml"
@@ -45,107 +46,193 @@ BUILDKIT_CDI_SPEC_MOUNTS = (
 )
 BUILDKIT_LABEL = "bertrand.dev/buildkit"
 BUILDKIT_LABEL_VALUE = "v1"
+BUILDKIT_NODE_SELECTOR = {"kubernetes.io/os": "linux"}
+BUILDKIT_CONTROL_PLANE_TOLERATIONS = (
+    TolerationSpec(
+        key="node-role.kubernetes.io/control-plane",
+        operator="Exists",
+        effect="NoSchedule",
+    ),
+    TolerationSpec(
+        key="node-role.kubernetes.io/master",
+        operator="Exists",
+        effect="NoSchedule",
+    ),
+)
 
 
 @dataclass(frozen=True)
-class BuildKitStatus:
-    """Read-only readiness report for Bertrand's BuildKit daemon.
+class BuildKitEndpoint:
+    """Concrete BuildKit daemon endpoint selected for one build.
+
+    Parameters
+    ----------
+    addr : str
+        BuildKit client address, suitable for ``buildctl --addr``.
+    node : str
+        Kubernetes node name running the selected builder pod.
+    platform : str
+        Native OCI platform exposed by the selected node.
+    """
+
+    addr: str
+    node: str
+    platform: str
+
+
+@dataclass(frozen=True)
+class BuildKitBuilder:
+    """Ready BuildKit daemon pod in the builder pool.
 
     Parameters
     ----------
     namespace : str
-        Namespace that owns the BuildKit resources.
+        Namespace that owns the builder pod.
+    pod : str
+        Builder pod name.
+    node : str
+        Node running the builder pod.
+    platform : str
+        Native OCI platform exposed by the node.
+    pod_ip : str
+        Pod IP used by short-lived ``buildctl`` Jobs.
+    endpoint : BuildKitEndpoint
+        Concrete BuildKit client endpoint for this builder.
+    config_hash : str
+        BuildKit config hash annotation installed on the builder pod.
+    config_current : bool
+        Whether ``config_hash`` matches the expected hash passed by the caller, or
+        ``True`` when no expected hash was provided.
+    """
+
+    namespace: str
+    pod: str
+    node: str
+    platform: str
+    pod_ip: str
+    endpoint: BuildKitEndpoint
+    config_hash: str
+    config_current: bool
+
+    @property
+    def addr(self) -> str:
+        """Return the BuildKit client address.
+
+        Returns
+        -------
+        str
+            BuildKit client address for this builder.
+        """
+        return self.endpoint.addr
+
+
+@dataclass(frozen=True)
+class BuildKitPlatformSchedule:
+    """Selected BuildKit builder for one native platform.
+
+    Parameters
+    ----------
+    platform : str
+        Native OCI platform assigned to this schedule entry.
+    builder : BuildKitBuilder
+        Ready builder selected for the platform.
+    """
+
+    platform: str
+    builder: BuildKitBuilder
+
+
+@dataclass(frozen=True)
+class BuildKitPoolStatus:
+    """Read-only readiness report for the BuildKit builder pool.
+
+    Parameters
+    ----------
+    namespace : str
+        Namespace that owns the BuildKit DaemonSet.
     name : str
-        BuildKit Service and Deployment name.
-    service_present : bool
-        Whether the BuildKit Service currently exists.
-    service_selector_ready : bool
-        Whether the Service selector matches the expected BuildKit pod selector.
-    service_port_ready : bool
-        Whether the Service exposes the expected BuildKit gRPC port.
-    service_ready : bool
-        Whether the Service exists and has the expected type, selector, and port.
-    deployment_present : bool
-        Whether the BuildKit Deployment currently exists.
-    available_replicas : int
-        Deployment replicas currently reported available.
-    updated_replicas : int
-        Deployment replicas updated to the latest pod template.
-    observed_generation : int
-        Deployment generation observed by the Kubernetes controller.
-    generation : int
-        Desired Deployment metadata generation.
+        BuildKit DaemonSet name.
+    daemonset_present : bool
+        Whether the BuildKit DaemonSet currently exists.
+    desired_builders : int
+        Number of eligible Linux nodes expected to host builders.
+    ready_builders : int
+        Number of ready BuildKit builder pods.
+    expected_platforms : tuple[str, ...]
+        Native platforms present on eligible cluster nodes.
+    ready_platforms : tuple[str, ...]
+        Native platforms represented by ready builder pods.
+    missing_platforms : tuple[str, ...]
+        Eligible native platforms without a ready builder pod.
     rollout_ready : bool
-        Whether the Deployment controller has observed the desired generation and at
-        least one replica is updated and available.
+        Whether the DaemonSet rollout is current.
     expected_config_hash : str | None
         Optional config hash expected by the caller.
     installed_config_hash : str
-        Config hash installed on the BuildKit pod template annotation.
+        Config hash installed on the DaemonSet pod template.
     config_current : bool
-        Whether the installed config hash matches the expected hash, or `True` when
-        no expected hash was provided.
-    storage_ready : bool
-        Whether the persistent BuildKit daemon cache PVC is ready.
-    cache : BuildKitCacheStatus
-        BuildKit daemon cache PVC readiness report.
+        Whether the DaemonSet template hash matches the expected hash, or ``True``
+        when no expected hash was provided.
+    cache_path : str
+        Host path used for node-local BuildKit daemon cache storage.
+    cdi_paths : tuple[str, ...]
+        Host CDI spec directories mounted into BuildKit pods.
+    builders : tuple[BuildKitBuilder, ...]
+        Ready builder pods discovered from the pool.
     ready : bool
-        Whether the Service exists, Deployment rollout is current, config is current,
-        and cache is ready.
+        Whether the DaemonSet rollout, config hash, and platform coverage are ready.
     """
 
     namespace: str
     name: str
-    service_present: bool
-    service_selector_ready: bool
-    service_port_ready: bool
-    service_ready: bool
-    deployment_present: bool
-    available_replicas: int
-    updated_replicas: int
-    observed_generation: int
-    generation: int
+    daemonset_present: bool
+    desired_builders: int
+    ready_builders: int
+    expected_platforms: tuple[str, ...]
+    ready_platforms: tuple[str, ...]
+    missing_platforms: tuple[str, ...]
     rollout_ready: bool
     expected_config_hash: str | None
     installed_config_hash: str
     config_current: bool
-    storage_ready: bool
-    cache: BuildKitCacheStatus
+    cache_path: str
+    cdi_paths: tuple[str, ...]
+    builders: tuple[BuildKitBuilder, ...]
     ready: bool
 
 
 @dataclass(frozen=True)
-class BuildKit:
-    """Stable in-cluster address for Bertrand's BuildKit daemon.
+class BuildKitPool:
+    """Per-node BuildKit daemon pool.
 
-    Attributes
+    Parameters
     ----------
     namespace : str
-        Kubernetes namespace that contains the BuildKit Service.
-    service : str
-        Kubernetes Service name used to route BuildKit client traffic.
+        Namespace that owns the BuildKit DaemonSet.
+    name : str
+        BuildKit DaemonSet name.
     port : int
-        TCP port exposed by the Service for BuildKit's gRPC API.
-    addr : str
-        BuildKit client address, suitable for `buildctl --addr` or `BUILDKIT_HOST`.
+        TCP port exposed by each BuildKit pod.
+    cache_path : Path
+        Host path used for node-local BuildKit daemon cache storage.
     """
 
     namespace: str
-    service: str
+    name: str
     port: int
-    addr: str
+    cache_path: Path
 
     @property
     def labels(self) -> dict[str, str]:
-        """Return shared BuildKit resource labels.
+        """Return labels applied to BuildKit pool resources.
 
         Returns
         -------
         dict[str, str]
-            Labels shared by the BuildKit Deployment and Service.
+            Shared BuildKit pool labels.
         """
         return {
-            "app.kubernetes.io/name": self.service,
+            "app.kubernetes.io/name": self.name,
             "app.kubernetes.io/part-of": "bertrand",
             BUILDKIT_LABEL: BUILDKIT_LABEL_VALUE,
         }
@@ -157,10 +244,10 @@ class BuildKit:
         Returns
         -------
         dict[str, str]
-            Labels used to bind the BuildKit Service to its pods.
+            Labels used to select BuildKit daemon pods.
         """
         return {
-            "app.kubernetes.io/name": self.service,
+            "app.kubernetes.io/name": self.name,
             BUILDKIT_LABEL: BUILDKIT_LABEL_VALUE,
         }
 
@@ -171,7 +258,7 @@ class BuildKit:
         timeout: float = INFINITY,
         config_hash: str | None = None,
     ) -> None:
-        """Converge Bertrand's bootstrap BuildKit Deployment and Service.
+        """Converge the per-node BuildKit DaemonSet.
 
         Parameters
         ----------
@@ -180,21 +267,25 @@ class BuildKit:
         timeout : float, optional
             Maximum runtime budget in seconds. If infinite, wait indefinitely.
         config_hash : str | None, optional
-            Hash of the mounted BuildKit configuration.  When provided, the hash is
+            Hash of the mounted BuildKit configuration. When provided, the hash is
             applied to the pod template to trigger a rollout after config changes.
 
         Raises
         ------
         TimeoutError
-            If `timeout` is non-positive, Kubernetes requests exceed the budget, or the
-            Deployment does not report at least one available replica before the
-            deadline.
+            If ``timeout`` is non-positive or rollout exceeds the budget.
+        OSError
+            If the cluster has no ready, schedulable Linux build nodes.
         """
         if timeout <= 0:
-            msg = "BuildKit daemon timeout must be non-negative"
+            msg = "BuildKit pool timeout must be non-negative"
             raise TimeoutError(msg)
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
+        eligible = await self._eligible_nodes(kube, timeout=deadline - loop.time())
+        if not eligible:
+            msg = "BuildKit pool requires at least one ready schedulable Linux node"
+            raise OSError(msg)
         pod_annotations = (
             {BUILDKIT_CONFIG_HASH_ANNOTATION: config_hash}
             if config_hash is not None
@@ -204,27 +295,10 @@ class BuildKit:
             f"--addr {BUILDKIT_LISTEN_ADDR!r} "
             f"--allow-insecure-entitlement {BUILDKIT_DEVICE_ENTITLEMENT!r}"
         )
-
-        await Service.upsert(
+        daemonset = await DaemonSet.upsert(
             kube,
             namespace=self.namespace,
-            name=self.service,
-            labels=self.labels,
-            selector=self.selector,
-            ports=[
-                ServicePortSpec(
-                    name="grpc",
-                    port=self.port,
-                    target_port=self.port,
-                )
-            ],
-            timeout=deadline - loop.time(),
-        )
-        cache = await BUILDKIT_CACHE.ensure(kube, timeout=deadline - loop.time())
-        deployment = await Deployment.upsert(
-            kube,
-            namespace=self.namespace,
-            name=self.service,
+            name=self.name,
             labels=self.labels,
             selector=self.selector,
             containers=[
@@ -285,9 +359,10 @@ class BuildKit:
                 )
             ],
             volumes=[
-                VolumeSpec.pvc(
+                VolumeSpec.host_path(
                     BUILDKIT_CACHE_VOLUME,
-                    claim_name=cache.name,
+                    path=self.cache_path,
+                    host_path_type="DirectoryOrCreate",
                 ),
                 VolumeSpec.config_map(
                     BUILDKIT_CONFIG_VOLUME,
@@ -304,10 +379,176 @@ class BuildKit:
                 ),
             ],
             pod_annotations=pod_annotations,
-            strategy=DeploymentStrategySpec.recreate(),
+            node_selector=BUILDKIT_NODE_SELECTOR,
+            tolerations=BUILDKIT_CONTROL_PLANE_TOLERATIONS,
             timeout=deadline - loop.time(),
         )
-        await deployment.wait_rollout(kube, timeout=deadline - loop.time())
+        await daemonset.wait_rollout(kube, timeout=deadline - loop.time())
+
+    async def builders(
+        self,
+        kube: Kube,
+        *,
+        timeout: float,
+        config_hash: str | None = None,
+    ) -> tuple[BuildKitBuilder, ...]:
+        """List ready BuildKit builders in deterministic order.
+
+        Parameters
+        ----------
+        kube : Kube
+            Kubernetes API client for the target cluster.
+        timeout : float
+            Maximum request budget in seconds. If infinite, wait indefinitely.
+        config_hash : str | None, optional
+            Expected BuildKit config hash used to mark builder freshness.
+
+        Returns
+        -------
+        tuple[BuildKitBuilder, ...]
+            Ready builder pods with endpoints and native platform metadata.
+
+        Raises
+        ------
+        TimeoutError
+            If ``timeout`` is non-positive.
+        """
+        if timeout <= 0:
+            msg = "BuildKit builder discovery timeout must be non-negative"
+            raise TimeoutError(msg)
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        nodes = await Node.list(kube, timeout=deadline - loop.time())
+        pods = await Pod.list(
+            kube,
+            timeout=deadline - loop.time(),
+            namespaces=(self.namespace,),
+            labels=self.selector,
+        )
+        return self._builders_from(nodes, pods, config_hash=config_hash)
+
+    async def platforms(self, kube: Kube, *, timeout: float) -> tuple[str, ...]:
+        """Return native platforms currently available for builds.
+
+        Parameters
+        ----------
+        kube : Kube
+            Kubernetes API client for the target cluster.
+        timeout : float
+            Maximum request budget in seconds. If infinite, wait indefinitely.
+
+        Returns
+        -------
+        tuple[str, ...]
+            Sorted unique platforms from ready, schedulable Linux nodes.
+
+        Raises
+        ------
+        TimeoutError
+            If ``timeout`` is non-positive.
+        """
+        if timeout <= 0:
+            msg = "BuildKit platform discovery timeout must be non-negative"
+            raise TimeoutError(msg)
+        nodes = await self._eligible_nodes(kube, timeout=timeout)
+        return tuple(sorted({node.platform for node in nodes if node.platform}))
+
+    async def schedule(
+        self,
+        kube: Kube,
+        *,
+        timeout: float,
+        platforms: Iterable[str] | None = None,
+        preferred_node: str | None = None,
+        config_hash: str | None = None,
+    ) -> tuple[BuildKitPlatformSchedule, ...]:
+        """Select one ready builder for each requested platform.
+
+        Parameters
+        ----------
+        kube : Kube
+            Kubernetes API client for the target cluster.
+        timeout : float
+            Maximum request budget in seconds. If infinite, wait indefinitely.
+        platforms : Iterable[str] | None, optional
+            Explicit platform filters. If omitted, every eligible cluster platform
+            is targeted.
+        preferred_node : str | None, optional
+            Node to prefer when selecting a builder for its matching platform.
+        config_hash : str | None, optional
+            Expected BuildKit config hash. When provided, stale builders are
+            excluded from scheduling.
+
+        Returns
+        -------
+        tuple[BuildKitPlatformSchedule, ...]
+            Deterministic platform-to-builder assignments.
+
+        Raises
+        ------
+        TimeoutError
+            If ``timeout`` is non-positive.
+        OSError
+            If no eligible platforms exist or any target platform has no usable
+            builder.
+        """
+        if timeout <= 0:
+            msg = "BuildKit scheduling timeout must be non-negative"
+            raise TimeoutError(msg)
+        preferred_node = preferred_node.strip() if preferred_node is not None else ""
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        available = await self.platforms(kube, timeout=deadline - loop.time())
+        targets = (
+            _normalize_platforms(platforms) if platforms is not None else available
+        )
+        if not targets:
+            msg = "BuildKit scheduling requires at least one eligible platform"
+            raise OSError(msg)
+        missing = tuple(platform for platform in targets if platform not in available)
+        if missing:
+            msg = (
+                "BuildKit scheduling requested unavailable platform(s): "
+                f"{', '.join(missing)}"
+            )
+            raise OSError(msg)
+
+        builders = await self.builders(
+            kube,
+            timeout=deadline - loop.time(),
+            config_hash=config_hash,
+        )
+        if config_hash is not None:
+            builders = tuple(builder for builder in builders if builder.config_current)
+
+        out: list[BuildKitPlatformSchedule] = []
+        for platform in targets:
+            candidates = [
+                builder for builder in builders if builder.platform == platform
+            ]
+            candidates.sort(
+                key=lambda builder: (
+                    builder.node != preferred_node,
+                    builder.platform,
+                    builder.node,
+                    builder.pod,
+                )
+            )
+            if not candidates:
+                msg = f"BuildKit has no ready builder for platform {platform!r}"
+                if config_hash is not None:
+                    msg = (
+                        f"{msg} with config hash {config_hash!r}; rerun "
+                        "`bertrand init` to refresh the builder pool"
+                    )
+                raise OSError(msg)
+            out.append(
+                BuildKitPlatformSchedule(
+                    platform=platform,
+                    builder=candidates[0],
+                )
+            )
+        return tuple(out)
 
     async def status(
         self,
@@ -315,8 +556,8 @@ class BuildKit:
         *,
         timeout: float = INFINITY,
         config_hash: str | None = None,
-    ) -> BuildKitStatus:
-        """Inspect BuildKit daemon readiness without mutating the cluster.
+    ) -> BuildKitPoolStatus:
+        """Inspect BuildKit pool readiness without mutating the cluster.
 
         Parameters
         ----------
@@ -330,138 +571,151 @@ class BuildKit:
 
         Returns
         -------
-        BuildKitStatus
-            Read-only BuildKit runtime readiness report.
+        BuildKitPoolStatus
+            Read-only BuildKit pool readiness report.
 
         Raises
         ------
         TimeoutError
-            If `timeout` is non-positive.
+            If ``timeout`` is non-positive.
         OSError
             If Kubernetes read operations fail or return malformed data.
         """
         if timeout <= 0:
-            msg = "BuildKit daemon status timeout must be non-negative"
+            msg = "BuildKit pool status timeout must be non-negative"
             raise TimeoutError(msg)
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
         try:
-            service = await Service.get(
+            daemonset = await DaemonSet.get(
                 kube,
                 namespace=self.namespace,
                 timeout=deadline - loop.time(),
-                name=self.service,
+                name=self.name,
             )
-            deployment = await Deployment.get(
+            nodes = await Node.list(kube, timeout=deadline - loop.time())
+            pods = await Pod.list(
                 kube,
-                namespace=self.namespace,
                 timeout=deadline - loop.time(),
-                name=self.service,
+                namespaces=(self.namespace,),
+                labels=self.selector,
             )
-            cache = await BUILDKIT_CACHE.status(kube, timeout=deadline - loop.time())
-
-            expected_port = ServicePortSpec(
-                name="grpc",
-                port=self.port,
-                target_port=self.port,
+            builders = self._builders_from(nodes, pods, config_hash=config_hash)
+            eligible = tuple(
+                sorted(
+                    (node for node in nodes if node.is_build_eligible),
+                    key=lambda node: node.name,
+                )
             )
-            service_status = _service_status(
-                service,
-                service_type="ClusterIP",
-                selector=self.selector,
-                ports=(expected_port,),
+            expected_platforms = tuple(
+                sorted({node.platform for node in eligible if node.platform})
             )
-            deployment_status = _deployment_status(deployment, minimum=1)
-            installed_hash = deployment_status.pod_annotations.get(
-                BUILDKIT_CONFIG_HASH_ANNOTATION,
-                "",
+            ready_platforms = tuple(
+                sorted({builder.platform for builder in builders if builder.platform})
             )
-
+            missing_platforms = tuple(
+                platform
+                for platform in expected_platforms
+                if platform not in set(ready_platforms)
+            )
+            installed_hash = (
+                daemonset.pod_annotations.get(BUILDKIT_CONFIG_HASH_ANNOTATION, "")
+                if daemonset is not None
+                else ""
+            )
             config_current = config_hash is None or installed_hash == config_hash
-            return BuildKitStatus(
+            rollout_ready = (
+                daemonset.rollout_ready(minimum=1) if daemonset is not None else False
+            )
+            return BuildKitPoolStatus(
                 namespace=self.namespace,
-                name=self.service,
-                service_present=service_status.present,
-                service_selector_ready=service_status.selector_ready,
-                service_port_ready=service_status.port_ready,
-                service_ready=service_status.ready,
-                deployment_present=deployment_status.present,
-                available_replicas=deployment_status.available_replicas,
-                updated_replicas=deployment_status.updated_replicas,
-                observed_generation=deployment_status.observed_generation,
-                generation=deployment_status.generation,
-                rollout_ready=deployment_status.rollout_ready,
+                name=self.name,
+                daemonset_present=daemonset is not None,
+                desired_builders=len(eligible),
+                ready_builders=len(builders),
+                expected_platforms=expected_platforms,
+                ready_platforms=ready_platforms,
+                missing_platforms=missing_platforms,
+                rollout_ready=rollout_ready,
                 expected_config_hash=config_hash,
                 installed_config_hash=installed_hash,
                 config_current=config_current,
-                storage_ready=cache.ready,
-                cache=cache,
+                cache_path=str(self.cache_path),
+                cdi_paths=tuple(path for _, path in BUILDKIT_CDI_SPEC_MOUNTS),
+                builders=builders,
                 ready=(
-                    service_status.ready
-                    and deployment_status.rollout_ready
+                    daemonset is not None
+                    and rollout_ready
                     and config_current
-                    and cache.ready
+                    and bool(builders)
+                    and not missing_platforms
                 ),
             )
         except OSError as err:
-            msg = (
-                f"failed to inspect BuildKit daemon "
-                f"{self.namespace}/{self.service}: {err}"
-            )
+            msg = f"failed to inspect BuildKit pool {self.namespace}/{self.name}: {err}"
             raise OSError(msg) from err
 
-    async def active_node(self, kube: Kube, *, timeout: float) -> str:
-        """Return the node running the active BuildKit daemon pod.
-
-        Parameters
-        ----------
-        kube : Kube
-            Kubernetes API client for the target cluster.
-        timeout : float
-            Maximum request budget in seconds. If infinite, wait indefinitely.
-
-        Returns
-        -------
-        str
-            Kubernetes node name running the active BuildKit pod.
-
-        Raises
-        ------
-        TimeoutError
-            If `timeout` is non-positive.
-        OSError
-            If no active BuildKit pod exists, more than one active pod exists, or
-            the active pod has not been assigned to a node.
-        """
-        if timeout <= 0:
-            msg = "BuildKit active node timeout must be non-negative"
-            raise TimeoutError(msg)
-        pods = await Pod.list(
-            kube,
-            timeout=timeout,
-            namespaces=(self.namespace,),
-            labels=self.selector,
+    async def _eligible_nodes(self, kube: Kube, *, timeout: float) -> tuple[Node, ...]:
+        nodes = await Node.list(kube, timeout=timeout)
+        return tuple(
+            sorted(
+                (node for node in nodes if node.is_build_eligible),
+                key=lambda node: node.name,
+            )
         )
-        active = [pod for pod in pods if pod.is_active]
-        if len(active) != 1:
-            msg = (
-                f"expected exactly one active BuildKit pod for {self.namespace}/"
-                f"{self.service}, found {len(active)}"
+
+    def _builders_from(
+        self,
+        nodes: Iterable[Node],
+        pods: Iterable[Pod],
+        *,
+        config_hash: str | None,
+    ) -> tuple[BuildKitBuilder, ...]:
+        nodes_by_name = {
+            node.name: node
+            for node in nodes
+            if node.name and node.is_build_eligible and node.platform
+        }
+        builders: list[BuildKitBuilder] = []
+        for pod in pods:
+            node = nodes_by_name.get(pod.node_name)
+            if node is None or not pod.is_ready or not pod.pod_ip:
+                continue
+            pod_hash = pod.annotations.get(BUILDKIT_CONFIG_HASH_ANNOTATION, "")
+            addr = f"tcp://{pod.pod_ip}:{self.port}"
+            endpoint = BuildKitEndpoint(
+                addr=addr,
+                node=node.name,
+                platform=node.platform,
             )
-            raise OSError(msg)
-        node_name = active[0].node_name
-        if not node_name:
-            msg = (
-                f"active BuildKit pod {active[0].namespace}/{active[0].name} is not "
-                "assigned to a node"
+            builders.append(
+                BuildKitBuilder(
+                    namespace=pod.namespace,
+                    pod=pod.name,
+                    node=node.name,
+                    platform=node.platform,
+                    pod_ip=pod.pod_ip,
+                    endpoint=endpoint,
+                    config_hash=pod_hash,
+                    config_current=config_hash is None or pod_hash == config_hash,
+                )
             )
-            raise OSError(msg)
-        return node_name
+        return tuple(sorted(builders, key=_builder_sort_key))
 
 
-BUILDKIT = BuildKit(
+def _builder_sort_key(builder: BuildKitBuilder) -> tuple[str, str, str]:
+    return (builder.platform, builder.node, builder.pod)
+
+
+def _normalize_platforms(platforms: Iterable[str]) -> tuple[str, ...]:
+    normalized = {platform.strip().lower() for platform in platforms}
+    normalized.discard("")
+    return tuple(sorted(normalized))
+
+
+BUILDKIT_POOL = BuildKitPool(
     namespace=BERTRAND_NAMESPACE,
-    service=BUILDKIT_NAME,
+    name=BUILDKIT_NAME,
     port=BUILDKIT_PORT,
-    addr=f"tcp://{BUILDKIT_NAME}.{BERTRAND_NAMESPACE}.svc.cluster.local:{BUILDKIT_PORT}",
+    cache_path=BUILDKIT_CACHE_PATH,
 )

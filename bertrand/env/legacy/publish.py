@@ -1,4 +1,4 @@
-"""The external CLI endpoint for building Bertrand images."""
+"""Legacy OCI publish command implementation for old container workflows."""
 
 from __future__ import annotations
 

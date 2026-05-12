@@ -11,6 +11,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Annotated, Literal, Protocol
 
 import jinja2
@@ -30,7 +31,8 @@ from bertrand.env.git import (
     WORKTREE_MOUNT,
 )
 from bertrand.env.kube.api import CustomResourceSpec, Kube
-from bertrand.env.kube.build.job import BuildKitImageBuild, BuildKitImageResult
+from bertrand.env.kube.build.job import BuildKitImageBuild
+from bertrand.env.kube.build.manifest import ImageManifestResult, publish_image_manifest
 from bertrand.env.kube.build.repository import IMAGES, ImageRepository
 from bertrand.env.kube.crd import CustomResourceClient, CustomResourceDefinition
 from bertrand.env.kube.pod import Pod
@@ -39,7 +41,6 @@ from bertrand.env.version import VERSION
 PROJECT_IMAGE_CONFIG_ID = "BERTRAND_IMAGE_CONFIG_ID"
 PROJECT_IMAGE_ENV_NAMESPACE = uuid.UUID("36eb88bb-c284-4cb2-ab0a-57f5e850868a")
 PROJECT_IMAGE_CONTEXT_PREFIX = "bertrand-project-image"
-PROJECT_IMAGE_TAG = "current"
 PROJECT_IMAGE_GROUP = "build.bertrand.dev"
 PROJECT_IMAGE_VERSION = "v1alpha1"
 PROJECT_IMAGE_KIND = "BertrandImage"
@@ -63,6 +64,7 @@ PROJECT_IMAGE_GC_GRACE_SECONDS = 86_400
 PROJECT_IMAGE_GC_LIMIT = 16
 _PROJECT_IMAGE_COMPONENT_RE = re.compile(r"[^a-z0-9._-]+")
 _PROJECT_IMAGE_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+_PROJECT_IMAGE_DIGEST_REF_RE = re.compile(r"^.+@sha256:[0-9a-f]{64}$")
 
 type _ProjectImagePhase = Literal["Active", "Retired"]
 type _NonEmptyString = Annotated[str, Field(min_length=1)]
@@ -101,6 +103,8 @@ class _BertrandImageSpec(BaseModel):
     image: _NonEmptyString
     digest_ref: _NonEmptyString
     digest: _NonEmptyString
+    platforms: tuple[_NonEmptyString, ...]
+    platform_images: dict[_NonEmptyString, _NonEmptyString]
     config_id: _NonEmptyString
 
 
@@ -138,6 +142,8 @@ _PROJECT_IMAGE_SPEC_SCHEMA = {
         "image",
         "digest_ref",
         "digest",
+        "platforms",
+        "platform_images",
         "config_id",
     ],
     "properties": {
@@ -146,8 +152,26 @@ _PROJECT_IMAGE_SPEC_SCHEMA = {
         "tag": {"type": "string", "minLength": 1},
         "env_id": {"type": "string", "minLength": 1},
         "image": {"type": "string", "minLength": 1},
-        "digest_ref": {"type": "string", "minLength": 1},
+        "digest_ref": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": _PROJECT_IMAGE_DIGEST_REF_RE.pattern,
+        },
         "digest": {"type": "string", "pattern": _PROJECT_IMAGE_DIGEST_RE.pattern},
+        "platforms": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": True,
+            "items": {"type": "string", "minLength": 1},
+        },
+        "platform_images": {
+            "type": "object",
+            "minProperties": 1,
+            "additionalProperties": {
+                "type": "string",
+                "pattern": _PROJECT_IMAGE_DIGEST_REF_RE.pattern,
+            },
+        },
         "config_id": {"type": "string", "minLength": 1},
     },
 }
@@ -199,6 +223,10 @@ class ProjectImageRecord:
         Immutable digest-pinned image reference.
     digest : str
         OCI manifest digest reported by BuildKit.
+    platforms : tuple[str, ...]
+        Platforms included in the manifest.
+    platform_images : Mapping[str, str]
+        Read-only mapping from platform to owned platform-image digest ref.
     config_id : str
         Deterministic hash of the image configuration inputs.
     phase : {"Active", "Retired"}
@@ -222,6 +250,8 @@ class ProjectImageRecord:
     image: str
     digest_ref: str
     digest: str
+    platforms: tuple[str, ...]
+    platform_images: Mapping[str, str]
     config_id: str
     phase: _ProjectImagePhase
     published_at: datetime | None
@@ -244,6 +274,27 @@ class ProjectImageRecord:
                 f"{image.status.phase!r}"
             )
             raise OSError(msg)
+        if not _PROJECT_IMAGE_DIGEST_RE.fullmatch(image.spec.digest):
+            msg = (
+                f"malformed {PROJECT_IMAGE_KIND} {image.metadata.name!r}: "
+                f"unsupported digest {image.spec.digest!r}"
+            )
+            raise OSError(msg)
+        if not _PROJECT_IMAGE_DIGEST_REF_RE.fullmatch(image.spec.digest_ref):
+            msg = (
+                f"malformed {PROJECT_IMAGE_KIND} {image.metadata.name!r}: "
+                f"unsupported digest ref {image.spec.digest_ref!r}"
+            )
+            raise OSError(msg)
+        platforms = tuple(image.spec.platforms)
+        platform_images = MappingProxyType(
+            dict(sorted(image.spec.platform_images.items()))
+        )
+        _validate_platform_images(
+            platforms=platforms,
+            platform_images=platform_images,
+            context=f"{PROJECT_IMAGE_KIND} {image.metadata.name!r}",
+        )
         return cls(
             name=image.metadata.name,
             namespace=image.metadata.namespace,
@@ -254,6 +305,8 @@ class ProjectImageRecord:
             image=image.spec.image,
             digest_ref=image.spec.digest_ref,
             digest=image.spec.digest,
+            platforms=platforms,
+            platform_images=platform_images,
             config_id=image.spec.config_id,
             phase=image.status.phase,
             published_at=_utc_datetime(image.status.published_at),
@@ -271,14 +324,14 @@ class ProjectImageResult:
     ----------
     plan : ProjectImageBuild
         Project image build plan that was executed.
-    build : BuildKitImageResult
-        BuildKit image publication result.
+    manifest : ImageManifestResult
+        Assembled internal image manifest result.
     record : ProjectImageRecord
         Active lifecycle record written for the published digest.
     """
 
     plan: ProjectImageBuild
-    build: BuildKitImageResult
+    manifest: ImageManifestResult
     record: ProjectImageRecord
 
     @property
@@ -288,9 +341,9 @@ class ProjectImageResult:
         Returns
         -------
         str
-            Mutable image reference published by BuildKit.
+            Mutable image reference published by the manifest assembler.
         """
-        return self.build.image
+        return self.manifest.image
 
     @property
     def digest(self) -> str:
@@ -299,9 +352,9 @@ class ProjectImageResult:
         Returns
         -------
         str
-            OCI manifest digest reported by BuildKit.
+            OCI manifest digest reported by the registry.
         """
-        return self.build.digest
+        return self.manifest.digest
 
     @property
     def digest_ref(self) -> str:
@@ -350,8 +403,10 @@ class ProjectImageBuild:
         kube: Kube,
         *,
         timeout: float = INFINITY,
+        external_image: str | None = None,
+        auth_id: KubeName | None = None,
     ) -> ProjectImageResult:
-        """Publish this project image and update its lifecycle record.
+        """Publish this project image manifest and update its lifecycle record.
 
         Parameters
         ----------
@@ -359,11 +414,16 @@ class ProjectImageBuild:
             Active Kubernetes API context.
         timeout : float, optional
             Maximum runtime budget in seconds. If infinite, wait indefinitely.
+        external_image : str | None, optional
+            Optional external image reference to copy the assembled manifest to.
+        auth_id : KubeName | None, optional
+            Secret capability ID containing Docker auth JSON for the external
+            registry.
 
         Returns
         -------
         ProjectImageResult
-            BuildKit publication result plus the active `BertrandImage` record.
+            Manifest publication result plus the active `BertrandImage` record.
 
         Raises
         ------
@@ -377,18 +437,27 @@ class ProjectImageBuild:
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
         await ensure_project_image_crd(kube, timeout=deadline - loop.time())
-        result = await self.build.publish(
+        platform_results = await self.build.publish_platforms(
             kube,
+            env_id=self.env_id,
             timeout=deadline - loop.time(),
+        )
+        manifest = await publish_image_manifest(
+            kube,
+            image=self.image,
+            platform_results=platform_results,
+            timeout=deadline - loop.time(),
+            external_image=external_image,
+            auth_id=auth_id,
             env_id=self.env_id,
         )
         record = await _record_project_image(
             kube,
             plan=self,
-            result=result,
+            result=manifest,
             timeout=deadline - loop.time(),
         )
-        return ProjectImageResult(plan=self, build=result, record=record)
+        return ProjectImageResult(plan=self, manifest=manifest, record=record)
 
 
 def project_image_build(
@@ -453,10 +522,9 @@ def project_image_build(
                 "projects",
                 repo_id,
                 _image_component(worktree, fallback="root"),
-                _image_component(tag, fallback="default"),
             )
         ),
-        PROJECT_IMAGE_TAG,
+        tag,
     )
     dockerfile = _dockerfile(config.root, bertrand, tag, image_config)
     config_id = _config_id(
@@ -706,17 +774,18 @@ async def gc_project_images(
         ):
             continue
         try:
-            await repository.delete_manifest(
-                record.digest_ref,
-                timeout=deadline - loop.time(),
-            )
+            for digest_ref in _record_digest_refs(record):
+                await repository.delete_manifest(
+                    digest_ref,
+                    timeout=deadline - loop.time(),
+                )
             await _PROJECT_IMAGE_CLIENT.delete(
                 kube,
                 namespace=BERTRAND_NAMESPACE,
                 name=record.name,
                 timeout=deadline - loop.time(),
             )
-        except (OSError, ValueError) as err:
+        except (OSError, TimeoutError, ValueError) as err:
             await _transition_project_image(
                 kube,
                 record=record,
@@ -740,7 +809,7 @@ async def _record_project_image(
     kube: Kube,
     *,
     plan: ProjectImageBuild,
-    result: BuildKitImageResult,
+    result: ImageManifestResult,
     timeout: float,
 ) -> ProjectImageRecord:
     if timeout <= 0:
@@ -748,12 +817,26 @@ async def _record_project_image(
         raise TimeoutError(msg)
     digest = _image_digest(result.digest)
     digest_ref = _digest_ref(result.image, digest)
+    if result.digest_ref != digest_ref:
+        msg = (
+            "project image manifest result digest ref does not match image and "
+            f"digest: {result.digest_ref!r}"
+        )
+        raise OSError(msg)
+    platform_images = dict(result.platform_images)
+    _validate_platform_images(
+        platforms=result.platforms,
+        platform_images=platform_images,
+        context=f"project image {plan.tag!r}",
+    )
     now = datetime.now(UTC)
     record = await _upsert_project_image_record(
         kube,
         plan=plan,
         digest=digest,
         digest_ref=digest_ref,
+        platforms=result.platforms,
+        platform_images=platform_images,
         published_at=now,
         timeout=timeout,
     )
@@ -788,6 +871,8 @@ async def _upsert_project_image_record(
     plan: ProjectImageBuild,
     digest: str,
     digest_ref: str,
+    platforms: tuple[str, ...],
+    platform_images: Mapping[str, str],
     published_at: datetime,
     timeout: float,
 ) -> ProjectImageRecord:
@@ -822,6 +907,8 @@ async def _upsert_project_image_record(
         "image": plan.image,
         "digest_ref": digest_ref,
         "digest": digest,
+        "platforms": list(platforms),
+        "platform_images": dict(platform_images),
         "config_id": plan.config_id,
     }
     loop = asyncio.get_running_loop()
@@ -874,6 +961,8 @@ async def _transition_project_image(
             "image": record.image,
             "digest_ref": record.digest_ref,
             "digest": record.digest,
+            "platforms": list(record.platforms),
+            "platform_images": dict(record.platform_images),
             "config_id": record.config_id,
         },
         labels=_record_labels(
@@ -954,7 +1043,18 @@ def _gc_eligible(
         return False
     if now - record.retired_at < grace:
         return False
-    return record.digest_ref not in live_refs and record.image not in live_refs
+    protected = {record.image, *_record_digest_refs(record)}
+    return protected.isdisjoint(live_refs)
+
+
+def _record_digest_refs(record: ProjectImageRecord) -> tuple[str, ...]:
+    seen: set[str] = set()
+    refs: list[str] = []
+    for ref in (record.digest_ref, *record.platform_images.values()):
+        if ref not in seen:
+            seen.add(ref)
+            refs.append(ref)
+    return tuple(refs)
 
 
 def _gc_sort_key(record: ProjectImageRecord) -> tuple[datetime, str]:
@@ -1014,6 +1114,38 @@ def _image_digest(digest: str) -> str:
         msg = f"BuildKit returned unsupported image digest: {digest!r}"
         raise OSError(msg)
     return digest
+
+
+def _validate_platform_images(
+    *,
+    platforms: Sequence[str],
+    platform_images: Mapping[str, str],
+    context: str,
+) -> None:
+    if not platforms:
+        msg = f"{context} must define at least one platform"
+        raise OSError(msg)
+    if len(set(platforms)) != len(platforms):
+        msg = f"{context} defines duplicate platforms"
+        raise OSError(msg)
+    platform_set = set(platforms)
+    image_set = set(platform_images)
+    if platform_set != image_set:
+        msg = (
+            f"{context} platform_images keys do not match platforms: "
+            f"{sorted(image_set)!r} != {sorted(platform_set)!r}"
+        )
+        raise OSError(msg)
+    for platform, digest_ref in platform_images.items():
+        if not platform.strip():
+            msg = f"{context} defines an empty platform"
+            raise OSError(msg)
+        if not _PROJECT_IMAGE_DIGEST_REF_RE.fullmatch(digest_ref):
+            msg = (
+                f"{context} platform {platform!r} has invalid digest ref: "
+                f"{digest_ref!r}"
+            )
+            raise OSError(msg)
 
 
 def _digest_ref(image: str, digest: str) -> str:

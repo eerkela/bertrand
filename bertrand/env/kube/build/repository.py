@@ -801,6 +801,52 @@ class ImageRepository:
             raise ValueError(msg)
         return f"{self.pull_host}/bertrand/{path}:{normalized_tag}"
 
+    def service_ref(self, ref: str) -> str:
+        """Rewrite an internal image ref to the in-cluster Service address.
+
+        Parameters
+        ----------
+        ref : str
+            Image reference rooted at either :attr:`pull_host` or
+            :attr:`service_addr`.
+
+        Returns
+        -------
+        str
+            Equivalent image reference rooted at :attr:`service_addr`.
+        """
+        return self._rewrite_ref(ref, source=self.pull_host, target=self.service_addr)
+
+    def pull_ref(self, ref: str) -> str:
+        """Rewrite an internal image ref to the canonical pull address.
+
+        Parameters
+        ----------
+        ref : str
+            Image reference rooted at either :attr:`service_addr` or
+            :attr:`pull_host`.
+
+        Returns
+        -------
+        str
+            Equivalent image reference rooted at :attr:`pull_host`.
+        """
+        return self._rewrite_ref(ref, source=self.service_addr, target=self.pull_host)
+
+    def _rewrite_ref(self, ref: str, *, source: str, target: str) -> str:
+        normalized = ref.strip()
+        if not normalized:
+            msg = "image reference cannot be empty"
+            raise ValueError(msg)
+        source_prefix = f"{source}/"
+        target_prefix = f"{target}/"
+        if normalized.startswith(target_prefix):
+            return normalized
+        if normalized.startswith(source_prefix):
+            return f"{target_prefix}{normalized[len(source_prefix) :]}"
+        msg = f"image reference {ref!r} does not belong to registry {self.pull_host!r}"
+        raise ValueError(msg)
+
     def _digest_delete_url(self, digest_ref: str) -> str:
         ref = digest_ref.strip()
         prefix = f"{self.pull_host}/"

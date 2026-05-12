@@ -5,10 +5,11 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import re
 import shutil
 import tempfile
 import uuid
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
@@ -22,12 +23,20 @@ from bertrand.env.git import (
     atomic_write_text,
 )
 from bertrand.env.kube.api import ContainerSpec, Kube, VolumeMountSpec, VolumeSpec
-from bertrand.env.kube.build.daemon import BUILDKIT, BUILDKIT_IMAGE, BuildKit
+from bertrand.env.kube.build.daemon import (
+    BUILDKIT_IMAGE,
+    BUILDKIT_POOL,
+    BuildKitBuilder,
+    BuildKitEndpoint,
+    BuildKitPool,
+)
 from bertrand.env.kube.capability.base import Capability, CapabilityKind
 from bertrand.env.kube.job import Job
 from bertrand.env.kube.node import Node
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from bertrand.env.config.core import KubeName, NonEmpty, OCIImageRef, Trimmed
 
 BUILD_JOB_CONTEXT_MOUNT = "/workspace"
@@ -45,6 +54,9 @@ BUILD_JOB_DIAGNOSTIC_TIMEOUT_SECONDS = 10.0
 BUILD_JOB_CLEANUP_TIMEOUT_SECONDS = 10.0
 BUILD_CACHE_TAG = "buildcache"
 CAPABILITY_VALUE_KEY = "value"
+BUILD_PLATFORM_RUN_ID_BYTES = 12
+_BUILD_PLATFORM_TOKEN_RE = re.compile(r"[^a-z0-9]+")
+_BUILD_IMAGE_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 
 @dataclass(frozen=True)
@@ -70,6 +82,53 @@ class BuildKitImageResult:
     config_digest: str
     descriptor: Mapping[str, object]
     metadata: Mapping[str, object]
+
+
+@dataclass(frozen=True)
+class BuildKitJobTarget:
+    """BuildKit builder target for one scheduled image build.
+
+    Parameters
+    ----------
+    platform : str
+        Native OCI platform assigned to the build target.
+    builder : BuildKitBuilder
+        Ready BuildKit builder selected for the target.
+    device_selectors : tuple[str, ...]
+        CDI selectors allowed for this target.
+    """
+
+    platform: str
+    builder: BuildKitBuilder
+    device_selectors: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class BuildKitPlatformResult:
+    """Result metadata for one native platform build.
+
+    Parameters
+    ----------
+    platform : str
+        Native OCI platform assigned to this build result.
+    builder : BuildKitBuilder
+        BuildKit builder that executed this platform build.
+    image : OCIImageRef
+        Temporary platform image reference pushed by BuildKit.
+    digest : str
+        Platform image digest reported by BuildKit.
+    digest_ref : str
+        Immutable digest-pinned reference for the platform image.
+    build : BuildKitImageResult
+        Raw BuildKit result metadata for this platform build.
+    """
+
+    platform: str
+    builder: BuildKitBuilder
+    image: OCIImageRef
+    digest: str
+    digest_ref: str
+    build: BuildKitImageResult
 
 
 @dataclass(frozen=True)
@@ -272,8 +331,9 @@ class BuildKitImageBuild:
 
     def buildctl_args(
         self,
-        buildkit: BuildKit = BUILDKIT,
+        buildkit: BuildKitEndpoint,
         *,
+        image: str | None = None,
         secret_paths: Mapping[str, str] | None = None,
         ssh_paths: Mapping[str, str] | None = None,
         device_selectors: tuple[str, ...] = (),
@@ -283,8 +343,10 @@ class BuildKitImageBuild:
 
         Parameters
         ----------
-        buildkit : BuildKit, optional
+        buildkit : BuildKitEndpoint
             BuildKit daemon endpoint used by the client Job.
+        image : str | None, optional
+            Output image reference. If omitted, :attr:`image` is used.
         secret_paths : Mapping[str, str] | None, optional
             BuildKit secret IDs mapped to mounted payload paths.
         ssh_paths : Mapping[str, str] | None, optional
@@ -299,7 +361,16 @@ class BuildKitImageBuild:
         list[str]
             Argument vector beginning with `--addr`, suitable for a container whose
             command is `buildctl`.
+
+        Raises
+        ------
+        ValueError
+            If the output image reference is empty.
         """
+        image = self.image if image is None else image.strip()
+        if not image:
+            msg = "BuildKit output image reference cannot be empty"
+            raise ValueError(msg)
         args = [
             "--addr",
             buildkit.addr,
@@ -340,7 +411,7 @@ class BuildKitImageBuild:
             metadata_file = metadata_file.strip()
             if metadata_file:
                 args.extend(["--metadata-file", metadata_file])
-        args.extend(["--output", f"type=image,name={self.image},push=true"])
+        args.extend(["--output", f"type=image,name={image},push=true"])
         return args
 
     async def publish(
@@ -348,7 +419,7 @@ class BuildKitImageBuild:
         kube: Kube,
         *,
         timeout: float = INFINITY,
-        buildkit: BuildKit = BUILDKIT,
+        buildkit_pool: BuildKitPool = BUILDKIT_POOL,
         env_id: str | None = None,
     ) -> BuildKitImageResult:
         """Run a one-off BuildKit client Job and publish the image.
@@ -359,8 +430,8 @@ class BuildKitImageBuild:
             Active Kubernetes API context.
         timeout : float, optional
             Maximum runtime budget in seconds. If infinite, wait indefinitely.
-        buildkit : BuildKit, optional
-            BuildKit daemon endpoint used by the client Job.
+        buildkit_pool : BuildKitPool, optional
+            BuildKit builder pool used to select a native daemon endpoint.
         env_id : str | None, optional
             Environment UUID used to resolve secret, SSH, and device capabilities.
 
@@ -409,88 +480,254 @@ class BuildKitImageBuild:
                 env_id=env_id,
                 timeout=deadline - loop.time(),
             )
-            buildkit_node = (
-                await buildkit.active_node(kube, timeout=deadline - loop.time())
-                if self.devices
-                else None
-            )
-            device_selectors = await self._device_selectors(
+            local_platform = local_node.platform
+            if not local_platform:
+                msg = (
+                    f"local Kubernetes node {local_node.name!r} has no usable "
+                    "native platform labels"
+                )
+                raise OSError(msg)
+            targets = await self.schedule(
                 kube,
                 env_id=env_id,
-                node=buildkit_node,
+                platforms=(local_platform,),
+                preferred_node=local_node.name,
+                buildkit_pool=buildkit_pool,
                 timeout=deadline - loop.time(),
             )
-
-            job = await Job.create(
+            if len(targets) != 1:
+                msg = f"expected exactly one BuildKit job target, found {len(targets)}"
+                raise OSError(msg)
+            return await self._publish_target(
                 kube,
-                namespace=BERTRAND_NAMESPACE,
-                name=self.job_name,
-                labels=self.labels,
-                containers=[
-                    ContainerSpec(
-                        name="buildctl",
-                        image=BUILDKIT_IMAGE,
-                        image_pull_policy="IfNotPresent",
-                        command=["buildctl"],
-                        args=self.buildctl_args(
-                            buildkit,
-                            secret_paths=secret_paths,
-                            ssh_paths=ssh_paths,
-                            device_selectors=device_selectors,
-                            metadata_file=BUILD_JOB_METADATA_FILE,
-                        ),
-                        volume_mounts=[
-                            VolumeMountSpec(
-                                name=BUILD_JOB_CONTEXT_VOLUME,
-                                mount_path=BUILD_JOB_CONTEXT_MOUNT,
-                                read_only=True,
-                            ),
-                            VolumeMountSpec(
-                                name=BUILD_JOB_METADATA_VOLUME,
-                                mount_path=BUILD_JOB_METADATA_MOUNT,
-                            ),
-                            *capability_mounts,
-                        ],
-                    )
-                ],
-                volumes=[
-                    VolumeSpec.host_path(
-                        BUILD_JOB_CONTEXT_VOLUME,
-                        path=context,
-                        host_path_type="Directory",
-                    ),
-                    VolumeSpec.host_path(
-                        BUILD_JOB_METADATA_VOLUME,
-                        path=metadata,
-                        host_path_type="Directory",
-                    ),
-                    *capability_volumes,
-                ],
-                ttl_seconds_after_finished=BUILD_JOB_TTL_SECONDS,
+                target=targets[0],
+                image=self.image,
+                context=context,
+                metadata=metadata,
+                capability_volumes=capability_volumes,
+                capability_mounts=capability_mounts,
+                secret_paths=secret_paths,
+                ssh_paths=ssh_paths,
                 node_name=local_node.name,
                 timeout=deadline - loop.time(),
             )
+
+    async def publish_platforms(
+        self,
+        kube: Kube,
+        *,
+        env_id: str | None,
+        timeout: float,
+        platforms: Iterable[str] | None = None,
+        preferred_node: str | None = None,
+        buildkit_pool: BuildKitPool = BUILDKIT_POOL,
+        output_ref_factory: (
+            Callable[[OCIImageRef, str, str], OCIImageRef] | None
+        ) = None,
+    ) -> tuple[BuildKitPlatformResult, ...]:
+        """Publish one native platform image per scheduled BuildKit target.
+
+        Parameters
+        ----------
+        kube : Kube
+            Active Kubernetes API context.
+        env_id : str | None
+            Environment UUID used to resolve secret, SSH, and device capabilities.
+        timeout : float
+            Maximum runtime budget in seconds. If infinite, wait indefinitely.
+        platforms : Iterable[str] | None, optional
+            Explicit target platform filters. If omitted, every ready native cluster
+            platform is targeted.
+        preferred_node : str | None, optional
+            Node to prefer when selecting a builder for its matching platform.
+        buildkit_pool : BuildKitPool, optional
+            BuildKit builder pool used to select native daemon endpoints.
+        output_ref_factory : callable, optional
+            Factory receiving the final image ref, platform, and publish run ID.
+            It must return the temporary output ref for that platform. If omitted,
+            refs are derived from :attr:`image`.
+
+        Returns
+        -------
+        tuple[BuildKitPlatformResult, ...]
+            Per-platform image digests, sorted by platform.
+
+        Raises
+        ------
+        TimeoutError
+            If staging, scheduling, Job creation, or Job completion exceeds
+            `timeout`.
+        FileNotFoundError
+            If a declared build context source does not exist.
+        ValueError
+            If capability inputs are present without `env_id`, or if a platform
+            output ref is invalid.
+        """
+        if timeout <= 0:
+            msg = "BuildKit platform image build timeout must be non-negative"
+            raise TimeoutError(msg)
+        if env_id is None and (self.secrets or self.ssh or self.devices):
+            msg = "BuildKit capability inputs require an environment identity"
+            raise ValueError(msg)
+        if env_id is not None:
+            env_id = _check_uuid(env_id)
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        output_ref_factory = output_ref_factory or _platform_output_ref
+
+        with tempfile.TemporaryDirectory(prefix=f"{self.context_prefix}-") as tmp:
+            root = Path(tmp).resolve()
             try:
-                await job.wait_complete(kube, timeout=deadline - loop.time())
-                return _load_build_metadata(
-                    metadata / Path(BUILD_JOB_METADATA_FILE).name,
-                    image=self.image,
-                )
-            except (OSError, TimeoutError) as err:
-                logs = await _build_job_log_tail(
+                context, metadata = self._stage_context(root)
+            except FileNotFoundError as err:
+                raise FileNotFoundError(str(err)) from err
+            local_node = await Node.local(kube, timeout=deadline - loop.time())
+            (
+                capability_volumes,
+                capability_mounts,
+                secret_paths,
+                ssh_paths,
+            ) = await self._capability_mounts(
+                kube,
+                env_id=env_id,
+                timeout=deadline - loop.time(),
+            )
+            targets = await self.schedule(
+                kube,
+                env_id=env_id,
+                platforms=platforms,
+                preferred_node=preferred_node,
+                buildkit_pool=buildkit_pool,
+                timeout=deadline - loop.time(),
+            )
+            run_id = uuid.uuid4().hex[:BUILD_PLATFORM_RUN_ID_BYTES]
+            results: list[BuildKitPlatformResult] = []
+            for target in sorted(targets, key=lambda item: item.platform):
+                image = output_ref_factory(self.image, target.platform, run_id)
+                image = image.strip()
+                if not image:
+                    msg = (
+                        "BuildKit platform output ref factory returned an empty "
+                        f"image for platform {target.platform!r}"
+                    )
+                    raise ValueError(msg)
+                build = await self._publish_target(
                     kube,
-                    job,
-                    timeout=BUILD_JOB_DIAGNOSTIC_TIMEOUT_SECONDS,
+                    target=target,
+                    image=image,
+                    context=context,
+                    metadata=metadata / _platform_token(target.platform),
+                    capability_volumes=capability_volumes,
+                    capability_mounts=capability_mounts,
+                    secret_paths=secret_paths,
+                    ssh_paths=ssh_paths,
+                    node_name=local_node.name,
+                    timeout=deadline - loop.time(),
                 )
-                await _delete_build_job(
-                    kube,
-                    job,
-                    timeout=BUILD_JOB_CLEANUP_TIMEOUT_SECONDS,
+                results.append(
+                    BuildKitPlatformResult(
+                        platform=target.platform,
+                        builder=target.builder,
+                        image=build.image,
+                        digest=build.digest,
+                        digest_ref=_digest_ref(build.image, build.digest),
+                        build=build,
+                    )
                 )
-                msg = _build_failure_message(self.image, err, logs)
-                if isinstance(err, TimeoutError):
-                    raise TimeoutError(msg) from err
-                raise OSError(msg) from err
+            return tuple(results)
+
+    async def _publish_target(
+        self,
+        kube: Kube,
+        *,
+        target: BuildKitJobTarget,
+        image: str,
+        context: Path,
+        metadata: Path,
+        capability_volumes: list[VolumeSpec],
+        capability_mounts: list[VolumeMountSpec],
+        secret_paths: Mapping[str, str],
+        ssh_paths: Mapping[str, str],
+        node_name: str,
+        timeout: float,
+    ) -> BuildKitImageResult:
+        if timeout <= 0:
+            msg = "BuildKit target image build timeout must be non-negative"
+            raise TimeoutError(msg)
+        metadata.mkdir(parents=True, exist_ok=True)
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        job = await Job.create(
+            kube,
+            namespace=BERTRAND_NAMESPACE,
+            name=self.job_name,
+            labels=self.labels,
+            containers=[
+                ContainerSpec(
+                    name="buildctl",
+                    image=BUILDKIT_IMAGE,
+                    image_pull_policy="IfNotPresent",
+                    command=["buildctl"],
+                    args=self.buildctl_args(
+                        target.builder.endpoint,
+                        image=image,
+                        secret_paths=secret_paths,
+                        ssh_paths=ssh_paths,
+                        device_selectors=target.device_selectors,
+                        metadata_file=BUILD_JOB_METADATA_FILE,
+                    ),
+                    volume_mounts=[
+                        VolumeMountSpec(
+                            name=BUILD_JOB_CONTEXT_VOLUME,
+                            mount_path=BUILD_JOB_CONTEXT_MOUNT,
+                            read_only=True,
+                        ),
+                        VolumeMountSpec(
+                            name=BUILD_JOB_METADATA_VOLUME,
+                            mount_path=BUILD_JOB_METADATA_MOUNT,
+                        ),
+                        *capability_mounts,
+                    ],
+                )
+            ],
+            volumes=[
+                VolumeSpec.host_path(
+                    BUILD_JOB_CONTEXT_VOLUME,
+                    path=context,
+                    host_path_type="Directory",
+                ),
+                VolumeSpec.host_path(
+                    BUILD_JOB_METADATA_VOLUME,
+                    path=metadata,
+                    host_path_type="Directory",
+                ),
+                *capability_volumes,
+            ],
+            ttl_seconds_after_finished=BUILD_JOB_TTL_SECONDS,
+            node_name=node_name,
+            timeout=deadline - loop.time(),
+        )
+        try:
+            await job.wait_complete(kube, timeout=deadline - loop.time())
+            return _load_build_metadata(
+                metadata / Path(BUILD_JOB_METADATA_FILE).name,
+                image=image,
+            )
+        except (OSError, TimeoutError) as err:
+            logs = await _build_job_log_tail(
+                kube,
+                job,
+                timeout=BUILD_JOB_DIAGNOSTIC_TIMEOUT_SECONDS,
+            )
+            await _delete_build_job(
+                kube,
+                job,
+                timeout=BUILD_JOB_CLEANUP_TIMEOUT_SECONDS,
+            )
+            msg = _build_failure_message(image, err, logs)
+            if isinstance(err, TimeoutError):
+                raise TimeoutError(msg) from err
+            raise OSError(msg) from err
 
     def _stage_context(self, root: Path) -> tuple[Path, Path]:
         context = root / "context"
@@ -573,6 +810,128 @@ class BuildKitImageBuild:
                 paths[capability_id] = f"{mount_path}/{CAPABILITY_VALUE_KEY}"
 
         return volumes, mounts, secret_paths, ssh_paths
+
+    async def schedule(
+        self,
+        kube: Kube,
+        *,
+        env_id: str | None,
+        timeout: float,
+        platforms: Iterable[str] | None = None,
+        preferred_node: str | None = None,
+        buildkit_pool: BuildKitPool = BUILDKIT_POOL,
+        config_hash: str | None = None,
+    ) -> tuple[BuildKitJobTarget, ...]:
+        """Schedule this build onto native BuildKit builders.
+
+        Parameters
+        ----------
+        kube : Kube
+            Active Kubernetes API context.
+        env_id : str | None
+            Environment UUID used to resolve device capabilities.
+        timeout : float
+            Maximum request budget in seconds. If infinite, wait indefinitely.
+        platforms : tuple[str, ...] | None, optional
+            Explicit platform filters. If omitted, all ready cluster platforms are
+            targeted.
+        preferred_node : str | None, optional
+            Node to prefer when scheduling its matching platform.
+        buildkit_pool : BuildKitPool, optional
+            BuildKit builder pool used for scheduling.
+        config_hash : str | None, optional
+            Expected BuildKit config hash used to reject stale builders.
+
+        Returns
+        -------
+        tuple[BuildKitJobTarget, ...]
+            Build-aware platform assignments with resolved device selectors.
+
+        Raises
+        ------
+        TimeoutError
+            If ``timeout`` is non-positive.
+        ValueError
+            If device inputs are present without ``env_id``.
+        OSError
+            If no scheduled builder can satisfy required device capabilities.
+        """
+        if timeout <= 0:
+            msg = "BuildKit build scheduling timeout must be non-negative"
+            raise TimeoutError(msg)
+        if self.devices and env_id is None:
+            msg = "BuildKit device inputs require an environment identity"
+            raise ValueError(msg)
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        schedule = await buildkit_pool.schedule(
+            kube,
+            timeout=deadline - loop.time(),
+            platforms=platforms,
+            preferred_node=preferred_node,
+            config_hash=config_hash,
+        )
+        if not self.devices:
+            return tuple(
+                BuildKitJobTarget(
+                    platform=entry.platform,
+                    builder=entry.builder,
+                    device_selectors=(),
+                )
+                for entry in schedule
+            )
+
+        targets: list[BuildKitJobTarget] = []
+        for entry in schedule:
+            builders = await buildkit_pool.builders(
+                kube,
+                timeout=deadline - loop.time(),
+                config_hash=config_hash,
+            )
+            if config_hash is not None:
+                builders = tuple(
+                    builder for builder in builders if builder.config_current
+                )
+            preferred = preferred_node.strip() if preferred_node is not None else ""
+            candidates = [
+                builder for builder in builders if builder.platform == entry.platform
+            ]
+            candidates.sort(
+                key=lambda builder: (
+                    builder.node != preferred,
+                    builder.platform,
+                    builder.node,
+                    builder.pod,
+                )
+            )
+            errors: list[str] = []
+            selected: BuildKitJobTarget | None = None
+            for candidate in candidates:
+                try:
+                    selectors = await self._device_selectors(
+                        kube,
+                        env_id=env_id,
+                        node=candidate.node,
+                        timeout=deadline - loop.time(),
+                    )
+                except OSError as err:
+                    errors.append(f"{candidate.node}: {err}")
+                    continue
+                selected = BuildKitJobTarget(
+                    platform=entry.platform,
+                    builder=candidate,
+                    device_selectors=selectors,
+                )
+                break
+            if selected is None:
+                detail = "; ".join(errors) if errors else "no candidate builders"
+                msg = (
+                    f"no ready BuildKit builder for platform {entry.platform!r} "
+                    f"can satisfy requested device capabilities: {detail}"
+                )
+                raise OSError(msg)
+            targets.append(selected)
+        return tuple(targets)
 
     async def _device_selectors(
         self,
@@ -688,6 +1047,55 @@ def _default_cache_ref(image: str) -> str:
         )
         raise ValueError(msg)
     return f"{image[:colon]}:{BUILD_CACHE_TAG}"
+
+
+def _platform_output_ref(image: str, platform: str, run_id: str) -> str:
+    repository, tag = _split_tagged_image(image)
+    platform_token = _platform_token(platform)
+    run_id = re.sub(r"[^a-f0-9]+", "", run_id.lower()).strip()
+    if not run_id:
+        msg = "BuildKit platform output run ID cannot be empty"
+        raise ValueError(msg)
+    suffix = f"{platform_token}-{run_id}"
+    max_prefix = max(1, 127 - len(suffix))
+    tag_prefix = tag[:max_prefix].rstrip("._-") or "image"
+    return f"{repository}:{tag_prefix}-{suffix}"
+
+
+def _split_tagged_image(image: str) -> tuple[str, str]:
+    image = image.strip()
+    if not image:
+        msg = "BuildKit image reference cannot be empty"
+        raise ValueError(msg)
+    if "@" in image:
+        msg = (
+            f"BuildKit platform output refs require a tagged image, got digest ref "
+            f"{image!r}"
+        )
+        raise ValueError(msg)
+    slash = image.rfind("/")
+    colon = image.rfind(":")
+    if colon <= slash or colon == len(image) - 1:
+        msg = f"BuildKit image reference {image!r} must include a tag"
+        raise ValueError(msg)
+    return image[:colon], image[colon + 1 :]
+
+
+def _platform_token(platform: str) -> str:
+    token = _BUILD_PLATFORM_TOKEN_RE.sub("-", platform.strip().lower()).strip("-")
+    if not token:
+        msg = "BuildKit platform cannot be empty"
+        raise ValueError(msg)
+    return token[:48].rstrip("-") or "platform"
+
+
+def _digest_ref(image: str, digest: str) -> str:
+    digest = digest.strip()
+    if not _BUILD_IMAGE_DIGEST_RE.fullmatch(digest):
+        msg = f"BuildKit returned unsupported image digest: {digest!r}"
+        raise OSError(msg)
+    repository, _ = _split_tagged_image(image)
+    return f"{repository}@{digest}"
 
 
 def _capability_volume_name(kind: CapabilityKind, capability_id: str) -> str:

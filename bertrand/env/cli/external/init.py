@@ -54,7 +54,7 @@ from bertrand.env.kube.api.bootstrap import (
     install_microk8s,
     start_microk8s,
 )
-from bertrand.env.kube.build.daemon import BUILDKIT
+from bertrand.env.kube.build.daemon import BUILDKIT_POOL
 from bertrand.env.kube.build.repository import IMAGES
 from bertrand.env.kube.ceph.autoscale import (
     ceph_autoscaler_image_build,
@@ -915,7 +915,7 @@ async def _converge_build_runtime(kube: Kube, *, timeout: float) -> None:
     await IMAGES.ensure(kube, timeout=deadline - loop.time())
     await IMAGES.ensure_node_trust(kube, timeout=deadline - loop.time())
     await IMAGES.assert_node_trust(kube, timeout=deadline - loop.time())
-    await BUILDKIT.ensure(
+    await BUILDKIT_POOL.ensure(
         kube,
         timeout=deadline - loop.time(),
         config_hash=IMAGES.buildkit_config_hash,

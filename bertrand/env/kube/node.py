@@ -43,6 +43,12 @@ NODE_TAINT_KEY_UNREACHABLE = "node.kubernetes.io/unreachable"
 NODE_TAINT_KEY_MEMORY_PRESSURE = "node.kubernetes.io/memory-pressure"
 NODE_TAINT_KEY_DISK_PRESSURE = "node.kubernetes.io/disk-pressure"
 NODE_TAINT_KEY_UNSCHEDULABLE = "node.kubernetes.io/unschedulable"
+NODE_ARCH_ALIASES = {
+    "x86_64": "amd64",
+    "amd64": "amd64",
+    "aarch64": "arm64",
+    "arm64": "arm64",
+}
 
 
 type TaintEffect = Literal["NoSchedule", "PreferNoSchedule", "NoExecute"]
@@ -255,6 +261,36 @@ class Node(KubeMetadata[kubernetes.client.V1Node]):
             Value of `kubernetes.io/hostname`, or an empty string when missing.
         """
         return self.labels.get("kubernetes.io/hostname", "").strip()
+
+    @property
+    def platform(self) -> str:
+        """Return the node's OCI platform string.
+
+        Returns
+        -------
+        str
+            Canonical platform string such as ``"linux/amd64"``, or an empty
+            string when the Kubernetes OS or architecture labels are missing.
+        """
+        labels = self.labels
+        os_name = labels.get("kubernetes.io/os", "").strip().lower()
+        arch = labels.get("kubernetes.io/arch", "").strip().lower()
+        arch = NODE_ARCH_ALIASES.get(arch, arch)
+        return f"{os_name}/{arch}" if os_name and arch else ""
+
+    @property
+    def is_build_eligible(self) -> bool:
+        """Return whether this node can host a native BuildKit builder.
+
+        Returns
+        -------
+        bool
+            ``True`` when the node is ready, schedulable, Linux, and has a valid
+            platform label pair.
+        """
+        return (
+            self.is_ready and self.is_schedulable and self.platform.startswith("linux/")
+        )
 
     @property
     def addresses(self) -> tuple[str, ...]:

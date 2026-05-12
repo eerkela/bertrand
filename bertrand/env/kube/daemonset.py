@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Self
 
 import kubernetes
@@ -483,6 +484,21 @@ class DaemonSet(NamespacedKubeMetadata[kubernetes.client.V1DaemonSet]):
         """
         status = self._obj.status
         return int(status.observed_generation or 0) if status is not None else 0
+
+    @property
+    def pod_annotations(self) -> Mapping[str, str]:
+        """Return pod-template annotations.
+
+        Returns
+        -------
+        Mapping[str, str]
+            Read-only pod-template annotations, or an empty mapping when absent.
+        """
+        spec = self._obj.spec
+        template = spec.template if spec is not None else None
+        metadata = template.metadata if template is not None else None
+        annotations = metadata.annotations if metadata is not None else None
+        return MappingProxyType(dict(annotations or {}))
 
     def has_available_pods(self, minimum: int = 1) -> bool:
         """Return whether this DaemonSet has enough available pods.

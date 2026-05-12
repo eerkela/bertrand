@@ -9,7 +9,7 @@ import time
 from datetime import UTC, datetime
 from pathlib import Path
 
-from bertrand.env.git import INFINITY, TimeoutExpired, atomic_write_text
+from bertrand.env.git import INFINITY, TimeoutExpired
 from bertrand.env.version import __version__
 
 
@@ -57,7 +57,6 @@ class External:
             self.version()
             self.init()
             self.build()
-            self.publish()
             self.start()
             self.enter()
             self.code()
@@ -150,84 +149,31 @@ class External:
             """Add the 'build' command to the parser."""
             command = self.commands.add_parser(
                 "build",
-                help="Build and materialize declared Bertrand images/containers at the "
-                "specified path without starting them.  Tags and arguments are "
-                "declared by modifying project metadata according to the '--lang' "
-                "options chosen during 'bertrand init'.  See the generated "
-                "configuration files for details.",
+                help="Build all declared Bertrand images at the specified worktree "
+                "through the in-cluster BuildKit service.",
             )
             command.add_argument(
                 "path",
-                metavar="ENV[:IMAGE[:CONTAINER]]",
-                help="A path to the specified environment directory.  This may be an "
-                "absolute or relative path, and must point to an environment "
-                "directory produced by 'bertrand init'.  The path may include "
-                "optional image and container tags (e.g. "
-                "'/path/to/env:image:container').  If no tags are given, all "
-                "declared images/containers are materialized.  If an image tag is "
-                "given, only that image and its declared containers are "
-                "materialized.  If both image and container tags are given, only "
-                "that declared container is materialized.",
-            )
-            command.set_defaults(handler=External.build)
-
-        def publish(self) -> None:
-            """Add the 'publish' command to the parser."""
-            command = self.commands.add_parser(
-                "publish",
-                help="Build and publish declared Bertrand images in the specified "
-                "environment to a remote OCI registry.  This is meant to be used "
-                "in CI workflows triggered by git tags, and usually does not need "
-                "to be invoked by the user directly.",
+                metavar="WORKTREE",
+                help="A path to the project worktree.  This is treated as a literal "
+                "filesystem path; image and workload suffix syntax is not parsed by "
+                "`bertrand build`.",
             )
             command.add_argument(
-                "path",
-                metavar="ENV",
-                help="A path to the specified environment directory.  This may be an "
-                "absolute or relative path, and must point to an environment "
-                "directory produced by 'bertrand init'.  Publish always targets "
-                "the entire environment and all declared tags.",
-            )
-            command.add_argument(
-                "--repo",
+                "--publish",
                 metavar="OCI_REPO",
                 default=None,
-                help="Remote OCI repository where arch-specific image tags and final "
-                "manifests will be published (for example: 'ghcr.io/owner/repo').",
+                help="Optional external OCI repository root where the same image "
+                "manifests should be published, for example 'ghcr.io/owner/repo'.",
             )
             command.add_argument(
-                "--version",
-                metavar="VERSION",
+                "--auth",
+                metavar="CAPABILITY",
                 default=None,
-                help="Optional release version to enforce.  Accepts both 'X.Y.Z' and "
-                "'vX.Y.Z', and must match the current project version after "
-                "normalization.",
+                help="Secret-backed capability ID containing Docker auth JSON for "
+                "the external registry.  Requires --publish.",
             )
-            command.add_argument(
-                "--manifest",
-                action="store_true",
-                help="Publish manifests only from existing arch-specific refs.  This "
-                "skips image builds and pushes no new arch tags, and is meant to "
-                "be used as a second stage in CI workflows after a successful "
-                "build-and-publish stage with the same version and repo "
-                "parameters.",
-            )
-            command.add_argument(
-                "--manifest-arches",
-                metavar="CSV",
-                default=None,
-                help="Comma-separated architecture list for --manifest mode (for "
-                "example: 'amd64,arm64').  Required when --manifest is set.",
-            )
-            command.add_argument(
-                "--arch-out",
-                metavar="PATH",
-                default=None,
-                help="Optional output path to write the normalized host architecture "
-                "detected during build mode.  This is intended for CI artifact "
-                "handoff and is invalid with --manifest.",
-            )
-            command.set_defaults(handler=External.publish)
+            command.set_defaults(handler=External.build)
 
         def start(self) -> None:
             """Add the 'start' command to the parser."""
@@ -792,104 +738,23 @@ class External:
 
         now = time.time()
         with asyncio.Runner() as runner:
-            worktree, workload, tag = _parse_target(args.path)
+            worktree = Path(args.path).expanduser().resolve()
             try:
                 runner.run(
                     bertrand_build(
                         worktree,
-                        workload,
-                        tag,
+                        publish=args.publish,
+                        auth=args.auth,
                         quiet=False,
                     )
                 )
             except (TimeoutError, TimeoutExpired) as err:
                 start = datetime.fromtimestamp(now, UTC)
-                cmd = ["bertrand", "build", _recover_spec(worktree, workload, tag)]
-                raise TimeoutExpired(
-                    cmd=cmd,
-                    timeout=0.0,  # indefinite
-                    output=None,
-                    stderr=f"started: {start}\nstopped: {datetime.now(UTC)}\n",
-                ) from err
-
-    @staticmethod
-    def publish(args: argparse.Namespace) -> None:
-        """Execute the `bertrand publish` CLI command.
-
-        Parameters
-        ----------
-        args : argparse.Namespace
-            The parsed command-line arguments.
-
-        Raises
-        ------
-        OSError
-            If the path includes workload/tag targeting, or if no repository is
-            provided.
-        TimeoutExpired
-            If a nested command times out while publishing.  This should never occur
-            under normal circumstances, and the 'publish' command intentionally does
-            not accept a timeout argument, so this can only be surfaced from an
-            internal error.
-        """
-        from bertrand.env.cli.external.publish import bertrand_publish
-
-        now = time.time()
-        repo = args.repo
-        if repo is None or not repo.strip():
-            msg = "must specify --repo when publishing"
-            raise OSError(msg)
-        arch_out = args.arch_out
-        if arch_out is not None:
-            arch_out = arch_out.strip()
-            if not arch_out:
-                msg = "--arch-out must not be empty"
-                raise OSError(msg)
-            if args.manifest:
-                msg = "--arch-out is only valid in build mode (without --manifest)"
-                raise OSError(msg)
-
-        with asyncio.Runner() as runner:
-            worktree, workload, tag = _parse_target(args.path)
-            if workload is not None or tag is not None:
-                msg = (
-                    "publish supports ENV scope only.  Omit workload (@...) and tag "
-                    "(:...) selectors."
-                )
-                raise OSError(msg)
-            try:
-                arch = runner.run(
-                    bertrand_publish(
-                        worktree,
-                        repo=repo,
-                        version=args.version,
-                        manifest=args.manifest,
-                        manifest_arches=args.manifest_arches,
-                    )
-                )
-                if arch_out is not None:
-                    if arch is None:
-                        msg = (
-                            "internal publish error: architecture output requested "
-                            "but publish ran in manifest mode"
-                        )
-                        raise OSError(msg)
-                    atomic_write_text(
-                        Path(arch_out).expanduser().resolve(),
-                        f"{arch}\n",
-                        encoding="utf-8",
-                    )
-            except (TimeoutError, TimeoutExpired) as err:
-                start = datetime.fromtimestamp(now, UTC)
-                cmd = ["bertrand", "publish", str(worktree), "--repo", repo]
-                if args.version:
-                    cmd.extend(["--version", args.version])
-                if args.manifest:
-                    cmd.append("--manifest")
-                if args.manifest_arches:
-                    cmd.extend(["--manifest-arches", args.manifest_arches])
-                if arch_out:
-                    cmd.extend(["--arch-out", arch_out])
+                cmd = ["bertrand", "build", str(worktree)]
+                if args.publish:
+                    cmd.extend(["--publish", args.publish])
+                if args.auth:
+                    cmd.extend(["--auth", args.auth])
                 raise TimeoutExpired(
                     cmd=cmd,
                     timeout=0.0,  # indefinite
