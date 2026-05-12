@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Literal, Self
 
 import kubernetes
@@ -10,26 +10,17 @@ import kubernetes
 from bertrand.env.git import until
 
 from .api import (
-    ContainerSpec,
-    ImagePullSecretSpec,
     Kube,
     NamespacedKubeMetadata,
-    PodSecurityContextSpec,
-    TolerationSpec,
-    VolumeSpec,
+    NamespacedResourceClient,
+    PodTemplateSpec,
     WatchEvent,
 )
 from .api._helpers import (
-    _list_namespaced_items,
-    _typed_payload,
     _validate_delete_status,
-    _wait_until_deleted,
 )
 from .api._render import (
     _pod_template_manifest,
-)
-from .api.watch import (
-    _watch_namespaced_resource,
 )
 
 if TYPE_CHECKING:
@@ -40,7 +31,6 @@ if TYPE_CHECKING:
     from bertrand.env.kube.pod import Pod
 
 JOB_WAIT_POLL_INTERVAL_SECONDS = 0.5
-type RestartPolicy = Literal["Never", "OnFailure"]
 type DeletionPropagationPolicy = Literal["Background", "Foreground", "Orphan"]
 
 
@@ -61,6 +51,39 @@ class Job(NamespacedKubeMetadata[kubernetes.client.V1Job]):
     """
 
     _obj: kubernetes.client.V1Job
+
+    @classmethod
+    def _client(cls) -> NamespacedResourceClient[kubernetes.client.V1Job, Self]:
+        return NamespacedResourceClient(
+            kind="Job",
+            expected=kubernetes.client.V1Job,
+            list_type=kubernetes.client.V1JobList,
+            wrapper=lambda payload: cls(_obj=payload),
+            read=lambda kube, namespace, name, request_timeout: (
+                kube.batch.read_namespaced_job(
+                    name=name,
+                    namespace=namespace,
+                    _request_timeout=request_timeout,
+                )
+            ),
+            list_all=lambda kube, label_selector, field_selector, request_timeout: (
+                kube.batch.list_job_for_all_namespaces(
+                    label_selector=label_selector,
+                    field_selector=field_selector,
+                    _request_timeout=request_timeout,
+                )
+            ),
+            list_namespace=lambda kube, namespace, labels, fields, timeout: (
+                kube.batch.list_namespaced_job(
+                    namespace=namespace,
+                    label_selector=labels,
+                    field_selector=fields,
+                    _request_timeout=timeout,
+                )
+            ),
+            watch_all=lambda kube: kube.batch.list_job_for_all_namespaces,
+            watch_namespace=lambda kube: kube.batch.list_namespaced_job,
+        )
 
     @classmethod
     async def get(
@@ -89,18 +112,12 @@ class Job(NamespacedKubeMetadata[kubernetes.client.V1Job]):
         Job | None
             Wrapped Kubernetes Job, or `None` if it does not exist.
         """
-        payload = await kube.run(
-            lambda request_timeout: kube.batch.read_namespaced_job(
-                name=name,
-                namespace=namespace,
-                _request_timeout=request_timeout,
-            ),
+        return await cls._client().get(
+            kube,
+            namespace=namespace,
+            name=name,
             timeout=timeout,
-            context=f"failed to read Job {name!r} in namespace {namespace!r}",
         )
-        if payload is None:
-            return None
-        return cls(_obj=_typed_payload(payload, kubernetes.client.V1Job, context="Job"))
 
     @classmethod
     async def list(
@@ -130,36 +147,12 @@ class Job(NamespacedKubeMetadata[kubernetes.client.V1Job]):
         list[Job]
             Wrapped Kubernetes Jobs matching the requested filters.
         """
-        return [
-            cls(_obj=item)
-            for item in await _list_namespaced_items(
-                kube,
-                timeout=timeout,
-                namespaces=namespaces,
-                labels=labels,
-                list_all=lambda label_selector, request_timeout: (
-                    kube.batch.list_job_for_all_namespaces(
-                        label_selector=label_selector,
-                        _request_timeout=request_timeout,
-                    )
-                ),
-                list_namespace=lambda namespace, label_selector, request_timeout: (
-                    kube.batch.list_namespaced_job(
-                        namespace=namespace,
-                        label_selector=label_selector,
-                        _request_timeout=request_timeout,
-                    )
-                ),
-                list_type=kubernetes.client.V1JobList,
-                item_type=kubernetes.client.V1Job,
-                all_context="failed to list Jobs across all namespaces",
-                namespace_context=lambda namespace: (
-                    f"failed to list Jobs in namespace {namespace!r}"
-                ),
-                list_context="Job",
-                item_context="Job",
-            )
-        ]
+        return await cls._client().list(
+            kube,
+            timeout=timeout,
+            namespaces=namespaces,
+            labels=labels,
+        )
 
     @classmethod
     async def watch(
@@ -194,21 +187,13 @@ class Job(NamespacedKubeMetadata[kubernetes.client.V1Job]):
         WatchEvent[Job]
             Typed watch events containing wrapped Jobs.
         """
-        async for event in _watch_namespaced_resource(
-            expected=kubernetes.client.V1Job,
-            wrapper=lambda payload: cls(_obj=payload),
+        async for event in cls._client().watch(
+            kube,
             timeout=timeout,
             namespace=namespace,
-            resource_version=resource_version,
             labels=labels,
             field_selector=field_selector,
-            watch_all=kube.batch.list_job_for_all_namespaces,
-            watch_namespace=kube.batch.list_namespaced_job,
-            all_context="failed to watch Jobs across all namespaces",
-            namespace_context=lambda namespace: (
-                f"failed to watch Jobs in namespace {namespace!r}"
-            ),
-            payload_context="Job watch",
+            resource_version=resource_version,
         ):
             yield event
 
@@ -218,46 +203,19 @@ class Job(NamespacedKubeMetadata[kubernetes.client.V1Job]):
         namespace: str,
         name: str,
         labels: Mapping[str, str],
-        containers: Collection[ContainerSpec],
-        volumes: Collection[VolumeSpec],
-        restart_policy: RestartPolicy,
+        pod_template: PodTemplateSpec,
         backoff_limit: int,
         ttl_seconds_after_finished: int | None,
-        automount_service_account_token: bool,
         annotations: Mapping[str, str] | None,
-        pod_annotations: Mapping[str, str] | None,
-        service_account_name: str | None,
-        node_selector: Mapping[str, str] | None,
-        node_name: str | None,
-        host_pid: bool | None,
-        pod_security_context: PodSecurityContextSpec | None,
-        tolerations: Collection[TolerationSpec],
-        image_pull_secrets: Collection[ImagePullSecretSpec],
-        priority_class_name: str | None,
-        dns_policy: str | None,
-        host_network: bool | None,
-        termination_grace_period_seconds: int | None,
     ) -> dict[str, object]:
+        template_labels = dict(labels)
+        template_labels.update(pod_template.labels)
+        if pod_template.restart_policy is None:
+            pod_template = replace(pod_template, restart_policy="Never")
         spec: dict[str, object] = {
             "backoffLimit": backoff_limit,
             "template": _pod_template_manifest(
-                labels=labels,
-                pod_annotations=pod_annotations,
-                containers=containers,
-                volumes=volumes,
-                automount_service_account_token=automount_service_account_token,
-                service_account_name=service_account_name,
-                node_selector=node_selector,
-                host_pid=host_pid,
-                restart_policy=restart_policy,
-                pod_security_context=pod_security_context,
-                tolerations=tolerations,
-                image_pull_secrets=image_pull_secrets,
-                priority_class_name=priority_class_name,
-                dns_policy=dns_policy,
-                host_network=host_network,
-                termination_grace_period_seconds=termination_grace_period_seconds,
-                node_name=node_name,
+                replace(pod_template, labels=template_labels),
             ),
         }
         if ttl_seconds_after_finished is not None:
@@ -283,26 +241,11 @@ class Job(NamespacedKubeMetadata[kubernetes.client.V1Job]):
         namespace: str,
         name: str,
         labels: Mapping[str, str],
-        containers: Collection[ContainerSpec],
-        volumes: Collection[VolumeSpec],
+        pod_template: PodTemplateSpec,
         timeout: float,
-        restart_policy: RestartPolicy = "Never",
         backoff_limit: int = 0,
         ttl_seconds_after_finished: int | None = 3600,
-        automount_service_account_token: bool = False,
         annotations: Mapping[str, str] | None = None,
-        pod_annotations: Mapping[str, str] | None = None,
-        service_account_name: str | None = None,
-        node_selector: Mapping[str, str] | None = None,
-        node_name: str | None = None,
-        host_pid: bool | None = None,
-        pod_security_context: PodSecurityContextSpec | None = None,
-        tolerations: Collection[TolerationSpec] = (),
-        image_pull_secrets: Collection[ImagePullSecretSpec] = (),
-        priority_class_name: str | None = None,
-        dns_policy: str | None = None,
-        host_network: bool | None = None,
-        termination_grace_period_seconds: int | None = None,
     ) -> Self:
         """Create one Kubernetes Job from intent-level fields.
 
@@ -316,46 +259,16 @@ class Job(NamespacedKubeMetadata[kubernetes.client.V1Job]):
             Job name to create.
         labels : Mapping[str, str]
             Labels to apply to the Job and pod template.
-        containers : Collection[ContainerSpec]
-            Pod containers to render into the Job template.
-        volumes : Collection[VolumeSpec]
-            Pod volumes to render into the Job template.
+        pod_template : PodTemplateSpec
+            Pod template to render into the Job.
         timeout : float
             Maximum request budget in seconds. If infinite, wait indefinitely.
-        restart_policy : {"Never", "OnFailure"}, optional
-            Pod restart policy.
         backoff_limit : int, optional
             Kubernetes Job retry limit.
         ttl_seconds_after_finished : int | None, optional
             Optional TTL controller retention period for finished Jobs.
-        automount_service_account_token : bool, optional
-            Whether pods should automount the default service-account token.
         annotations : Mapping[str, str] | None, optional
             Annotations to apply to `metadata.annotations`.
-        pod_annotations : Mapping[str, str] | None, optional
-            Annotations to apply to pod template `metadata.annotations`.
-        service_account_name : str | None, optional
-            Optional pod service account name.
-        node_selector : Mapping[str, str] | None, optional
-            Optional pod node selector.
-        node_name : str | None, optional
-            Optional exact node name for host-local execution.
-        host_pid : bool | None, optional
-            Optional pod `hostPID` value.
-        pod_security_context : PodSecurityContextSpec | None, optional
-            Optional pod security context.
-        tolerations : Collection[TolerationSpec], optional
-            Optional pod tolerations.
-        image_pull_secrets : Collection[ImagePullSecretSpec], optional
-            Optional image pull Secret references.
-        priority_class_name : str | None, optional
-            Optional pod priority class name.
-        dns_policy : str | None, optional
-            Optional pod DNS policy.
-        host_network : bool | None, optional
-            Optional pod `hostNetwork` value.
-        termination_grace_period_seconds : int | None, optional
-            Optional pod termination grace period in seconds.
 
         Returns
         -------
@@ -385,25 +298,10 @@ class Job(NamespacedKubeMetadata[kubernetes.client.V1Job]):
             namespace=namespace,
             name=name,
             labels=labels,
-            containers=containers,
-            volumes=volumes,
-            restart_policy=restart_policy,
+            pod_template=pod_template,
             backoff_limit=backoff_limit,
             ttl_seconds_after_finished=ttl_seconds_after_finished,
-            automount_service_account_token=automount_service_account_token,
             annotations=annotations,
-            pod_annotations=pod_annotations,
-            service_account_name=service_account_name,
-            node_selector=node_selector,
-            node_name=node_name,
-            host_pid=host_pid,
-            pod_security_context=pod_security_context,
-            tolerations=tolerations,
-            image_pull_secrets=image_pull_secrets,
-            priority_class_name=priority_class_name,
-            dns_policy=dns_policy,
-            host_network=host_network,
-            termination_grace_period_seconds=termination_grace_period_seconds,
         )
         created = await kube.run(
             lambda request_timeout: kube.batch.create_namespaced_job(
@@ -646,10 +544,14 @@ class Job(NamespacedKubeMetadata[kubernetes.client.V1Job]):
 
         """
         namespace, name = self._require_namespace_name("wait for Job deletion")
-        await _wait_until_deleted(
-            label=self._object_label(name=name, namespace=namespace),
-            timeout=timeout,
-            refresh=lambda remaining: self.refresh(kube, timeout=remaining),
+        await (
+            type(self)
+            ._client()
+            .wait_deleted(
+                label=self._object_label(name=name, namespace=namespace),
+                timeout=timeout,
+                refresh=lambda remaining: self.refresh(kube, timeout=remaining),
+            )
         )
 
     async def wait_complete(self, kube: Kube, *, timeout: float) -> Self:

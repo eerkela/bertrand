@@ -285,7 +285,7 @@ async def _watch_namespaced_resource[T, W](
     else:
         fn = watch_all
         api_kwargs = {}
-    context = all_context
+        context = all_context
 
     async for event in watch(
         fn,

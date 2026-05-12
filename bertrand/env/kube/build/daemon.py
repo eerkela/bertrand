@@ -12,6 +12,7 @@ from bertrand.env.kube.api import (
     ContainerPortSpec,
     ContainerSpec,
     Kube,
+    PodTemplateSpec,
     ProbeSpec,
     SecurityContextSpec,
     TolerationSpec,
@@ -62,25 +63,6 @@ BUILDKIT_CONTROL_PLANE_TOLERATIONS = (
 
 
 @dataclass(frozen=True)
-class BuildKitEndpoint:
-    """Concrete BuildKit daemon endpoint selected for one build.
-
-    Parameters
-    ----------
-    addr : str
-        BuildKit client address, suitable for ``buildctl --addr``.
-    node : str
-        Kubernetes node name running the selected builder pod.
-    platform : str
-        Native OCI platform exposed by the selected node.
-    """
-
-    addr: str
-    node: str
-    platform: str
-
-
-@dataclass(frozen=True)
 class BuildKitBuilder:
     """Ready BuildKit daemon pod in the builder pool.
 
@@ -96,8 +78,8 @@ class BuildKitBuilder:
         Native OCI platform exposed by the node.
     pod_ip : str
         Pod IP used by short-lived ``buildctl`` Jobs.
-    endpoint : BuildKitEndpoint
-        Concrete BuildKit client endpoint for this builder.
+    addr : str
+        BuildKit client address, suitable for ``buildctl --addr``.
     config_hash : str
         BuildKit config hash annotation installed on the builder pod.
     config_current : bool
@@ -110,36 +92,9 @@ class BuildKitBuilder:
     node: str
     platform: str
     pod_ip: str
-    endpoint: BuildKitEndpoint
+    addr: str
     config_hash: str
     config_current: bool
-
-    @property
-    def addr(self) -> str:
-        """Return the BuildKit client address.
-
-        Returns
-        -------
-        str
-            BuildKit client address for this builder.
-        """
-        return self.endpoint.addr
-
-
-@dataclass(frozen=True)
-class BuildKitPlatformSchedule:
-    """Selected BuildKit builder for one native platform.
-
-    Parameters
-    ----------
-    platform : str
-        Native OCI platform assigned to this schedule entry.
-    builder : BuildKitBuilder
-        Ready builder selected for the platform.
-    """
-
-    platform: str
-    builder: BuildKitBuilder
 
 
 @dataclass(frozen=True)
@@ -181,6 +136,8 @@ class BuildKitPoolStatus:
         Ready builder pods discovered from the pool.
     ready : bool
         Whether the DaemonSet rollout, config hash, and platform coverage are ready.
+    failures : tuple[str, ...]
+        Human-readable readiness failures, empty when the pool is ready.
     """
 
     namespace: str
@@ -199,6 +156,31 @@ class BuildKitPoolStatus:
     cdi_paths: tuple[str, ...]
     builders: tuple[BuildKitBuilder, ...]
     ready: bool
+
+    @property
+    def failures(self) -> tuple[str, ...]:
+        """Return semantic readiness failures for this builder pool.
+
+        Returns
+        -------
+        tuple[str, ...]
+            Human-readable failures explaining why the builder pool is not ready.
+        """
+        failures: list[str] = []
+        if not self.daemonset_present:
+            failures.append("BuildKit DaemonSet is missing")
+        if not self.rollout_ready:
+            failures.append("BuildKit DaemonSet rollout is not ready")
+        if not self.config_current:
+            failures.append("BuildKit DaemonSet has stale registry config")
+        if not self.ready_builders:
+            failures.append("BuildKit has no ready builder pods")
+        if self.missing_platforms:
+            platforms = ", ".join(self.missing_platforms)
+            failures.append(
+                f"BuildKit has no ready builder for platform(s): {platforms}"
+            )
+        return tuple(failures)
 
 
 @dataclass(frozen=True)
@@ -311,86 +293,88 @@ class BuildKitPool:
             name=self.name,
             labels=self.labels,
             selector=self.selector,
-            containers=[
-                ContainerSpec(
-                    name="buildkitd",
-                    image=BUILDKIT_IMAGE,
-                    image_pull_policy="IfNotPresent",
-                    command=["/bin/sh", "-ec"],
-                    args=[
-                        (
-                            f"if [ -s {BUILDKIT_CONFIG_FILE!r} ]; then "
-                            f"exec buildkitd {buildkitd_flags} "
-                            f"--config {BUILDKIT_CONFIG_FILE!r}; "
-                            "fi; "
-                            f"exec buildkitd {buildkitd_flags}"
-                        )
-                    ],
-                    ports=[
-                        ContainerPortSpec(
-                            name="grpc",
-                            container_port=self.port,
-                        )
-                    ],
-                    security_context=SecurityContextSpec(
-                        privileged=True,
-                        run_as_user=0,
-                    ),
-                    readiness_probe=ProbeSpec.tcp(
-                        port=self.port,
-                        period_seconds=2,
-                        failure_threshold=30,
-                    ),
-                    liveness_probe=ProbeSpec.tcp(
-                        port=self.port,
-                        initial_delay_seconds=10,
-                        period_seconds=10,
-                        failure_threshold=3,
-                    ),
-                    volume_mounts=[
-                        VolumeMountSpec(
-                            name=BUILDKIT_CACHE_VOLUME,
-                            mount_path=BUILDKIT_CACHE_MOUNT,
-                        ),
-                        VolumeMountSpec(
-                            name=BUILDKIT_CONFIG_VOLUME,
-                            mount_path=BUILDKIT_CONFIG_DIR,
-                            read_only=True,
-                        ),
-                        *(
-                            VolumeMountSpec(
-                                name=name,
-                                mount_path=path,
-                                read_only=True,
+            pod_template=PodTemplateSpec(
+                containers=[
+                    ContainerSpec(
+                        name="buildkitd",
+                        image=BUILDKIT_IMAGE,
+                        image_pull_policy="IfNotPresent",
+                        command=["/bin/sh", "-ec"],
+                        args=[
+                            (
+                                f"if [ -s {BUILDKIT_CONFIG_FILE!r} ]; then "
+                                f"exec buildkitd {buildkitd_flags} "
+                                f"--config {BUILDKIT_CONFIG_FILE!r}; "
+                                "fi; "
+                                f"exec buildkitd {buildkitd_flags}"
                             )
-                            for name, path in BUILDKIT_CDI_SPEC_MOUNTS
+                        ],
+                        ports=[
+                            ContainerPortSpec(
+                                name="grpc",
+                                container_port=self.port,
+                            )
+                        ],
+                        security_context=SecurityContextSpec(
+                            privileged=True,
+                            run_as_user=0,
                         ),
-                    ],
-                )
-            ],
-            volumes=[
-                VolumeSpec.host_path(
-                    BUILDKIT_CACHE_VOLUME,
-                    path=self.cache_path,
-                    host_path_type="DirectoryOrCreate",
-                ),
-                VolumeSpec.config_map(
-                    BUILDKIT_CONFIG_VOLUME,
-                    config_map_name=BUILDKIT_CONFIG_NAME,
-                    optional=True,
-                ),
-                *(
-                    VolumeSpec.host_path(
-                        name,
-                        path=path,
-                        host_path_type="DirectoryOrCreate",
+                        readiness_probe=ProbeSpec.tcp(
+                            port=self.port,
+                            period_seconds=2,
+                            failure_threshold=30,
+                        ),
+                        liveness_probe=ProbeSpec.tcp(
+                            port=self.port,
+                            initial_delay_seconds=10,
+                            period_seconds=10,
+                            failure_threshold=3,
+                        ),
+                        volume_mounts=[
+                            VolumeMountSpec(
+                                name=BUILDKIT_CACHE_VOLUME,
+                                mount_path=BUILDKIT_CACHE_MOUNT,
+                            ),
+                            VolumeMountSpec(
+                                name=BUILDKIT_CONFIG_VOLUME,
+                                mount_path=BUILDKIT_CONFIG_DIR,
+                                read_only=True,
+                            ),
+                            *(
+                                VolumeMountSpec(
+                                    name=name,
+                                    mount_path=path,
+                                    read_only=True,
+                                )
+                                for name, path in BUILDKIT_CDI_SPEC_MOUNTS
+                            ),
+                        ],
                     )
-                    for name, path in BUILDKIT_CDI_SPEC_MOUNTS
-                ),
-            ],
-            pod_annotations=pod_annotations,
-            node_selector=BUILDKIT_NODE_SELECTOR,
-            tolerations=BUILDKIT_CONTROL_PLANE_TOLERATIONS,
+                ],
+                volumes=[
+                    VolumeSpec.host_path(
+                        BUILDKIT_CACHE_VOLUME,
+                        path=self.cache_path,
+                        host_path_type="DirectoryOrCreate",
+                    ),
+                    VolumeSpec.config_map(
+                        BUILDKIT_CONFIG_VOLUME,
+                        config_map_name=BUILDKIT_CONFIG_NAME,
+                        optional=True,
+                    ),
+                    *(
+                        VolumeSpec.host_path(
+                            name,
+                            path=path,
+                            host_path_type="DirectoryOrCreate",
+                        )
+                        for name, path in BUILDKIT_CDI_SPEC_MOUNTS
+                    ),
+                ],
+                annotations=pod_annotations,
+                node_selector=BUILDKIT_NODE_SELECTOR,
+                tolerations=BUILDKIT_CONTROL_PLANE_TOLERATIONS,
+            ),
             timeout=deadline - loop.time(),
         )
         await daemonset.wait_rollout(kube, timeout=deadline - loop.time())
@@ -416,7 +400,7 @@ class BuildKitPool:
         Returns
         -------
         tuple[BuildKitBuilder, ...]
-            Ready builder pods with endpoints and native platform metadata.
+            Ready builder pods with client addresses and native platform metadata.
 
         Raises
         ------
@@ -467,7 +451,7 @@ class BuildKitPool:
         platforms: Iterable[str] | None = None,
         preferred_node: str | None = None,
         config_hash: str | None = None,
-    ) -> tuple[BuildKitPlatformSchedule, ...]:
+    ) -> tuple[BuildKitBuilder, ...]:
         """Select one ready builder for each requested platform.
 
         Parameters
@@ -487,8 +471,8 @@ class BuildKitPool:
 
         Returns
         -------
-        tuple[BuildKitPlatformSchedule, ...]
-            Deterministic platform-to-builder assignments.
+        tuple[BuildKitBuilder, ...]
+            Selected builders, one per requested platform.
 
         Raises
         ------
@@ -714,17 +698,14 @@ class BuildKitPool:
         platforms: Iterable[str] | None,
         preferred_node: str | None,
         config_hash: str | None,
-    ) -> tuple[BuildKitPlatformSchedule, ...]:
+    ) -> tuple[BuildKitBuilder, ...]:
         groups = self._candidate_groups(
             snapshot,
             platforms=platforms,
             preferred_node=preferred_node,
             config_hash=config_hash,
         )
-        return tuple(
-            BuildKitPlatformSchedule(platform=platform, builder=candidates[0])
-            for platform, candidates in groups.items()
-        )
+        return tuple(candidates[0] for candidates in groups.values())
 
     def _builders_from(
         self,
@@ -744,12 +725,6 @@ class BuildKitPool:
             if node is None or not pod.is_ready or not pod.pod_ip:
                 continue
             pod_hash = pod.annotations.get(BUILDKIT_CONFIG_HASH_ANNOTATION, "")
-            addr = f"tcp://{pod.pod_ip}:{self.port}"
-            endpoint = BuildKitEndpoint(
-                addr=addr,
-                node=node.name,
-                platform=node.platform,
-            )
             builders.append(
                 BuildKitBuilder(
                     namespace=pod.namespace,
@@ -757,7 +732,7 @@ class BuildKitPool:
                     node=node.name,
                     platform=node.platform,
                     pod_ip=pod.pod_ip,
-                    endpoint=endpoint,
+                    addr=f"tcp://{pod.pod_ip}:{self.port}",
                     config_hash=pod_hash,
                     config_current=config_hash is None or pod_hash == config_hash,
                 )

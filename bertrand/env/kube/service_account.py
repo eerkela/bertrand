@@ -9,13 +9,7 @@ from kubernetes import client as kube_client
 
 from .api import (
     NamespacedKubeMetadata,
-)
-from .api._helpers import (
-    _create_or_patch,
-    _list_namespaced_items,
-    _typed_payload,
-    _validate_delete_status,
-    _wait_until_deleted,
+    NamespacedResourceClient,
 )
 
 if TYPE_CHECKING:
@@ -38,6 +32,59 @@ class ServiceAccount(NamespacedKubeMetadata[kube_client.V1ServiceAccount]):
     """
 
     _obj: kube_client.V1ServiceAccount
+
+    @classmethod
+    def _client(cls) -> NamespacedResourceClient[kube_client.V1ServiceAccount, Self]:
+        return NamespacedResourceClient(
+            kind="ServiceAccount",
+            expected=kube_client.V1ServiceAccount,
+            list_type=kube_client.V1ServiceAccountList,
+            wrapper=lambda payload: cls(_obj=payload),
+            read=lambda kube, namespace, name, request_timeout: (
+                kube.core.read_namespaced_service_account(
+                    name=name,
+                    namespace=namespace,
+                    _request_timeout=request_timeout,
+                )
+            ),
+            list_all=lambda kube, label_selector, field_selector, request_timeout: (
+                kube.core.list_service_account_for_all_namespaces(
+                    label_selector=label_selector,
+                    field_selector=field_selector,
+                    _request_timeout=request_timeout,
+                )
+            ),
+            list_namespace=lambda kube, namespace, labels, fields, timeout: (
+                kube.core.list_namespaced_service_account(
+                    namespace=namespace,
+                    label_selector=labels,
+                    field_selector=fields,
+                    _request_timeout=timeout,
+                )
+            ),
+            create=lambda kube, namespace, _name, manifest, request_timeout: (
+                kube.core.create_namespaced_service_account(
+                    namespace=namespace,
+                    body=manifest,
+                    _request_timeout=request_timeout,
+                )
+            ),
+            patch=lambda kube, namespace, name, manifest, request_timeout: (
+                kube.core.patch_namespaced_service_account(
+                    name=name,
+                    namespace=namespace,
+                    body=manifest,
+                    _request_timeout=request_timeout,
+                )
+            ),
+            delete=lambda kube, namespace, name, request_timeout: (
+                kube.core.delete_namespaced_service_account(
+                    name=name,
+                    namespace=namespace,
+                    _request_timeout=request_timeout,
+                )
+            ),
+        )
 
     @classmethod
     async def get(
@@ -66,25 +113,11 @@ class ServiceAccount(NamespacedKubeMetadata[kube_client.V1ServiceAccount]):
         ServiceAccount | None
             Wrapped Kubernetes ServiceAccount, or `None` if it does not exist.
         """
-        payload = await kube.run(
-            lambda request_timeout: kube.core.read_namespaced_service_account(
-                name=name,
-                namespace=namespace,
-                _request_timeout=request_timeout,
-            ),
+        return await cls._client().get(
+            kube,
+            namespace=namespace,
+            name=name,
             timeout=timeout,
-            context=(
-                f"failed to read ServiceAccount {name!r} in namespace {namespace!r}"
-            ),
-        )
-        if payload is None:
-            return None
-        return cls(
-            _obj=_typed_payload(
-                payload,
-                kube_client.V1ServiceAccount,
-                context="ServiceAccount",
-            )
         )
 
     @classmethod
@@ -114,36 +147,12 @@ class ServiceAccount(NamespacedKubeMetadata[kube_client.V1ServiceAccount]):
         list[ServiceAccount]
             Wrapped ServiceAccounts matching the requested filters.
         """
-        return [
-            cls(_obj=item)
-            for item in await _list_namespaced_items(
-                kube,
-                timeout=timeout,
-                namespaces=namespaces,
-                labels=labels,
-                list_all=lambda label_selector, request_timeout: (
-                    kube.core.list_service_account_for_all_namespaces(
-                        label_selector=label_selector,
-                        _request_timeout=request_timeout,
-                    )
-                ),
-                list_namespace=lambda namespace, label_selector, request_timeout: (
-                    kube.core.list_namespaced_service_account(
-                        namespace=namespace,
-                        label_selector=label_selector,
-                        _request_timeout=request_timeout,
-                    )
-                ),
-                list_type=kube_client.V1ServiceAccountList,
-                item_type=kube_client.V1ServiceAccount,
-                all_context="failed to list ServiceAccounts across all namespaces",
-                namespace_context=lambda namespace: (
-                    f"failed to list ServiceAccounts in namespace {namespace!r}"
-                ),
-                list_context="ServiceAccount",
-                item_context="ServiceAccount",
-            )
-        ]
+        return await cls._client().list(
+            kube,
+            timeout=timeout,
+            namespaces=namespaces,
+            labels=labels,
+        )
 
     @staticmethod
     def _manifest(
@@ -213,26 +222,13 @@ class ServiceAccount(NamespacedKubeMetadata[kube_client.V1ServiceAccount]):
             labels=labels,
             annotations=annotations,
         )
-        payload = await _create_or_patch(
+        return await cls._client().upsert(
             kube,
+            namespace=namespace,
+            name=name,
+            manifest=manifest,
             timeout=timeout,
-            create=lambda request_timeout: kube.core.create_namespaced_service_account(
-                namespace=namespace,
-                body=manifest,
-                _request_timeout=request_timeout,
-            ),
-            patch=lambda request_timeout: kube.core.patch_namespaced_service_account(
-                name=name,
-                namespace=namespace,
-                body=manifest,
-                _request_timeout=request_timeout,
-            ),
-            create_context=f"failed to create ServiceAccount {namespace}/{name}",
-            patch_context=f"failed to patch ServiceAccount {namespace}/{name}",
-            expected=kube_client.V1ServiceAccount,
-            payload_context="ServiceAccount",
         )
-        return cls(_obj=payload)
 
     async def refresh(self, kube: Kube, *, timeout: float) -> Self | None:
         """Re-read this ServiceAccount by its metadata namespace and name.
@@ -269,17 +265,15 @@ class ServiceAccount(NamespacedKubeMetadata[kube_client.V1ServiceAccount]):
             Maximum request budget in seconds. If infinite, wait indefinitely.
         """
         namespace, name = self._require_namespace_name("delete ServiceAccount")
-        payload = await kube.run(
-            lambda request_timeout: kube.core.delete_namespaced_service_account(
-                name=name,
+        await (
+            type(self)
+            ._client()
+            .delete_by_name(
+                kube,
                 namespace=namespace,
-                _request_timeout=request_timeout,
-            ),
-            timeout=timeout,
-            context=f"failed to delete ServiceAccount {namespace}/{name}",
-        )
-        _validate_delete_status(
-            payload, label=self._object_label(name=name, namespace=namespace)
+                name=name,
+                timeout=timeout,
+            )
         )
 
     async def wait_deleted(self, kube: Kube, *, timeout: float) -> None:
@@ -296,8 +290,12 @@ class ServiceAccount(NamespacedKubeMetadata[kube_client.V1ServiceAccount]):
         namespace, name = self._require_namespace_name(
             "wait for ServiceAccount deletion"
         )
-        await _wait_until_deleted(
-            label=self._object_label(name=name, namespace=namespace),
-            timeout=timeout,
-            refresh=lambda remaining: self.refresh(kube, timeout=remaining),
+        await (
+            type(self)
+            ._client()
+            .wait_deleted(
+                label=self._object_label(name=name, namespace=namespace),
+                timeout=timeout,
+                refresh=lambda remaining: self.refresh(kube, timeout=remaining),
+            )
         )

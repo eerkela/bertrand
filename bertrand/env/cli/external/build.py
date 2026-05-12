@@ -13,18 +13,14 @@ from bertrand.env.config.core import Config, _check_kube_name
 from bertrand.env.config.repository import resolve_repo_id
 from bertrand.env.git import INFINITY, GitRepository
 from bertrand.env.kube.api import Kube
-from bertrand.env.kube.build.daemon import BUILDKIT_POOL, BuildKitPoolStatus
+from bertrand.env.kube.build.daemon import BUILDKIT_POOL
 from bertrand.env.kube.build.lifecycle import gc_project_images
 from bertrand.env.kube.build.project import project_image_build
-from bertrand.env.kube.build.repository import (
-    IMAGE_TAG_RE,
-    IMAGES,
-    ImageRepositoryStatus,
-)
+from bertrand.env.kube.build.refs import validate_tag
+from bertrand.env.kube.build.repository import IMAGES
 
 if TYPE_CHECKING:
-    from bertrand.env.kube.build.manifest import ImageManifestResult
-    from bertrand.env.kube.build.project import ProjectImageResult
+    from bertrand.env.kube.build.lifecycle import ProjectImagePublication
 
 
 _GITHUB_HTTPS_REMOTE = re.compile(
@@ -80,7 +76,7 @@ async def bertrand_build(
         auth = _check_kube_name(auth)
 
     repo, worktree = await _resolve_build_target(target)
-    results: list[tuple[str, ProjectImageResult]] = []
+    results: list[tuple[str, ProjectImagePublication]] = []
     with await Kube.host(timeout=INFINITY) as kube:
         config = await Config.load(worktree, kube=kube, repo=repo, timeout=INFINITY)
         async with config:
@@ -230,37 +226,32 @@ def _github_remote_identity(url: str) -> tuple[str, str] | None:
 
 
 def _external_image(repo: str, tag: str) -> str:
-    if not IMAGE_TAG_RE.fullmatch(tag):
+    try:
+        validate_tag(tag, label="derived image tag")
+    except ValueError as err:
         msg = f"derived image tag is not a valid OCI tag: {tag!r}"
-        raise ValueError(msg)
+        raise ValueError(msg) from err
     return f"{repo}:{tag}"
 
 
-def _print_results(results: list[tuple[str, ProjectImageResult]]) -> None:
+def _print_results(results: list[tuple[str, ProjectImagePublication]]) -> None:
     for index, (tag, result) in enumerate(results):
         if index:
             print()
         print(f"image: {_display_image_key(tag)}")
         print(f"  internal: {result.image}")
         print(f"  digest: {result.digest_ref}")
-        print(f"  platforms: {', '.join(result.record.platforms)}")
-        if result.manifest.channel_digest_refs:
+        print(f"  platforms: {', '.join(result.platforms)}")
+        if result.channel_digest_refs:
             print("  channels:")
-            for name, ref in result.manifest.channel_digest_refs.items():
+            for name, ref in result.channel_digest_refs.items():
                 print(f"    {name}: {ref}")
-        external = _external_digest(result.manifest)
-        if external is not None:
-            print(f"  external: {external}")
-        if result.manifest.external_channel_digest_refs:
+        if result.external_digest_ref is not None:
+            print(f"  external: {result.external_digest_ref}")
+        if result.external_channel_digest_refs:
             print("  external channels:")
-            for name, ref in result.manifest.external_channel_digest_refs.items():
+            for name, ref in result.external_channel_digest_refs.items():
                 print(f"    {name}: {ref}")
-
-
-def _external_digest(result: ImageManifestResult) -> str | None:
-    if result.external_digest_ref is None:
-        return None
-    return result.external_digest_ref
 
 
 def _display_image_key(tag: str) -> str:
@@ -279,10 +270,7 @@ async def _assert_build_runtime(kube: Kube, *, timeout: float) -> None:
         timeout=deadline - loop.time(),
         config_hash=IMAGES.buildkit_config_hash,
     )
-    failures = [
-        *_registry_readiness_failures(registry),
-        *_buildkit_readiness_failures(buildkit),
-    ]
+    failures = [*registry.failures, *buildkit.failures]
     if failures:
         detail = "\n".join(f"- {failure}" for failure in failures)
         msg = (
@@ -290,39 +278,6 @@ async def _assert_build_runtime(kube: Kube, *, timeout: float) -> None:
             f"to converge the Kubernetes build service.\n{detail}"
         )
         raise OSError(msg)
-
-
-def _registry_readiness_failures(status: ImageRepositoryStatus) -> list[str]:
-    failures: list[str] = []
-    if not status.service_ready:
-        failures.append("image registry Service is missing or has the wrong shape")
-    if not status.rollout_ready:
-        failures.append("image registry Deployment rollout is not ready")
-    if not status.storage_ready:
-        failures.append("image registry storage is not bound and ready")
-    if not status.delete_enabled:
-        failures.append("image registry manifest deletion is not enabled")
-    if not status.config_current:
-        failures.append("BuildKit registry routing config is stale")
-    if not status.node_trust_ready:
-        failures.append("one or more Kubernetes nodes do not trust the image registry")
-    return failures
-
-
-def _buildkit_readiness_failures(status: BuildKitPoolStatus) -> list[str]:
-    failures: list[str] = []
-    if not status.daemonset_present:
-        failures.append("BuildKit DaemonSet is missing")
-    if not status.rollout_ready:
-        failures.append("BuildKit DaemonSet rollout is not ready")
-    if not status.config_current:
-        failures.append("BuildKit DaemonSet has stale registry config")
-    if not status.ready_builders:
-        failures.append("BuildKit has no ready builder pods")
-    if status.missing_platforms:
-        platforms = ", ".join(status.missing_platforms)
-        failures.append(f"BuildKit has no ready builder for platform(s): {platforms}")
-    return failures
 
 
 async def _best_effort_gc(kube: Kube, *, quiet: bool) -> None:

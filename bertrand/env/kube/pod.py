@@ -11,16 +11,8 @@ import kubernetes
 from .api import (
     Kube,
     NamespacedKubeMetadata,
+    NamespacedResourceClient,
     WatchEvent,
-)
-from .api._helpers import (
-    _list_namespaced_items,
-    _typed_payload,
-    _validate_delete_status,
-    _wait_until_deleted,
-)
-from .api.watch import (
-    _watch_namespaced_resource,
 )
 
 if TYPE_CHECKING:
@@ -55,6 +47,47 @@ class Pod(NamespacedKubeMetadata[kubernetes.client.V1Pod]):
     _obj: kubernetes.client.V1Pod
 
     @classmethod
+    def _client(cls) -> NamespacedResourceClient[kubernetes.client.V1Pod, Self]:
+        return NamespacedResourceClient(
+            kind="Pod",
+            expected=kubernetes.client.V1Pod,
+            list_type=kubernetes.client.V1PodList,
+            wrapper=lambda payload: cls(_obj=payload),
+            read=lambda kube, namespace, name, request_timeout: (
+                kube.core.read_namespaced_pod(
+                    name=name,
+                    namespace=namespace,
+                    _request_timeout=request_timeout,
+                )
+            ),
+            list_all=lambda kube, label_selector, field_selector, request_timeout: (
+                kube.core.list_pod_for_all_namespaces(
+                    label_selector=label_selector,
+                    field_selector=field_selector,
+                    _request_timeout=request_timeout,
+                )
+            ),
+            list_namespace=lambda kube, namespace, labels, fields, timeout: (
+                kube.core.list_namespaced_pod(
+                    namespace=namespace,
+                    label_selector=labels,
+                    field_selector=fields,
+                    _request_timeout=timeout,
+                )
+            ),
+            delete=lambda kube, namespace, name, request_timeout: (
+                kube.core.delete_namespaced_pod(
+                    name=name,
+                    namespace=namespace,
+                    body=kubernetes.client.V1DeleteOptions(),
+                    _request_timeout=request_timeout,
+                )
+            ),
+            watch_all=lambda kube: kube.core.list_pod_for_all_namespaces,
+            watch_namespace=lambda kube: kube.core.list_namespaced_pod,
+        )
+
+    @classmethod
     async def get(
         cls,
         kube: Kube,
@@ -82,18 +115,12 @@ class Pod(NamespacedKubeMetadata[kubernetes.client.V1Pod]):
         Pod | None
             Validated Kubernetes pod wrapper, or `None` if the pod does not exist.
         """
-        payload = await kube.run(
-            lambda request_timeout: kube.core.read_namespaced_pod(
-                name=name,
-                namespace=namespace,
-                _request_timeout=request_timeout,
-            ),
+        return await cls._client().get(
+            kube,
+            namespace=namespace,
+            name=name,
             timeout=timeout,
-            context=f"failed to read pod {name!r} in namespace {namespace!r}",
         )
-        if payload is None:
-            return None
-        return cls(_obj=_typed_payload(payload, kubernetes.client.V1Pod, context="Pod"))
 
     @classmethod
     async def list(
@@ -103,6 +130,7 @@ class Pod(NamespacedKubeMetadata[kubernetes.client.V1Pod]):
         timeout: float,
         namespaces: Collection[str] | None = None,
         labels: Mapping[str, str] | None = None,
+        field_selector: str | None = None,
     ) -> builtins.list[Self]:
         """List Kubernetes Pods with optional namespace and label filtering.
 
@@ -118,42 +146,21 @@ class Pod(NamespacedKubeMetadata[kubernetes.client.V1Pod]):
             names are normalized (trimmed), deduplicated, and queried individually.
         labels : Mapping[str, str] | None, optional
             Optional label filters.
+        field_selector : str | None, optional
+            Raw Kubernetes field selector.
 
         Returns
         -------
         builtins.list[Pod]
             Validated Kubernetes pod wrappers.
         """
-        return [
-            cls(_obj=item)
-            for item in await _list_namespaced_items(
-                kube,
-                timeout=timeout,
-                namespaces=namespaces,
-                labels=labels,
-                list_all=lambda label_selector, request_timeout: (
-                    kube.core.list_pod_for_all_namespaces(
-                        label_selector=label_selector,
-                        _request_timeout=request_timeout,
-                    )
-                ),
-                list_namespace=lambda namespace, label_selector, request_timeout: (
-                    kube.core.list_namespaced_pod(
-                        namespace=namespace,
-                        label_selector=label_selector,
-                        _request_timeout=request_timeout,
-                    )
-                ),
-                list_type=kubernetes.client.V1PodList,
-                item_type=kubernetes.client.V1Pod,
-                all_context="failed to list pods across all namespaces",
-                namespace_context=lambda namespace: (
-                    f"failed to list pods in namespace {namespace!r}"
-                ),
-                list_context="Pod",
-                item_context="Pod",
-            )
-        ]
+        return await cls._client().list(
+            kube,
+            timeout=timeout,
+            namespaces=namespaces,
+            labels=labels,
+            field_selector=field_selector,
+        )
 
     @classmethod
     async def watch(
@@ -188,21 +195,13 @@ class Pod(NamespacedKubeMetadata[kubernetes.client.V1Pod]):
         WatchEvent[Pod]
             Typed watch events containing wrapped Pods.
         """
-        async for event in _watch_namespaced_resource(
-            expected=kubernetes.client.V1Pod,
-            wrapper=lambda payload: cls(_obj=payload),
+        async for event in cls._client().watch(
+            kube,
             timeout=timeout,
             namespace=namespace,
-            resource_version=resource_version,
             labels=labels,
             field_selector=field_selector,
-            watch_all=kube.core.list_pod_for_all_namespaces,
-            watch_namespace=kube.core.list_namespaced_pod,
-            all_context="failed to watch Pods across all namespaces",
-            namespace_context=lambda namespace: (
-                f"failed to watch Pods in namespace {namespace!r}"
-            ),
-            payload_context="Pod watch",
+            resource_version=resource_version,
         ):
             yield event
 
@@ -514,10 +513,14 @@ class Pod(NamespacedKubeMetadata[kubernetes.client.V1Pod]):
             Maximum runtime budget in seconds. If infinite, wait indefinitely.
         """
         namespace, name = self._require_namespace_name("wait for pod deletion")
-        await _wait_until_deleted(
-            label=self._object_label(name=name, namespace=namespace),
-            timeout=timeout,
-            refresh=lambda remaining: self.refresh(kube, timeout=remaining),
+        await (
+            type(self)
+            ._client()
+            .wait_deleted(
+                label=self._object_label(name=name, namespace=namespace),
+                timeout=timeout,
+                refresh=lambda remaining: self.refresh(kube, timeout=remaining),
+            )
         )
 
     async def wait_terminal(self, kube: Kube, *, timeout: float) -> Self:
@@ -612,16 +615,13 @@ class Pod(NamespacedKubeMetadata[kubernetes.client.V1Pod]):
         """
         namespace, name = self._require_namespace_name("delete pod")
 
-        payload = await kube.run(
-            lambda request_timeout: kube.core.delete_namespaced_pod(
-                name=name,
+        await (
+            type(self)
+            ._client()
+            .delete_by_name(
+                kube,
                 namespace=namespace,
-                body=kubernetes.client.V1DeleteOptions(),
-                _request_timeout=request_timeout,
-            ),
-            timeout=timeout,
-            context=f"failed to delete pod {namespace}/{name}",
-        )
-        _validate_delete_status(
-            payload, label=self._object_label(name=name, namespace=namespace)
+                name=name,
+                timeout=timeout,
+            )
         )

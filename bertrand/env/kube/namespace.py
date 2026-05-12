@@ -8,14 +8,8 @@ from typing import TYPE_CHECKING, Self
 from kubernetes import client as kube_client
 
 from .api import (
+    ClusterResourceClient,
     KubeMetadata,
-)
-from .api._helpers import (
-    _create_or_patch,
-    _list_cluster_items,
-    _typed_payload,
-    _validate_delete_status,
-    _wait_until_deleted,
 )
 
 if TYPE_CHECKING:
@@ -40,6 +34,43 @@ class Namespace(KubeMetadata[kube_client.V1Namespace]):
     _obj: kube_client.V1Namespace
 
     @classmethod
+    def _client(cls) -> ClusterResourceClient[kube_client.V1Namespace, Self]:
+        return ClusterResourceClient(
+            kind="Namespace",
+            expected=kube_client.V1Namespace,
+            list_type=kube_client.V1NamespaceList,
+            wrapper=lambda payload: cls(_obj=payload),
+            read=lambda kube, name, request_timeout: kube.core.read_namespace(
+                name=name,
+                _request_timeout=request_timeout,
+            ),
+            list_items=lambda kube, label_selector, field_selector, request_timeout: (
+                kube.core.list_namespace(
+                    label_selector=label_selector,
+                    field_selector=field_selector,
+                    _request_timeout=request_timeout,
+                )
+            ),
+            create=lambda kube, _name, manifest, request_timeout: (
+                kube.core.create_namespace(
+                    body=manifest,
+                    _request_timeout=request_timeout,
+                )
+            ),
+            patch=lambda kube, name, manifest, request_timeout: (
+                kube.core.patch_namespace(
+                    name=name,
+                    body=manifest,
+                    _request_timeout=request_timeout,
+                )
+            ),
+            delete=lambda kube, name, request_timeout: kube.core.delete_namespace(
+                name=name,
+                _request_timeout=request_timeout,
+            ),
+        )
+
+    @classmethod
     async def get(cls, kube: Kube, *, name: str, timeout: float) -> Self | None:
         """Read one Kubernetes Namespace by name.
 
@@ -58,19 +89,7 @@ class Namespace(KubeMetadata[kube_client.V1Namespace]):
             Wrapped Kubernetes Namespace, or `None` if it does not exist.
 
         """
-        payload = await kube.run(
-            lambda request_timeout: kube.core.read_namespace(
-                name=name,
-                _request_timeout=request_timeout,
-            ),
-            timeout=timeout,
-            context=f"failed to read Namespace {name!r}",
-        )
-        if payload is None:
-            return None
-        return cls(
-            _obj=_typed_payload(payload, kube_client.V1Namespace, context="Namespace")
-        )
+        return await cls._client().get(kube, name=name, timeout=timeout)
 
     @classmethod
     async def list(
@@ -97,25 +116,7 @@ class Namespace(KubeMetadata[kube_client.V1Namespace]):
             Wrapped Namespaces matching the requested filters.
 
         """
-        return [
-            cls(_obj=item)
-            for item in await _list_cluster_items(
-                kube,
-                timeout=timeout,
-                labels=labels,
-                list_items=lambda label_selector, request_timeout: (
-                    kube.core.list_namespace(
-                        label_selector=label_selector,
-                        _request_timeout=request_timeout,
-                    )
-                ),
-                list_type=kube_client.V1NamespaceList,
-                item_type=kube_client.V1Namespace,
-                context="failed to list Namespaces",
-                list_context="Namespace",
-                item_context="Namespace",
-            )
-        ]
+        return await cls._client().list(kube, timeout=timeout, labels=labels)
 
     @staticmethod
     def _manifest(
@@ -175,24 +176,12 @@ class Namespace(KubeMetadata[kube_client.V1Namespace]):
             msg = "Namespace upsert requires non-empty name"
             raise OSError(msg)
         manifest = cls._manifest(name=name, labels=labels, annotations=annotations)
-        payload = await _create_or_patch(
+        return await cls._client().upsert(
             kube,
+            name=name,
+            manifest=manifest,
             timeout=timeout,
-            create=lambda request_timeout: kube.core.create_namespace(
-                body=manifest,
-                _request_timeout=request_timeout,
-            ),
-            patch=lambda request_timeout: kube.core.patch_namespace(
-                name=name,
-                body=manifest,
-                _request_timeout=request_timeout,
-            ),
-            create_context=f"failed to create Namespace {name}",
-            patch_context=f"failed to patch Namespace {name}",
-            expected=kube_client.V1Namespace,
-            payload_context="Namespace",
         )
-        return cls(_obj=payload)
 
     @property
     def phase(self) -> str:
@@ -235,15 +224,7 @@ class Namespace(KubeMetadata[kube_client.V1Namespace]):
             Maximum request budget in seconds. If infinite, wait indefinitely.
         """
         name = self._require_name("delete Namespace")
-        payload = await kube.run(
-            lambda request_timeout: kube.core.delete_namespace(
-                name=name,
-                _request_timeout=request_timeout,
-            ),
-            timeout=timeout,
-            context=f"failed to delete Namespace {name}",
-        )
-        _validate_delete_status(payload, label=self._object_label(name))
+        await type(self)._client().delete_by_name(kube, name=name, timeout=timeout)
 
     async def wait_deleted(self, kube: Kube, *, timeout: float) -> None:
         """Wait until this Namespace is deleted from the cluster.
@@ -257,8 +238,12 @@ class Namespace(KubeMetadata[kube_client.V1Namespace]):
 
         """
         name = self._require_name("wait for Namespace deletion")
-        await _wait_until_deleted(
-            label=self._object_label(name),
-            timeout=timeout,
-            refresh=lambda remaining: self.refresh(kube, timeout=remaining),
+        await (
+            type(self)
+            ._client()
+            .wait_deleted(
+                label=self._object_label(name),
+                timeout=timeout,
+                refresh=lambda remaining: self.refresh(kube, timeout=remaining),
+            )
         )

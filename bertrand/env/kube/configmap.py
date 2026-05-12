@@ -11,13 +11,7 @@ from kubernetes import client as kube_client
 from .api import (
     Kube,
     NamespacedKubeMetadata,
-)
-from .api._helpers import (
-    _create_or_patch,
-    _list_namespaced_items,
-    _typed_payload,
-    _validate_delete_status,
-    _wait_until_deleted,
+    NamespacedResourceClient,
 )
 
 if TYPE_CHECKING:
@@ -41,6 +35,59 @@ class ConfigMap(NamespacedKubeMetadata[kube_client.V1ConfigMap]):
     """
 
     _obj: kube_client.V1ConfigMap
+
+    @classmethod
+    def _client(cls) -> NamespacedResourceClient[kube_client.V1ConfigMap, Self]:
+        return NamespacedResourceClient(
+            kind="ConfigMap",
+            expected=kube_client.V1ConfigMap,
+            list_type=kube_client.V1ConfigMapList,
+            wrapper=lambda payload: cls(_obj=payload),
+            read=lambda kube, namespace, name, request_timeout: (
+                kube.core.read_namespaced_config_map(
+                    name=name,
+                    namespace=namespace,
+                    _request_timeout=request_timeout,
+                )
+            ),
+            list_all=lambda kube, label_selector, field_selector, request_timeout: (
+                kube.core.list_config_map_for_all_namespaces(
+                    label_selector=label_selector,
+                    field_selector=field_selector,
+                    _request_timeout=request_timeout,
+                )
+            ),
+            list_namespace=lambda kube, namespace, labels, fields, timeout: (
+                kube.core.list_namespaced_config_map(
+                    namespace=namespace,
+                    label_selector=labels,
+                    field_selector=fields,
+                    _request_timeout=timeout,
+                )
+            ),
+            create=lambda kube, namespace, _name, manifest, request_timeout: (
+                kube.core.create_namespaced_config_map(
+                    namespace=namespace,
+                    body=manifest,
+                    _request_timeout=request_timeout,
+                )
+            ),
+            patch=lambda kube, namespace, name, manifest, request_timeout: (
+                kube.core.patch_namespaced_config_map(
+                    name=name,
+                    namespace=namespace,
+                    body=manifest,
+                    _request_timeout=request_timeout,
+                )
+            ),
+            delete=lambda kube, namespace, name, request_timeout: (
+                kube.core.delete_namespaced_config_map(
+                    name=name,
+                    namespace=namespace,
+                    _request_timeout=request_timeout,
+                )
+            ),
+        )
 
     @classmethod
     async def get(
@@ -69,21 +116,11 @@ class ConfigMap(NamespacedKubeMetadata[kube_client.V1ConfigMap]):
         ConfigMap | None
             Wrapped Kubernetes ConfigMap, or `None` if it does not exist.
         """
-        payload = await kube.run(
-            lambda request_timeout: kube.core.read_namespaced_config_map(
-                name=name,
-                namespace=namespace,
-                _request_timeout=request_timeout,
-            ),
+        return await cls._client().get(
+            kube,
+            namespace=namespace,
+            name=name,
             timeout=timeout,
-            context=(
-                f"failed to read cluster ConfigMap {name!r} in namespace {namespace!r}"
-            ),
-        )
-        if payload is None:
-            return None
-        return cls(
-            _obj=_typed_payload(payload, kube_client.V1ConfigMap, context="ConfigMap")
         )
 
     @classmethod
@@ -114,36 +151,12 @@ class ConfigMap(NamespacedKubeMetadata[kube_client.V1ConfigMap]):
         list[ConfigMap]
             Wrapped Kubernetes ConfigMaps matching the requested filters.
         """
-        return [
-            cls(_obj=item)
-            for item in await _list_namespaced_items(
-                kube,
-                timeout=timeout,
-                namespaces=namespaces,
-                labels=labels,
-                list_all=lambda label_selector, request_timeout: (
-                    kube.core.list_config_map_for_all_namespaces(
-                        label_selector=label_selector,
-                        _request_timeout=request_timeout,
-                    )
-                ),
-                list_namespace=lambda namespace, label_selector, request_timeout: (
-                    kube.core.list_namespaced_config_map(
-                        namespace=namespace,
-                        label_selector=label_selector,
-                        _request_timeout=request_timeout,
-                    )
-                ),
-                list_type=kube_client.V1ConfigMapList,
-                item_type=kube_client.V1ConfigMap,
-                all_context="failed to list cluster ConfigMaps across all namespaces",
-                namespace_context=lambda namespace: (
-                    f"failed to list cluster ConfigMaps in namespace {namespace!r}"
-                ),
-                list_context="ConfigMap",
-                item_context="ConfigMap",
-            )
-        ]
+        return await cls._client().list(
+            kube,
+            timeout=timeout,
+            namespaces=namespaces,
+            labels=labels,
+        )
 
     @staticmethod
     def _manifest(
@@ -229,26 +242,13 @@ class ConfigMap(NamespacedKubeMetadata[kube_client.V1ConfigMap]):
             annotations=annotations,
         )
 
-        payload = await _create_or_patch(
+        return await cls._client().upsert(
             kube,
+            namespace=namespace,
+            name=name,
+            manifest=manifest,
             timeout=timeout,
-            create=lambda request_timeout: kube.core.create_namespaced_config_map(
-                namespace=namespace,
-                body=manifest,
-                _request_timeout=request_timeout,
-            ),
-            patch=lambda request_timeout: kube.core.patch_namespaced_config_map(
-                name=name,
-                namespace=namespace,
-                body=manifest,
-                _request_timeout=request_timeout,
-            ),
-            create_context=f"failed to create cluster ConfigMap {name!r}",
-            patch_context=f"failed to update cluster ConfigMap {name!r}",
-            expected=kube_client.V1ConfigMap,
-            payload_context="ConfigMap",
         )
-        return cls(_obj=payload)
 
     @property
     def data(self) -> Mapping[str, str]:
@@ -306,17 +306,15 @@ class ConfigMap(NamespacedKubeMetadata[kube_client.V1ConfigMap]):
             Maximum request budget in seconds. If infinite, wait indefinitely.
         """
         namespace, name = self._require_namespace_name("delete ConfigMap")
-        payload = await kube.run(
-            lambda request_timeout: kube.core.delete_namespaced_config_map(
-                name=name,
+        await (
+            type(self)
+            ._client()
+            .delete_by_name(
+                kube,
                 namespace=namespace,
-                _request_timeout=request_timeout,
-            ),
-            timeout=timeout,
-            context=f"failed to delete cluster ConfigMap {namespace}/{name}",
-        )
-        _validate_delete_status(
-            payload, label=self._object_label(name=name, namespace=namespace)
+                name=name,
+                timeout=timeout,
+            )
         )
 
     async def wait_deleted(self, kube: Kube, *, timeout: float) -> None:
@@ -331,8 +329,12 @@ class ConfigMap(NamespacedKubeMetadata[kube_client.V1ConfigMap]):
 
         """
         namespace, name = self._require_namespace_name("wait for ConfigMap deletion")
-        await _wait_until_deleted(
-            label=self._object_label(name=name, namespace=namespace),
-            timeout=timeout,
-            refresh=lambda remaining: self.refresh(kube, timeout=remaining),
+        await (
+            type(self)
+            ._client()
+            .wait_deleted(
+                label=self._object_label(name=name, namespace=namespace),
+                timeout=timeout,
+                refresh=lambda remaining: self.refresh(kube, timeout=remaining),
+            )
         )

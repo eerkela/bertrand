@@ -5,12 +5,10 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from collections.abc import Collection, Mapping
-
     from .spec import (
         ContainerSpec,
-        ImagePullSecretSpec,
         PodSecurityContextSpec,
+        PodTemplateSpec,
         ProbeSpec,
         ResourceRequirementsSpec,
         SecurityContextSpec,
@@ -289,75 +287,60 @@ def _volume_manifest(volume: VolumeSpec) -> dict[str, object]:
     return payload
 
 
-def _pod_template_manifest(
-    *,
-    labels: Mapping[str, str],
-    pod_annotations: Mapping[str, str] | None,
-    containers: Collection[ContainerSpec],
-    volumes: Collection[VolumeSpec],
-    automount_service_account_token: bool,
-    service_account_name: str | None,
-    node_selector: Mapping[str, str] | None,
-    host_pid: bool | None,
-    restart_policy: str | None = None,
-    pod_security_context: PodSecurityContextSpec | None = None,
-    tolerations: Collection[TolerationSpec] = (),
-    image_pull_secrets: Collection[ImagePullSecretSpec] = (),
-    priority_class_name: str | None = None,
-    dns_policy: str | None = None,
-    host_network: bool | None = None,
-    termination_grace_period_seconds: int | None = None,
-    node_name: str | None = None,
-) -> dict[str, object]:
+def _pod_template_manifest(template: PodTemplateSpec) -> dict[str, object]:
     spec: dict[str, object] = {
-        "automountServiceAccountToken": automount_service_account_token,
-        "containers": [_container_manifest(container) for container in containers],
-        "volumes": [_volume_manifest(volume) for volume in volumes],
+        "automountServiceAccountToken": template.automount_service_account_token,
+        "containers": [
+            _container_manifest(container) for container in template.containers
+        ],
+        "volumes": [_volume_manifest(volume) for volume in template.volumes],
     }
-    if restart_policy is not None:
-        spec["restartPolicy"] = restart_policy
-    if service_account_name is not None:
-        service_account_name = service_account_name.strip()
+    if template.restart_policy is not None:
+        spec["restartPolicy"] = template.restart_policy
+    if template.service_account_name is not None:
+        service_account_name = template.service_account_name.strip()
         if service_account_name:
             spec["serviceAccountName"] = service_account_name
-    if node_selector:
-        spec["nodeSelector"] = dict(node_selector)
-    if node_name is not None:
-        node_name = node_name.strip()
+    if template.node_selector:
+        spec["nodeSelector"] = dict(template.node_selector)
+    if template.node_name is not None:
+        node_name = template.node_name.strip()
         if node_name:
             spec["nodeName"] = node_name
-    if pod_security_context is not None:
-        security_context = _pod_security_context_manifest(pod_security_context)
+    if template.security_context is not None:
+        security_context = _pod_security_context_manifest(template.security_context)
         if security_context:
             spec["securityContext"] = security_context
-    if tolerations:
+    if template.tolerations:
         spec["tolerations"] = [
-            _toleration_manifest(toleration) for toleration in tolerations
+            _toleration_manifest(toleration) for toleration in template.tolerations
         ]
-    if image_pull_secrets:
+    if template.image_pull_secrets:
         spec["imagePullSecrets"] = [
             {"name": secret.name}
-            for secret in image_pull_secrets
+            for secret in template.image_pull_secrets
             if secret.name.strip()
         ]
-    if priority_class_name is not None:
-        priority_class_name = priority_class_name.strip()
+    if template.priority_class_name is not None:
+        priority_class_name = template.priority_class_name.strip()
         if priority_class_name:
             spec["priorityClassName"] = priority_class_name
-    if dns_policy is not None:
-        dns_policy = dns_policy.strip()
+    if template.dns_policy is not None:
+        dns_policy = template.dns_policy.strip()
         if dns_policy:
             spec["dnsPolicy"] = dns_policy
-    if host_network is not None:
-        spec["hostNetwork"] = host_network
-    if host_pid is not None:
-        spec["hostPID"] = host_pid
-    if termination_grace_period_seconds is not None:
-        if termination_grace_period_seconds < 0:
+    if template.host_network is not None:
+        spec["hostNetwork"] = template.host_network
+    if template.host_pid is not None:
+        spec["hostPID"] = template.host_pid
+    if template.termination_grace_period_seconds is not None:
+        if template.termination_grace_period_seconds < 0:
             msg = "termination grace period cannot be negative"
             raise ValueError(msg)
-        spec["terminationGracePeriodSeconds"] = termination_grace_period_seconds
-    metadata: dict[str, object] = {"labels": dict(labels)}
-    if pod_annotations:
-        metadata["annotations"] = dict(pod_annotations)
+        spec["terminationGracePeriodSeconds"] = (
+            template.termination_grace_period_seconds
+        )
+    metadata: dict[str, object] = {"labels": dict(template.labels)}
+    if template.annotations:
+        metadata["annotations"] = dict(template.annotations)
     return {"metadata": metadata, "spec": spec}

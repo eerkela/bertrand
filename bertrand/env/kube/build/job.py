@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-import re
 import shutil
 import tempfile
 import uuid
@@ -23,13 +22,25 @@ from bertrand.env.git import (
     INFINITY,
     atomic_write_text,
 )
-from bertrand.env.kube.api import ContainerSpec, Kube, VolumeMountSpec, VolumeSpec
+from bertrand.env.kube.api import (
+    ContainerSpec,
+    Kube,
+    PodTemplateSpec,
+    VolumeMountSpec,
+    VolumeSpec,
+)
 from bertrand.env.kube.build.daemon import (
     BUILDKIT_IMAGE,
     BUILDKIT_POOL,
     BuildKitBuilder,
-    BuildKitEndpoint,
     BuildKitPool,
+)
+from bertrand.env.kube.build.execution import wait_job_complete
+from bertrand.env.kube.build.refs import (
+    digest_ref,
+    platform_output_ref,
+    platform_token,
+    replace_tag,
 )
 from bertrand.env.kube.capability.base import Capability, CapabilityKind
 from bertrand.env.kube.job import Job
@@ -56,8 +67,6 @@ BUILD_JOB_CLEANUP_TIMEOUT_SECONDS = 10.0
 BUILD_CACHE_TAG = "buildcache"
 CAPABILITY_VALUE_KEY = "value"
 BUILD_PLATFORM_RUN_ID_BYTES = 12
-_BUILD_PLATFORM_TOKEN_RE = re.compile(r"[^a-z0-9]+")
-_BUILD_IMAGE_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 
 @dataclass(frozen=True)
@@ -343,7 +352,7 @@ class BuildKitImageBuild:
 
     def buildctl_args(
         self,
-        buildkit: BuildKitEndpoint,
+        buildkit_addr: str,
         *,
         image: str | None = None,
         secret_paths: Mapping[str, str] | None = None,
@@ -355,8 +364,8 @@ class BuildKitImageBuild:
 
         Parameters
         ----------
-        buildkit : BuildKitEndpoint
-            BuildKit daemon endpoint used by the client Job.
+        buildkit_addr : str
+            BuildKit daemon address used by the client Job.
         image : str | None, optional
             Output image reference. If omitted, :attr:`image` is used.
         secret_paths : Mapping[str, str] | None, optional
@@ -385,7 +394,7 @@ class BuildKitImageBuild:
             raise ValueError(msg)
         args = [
             "--addr",
-            buildkit.addr,
+            buildkit_addr,
             "build",
             "--progress",
             self.progress,
@@ -443,7 +452,7 @@ class BuildKitImageBuild:
         timeout : float, optional
             Maximum runtime budget in seconds. If infinite, wait indefinitely.
         buildkit_pool : BuildKitPool, optional
-            BuildKit builder pool used to select a native daemon endpoint.
+            BuildKit builder pool used to select a native daemon address.
         env_id : str | None, optional
             Environment UUID used to resolve secret, SSH, and device capabilities.
 
@@ -540,7 +549,7 @@ class BuildKitImageBuild:
         preferred_node : str | None, optional
             Node to prefer when selecting a builder for its matching platform.
         buildkit_pool : BuildKitPool, optional
-            BuildKit builder pool used to select native daemon endpoints.
+            BuildKit builder pool used to select native daemon addresses.
         output_ref_factory : callable, optional
             Factory receiving the final image ref, platform, and publish run ID.
             It must return the temporary output ref for that platform. If omitted,
@@ -570,7 +579,7 @@ class BuildKitImageBuild:
             env_id = _check_uuid(env_id)
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
-        output_ref_factory = output_ref_factory or _platform_output_ref
+        output_ref_factory = output_ref_factory or platform_output_ref
 
         async with self._execution_workspace(
             kube,
@@ -601,7 +610,7 @@ class BuildKitImageBuild:
                     target=target,
                     image=image,
                     context=workspace.context,
-                    metadata=workspace.metadata / _platform_token(target.platform),
+                    metadata=workspace.metadata / platform_token(target.platform),
                     capability_volumes=workspace.capability_volumes,
                     capability_mounts=workspace.capability_mounts,
                     secret_paths=workspace.secret_paths,
@@ -615,7 +624,7 @@ class BuildKitImageBuild:
                         builder=target.builder,
                         image=build.image,
                         digest=build.digest,
-                        digest_ref=_digest_ref(build.image, build.digest),
+                        digest_ref=digest_ref(build.image, build.digest),
                         build=build,
                     )
                 )
@@ -687,72 +696,69 @@ class BuildKitImageBuild:
             namespace=BERTRAND_NAMESPACE,
             name=self.job_name,
             labels=self.labels,
-            containers=[
-                ContainerSpec(
-                    name="buildctl",
-                    image=BUILDKIT_IMAGE,
-                    image_pull_policy="IfNotPresent",
-                    command=["buildctl"],
-                    args=self.buildctl_args(
-                        target.builder.endpoint,
-                        image=image,
-                        secret_paths=secret_paths,
-                        ssh_paths=ssh_paths,
-                        device_selectors=target.device_selectors,
-                        metadata_file=BUILD_JOB_METADATA_FILE,
+            pod_template=PodTemplateSpec(
+                containers=[
+                    ContainerSpec(
+                        name="buildctl",
+                        image=BUILDKIT_IMAGE,
+                        image_pull_policy="IfNotPresent",
+                        command=["buildctl"],
+                        args=self.buildctl_args(
+                            target.builder.addr,
+                            image=image,
+                            secret_paths=secret_paths,
+                            ssh_paths=ssh_paths,
+                            device_selectors=target.device_selectors,
+                            metadata_file=BUILD_JOB_METADATA_FILE,
+                        ),
+                        volume_mounts=[
+                            VolumeMountSpec(
+                                name=BUILD_JOB_CONTEXT_VOLUME,
+                                mount_path=BUILD_JOB_CONTEXT_MOUNT,
+                                read_only=True,
+                            ),
+                            VolumeMountSpec(
+                                name=BUILD_JOB_METADATA_VOLUME,
+                                mount_path=BUILD_JOB_METADATA_MOUNT,
+                            ),
+                            *capability_mounts,
+                        ],
+                    )
+                ],
+                volumes=[
+                    VolumeSpec.host_path(
+                        BUILD_JOB_CONTEXT_VOLUME,
+                        path=context,
+                        host_path_type="Directory",
                     ),
-                    volume_mounts=[
-                        VolumeMountSpec(
-                            name=BUILD_JOB_CONTEXT_VOLUME,
-                            mount_path=BUILD_JOB_CONTEXT_MOUNT,
-                            read_only=True,
-                        ),
-                        VolumeMountSpec(
-                            name=BUILD_JOB_METADATA_VOLUME,
-                            mount_path=BUILD_JOB_METADATA_MOUNT,
-                        ),
-                        *capability_mounts,
-                    ],
-                )
-            ],
-            volumes=[
-                VolumeSpec.host_path(
-                    BUILD_JOB_CONTEXT_VOLUME,
-                    path=context,
-                    host_path_type="Directory",
-                ),
-                VolumeSpec.host_path(
-                    BUILD_JOB_METADATA_VOLUME,
-                    path=metadata,
-                    host_path_type="Directory",
-                ),
-                *capability_volumes,
-            ],
+                    VolumeSpec.host_path(
+                        BUILD_JOB_METADATA_VOLUME,
+                        path=metadata,
+                        host_path_type="Directory",
+                    ),
+                    *capability_volumes,
+                ],
+                node_name=node_name,
+            ),
             ttl_seconds_after_finished=BUILD_JOB_TTL_SECONDS,
-            node_name=node_name,
             timeout=deadline - loop.time(),
         )
-        try:
-            await job.wait_complete(kube, timeout=deadline - loop.time())
-            return _load_build_metadata(
-                metadata / Path(BUILD_JOB_METADATA_FILE).name,
-                image=image,
-            )
-        except (OSError, TimeoutError) as err:
-            logs = await _build_job_log_tail(
-                kube,
-                job,
-                timeout=BUILD_JOB_DIAGNOSTIC_TIMEOUT_SECONDS,
-            )
-            await _delete_build_job(
-                kube,
-                job,
-                timeout=BUILD_JOB_CLEANUP_TIMEOUT_SECONDS,
-            )
-            msg = _build_failure_message(image, err, logs)
-            if isinstance(err, TimeoutError):
-                raise TimeoutError(msg) from err
-            raise OSError(msg) from err
+        await wait_job_complete(
+            kube,
+            job,
+            timeout=deadline - loop.time(),
+            failure_context=f"BuildKit image build for {image!r} failed",
+            log_heading="Build pod logs",
+            log_failure_label="BuildKit build pod logs",
+            tail_lines=BUILD_JOB_LOG_TAIL_LINES,
+            diagnostic_timeout=BUILD_JOB_DIAGNOSTIC_TIMEOUT_SECONDS,
+            cleanup_timeout=BUILD_JOB_CLEANUP_TIMEOUT_SECONDS,
+            include_log_headers=True,
+        )
+        return _load_build_metadata(
+            metadata / Path(BUILD_JOB_METADATA_FILE).name,
+            image=image,
+        )
 
     def _stage_context(self, root: Path) -> tuple[Path, Path]:
         context = root / "context"
@@ -974,52 +980,6 @@ class BuildKitImageBuild:
         return tuple(selectors)
 
 
-async def _build_job_log_tail(kube: Kube, job: Job, *, timeout: float) -> str:
-    if timeout <= 0:
-        return ""
-    try:
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + timeout
-        pods = await job.pods(kube, timeout=deadline - loop.time())
-        chunks: list[str] = []
-        for pod in pods:
-            remaining = deadline - loop.time()
-            if remaining <= 0:
-                break
-            log = await pod.logs(
-                kube,
-                timeout=remaining,
-                tail_lines=BUILD_JOB_LOG_TAIL_LINES,
-            )
-            log = log.strip()
-            if log:
-                chunks.append(f"--- {pod.namespace}/{pod.name} ---\n{log}")
-        return "\n\n".join(chunks)
-    except (OSError, TimeoutError, ValueError) as err:
-        return f"<failed to read BuildKit build pod logs: {err}>"
-
-
-async def _delete_build_job(kube: Kube, job: Job, *, timeout: float) -> None:
-    if timeout <= 0:
-        return
-    try:
-        await job.delete(
-            kube,
-            timeout=timeout,
-            propagation_policy="Foreground",
-        )
-    except (OSError, TimeoutError):
-        return
-
-
-def _build_failure_message(image: str, err: BaseException, logs: str) -> str:
-    msg = f"BuildKit image build for {image!r} failed: {err}"
-    logs = logs.strip()
-    if logs:
-        msg = f"{msg}\n\nBuild pod logs:\n{logs}"
-    return msg
-
-
 def _normalize_capability_requests(
     requests: Mapping[KubeName, bool],
     *,
@@ -1039,71 +999,14 @@ def _normalize_capability_requests(
 
 
 def _default_cache_ref(image: str) -> str:
-    image = image.strip()
-    if "@" in image:
+    try:
+        return replace_tag(image, BUILD_CACHE_TAG, label="BuildKit image reference")
+    except ValueError as err:
         msg = (
-            f"BuildKit image reference {image!r} uses a digest; provide explicit "
+            f"invalid BuildKit image reference {image!r}; provide explicit "
             "cache_ref or disable cache"
         )
-        raise ValueError(msg)
-    slash = image.rfind("/")
-    colon = image.rfind(":")
-    if colon <= slash or colon == len(image) - 1:
-        msg = (
-            f"BuildKit image reference {image!r} has no tag; provide explicit "
-            "cache_ref or disable cache"
-        )
-        raise ValueError(msg)
-    return f"{image[:colon]}:{BUILD_CACHE_TAG}"
-
-
-def _platform_output_ref(image: str, platform: str, run_id: str) -> str:
-    repository, tag = _split_tagged_image(image)
-    platform_token = _platform_token(platform)
-    run_id = re.sub(r"[^a-f0-9]+", "", run_id.lower()).strip()
-    if not run_id:
-        msg = "BuildKit platform output run ID cannot be empty"
-        raise ValueError(msg)
-    suffix = f"{platform_token}-{run_id}"
-    max_prefix = max(1, 127 - len(suffix))
-    tag_prefix = tag[:max_prefix].rstrip("._-") or "image"
-    return f"{repository}:{tag_prefix}-{suffix}"
-
-
-def _split_tagged_image(image: str) -> tuple[str, str]:
-    image = image.strip()
-    if not image:
-        msg = "BuildKit image reference cannot be empty"
-        raise ValueError(msg)
-    if "@" in image:
-        msg = (
-            f"BuildKit platform output refs require a tagged image, got digest ref "
-            f"{image!r}"
-        )
-        raise ValueError(msg)
-    slash = image.rfind("/")
-    colon = image.rfind(":")
-    if colon <= slash or colon == len(image) - 1:
-        msg = f"BuildKit image reference {image!r} must include a tag"
-        raise ValueError(msg)
-    return image[:colon], image[colon + 1 :]
-
-
-def _platform_token(platform: str) -> str:
-    token = _BUILD_PLATFORM_TOKEN_RE.sub("-", platform.strip().lower()).strip("-")
-    if not token:
-        msg = "BuildKit platform cannot be empty"
-        raise ValueError(msg)
-    return token[:48].rstrip("-") or "platform"
-
-
-def _digest_ref(image: str, digest: str) -> str:
-    digest = digest.strip()
-    if not _BUILD_IMAGE_DIGEST_RE.fullmatch(digest):
-        msg = f"BuildKit returned unsupported image digest: {digest!r}"
-        raise OSError(msg)
-    repository, _ = _split_tagged_image(image)
-    return f"{repository}@{digest}"
+        raise ValueError(msg) from err
 
 
 def _capability_volume_name(kind: CapabilityKind, capability_id: str) -> str:

@@ -12,13 +12,7 @@ from kubernetes import client as kube_client
 from .api import (
     Kube,
     NamespacedKubeMetadata,
-)
-from .api._helpers import (
-    _create_or_patch,
-    _list_namespaced_items,
-    _typed_payload,
-    _validate_delete_status,
-    _wait_until_deleted,
+    NamespacedResourceClient,
 )
 
 if TYPE_CHECKING:
@@ -37,6 +31,59 @@ class Secret(NamespacedKubeMetadata[kube_client.V1Secret]):
     """
 
     _obj: kube_client.V1Secret
+
+    @classmethod
+    def _client(cls) -> NamespacedResourceClient[kube_client.V1Secret, Self]:
+        return NamespacedResourceClient(
+            kind="Secret",
+            expected=kube_client.V1Secret,
+            list_type=kube_client.V1SecretList,
+            wrapper=lambda payload: cls(_obj=payload),
+            read=lambda kube, namespace, name, request_timeout: (
+                kube.core.read_namespaced_secret(
+                    name=name,
+                    namespace=namespace,
+                    _request_timeout=request_timeout,
+                )
+            ),
+            list_all=lambda kube, label_selector, field_selector, request_timeout: (
+                kube.core.list_secret_for_all_namespaces(
+                    label_selector=label_selector,
+                    field_selector=field_selector,
+                    _request_timeout=request_timeout,
+                )
+            ),
+            list_namespace=lambda kube, namespace, labels, fields, timeout: (
+                kube.core.list_namespaced_secret(
+                    namespace=namespace,
+                    label_selector=labels,
+                    field_selector=fields,
+                    _request_timeout=timeout,
+                )
+            ),
+            create=lambda kube, namespace, _name, manifest, request_timeout: (
+                kube.core.create_namespaced_secret(
+                    namespace=namespace,
+                    body=manifest,
+                    _request_timeout=request_timeout,
+                )
+            ),
+            patch=lambda kube, namespace, name, manifest, request_timeout: (
+                kube.core.patch_namespaced_secret(
+                    name=name,
+                    namespace=namespace,
+                    body=manifest,
+                    _request_timeout=request_timeout,
+                )
+            ),
+            delete=lambda kube, namespace, name, request_timeout: (
+                kube.core.delete_namespaced_secret(
+                    name=name,
+                    namespace=namespace,
+                    _request_timeout=request_timeout,
+                )
+            ),
+        )
 
     @classmethod
     async def get(
@@ -65,20 +112,12 @@ class Secret(NamespacedKubeMetadata[kube_client.V1Secret]):
         Secret | None
             Wrapped Kubernetes secret, or `None` when the object does not exist.
         """
-        payload = await kube.run(
-            lambda request_timeout: kube.core.read_namespaced_secret(
-                name=name,
-                namespace=namespace,
-                _request_timeout=request_timeout,
-            ),
+        return await cls._client().get(
+            kube,
+            namespace=namespace,
+            name=name,
             timeout=timeout,
-            context=(
-                f"failed to read cluster secret {name!r} in namespace {namespace!r}"
-            ),
         )
-        if payload is None:
-            return None
-        return cls(_obj=_typed_payload(payload, kube_client.V1Secret, context="Secret"))
 
     @classmethod
     async def list(
@@ -108,36 +147,12 @@ class Secret(NamespacedKubeMetadata[kube_client.V1Secret]):
         builtins.list[Secret]
             Validated secret wrappers matching the requested filters.
         """
-        return [
-            cls(_obj=item)
-            for item in await _list_namespaced_items(
-                kube,
-                timeout=timeout,
-                namespaces=namespaces,
-                labels=labels,
-                list_all=lambda label_selector, request_timeout: (
-                    kube.core.list_secret_for_all_namespaces(
-                        label_selector=label_selector,
-                        _request_timeout=request_timeout,
-                    )
-                ),
-                list_namespace=lambda namespace, label_selector, request_timeout: (
-                    kube.core.list_namespaced_secret(
-                        namespace=namespace,
-                        label_selector=label_selector,
-                        _request_timeout=request_timeout,
-                    )
-                ),
-                list_type=kube_client.V1SecretList,
-                item_type=kube_client.V1Secret,
-                all_context="failed to list cluster secrets across all namespaces",
-                namespace_context=lambda namespace: (
-                    f"failed to list cluster secrets in namespace {namespace!r}"
-                ),
-                list_context="Secret",
-                item_context="Secret",
-            )
-        ]
+        return await cls._client().list(
+            kube,
+            timeout=timeout,
+            namespaces=namespaces,
+            labels=labels,
+        )
 
     @classmethod
     async def upsert(
@@ -188,26 +203,13 @@ class Secret(NamespacedKubeMetadata[kube_client.V1Secret]):
             "data": {"value": base64.b64encode(payload).decode("ascii")},
         }
 
-        result = await _create_or_patch(
+        return await cls._client().upsert(
             kube,
+            namespace=namespace,
+            name=name,
+            manifest=manifest,
             timeout=timeout,
-            create=lambda request_timeout: kube.core.create_namespaced_secret(
-                namespace=namespace,
-                body=manifest,
-                _request_timeout=request_timeout,
-            ),
-            patch=lambda request_timeout: kube.core.patch_namespaced_secret(
-                name=name,
-                namespace=namespace,
-                body=manifest,
-                _request_timeout=request_timeout,
-            ),
-            create_context=f"failed to create cluster secret {name!r}",
-            patch_context=f"failed to update cluster secret {name!r}",
-            expected=kube_client.V1Secret,
-            payload_context="Secret",
         )
-        return cls(_obj=result)
 
     @property
     def value(self) -> bytes:
@@ -271,17 +273,15 @@ class Secret(NamespacedKubeMetadata[kube_client.V1Secret]):
             Maximum request budget in seconds. If infinite, wait indefinitely.
         """
         namespace, name = self._require_namespace_name("delete secret")
-        payload = await kube.run(
-            lambda request_timeout: kube.core.delete_namespaced_secret(
-                name=name,
+        await (
+            type(self)
+            ._client()
+            .delete_by_name(
+                kube,
                 namespace=namespace,
-                _request_timeout=request_timeout,
-            ),
-            timeout=timeout,
-            context=f"failed to delete cluster secret {namespace}/{name}",
-        )
-        _validate_delete_status(
-            payload, label=self._object_label(name=name, namespace=namespace)
+                name=name,
+                timeout=timeout,
+            )
         )
 
     async def wait_deleted(self, kube: Kube, *, timeout: float) -> None:
@@ -296,8 +296,12 @@ class Secret(NamespacedKubeMetadata[kube_client.V1Secret]):
 
         """
         namespace, name = self._require_namespace_name("wait for secret deletion")
-        await _wait_until_deleted(
-            label=self._object_label(name=name, namespace=namespace),
-            timeout=timeout,
-            refresh=lambda remaining: self.refresh(kube, timeout=remaining),
+        await (
+            type(self)
+            ._client()
+            .wait_deleted(
+                label=self._object_label(name=name, namespace=namespace),
+                timeout=timeout,
+                refresh=lambda remaining: self.refresh(kube, timeout=remaining),
+            )
         )

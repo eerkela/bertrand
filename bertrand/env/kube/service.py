@@ -4,21 +4,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Literal, Self, cast
+from typing import TYPE_CHECKING, Literal, Self
 
 import kubernetes
 
 from .api import (
     Kube,
     NamespacedKubeMetadata,
+    NamespacedResourceClient,
     ServicePortSpec,
-)
-from .api._helpers import (
-    _create_or_patch,
-    _list_namespaced_items,
-    _typed_payload,
-    _validate_delete_status,
-    _wait_until_deleted,
 )
 from .api.view import ServicePortView
 
@@ -48,6 +42,59 @@ class Service(NamespacedKubeMetadata[kubernetes.client.V1Service]):
     _obj: kubernetes.client.V1Service
 
     @classmethod
+    def _client(cls) -> NamespacedResourceClient[kubernetes.client.V1Service, Self]:
+        return NamespacedResourceClient(
+            kind="Service",
+            expected=kubernetes.client.V1Service,
+            list_type=kubernetes.client.V1ServiceList,
+            wrapper=lambda payload: cls(_obj=payload),
+            read=lambda kube, namespace, name, request_timeout: (
+                kube.core.read_namespaced_service(
+                    name=name,
+                    namespace=namespace,
+                    _request_timeout=request_timeout,
+                )
+            ),
+            list_all=lambda kube, label_selector, field_selector, request_timeout: (
+                kube.core.list_service_for_all_namespaces(
+                    label_selector=label_selector,
+                    field_selector=field_selector,
+                    _request_timeout=request_timeout,
+                )
+            ),
+            list_namespace=lambda kube, namespace, labels, fields, timeout: (
+                kube.core.list_namespaced_service(
+                    namespace=namespace,
+                    label_selector=labels,
+                    field_selector=fields,
+                    _request_timeout=timeout,
+                )
+            ),
+            create=lambda kube, namespace, _name, manifest, request_timeout: (
+                kube.core.create_namespaced_service(
+                    namespace=namespace,
+                    body=manifest,
+                    _request_timeout=request_timeout,
+                )
+            ),
+            patch=lambda kube, namespace, name, manifest, request_timeout: (
+                kube.core.patch_namespaced_service(
+                    name=name,
+                    namespace=namespace,
+                    body=manifest,
+                    _request_timeout=request_timeout,
+                )
+            ),
+            delete=lambda kube, namespace, name, request_timeout: (
+                kube.core.delete_namespaced_service(
+                    name=name,
+                    namespace=namespace,
+                    _request_timeout=request_timeout,
+                )
+            ),
+        )
+
+    @classmethod
     async def get(
         cls,
         kube: Kube,
@@ -74,19 +121,11 @@ class Service(NamespacedKubeMetadata[kubernetes.client.V1Service]):
         Service | None
             Wrapped Kubernetes Service, or `None` if it does not exist.
         """
-        payload = await kube.run(
-            lambda request_timeout: kube.core.read_namespaced_service(
-                name=name,
-                namespace=namespace,
-                _request_timeout=request_timeout,
-            ),
+        return await cls._client().get(
+            kube,
+            namespace=namespace,
+            name=name,
             timeout=timeout,
-            context=f"failed to read Service {name!r} in namespace {namespace!r}",
-        )
-        if payload is None:
-            return None
-        return cls(
-            _obj=_typed_payload(payload, kubernetes.client.V1Service, context="Service")
         )
 
     @classmethod
@@ -117,36 +156,12 @@ class Service(NamespacedKubeMetadata[kubernetes.client.V1Service]):
         list[Service]
             Wrapped Kubernetes Services matching the requested filters.
         """
-        return [
-            cls(_obj=item)
-            for item in await _list_namespaced_items(
-                kube,
-                timeout=timeout,
-                namespaces=namespaces,
-                labels=labels,
-                list_all=lambda label_selector, request_timeout: (
-                    kube.core.list_service_for_all_namespaces(
-                        label_selector=label_selector,
-                        _request_timeout=request_timeout,
-                    )
-                ),
-                list_namespace=lambda namespace, label_selector, request_timeout: (
-                    kube.core.list_namespaced_service(
-                        namespace=namespace,
-                        label_selector=label_selector,
-                        _request_timeout=request_timeout,
-                    )
-                ),
-                list_type=kubernetes.client.V1ServiceList,
-                item_type=kubernetes.client.V1Service,
-                all_context="failed to list Services across all namespaces",
-                namespace_context=lambda namespace: (
-                    f"failed to list Services in namespace {namespace!r}"
-                ),
-                list_context="Service",
-                item_context="Service",
-            )
-        ]
+        return await cls._client().list(
+            kube,
+            timeout=timeout,
+            namespaces=namespaces,
+            labels=labels,
+        )
 
     @staticmethod
     def _manifest(
@@ -236,6 +251,12 @@ class Service(NamespacedKubeMetadata[kubernetes.client.V1Service]):
         OSError
             If Kubernetes create/patch fails or returns malformed data.
         """
+        namespace = namespace.strip()
+        name = name.strip()
+        if not namespace or not name:
+            msg = "Service upsert requires non-empty namespace and name"
+            raise OSError(msg)
+
         manifest = cls._manifest(
             namespace=namespace,
             name=name,
@@ -245,37 +266,13 @@ class Service(NamespacedKubeMetadata[kubernetes.client.V1Service]):
             annotations=annotations,
             service_type=service_type,
         )
-        metadata = manifest.get("metadata")
-        if not isinstance(metadata, dict):
-            msg = "Service manifest must define metadata"
-            raise OSError(msg)
-        metadata = cast("dict[object, object]", metadata)
-        namespace = str(metadata.get("namespace") or "").strip()
-        name = str(metadata.get("name") or "").strip()
-        if not namespace or not name:
-            msg = "Service manifest must define metadata.namespace and metadata.name"
-            raise OSError(msg)
-
-        payload = await _create_or_patch(
+        return await cls._client().upsert(
             kube,
+            namespace=namespace,
+            name=name,
+            manifest=manifest,
             timeout=timeout,
-            create=lambda request_timeout: kube.core.create_namespaced_service(
-                namespace=namespace,
-                body=manifest,
-                _request_timeout=request_timeout,
-            ),
-            patch=lambda request_timeout: kube.core.patch_namespaced_service(
-                name=name,
-                namespace=namespace,
-                body=manifest,
-                _request_timeout=request_timeout,
-            ),
-            create_context=f"failed to create Service {namespace}/{name}",
-            patch_context=f"failed to patch Service {namespace}/{name}",
-            expected=kubernetes.client.V1Service,
-            payload_context="Service",
         )
-        return cls(_obj=payload)
 
     @property
     def selector(self) -> Mapping[str, str]:
@@ -428,17 +425,15 @@ class Service(NamespacedKubeMetadata[kubernetes.client.V1Service]):
             Maximum request budget in seconds. If infinite, wait indefinitely.
         """
         namespace, name = self._require_namespace_name("delete Service")
-        payload = await kube.run(
-            lambda request_timeout: kube.core.delete_namespaced_service(
-                name=name,
+        await (
+            type(self)
+            ._client()
+            .delete_by_name(
+                kube,
                 namespace=namespace,
-                _request_timeout=request_timeout,
-            ),
-            timeout=timeout,
-            context=f"failed to delete cluster Service {namespace}/{name}",
-        )
-        _validate_delete_status(
-            payload, label=self._object_label(name=name, namespace=namespace)
+                name=name,
+                timeout=timeout,
+            )
         )
 
     async def wait_deleted(self, kube: Kube, *, timeout: float) -> None:
@@ -453,8 +448,12 @@ class Service(NamespacedKubeMetadata[kubernetes.client.V1Service]):
 
         """
         namespace, name = self._require_namespace_name("wait for Service deletion")
-        await _wait_until_deleted(
-            label=self._object_label(name=name, namespace=namespace),
-            timeout=timeout,
-            refresh=lambda remaining: self.refresh(kube, timeout=remaining),
+        await (
+            type(self)
+            ._client()
+            .wait_deleted(
+                label=self._object_label(name=name, namespace=namespace),
+                timeout=timeout,
+                refresh=lambda remaining: self.refresh(kube, timeout=remaining),
+            )
         )

@@ -7,6 +7,8 @@ from .client import CLUSTER_REGISTRY_READY_VALUE as CLUSTER_REGISTRY_READY_VALUE
 from .client import Kube as Kube
 from .metadata import KubeMetadata as KubeMetadata
 from .metadata import NamespacedKubeMetadata as NamespacedKubeMetadata
+from .resource import ClusterResourceClient as ClusterResourceClient
+from .resource import NamespacedResourceClient as NamespacedResourceClient
 from .spec import (
     ContainerPortSpec as ContainerPortSpec,
 )
@@ -30,6 +32,9 @@ from .spec import (
 )
 from .spec import (
     PodSecurityContextSpec as PodSecurityContextSpec,
+)
+from .spec import (
+    PodTemplateSpec as PodTemplateSpec,
 )
 from .spec import (
     PolicyRuleSpec as PolicyRuleSpec,

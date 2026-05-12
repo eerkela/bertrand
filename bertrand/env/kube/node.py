@@ -11,19 +11,12 @@ from typing import TYPE_CHECKING, Literal, Self
 import kubernetes
 
 from .api import (
+    ClusterResourceClient,
     Kube,
     KubeMetadata,
     WatchEvent,
 )
-from .api._helpers import (
-    _list_cluster_items,
-    _list_namespaced_items,
-    _typed_payload,
-)
 from .api.view import TaintView
-from .api.watch import (
-    _watch_cluster_resource,
-)
 from .pod import Pod
 
 if TYPE_CHECKING:
@@ -73,6 +66,27 @@ class Node(KubeMetadata[kubernetes.client.V1Node]):
     _obj: kubernetes.client.V1Node
 
     @classmethod
+    def _client(cls) -> ClusterResourceClient[kubernetes.client.V1Node, Self]:
+        return ClusterResourceClient(
+            kind="Node",
+            expected=kubernetes.client.V1Node,
+            list_type=kubernetes.client.V1NodeList,
+            wrapper=lambda payload: cls(_obj=payload),
+            read=lambda kube, name, request_timeout: kube.core.read_node(
+                name=name,
+                _request_timeout=request_timeout,
+            ),
+            list_items=lambda kube, label_selector, field_selector, request_timeout: (
+                kube.core.list_node(
+                    label_selector=label_selector,
+                    field_selector=field_selector,
+                    _request_timeout=request_timeout,
+                )
+            ),
+            watch_items=lambda kube: kube.core.list_node,
+        )
+
+    @classmethod
     async def get(
         cls,
         kube: Kube,
@@ -98,19 +112,7 @@ class Node(KubeMetadata[kubernetes.client.V1Node]):
             Validated Kubernetes node wrapper, or `None` if the node does not exist.
 
         """
-        payload = await kube.run(
-            lambda timeout: kube.core.read_node(
-                name=name,
-                _request_timeout=timeout,
-            ),
-            timeout=timeout,
-            context=f"failed to read Kubernetes node {name!r}",
-        )
-        if payload is None:
-            return None
-        return cls(
-            _obj=_typed_payload(payload, kubernetes.client.V1Node, context="node")
-        )
+        return await cls._client().get(kube, name=name, timeout=timeout)
 
     @classmethod
     async def list(
@@ -138,23 +140,7 @@ class Node(KubeMetadata[kubernetes.client.V1Node]):
             Validated Kubernetes node wrappers.
 
         """
-        return [
-            cls(_obj=item)
-            for item in await _list_cluster_items(
-                kube,
-                timeout=timeout,
-                labels=labels,
-                list_items=lambda label_selector, request_timeout: kube.core.list_node(
-                    label_selector=label_selector,
-                    _request_timeout=request_timeout,
-                ),
-                list_type=kubernetes.client.V1NodeList,
-                item_type=kubernetes.client.V1Node,
-                context="failed to list Kubernetes nodes",
-                list_context="node",
-                item_context="node",
-            )
-        ]
+        return await cls._client().list(kube, timeout=timeout, labels=labels)
 
     @classmethod
     async def watch(
@@ -183,16 +169,11 @@ class Node(KubeMetadata[kubernetes.client.V1Node]):
         WatchEvent[Node]
             Typed watch events containing wrapped Nodes.
         """
-        async for event in _watch_cluster_resource(
-            watch_fn=kube.core.list_node,
-            expected=kubernetes.client.V1Node,
-            wrapper=lambda payload: cls(_obj=payload),
+        async for event in cls._client().watch(
+            kube,
             timeout=timeout,
-            context="failed to watch Kubernetes Nodes",
-            resource_version=resource_version,
             labels=labels,
-            field_selector=None,
-            payload_context="Node watch",
+            resource_version=resource_version,
         ):
             yield event
 
@@ -790,39 +771,13 @@ class Node(KubeMetadata[kubernetes.client.V1Node]):
         if not node_name:
             msg = "cannot query pods for Kubernetes node with missing name"
             raise OSError(msg)
-        return [
-            Pod(_obj=item)
-            for item in await _list_namespaced_items(
-                kube,
-                timeout=timeout,
-                namespaces=namespaces,
-                labels=labels,
-                list_all=lambda label_selector, request_timeout: (
-                    kube.core.list_pod_for_all_namespaces(
-                        field_selector=f"spec.nodeName={node_name}",
-                        label_selector=label_selector,
-                        _request_timeout=request_timeout,
-                    )
-                ),
-                list_namespace=lambda namespace, label_selector, request_timeout: (
-                    kube.core.list_namespaced_pod(
-                        namespace=namespace,
-                        field_selector=f"spec.nodeName={node_name}",
-                        label_selector=label_selector,
-                        _request_timeout=request_timeout,
-                    )
-                ),
-                list_type=kubernetes.client.V1PodList,
-                item_type=kubernetes.client.V1Pod,
-                all_context=f"failed to list pods on Kubernetes node {node_name!r}",
-                namespace_context=lambda namespace: (
-                    f"failed to list pods in namespace {namespace!r} on "
-                    f"Kubernetes node {node_name!r}"
-                ),
-                list_context="pod",
-                item_context="pod",
-            )
-        ]
+        return await Pod.list(
+            kube,
+            timeout=timeout,
+            namespaces=namespaces,
+            labels=labels,
+            field_selector=f"spec.nodeName={node_name}",
+        )
 
     async def drain(
         self,

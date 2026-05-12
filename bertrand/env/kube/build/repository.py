@@ -6,7 +6,6 @@ import asyncio
 import hashlib
 import json
 import math
-import re
 import tempfile
 import urllib.error
 import urllib.parse
@@ -24,17 +23,19 @@ from bertrand.env.kube.api import (
     DeploymentStrategySpec,
     EnvVarSpec,
     Kube,
+    PodTemplateSpec,
     ProbeSpec,
     ServicePortSpec,
     VolumeMountSpec,
     VolumeSpec,
 )
-from bertrand.env.kube.build._status import (
-    _deployment_status,
-    _pvc_status,
-    _service_status,
-)
 from bertrand.env.kube.build.daemon import BUILDKIT_CONFIG_KEY, BUILDKIT_CONFIG_NAME
+from bertrand.env.kube.build.refs import (
+    DIGEST_RE,
+    IMAGE_REF_COMPONENT_RE,
+    rewrite_registry_ref,
+    validate_tag,
+)
 from bertrand.env.kube.ceph.volume import CEPHFS_STORAGE_CLASS_PREFERENCES
 from bertrand.env.kube.configmap import ConfigMap
 from bertrand.env.kube.deployment import Deployment
@@ -59,8 +60,6 @@ IMAGE_REPOSITORY_MOUNT = "/var/lib/registry"
 IMAGE_REPOSITORY_VOLUME = "registry-state"
 IMAGE_REPOSITORY_LABEL = "bertrand.dev/image-repository"
 IMAGE_REPOSITORY_LABEL_VALUE = "v1"
-IMAGE_REF_COMPONENT_RE = re.compile(r"^[a-z0-9]+(?:(?:[._]|__|[-]*)[a-z0-9]+)*$")
-IMAGE_TAG_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$")
 IMAGE_REPOSITORY_ROUTE_POLL_INTERVAL_SECONDS = 0.5
 IMAGE_REPOSITORY_ROUTE_REQUEST_TIMEOUT_SECONDS = 2.0
 IMAGE_REPOSITORY_ROUTE_READY_STATUS = frozenset({200, 401})
@@ -154,6 +153,8 @@ class ImageRepositoryStatus:
     ready : bool
         Whether the registry Service, Deployment rollout, PVC, BuildKit config, and
         node trust labels are ready.
+    failures : tuple[str, ...]
+        Human-readable readiness failures, empty when the repository is ready.
     """
 
     namespace: str
@@ -184,6 +185,32 @@ class ImageRepositoryStatus:
     trusted_nodes: tuple[str, ...]
     untrusted_nodes: tuple[str, ...]
     ready: bool
+
+    @property
+    def failures(self) -> tuple[str, ...]:
+        """Return semantic readiness failures for this repository.
+
+        Returns
+        -------
+        tuple[str, ...]
+            Human-readable failures explaining why the repository is not ready.
+        """
+        failures: list[str] = []
+        if not self.service_ready:
+            failures.append("image registry Service is missing or has the wrong shape")
+        if not self.rollout_ready:
+            failures.append("image registry Deployment rollout is not ready")
+        if not self.storage_ready:
+            failures.append("image registry storage is not bound and ready")
+        if not self.delete_enabled:
+            failures.append("image registry manifest deletion is not enabled")
+        if not self.config_current:
+            failures.append("BuildKit registry routing config is stale")
+        if not self.node_trust_ready:
+            failures.append(
+                "one or more Kubernetes nodes do not trust the image registry"
+            )
+        return tuple(failures)
 
 
 @dataclass(frozen=True)
@@ -538,13 +565,36 @@ class ImageRepository:
                 target_port=self.port,
                 node_port=self.node_port,
             )
-            service_status = _service_status(
-                service,
-                service_type="NodePort",
-                selector=self.selector,
-                ports=(expected_port,),
+            service_present = service is not None
+            service_selector_ready = (
+                service.selects(self.selector) if service is not None else False
             )
-            deployment_status = _deployment_status(deployment, minimum=1)
+            service_port_ready = (
+                service.exposes(expected_port) if service is not None else False
+            )
+            service_ready = (
+                service.matches(
+                    service_type="NodePort",
+                    selector=self.selector,
+                    ports=(expected_port,),
+                )
+                if service is not None
+                else False
+            )
+            deployment_present = deployment is not None
+            available_replicas = (
+                deployment.available_replicas if deployment is not None else 0
+            )
+            updated_replicas = (
+                deployment.updated_replicas if deployment is not None else 0
+            )
+            observed_generation = (
+                deployment.observed_generation if deployment is not None else 0
+            )
+            generation = deployment.generation if deployment is not None else 0
+            rollout_ready = (
+                deployment.rollout_ready(minimum=1) if deployment is not None else False
+            )
             delete_enabled = (
                 deployment is not None
                 and deployment.container_env("registry").get(
@@ -552,13 +602,29 @@ class ImageRepository:
                 )
                 == "true"
             )
-            pvc_status = _pvc_status(
-                pvc,
-                required_labels={
-                    BERTRAND_ENV: "1",
-                    IMAGE_REPOSITORY_LABEL: IMAGE_REPOSITORY_LABEL_VALUE,
-                },
-                access_mode="ReadWriteMany",
+            pvc_present = pvc is not None
+            pvc_managed = (
+                all(
+                    pvc.labels.get(key) == value
+                    for key, value in {
+                        BERTRAND_ENV: "1",
+                        IMAGE_REPOSITORY_LABEL: IMAGE_REPOSITORY_LABEL_VALUE,
+                    }.items()
+                )
+                if pvc is not None
+                else False
+            )
+            pvc_bound = pvc.is_bound if pvc is not None else False
+            pvc_phase = pvc.phase if pvc is not None else ""
+            storage_class = pvc.storage_class_name if pvc is not None else ""
+            access_modes = pvc.access_modes if pvc is not None else ()
+            storage_request = pvc.requested_storage if pvc is not None else ""
+            storage_ready = (
+                pvc is not None
+                and pvc_managed
+                and pvc_bound
+                and bool(storage_class)
+                and pvc.has_access_mode("ReadWriteMany")
             )
             desired_config_hash = self.buildkit_config_hash
             installed_config_hash = (
@@ -580,24 +646,24 @@ class ImageRepository:
             return ImageRepositoryStatus(
                 namespace=self.namespace,
                 name=self.service,
-                service_present=service_status.present,
-                service_selector_ready=service_status.selector_ready,
-                service_port_ready=service_status.port_ready,
-                service_ready=service_status.ready,
-                deployment_present=deployment_status.present,
-                pvc_present=pvc_status.present,
-                pvc_managed=pvc_status.managed,
-                pvc_bound=pvc_status.bound,
-                pvc_phase=pvc_status.phase,
-                storage_class=pvc_status.storage_class,
-                access_modes=pvc_status.access_modes,
-                storage_request=pvc_status.storage_request,
-                storage_ready=pvc_status.ready,
-                available_replicas=deployment_status.available_replicas,
-                updated_replicas=deployment_status.updated_replicas,
-                observed_generation=deployment_status.observed_generation,
-                generation=deployment_status.generation,
-                rollout_ready=deployment_status.rollout_ready,
+                service_present=service_present,
+                service_selector_ready=service_selector_ready,
+                service_port_ready=service_port_ready,
+                service_ready=service_ready,
+                deployment_present=deployment_present,
+                pvc_present=pvc_present,
+                pvc_managed=pvc_managed,
+                pvc_bound=pvc_bound,
+                pvc_phase=pvc_phase,
+                storage_class=storage_class,
+                access_modes=access_modes,
+                storage_request=storage_request,
+                storage_ready=storage_ready,
+                available_replicas=available_replicas,
+                updated_replicas=updated_replicas,
+                observed_generation=observed_generation,
+                generation=generation,
+                rollout_ready=rollout_ready,
                 delete_enabled=delete_enabled,
                 desired_config_hash=desired_config_hash,
                 installed_config_hash=installed_config_hash,
@@ -606,10 +672,10 @@ class ImageRepository:
                 trusted_nodes=tuple(trusted),
                 untrusted_nodes=tuple(untrusted),
                 ready=(
-                    service_status.ready
-                    and deployment_status.rollout_ready
+                    service_ready
+                    and rollout_ready
                     and delete_enabled
-                    and pvc_status.ready
+                    and storage_ready
                     and config_current
                     and node_trust_ready
                 ),
@@ -710,54 +776,56 @@ class ImageRepository:
             name=self.service,
             labels=self.labels,
             selector=self.selector,
-            containers=[
-                ContainerSpec(
-                    name="registry",
-                    image=IMAGE_REPOSITORY_IMAGE,
-                    image_pull_policy="IfNotPresent",
-                    ports=[
-                        ContainerPortSpec(
-                            name="registry",
-                            container_port=self.port,
-                        )
-                    ],
-                    env=[
-                        EnvVarSpec(
-                            name="REGISTRY_HTTP_ADDR",
-                            value=f"0.0.0.0:{self.port}",
+            pod_template=PodTemplateSpec(
+                containers=[
+                    ContainerSpec(
+                        name="registry",
+                        image=IMAGE_REPOSITORY_IMAGE,
+                        image_pull_policy="IfNotPresent",
+                        ports=[
+                            ContainerPortSpec(
+                                name="registry",
+                                container_port=self.port,
+                            )
+                        ],
+                        env=[
+                            EnvVarSpec(
+                                name="REGISTRY_HTTP_ADDR",
+                                value=f"0.0.0.0:{self.port}",
+                            ),
+                            EnvVarSpec(
+                                name="REGISTRY_STORAGE_DELETE_ENABLED",
+                                value="true",
+                            ),
+                        ],
+                        readiness_probe=ProbeSpec.http(
+                            path="/v2/",
+                            port=self.port,
+                            period_seconds=2,
+                            failure_threshold=30,
                         ),
-                        EnvVarSpec(
-                            name="REGISTRY_STORAGE_DELETE_ENABLED",
-                            value="true",
+                        liveness_probe=ProbeSpec.http(
+                            path="/v2/",
+                            port=self.port,
+                            initial_delay_seconds=10,
+                            period_seconds=10,
+                            failure_threshold=3,
                         ),
-                    ],
-                    readiness_probe=ProbeSpec.http(
-                        path="/v2/",
-                        port=self.port,
-                        period_seconds=2,
-                        failure_threshold=30,
-                    ),
-                    liveness_probe=ProbeSpec.http(
-                        path="/v2/",
-                        port=self.port,
-                        initial_delay_seconds=10,
-                        period_seconds=10,
-                        failure_threshold=3,
-                    ),
-                    volume_mounts=[
-                        VolumeMountSpec(
-                            name=IMAGE_REPOSITORY_VOLUME,
-                            mount_path=IMAGE_REPOSITORY_MOUNT,
-                        )
-                    ],
-                )
-            ],
-            volumes=[
-                VolumeSpec.pvc(
-                    IMAGE_REPOSITORY_VOLUME,
-                    claim_name=self.service,
-                )
-            ],
+                        volume_mounts=[
+                            VolumeMountSpec(
+                                name=IMAGE_REPOSITORY_VOLUME,
+                                mount_path=IMAGE_REPOSITORY_MOUNT,
+                            )
+                        ],
+                    )
+                ],
+                volumes=[
+                    VolumeSpec.pvc(
+                        IMAGE_REPOSITORY_VOLUME,
+                        claim_name=self.service,
+                    )
+                ],
+            ),
             strategy=DeploymentStrategySpec.recreate(),
             timeout=deadline - loop.time(),
         )
@@ -785,15 +853,9 @@ class ImageRepository:
             If the repository path or tag is empty or invalid.
         """
         path = name.strip().strip("/")
-        normalized_tag = tag.strip()
+        normalized_tag = validate_tag(tag)
         if not path:
             msg = "image repository path cannot be empty"
-            raise ValueError(msg)
-        if not normalized_tag:
-            msg = "image tag cannot be empty"
-            raise ValueError(msg)
-        if not IMAGE_TAG_RE.fullmatch(normalized_tag):
-            msg = f"invalid image tag: {tag!r}"
             raise ValueError(msg)
         parts = path.split("/")
         if any(not IMAGE_REF_COMPONENT_RE.fullmatch(part) for part in parts):
@@ -815,7 +877,12 @@ class ImageRepository:
         str
             Equivalent image reference rooted at :attr:`service_addr`.
         """
-        return self._rewrite_ref(ref, source=self.pull_host, target=self.service_addr)
+        return rewrite_registry_ref(
+            ref,
+            source=self.pull_host,
+            target=self.service_addr,
+            canonical_host=self.pull_host,
+        )
 
     def pull_ref(self, ref: str) -> str:
         """Rewrite an internal image ref to the canonical pull address.
@@ -831,21 +898,12 @@ class ImageRepository:
         str
             Equivalent image reference rooted at :attr:`pull_host`.
         """
-        return self._rewrite_ref(ref, source=self.service_addr, target=self.pull_host)
-
-    def _rewrite_ref(self, ref: str, *, source: str, target: str) -> str:
-        normalized = ref.strip()
-        if not normalized:
-            msg = "image reference cannot be empty"
-            raise ValueError(msg)
-        source_prefix = f"{source}/"
-        target_prefix = f"{target}/"
-        if normalized.startswith(target_prefix):
-            return normalized
-        if normalized.startswith(source_prefix):
-            return f"{target_prefix}{normalized[len(source_prefix) :]}"
-        msg = f"image reference {ref!r} does not belong to registry {self.pull_host!r}"
-        raise ValueError(msg)
+        return rewrite_registry_ref(
+            ref,
+            source=self.service_addr,
+            target=self.pull_host,
+            canonical_host=self.pull_host,
+        )
 
     def _digest_delete_url(self, digest_ref: str) -> str:
         ref = digest_ref.strip()
@@ -861,7 +919,7 @@ class ImageRepository:
         if not sep or not repo_path or not digest:
             msg = f"image reference must include an immutable digest: {digest_ref!r}"
             raise ValueError(msg)
-        if not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
+        if not DIGEST_RE.fullmatch(digest):
             msg = f"unsupported image digest in ref {digest_ref!r}"
             raise ValueError(msg)
         encoded_path = urllib.parse.quote(repo_path, safe="/")

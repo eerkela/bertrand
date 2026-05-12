@@ -24,13 +24,11 @@ from bertrand.env.git import (
 from bertrand.env.kube.build.containerfile import project_containerfile
 from bertrand.env.kube.build.job import BuildKitImageBuild
 from bertrand.env.kube.build.lifecycle import (
-    ProjectImageRecord,
-    channel_refs,
+    ProjectImagePublication,
     ensure_project_image_crd,
-    record_project_image,
     worktree_identity,
 )
-from bertrand.env.kube.build.manifest import ImageManifestResult, publish_image_manifest
+from bertrand.env.kube.build.manifest import publish_image_manifest
 from bertrand.env.kube.build.repository import IMAGES
 
 PROJECT_IMAGE_CONFIG_ID = "BERTRAND_IMAGE_CONFIG_ID"
@@ -48,58 +46,6 @@ if TYPE_CHECKING:
 class _CapabilityRequest(Protocol):
     id: KubeName
     required: bool
-
-
-@dataclass(frozen=True)
-class ProjectImageResult:
-    """Result for one cluster-native project image publication.
-
-    Parameters
-    ----------
-    plan : ProjectImageBuild
-        Project image build plan that was executed.
-    manifest : ImageManifestResult
-        Assembled internal image manifest result.
-    record : ProjectImageRecord
-        Active lifecycle record written for the published digest.
-    """
-
-    plan: ProjectImageBuild
-    manifest: ImageManifestResult
-    record: ProjectImageRecord
-
-    @property
-    def image(self) -> str:
-        """Return the mutable image reference.
-
-        Returns
-        -------
-        str
-            Mutable image reference published by the manifest assembler.
-        """
-        return self.manifest.image
-
-    @property
-    def digest(self) -> str:
-        """Return the published image digest.
-
-        Returns
-        -------
-        str
-            OCI manifest digest reported by the registry.
-        """
-        return self.manifest.digest
-
-    @property
-    def digest_ref(self) -> str:
-        """Return the immutable digest-pinned image reference.
-
-        Returns
-        -------
-        str
-            Image reference safe for future digest-pinned workload use.
-        """
-        return self.record.digest_ref
 
 
 @dataclass(frozen=True)
@@ -145,7 +91,7 @@ class ProjectImageBuild:
         timeout: float = INFINITY,
         external_image: str | None = None,
         auth_id: KubeName | None = None,
-    ) -> ProjectImageResult:
+    ) -> ProjectImagePublication:
         """Publish this project image manifest and update its lifecycle record.
 
         Parameters
@@ -162,8 +108,8 @@ class ProjectImageBuild:
 
         Returns
         -------
-        ProjectImageResult
-            Manifest publication result plus the active `BertrandImage` record.
+        ProjectImagePublication
+            Publication result backed by the active `BertrandImage` record.
 
         Raises
         ------
@@ -182,28 +128,15 @@ class ProjectImageBuild:
             env_id=self.env_id,
             timeout=deadline - loop.time(),
         )
-        manifest = await publish_image_manifest(
+        return await publish_image_manifest(
             kube,
-            image=self.image,
+            plan=self,
             platform_results=platform_results,
             timeout=deadline - loop.time(),
             external_image=external_image,
-            channels=channel_refs(self.image, self.channels),
-            external_channels=(
-                channel_refs(external_image, self.channels)
-                if external_image is not None
-                else None
-            ),
             auth_id=auth_id,
             env_id=self.env_id,
         )
-        record = await record_project_image(
-            kube,
-            plan=self,
-            result=manifest,
-            timeout=deadline - loop.time(),
-        )
-        return ProjectImageResult(plan=self, manifest=manifest, record=record)
 
 
 def project_image_build(

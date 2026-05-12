@@ -9,16 +9,7 @@ from kubernetes import client as kube_client
 
 from .api import (
     NamespacedKubeMetadata,
-)
-from .api._helpers import (
-    _create_or_patch,
-    _list_namespaced_items,
-    _typed_payload,
-    _validate_delete_status,
-    _wait_until_deleted,
-)
-from .api.watch import (
-    _watch_namespaced_resource,
+    NamespacedResourceClient,
 )
 
 if TYPE_CHECKING:
@@ -40,6 +31,61 @@ class Lease(NamespacedKubeMetadata[kube_client.V1Lease]):
     """
 
     _obj: kube_client.V1Lease
+
+    @classmethod
+    def _client(cls) -> NamespacedResourceClient[kube_client.V1Lease, Self]:
+        return NamespacedResourceClient(
+            kind="Lease",
+            expected=kube_client.V1Lease,
+            list_type=kube_client.V1LeaseList,
+            wrapper=lambda payload: cls(_obj=payload),
+            read=lambda kube, namespace, name, request_timeout: (
+                kube.coordination.read_namespaced_lease(
+                    name=name,
+                    namespace=namespace,
+                    _request_timeout=request_timeout,
+                )
+            ),
+            list_all=lambda kube, label_selector, field_selector, request_timeout: (
+                kube.coordination.list_lease_for_all_namespaces(
+                    label_selector=label_selector,
+                    field_selector=field_selector,
+                    _request_timeout=request_timeout,
+                )
+            ),
+            list_namespace=lambda kube, namespace, labels, fields, timeout: (
+                kube.coordination.list_namespaced_lease(
+                    namespace=namespace,
+                    label_selector=labels,
+                    field_selector=fields,
+                    _request_timeout=timeout,
+                )
+            ),
+            create=lambda kube, namespace, _name, manifest, request_timeout: (
+                kube.coordination.create_namespaced_lease(
+                    namespace=namespace,
+                    body=manifest,
+                    _request_timeout=request_timeout,
+                )
+            ),
+            patch=lambda kube, namespace, name, manifest, request_timeout: (
+                kube.coordination.patch_namespaced_lease(
+                    name=name,
+                    namespace=namespace,
+                    body=manifest,
+                    _request_timeout=request_timeout,
+                )
+            ),
+            delete=lambda kube, namespace, name, request_timeout: (
+                kube.coordination.delete_namespaced_lease(
+                    name=name,
+                    namespace=namespace,
+                    _request_timeout=request_timeout,
+                )
+            ),
+            watch_all=lambda kube: kube.coordination.list_lease_for_all_namespaces,
+            watch_namespace=lambda kube: kube.coordination.list_namespaced_lease,
+        )
 
     @classmethod
     async def get(
@@ -68,18 +114,12 @@ class Lease(NamespacedKubeMetadata[kube_client.V1Lease]):
         Lease | None
             Wrapped Kubernetes Lease, or `None` if it does not exist.
         """
-        payload = await kube.run(
-            lambda request_timeout: kube.coordination.read_namespaced_lease(
-                name=name,
-                namespace=namespace,
-                _request_timeout=request_timeout,
-            ),
+        return await cls._client().get(
+            kube,
+            namespace=namespace,
+            name=name,
             timeout=timeout,
-            context=f"failed to read Lease {name!r} in namespace {namespace!r}",
         )
-        if payload is None:
-            return None
-        return cls(_obj=_typed_payload(payload, kube_client.V1Lease, context="Lease"))
 
     @classmethod
     async def list(
@@ -108,36 +148,12 @@ class Lease(NamespacedKubeMetadata[kube_client.V1Lease]):
         list[Lease]
             Wrapped Leases matching the requested filters.
         """
-        return [
-            cls(_obj=item)
-            for item in await _list_namespaced_items(
-                kube,
-                timeout=timeout,
-                namespaces=namespaces,
-                labels=labels,
-                list_all=lambda label_selector, request_timeout: (
-                    kube.coordination.list_lease_for_all_namespaces(
-                        label_selector=label_selector,
-                        _request_timeout=request_timeout,
-                    )
-                ),
-                list_namespace=lambda namespace, label_selector, request_timeout: (
-                    kube.coordination.list_namespaced_lease(
-                        namespace=namespace,
-                        label_selector=label_selector,
-                        _request_timeout=request_timeout,
-                    )
-                ),
-                list_type=kube_client.V1LeaseList,
-                item_type=kube_client.V1Lease,
-                all_context="failed to list Leases across all namespaces",
-                namespace_context=lambda namespace: (
-                    f"failed to list Leases in namespace {namespace!r}"
-                ),
-                list_context="Lease",
-                item_context="Lease",
-            )
-        ]
+        return await cls._client().list(
+            kube,
+            timeout=timeout,
+            namespaces=namespaces,
+            labels=labels,
+        )
 
     @classmethod
     async def watch(
@@ -172,21 +188,13 @@ class Lease(NamespacedKubeMetadata[kube_client.V1Lease]):
         WatchEvent[Lease]
             Typed watch events containing wrapped Leases.
         """
-        async for event in _watch_namespaced_resource(
-            expected=kube_client.V1Lease,
-            wrapper=lambda payload: cls(_obj=payload),
+        async for event in cls._client().watch(
+            kube,
             timeout=timeout,
             namespace=namespace,
-            resource_version=resource_version,
             labels=labels,
             field_selector=field_selector,
-            watch_all=kube.coordination.list_lease_for_all_namespaces,
-            watch_namespace=kube.coordination.list_namespaced_lease,
-            all_context="failed to watch Leases across all namespaces",
-            namespace_context=lambda namespace: (
-                f"failed to watch Leases in namespace {namespace!r}"
-            ),
-            payload_context="Lease watch",
+            resource_version=resource_version,
         ):
             yield event
 
@@ -481,26 +489,13 @@ class Lease(NamespacedKubeMetadata[kube_client.V1Lease]):
             labels=labels,
             annotations=annotations,
         )
-        payload = await _create_or_patch(
+        return await cls._client().upsert(
             kube,
+            namespace=namespace,
+            name=name,
+            manifest=manifest,
             timeout=timeout,
-            create=lambda request_timeout: kube.coordination.create_namespaced_lease(
-                namespace=namespace,
-                body=manifest,
-                _request_timeout=request_timeout,
-            ),
-            patch=lambda request_timeout: kube.coordination.patch_namespaced_lease(
-                name=name,
-                namespace=namespace,
-                body=manifest,
-                _request_timeout=request_timeout,
-            ),
-            create_context=f"failed to create Lease {namespace}/{name}",
-            patch_context=f"failed to patch Lease {namespace}/{name}",
-            expected=kube_client.V1Lease,
-            payload_context="Lease",
         )
-        return cls(_obj=payload)
 
     @property
     def holder_identity(self) -> str:
@@ -584,17 +579,15 @@ class Lease(NamespacedKubeMetadata[kube_client.V1Lease]):
             Maximum request budget in seconds. If infinite, wait indefinitely.
         """
         namespace, name = self._require_namespace_name("delete Lease")
-        payload = await kube.run(
-            lambda request_timeout: kube.coordination.delete_namespaced_lease(
-                name=name,
+        await (
+            type(self)
+            ._client()
+            .delete_by_name(
+                kube,
                 namespace=namespace,
-                _request_timeout=request_timeout,
-            ),
-            timeout=timeout,
-            context=f"failed to delete Lease {namespace}/{name}",
-        )
-        _validate_delete_status(
-            payload, label=self._object_label(name=name, namespace=namespace)
+                name=name,
+                timeout=timeout,
+            )
         )
 
     async def wait_deleted(self, kube: Kube, *, timeout: float) -> None:
@@ -609,8 +602,12 @@ class Lease(NamespacedKubeMetadata[kube_client.V1Lease]):
 
         """
         namespace, name = self._require_namespace_name("wait for Lease deletion")
-        await _wait_until_deleted(
-            label=self._object_label(name=name, namespace=namespace),
-            timeout=timeout,
-            refresh=lambda remaining: self.refresh(kube, timeout=remaining),
+        await (
+            type(self)
+            ._client()
+            .wait_deleted(
+                label=self._object_label(name=name, namespace=namespace),
+                timeout=timeout,
+                refresh=lambda remaining: self.refresh(kube, timeout=remaining),
+            )
         )

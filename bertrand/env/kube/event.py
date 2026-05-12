@@ -9,15 +9,9 @@ from kubernetes import client as kube_client
 
 from .api import (
     NamespacedKubeMetadata,
-)
-from .api._helpers import (
-    _list_namespaced_items,
-    _typed_payload,
+    NamespacedResourceClient,
 )
 from .api.view import ObjectReference
-from .api.watch import (
-    _watch_namespaced_resource,
-)
 
 if TYPE_CHECKING:
     import builtins
@@ -60,6 +54,39 @@ class Event(NamespacedKubeMetadata[kube_client.EventsV1Event]):
     _obj: kube_client.EventsV1Event
 
     @classmethod
+    def _client(cls) -> NamespacedResourceClient[kube_client.EventsV1Event, Self]:
+        return NamespacedResourceClient(
+            kind="Event",
+            expected=kube_client.EventsV1Event,
+            list_type=kube_client.EventsV1EventList,
+            wrapper=lambda payload: cls(_obj=payload),
+            read=lambda kube, namespace, name, request_timeout: (
+                kube.events.read_namespaced_event(
+                    name=name,
+                    namespace=namespace,
+                    _request_timeout=request_timeout,
+                )
+            ),
+            list_all=lambda kube, label_selector, field_selector, request_timeout: (
+                kube.events.list_event_for_all_namespaces(
+                    label_selector=label_selector,
+                    field_selector=field_selector,
+                    _request_timeout=request_timeout,
+                )
+            ),
+            list_namespace=lambda kube, namespace, labels, fields, timeout: (
+                kube.events.list_namespaced_event(
+                    namespace=namespace,
+                    label_selector=labels,
+                    field_selector=fields,
+                    _request_timeout=timeout,
+                )
+            ),
+            watch_all=lambda kube: kube.events.list_event_for_all_namespaces,
+            watch_namespace=lambda kube: kube.events.list_namespaced_event,
+        )
+
+    @classmethod
     async def get(
         cls,
         kube: Kube,
@@ -86,19 +113,11 @@ class Event(NamespacedKubeMetadata[kube_client.EventsV1Event]):
         Event | None
             Wrapped Kubernetes Event, or `None` if it does not exist.
         """
-        payload = await kube.run(
-            lambda request_timeout: kube.events.read_namespaced_event(
-                name=name,
-                namespace=namespace,
-                _request_timeout=request_timeout,
-            ),
+        return await cls._client().get(
+            kube,
+            namespace=namespace,
+            name=name,
             timeout=timeout,
-            context=f"failed to read Event {name!r} in namespace {namespace!r}",
-        )
-        if payload is None:
-            return None
-        return cls(
-            _obj=_typed_payload(payload, kube_client.EventsV1Event, context="Event")
         )
 
     @classmethod
@@ -131,41 +150,13 @@ class Event(NamespacedKubeMetadata[kube_client.EventsV1Event]):
         list[Event]
             Wrapped Events matching the requested filters.
         """
-        normalized_field_selector = (
-            field_selector.strip() if field_selector is not None else None
+        return await cls._client().list(
+            kube,
+            timeout=timeout,
+            namespaces=namespaces,
+            labels=labels,
+            field_selector=field_selector,
         )
-        return [
-            cls(_obj=item)
-            for item in await _list_namespaced_items(
-                kube,
-                timeout=timeout,
-                namespaces=namespaces,
-                labels=labels,
-                list_all=lambda label_selector, request_timeout: (
-                    kube.events.list_event_for_all_namespaces(
-                        label_selector=label_selector,
-                        field_selector=normalized_field_selector or None,
-                        _request_timeout=request_timeout,
-                    )
-                ),
-                list_namespace=lambda namespace, label_selector, request_timeout: (
-                    kube.events.list_namespaced_event(
-                        namespace=namespace,
-                        label_selector=label_selector,
-                        field_selector=normalized_field_selector or None,
-                        _request_timeout=request_timeout,
-                    )
-                ),
-                list_type=kube_client.EventsV1EventList,
-                item_type=kube_client.EventsV1Event,
-                all_context="failed to list Events across all namespaces",
-                namespace_context=lambda namespace: (
-                    f"failed to list Events in namespace {namespace!r}"
-                ),
-                list_context="Event",
-                item_context="Event",
-            )
-        ]
 
     @classmethod
     async def watch(
@@ -200,21 +191,13 @@ class Event(NamespacedKubeMetadata[kube_client.EventsV1Event]):
         WatchEvent[Event]
             Typed watch events containing wrapped Events.
         """
-        async for event in _watch_namespaced_resource(
-            expected=kube_client.EventsV1Event,
-            wrapper=lambda payload: cls(_obj=payload),
+        async for event in cls._client().watch(
+            kube,
             timeout=timeout,
             namespace=namespace,
-            resource_version=resource_version,
             labels=labels,
             field_selector=field_selector,
-            watch_all=kube.events.list_event_for_all_namespaces,
-            watch_namespace=kube.events.list_namespaced_event,
-            all_context="failed to watch Events across all namespaces",
-            namespace_context=lambda namespace: (
-                f"failed to watch Events in namespace {namespace!r}"
-            ),
-            payload_context="Event watch",
+            resource_version=resource_version,
         ):
             yield event
 

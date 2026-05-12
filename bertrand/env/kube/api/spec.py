@@ -663,6 +663,67 @@ class ContainerSpec:
 
 
 @dataclass(frozen=True)
+class PodTemplateSpec:
+    """Intent-level Kubernetes Pod template shared by workload resources.
+
+    Parameters
+    ----------
+    containers : Collection[ContainerSpec]
+        Containers to render into the Pod template.
+    volumes : Collection[VolumeSpec], optional
+        Volumes to render into the Pod template.
+    labels : Mapping[str, str], optional
+        Labels to apply to the Pod template metadata.
+    annotations : Mapping[str, str] | None, optional
+        Annotations to apply to the Pod template metadata.
+    restart_policy : str | None, optional
+        Optional Pod restart policy, such as ``"Never"`` or ``"OnFailure"``.
+    automount_service_account_token : bool, optional
+        Whether pods should automount the default service-account token.
+    service_account_name : str | None, optional
+        Optional pod service-account name.
+    node_selector : Mapping[str, str] | None, optional
+        Optional node selector.
+    node_name : str | None, optional
+        Optional exact node name.
+    host_pid : bool | None, optional
+        Optional ``hostPID`` value.
+    security_context : PodSecurityContextSpec | None, optional
+        Optional pod security context.
+    tolerations : Collection[TolerationSpec], optional
+        Optional pod tolerations.
+    image_pull_secrets : Collection[ImagePullSecretSpec], optional
+        Optional image pull Secret references.
+    priority_class_name : str | None, optional
+        Optional priority class name.
+    dns_policy : str | None, optional
+        Optional DNS policy.
+    host_network : bool | None, optional
+        Optional ``hostNetwork`` value.
+    termination_grace_period_seconds : int | None, optional
+        Optional pod termination grace period in seconds.
+    """
+
+    containers: Collection[ContainerSpec]
+    volumes: Collection[VolumeSpec] = ()
+    labels: Mapping[str, str] = MappingProxyType({})
+    annotations: Mapping[str, str] | None = None
+    restart_policy: str | None = None
+    automount_service_account_token: bool = False
+    service_account_name: str | None = None
+    node_selector: Mapping[str, str] | None = None
+    node_name: str | None = None
+    host_pid: bool | None = None
+    security_context: PodSecurityContextSpec | None = None
+    tolerations: Collection[TolerationSpec] = ()
+    image_pull_secrets: Collection[ImagePullSecretSpec] = ()
+    priority_class_name: str | None = None
+    dns_policy: str | None = None
+    host_network: bool | None = None
+    termination_grace_period_seconds: int | None = None
+
+
+@dataclass(frozen=True)
 class VolumeSpec:
     """Intent-level Kubernetes pod volume specification.
 

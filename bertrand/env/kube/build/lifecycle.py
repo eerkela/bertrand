@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import re
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -15,14 +14,18 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from bertrand.env.git import BERTRAND_ENV, BERTRAND_NAMESPACE
 from bertrand.env.kube.api import CustomResourceSpec, Kube
-from bertrand.env.kube.build.repository import IMAGE_TAG_RE, IMAGES, ImageRepository
+from bertrand.env.kube.build.refs import (
+    DIGEST_RE,
+    DIGEST_REF_RE,
+    channel_refs,
+    digest_ref,
+)
+from bertrand.env.kube.build.repository import IMAGES, ImageRepository
 from bertrand.env.kube.crd import CustomResourceClient, CustomResourceDefinition
 from bertrand.env.kube.pod import Pod
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
-
-    from bertrand.env.kube.build.manifest import ImageManifestResult
 
 PROJECT_IMAGE_GROUP = "build.bertrand.dev"
 PROJECT_IMAGE_VERSION = "v1alpha1"
@@ -45,8 +48,6 @@ PROJECT_IMAGE_CONFIG_ANNOTATION = "bertrand.dev/image-config-id"
 PROJECT_IMAGE_DIGEST_ANNOTATION = "bertrand.dev/image-digest"
 PROJECT_IMAGE_GC_GRACE_SECONDS = 86_400
 PROJECT_IMAGE_GC_LIMIT = 16
-_PROJECT_IMAGE_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
-_PROJECT_IMAGE_DIGEST_REF_RE = re.compile(r"^.+@sha256:[0-9a-f]{64}$")
 
 type _ProjectImagePhase = Literal["Active", "Retired"]
 type _NonEmptyString = Annotated[str, Field(min_length=1)]
@@ -151,9 +152,9 @@ _PROJECT_IMAGE_SPEC_SCHEMA = {
         "digest_ref": {
             "type": "string",
             "minLength": 1,
-            "pattern": _PROJECT_IMAGE_DIGEST_REF_RE.pattern,
+            "pattern": DIGEST_REF_RE.pattern,
         },
-        "digest": {"type": "string", "pattern": _PROJECT_IMAGE_DIGEST_RE.pattern},
+        "digest": {"type": "string", "pattern": DIGEST_RE.pattern},
         "platforms": {
             "type": "array",
             "minItems": 1,
@@ -165,7 +166,7 @@ _PROJECT_IMAGE_SPEC_SCHEMA = {
             "minProperties": 1,
             "additionalProperties": {
                 "type": "string",
-                "pattern": _PROJECT_IMAGE_DIGEST_REF_RE.pattern,
+                "pattern": DIGEST_REF_RE.pattern,
             },
         },
         "channels": {
@@ -277,13 +278,13 @@ class ProjectImageRecord:
                 f"{image.status.phase!r}"
             )
             raise OSError(msg)
-        if not _PROJECT_IMAGE_DIGEST_RE.fullmatch(image.spec.digest):
+        if not DIGEST_RE.fullmatch(image.spec.digest):
             msg = (
                 f"malformed {PROJECT_IMAGE_KIND} {image.metadata.name!r}: "
                 f"unsupported digest {image.spec.digest!r}"
             )
             raise OSError(msg)
-        if not _PROJECT_IMAGE_DIGEST_REF_RE.fullmatch(image.spec.digest_ref):
+        if not DIGEST_REF_RE.fullmatch(image.spec.digest_ref):
             msg = (
                 f"malformed {PROJECT_IMAGE_KIND} {image.metadata.name!r}: "
                 f"unsupported digest ref {image.spec.digest_ref!r}"
@@ -322,6 +323,110 @@ class ProjectImageRecord:
             retired_at=_utc_datetime(image.status.retired_at),
             last_gc_at=_utc_datetime(image.status.last_gc_at),
             last_error=image.status.last_error,
+        )
+
+
+@dataclass(frozen=True)
+class ProjectImagePublication:
+    """Result for one cluster-native project image publication.
+
+    Parameters
+    ----------
+    record : ProjectImageRecord
+        Active lifecycle record written for the published digest.
+    external_image : str | None, optional
+        External mutable image reference copied from the internal manifest.
+    external_digest_ref : str | None, optional
+        External digest-pinned image reference reported after copy.
+    external_channel_digest_refs : Mapping[str, str], optional
+        Read-only mapping from external channel name to digest-pinned ref.
+    """
+
+    record: ProjectImageRecord
+    external_image: str | None = None
+    external_digest_ref: str | None = None
+    external_channel_digest_refs: Mapping[str, str] = MappingProxyType({})
+
+    @property
+    def image(self) -> str:
+        """Return the mutable image reference.
+
+        Returns
+        -------
+        str
+            Mutable image reference published by the build.
+        """
+        return self.record.image
+
+    @property
+    def digest(self) -> str:
+        """Return the published image digest.
+
+        Returns
+        -------
+        str
+            OCI manifest digest reported by the registry.
+        """
+        return self.record.digest
+
+    @property
+    def digest_ref(self) -> str:
+        """Return the immutable digest-pinned image reference.
+
+        Returns
+        -------
+        str
+            Image reference safe for future digest-pinned workload use.
+        """
+        return self.record.digest_ref
+
+    @property
+    def platforms(self) -> tuple[str, ...]:
+        """Return the platforms included in the published manifest.
+
+        Returns
+        -------
+        tuple[str, ...]
+            Published OCI platforms.
+        """
+        return self.record.platforms
+
+    @property
+    def platform_images(self) -> Mapping[str, str]:
+        """Return per-platform digest-pinned image refs.
+
+        Returns
+        -------
+        Mapping[str, str]
+            Read-only platform-to-digest-ref mapping from the lifecycle record.
+        """
+        return self.record.platform_images
+
+    @property
+    def channels(self) -> Mapping[str, str]:
+        """Return internal mutable channel refs.
+
+        Returns
+        -------
+        Mapping[str, str]
+            Read-only channel refs recorded for the published image.
+        """
+        return self.record.channels
+
+    @property
+    def channel_digest_refs(self) -> Mapping[str, str]:
+        """Return internal digest-pinned channel refs.
+
+        Returns
+        -------
+        Mapping[str, str]
+            Read-only channel digest refs derived from the lifecycle record.
+        """
+        return MappingProxyType(
+            {
+                name: digest_ref(ref, self.record.digest)
+                for name, ref in self.record.channels.items()
+            }
         )
 
 
@@ -568,7 +673,12 @@ async def record_project_image(
     kube: Kube,
     *,
     plan: _ProjectImagePlan,
-    result: ImageManifestResult,
+    image: str,
+    digest: str,
+    image_digest_ref: str,
+    platforms: tuple[str, ...],
+    platform_images: Mapping[str, str],
+    channel_digest_refs: Mapping[str, str],
     timeout: float,
 ) -> ProjectImageRecord:
     """Record a published project image manifest and retire superseded peers.
@@ -579,8 +689,18 @@ async def record_project_image(
         Active Kubernetes API context.
     plan : ProjectImagePlan
         Executed project image plan.
-    result : ImageManifestResult
-        Assembled manifest result.
+    image : str
+        Mutable image reference published by the manifest job.
+    digest : str
+        OCI manifest digest reported by the registry.
+    image_digest_ref : str
+        Immutable digest-pinned ref for ``image``.
+    platforms : tuple[str, ...]
+        Platforms included in the manifest.
+    platform_images : Mapping[str, str]
+        Digest-pinned platform refs that were included in the manifest.
+    channel_digest_refs : Mapping[str, str]
+        Digest-pinned internal channel refs emitted by the manifest job.
     timeout : float
         Maximum record update budget in seconds.
 
@@ -599,19 +719,23 @@ async def record_project_image(
     if timeout <= 0:
         msg = "project image record update timeout must be non-negative"
         raise TimeoutError(msg)
-    digest = _image_digest(result.digest)
-    digest_ref = _digest_ref(result.image, digest)
-    if result.digest_ref != digest_ref:
+    digest = _image_digest(digest)
+    expected_digest_ref = digest_ref(image, digest)
+    if image_digest_ref != expected_digest_ref:
         msg = (
             "project image manifest result digest ref does not match image and "
-            f"digest: {result.digest_ref!r}"
+            f"digest: {image_digest_ref!r}"
         )
         raise OSError(msg)
-    platform_images = dict(result.platform_images)
+    platform_images = dict(platform_images)
     channels = channel_refs(plan.image, plan.channels)
-    _validate_channel_digests(channels=channels, digest=digest, result=result)
+    _validate_channel_digests(
+        channels=channels,
+        digest=digest,
+        actual=channel_digest_refs,
+    )
     _validate_platform_images(
-        platforms=result.platforms,
+        platforms=platforms,
         platform_images=platform_images,
         context=f"project image {plan.tag!r}",
     )
@@ -620,8 +744,8 @@ async def record_project_image(
         kube,
         plan=plan,
         digest=digest,
-        digest_ref=digest_ref,
-        platforms=result.platforms,
+        digest_ref=expected_digest_ref,
+        platforms=platforms,
         platform_images=platform_images,
         channels=channels,
         published_at=now,
@@ -667,24 +791,6 @@ def worktree_identity(worktree: Path | str) -> str:
     """
     value = worktree.as_posix() if isinstance(worktree, Path) else str(worktree).strip()
     return value if value and value != "." else "."
-
-
-def channel_refs(image: str, channels: Sequence[str]) -> dict[str, str]:
-    """Derive tagged image refs for moving channel names.
-
-    Parameters
-    ----------
-    image : str
-        Versioned mutable image ref.
-    channels : Sequence[str]
-        Channel tag names.
-
-    Returns
-    -------
-    dict[str, str]
-        Mapping from channel name to mutable image ref.
-    """
-    return {channel: _tagged_ref(image, channel) for channel in channels}
 
 
 async def _upsert_project_image_record(
@@ -951,7 +1057,7 @@ def _label_hash(value: str) -> str:
 
 def _image_digest(digest: str) -> str:
     digest = digest.strip()
-    if not _PROJECT_IMAGE_DIGEST_RE.fullmatch(digest):
+    if not DIGEST_RE.fullmatch(digest):
         msg = f"BuildKit returned unsupported image digest: {digest!r}"
         raise OSError(msg)
     return digest
@@ -977,14 +1083,13 @@ def _validate_platform_images(
             f"{sorted(image_set)!r} != {sorted(platform_set)!r}"
         )
         raise OSError(msg)
-    for platform, digest_ref in platform_images.items():
+    for platform, image_ref in platform_images.items():
         if not platform.strip():
             msg = f"{context} defines an empty platform"
             raise OSError(msg)
-        if not _PROJECT_IMAGE_DIGEST_REF_RE.fullmatch(digest_ref):
+        if not DIGEST_REF_RE.fullmatch(image_ref):
             msg = (
-                f"{context} platform {platform!r} has invalid digest ref: "
-                f"{digest_ref!r}"
+                f"{context} platform {platform!r} has invalid digest ref: {image_ref!r}"
             )
             raise OSError(msg)
 
@@ -1003,48 +1108,16 @@ def _validate_channel_digests(
     *,
     channels: Mapping[str, str],
     digest: str,
-    result: ImageManifestResult,
+    actual: Mapping[str, str],
 ) -> None:
-    expected = {name: _digest_ref(ref, digest) for name, ref in channels.items()}
-    actual = dict(result.channel_digest_refs)
-    if actual != expected:
+    expected = {name: digest_ref(ref, digest) for name, ref in channels.items()}
+    normalized = dict(actual)
+    if normalized != expected:
         msg = (
             "project image manifest result channel digest refs do not match "
-            f"published channels: {actual!r} != {expected!r}"
+            f"published channels: {normalized!r} != {expected!r}"
         )
         raise OSError(msg)
-
-
-def _tagged_ref(image: str, tag: str) -> str:
-    value = image.strip()
-    normalized_tag = tag.strip()
-    if not IMAGE_TAG_RE.fullmatch(normalized_tag):
-        msg = f"invalid image channel tag: {tag!r}"
-        raise ValueError(msg)
-    slash = value.rfind("/")
-    colon = value.rfind(":")
-    if colon <= slash:
-        msg = f"image reference must include a tag: {image!r}"
-        raise ValueError(msg)
-    repository = value[:colon]
-    if not repository:
-        msg = f"image reference must include a repository: {image!r}"
-        raise ValueError(msg)
-    return f"{repository}:{normalized_tag}"
-
-
-def _digest_ref(image: str, digest: str) -> str:
-    image = image.strip()
-    if "@" in image:
-        repository = image.rsplit("@", 1)[0]
-    else:
-        slash = image.rfind("/")
-        colon = image.rfind(":")
-        repository = image[:colon] if colon > slash else image
-    if not repository:
-        msg = f"cannot derive digest reference from image {image!r}"
-        raise OSError(msg)
-    return f"{repository}@{digest}"
 
 
 def _datetime_payload(value: datetime | None) -> str | None:
