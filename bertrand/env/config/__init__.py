@@ -7,6 +7,7 @@ from .bertrand import (
     INSTRUMENTS,
     SHELLS,
     Bertrand,
+    project_image_tag,
 )
 from .clang_format import (
     ClangFormat,

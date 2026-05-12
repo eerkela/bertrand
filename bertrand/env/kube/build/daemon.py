@@ -202,6 +202,16 @@ class BuildKitPoolStatus:
 
 
 @dataclass(frozen=True)
+class _BuildKitPoolSnapshot:
+    daemonset: DaemonSet | None
+    eligible_nodes: tuple[Node, ...]
+    builders: tuple[BuildKitBuilder, ...]
+    expected_platforms: tuple[str, ...]
+    ready_platforms: tuple[str, ...]
+    missing_platforms: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class BuildKitPool:
     """Per-node BuildKit daemon pool.
 
@@ -416,16 +426,12 @@ class BuildKitPool:
         if timeout <= 0:
             msg = "BuildKit builder discovery timeout must be non-negative"
             raise TimeoutError(msg)
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + timeout
-        nodes = await Node.list(kube, timeout=deadline - loop.time())
-        pods = await Pod.list(
+        snapshot = await self._snapshot(
             kube,
-            timeout=deadline - loop.time(),
-            namespaces=(self.namespace,),
-            labels=self.selector,
+            timeout=timeout,
+            config_hash=config_hash,
         )
-        return self._builders_from(nodes, pods, config_hash=config_hash)
+        return snapshot.builders
 
     async def platforms(self, kube: Kube, *, timeout: float) -> tuple[str, ...]:
         """Return native platforms currently available for builds.
@@ -450,8 +456,8 @@ class BuildKitPool:
         if timeout <= 0:
             msg = "BuildKit platform discovery timeout must be non-negative"
             raise TimeoutError(msg)
-        nodes = await self._eligible_nodes(kube, timeout=timeout)
-        return tuple(sorted({node.platform for node in nodes if node.platform}))
+        snapshot = await self._snapshot(kube, timeout=timeout)
+        return snapshot.expected_platforms
 
     async def schedule(
         self,
@@ -488,67 +494,21 @@ class BuildKitPool:
         ------
         TimeoutError
             If ``timeout`` is non-positive.
-        OSError
-            If no eligible platforms exist or any target platform has no usable
-            builder.
         """
         if timeout <= 0:
             msg = "BuildKit scheduling timeout must be non-negative"
             raise TimeoutError(msg)
-        preferred_node = preferred_node.strip() if preferred_node is not None else ""
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + timeout
-        available = await self.platforms(kube, timeout=deadline - loop.time())
-        targets = (
-            _normalize_platforms(platforms) if platforms is not None else available
-        )
-        if not targets:
-            msg = "BuildKit scheduling requires at least one eligible platform"
-            raise OSError(msg)
-        missing = tuple(platform for platform in targets if platform not in available)
-        if missing:
-            msg = (
-                "BuildKit scheduling requested unavailable platform(s): "
-                f"{', '.join(missing)}"
-            )
-            raise OSError(msg)
-
-        builders = await self.builders(
+        snapshot = await self._snapshot(
             kube,
-            timeout=deadline - loop.time(),
+            timeout=timeout,
             config_hash=config_hash,
         )
-        if config_hash is not None:
-            builders = tuple(builder for builder in builders if builder.config_current)
-
-        out: list[BuildKitPlatformSchedule] = []
-        for platform in targets:
-            candidates = [
-                builder for builder in builders if builder.platform == platform
-            ]
-            candidates.sort(
-                key=lambda builder: (
-                    builder.node != preferred_node,
-                    builder.platform,
-                    builder.node,
-                    builder.pod,
-                )
-            )
-            if not candidates:
-                msg = f"BuildKit has no ready builder for platform {platform!r}"
-                if config_hash is not None:
-                    msg = (
-                        f"{msg} with config hash {config_hash!r}; rerun "
-                        "`bertrand init` to refresh the builder pool"
-                    )
-                raise OSError(msg)
-            out.append(
-                BuildKitPlatformSchedule(
-                    platform=platform,
-                    builder=candidates[0],
-                )
-            )
-        return tuple(out)
+        return self._schedule_from(
+            snapshot,
+            platforms=platforms,
+            preferred_node=preferred_node,
+            config_hash=config_hash,
+        )
 
     async def status(
         self,
@@ -587,37 +547,13 @@ class BuildKitPool:
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
         try:
-            daemonset = await DaemonSet.get(
-                kube,
-                namespace=self.namespace,
-                timeout=deadline - loop.time(),
-                name=self.name,
-            )
-            nodes = await Node.list(kube, timeout=deadline - loop.time())
-            pods = await Pod.list(
+            snapshot = await self._snapshot(
                 kube,
                 timeout=deadline - loop.time(),
-                namespaces=(self.namespace,),
-                labels=self.selector,
+                config_hash=config_hash,
+                include_daemonset=True,
             )
-            builders = self._builders_from(nodes, pods, config_hash=config_hash)
-            eligible = tuple(
-                sorted(
-                    (node for node in nodes if node.is_build_eligible),
-                    key=lambda node: node.name,
-                )
-            )
-            expected_platforms = tuple(
-                sorted({node.platform for node in eligible if node.platform})
-            )
-            ready_platforms = tuple(
-                sorted({builder.platform for builder in builders if builder.platform})
-            )
-            missing_platforms = tuple(
-                platform
-                for platform in expected_platforms
-                if platform not in set(ready_platforms)
-            )
+            daemonset = snapshot.daemonset
             installed_hash = (
                 daemonset.pod_annotations.get(BUILDKIT_CONFIG_HASH_ANNOTATION, "")
                 if daemonset is not None
@@ -631,37 +567,163 @@ class BuildKitPool:
                 namespace=self.namespace,
                 name=self.name,
                 daemonset_present=daemonset is not None,
-                desired_builders=len(eligible),
-                ready_builders=len(builders),
-                expected_platforms=expected_platforms,
-                ready_platforms=ready_platforms,
-                missing_platforms=missing_platforms,
+                desired_builders=len(snapshot.eligible_nodes),
+                ready_builders=len(snapshot.builders),
+                expected_platforms=snapshot.expected_platforms,
+                ready_platforms=snapshot.ready_platforms,
+                missing_platforms=snapshot.missing_platforms,
                 rollout_ready=rollout_ready,
                 expected_config_hash=config_hash,
                 installed_config_hash=installed_hash,
                 config_current=config_current,
                 cache_path=str(self.cache_path),
                 cdi_paths=tuple(path for _, path in BUILDKIT_CDI_SPEC_MOUNTS),
-                builders=builders,
+                builders=snapshot.builders,
                 ready=(
                     daemonset is not None
                     and rollout_ready
                     and config_current
-                    and bool(builders)
-                    and not missing_platforms
+                    and bool(snapshot.builders)
+                    and not snapshot.missing_platforms
                 ),
             )
         except OSError as err:
             msg = f"failed to inspect BuildKit pool {self.namespace}/{self.name}: {err}"
             raise OSError(msg) from err
 
+    async def _snapshot(
+        self,
+        kube: Kube,
+        *,
+        timeout: float,
+        config_hash: str | None = None,
+        include_daemonset: bool = False,
+    ) -> _BuildKitPoolSnapshot:
+        if timeout <= 0:
+            msg = "BuildKit pool discovery timeout must be non-negative"
+            raise TimeoutError(msg)
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        daemonset = (
+            await DaemonSet.get(
+                kube,
+                namespace=self.namespace,
+                name=self.name,
+                timeout=deadline - loop.time(),
+            )
+            if include_daemonset
+            else None
+        )
+        nodes = await Node.list(kube, timeout=deadline - loop.time())
+        pods = await Pod.list(
+            kube,
+            timeout=deadline - loop.time(),
+            namespaces=(self.namespace,),
+            labels=self.selector,
+        )
+        eligible = self._eligible_nodes_from(nodes)
+        builders = self._builders_from(nodes, pods, config_hash=config_hash)
+        expected_platforms = tuple(
+            sorted({node.platform for node in eligible if node.platform})
+        )
+        ready_platforms = tuple(
+            sorted({builder.platform for builder in builders if builder.platform})
+        )
+        missing_platforms = tuple(
+            platform
+            for platform in expected_platforms
+            if platform not in set(ready_platforms)
+        )
+        return _BuildKitPoolSnapshot(
+            daemonset=daemonset,
+            eligible_nodes=eligible,
+            builders=builders,
+            expected_platforms=expected_platforms,
+            ready_platforms=ready_platforms,
+            missing_platforms=missing_platforms,
+        )
+
     async def _eligible_nodes(self, kube: Kube, *, timeout: float) -> tuple[Node, ...]:
         nodes = await Node.list(kube, timeout=timeout)
+        return self._eligible_nodes_from(nodes)
+
+    def _eligible_nodes_from(self, nodes: Iterable[Node]) -> tuple[Node, ...]:
         return tuple(
             sorted(
                 (node for node in nodes if node.is_build_eligible),
                 key=lambda node: node.name,
             )
+        )
+
+    def _candidate_groups(
+        self,
+        snapshot: _BuildKitPoolSnapshot,
+        *,
+        platforms: Iterable[str] | None,
+        preferred_node: str | None,
+        config_hash: str | None,
+    ) -> dict[str, tuple[BuildKitBuilder, ...]]:
+        preferred = preferred_node.strip() if preferred_node is not None else ""
+        available = snapshot.expected_platforms
+        targets = (
+            _normalize_platforms(platforms) if platforms is not None else available
+        )
+        if not targets:
+            msg = "BuildKit scheduling requires at least one eligible platform"
+            raise OSError(msg)
+        missing = tuple(platform for platform in targets if platform not in available)
+        if missing:
+            msg = (
+                "BuildKit scheduling requested unavailable platform(s): "
+                f"{', '.join(missing)}"
+            )
+            raise OSError(msg)
+
+        builders = snapshot.builders
+        if config_hash is not None:
+            builders = tuple(builder for builder in builders if builder.config_current)
+
+        out: dict[str, tuple[BuildKitBuilder, ...]] = {}
+        for platform in targets:
+            candidates = [
+                builder for builder in builders if builder.platform == platform
+            ]
+            candidates.sort(
+                key=lambda builder: (
+                    builder.node != preferred,
+                    builder.platform,
+                    builder.node,
+                    builder.pod,
+                )
+            )
+            if not candidates:
+                msg = f"BuildKit has no ready builder for platform {platform!r}"
+                if config_hash is not None:
+                    msg = (
+                        f"{msg} with config hash {config_hash!r}; rerun "
+                        "`bertrand init` to refresh the builder pool"
+                    )
+                raise OSError(msg)
+            out[platform] = tuple(candidates)
+        return out
+
+    def _schedule_from(
+        self,
+        snapshot: _BuildKitPoolSnapshot,
+        *,
+        platforms: Iterable[str] | None,
+        preferred_node: str | None,
+        config_hash: str | None,
+    ) -> tuple[BuildKitPlatformSchedule, ...]:
+        groups = self._candidate_groups(
+            snapshot,
+            platforms=platforms,
+            preferred_node=preferred_node,
+            config_hash=config_hash,
+        )
+        return tuple(
+            BuildKitPlatformSchedule(platform=platform, builder=candidates[0])
+            for platform, candidates in groups.items()
         )
 
     def _builders_from(

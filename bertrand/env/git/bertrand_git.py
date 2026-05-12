@@ -12,6 +12,7 @@ common functionality themselves, and can stand alone with respect to the rest of
 a git hook could cause ordinary git operations to fail if `bertrand` is not installed
 in the current environment.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -2087,6 +2088,36 @@ class GitRepository:
 
         # detached HEAD: let caller decide what to do
         return None
+
+    async def head_worktree(self) -> GitRepository.Worktree | None:
+        """Return the in-repository worktree attached to HEAD.
+
+        Returns
+        -------
+        GitRepository.Worktree | None
+            The worktree registered for the current HEAD branch, or None if HEAD is
+            detached, unattached, or attached only to an out-of-repository worktree.
+
+        Raises
+        ------
+        FileExistsError
+            If multiple registered worktrees claim the current HEAD branch.
+        """
+        branch = await self.head_branch()
+        if branch is None:
+            return None
+        matches = [
+            worktree
+            for worktree in await self.worktrees()
+            if worktree.branch == branch and worktree.path.is_relative_to(self.root)
+        ]
+        if not matches:
+            return None
+        if len(matches) > 1:
+            paths = ", ".join(str(worktree.path) for worktree in matches)
+            msg = f"multiple worktrees are attached to HEAD branch {branch!r}: {paths}"
+            raise FileExistsError(msg)
+        return matches[0]
 
     async def is_bare(self) -> bool:
         """Return whether this repository is bare.

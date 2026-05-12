@@ -154,17 +154,21 @@ class External:
             )
             command.add_argument(
                 "path",
-                metavar="WORKTREE",
-                help="A path to the project worktree.  This is treated as a literal "
-                "filesystem path; image and workload suffix syntax is not parsed by "
-                "`bertrand build`.",
+                metavar="REPO[/WORKTREE]",
+                help="A path to the project repository or worktree.  Repository "
+                "roots target the worktree attached to HEAD; image and workload "
+                "suffix syntax is not parsed by `bertrand build`.",
             )
             command.add_argument(
                 "--publish",
+                nargs="?",
+                const="",
                 metavar="OCI_REPO",
                 default=None,
                 help="Optional external OCI repository root where the same image "
-                "manifests should be published, for example 'ghcr.io/owner/repo'.",
+                "manifests should be published, for example 'ghcr.io/owner/repo'. "
+                "If omitted after --publish, Bertrand infers a GHCR repository from "
+                "the GitHub remote.",
             )
             command.add_argument(
                 "--auth",
@@ -751,8 +755,10 @@ class External:
             except (TimeoutError, TimeoutExpired) as err:
                 start = datetime.fromtimestamp(now, UTC)
                 cmd = ["bertrand", "build", str(worktree)]
-                if args.publish:
-                    cmd.extend(["--publish", args.publish])
+                if args.publish is not None:
+                    cmd.append("--publish")
+                    if args.publish:
+                        cmd.append(args.publish)
                 if args.auth:
                     cmd.extend(["--auth", args.auth])
                 raise TimeoutExpired(

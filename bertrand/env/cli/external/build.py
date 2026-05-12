@@ -3,16 +3,19 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import sys
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from bertrand.env.config import Bertrand
 from bertrand.env.config.core import Config, _check_kube_name
 from bertrand.env.config.repository import resolve_repo_id
-from bertrand.env.git import INFINITY
+from bertrand.env.git import INFINITY, GitRepository
 from bertrand.env.kube.api import Kube
 from bertrand.env.kube.build.daemon import BUILDKIT_POOL, BuildKitPoolStatus
-from bertrand.env.kube.build.project import gc_project_images, project_image_build
+from bertrand.env.kube.build.lifecycle import gc_project_images
+from bertrand.env.kube.build.project import project_image_build
 from bertrand.env.kube.build.repository import (
     IMAGE_TAG_RE,
     IMAGES,
@@ -20,109 +23,23 @@ from bertrand.env.kube.build.repository import (
 )
 
 if TYPE_CHECKING:
-    from pathlib import Path
-
-    from bertrand.env.config.core import TOMLKey
     from bertrand.env.kube.build.manifest import ImageManifestResult
     from bertrand.env.kube.build.project import ProjectImageResult
 
 
-# NOTE: Distributed native image build roadmap.
-#
-# Bertrand's final image build path should be manifest-oriented and native to the
-# local Kubernetes cluster.  The command should read the whole project config,
-# build every entry in `[tool.bertrand.image]`, publish a canonical manifest for
-# each entry to the in-cluster registry, and optionally publish the same manifest
-# to an external registry with `--publish`.
-#
-# Locked design decisions:
-# - `bertrand build <worktree>` builds the entire image matrix.
-# - `bertrand build` does not accept image tag suffixes such as `<worktree>:debug`.
-#   If targeted builds ever return, they should use an explicit flag instead.
-# - There is no `--all` flag because building the matrix is the default behavior.
-# - `bertrand publish` should be removed from the active CLI once
-#   `bertrand build --publish` provides the distribution path.
-# - `[tool.bertrand.image.<name>]` names are image variant names, not aliases or
-#   release channels.
-# - Internal and external publishes use the same logical image tags:
-#   `<internal-project-repo>:<name>` and `<external-repo>:<name>`.
-# - External publishing is additive.  It never replaces the internal manifest or
-#   the `BertrandImage` lifecycle record.
-# - Registry authorization is provided by `--auth <capability-id>`, resolved as a
-#   Secret-backed capability containing Docker `config.json` bytes.
-# - BuildKit is still runtime infrastructure, not Bertrand domain state.  Keep the
-#   native builder pool as wrapper/convergence code unless we explicitly decide to
-#   introduce a CRD for asynchronous build-request state later.
-#
-# Target architecture:
-# - The cluster's ready, schedulable node platforms define the default build
-#   target set.  Foreign platforms and CI/cloud builders are future extensions.
-# - BuildKit should become platform-aware.  Each platform build is executed by a
-#   BuildKit daemon scheduled on a node of that same platform, not by relying on a
-#   singleton daemon plus QEMU/cross-compilation.
-# - Each image/platform build pushes a deterministic temporary internal ref.
-# - A manifest assembly Job combines the platform refs into the canonical internal
-#   manifest tag, and into the external tag when `--publish` is present.
-# - `BertrandImage` records the canonical internal manifest digest and owned
-#   platform digest refs.  External refs are distribution outputs and are not
-#   owned by cluster GC.
-#
-# Implementation phases:
-# 1. Builder pool foundation:
-#    - hard-cut the singleton BuildKit convergence object to a per-node DaemonSet
-#      builder pool;
-#    - expose builder status: platform, node, endpoint, rollout, cache path,
-#      config hash freshness, and CDI mount readiness;
-#    - preserve registry config, rootful BuildKit, and CDI mounts;
-#    - use node-local cache under `CACHE_DIR / "buildkit"` with registry cache as
-#      the portable cross-node layer.
-# 2. Platform discovery and selection:
-#    - add Node wrapper helpers for canonical OS/architecture platform strings;
-#    - derive target platforms from ready, schedulable nodes;
-#    - choose exactly one ready BuildKit builder for each target platform;
-#    - fail before building if any platform has no ready native builder.
-# 3. Per-platform BuildKit jobs:
-#    - extend the BuildKit job contract with one target platform, builder endpoint,
-#      output refs, and optional Docker config auth;
-#    - run one build Job per image/platform pair against the selected platform
-#      builder;
-#    - resolve CDI device capabilities against the selected builder's node;
-#    - keep secret, SSH, cache, metadata capture, log tailing, and foreground
-#      cleanup behavior intact.
-# 4. Manifest assembly:
-#    - add an in-cluster manifest assembly Job using `regctl`, with insecure HTTP
-#      configuration scoped only to the internal registry Service host;
-#    - assemble canonical internal manifests from all platform refs;
-#    - push the same manifest externally when `--publish <repo>` is provided;
-#    - mount Docker config auth for external registry access only when `--auth` is
-#      provided.
-# 5. Lifecycle and GC:
-#    - write one `BertrandImage` record per canonical internal manifest, including
-#      its owned temporary platform digest refs;
-#    - mark superseded records for the same repo/worktree/image name as retired;
-#    - extend bounded GC to delete retired canonical manifests and owned temporary
-#      platform refs after grace, while preserving live-Pod protections;
-#    - keep external registry retention outside Bertrand's cluster GC.
-# 6. CLI cutover:
-#    - make this command build every configured image entry by default;
-#    - reject workload targeting and image suffix targeting with clear errors;
-#    - add `--publish <repo>` and `--auth <capability-id>`;
-#    - remove the active `bertrand publish` parser/handler;
-#    - print a compact summary with image name, platforms, internal digest ref, and
-#      optional external ref.
-#
-# Acceptance criteria:
-# - every ready cluster platform is represented in each internal image manifest;
-# - no worktree image metadata or IID files are written;
-# - `BertrandImage` remains the internal lifecycle source of truth;
-# - native builder selection, device capability locality, and manifest assembly are
-#   deterministic and fail closed;
-# - external publish failures fail the build, while internal GC failures stay
-#   best-effort warnings.
+_GITHUB_HTTPS_REMOTE = re.compile(
+    r"^https://github\.com/(?P<owner>[^/\s]+)/(?P<repo>[^/\s]+?)(?:\.git)?/?$"
+)
+_GITHUB_SSH_REMOTE = re.compile(
+    r"^git@github\.com:(?P<owner>[^/\s]+)/(?P<repo>[^/\s]+?)(?:\.git)?$"
+)
+_GITHUB_SSH_URL_REMOTE = re.compile(
+    r"^ssh://git@github\.com/(?P<owner>[^/\s]+)/(?P<repo>[^/\s]+?)(?:\.git)?/?$"
+)
 
 
 async def bertrand_build(
-    worktree: Path,
+    target: Path,
     *,
     publish: str | None = None,
     auth: str | None = None,
@@ -132,8 +49,8 @@ async def bertrand_build(
 
     Parameters
     ----------
-    worktree : Path
-        Project worktree path.
+    target : Path
+        Project repository or worktree path.
     publish : str | None, optional
         Optional external OCI repository root to publish manifests to.
     auth : str | None, optional
@@ -152,7 +69,6 @@ async def bertrand_build(
     This command does not materialize or start any containers. It publishes image
     manifests and lifecycle records only.
     """
-    publish = _normalize_publish_repository(publish)
     if auth is not None:
         auth = auth.strip()
         if not auth:
@@ -163,17 +79,21 @@ async def bertrand_build(
             raise ValueError(msg)
         auth = _check_kube_name(auth)
 
-    results: list[tuple[TOMLKey, ProjectImageResult]] = []
+    repo, worktree = await _resolve_build_target(target)
+    results: list[tuple[str, ProjectImageResult]] = []
     with await Kube.host(timeout=INFINITY) as kube:
-        config = await Config.load(worktree, kube=kube, timeout=INFINITY)
+        config = await Config.load(worktree, kube=kube, repo=repo, timeout=INFINITY)
         async with config:
             await _assert_build_runtime(kube, timeout=INFINITY)
+            publish_repo = await _publish_repository(config.repo, publish)
             repo_id = resolve_repo_id(config.repo)
             tags = _image_tags(config)
             for tag in tags:
                 plan = project_image_build(config, tag, repo_id=repo_id)
                 external_image = (
-                    _external_image(publish, tag) if publish is not None else None
+                    _external_image(publish_repo, plan.oci_tag)
+                    if publish_repo is not None
+                    else None
                 )
                 result = await plan.publish(
                     kube,
@@ -188,7 +108,25 @@ async def bertrand_build(
         _print_results(results)
 
 
-def _image_tags(config: Config) -> tuple[TOMLKey, ...]:
+async def _resolve_build_target(target: Path) -> tuple[GitRepository, Path]:
+    repo, worktree = await GitRepository.resolve(target.expanduser().resolve())
+    if not repo:
+        msg = f"no initialized Git repository found for build target: {target}"
+        raise OSError(msg)
+    if worktree != Path():
+        return repo, repo.root / worktree
+    head = await repo.head_worktree()
+    if head is None:
+        msg = (
+            f"repository HEAD for {repo.root} must be attached to a local worktree; "
+            "provide an explicit worktree path or attach HEAD to a branch before "
+            "running `bertrand build`."
+        )
+        raise OSError(msg)
+    return repo, head.path
+
+
+def _image_tags(config: Config) -> tuple[str, ...]:
     bertrand = config.get(Bertrand)
     if bertrand is None:
         msg = f"missing 'bertrand' configuration for environment at {config.root}"
@@ -197,6 +135,14 @@ def _image_tags(config: Config) -> tuple[TOMLKey, ...]:
         msg = f"environment at {config.root} does not define any images"
         raise OSError(msg)
     return tuple(sorted(bertrand.image))
+
+
+async def _publish_repository(repo: GitRepository, publish: str | None) -> str | None:
+    if publish is None:
+        return None
+    if publish.strip():
+        return _normalize_publish_repository(publish)
+    return await _infer_ghcr_repository(repo)
 
 
 def _normalize_publish_repository(repo: str | None) -> str | None:
@@ -223,30 +169,102 @@ def _normalize_publish_repository(repo: str | None) -> str | None:
     return value
 
 
+async def _infer_ghcr_repository(repo: GitRepository) -> str:
+    remotes = await _github_remotes(repo)
+    origin = remotes.get("origin")
+    if origin is not None:
+        if len(origin) == 1:
+            owner, name = next(iter(origin))
+            return f"ghcr.io/{owner}/{name}".lower()
+        choices = ", ".join(
+            f"github.com/{owner}/{name}" for owner, name in sorted(origin)
+        )
+        msg = f"Git remote 'origin' has ambiguous GitHub repositories: {choices}"
+        raise ValueError(msg)
+
+    choices = {identity for identities in remotes.values() for identity in identities}
+    if len(choices) == 1:
+        owner, name = next(iter(choices))
+        return f"ghcr.io/{owner}/{name}".lower()
+    if not choices:
+        msg = (
+            "--publish could not infer a GHCR repository because this Git repository "
+            "has no GitHub remotes; pass --publish ghcr.io/owner/repo explicitly."
+        )
+        raise ValueError(msg)
+    formatted = ", ".join(
+        f"github.com/{owner}/{name}" for owner, name in sorted(choices)
+    )
+    msg = (
+        "--publish found multiple GitHub repositories and cannot choose one: "
+        f"{formatted}; pass --publish ghcr.io/owner/repo explicitly."
+    )
+    raise ValueError(msg)
+
+
+async def _github_remotes(
+    repo: GitRepository,
+) -> dict[str, frozenset[tuple[str, str]]]:
+    result = await repo.run(["remote", "-v"], capture_output=True)
+    out: dict[str, set[tuple[str, str]]] = {}
+    for raw in result.stdout.splitlines():
+        parts = raw.split()
+        if len(parts) < 2:
+            continue
+        name, url = parts[0], parts[1]
+        identity = _github_remote_identity(url)
+        if identity is not None:
+            out.setdefault(name, set()).add(identity)
+    return {name: frozenset(identities) for name, identities in out.items()}
+
+
+def _github_remote_identity(url: str) -> tuple[str, str] | None:
+    for pattern in (_GITHUB_HTTPS_REMOTE, _GITHUB_SSH_REMOTE, _GITHUB_SSH_URL_REMOTE):
+        match = pattern.fullmatch(url.strip())
+        if match is not None:
+            owner = match.group("owner")
+            repo = match.group("repo")
+            if owner and repo:
+                return owner, repo
+    return None
+
+
 def _external_image(repo: str, tag: str) -> str:
     if not IMAGE_TAG_RE.fullmatch(tag):
-        msg = f"image config key is not a valid OCI tag: {tag!r}"
+        msg = f"derived image tag is not a valid OCI tag: {tag!r}"
         raise ValueError(msg)
     return f"{repo}:{tag}"
 
 
-def _print_results(results: list[tuple[TOMLKey, ProjectImageResult]]) -> None:
+def _print_results(results: list[tuple[str, ProjectImageResult]]) -> None:
     for index, (tag, result) in enumerate(results):
         if index:
             print()
-        print(f"image: {tag}")
+        print(f"image: {_display_image_key(tag)}")
         print(f"  internal: {result.image}")
         print(f"  digest: {result.digest_ref}")
         print(f"  platforms: {', '.join(result.record.platforms)}")
+        if result.manifest.channel_digest_refs:
+            print("  channels:")
+            for name, ref in result.manifest.channel_digest_refs.items():
+                print(f"    {name}: {ref}")
         external = _external_digest(result.manifest)
         if external is not None:
             print(f"  external: {external}")
+        if result.manifest.external_channel_digest_refs:
+            print("  external channels:")
+            for name, ref in result.manifest.external_channel_digest_refs.items():
+                print(f"    {name}: {ref}")
 
 
 def _external_digest(result: ImageManifestResult) -> str | None:
     if result.external_digest_ref is None:
         return None
     return result.external_digest_ref
+
+
+def _display_image_key(tag: str) -> str:
+    return '""' if tag == "" else tag
 
 
 async def _assert_build_runtime(kube: Kube, *, timeout: float) -> None:

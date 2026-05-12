@@ -9,7 +9,8 @@ import re
 import shutil
 import tempfile
 import uuid
-from collections.abc import Iterable, Mapping
+from collections.abc import AsyncIterator, Iterable, Mapping
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
@@ -129,6 +130,17 @@ class BuildKitPlatformResult:
     digest: str
     digest_ref: str
     build: BuildKitImageResult
+
+
+@dataclass(frozen=True)
+class _BuildKitExecutionWorkspace:
+    context: Path
+    metadata: Path
+    local_node: Node
+    capability_volumes: tuple[VolumeSpec, ...]
+    capability_mounts: tuple[VolumeMountSpec, ...]
+    secret_paths: Mapping[str, str]
+    ssh_paths: Mapping[str, str]
 
 
 @dataclass(frozen=True)
@@ -444,8 +456,6 @@ class BuildKitImageBuild:
         ------
         TimeoutError
             If staging, Job creation, or Job completion exceeds `timeout`.
-        FileNotFoundError
-            If a declared build context source does not exist.
         OSError
             If the Kubernetes build Job fails, Job creation fails, or BuildKit
             metadata cannot be loaded.
@@ -463,27 +473,16 @@ class BuildKitImageBuild:
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
 
-        with tempfile.TemporaryDirectory(prefix=f"{self.context_prefix}-") as tmp:
-            root = Path(tmp).resolve()
-            try:
-                context, metadata = self._stage_context(root)
-            except FileNotFoundError as err:
-                raise FileNotFoundError(str(err)) from err
-            local_node = await Node.local(kube, timeout=deadline - loop.time())
-            (
-                capability_volumes,
-                capability_mounts,
-                secret_paths,
-                ssh_paths,
-            ) = await self._capability_mounts(
-                kube,
-                env_id=env_id,
-                timeout=deadline - loop.time(),
-            )
-            local_platform = local_node.platform
+        async with self._execution_workspace(
+            kube,
+            env_id=env_id,
+            timeout=deadline - loop.time(),
+        ) as workspace:
+            local_platform = workspace.local_node.platform
             if not local_platform:
                 msg = (
-                    f"local Kubernetes node {local_node.name!r} has no usable "
+                    f"local Kubernetes node {workspace.local_node.name!r} has no "
+                    "usable "
                     "native platform labels"
                 )
                 raise OSError(msg)
@@ -491,7 +490,7 @@ class BuildKitImageBuild:
                 kube,
                 env_id=env_id,
                 platforms=(local_platform,),
-                preferred_node=local_node.name,
+                preferred_node=workspace.local_node.name,
                 buildkit_pool=buildkit_pool,
                 timeout=deadline - loop.time(),
             )
@@ -502,13 +501,13 @@ class BuildKitImageBuild:
                 kube,
                 target=targets[0],
                 image=self.image,
-                context=context,
-                metadata=metadata,
-                capability_volumes=capability_volumes,
-                capability_mounts=capability_mounts,
-                secret_paths=secret_paths,
-                ssh_paths=ssh_paths,
-                node_name=local_node.name,
+                context=workspace.context,
+                metadata=workspace.metadata,
+                capability_volumes=workspace.capability_volumes,
+                capability_mounts=workspace.capability_mounts,
+                secret_paths=workspace.secret_paths,
+                ssh_paths=workspace.ssh_paths,
+                node_name=workspace.local_node.name,
                 timeout=deadline - loop.time(),
             )
 
@@ -557,8 +556,6 @@ class BuildKitImageBuild:
         TimeoutError
             If staging, scheduling, Job creation, or Job completion exceeds
             `timeout`.
-        FileNotFoundError
-            If a declared build context source does not exist.
         ValueError
             If capability inputs are present without `env_id`, or if a platform
             output ref is invalid.
@@ -575,23 +572,11 @@ class BuildKitImageBuild:
         deadline = loop.time() + timeout
         output_ref_factory = output_ref_factory or _platform_output_ref
 
-        with tempfile.TemporaryDirectory(prefix=f"{self.context_prefix}-") as tmp:
-            root = Path(tmp).resolve()
-            try:
-                context, metadata = self._stage_context(root)
-            except FileNotFoundError as err:
-                raise FileNotFoundError(str(err)) from err
-            local_node = await Node.local(kube, timeout=deadline - loop.time())
-            (
-                capability_volumes,
-                capability_mounts,
-                secret_paths,
-                ssh_paths,
-            ) = await self._capability_mounts(
-                kube,
-                env_id=env_id,
-                timeout=deadline - loop.time(),
-            )
+        async with self._execution_workspace(
+            kube,
+            env_id=env_id,
+            timeout=deadline - loop.time(),
+        ) as workspace:
             targets = await self.schedule(
                 kube,
                 env_id=env_id,
@@ -615,13 +600,13 @@ class BuildKitImageBuild:
                     kube,
                     target=target,
                     image=image,
-                    context=context,
-                    metadata=metadata / _platform_token(target.platform),
-                    capability_volumes=capability_volumes,
-                    capability_mounts=capability_mounts,
-                    secret_paths=secret_paths,
-                    ssh_paths=ssh_paths,
-                    node_name=local_node.name,
+                    context=workspace.context,
+                    metadata=workspace.metadata / _platform_token(target.platform),
+                    capability_volumes=workspace.capability_volumes,
+                    capability_mounts=workspace.capability_mounts,
+                    secret_paths=workspace.secret_paths,
+                    ssh_paths=workspace.ssh_paths,
+                    node_name=workspace.local_node.name,
                     timeout=deadline - loop.time(),
                 )
                 results.append(
@@ -636,6 +621,46 @@ class BuildKitImageBuild:
                 )
             return tuple(results)
 
+    @asynccontextmanager
+    async def _execution_workspace(
+        self,
+        kube: Kube,
+        *,
+        env_id: str | None,
+        timeout: float,
+    ) -> AsyncIterator[_BuildKitExecutionWorkspace]:
+        if timeout <= 0:
+            msg = "BuildKit execution workspace timeout must be non-negative"
+            raise TimeoutError(msg)
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        with tempfile.TemporaryDirectory(prefix=f"{self.context_prefix}-") as tmp:
+            root = Path(tmp).resolve()
+            try:
+                context, metadata = self._stage_context(root)
+            except FileNotFoundError as err:
+                raise FileNotFoundError(str(err)) from err
+            local_node = await Node.local(kube, timeout=deadline - loop.time())
+            (
+                capability_volumes,
+                capability_mounts,
+                secret_paths,
+                ssh_paths,
+            ) = await self._capability_mounts(
+                kube,
+                env_id=env_id,
+                timeout=deadline - loop.time(),
+            )
+            yield _BuildKitExecutionWorkspace(
+                context=context,
+                metadata=metadata,
+                local_node=local_node,
+                capability_volumes=tuple(capability_volumes),
+                capability_mounts=tuple(capability_mounts),
+                secret_paths=MappingProxyType(secret_paths),
+                ssh_paths=MappingProxyType(ssh_paths),
+            )
+
     async def _publish_target(
         self,
         kube: Kube,
@@ -644,8 +669,8 @@ class BuildKitImageBuild:
         image: str,
         context: Path,
         metadata: Path,
-        capability_volumes: list[VolumeSpec],
-        capability_mounts: list[VolumeMountSpec],
+        capability_volumes: tuple[VolumeSpec, ...],
+        capability_mounts: tuple[VolumeMountSpec, ...],
         secret_paths: Mapping[str, str],
         ssh_paths: Mapping[str, str],
         node_name: str,
@@ -864,46 +889,29 @@ class BuildKitImageBuild:
             raise ValueError(msg)
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
-        schedule = await buildkit_pool.schedule(
+        snapshot = await buildkit_pool._snapshot(
             kube,
             timeout=deadline - loop.time(),
+            config_hash=config_hash,
+        )
+        groups = buildkit_pool._candidate_groups(
+            snapshot,
             platforms=platforms,
             preferred_node=preferred_node,
             config_hash=config_hash,
         )
-        if not self.devices:
-            return tuple(
-                BuildKitJobTarget(
-                    platform=entry.platform,
-                    builder=entry.builder,
-                    device_selectors=(),
-                )
-                for entry in schedule
-            )
 
         targets: list[BuildKitJobTarget] = []
-        for entry in schedule:
-            builders = await buildkit_pool.builders(
-                kube,
-                timeout=deadline - loop.time(),
-                config_hash=config_hash,
-            )
-            if config_hash is not None:
-                builders = tuple(
-                    builder for builder in builders if builder.config_current
+        for platform, candidates in groups.items():
+            if not self.devices:
+                targets.append(
+                    BuildKitJobTarget(
+                        platform=platform,
+                        builder=candidates[0],
+                        device_selectors=(),
+                    )
                 )
-            preferred = preferred_node.strip() if preferred_node is not None else ""
-            candidates = [
-                builder for builder in builders if builder.platform == entry.platform
-            ]
-            candidates.sort(
-                key=lambda builder: (
-                    builder.node != preferred,
-                    builder.platform,
-                    builder.node,
-                    builder.pod,
-                )
-            )
+                continue
             errors: list[str] = []
             selected: BuildKitJobTarget | None = None
             for candidate in candidates:
@@ -918,7 +926,7 @@ class BuildKitImageBuild:
                     errors.append(f"{candidate.node}: {err}")
                     continue
                 selected = BuildKitJobTarget(
-                    platform=entry.platform,
+                    platform=platform,
                     builder=candidate,
                     device_selectors=selectors,
                 )
@@ -926,7 +934,7 @@ class BuildKitImageBuild:
             if selected is None:
                 detail = "; ".join(errors) if errors else "no candidate builders"
                 msg = (
-                    f"no ready BuildKit builder for platform {entry.platform!r} "
+                    f"no ready BuildKit builder for platform {platform!r} "
                     f"can satisfy requested device capabilities: {detail}"
                 )
                 raise OSError(msg)
