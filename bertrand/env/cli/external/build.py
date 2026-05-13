@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import re
 import sys
 from pathlib import Path
@@ -11,15 +12,20 @@ from typing import TYPE_CHECKING
 from bertrand.env.config import Bertrand
 from bertrand.env.config.core import Config, _check_kube_name
 from bertrand.env.config.repository import resolve_repo_id
-from bertrand.env.git import INFINITY, GitRepository
+from bertrand.env.git import BERTRAND_NAMESPACE, INFINITY, GitRepository
 from bertrand.env.kube.api import Kube
+from bertrand.env.kube.build.controller import BUILDKIT_BUILD_CONTROLLER
 from bertrand.env.kube.build.daemon import BUILDKIT_POOL
+from bertrand.env.kube.build.execution import job_logs
 from bertrand.env.kube.build.lifecycle import gc_project_images
 from bertrand.env.kube.build.project import project_image_build
 from bertrand.env.kube.build.refs import validate_tag
 from bertrand.env.kube.build.repository import IMAGES
+from bertrand.env.kube.deployment import Deployment
+from bertrand.env.kube.job import Job
 
 if TYPE_CHECKING:
+    from bertrand.env.kube.build.controller import BuildKitBuildRecord
     from bertrand.env.kube.build.lifecycle import ProjectImagePublication
 
 
@@ -32,6 +38,9 @@ _GITHUB_SSH_REMOTE = re.compile(
 _GITHUB_SSH_URL_REMOTE = re.compile(
     r"^ssh://git@github\.com/(?P<owner>[^/\s]+)/(?P<repo>[^/\s]+?)(?:\.git)?/?$"
 )
+_BUILD_LOG_POLL_SECONDS = 2.0
+_BUILD_LOG_READ_TIMEOUT_SECONDS = 5.0
+_BUILD_LOG_TAIL_LINES = 240
 
 
 async def bertrand_build(
@@ -40,8 +49,9 @@ async def bertrand_build(
     publish: str | None = None,
     auth: str | None = None,
     quiet: bool,
+    detach: bool = False,
 ) -> None:
-    """Build all configured Bertrand images through the Kubernetes BuildKit pool.
+    """Build all configured Bertrand images through the Kubernetes BuildKit service.
 
     Parameters
     ----------
@@ -54,6 +64,8 @@ async def bertrand_build(
         external registry.
     quiet : bool
         Whether to suppress build summary output.
+    detach : bool, optional
+        Whether to submit durable build requests without waiting for publication.
 
     Raises
     ------
@@ -77,6 +89,7 @@ async def bertrand_build(
 
     repo, worktree = await _resolve_build_target(target)
     results: list[tuple[str, ProjectImagePublication]] = []
+    requests: list[tuple[str, str]] = []
     with await Kube.host(timeout=INFINITY) as kube:
         config = await Config.load(worktree, kube=kube, repo=repo, timeout=INFINITY)
         async with config:
@@ -91,17 +104,37 @@ async def bertrand_build(
                     if publish_repo is not None
                     else None
                 )
-                result = await plan.publish(
-                    kube,
-                    timeout=INFINITY,
-                    external_image=external_image,
-                    auth_id=auth,
-                )
-                results.append((tag, result))
-            await _best_effort_gc(kube, quiet=quiet)
+                if detach:
+                    request = await plan.submit(
+                        kube,
+                        timeout=INFINITY,
+                        external_image=external_image,
+                        auth_id=auth,
+                    )
+                    requests.append((tag, request.name))
+                else:
+                    follower = None if quiet else _BuildLogFollower(kube)
+                    try:
+                        on_update = None if follower is None else follower.update
+                        result = await plan.publish(
+                            kube,
+                            timeout=INFINITY,
+                            external_image=external_image,
+                            auth_id=auth,
+                            on_update=on_update,
+                        )
+                    finally:
+                        if follower is not None:
+                            await follower.close()
+                    results.append((tag, result))
+            if not detach:
+                await _best_effort_gc(kube, quiet=quiet)
 
     if not quiet:
-        _print_results(results)
+        if detach:
+            _print_requests(requests)
+        else:
+            _print_results(results)
 
 
 async def _resolve_build_target(target: Path) -> tuple[GitRepository, Path]:
@@ -238,13 +271,14 @@ def _print_results(results: list[tuple[str, ProjectImagePublication]]) -> None:
     for index, (tag, result) in enumerate(results):
         if index:
             print()
+        record = result.record
         print(f"image: {_display_image_key(tag)}")
-        print(f"  internal: {result.image}")
-        print(f"  digest: {result.digest_ref}")
-        print(f"  platforms: {', '.join(result.platforms)}")
-        if result.channel_digest_refs:
+        print(f"  internal: {record.image}")
+        print(f"  digest: {record.digest_ref}")
+        print(f"  platforms: {', '.join(record.platforms)}")
+        if record.channel_digest_refs:
             print("  channels:")
-            for name, ref in result.channel_digest_refs.items():
+            for name, ref in record.channel_digest_refs.items():
                 print(f"    {name}: {ref}")
         if result.external_digest_ref is not None:
             print(f"  external: {result.external_digest_ref}")
@@ -252,6 +286,14 @@ def _print_results(results: list[tuple[str, ProjectImagePublication]]) -> None:
             print("  external channels:")
             for name, ref in result.external_channel_digest_refs.items():
                 print(f"    {name}: {ref}")
+
+
+def _print_requests(requests: list[tuple[str, str]]) -> None:
+    for index, (tag, name) in enumerate(requests):
+        if index:
+            print()
+        print(f"image: {_display_image_key(tag)}")
+        print(f"  build: {name}")
 
 
 def _display_image_key(tag: str) -> str:
@@ -270,7 +312,17 @@ async def _assert_build_runtime(kube: Kube, *, timeout: float) -> None:
         timeout=deadline - loop.time(),
         config_hash=IMAGES.buildkit_config_hash,
     )
+    controller = await Deployment.get(
+        kube,
+        namespace=BERTRAND_NAMESPACE,
+        name=BUILDKIT_BUILD_CONTROLLER,
+        timeout=deadline - loop.time(),
+    )
     failures = [*registry.failures, *buildkit.failures]
+    if controller is None:
+        failures.append("BuildKit build controller Deployment is missing")
+    elif not controller.rollout_ready(minimum=1):
+        failures.append("BuildKit build controller rollout is not ready")
     if failures:
         detail = "\n".join(f"- {failure}" for failure in failures)
         msg = (
@@ -289,3 +341,85 @@ async def _best_effort_gc(kube: Kube, *, quiet: bool) -> None:
                 f"warning: project image garbage collection failed: {err}",
                 file=sys.stderr,
             )
+
+
+class _BuildLogFollower:
+    """Best-effort active BuildKit Job log follower for synchronous CLI builds.
+
+    Parameters
+    ----------
+    kube : Kube
+        Active Kubernetes API context used to read Jobs and pod logs.
+    """
+
+    def __init__(self, kube: Kube) -> None:
+        self._kube = kube
+        self._job_name = ""
+        self._task: asyncio.Task[None] | None = None
+        self._printed: dict[str, str] = {}
+
+    async def update(self, record: BuildKitBuildRecord) -> None:
+        """Follow the current active Job from a BuildKit request status update.
+
+        Parameters
+        ----------
+        record : BuildKitBuildRecord
+            Build request status snapshot.
+        """
+        await self._set_job(record.status.active_job)
+
+    async def close(self) -> None:
+        """Stop any active log-following task."""
+        await self._set_job("")
+
+    async def _set_job(self, name: str) -> None:
+        name = name.strip()
+        if name == self._job_name:
+            return
+        if self._task is not None:
+            self._task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._task
+        self._job_name = name
+        self._task = None
+        if name:
+            self._task = asyncio.create_task(self._run(name))
+
+    async def _run(self, name: str) -> None:
+        while True:
+            try:
+                job = await Job.get(
+                    self._kube,
+                    namespace=BERTRAND_NAMESPACE,
+                    name=name,
+                    timeout=_BUILD_LOG_READ_TIMEOUT_SECONDS,
+                )
+                if job is not None:
+                    logs = await job_logs(
+                        self._kube,
+                        job,
+                        timeout=_BUILD_LOG_READ_TIMEOUT_SECONDS,
+                        tail_lines=_BUILD_LOG_TAIL_LINES,
+                        failure_label="build Job logs",
+                        include_headers=True,
+                    )
+                    self._print_new_logs(name, logs)
+            except (OSError, TimeoutError, ValueError):
+                pass
+            await asyncio.sleep(_BUILD_LOG_POLL_SECONDS)
+
+    def _print_new_logs(self, name: str, logs: str) -> None:
+        logs = logs.strip()
+        if not logs:
+            return
+        previous = self._printed.get(name, "")
+        if logs == previous:
+            return
+        if previous and logs.startswith(previous):
+            chunk = logs[len(previous) :].lstrip("\n")
+        else:
+            chunk = logs
+        self._printed[name] = logs
+        if not chunk:
+            return
+        print(chunk, file=sys.stderr, flush=True)

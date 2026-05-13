@@ -9,7 +9,7 @@ from kubernetes import client as kube_client
 
 from .api import (
     NamespacedKubeMetadata,
-    NamespacedResourceClient,
+    ResourceClient,
 )
 from .api.view import ObjectReference
 
@@ -54,8 +54,9 @@ class Event(NamespacedKubeMetadata[kube_client.EventsV1Event]):
     _obj: kube_client.EventsV1Event
 
     @classmethod
-    def _client(cls) -> NamespacedResourceClient[kube_client.EventsV1Event, Self]:
-        return NamespacedResourceClient(
+    def _client(cls) -> ResourceClient[kube_client.EventsV1Event, Self]:
+        return ResourceClient(
+            scope="namespaced",
             kind="Event",
             expected=kube_client.EventsV1Event,
             list_type=kube_client.EventsV1EventList,

@@ -9,7 +9,7 @@ from kubernetes import client as kube_client
 
 from .api import (
     NamespacedKubeMetadata,
-    NamespacedResourceClient,
+    ResourceClient,
 )
 
 if TYPE_CHECKING:
@@ -34,8 +34,9 @@ class ServiceAccount(NamespacedKubeMetadata[kube_client.V1ServiceAccount]):
     _obj: kube_client.V1ServiceAccount
 
     @classmethod
-    def _client(cls) -> NamespacedResourceClient[kube_client.V1ServiceAccount, Self]:
-        return NamespacedResourceClient(
+    def _client(cls) -> ResourceClient[kube_client.V1ServiceAccount, Self]:
+        return ResourceClient(
+            scope="namespaced",
             kind="ServiceAccount",
             expected=kube_client.V1ServiceAccount,
             list_type=kube_client.V1ServiceAccountList,

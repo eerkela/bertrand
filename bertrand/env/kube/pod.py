@@ -11,7 +11,7 @@ import kubernetes
 from .api import (
     Kube,
     NamespacedKubeMetadata,
-    NamespacedResourceClient,
+    ResourceClient,
     WatchEvent,
 )
 
@@ -47,8 +47,9 @@ class Pod(NamespacedKubeMetadata[kubernetes.client.V1Pod]):
     _obj: kubernetes.client.V1Pod
 
     @classmethod
-    def _client(cls) -> NamespacedResourceClient[kubernetes.client.V1Pod, Self]:
-        return NamespacedResourceClient(
+    def _client(cls) -> ResourceClient[kubernetes.client.V1Pod, Self]:
+        return ResourceClient(
+            scope="namespaced",
             kind="Pod",
             expected=kubernetes.client.V1Pod,
             list_type=kubernetes.client.V1PodList,

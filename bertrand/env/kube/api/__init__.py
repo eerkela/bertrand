@@ -7,8 +7,8 @@ from .client import CLUSTER_REGISTRY_READY_VALUE as CLUSTER_REGISTRY_READY_VALUE
 from .client import Kube as Kube
 from .metadata import KubeMetadata as KubeMetadata
 from .metadata import NamespacedKubeMetadata as NamespacedKubeMetadata
-from .resource import ClusterResourceClient as ClusterResourceClient
-from .resource import NamespacedResourceClient as NamespacedResourceClient
+from .resource import ResourceClient as ResourceClient
+from .resource import ResourceScope as ResourceScope
 from .spec import (
     ContainerPortSpec as ContainerPortSpec,
 )
@@ -22,16 +22,7 @@ from .spec import (
     DeploymentStrategySpec as DeploymentStrategySpec,
 )
 from .spec import (
-    EmptyDirSpec as EmptyDirSpec,
-)
-from .spec import (
     EnvVarSpec as EnvVarSpec,
-)
-from .spec import (
-    ImagePullSecretSpec as ImagePullSecretSpec,
-)
-from .spec import (
-    PodSecurityContextSpec as PodSecurityContextSpec,
 )
 from .spec import (
     PodTemplateSpec as PodTemplateSpec,
@@ -43,16 +34,7 @@ from .spec import (
     PortProtocol as PortProtocol,
 )
 from .spec import (
-    ProbeHandlerSpec as ProbeHandlerSpec,
-)
-from .spec import (
     ProbeSpec as ProbeSpec,
-)
-from .spec import (
-    ResourceRequirementsSpec as ResourceRequirementsSpec,
-)
-from .spec import (
-    RollingUpdateSpec as RollingUpdateSpec,
 )
 from .spec import (
     SecurityContextSpec as SecurityContextSpec,

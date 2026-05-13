@@ -54,12 +54,10 @@ from bertrand.env.kube.api.bootstrap import (
     install_microk8s,
     start_microk8s,
 )
+from bertrand.env.kube.build.controller import ensure_buildkit_build_controller
 from bertrand.env.kube.build.daemon import BUILDKIT_POOL
 from bertrand.env.kube.build.repository import IMAGES
-from bertrand.env.kube.ceph.autoscale import (
-    ceph_autoscaler_image_build,
-    ensure_ceph_autoscaler,
-)
+from bertrand.env.kube.ceph.autoscale import ensure_ceph_autoscaler
 from bertrand.env.kube.ceph.bootstrap import (
     assert_microceph_installed,
     install_microceph,
@@ -72,6 +70,7 @@ from bertrand.env.kube.ceph.mount import (
     resurrect_repository_mount,
 )
 from bertrand.env.kube.ceph.volume import DEFAULT_VOLUME_SIZE, RepoVolume
+from bertrand.env.kube.control import control_plane_image
 from bertrand.env.kube.namespace import Namespace
 
 if TYPE_CHECKING:
@@ -920,6 +919,11 @@ async def _converge_build_runtime(kube: Kube, *, timeout: float) -> None:
         timeout=deadline - loop.time(),
         config_hash=IMAGES.buildkit_config_hash,
     )
+    await ensure_buildkit_build_controller(
+        kube,
+        image=control_plane_image(),
+        timeout=deadline - loop.time(),
+    )
 
 
 async def _converge_cluster_runtime(kube: Kube, *, timeout: float) -> None:
@@ -929,14 +933,9 @@ async def _converge_cluster_runtime(kube: Kube, *, timeout: float) -> None:
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout
     await _converge_build_runtime(kube, timeout=deadline - loop.time())
-    autoscaler_build = ceph_autoscaler_image_build()
-    autoscaler_result = await autoscaler_build.publish(
-        kube,
-        timeout=deadline - loop.time(),
-    )
     await ensure_ceph_autoscaler(
         kube,
-        image=autoscaler_result.image,
+        image=control_plane_image(),
         timeout=deadline - loop.time(),
     )
 

@@ -7,10 +7,8 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from .spec import (
         ContainerSpec,
-        PodSecurityContextSpec,
         PodTemplateSpec,
         ProbeSpec,
-        ResourceRequirementsSpec,
         SecurityContextSpec,
         TolerationSpec,
         VolumeSpec,
@@ -18,41 +16,29 @@ if TYPE_CHECKING:
 
 
 def _probe_manifest(probe: ProbeSpec) -> dict[str, object]:
-    handler = probe.handler
     sources = sum(
         (
-            handler.tcp_port is not None,
-            handler.http_path is not None or handler.http_port is not None,
+            probe.tcp_port is not None,
+            probe.http_path is not None or probe.http_port is not None,
         )
     )
     if sources != 1:
-        msg = "probe handler must define exactly one source"
+        msg = "probe must define exactly one source"
         raise ValueError(msg)
     payload: dict[str, object]
-    if handler.tcp_port is not None:
-        payload = {"tcpSocket": {"port": handler.tcp_port}}
+    if probe.tcp_port is not None:
+        payload = {"tcpSocket": {"port": probe.tcp_port}}
     else:
-        if handler.http_path is None or handler.http_port is None:
-            msg = "HTTP probe handler requires path and port"
+        if probe.http_path is None or probe.http_port is None:
+            msg = "HTTP probe requires path and port"
             raise ValueError(msg)
-        payload = {"httpGet": {"path": handler.http_path, "port": handler.http_port}}
+        payload = {"httpGet": {"path": probe.http_path, "port": probe.http_port}}
     if probe.initial_delay_seconds is not None:
         payload["initialDelaySeconds"] = probe.initial_delay_seconds
     if probe.period_seconds is not None:
         payload["periodSeconds"] = probe.period_seconds
     if probe.failure_threshold is not None:
         payload["failureThreshold"] = probe.failure_threshold
-    return payload
-
-
-def _resource_requirements_manifest(
-    resources: ResourceRequirementsSpec,
-) -> dict[str, object]:
-    payload: dict[str, object] = {}
-    if resources.requests:
-        payload["requests"] = dict(resources.requests)
-    if resources.limits:
-        payload["limits"] = dict(resources.limits)
     return payload
 
 
@@ -96,29 +82,6 @@ def _security_context_manifest(
         capabilities["drop"] = list(security_context.capabilities_drop)
     if capabilities:
         payload["capabilities"] = capabilities
-    seccomp_profile = _seccomp_profile_manifest(
-        profile_type=security_context.seccomp_profile_type,
-        localhost_profile=security_context.seccomp_profile_localhost_profile,
-    )
-    if seccomp_profile is not None:
-        payload["seccompProfile"] = seccomp_profile
-    return payload
-
-
-def _pod_security_context_manifest(
-    security_context: PodSecurityContextSpec,
-) -> dict[str, object]:
-    payload: dict[str, object] = {}
-    if security_context.run_as_user is not None:
-        payload["runAsUser"] = security_context.run_as_user
-    if security_context.run_as_group is not None:
-        payload["runAsGroup"] = security_context.run_as_group
-    if security_context.run_as_non_root is not None:
-        payload["runAsNonRoot"] = security_context.run_as_non_root
-    if security_context.fs_group is not None:
-        payload["fsGroup"] = security_context.fs_group
-    if security_context.supplemental_groups:
-        payload["supplementalGroups"] = list(security_context.supplemental_groups)
     seccomp_profile = _seccomp_profile_manifest(
         profile_type=security_context.seccomp_profile_type,
         localhost_profile=security_context.seccomp_profile_localhost_profile,
@@ -231,10 +194,6 @@ def _container_manifest(container: ContainerSpec) -> dict[str, object]:
             }
             for mount in container.volume_mounts
         ]
-    if container.resources is not None:
-        resources = _resource_requirements_manifest(container.resources)
-        if resources:
-            payload["resources"] = resources
     if container.security_context is not None:
         security_context = _security_context_manifest(container.security_context)
         if security_context:
@@ -243,14 +202,18 @@ def _container_manifest(container: ContainerSpec) -> dict[str, object]:
 
 
 def _volume_manifest(volume: VolumeSpec) -> dict[str, object]:
+    empty_dir_source = (
+        volume.empty_dir_source
+        or volume.empty_dir_medium is not None
+        or volume.empty_dir_size_limit is not None
+    )
     kinds = sum(
-        value is not None
-        for value in (
-            volume.empty_dir_source,
-            volume.config_map_name,
-            volume.secret_name,
-            volume.persistent_volume_claim,
-            volume.host_path_path,
+        (
+            empty_dir_source,
+            volume.config_map_name is not None,
+            volume.secret_name is not None,
+            volume.persistent_volume_claim is not None,
+            volume.host_path_path is not None,
         )
     )
     if kinds != 1:
@@ -258,12 +221,12 @@ def _volume_manifest(volume: VolumeSpec) -> dict[str, object]:
         raise ValueError(msg)
 
     payload: dict[str, object] = {"name": volume.name}
-    if volume.empty_dir_source is not None:
+    if empty_dir_source:
         empty_dir: dict[str, object] = {}
-        if volume.empty_dir_source.medium is not None:
-            empty_dir["medium"] = volume.empty_dir_source.medium
-        if volume.empty_dir_source.size_limit is not None:
-            empty_dir["sizeLimit"] = volume.empty_dir_source.size_limit
+        if volume.empty_dir_medium is not None:
+            empty_dir["medium"] = volume.empty_dir_medium
+        if volume.empty_dir_size_limit is not None:
+            empty_dir["sizeLimit"] = volume.empty_dir_size_limit
         payload["emptyDir"] = empty_dir
     elif volume.config_map_name is not None:
         config_map: dict[str, object] = {"name": volume.config_map_name}
@@ -307,19 +270,15 @@ def _pod_template_manifest(template: PodTemplateSpec) -> dict[str, object]:
         node_name = template.node_name.strip()
         if node_name:
             spec["nodeName"] = node_name
-    if template.security_context is not None:
-        security_context = _pod_security_context_manifest(template.security_context)
-        if security_context:
-            spec["securityContext"] = security_context
     if template.tolerations:
         spec["tolerations"] = [
             _toleration_manifest(toleration) for toleration in template.tolerations
         ]
     if template.image_pull_secrets:
         spec["imagePullSecrets"] = [
-            {"name": secret.name}
+            {"name": name}
             for secret in template.image_pull_secrets
-            if secret.name.strip()
+            if (name := secret.strip())
         ]
     if template.priority_class_name is not None:
         priority_class_name = template.priority_class_name.strip()

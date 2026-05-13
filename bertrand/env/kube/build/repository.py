@@ -99,53 +99,10 @@ class ImageRepositoryStatus:
         Namespace that owns the registry resources.
     name : str
         Registry Service, Deployment, and PVC name.
-    service_present : bool
-        Whether the registry Service currently exists.
-    service_selector_ready : bool
-        Whether the Service selector matches the expected registry pod selector.
-    service_port_ready : bool
-        Whether the Service exposes the expected registry port and NodePort.
-    service_ready : bool
-        Whether the Service exists and has the expected type, selector, and port.
-    deployment_present : bool
-        Whether the registry Deployment currently exists.
-    pvc_present : bool
-        Whether the registry PersistentVolumeClaim currently exists.
-    pvc_managed : bool
-        Whether the registry claim carries Bertrand registry ownership labels.
-    pvc_bound : bool
-        Whether the registry PersistentVolumeClaim is bound to a PersistentVolume.
-    pvc_phase : str
-        Kubernetes claim phase, or an empty string when the claim is absent.
-    storage_class : str
-        StorageClass name reported by the registry claim.
-    access_modes : tuple[str, ...]
-        Access modes reported by the registry claim.
-    storage_request : str
-        Requested storage quantity reported by the registry claim.
-    storage_ready : bool
-        Whether the registry claim is managed, bound, and exposes ReadWriteMany.
-    available_replicas : int
-        Registry Deployment replicas currently reported available.
-    updated_replicas : int
-        Registry Deployment replicas updated to the latest pod template.
-    observed_generation : int
-        Registry Deployment generation observed by the Kubernetes controller.
-    generation : int
-        Desired Registry Deployment metadata generation.
-    rollout_ready : bool
-        Whether the Deployment controller has observed the desired generation and at
-        least one replica is updated and available.
-    delete_enabled : bool
-        Whether the live registry pod template enables manifest deletion.
-    desired_config_hash : str
-        BuildKit registry-routing config hash expected by this repository object.
-    installed_config_hash : str
-        BuildKit registry-routing config hash currently stored in the ConfigMap.
-    config_current : bool
-        Whether the installed BuildKit registry config matches the desired config.
-    node_trust_ready : bool
-        Whether every listed Kubernetes node carries the registry-ready label.
+    storage : str
+        Concise PVC/storage readiness summary.
+    rollout : str
+        Concise Deployment rollout summary.
     trusted_nodes : tuple[str, ...]
         Node names with the registry-ready label.
     untrusted_nodes : tuple[str, ...]
@@ -159,58 +116,12 @@ class ImageRepositoryStatus:
 
     namespace: str
     name: str
-    service_present: bool
-    service_selector_ready: bool
-    service_port_ready: bool
-    service_ready: bool
-    deployment_present: bool
-    pvc_present: bool
-    pvc_managed: bool
-    pvc_bound: bool
-    pvc_phase: str
-    storage_class: str
-    access_modes: tuple[str, ...]
-    storage_request: str
-    storage_ready: bool
-    available_replicas: int
-    updated_replicas: int
-    observed_generation: int
-    generation: int
-    rollout_ready: bool
-    delete_enabled: bool
-    desired_config_hash: str
-    installed_config_hash: str
-    config_current: bool
-    node_trust_ready: bool
+    storage: str
+    rollout: str
     trusted_nodes: tuple[str, ...]
     untrusted_nodes: tuple[str, ...]
     ready: bool
-
-    @property
-    def failures(self) -> tuple[str, ...]:
-        """Return semantic readiness failures for this repository.
-
-        Returns
-        -------
-        tuple[str, ...]
-            Human-readable failures explaining why the repository is not ready.
-        """
-        failures: list[str] = []
-        if not self.service_ready:
-            failures.append("image registry Service is missing or has the wrong shape")
-        if not self.rollout_ready:
-            failures.append("image registry Deployment rollout is not ready")
-        if not self.storage_ready:
-            failures.append("image registry storage is not bound and ready")
-        if not self.delete_enabled:
-            failures.append("image registry manifest deletion is not enabled")
-        if not self.config_current:
-            failures.append("BuildKit registry routing config is stale")
-        if not self.node_trust_ready:
-            failures.append(
-                "one or more Kubernetes nodes do not trust the image registry"
-            )
-        return tuple(failures)
+    failures: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -565,13 +476,6 @@ class ImageRepository:
                 target_port=self.port,
                 node_port=self.node_port,
             )
-            service_present = service is not None
-            service_selector_ready = (
-                service.selects(self.selector) if service is not None else False
-            )
-            service_port_ready = (
-                service.exposes(expected_port) if service is not None else False
-            )
             service_ready = (
                 service.matches(
                     service_type="NodePort",
@@ -581,7 +485,6 @@ class ImageRepository:
                 if service is not None
                 else False
             )
-            deployment_present = deployment is not None
             available_replicas = (
                 deployment.available_replicas if deployment is not None else 0
             )
@@ -602,7 +505,6 @@ class ImageRepository:
                 )
                 == "true"
             )
-            pvc_present = pvc is not None
             pvc_managed = (
                 all(
                     pvc.labels.get(key) == value
@@ -615,10 +517,18 @@ class ImageRepository:
                 else False
             )
             pvc_bound = pvc.is_bound if pvc is not None else False
-            pvc_phase = pvc.phase if pvc is not None else ""
-            storage_class = pvc.storage_class_name if pvc is not None else ""
+            pvc_phase = pvc.phase if pvc is not None else "missing"
+            storage_class = pvc.storage_class_name if pvc is not None else "missing"
             access_modes = pvc.access_modes if pvc is not None else ()
-            storage_request = pvc.requested_storage if pvc is not None else ""
+            storage_request = pvc.requested_storage if pvc is not None else "missing"
+            storage_summary = (
+                f"{pvc_phase}; class={storage_class}; "
+                f"request={storage_request}; modes={','.join(access_modes) or 'none'}"
+            )
+            rollout_summary = (
+                f"available={available_replicas}; updated={updated_replicas}; "
+                f"observed={observed_generation}; generation={generation}"
+            )
             storage_ready = (
                 pvc is not None
                 and pvc_managed
@@ -643,42 +553,32 @@ class ImageRepository:
             trusted_set = frozenset(trusted)
             untrusted = [name for name in named_nodes if name not in trusted_set]
             node_trust_ready = bool(named_nodes) and not untrusted
+            failures: list[str] = []
+            if not service_ready:
+                failures.append(
+                    "image registry Service is missing or has the wrong shape"
+                )
+            if not rollout_ready:
+                failures.append("image registry Deployment rollout is not ready")
+            if not storage_ready:
+                failures.append("image registry storage is not bound and ready")
+            if not delete_enabled:
+                failures.append("image registry manifest deletion is not enabled")
+            if not config_current:
+                failures.append("BuildKit registry routing config is stale")
+            if not node_trust_ready:
+                failures.append(
+                    "one or more Kubernetes nodes do not trust the image registry"
+                )
             return ImageRepositoryStatus(
                 namespace=self.namespace,
                 name=self.service,
-                service_present=service_present,
-                service_selector_ready=service_selector_ready,
-                service_port_ready=service_port_ready,
-                service_ready=service_ready,
-                deployment_present=deployment_present,
-                pvc_present=pvc_present,
-                pvc_managed=pvc_managed,
-                pvc_bound=pvc_bound,
-                pvc_phase=pvc_phase,
-                storage_class=storage_class,
-                access_modes=access_modes,
-                storage_request=storage_request,
-                storage_ready=storage_ready,
-                available_replicas=available_replicas,
-                updated_replicas=updated_replicas,
-                observed_generation=observed_generation,
-                generation=generation,
-                rollout_ready=rollout_ready,
-                delete_enabled=delete_enabled,
-                desired_config_hash=desired_config_hash,
-                installed_config_hash=installed_config_hash,
-                config_current=config_current,
-                node_trust_ready=node_trust_ready,
+                storage=storage_summary,
+                rollout=rollout_summary,
                 trusted_nodes=tuple(trusted),
                 untrusted_nodes=tuple(untrusted),
-                ready=(
-                    service_ready
-                    and rollout_ready
-                    and delete_enabled
-                    and storage_ready
-                    and config_current
-                    and node_trust_ready
-                ),
+                ready=not failures,
+                failures=tuple(failures),
             )
         except OSError as err:
             msg = (

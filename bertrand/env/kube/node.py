@@ -10,12 +10,7 @@ from typing import TYPE_CHECKING, Literal, Self
 
 import kubernetes
 
-from .api import (
-    ClusterResourceClient,
-    Kube,
-    KubeMetadata,
-    WatchEvent,
-)
+from .api import Kube, KubeMetadata, ResourceClient, WatchEvent
 from .api.view import TaintView
 from .pod import Pod
 
@@ -66,24 +61,25 @@ class Node(KubeMetadata[kubernetes.client.V1Node]):
     _obj: kubernetes.client.V1Node
 
     @classmethod
-    def _client(cls) -> ClusterResourceClient[kubernetes.client.V1Node, Self]:
-        return ClusterResourceClient(
+    def _client(cls) -> ResourceClient[kubernetes.client.V1Node, Self]:
+        return ResourceClient(
+            scope="cluster",
             kind="Node",
             expected=kubernetes.client.V1Node,
             list_type=kubernetes.client.V1NodeList,
             wrapper=lambda payload: cls(_obj=payload),
-            read=lambda kube, name, request_timeout: kube.core.read_node(
+            read=lambda kube, _namespace, name, request_timeout: kube.core.read_node(
                 name=name,
                 _request_timeout=request_timeout,
             ),
-            list_items=lambda kube, label_selector, field_selector, request_timeout: (
+            list_all=lambda kube, label_selector, field_selector, request_timeout: (
                 kube.core.list_node(
                     label_selector=label_selector,
                     field_selector=field_selector,
                     _request_timeout=request_timeout,
                 )
             ),
-            watch_items=lambda kube: kube.core.list_node,
+            watch_all=lambda kube: kube.core.list_node,
         )
 
     @classmethod

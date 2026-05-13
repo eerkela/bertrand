@@ -7,10 +7,7 @@ from typing import TYPE_CHECKING, Self
 
 from kubernetes import client as kube_client
 
-from .api import (
-    ClusterResourceClient,
-    KubeMetadata,
-)
+from .api import KubeMetadata, ResourceClient
 
 if TYPE_CHECKING:
     import builtins
@@ -34,39 +31,44 @@ class Namespace(KubeMetadata[kube_client.V1Namespace]):
     _obj: kube_client.V1Namespace
 
     @classmethod
-    def _client(cls) -> ClusterResourceClient[kube_client.V1Namespace, Self]:
-        return ClusterResourceClient(
+    def _client(cls) -> ResourceClient[kube_client.V1Namespace, Self]:
+        return ResourceClient(
+            scope="cluster",
             kind="Namespace",
             expected=kube_client.V1Namespace,
             list_type=kube_client.V1NamespaceList,
             wrapper=lambda payload: cls(_obj=payload),
-            read=lambda kube, name, request_timeout: kube.core.read_namespace(
-                name=name,
-                _request_timeout=request_timeout,
+            read=lambda kube, _namespace, name, request_timeout: (
+                kube.core.read_namespace(
+                    name=name,
+                    _request_timeout=request_timeout,
+                )
             ),
-            list_items=lambda kube, label_selector, field_selector, request_timeout: (
+            list_all=lambda kube, label_selector, field_selector, request_timeout: (
                 kube.core.list_namespace(
                     label_selector=label_selector,
                     field_selector=field_selector,
                     _request_timeout=request_timeout,
                 )
             ),
-            create=lambda kube, _name, manifest, request_timeout: (
+            create=lambda kube, _namespace, _name, manifest, request_timeout: (
                 kube.core.create_namespace(
                     body=manifest,
                     _request_timeout=request_timeout,
                 )
             ),
-            patch=lambda kube, name, manifest, request_timeout: (
+            patch=lambda kube, _namespace, name, manifest, request_timeout: (
                 kube.core.patch_namespace(
                     name=name,
                     body=manifest,
                     _request_timeout=request_timeout,
                 )
             ),
-            delete=lambda kube, name, request_timeout: kube.core.delete_namespace(
-                name=name,
-                _request_timeout=request_timeout,
+            delete=lambda kube, _namespace, name, request_timeout: (
+                kube.core.delete_namespace(
+                    name=name,
+                    _request_timeout=request_timeout,
+                )
             ),
         )
 

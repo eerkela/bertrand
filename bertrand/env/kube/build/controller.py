@@ -1,0 +1,997 @@
+"""Durable BuildKit build requests and their Kubernetes controller."""
+
+from __future__ import annotations
+
+import asyncio
+import hashlib
+import sys
+import uuid
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from types import MappingProxyType
+from typing import TYPE_CHECKING, Annotated, Literal
+
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
+
+from bertrand.env.git import (
+    BERTRAND_ENV,
+    BERTRAND_NAMESPACE,
+    ENV_ID_ENV,
+    IMAGE_TAG_ENV,
+    INFINITY,
+    REPO_ID_ENV,
+    WORKTREE_ENV,
+)
+from bertrand.env.kube.api import (
+    CLUSTER_REGISTRY_READY_LABEL,
+    CLUSTER_REGISTRY_READY_VALUE,
+    ContainerSpec,
+    CustomResourceSpec,
+    Kube,
+    PodTemplateSpec,
+    PolicyRuleSpec,
+)
+from bertrand.env.kube.build.job import _ProjectBuildExecutor
+from bertrand.env.kube.build.lifecycle import (
+    PROJECT_IMAGE_CONFIG_ID,
+    ProjectImageIdentity,
+    ProjectImagePublication,
+    ensure_project_image_crd,
+)
+from bertrand.env.kube.build.manifest import _publish_project_image_manifest
+from bertrand.env.kube.crd import CustomResourceClient, CustomResourceDefinition
+from bertrand.env.kube.deployment import Deployment
+from bertrand.env.kube.rbac import ClusterRole, ClusterRoleBinding
+from bertrand.env.kube.service_account import ServiceAccount
+
+if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable, Mapping
+
+    from bertrand.env.config.core import KubeName
+    from bertrand.env.kube.job import Job
+
+
+BUILDKIT_BUILD_GROUP = "build.bertrand.dev"
+BUILDKIT_BUILD_VERSION = "v1alpha1"
+BUILDKIT_BUILD_KIND = "BuildKitBuild"
+BUILDKIT_BUILD_PLURAL = "buildkitbuilds"
+BUILDKIT_BUILD_LABEL = "bertrand.dev/buildkit-build"
+BUILDKIT_BUILD_LABEL_VALUE = "v1"
+BUILDKIT_BUILD_REPO_LABEL = "bertrand.dev/buildkit-build-repo"
+BUILDKIT_BUILD_WORKTREE_LABEL = "bertrand.dev/buildkit-build-worktree"
+BUILDKIT_BUILD_TAG_LABEL = "bertrand.dev/buildkit-build-tag"
+BUILDKIT_BUILD_CONFIG_LABEL = "bertrand.dev/buildkit-build-config"
+BUILDKIT_BUILD_CONTROLLER = "bertrand-build-controller"
+BUILDKIT_BUILD_SERVICE_ACCOUNT = "bertrand-build-controller"
+BUILDKIT_BUILD_RECONCILE_SECONDS = 2.0
+BUILDKIT_BUILD_WAIT_POLL_SECONDS = 2.0
+BUILDKIT_BUILD_LOG_EXCERPT_CHARS = 4000
+
+type _BuildKitBuildPhase = Literal["Pending", "Running", "Succeeded", "Failed"]
+type _NonEmptyString = Annotated[str, Field(min_length=1)]
+
+
+class _ObjectMeta(BaseModel):
+    """Validated subset of Kubernetes object metadata."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    name: str = ""
+    namespace: str = ""
+    generation: int = 0
+    resource_version: str = Field(default="", alias="resourceVersion")
+    labels: dict[str, str] = Field(default_factory=dict)
+
+
+class _BuildKitBuildSpecPayload(BaseModel):
+    """Validated project-only `BuildKitBuild.spec` payload."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    repo_id: _NonEmptyString
+    worktree: _NonEmptyString = "."
+    tag: str
+    env_id: _NonEmptyString
+    config_id: _NonEmptyString
+    image: _NonEmptyString
+    dockerfile: _NonEmptyString
+    build_args: dict[str, str] = Field(default_factory=dict)
+    target: str | None = None
+    secrets: dict[_NonEmptyString, bool] = Field(default_factory=dict)
+    ssh: dict[_NonEmptyString, bool] = Field(default_factory=dict)
+    devices: dict[_NonEmptyString, bool] = Field(default_factory=dict)
+    channels: list[_NonEmptyString] = Field(default_factory=list)
+    external_image: str | None = None
+    auth_id: str | None = None
+
+
+class _BuildKitBuildStatusPayload(BaseModel):
+    """Validated `BuildKitBuild.status` payload."""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    phase: _BuildKitBuildPhase = "Pending"
+    observed_generation: int | None = Field(default=None, alias="observedGeneration")
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    active_job: str = ""
+    active_platform: str = ""
+    external_digest_ref: str = ""
+    external_channel_digest_refs: dict[str, str] = Field(default_factory=dict)
+    record_name: str = ""
+    message: str = ""
+    log_excerpt: str = ""
+
+
+class _BuildKitBuildPayload(BaseModel):
+    """Validated `BuildKitBuild` custom-object payload."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    api_version: str = Field(alias="apiVersion")
+    kind: Literal["BuildKitBuild"]
+    metadata: _ObjectMeta
+    spec: _BuildKitBuildSpecPayload
+    status: _BuildKitBuildStatusPayload = Field(
+        default_factory=_BuildKitBuildStatusPayload
+    )
+
+
+_STRING_MAP_SCHEMA = {"type": "object", "additionalProperties": {"type": "string"}}
+_BOOL_MAP_SCHEMA = {"type": "object", "additionalProperties": {"type": "boolean"}}
+_STRING_LIST_SCHEMA = {
+    "type": "array",
+    "items": {"type": "string", "minLength": 1},
+    "uniqueItems": True,
+}
+_BUILDKIT_BUILD_SPEC_SCHEMA = {
+    "type": "object",
+    "required": [
+        "repo_id",
+        "worktree",
+        "tag",
+        "env_id",
+        "config_id",
+        "image",
+        "dockerfile",
+        "channels",
+    ],
+    "properties": {
+        "repo_id": {"type": "string", "minLength": 1},
+        "worktree": {"type": "string", "minLength": 1},
+        "tag": {"type": "string"},
+        "env_id": {"type": "string", "minLength": 1},
+        "config_id": {"type": "string", "minLength": 1},
+        "image": {"type": "string", "minLength": 1},
+        "dockerfile": {"type": "string", "minLength": 1},
+        "build_args": _STRING_MAP_SCHEMA,
+        "target": {"type": "string", "nullable": True},
+        "secrets": _BOOL_MAP_SCHEMA,
+        "ssh": _BOOL_MAP_SCHEMA,
+        "devices": _BOOL_MAP_SCHEMA,
+        "channels": _STRING_LIST_SCHEMA,
+        "external_image": {"type": "string", "nullable": True},
+        "auth_id": {"type": "string", "nullable": True},
+    },
+}
+_BUILDKIT_BUILD_STATUS_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "phase": {
+            "type": "string",
+            "enum": ["Pending", "Running", "Succeeded", "Failed"],
+        },
+        "observedGeneration": {"type": "integer", "nullable": True},
+        "started_at": {"type": "string", "format": "date-time", "nullable": True},
+        "completed_at": {"type": "string", "format": "date-time", "nullable": True},
+        "active_job": {"type": "string"},
+        "active_platform": {"type": "string"},
+        "external_digest_ref": {"type": "string"},
+        "external_channel_digest_refs": _STRING_MAP_SCHEMA,
+        "record_name": {"type": "string"},
+        "message": {"type": "string"},
+        "log_excerpt": {"type": "string"},
+    },
+}
+_BUILDKIT_BUILD_LABELS = {
+    BERTRAND_ENV: "1",
+    BUILDKIT_BUILD_LABEL: BUILDKIT_BUILD_LABEL_VALUE,
+}
+_BUILDKIT_BUILD_SPEC = CustomResourceSpec(
+    group=BUILDKIT_BUILD_GROUP,
+    version=BUILDKIT_BUILD_VERSION,
+    kind=BUILDKIT_BUILD_KIND,
+    plural=BUILDKIT_BUILD_PLURAL,
+    labels=_BUILDKIT_BUILD_LABELS,
+)
+_BUILDKIT_BUILD_CLIENT = CustomResourceClient(_BUILDKIT_BUILD_SPEC)
+
+
+@dataclass(frozen=True)
+class BuildKitBuildStatus:
+    """Read-only status for one durable BuildKit build request.
+
+    Parameters
+    ----------
+    phase : {"Pending", "Running", "Succeeded", "Failed"}
+        Coarse lifecycle phase.
+    observed_generation : int | None
+        Metadata generation last reconciled by the controller.
+    started_at : datetime | None
+        Time the controller started the current generation.
+    completed_at : datetime | None
+        Time the current generation reached a terminal phase.
+    active_job : str
+        Current BuildKit client Job name, if any.
+    active_platform : str
+        Native OCI platform currently being built, if any.
+    external_digest_ref : str
+        External digest ref emitted by manifest copy, if any.
+    external_channel_digest_refs : Mapping[str, str]
+        External digest-pinned channel refs.
+    record_name : str
+        `BertrandImage` lifecycle record written by project publication.
+    message : str
+        Concise human-readable status message.
+    log_excerpt : str
+        Failure or diagnostic log excerpt.
+    """
+
+    phase: _BuildKitBuildPhase
+    observed_generation: int | None
+    started_at: datetime | None
+    completed_at: datetime | None
+    active_job: str
+    active_platform: str
+    external_digest_ref: str
+    external_channel_digest_refs: Mapping[str, str]
+    record_name: str
+    message: str
+    log_excerpt: str
+
+    @classmethod
+    def _from_payload(cls, payload: _BuildKitBuildStatusPayload) -> BuildKitBuildStatus:
+        return cls(
+            phase=payload.phase,
+            observed_generation=payload.observed_generation,
+            started_at=payload.started_at,
+            completed_at=payload.completed_at,
+            active_job=payload.active_job,
+            active_platform=payload.active_platform,
+            external_digest_ref=payload.external_digest_ref,
+            external_channel_digest_refs=MappingProxyType(
+                dict(sorted(payload.external_channel_digest_refs.items()))
+            ),
+            record_name=payload.record_name,
+            message=payload.message,
+            log_excerpt=payload.log_excerpt,
+        )
+
+
+@dataclass(frozen=True)
+class BuildKitBuildRecord:
+    """Read-only wrapper for one `BuildKitBuild` custom object.
+
+    Parameters
+    ----------
+    name : str
+        Kubernetes custom object name.
+    namespace : str
+        Kubernetes namespace that owns the build request.
+    generation : int
+        Kubernetes metadata generation for the request.
+    resource_version : str
+        Kubernetes resource version used by wait loops.
+    status : BuildKitBuildStatus
+        Validated build status payload.
+    """
+
+    name: str
+    namespace: str
+    generation: int
+    resource_version: str
+    status: BuildKitBuildStatus
+
+    @classmethod
+    def _from_payload(cls, payload: object) -> BuildKitBuildRecord:
+        try:
+            request = _BuildKitBuildPayload.model_validate(payload)
+        except ValidationError as err:
+            msg = f"malformed {BUILDKIT_BUILD_KIND} custom object: {err}"
+            raise OSError(msg) from err
+        return cls(
+            name=request.metadata.name,
+            namespace=request.metadata.namespace,
+            generation=request.metadata.generation,
+            resource_version=request.metadata.resource_version,
+            status=BuildKitBuildStatus._from_payload(request.status),
+        )
+
+
+class _BuildKitBuildController:
+    """In-cluster reconciler for durable BuildKit build requests."""
+
+    async def run(self, *, timeout: float = INFINITY) -> None:
+        """Run the controller reconciliation loop.
+
+        Parameters
+        ----------
+        timeout : float, optional
+            Maximum runtime budget in seconds. If infinite, run indefinitely.
+
+        Raises
+        ------
+        TimeoutError
+            If `timeout` is non-positive.
+        """
+        if timeout <= 0:
+            msg = "BuildKit build controller timeout must be non-negative"
+            raise TimeoutError(msg)
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        with Kube.inside_cluster(namespace=BERTRAND_NAMESPACE) as kube:
+            while loop.time() < deadline:
+                try:
+                    await self.reconcile_all(kube, deadline=deadline)
+                except (OSError, TimeoutError, ValueError) as err:
+                    print(
+                        f"warning: BuildKit build reconciliation failed: {err}",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                remaining = deadline - loop.time()
+                if remaining <= 0:
+                    break
+                await asyncio.sleep(min(BUILDKIT_BUILD_RECONCILE_SECONDS, remaining))
+
+    async def reconcile_all(self, kube: Kube, *, deadline: float) -> None:
+        """Reconcile every non-terminal `BuildKitBuild` in the Bertrand namespace.
+
+        Parameters
+        ----------
+        kube : Kube
+            Active Kubernetes API context.
+        deadline : float
+            Absolute event-loop deadline for this pass.
+        """
+        loop = asyncio.get_running_loop()
+        objects = await _BUILDKIT_BUILD_CLIENT.list(
+            kube,
+            namespace=BERTRAND_NAMESPACE,
+            labels={BUILDKIT_BUILD_LABEL: BUILDKIT_BUILD_LABEL_VALUE},
+            timeout=deadline - loop.time(),
+        )
+        requests = [_build_payload(obj.payload) for obj in objects]
+        for request in sorted(requests, key=lambda item: item.metadata.name):
+            if (
+                request.status.observed_generation == request.metadata.generation
+                and request.status.phase in ("Succeeded", "Failed")
+            ):
+                continue
+            await self.reconcile(kube, request=request, deadline=deadline)
+
+    async def reconcile(
+        self,
+        kube: Kube,
+        *,
+        request: _BuildKitBuildPayload,
+        deadline: float,
+    ) -> None:
+        """Reconcile one build request generation.
+
+        Parameters
+        ----------
+        kube : Kube
+            Active Kubernetes API context.
+        request : _BuildKitBuildPayload
+            Build request to execute.
+        deadline : float
+            Absolute event-loop deadline for this reconciliation.
+        """
+        loop = asyncio.get_running_loop()
+        try:
+            await _patch_build_status(
+                kube,
+                name=request.metadata.name,
+                phase="Running",
+                generation=request.metadata.generation,
+                started_at=datetime.now(UTC).isoformat(),
+                completed_at=None,
+                active_job="",
+                active_platform="",
+                external_digest_ref="",
+                external_channel_digest_refs={},
+                record_name="",
+                message="BuildKit build is running",
+                log_excerpt="",
+                timeout=deadline - loop.time(),
+            )
+            platform_refs = await self._publish_platforms(
+                kube,
+                request=request,
+                deadline=deadline,
+            )
+            publication = await self._publish_manifest(
+                kube,
+                request=request,
+                platform_refs=platform_refs,
+                deadline=deadline,
+            )
+            await _patch_build_status(
+                kube,
+                name=request.metadata.name,
+                phase="Succeeded",
+                generation=request.metadata.generation,
+                completed_at=datetime.now(UTC).isoformat(),
+                active_job="",
+                active_platform="",
+                external_digest_ref=publication.external_digest_ref or "",
+                external_channel_digest_refs=publication.external_channel_digest_refs,
+                record_name=publication.record.name,
+                message="BuildKit build succeeded",
+                log_excerpt="",
+                timeout=deadline - loop.time(),
+            )
+        except (OSError, TimeoutError, ValueError) as err:
+            await _patch_build_status(
+                kube,
+                name=request.metadata.name,
+                phase="Failed",
+                generation=request.metadata.generation,
+                completed_at=datetime.now(UTC).isoformat(),
+                active_job="",
+                active_platform="",
+                message=str(err).splitlines()[0][:240] if str(err) else "Build failed",
+                log_excerpt=_log_excerpt(str(err)),
+                timeout=deadline - loop.time(),
+            )
+
+    async def _publish_platforms(
+        self,
+        kube: Kube,
+        *,
+        request: _BuildKitBuildPayload,
+        deadline: float,
+    ) -> dict[str, str]:
+        spec = request.spec
+        identity = _project_identity(spec)
+        build = _ProjectBuildExecutor(
+            image=spec.image,
+            dockerfile=spec.dockerfile,
+            repo_id=identity.repo_id,
+            worktree=identity.worktree,
+            build_args=dict(spec.build_args),
+            image_labels=_project_image_labels(identity),
+            target=spec.target,
+            secrets=dict(spec.secrets),
+            ssh=dict(spec.ssh),
+            devices=dict(spec.devices),
+        )
+        loop = asyncio.get_running_loop()
+
+        async def observe_job(platform: str, job: Job) -> None:
+            await _patch_build_status(
+                kube,
+                name=request.metadata.name,
+                phase="Running",
+                generation=request.metadata.generation,
+                active_job=job.name,
+                active_platform=platform,
+                message=f"BuildKit build is running for {platform}",
+                timeout=deadline - loop.time(),
+            )
+
+        return await build.publish_platforms(
+            kube,
+            env_id=identity.env_id,
+            job_observer=observe_job,
+            timeout=deadline - loop.time(),
+        )
+
+    async def _publish_manifest(
+        self,
+        kube: Kube,
+        *,
+        request: _BuildKitBuildPayload,
+        platform_refs: Mapping[str, str],
+        deadline: float,
+    ) -> ProjectImagePublication:
+        spec = request.spec
+        identity = _project_identity(spec)
+        loop = asyncio.get_running_loop()
+
+        async def observe_job(job: Job) -> None:
+            await _patch_build_status(
+                kube,
+                name=request.metadata.name,
+                phase="Running",
+                generation=request.metadata.generation,
+                active_job=job.name,
+                active_platform="",
+                message="image manifest assembly is running",
+                timeout=deadline - loop.time(),
+            )
+
+        return await _publish_project_image_manifest(
+            kube,
+            identity=identity,
+            platform_refs=platform_refs,
+            external_image=spec.external_image,
+            auth_id=spec.auth_id,
+            env_id=identity.env_id,
+            job_observer=observe_job,
+            timeout=deadline - loop.time(),
+        )
+
+
+async def ensure_buildkit_build_crd(kube: Kube, *, timeout: float) -> None:
+    """Converge the durable BuildKit build request CRD.
+
+    Parameters
+    ----------
+    kube : Kube
+        Active Kubernetes API context.
+    timeout : float
+        Maximum convergence budget in seconds.
+
+    Raises
+    ------
+    TimeoutError
+        If `timeout` is non-positive or CRD establishment exceeds the budget.
+    """
+    if timeout <= 0:
+        msg = "BuildKitBuild CRD timeout must be non-negative"
+        raise TimeoutError(msg)
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    crd = await CustomResourceDefinition.upsert(
+        kube,
+        group=BUILDKIT_BUILD_GROUP,
+        version=BUILDKIT_BUILD_VERSION,
+        plural=BUILDKIT_BUILD_PLURAL,
+        singular="buildkitbuild",
+        kind=BUILDKIT_BUILD_KIND,
+        short_names=("bkbuild",),
+        spec_schema=_BUILDKIT_BUILD_SPEC_SCHEMA,
+        status_schema=_BUILDKIT_BUILD_STATUS_SCHEMA,
+        labels=_BUILDKIT_BUILD_LABELS,
+        timeout=deadline - loop.time(),
+    )
+    await crd.wait_established(kube, timeout=deadline - loop.time())
+
+
+async def ensure_buildkit_build_controller(
+    kube: Kube,
+    *,
+    image: str,
+    timeout: float,
+) -> None:
+    """Converge the in-cluster BuildKit build controller.
+
+    Parameters
+    ----------
+    kube : Kube
+        Active Kubernetes API context.
+    image : str
+        Bertrand control-plane image containing this package and runtime
+        dependencies.
+    timeout : float
+        Maximum convergence budget in seconds.
+
+    Raises
+    ------
+    TimeoutError
+        If `timeout` is non-positive or rollout exceeds the budget.
+    ValueError
+        If the controller image reference is empty.
+    """
+    image = image.strip()
+    if not image:
+        msg = "BuildKit build controller image cannot be empty"
+        raise ValueError(msg)
+    if timeout <= 0:
+        msg = "BuildKit build controller timeout must be non-negative"
+        raise TimeoutError(msg)
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    await ensure_buildkit_build_crd(kube, timeout=deadline - loop.time())
+    await ensure_project_image_crd(kube, timeout=deadline - loop.time())
+    await ServiceAccount.upsert(
+        kube,
+        namespace=BERTRAND_NAMESPACE,
+        name=BUILDKIT_BUILD_SERVICE_ACCOUNT,
+        labels=_BUILDKIT_BUILD_LABELS,
+        timeout=deadline - loop.time(),
+    )
+    await ClusterRole.upsert(
+        kube,
+        name=BUILDKIT_BUILD_CONTROLLER,
+        labels=_BUILDKIT_BUILD_LABELS,
+        rules=_controller_rules(),
+        timeout=deadline - loop.time(),
+    )
+    await ClusterRoleBinding.upsert(
+        kube,
+        name=BUILDKIT_BUILD_CONTROLLER,
+        role_name=BUILDKIT_BUILD_CONTROLLER,
+        service_account_name=BUILDKIT_BUILD_SERVICE_ACCOUNT,
+        service_account_namespace=BERTRAND_NAMESPACE,
+        labels=_BUILDKIT_BUILD_LABELS,
+        timeout=deadline - loop.time(),
+    )
+    deployment = await Deployment.upsert(
+        kube,
+        namespace=BERTRAND_NAMESPACE,
+        name=BUILDKIT_BUILD_CONTROLLER,
+        labels=_BUILDKIT_BUILD_LABELS,
+        selector={BUILDKIT_BUILD_LABEL: BUILDKIT_BUILD_LABEL_VALUE},
+        replicas=1,
+        pod_template=PodTemplateSpec(
+            containers=[
+                ContainerSpec(
+                    name="controller",
+                    image=image,
+                    image_pull_policy="IfNotPresent",
+                    command=["python", "-m", "bertrand.env.kube.build.controller"],
+                )
+            ],
+            service_account_name=BUILDKIT_BUILD_SERVICE_ACCOUNT,
+            automount_service_account_token=True,
+            node_selector={
+                CLUSTER_REGISTRY_READY_LABEL: CLUSTER_REGISTRY_READY_VALUE,
+            },
+        ),
+        timeout=deadline - loop.time(),
+    )
+    await deployment.wait_rollout(kube, timeout=deadline - loop.time())
+
+
+async def submit_buildkit_build(
+    kube: Kube,
+    *,
+    identity: ProjectImageIdentity,
+    dockerfile: str,
+    build_args: Mapping[str, str],
+    target: str | None,
+    secrets: Mapping[KubeName, bool],
+    ssh: Mapping[KubeName, bool],
+    devices: Mapping[KubeName, bool],
+    timeout: float,
+    external_image: str | None = None,
+    auth_id: KubeName | None = None,
+) -> BuildKitBuildRecord:
+    """Create one durable project-image BuildKit request.
+
+    Parameters
+    ----------
+    kube : Kube
+        Active Kubernetes API context.
+    identity : ProjectImageIdentity
+        Stable project image identity to build and publish.
+    dockerfile : str
+        Rendered Containerfile text.
+    build_args : Mapping[str, str]
+        Dockerfile build arguments.
+    target : str | None
+        Optional target stage in a multi-stage Containerfile.
+    secrets : Mapping[KubeName, bool]
+        Secret capability requests exposed to the build.
+    ssh : Mapping[KubeName, bool]
+        SSH capability requests exposed to the build.
+    devices : Mapping[KubeName, bool]
+        CDI device capability requests exposed to the build.
+    timeout : float
+        Maximum creation budget in seconds.
+    external_image : str | None, optional
+        Optional external manifest destination.
+    auth_id : KubeName | None, optional
+        Secret capability ID containing Docker auth JSON for external publishing.
+
+    Returns
+    -------
+    BuildKitBuildRecord
+        Submitted build request.
+
+    Raises
+    ------
+    TimeoutError
+        If `timeout` is non-positive or request creation exceeds the budget.
+    """
+    if timeout <= 0:
+        msg = "BuildKitBuild submit timeout must be non-negative"
+        raise TimeoutError(msg)
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    await ensure_buildkit_build_crd(kube, timeout=deadline - loop.time())
+    spec = _build_spec(
+        identity=identity,
+        dockerfile=dockerfile,
+        build_args=build_args,
+        target=target,
+        secrets=secrets,
+        ssh=ssh,
+        devices=devices,
+        external_image=external_image,
+        auth_id=auth_id,
+    )
+    obj = await _BUILDKIT_BUILD_CLIENT.create(
+        kube,
+        namespace=BERTRAND_NAMESPACE,
+        name=_buildkit_build_name(spec),
+        spec=spec,
+        labels=_request_labels(identity),
+        timeout=deadline - loop.time(),
+    )
+    return BuildKitBuildRecord._from_payload(obj.payload)
+
+
+async def get_buildkit_build(
+    kube: Kube,
+    *,
+    name: str,
+    timeout: float,
+) -> BuildKitBuildRecord | None:
+    """Read one durable BuildKit build request.
+
+    Parameters
+    ----------
+    kube : Kube
+        Active Kubernetes API context.
+    name : str
+        Build request name.
+    timeout : float
+        Maximum request budget in seconds.
+
+    Returns
+    -------
+    BuildKitBuildRecord | None
+        Build request, or `None` if it does not exist.
+    """
+    obj = await _BUILDKIT_BUILD_CLIENT.get(
+        kube,
+        namespace=BERTRAND_NAMESPACE,
+        name=name,
+        timeout=timeout,
+    )
+    if obj is None:
+        return None
+    return BuildKitBuildRecord._from_payload(obj.payload)
+
+
+async def wait_buildkit_build(
+    kube: Kube,
+    *,
+    name: str,
+    timeout: float,
+    on_update: Callable[[BuildKitBuildRecord], Awaitable[None]] | None = None,
+) -> BuildKitBuildRecord:
+    """Wait for one durable BuildKit build request to reach a terminal phase.
+
+    Parameters
+    ----------
+    kube : Kube
+        Active Kubernetes API context.
+    name : str
+        Build request name.
+    timeout : float
+        Maximum wait budget in seconds.
+    on_update : Callable[[BuildKitBuildRecord], Awaitable[None]] | None, optional
+        Async callback invoked when the observed resource version changes.
+
+    Returns
+    -------
+    BuildKitBuildRecord
+        Terminal build request record.
+
+    Raises
+    ------
+    TimeoutError
+        If `timeout` is non-positive or expires before the request is terminal.
+    OSError
+        If the request disappears while waiting.
+    """
+    if timeout <= 0:
+        msg = "BuildKitBuild wait timeout must be non-negative"
+        raise TimeoutError(msg)
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    seen_version = ""
+    while True:
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            msg = f"BuildKitBuild {name!r} did not finish before timeout"
+            raise TimeoutError(msg)
+        record = await get_buildkit_build(kube, name=name, timeout=remaining)
+        if record is None:
+            msg = f"BuildKitBuild {name!r} disappeared while waiting"
+            raise OSError(msg)
+        if record.resource_version != seen_version:
+            seen_version = record.resource_version
+            if on_update is not None:
+                await on_update(record)
+        if record.status.phase in ("Succeeded", "Failed"):
+            return record
+        await asyncio.sleep(min(BUILDKIT_BUILD_WAIT_POLL_SECONDS, remaining))
+
+
+async def run_buildkit_build_controller(*, timeout: float = INFINITY) -> None:
+    """Run the in-cluster durable BuildKit build controller.
+
+    Parameters
+    ----------
+    timeout : float, optional
+        Maximum runtime budget in seconds. If infinite, run indefinitely.
+    """
+    await _BuildKitBuildController().run(timeout=timeout)
+
+
+def main() -> int:
+    """Run the BuildKit build controller module entrypoint.
+
+    Returns
+    -------
+    int
+        Process exit status.
+    """
+    try:
+        asyncio.run(run_buildkit_build_controller())
+    except KeyboardInterrupt:
+        return 0
+    return 0
+
+
+def _controller_rules() -> tuple[PolicyRuleSpec, ...]:
+    return (
+        PolicyRuleSpec(
+            api_groups=[BUILDKIT_BUILD_GROUP],
+            resources=[
+                BUILDKIT_BUILD_PLURAL,
+                f"{BUILDKIT_BUILD_PLURAL}/status",
+                "bertrandimages",
+            ],
+            verbs=["get", "list", "watch", "create", "update", "patch", "delete"],
+        ),
+        PolicyRuleSpec(
+            api_groups=["batch"],
+            resources=["jobs"],
+            verbs=["get", "list", "watch", "create", "delete"],
+        ),
+        PolicyRuleSpec(
+            api_groups=[""],
+            resources=["pods", "pods/log", "configmaps", "secrets", "nodes"],
+            verbs=["get", "list", "watch", "create", "update", "patch", "delete"],
+        ),
+    )
+
+
+def _build_spec(
+    *,
+    identity: ProjectImageIdentity,
+    dockerfile: str,
+    build_args: Mapping[str, str],
+    target: str | None,
+    secrets: Mapping[str, bool],
+    ssh: Mapping[str, bool],
+    devices: Mapping[str, bool],
+    external_image: str | None,
+    auth_id: str | None,
+) -> dict[str, object]:
+    spec: dict[str, object] = {
+        "repo_id": identity.repo_id,
+        "worktree": identity.worktree,
+        "tag": identity.tag,
+        "env_id": identity.env_id,
+        "config_id": identity.config_id,
+        "image": identity.image,
+        "dockerfile": dockerfile,
+        "build_args": dict(sorted(build_args.items())),
+        "target": target,
+        "secrets": dict(sorted(secrets.items())),
+        "ssh": dict(sorted(ssh.items())),
+        "devices": dict(sorted(devices.items())),
+        "channels": sorted({channel.strip() for channel in identity.channels}),
+        "external_image": external_image,
+        "auth_id": auth_id,
+    }
+    _BuildKitBuildSpecPayload.model_validate(spec)
+    return spec
+
+
+def _buildkit_build_name(spec: Mapping[str, object]) -> str:
+    digest = hashlib.sha256(
+        repr(sorted(spec.items())).encode("utf-8", errors="replace")
+    ).hexdigest()
+    return f"bertrand-build-{digest[:16]}-{uuid.uuid4().hex[:8]}"
+
+
+def _request_labels(identity: ProjectImageIdentity) -> dict[str, str]:
+    labels = dict(_BUILDKIT_BUILD_LABELS)
+    labels.update(
+        {
+            BUILDKIT_BUILD_REPO_LABEL: _label_hash(identity.repo_id),
+            BUILDKIT_BUILD_WORKTREE_LABEL: _label_hash(identity.worktree),
+            BUILDKIT_BUILD_TAG_LABEL: _label_hash(identity.tag),
+            BUILDKIT_BUILD_CONFIG_LABEL: _label_hash(identity.config_id),
+        }
+    )
+    return labels
+
+
+async def _patch_build_status(
+    kube: Kube,
+    *,
+    name: str,
+    phase: _BuildKitBuildPhase,
+    generation: int,
+    timeout: float,
+    **updates: object,
+) -> BuildKitBuildRecord:
+    if timeout <= 0:
+        msg = "BuildKitBuild status patch timeout must be non-negative"
+        raise TimeoutError(msg)
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    payload: dict[str, object] = {}
+    payload.update(updates)
+    payload["phase"] = phase
+    payload["observedGeneration"] = generation
+    payload = _BuildKitBuildStatusPayload.model_validate(payload).model_dump(
+        mode="json",
+        by_alias=True,
+        exclude_unset=True,
+    )
+    obj = await _BUILDKIT_BUILD_CLIENT.patch_status(
+        kube,
+        namespace=BERTRAND_NAMESPACE,
+        name=name,
+        status=payload,
+        timeout=deadline - loop.time(),
+    )
+    return BuildKitBuildRecord._from_payload(obj.payload)
+
+
+def _build_payload(payload: object) -> _BuildKitBuildPayload:
+    try:
+        return _BuildKitBuildPayload.model_validate(payload)
+    except ValidationError as err:
+        msg = f"malformed {BUILDKIT_BUILD_KIND} custom object: {err}"
+        raise OSError(msg) from err
+
+
+def _project_identity(spec: _BuildKitBuildSpecPayload) -> ProjectImageIdentity:
+    return ProjectImageIdentity(
+        repo_id=spec.repo_id,
+        worktree=spec.worktree,
+        tag=spec.tag,
+        env_id=spec.env_id,
+        config_id=spec.config_id,
+        image=spec.image,
+        channels=tuple(sorted({channel.strip() for channel in spec.channels})),
+    )
+
+
+def _project_image_labels(identity: ProjectImageIdentity) -> dict[str, str]:
+    return {
+        BERTRAND_ENV: "1",
+        REPO_ID_ENV: identity.repo_id,
+        WORKTREE_ENV: identity.worktree,
+        IMAGE_TAG_ENV: identity.tag,
+        ENV_ID_ENV: identity.env_id,
+        PROJECT_IMAGE_CONFIG_ID: identity.config_id,
+    }
+
+
+def _log_excerpt(text: str) -> str:
+    lines = text.strip().splitlines()
+    excerpt = "\n".join(lines[-80:])
+    if len(excerpt) > BUILDKIT_BUILD_LOG_EXCERPT_CHARS:
+        return excerpt[-BUILDKIT_BUILD_LOG_EXCERPT_CHARS:]
+    return excerpt
+
+
+def _label_hash(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()[:16]
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

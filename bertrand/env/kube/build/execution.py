@@ -6,6 +6,8 @@ import asyncio
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
+
     from bertrand.env.kube.api import Kube
     from bertrand.env.kube.job import Job
 
@@ -175,3 +177,88 @@ async def wait_job_complete(
         if isinstance(err, TimeoutError):
             raise TimeoutError(msg) from err
         raise OSError(msg) from err
+
+
+async def run_observed_job(
+    kube: Kube,
+    job: Job,
+    *,
+    timeout: float,
+    failure_context: str,
+    log_heading: str,
+    log_failure_label: str,
+    tail_lines: int,
+    diagnostic_timeout: float,
+    cleanup_timeout: float,
+    include_log_headers: bool = False,
+    observer: Callable[[Job], Awaitable[None]] | None = None,
+) -> str:
+    """Observe, wait for, and collect logs from one short-lived Job.
+
+    Parameters
+    ----------
+    kube : Kube
+        Active Kubernetes API context.
+    job : Job
+        Job to observe and wait on.
+    timeout : float
+        Maximum completion and success-log budget in seconds.
+    failure_context : str
+        Failure message prefix used if the Job fails or times out.
+    log_heading : str
+        Heading inserted before collected diagnostic logs.
+    log_failure_label : str
+        Label used when diagnostic or success log collection itself fails.
+    tail_lines : int
+        Number of pod log lines to collect.
+    diagnostic_timeout : float
+        Maximum budget for failure log collection.
+    cleanup_timeout : float
+        Maximum budget for failed Job cleanup.
+    include_log_headers : bool, optional
+        Whether collected logs should include pod headers.
+    observer : Callable[[Job], Awaitable[None]] | None, optional
+        Callback invoked after the Job is created and before waiting begins.
+
+    Returns
+    -------
+    str
+        Success logs collected from the completed Job.
+
+    Raises
+    ------
+    TimeoutError
+        If the Job does not complete before `timeout`.
+    OSError
+        If the Job fails or disappears while waiting.
+    """
+    if timeout <= 0:
+        msg = "observed Job timeout must be non-negative"
+        raise TimeoutError(msg)
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    if observer is not None:
+        await observer(job)
+    try:
+        await wait_job_complete(
+            kube,
+            job,
+            timeout=deadline - loop.time(),
+            failure_context=failure_context,
+            log_heading=log_heading,
+            log_failure_label=log_failure_label,
+            tail_lines=tail_lines,
+            diagnostic_timeout=diagnostic_timeout,
+            cleanup_timeout=cleanup_timeout,
+            include_log_headers=include_log_headers,
+        )
+    except OSError as err:
+        raise OSError(str(err)) from err
+    return await job_logs(
+        kube,
+        job,
+        timeout=deadline - loop.time(),
+        tail_lines=tail_lines,
+        failure_label=log_failure_label,
+        include_headers=include_log_headers,
+    )

@@ -13,8 +13,8 @@ from bertrand.env.git import until
 from .api import (
     Kube,
     NamespacedKubeMetadata,
-    NamespacedResourceClient,
     PodTemplateSpec,
+    ResourceClient,
     WatchEvent,
 )
 from .api._render import (
@@ -37,8 +37,9 @@ class DaemonSet(NamespacedKubeMetadata[kubernetes.client.V1DaemonSet]):
     @classmethod
     def _client(
         cls,
-    ) -> NamespacedResourceClient[kubernetes.client.V1DaemonSet, Self]:
-        return NamespacedResourceClient(
+    ) -> ResourceClient[kubernetes.client.V1DaemonSet, Self]:
+        return ResourceClient(
+            scope="namespaced",
             kind="DaemonSet",
             expected=kubernetes.client.V1DaemonSet,
             list_type=kubernetes.client.V1DaemonSetList,

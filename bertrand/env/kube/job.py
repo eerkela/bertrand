@@ -12,8 +12,8 @@ from bertrand.env.git import until
 from .api import (
     Kube,
     NamespacedKubeMetadata,
-    NamespacedResourceClient,
     PodTemplateSpec,
+    ResourceClient,
     WatchEvent,
 )
 from .api._helpers import (
@@ -53,8 +53,9 @@ class Job(NamespacedKubeMetadata[kubernetes.client.V1Job]):
     _obj: kubernetes.client.V1Job
 
     @classmethod
-    def _client(cls) -> NamespacedResourceClient[kubernetes.client.V1Job, Self]:
-        return NamespacedResourceClient(
+    def _client(cls) -> ResourceClient[kubernetes.client.V1Job, Self]:
+        return ResourceClient(
+            scope="namespaced",
             kind="Job",
             expected=kubernetes.client.V1Job,
             list_type=kubernetes.client.V1JobList,

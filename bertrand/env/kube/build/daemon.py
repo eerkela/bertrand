@@ -63,7 +63,7 @@ BUILDKIT_CONTROL_PLANE_TOLERATIONS = (
 
 
 @dataclass(frozen=True)
-class BuildKitBuilder:
+class _BuildKitBuilder:
     """Ready BuildKit daemon pod in the builder pool.
 
     Parameters
@@ -107,8 +107,6 @@ class BuildKitPoolStatus:
         Namespace that owns the BuildKit DaemonSet.
     name : str
         BuildKit DaemonSet name.
-    daemonset_present : bool
-        Whether the BuildKit DaemonSet currently exists.
     desired_builders : int
         Number of eligible Linux nodes expected to host builders.
     ready_builders : int
@@ -119,21 +117,6 @@ class BuildKitPoolStatus:
         Native platforms represented by ready builder pods.
     missing_platforms : tuple[str, ...]
         Eligible native platforms without a ready builder pod.
-    rollout_ready : bool
-        Whether the DaemonSet rollout is current.
-    expected_config_hash : str | None
-        Optional config hash expected by the caller.
-    installed_config_hash : str
-        Config hash installed on the DaemonSet pod template.
-    config_current : bool
-        Whether the DaemonSet template hash matches the expected hash, or ``True``
-        when no expected hash was provided.
-    cache_path : str
-        Host path used for node-local BuildKit daemon cache storage.
-    cdi_paths : tuple[str, ...]
-        Host CDI spec directories mounted into BuildKit pods.
-    builders : tuple[BuildKitBuilder, ...]
-        Ready builder pods discovered from the pool.
     ready : bool
         Whether the DaemonSet rollout, config hash, and platform coverage are ready.
     failures : tuple[str, ...]
@@ -142,52 +125,20 @@ class BuildKitPoolStatus:
 
     namespace: str
     name: str
-    daemonset_present: bool
     desired_builders: int
     ready_builders: int
     expected_platforms: tuple[str, ...]
     ready_platforms: tuple[str, ...]
     missing_platforms: tuple[str, ...]
-    rollout_ready: bool
-    expected_config_hash: str | None
-    installed_config_hash: str
-    config_current: bool
-    cache_path: str
-    cdi_paths: tuple[str, ...]
-    builders: tuple[BuildKitBuilder, ...]
     ready: bool
-
-    @property
-    def failures(self) -> tuple[str, ...]:
-        """Return semantic readiness failures for this builder pool.
-
-        Returns
-        -------
-        tuple[str, ...]
-            Human-readable failures explaining why the builder pool is not ready.
-        """
-        failures: list[str] = []
-        if not self.daemonset_present:
-            failures.append("BuildKit DaemonSet is missing")
-        if not self.rollout_ready:
-            failures.append("BuildKit DaemonSet rollout is not ready")
-        if not self.config_current:
-            failures.append("BuildKit DaemonSet has stale registry config")
-        if not self.ready_builders:
-            failures.append("BuildKit has no ready builder pods")
-        if self.missing_platforms:
-            platforms = ", ".join(self.missing_platforms)
-            failures.append(
-                f"BuildKit has no ready builder for platform(s): {platforms}"
-            )
-        return tuple(failures)
+    failures: tuple[str, ...]
 
 
 @dataclass(frozen=True)
 class _BuildKitPoolSnapshot:
     daemonset: DaemonSet | None
     eligible_nodes: tuple[Node, ...]
-    builders: tuple[BuildKitBuilder, ...]
+    builders: tuple[_BuildKitBuilder, ...]
     expected_platforms: tuple[str, ...]
     ready_platforms: tuple[str, ...]
     missing_platforms: tuple[str, ...]
@@ -379,121 +330,6 @@ class BuildKitPool:
         )
         await daemonset.wait_rollout(kube, timeout=deadline - loop.time())
 
-    async def builders(
-        self,
-        kube: Kube,
-        *,
-        timeout: float,
-        config_hash: str | None = None,
-    ) -> tuple[BuildKitBuilder, ...]:
-        """List ready BuildKit builders in deterministic order.
-
-        Parameters
-        ----------
-        kube : Kube
-            Kubernetes API client for the target cluster.
-        timeout : float
-            Maximum request budget in seconds. If infinite, wait indefinitely.
-        config_hash : str | None, optional
-            Expected BuildKit config hash used to mark builder freshness.
-
-        Returns
-        -------
-        tuple[BuildKitBuilder, ...]
-            Ready builder pods with client addresses and native platform metadata.
-
-        Raises
-        ------
-        TimeoutError
-            If ``timeout`` is non-positive.
-        """
-        if timeout <= 0:
-            msg = "BuildKit builder discovery timeout must be non-negative"
-            raise TimeoutError(msg)
-        snapshot = await self._snapshot(
-            kube,
-            timeout=timeout,
-            config_hash=config_hash,
-        )
-        return snapshot.builders
-
-    async def platforms(self, kube: Kube, *, timeout: float) -> tuple[str, ...]:
-        """Return native platforms currently available for builds.
-
-        Parameters
-        ----------
-        kube : Kube
-            Kubernetes API client for the target cluster.
-        timeout : float
-            Maximum request budget in seconds. If infinite, wait indefinitely.
-
-        Returns
-        -------
-        tuple[str, ...]
-            Sorted unique platforms from ready, schedulable Linux nodes.
-
-        Raises
-        ------
-        TimeoutError
-            If ``timeout`` is non-positive.
-        """
-        if timeout <= 0:
-            msg = "BuildKit platform discovery timeout must be non-negative"
-            raise TimeoutError(msg)
-        snapshot = await self._snapshot(kube, timeout=timeout)
-        return snapshot.expected_platforms
-
-    async def schedule(
-        self,
-        kube: Kube,
-        *,
-        timeout: float,
-        platforms: Iterable[str] | None = None,
-        preferred_node: str | None = None,
-        config_hash: str | None = None,
-    ) -> tuple[BuildKitBuilder, ...]:
-        """Select one ready builder for each requested platform.
-
-        Parameters
-        ----------
-        kube : Kube
-            Kubernetes API client for the target cluster.
-        timeout : float
-            Maximum request budget in seconds. If infinite, wait indefinitely.
-        platforms : Iterable[str] | None, optional
-            Explicit platform filters. If omitted, every eligible cluster platform
-            is targeted.
-        preferred_node : str | None, optional
-            Node to prefer when selecting a builder for its matching platform.
-        config_hash : str | None, optional
-            Expected BuildKit config hash. When provided, stale builders are
-            excluded from scheduling.
-
-        Returns
-        -------
-        tuple[BuildKitBuilder, ...]
-            Selected builders, one per requested platform.
-
-        Raises
-        ------
-        TimeoutError
-            If ``timeout`` is non-positive.
-        """
-        if timeout <= 0:
-            msg = "BuildKit scheduling timeout must be non-negative"
-            raise TimeoutError(msg)
-        snapshot = await self._snapshot(
-            kube,
-            timeout=timeout,
-            config_hash=config_hash,
-        )
-        return self._schedule_from(
-            snapshot,
-            platforms=platforms,
-            preferred_node=preferred_node,
-            config_hash=config_hash,
-        )
-
     async def status(
         self,
         kube: Kube,
@@ -547,29 +383,30 @@ class BuildKitPool:
             rollout_ready = (
                 daemonset.rollout_ready(minimum=1) if daemonset is not None else False
             )
+            failures: list[str] = []
+            if daemonset is None:
+                failures.append("BuildKit DaemonSet is missing")
+            if not rollout_ready:
+                failures.append("BuildKit DaemonSet rollout is not ready")
+            if not config_current:
+                failures.append("BuildKit DaemonSet has stale registry config")
+            if not snapshot.builders:
+                failures.append("BuildKit has no ready builder pods")
+            if snapshot.missing_platforms:
+                platforms = ", ".join(snapshot.missing_platforms)
+                failures.append(
+                    f"BuildKit has no ready builder for platform(s): {platforms}"
+                )
             return BuildKitPoolStatus(
                 namespace=self.namespace,
                 name=self.name,
-                daemonset_present=daemonset is not None,
                 desired_builders=len(snapshot.eligible_nodes),
                 ready_builders=len(snapshot.builders),
                 expected_platforms=snapshot.expected_platforms,
                 ready_platforms=snapshot.ready_platforms,
                 missing_platforms=snapshot.missing_platforms,
-                rollout_ready=rollout_ready,
-                expected_config_hash=config_hash,
-                installed_config_hash=installed_hash,
-                config_current=config_current,
-                cache_path=str(self.cache_path),
-                cdi_paths=tuple(path for _, path in BUILDKIT_CDI_SPEC_MOUNTS),
-                builders=snapshot.builders,
-                ready=(
-                    daemonset is not None
-                    and rollout_ready
-                    and config_current
-                    and bool(snapshot.builders)
-                    and not snapshot.missing_platforms
-                ),
+                ready=not failures,
+                failures=tuple(failures),
             )
         except OSError as err:
             msg = f"failed to inspect BuildKit pool {self.namespace}/{self.name}: {err}"
@@ -643,38 +480,24 @@ class BuildKitPool:
         self,
         snapshot: _BuildKitPoolSnapshot,
         *,
-        platforms: Iterable[str] | None,
-        preferred_node: str | None,
         config_hash: str | None,
-    ) -> dict[str, tuple[BuildKitBuilder, ...]]:
-        preferred = preferred_node.strip() if preferred_node is not None else ""
-        available = snapshot.expected_platforms
-        targets = (
-            _normalize_platforms(platforms) if platforms is not None else available
-        )
+    ) -> dict[str, tuple[_BuildKitBuilder, ...]]:
+        targets = snapshot.expected_platforms
         if not targets:
             msg = "BuildKit scheduling requires at least one eligible platform"
-            raise OSError(msg)
-        missing = tuple(platform for platform in targets if platform not in available)
-        if missing:
-            msg = (
-                "BuildKit scheduling requested unavailable platform(s): "
-                f"{', '.join(missing)}"
-            )
             raise OSError(msg)
 
         builders = snapshot.builders
         if config_hash is not None:
             builders = tuple(builder for builder in builders if builder.config_current)
 
-        out: dict[str, tuple[BuildKitBuilder, ...]] = {}
+        out: dict[str, tuple[_BuildKitBuilder, ...]] = {}
         for platform in targets:
             candidates = [
                 builder for builder in builders if builder.platform == platform
             ]
             candidates.sort(
                 key=lambda builder: (
-                    builder.node != preferred,
                     builder.platform,
                     builder.node,
                     builder.pod,
@@ -691,42 +514,26 @@ class BuildKitPool:
             out[platform] = tuple(candidates)
         return out
 
-    def _schedule_from(
-        self,
-        snapshot: _BuildKitPoolSnapshot,
-        *,
-        platforms: Iterable[str] | None,
-        preferred_node: str | None,
-        config_hash: str | None,
-    ) -> tuple[BuildKitBuilder, ...]:
-        groups = self._candidate_groups(
-            snapshot,
-            platforms=platforms,
-            preferred_node=preferred_node,
-            config_hash=config_hash,
-        )
-        return tuple(candidates[0] for candidates in groups.values())
-
     def _builders_from(
         self,
         nodes: Iterable[Node],
         pods: Iterable[Pod],
         *,
         config_hash: str | None,
-    ) -> tuple[BuildKitBuilder, ...]:
+    ) -> tuple[_BuildKitBuilder, ...]:
         nodes_by_name = {
             node.name: node
             for node in nodes
             if node.name and node.is_build_eligible and node.platform
         }
-        builders: list[BuildKitBuilder] = []
+        builders: list[_BuildKitBuilder] = []
         for pod in pods:
             node = nodes_by_name.get(pod.node_name)
             if node is None or not pod.is_ready or not pod.pod_ip:
                 continue
             pod_hash = pod.annotations.get(BUILDKIT_CONFIG_HASH_ANNOTATION, "")
             builders.append(
-                BuildKitBuilder(
+                _BuildKitBuilder(
                     namespace=pod.namespace,
                     pod=pod.name,
                     node=node.name,
@@ -740,14 +547,8 @@ class BuildKitPool:
         return tuple(sorted(builders, key=_builder_sort_key))
 
 
-def _builder_sort_key(builder: BuildKitBuilder) -> tuple[str, str, str]:
+def _builder_sort_key(builder: _BuildKitBuilder) -> tuple[str, str, str]:
     return (builder.platform, builder.node, builder.pod)
-
-
-def _normalize_platforms(platforms: Iterable[str]) -> tuple[str, ...]:
-    normalized = {platform.strip().lower() for platform in platforms}
-    normalized.discard("")
-    return tuple(sorted(normalized))
 
 
 BUILDKIT_POOL = BuildKitPool(

@@ -809,12 +809,27 @@ class CustomResourceDefinition(KubeMetadata[kube_client.V1CustomResourceDefiniti
         singular: str,
         kind: str,
         spec_schema: Mapping[str, object],
-        status_schema: Mapping[str, object],
+        status_schema: Mapping[str, object] | None,
         labels: Mapping[str, str] | None,
         annotations: Mapping[str, str] | None,
         scope: str,
         short_names: Collection[str],
     ) -> dict[str, object]:
+        schema_properties: dict[str, object] = {"spec": dict(spec_schema)}
+        version_entry: dict[str, object] = {
+            "name": version,
+            "served": True,
+            "storage": True,
+            "schema": {
+                "openAPIV3Schema": {
+                    "type": "object",
+                    "properties": schema_properties,
+                },
+            },
+        }
+        if status_schema is not None:
+            schema_properties["status"] = dict(status_schema)
+            version_entry["subresources"] = {"status": {}}
         return {
             "apiVersion": "apiextensions.k8s.io/v1",
             "kind": "CustomResourceDefinition",
@@ -832,23 +847,7 @@ class CustomResourceDefinition(KubeMetadata[kube_client.V1CustomResourceDefiniti
                     "kind": kind,
                     "shortNames": list(short_names),
                 },
-                "versions": [
-                    {
-                        "name": version,
-                        "served": True,
-                        "storage": True,
-                        "schema": {
-                            "openAPIV3Schema": {
-                                "type": "object",
-                                "properties": {
-                                    "spec": dict(spec_schema),
-                                    "status": dict(status_schema),
-                                },
-                            }
-                        },
-                        "subresources": {"status": {}},
-                    }
-                ],
+                "versions": [version_entry],
             },
         }
 
@@ -945,8 +944,8 @@ class CustomResourceDefinition(KubeMetadata[kube_client.V1CustomResourceDefiniti
         singular: str,
         kind: str,
         spec_schema: Mapping[str, object],
-        status_schema: Mapping[str, object],
         timeout: float,
+        status_schema: Mapping[str, object] | None = None,
         labels: Mapping[str, str] | None = None,
         annotations: Mapping[str, str] | None = None,
         scope: str = "Namespaced",
@@ -970,10 +969,11 @@ class CustomResourceDefinition(KubeMetadata[kube_client.V1CustomResourceDefiniti
             Kubernetes kind name.
         spec_schema : Mapping[str, object]
             OpenAPI schema for the custom resource `spec` object.
-        status_schema : Mapping[str, object]
-            OpenAPI schema for the custom resource `status` object.
         timeout : float
             Maximum request budget in seconds.
+        status_schema : Mapping[str, object] | None, optional
+            Optional OpenAPI schema for the custom resource `status` object. When
+            omitted, the CRD has no status subresource.
         labels : Mapping[str, str] | None, optional
             Labels to apply to the CRD object.
         annotations : Mapping[str, str] | None, optional

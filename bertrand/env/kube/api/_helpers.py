@@ -62,16 +62,6 @@ def _typed_payload[T](payload: object, expected: type[T], *, context: str) -> T:
     return payload
 
 
-def _typed_wrapper[T, W](
-    payload: object,
-    expected: type[T],
-    *,
-    wrapper: Callable[[T], W],
-    context: str,
-) -> W:
-    return wrapper(_typed_payload(payload, expected, context=context))
-
-
 def _typed_list_items[T](
     payload: object | None,
     *,

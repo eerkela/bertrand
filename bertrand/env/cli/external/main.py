@@ -177,6 +177,12 @@ class External:
                 help="Secret-backed capability ID containing Docker auth JSON for "
                 "the external registry.  Requires --publish.",
             )
+            command.add_argument(
+                "--detach",
+                action="store_true",
+                help="Submit durable build requests and exit without waiting for "
+                "publication.",
+            )
             command.set_defaults(handler=External.build)
 
         def start(self) -> None:
@@ -750,6 +756,7 @@ class External:
                         publish=args.publish,
                         auth=args.auth,
                         quiet=False,
+                        detach=args.detach,
                     )
                 )
             except (TimeoutError, TimeoutExpired) as err:
@@ -761,6 +768,8 @@ class External:
                         cmd.append(args.publish)
                 if args.auth:
                     cmd.extend(["--auth", args.auth])
+                if args.detach:
+                    cmd.append("--detach")
                 raise TimeoutExpired(
                     cmd=cmd,
                     timeout=0.0,  # indefinite

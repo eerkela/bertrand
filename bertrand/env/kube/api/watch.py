@@ -12,7 +12,7 @@ from typing import Literal, cast
 import kubernetes
 from kubernetes.client.rest import ApiException
 
-from ._helpers import _label_selector, _typed_wrapper
+from ._helpers import _label_selector
 
 type WatchEventType = Literal["ADDED", "MODIFIED", "DELETED", "BOOKMARK", "ERROR"]
 _WATCH_EVENT_TYPES: frozenset[str] = frozenset(
@@ -47,15 +47,10 @@ class WatchExpired(OSError):  # noqa: N818
     """Raised when Kubernetes expires a watch resource version."""
 
 
-@dataclass(frozen=True)
-class _WatchEnd:
-    pass
+_WATCH_END = object()
 
 
-_WATCH_END = _WatchEnd()
-
-
-def _next_watch_payload(iterator: Iterator[object]) -> object | _WatchEnd:
+def _next_watch_payload(iterator: Iterator[object]) -> object:
     try:
         return next(iterator)
     except StopIteration:
@@ -231,75 +226,3 @@ async def watch[T](
             )
     finally:
         watcher.stop()
-
-
-async def _watch_cluster_resource[T, W](
-    *,
-    timeout: float,
-    labels: Mapping[str, str] | None,
-    field_selector: str | None,
-    resource_version: str | None,
-    watch_fn: Callable[..., object],
-    expected: type[T],
-    wrapper: Callable[[T], W],
-    context: str,
-    payload_context: str,
-) -> AsyncIterator[WatchEvent[W]]:
-    async for event in watch(
-        watch_fn,
-        wrapper=lambda payload: _typed_wrapper(
-            payload,
-            expected,
-            wrapper=wrapper,
-            context=payload_context,
-        ),
-        timeout=timeout,
-        context=context,
-        resource_version=resource_version,
-        labels=labels,
-        field_selector=field_selector,
-    ):
-        yield event
-
-
-async def _watch_namespaced_resource[T, W](
-    *,
-    timeout: float,
-    namespace: str | None,
-    labels: Mapping[str, str] | None,
-    field_selector: str | None,
-    resource_version: str | None,
-    watch_all: Callable[..., object],
-    watch_namespace: Callable[..., object],
-    expected: type[T],
-    wrapper: Callable[[T], W],
-    all_context: str,
-    namespace_context: Callable[[str], str],
-    payload_context: str,
-) -> AsyncIterator[WatchEvent[W]]:
-    namespace = namespace.strip() if namespace is not None else ""
-    if namespace:
-        fn = watch_namespace
-        api_kwargs: Mapping[str, object] = {"namespace": namespace}
-        context = namespace_context(namespace)
-    else:
-        fn = watch_all
-        api_kwargs = {}
-        context = all_context
-
-    async for event in watch(
-        fn,
-        wrapper=lambda payload: _typed_wrapper(
-            payload,
-            expected,
-            wrapper=wrapper,
-            context=payload_context,
-        ),
-        timeout=timeout,
-        context=context,
-        resource_version=resource_version,
-        labels=labels,
-        field_selector=field_selector,
-        api_kwargs=api_kwargs,
-    ):
-        yield event

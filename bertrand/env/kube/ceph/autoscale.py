@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import math
 import os
 import platform
@@ -12,7 +11,6 @@ import uuid
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Literal, cast
 
 from pydantic import (
@@ -59,8 +57,6 @@ from bertrand.env.kube.service_account import ServiceAccount
 if TYPE_CHECKING:
     from collections.abc import Collection, Mapping
 
-    from bertrand.env.kube.build.job import BuildKitImageBuild
-
 AUTOSCALE_GROUP = "ceph.bertrand.dev"
 AUTOSCALE_VERSION = "v1alpha1"
 AUTOSCALE_AUTOSCALER_KIND = "CephStorageAutoscaler"
@@ -75,7 +71,6 @@ AUTOSCALE_CONTROLLER_NAME = "bertrand-ceph-autoscaler"
 AUTOSCALE_AGENT_NAME = "bertrand-ceph-autoscaler-agent"
 AUTOSCALE_LABEL = "bertrand.dev/ceph-autoscaler"
 AUTOSCALE_LABEL_VALUE = "v1"
-AUTOSCALE_IMAGE_CONTEXT_PREFIX = "bertrand-ceph-autoscaler"
 AUTOSCALE_PHASES = ("Pending", "Running", "Succeeded", "Failed")
 AUTOSCALE_NODE_REPORT_MAX_AGE_SECONDS = 120
 AUTOSCALE_WATCH_RESTART_DELAY_SECONDS = 1.0
@@ -486,57 +481,6 @@ async def _ensure_workloads(kube: Kube, *, image: str, deadline: float) -> None:
     await agent.wait_rollout(kube, timeout=deadline - loop.time())
 
 
-def ceph_autoscaler_image_build() -> BuildKitImageBuild:
-    """Return the autoscaler controlplane image build contract.
-
-    Returns
-    -------
-    BuildKitImageBuild
-        Build contract for the Ceph autoscaler controller/agent image.
-    """
-    from bertrand.env.kube.build.job import BuildKitImageBuild
-    from bertrand.env.kube.build.repository import IMAGES
-
-    repo_root = Path(__file__).resolve().parents[4]
-    h = hashlib.sha256()
-    for path in (
-        Path(__file__).resolve(),
-        Path(__file__).with_name("api.py").resolve(),
-        repo_root / "bertrand/env/kube/api.py",
-        repo_root / "bertrand/env/kube/crd.py",
-        repo_root / "bertrand/env/kube/daemonset.py",
-        repo_root / "bertrand/env/kube/deployment.py",
-        repo_root / "bertrand/env/kube/node.py",
-        repo_root / "bertrand/env/kube/rbac.py",
-        repo_root / "bertrand/env/kube/service_account.py",
-        repo_root / "bertrand/env/git/__init__.py",
-        repo_root / "bertrand/env/git/bertrand_git.py",
-    ):
-        payload = path.read_bytes()
-        h.update(len(payload).to_bytes(8, "big"))
-        h.update(payload)
-    image = IMAGES.ref("ceph-autoscaler", f"v1-{h.hexdigest()[:12]}")
-    return BuildKitImageBuild(
-        image=image,
-        dockerfile="\n".join(
-            (
-                "FROM python:3.12-slim",
-                "WORKDIR /opt/bertrand",
-                "ENV PYTHONUNBUFFERED=1",
-                "ENV PYTHONPATH=/opt/bertrand",
-                "COPY bertrand /opt/bertrand/bertrand",
-                "RUN python -m pip install --no-cache-dir "
-                "'pydantic>=2,<3' 'kubernetes>=32,<35'",
-                "ENTRYPOINT [\"python\", \"-m\", \"bertrand.env.kube.ceph.autoscale\"]",
-            )
-        )
-        + "\n",
-        context_copies=((repo_root / "bertrand", Path("bertrand")),),
-        context_prefix=AUTOSCALE_IMAGE_CONTEXT_PREFIX,
-        build_labels={BERTRAND_ENV: "1"},
-    )
-
-
 async def ensure_ceph_autoscaler(kube: Kube, *, image: str, timeout: float) -> None:
     """Converge Ceph autoscaler CRDs, RBAC, and workloads in the local cluster.
 
@@ -684,6 +628,7 @@ class CephAutoscalerController:
         capacity: CephCapacitySnapshot,
         actions: Collection[_CephStorageAction],
         eligible_nodes: list[str],
+        loop_bytes: int,
     ) -> list[_PlannedAction]:
         spec = policy.spec
         if (
@@ -692,7 +637,6 @@ class CephAutoscalerController:
             or capacity.used_ratio < spec.high_watermark
         ):
             return []
-        loop_bytes = parse_size_bytes(spec.loop_size)
         target_used = spec.target_watermark * capacity.total_bytes
         deficit = capacity.used_bytes - target_used
         if deficit <= 0:
@@ -888,18 +832,19 @@ class CephAutoscalerController:
         actions = await self._list_actions(kube, timeout=deadline - loop.time())
         reports = await self._list_node_reports(kube, timeout=deadline - loop.time())
         capacity = await ceph_df(timeout=deadline - loop.time())
+        loop_bytes = parse_size_bytes(policy.spec.loop_size)
+        ready_nodes = await self._ready_nodes(kube, timeout=deadline - loop.time())
+        eligible_nodes = self._eligible_nodes(
+            ready_nodes=ready_nodes,
+            reports=reports,
+            loop_bytes=loop_bytes,
+        )
         planned = self._plan_actions(
             policy=policy,
             capacity=capacity,
             actions=actions,
-            eligible_nodes=self._eligible_nodes(
-                ready_nodes=await self._ready_nodes(
-                    kube,
-                    timeout=deadline - loop.time(),
-                ),
-                reports=reports,
-                loop_bytes=parse_size_bytes(policy.spec.loop_size),
-            ),
+            eligible_nodes=eligible_nodes,
+            loop_bytes=loop_bytes,
         )
         if planned:
             await self._create_actions(
@@ -1011,34 +956,24 @@ class CephAutoscalerController:
                             )
                     wake.clear()
                     interval = AUTOSCALE_CONTROLLER_DEFAULT_RECONCILE_SECONDS
+                    error: str | None = None
                     try:
                         interval = await self.reconcile(kube, deadline=deadline)
                     except asyncio.CancelledError:
                         raise
                     except ValidationError as err:
-                        with suppress(OSError, TimeoutError, ValueError):
-                            await self._patch_error(
-                                kube,
-                                error=(
-                                    "malformed autoscaler custom resource payload: "
-                                    f"{err}"
-                                ),
-                                deadline=deadline,
-                            )
+                        error = f"malformed autoscaler custom resource payload: {err}"
                     except TimeoutError as err:
                         if deadline - loop.time() <= 0:
                             raise
-                        with suppress(OSError, TimeoutError, ValueError):
-                            await self._patch_error(
-                                kube,
-                                error=str(err),
-                                deadline=deadline,
-                            )
+                        error = str(err)
                     except (OSError, ValueError, RuntimeError) as err:
+                        error = str(err)
+                    if error is not None:
                         with suppress(OSError, TimeoutError, ValueError):
                             await self._patch_error(
                                 kube,
-                                error=str(err),
+                                error=error,
                                 deadline=deadline,
                             )
 

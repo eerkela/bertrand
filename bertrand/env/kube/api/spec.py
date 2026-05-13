@@ -258,8 +258,8 @@ class VolumeMountSpec:
 
 
 @dataclass(frozen=True)
-class ProbeHandlerSpec:
-    """Intent-level Kubernetes probe handler.
+class ProbeSpec:
+    """Intent-level Kubernetes container health probe.
 
     Parameters
     ----------
@@ -269,55 +269,6 @@ class ProbeHandlerSpec:
         HTTP path to request.
     http_port : int | str | None, optional
         HTTP port to request.
-    """
-
-    tcp_port: int | str | None = None
-    http_path: str | None = None
-    http_port: int | str | None = None
-
-    @classmethod
-    def tcp(cls, *, port: int | str) -> Self:
-        """Create a TCP socket probe handler.
-
-        Parameters
-        ----------
-        port : int | str
-            Container port number or named port to probe.
-
-        Returns
-        -------
-        Self
-            Probe handler specification.
-        """
-        return cls(tcp_port=port)
-
-    @classmethod
-    def http(cls, *, path: str, port: int | str) -> Self:
-        """Create an HTTP GET probe handler.
-
-        Parameters
-        ----------
-        path : str
-            HTTP path to request.
-        port : int | str
-            Container port number or named port to probe.
-
-        Returns
-        -------
-        Self
-            Probe handler specification.
-        """
-        return cls(http_path=path, http_port=port)
-
-
-@dataclass(frozen=True)
-class ProbeSpec:
-    """Intent-level Kubernetes container health probe.
-
-    Parameters
-    ----------
-    handler : ProbeHandlerSpec
-        Probe handler intent.
     initial_delay_seconds : int | None, optional
         Delay before the first probe.
     period_seconds : int | None, optional
@@ -326,7 +277,9 @@ class ProbeSpec:
         Number of failed probes before Kubernetes marks the container unhealthy.
     """
 
-    handler: ProbeHandlerSpec
+    tcp_port: int | str | None = None
+    http_path: str | None = None
+    http_port: int | str | None = None
     initial_delay_seconds: int | None = None
     period_seconds: int | None = None
     failure_threshold: int | None = None
@@ -359,7 +312,7 @@ class ProbeSpec:
             Probe specification.
         """
         return cls(
-            handler=ProbeHandlerSpec.tcp(port=port),
+            tcp_port=port,
             initial_delay_seconds=initial_delay_seconds,
             period_seconds=period_seconds,
             failure_threshold=failure_threshold,
@@ -396,27 +349,12 @@ class ProbeSpec:
             Probe specification.
         """
         return cls(
-            handler=ProbeHandlerSpec.http(path=path, port=port),
+            http_path=path,
+            http_port=port,
             initial_delay_seconds=initial_delay_seconds,
             period_seconds=period_seconds,
             failure_threshold=failure_threshold,
         )
-
-
-@dataclass(frozen=True)
-class ResourceRequirementsSpec:
-    """Intent-level Kubernetes container resource requirements.
-
-    Parameters
-    ----------
-    requests : Mapping[str, str]
-        Resource requests such as `{"cpu": "100m", "memory": "128Mi"}`.
-    limits : Mapping[str, str]
-        Resource limits such as `{"cpu": "1", "memory": "1Gi"}`.
-    """
-
-    requests: Mapping[str, str] = MappingProxyType({})
-    limits: Mapping[str, str] = MappingProxyType({})
 
 
 @dataclass(frozen=True)
@@ -460,37 +398,6 @@ class SecurityContextSpec:
 
 
 @dataclass(frozen=True)
-class PodSecurityContextSpec:
-    """Intent-level Kubernetes pod security context.
-
-    Parameters
-    ----------
-    run_as_user : int | None, optional
-        Pod-level user ID.
-    run_as_group : int | None, optional
-        Pod-level group ID.
-    run_as_non_root : bool | None, optional
-        Whether Kubernetes should require a non-root user.
-    fs_group : int | None, optional
-        Filesystem group ID.
-    supplemental_groups : Collection[int]
-        Supplemental group IDs.
-    seccomp_profile_type : str | None, optional
-        Seccomp profile type.
-    seccomp_profile_localhost_profile : str | None, optional
-        Localhost seccomp profile name.
-    """
-
-    run_as_user: int | None = None
-    run_as_group: int | None = None
-    run_as_non_root: bool | None = None
-    fs_group: int | None = None
-    supplemental_groups: Collection[int] = ()
-    seccomp_profile_type: str | None = None
-    seccomp_profile_localhost_profile: str | None = None
-
-
-@dataclass(frozen=True)
 class TolerationSpec:
     """Intent-level Kubernetes pod toleration.
 
@@ -516,51 +423,6 @@ class TolerationSpec:
 
 
 @dataclass(frozen=True)
-class ImagePullSecretSpec:
-    """Intent-level Kubernetes image pull Secret reference.
-
-    Parameters
-    ----------
-    name : str
-        Secret name to include in `imagePullSecrets`.
-    """
-
-    name: str
-
-
-@dataclass(frozen=True)
-class EmptyDirSpec:
-    """Intent-level Kubernetes `emptyDir` volume source.
-
-    Parameters
-    ----------
-    medium : str | None, optional
-        Storage medium, such as `"Memory"`.
-    size_limit : str | None, optional
-        Kubernetes quantity limiting the volume size.
-    """
-
-    medium: str | None = None
-    size_limit: str | None = None
-
-
-@dataclass(frozen=True)
-class RollingUpdateSpec:
-    """Intent-level Kubernetes rolling-update strategy settings.
-
-    Parameters
-    ----------
-    max_surge : int | str | None, optional
-        Maximum surge replicas during rollout.
-    max_unavailable : int | str | None, optional
-        Maximum unavailable replicas during rollout.
-    """
-
-    max_surge: int | str | None = None
-    max_unavailable: int | str | None = None
-
-
-@dataclass(frozen=True)
 class DeploymentStrategySpec:
     """Intent-level Kubernetes Deployment rollout strategy.
 
@@ -568,12 +430,15 @@ class DeploymentStrategySpec:
     ----------
     kind : str
         Kubernetes strategy type, such as `"Recreate"` or `"RollingUpdate"`.
-    rolling_update_config : RollingUpdateSpec | None, optional
-        Optional rolling-update settings.
+    max_surge : int | str | None, optional
+        Maximum surge replicas during rolling updates.
+    max_unavailable : int | str | None, optional
+        Maximum unavailable replicas during rolling updates.
     """
 
     kind: str
-    rolling_update_config: RollingUpdateSpec | None = None
+    max_surge: int | str | None = None
+    max_unavailable: int | str | None = None
 
     @classmethod
     def recreate(cls) -> Self:
@@ -609,10 +474,8 @@ class DeploymentStrategySpec:
         """
         return cls(
             kind="RollingUpdate",
-            rolling_update_config=RollingUpdateSpec(
-                max_surge=max_surge,
-                max_unavailable=max_unavailable,
-            ),
+            max_surge=max_surge,
+            max_unavailable=max_unavailable,
         )
 
 
@@ -642,8 +505,6 @@ class ContainerSpec:
         Liveness probe intent.
     volume_mounts : Collection[VolumeMountSpec], optional
         Pod volume mounts for the container.
-    resources : ResourceRequirementsSpec | None, optional
-        Container resource requests and limits.
     security_context : SecurityContextSpec | None, optional
         Container security context intent.
     """
@@ -658,7 +519,6 @@ class ContainerSpec:
     readiness_probe: ProbeSpec | None = None
     liveness_probe: ProbeSpec | None = None
     volume_mounts: Collection[VolumeMountSpec] = ()
-    resources: ResourceRequirementsSpec | None = None
     security_context: SecurityContextSpec | None = None
 
 
@@ -688,12 +548,10 @@ class PodTemplateSpec:
         Optional exact node name.
     host_pid : bool | None, optional
         Optional ``hostPID`` value.
-    security_context : PodSecurityContextSpec | None, optional
-        Optional pod security context.
     tolerations : Collection[TolerationSpec], optional
         Optional pod tolerations.
-    image_pull_secrets : Collection[ImagePullSecretSpec], optional
-        Optional image pull Secret references.
+    image_pull_secrets : Collection[str], optional
+        Optional image pull Secret names.
     priority_class_name : str | None, optional
         Optional priority class name.
     dns_policy : str | None, optional
@@ -714,9 +572,8 @@ class PodTemplateSpec:
     node_selector: Mapping[str, str] | None = None
     node_name: str | None = None
     host_pid: bool | None = None
-    security_context: PodSecurityContextSpec | None = None
     tolerations: Collection[TolerationSpec] = ()
-    image_pull_secrets: Collection[ImagePullSecretSpec] = ()
+    image_pull_secrets: Collection[str] = ()
     priority_class_name: str | None = None
     dns_policy: str | None = None
     host_network: bool | None = None
@@ -731,8 +588,12 @@ class VolumeSpec:
     ----------
     name : str
         Pod volume name.
-    empty_dir_source : EmptyDirSpec | None, optional
-        `emptyDir` volume source.
+    empty_dir_source : bool, optional
+        Whether the volume is backed by an `emptyDir` source.
+    empty_dir_medium : str | None, optional
+        Storage medium for `emptyDir` volumes, such as `"Memory"`.
+    empty_dir_size_limit : str | None, optional
+        Kubernetes quantity limiting the `emptyDir` volume size.
     config_map_name : str | None, optional
         ConfigMap name for ConfigMap-backed volumes.
     config_map_optional : bool | None, optional
@@ -752,7 +613,9 @@ class VolumeSpec:
     """
 
     name: str
-    empty_dir_source: EmptyDirSpec | None = None
+    empty_dir_source: bool = False
+    empty_dir_medium: str | None = None
+    empty_dir_size_limit: str | None = None
     config_map_name: str | None = None
     config_map_optional: bool | None = None
     secret_name: str | None = None
@@ -788,7 +651,9 @@ class VolumeSpec:
         """
         return cls(
             name=name,
-            empty_dir_source=EmptyDirSpec(medium=medium, size_limit=size_limit),
+            empty_dir_source=True,
+            empty_dir_medium=medium,
+            empty_dir_size_limit=size_limit,
         )
 
     @classmethod

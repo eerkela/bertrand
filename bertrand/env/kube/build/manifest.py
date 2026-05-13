@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 from bertrand.env.config.core import _check_kube_name, _check_uuid
 from bertrand.env.git import BERTRAND_ENV, BERTRAND_NAMESPACE
 from bertrand.env.kube.api import ContainerSpec, EnvVarSpec, Kube, PodTemplateSpec
-from bertrand.env.kube.build.execution import job_logs, wait_job_complete
+from bertrand.env.kube.build.execution import run_observed_job
 from bertrand.env.kube.build.lifecycle import (
     ProjectImagePublication,
     record_project_image,
@@ -19,7 +19,6 @@ from bertrand.env.kube.build.lifecycle import (
 from bertrand.env.kube.build.refs import (
     DIGEST_REF_RE,
     channel_refs,
-    digest_from_ref,
     tagged_repository,
     validate_tagged_ref,
 )
@@ -28,11 +27,10 @@ from bertrand.env.kube.capability.base import Capability
 from bertrand.env.kube.job import Job
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Awaitable, Callable, Mapping
 
     from bertrand.env.config.core import KubeName
-    from bertrand.env.kube.build.job import BuildKitPlatformResult
-    from bertrand.env.kube.build.lifecycle import _ProjectImagePlan
+    from bertrand.env.kube.build.lifecycle import ProjectImageIdentity
 
 MANIFEST_JOB_IMAGE = "ghcr.io/regclient/regctl:v0.10.0-alpine"
 MANIFEST_JOB_LABEL = "bertrand.dev/manifest-job"
@@ -49,27 +47,29 @@ MANIFEST_AUTH_ENV = "DOCKER_AUTH_CONFIG"
 MANIFEST_AUTH_KEY = "value"
 
 
-async def publish_image_manifest(
+async def _publish_project_image_manifest(
     kube: Kube,
     *,
-    plan: _ProjectImagePlan,
-    platform_results: tuple[BuildKitPlatformResult, ...],
+    identity: ProjectImageIdentity,
+    platform_refs: Mapping[str, str],
     timeout: float,
     external_image: str | None = None,
     auth_id: KubeName | None = None,
     env_id: str | None = None,
     repository: ImageRepository = IMAGES,
+    job_observer: Callable[[Job], Awaitable[None]] | None = None,
 ) -> ProjectImagePublication:
-    """Assemble and optionally copy one multi-platform OCI image manifest.
+    """Assemble, copy, and record one project image manifest.
 
     Parameters
     ----------
     kube : Kube
         Active Kubernetes API context.
-    plan : ProjectImagePlan
-        Executed project image plan to record after manifest publication.
-    platform_results : tuple[BuildKitPlatformResult, ...]
-        Platform image digests returned by native BuildKit executions.
+    identity : ProjectImageIdentity
+        Executed project image identity to record after manifest publication.
+    platform_refs : Mapping[str, str]
+        Digest-pinned platform image refs returned by native BuildKit executions,
+        keyed by OCI platform.
     timeout : float
         Maximum runtime budget in seconds. If infinite, wait indefinitely.
     external_image : str | None, optional
@@ -80,6 +80,8 @@ async def publish_image_manifest(
         Environment UUID used to resolve `auth_id`.
     repository : ImageRepository, optional
         Internal image repository that owns `image` and platform digest refs.
+    job_observer : Callable[[Job], Awaitable[None]] | None, optional
+        Callback invoked after the manifest assembly Job is created.
 
     Returns
     -------
@@ -90,15 +92,13 @@ async def publish_image_manifest(
     ------
     TimeoutError
         If the assembly Job cannot complete before `timeout`.
-    OSError
-        If the assembly Job fails or does not emit digest sentinels.
     ValueError
         If refs, platforms, or auth inputs are malformed.
     """
     if timeout <= 0:
         msg = "image manifest publish timeout must be non-negative"
         raise TimeoutError(msg)
-    image = validate_tagged_ref(plan.image, label="internal manifest target")
+    image = validate_tagged_ref(identity.image, label="internal manifest target")
     internal_service_ref = repository.service_ref(image)
     if repository.pull_ref(internal_service_ref) != image:
         msg = f"internal manifest target is not canonical: {image!r}"
@@ -108,7 +108,7 @@ async def publish_image_manifest(
         if external_image is not None
         else None
     )
-    internal_channels = channel_refs(image, plan.channels)
+    internal_channels = channel_refs(image, identity.channels)
     for name, ref in internal_channels.items():
         if ref == image:
             msg = f"internal manifest channel {name!r} duplicates target image"
@@ -118,7 +118,7 @@ async def publish_image_manifest(
             msg = f"internal manifest channel is not canonical: {ref!r}"
             raise ValueError(msg)
     external_channel_refs = (
-        channel_refs(external_image, plan.channels)
+        channel_refs(external_image, identity.channels)
         if external_image is not None
         else {}
     )
@@ -135,7 +135,7 @@ async def publish_image_manifest(
     if env_id is not None:
         env_id = _check_uuid(env_id)
 
-    platform_refs = _validate_platform_results(platform_results, repository)
+    platform_refs = _validate_platform_refs(platform_refs, repository)
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout
     auth_secret = await _resolve_auth_secret(
@@ -186,7 +186,7 @@ async def publish_image_manifest(
         ttl_seconds_after_finished=MANIFEST_JOB_TTL_SECONDS,
         timeout=deadline - loop.time(),
     )
-    await wait_job_complete(
+    logs = await run_observed_job(
         kube,
         job,
         timeout=deadline - loop.time(),
@@ -196,22 +196,12 @@ async def publish_image_manifest(
         tail_lines=MANIFEST_JOB_LOG_TAIL_LINES,
         diagnostic_timeout=MANIFEST_JOB_DIAGNOSTIC_TIMEOUT_SECONDS,
         cleanup_timeout=MANIFEST_JOB_CLEANUP_TIMEOUT_SECONDS,
-    )
-    logs = await job_logs(
-        kube,
-        job,
-        timeout=deadline - loop.time(),
-        tail_lines=MANIFEST_JOB_LOG_TAIL_LINES,
-        failure_label="manifest Job pod logs",
+        observer=job_observer,
     )
 
     internal_digest_ref = repository.pull_ref(
         _parse_sentinel(logs, MANIFEST_INTERNAL_SENTINEL)
     )
-    try:
-        digest = digest_from_ref(internal_digest_ref)
-    except ValueError as err:
-        raise OSError(str(err)) from err
     channel_digest_refs = MappingProxyType(
         {
             name: repository.pull_ref(ref)
@@ -236,18 +226,14 @@ async def publish_image_manifest(
     )
     record = await record_project_image(
         kube,
-        plan=plan,
-        image=image,
-        digest=digest,
+        identity=identity,
         image_digest_ref=internal_digest_ref,
-        platforms=tuple(platform_refs),
         platform_images=MappingProxyType(dict(platform_refs)),
         channel_digest_refs=channel_digest_refs,
         timeout=deadline - loop.time(),
     )
     return ProjectImagePublication(
         record=record,
-        external_image=external_image,
         external_digest_ref=external_digest_ref,
         external_channel_digest_refs=MappingProxyType(
             dict(external_channel_digest_refs)
@@ -255,29 +241,29 @@ async def publish_image_manifest(
     )
 
 
-def _validate_platform_results(
-    platform_results: tuple[BuildKitPlatformResult, ...],
+def _validate_platform_refs(
+    platform_refs: Mapping[str, str],
     repository: ImageRepository,
 ) -> dict[str, str]:
-    if not platform_results:
+    if not platform_refs:
         msg = "image manifest assembly requires at least one platform result"
         raise ValueError(msg)
-    platform_refs: dict[str, str] = {}
-    for result in platform_results:
-        platform = result.platform.strip()
+    validated: dict[str, str] = {}
+    for raw_platform, raw_ref in platform_refs.items():
+        platform = raw_platform.strip()
         if not platform:
             msg = "image manifest platform cannot be empty"
             raise ValueError(msg)
-        if platform in platform_refs:
+        if platform in validated:
             msg = f"duplicate image manifest platform: {platform!r}"
             raise ValueError(msg)
-        digest_ref = result.digest_ref.strip()
+        digest_ref = raw_ref.strip()
         if not DIGEST_REF_RE.fullmatch(digest_ref):
             msg = f"platform image ref must include a sha256 digest: {digest_ref!r}"
             raise ValueError(msg)
         repository.service_ref(digest_ref)
-        platform_refs[platform] = digest_ref
-    return dict(sorted(platform_refs.items()))
+        validated[platform] = digest_ref
+    return dict(sorted(validated.items()))
 
 
 async def _resolve_auth_secret(

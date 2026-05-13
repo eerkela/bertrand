@@ -11,7 +11,7 @@ from kubernetes import client as kube_client
 from .api import (
     Kube,
     NamespacedKubeMetadata,
-    NamespacedResourceClient,
+    ResourceClient,
 )
 
 if TYPE_CHECKING:
@@ -37,8 +37,9 @@ class ConfigMap(NamespacedKubeMetadata[kube_client.V1ConfigMap]):
     _obj: kube_client.V1ConfigMap
 
     @classmethod
-    def _client(cls) -> NamespacedResourceClient[kube_client.V1ConfigMap, Self]:
-        return NamespacedResourceClient(
+    def _client(cls) -> ResourceClient[kube_client.V1ConfigMap, Self]:
+        return ResourceClient(
+            scope="namespaced",
             kind="ConfigMap",
             expected=kube_client.V1ConfigMap,
             list_type=kube_client.V1ConfigMapList,

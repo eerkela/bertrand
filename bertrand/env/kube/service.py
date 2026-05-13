@@ -11,7 +11,7 @@ import kubernetes
 from .api import (
     Kube,
     NamespacedKubeMetadata,
-    NamespacedResourceClient,
+    ResourceClient,
     ServicePortSpec,
 )
 from .api.view import ServicePortView
@@ -42,8 +42,9 @@ class Service(NamespacedKubeMetadata[kubernetes.client.V1Service]):
     _obj: kubernetes.client.V1Service
 
     @classmethod
-    def _client(cls) -> NamespacedResourceClient[kubernetes.client.V1Service, Self]:
-        return NamespacedResourceClient(
+    def _client(cls) -> ResourceClient[kubernetes.client.V1Service, Self]:
+        return ResourceClient(
+            scope="namespaced",
             kind="Service",
             expected=kubernetes.client.V1Service,
             list_type=kubernetes.client.V1ServiceList,

@@ -8,11 +8,10 @@ from typing import TYPE_CHECKING, Literal, Self
 from kubernetes import client as kube_client
 
 from .api import (
-    ClusterResourceClient,
     KubeMetadata,
     NamespacedKubeMetadata,
-    NamespacedResourceClient,
     PolicyRuleSpec,
+    ResourceClient,
 )
 
 if TYPE_CHECKING:
@@ -125,39 +124,44 @@ class ClusterRole(KubeMetadata[kube_client.V1ClusterRole]):
     _obj: kube_client.V1ClusterRole
 
     @classmethod
-    def _client(cls) -> ClusterResourceClient[kube_client.V1ClusterRole, Self]:
-        return ClusterResourceClient(
+    def _client(cls) -> ResourceClient[kube_client.V1ClusterRole, Self]:
+        return ResourceClient(
+            scope="cluster",
             kind="ClusterRole",
             expected=kube_client.V1ClusterRole,
             list_type=kube_client.V1ClusterRoleList,
             wrapper=lambda payload: cls(_obj=payload),
-            read=lambda kube, name, request_timeout: kube.rbac.read_cluster_role(
-                name=name,
-                _request_timeout=request_timeout,
+            read=lambda kube, _namespace, name, request_timeout: (
+                kube.rbac.read_cluster_role(
+                    name=name,
+                    _request_timeout=request_timeout,
+                )
             ),
-            list_items=lambda kube, label_selector, field_selector, request_timeout: (
+            list_all=lambda kube, label_selector, field_selector, request_timeout: (
                 kube.rbac.list_cluster_role(
                     label_selector=label_selector,
                     field_selector=field_selector,
                     _request_timeout=request_timeout,
                 )
             ),
-            create=lambda kube, _name, manifest, request_timeout: (
+            create=lambda kube, _namespace, _name, manifest, request_timeout: (
                 kube.rbac.create_cluster_role(
                     body=manifest,
                     _request_timeout=request_timeout,
                 )
             ),
-            patch=lambda kube, name, manifest, request_timeout: (
+            patch=lambda kube, _namespace, name, manifest, request_timeout: (
                 kube.rbac.patch_cluster_role(
                     name=name,
                     body=manifest,
                     _request_timeout=request_timeout,
                 )
             ),
-            delete=lambda kube, name, request_timeout: kube.rbac.delete_cluster_role(
-                name=name,
-                _request_timeout=request_timeout,
+            delete=lambda kube, _namespace, name, request_timeout: (
+                kube.rbac.delete_cluster_role(
+                    name=name,
+                    _request_timeout=request_timeout,
+                )
             ),
         )
 
@@ -333,39 +337,40 @@ class ClusterRoleBinding(KubeMetadata[kube_client.V1ClusterRoleBinding]):
     @classmethod
     def _client(
         cls,
-    ) -> ClusterResourceClient[kube_client.V1ClusterRoleBinding, Self]:
-        return ClusterResourceClient(
+    ) -> ResourceClient[kube_client.V1ClusterRoleBinding, Self]:
+        return ResourceClient(
+            scope="cluster",
             kind="ClusterRoleBinding",
             expected=kube_client.V1ClusterRoleBinding,
             list_type=kube_client.V1ClusterRoleBindingList,
             wrapper=lambda payload: cls(_obj=payload),
-            read=lambda kube, name, request_timeout: (
+            read=lambda kube, _namespace, name, request_timeout: (
                 kube.rbac.read_cluster_role_binding(
                     name=name,
                     _request_timeout=request_timeout,
                 )
             ),
-            list_items=lambda kube, label_selector, field_selector, request_timeout: (
+            list_all=lambda kube, label_selector, field_selector, request_timeout: (
                 kube.rbac.list_cluster_role_binding(
                     label_selector=label_selector,
                     field_selector=field_selector,
                     _request_timeout=request_timeout,
                 )
             ),
-            create=lambda kube, _name, manifest, request_timeout: (
+            create=lambda kube, _namespace, _name, manifest, request_timeout: (
                 kube.rbac.create_cluster_role_binding(
                     body=manifest,
                     _request_timeout=request_timeout,
                 )
             ),
-            patch=lambda kube, name, manifest, request_timeout: (
+            patch=lambda kube, _namespace, name, manifest, request_timeout: (
                 kube.rbac.patch_cluster_role_binding(
                     name=name,
                     body=manifest,
                     _request_timeout=request_timeout,
                 )
             ),
-            delete=lambda kube, name, request_timeout: (
+            delete=lambda kube, _namespace, name, request_timeout: (
                 kube.rbac.delete_cluster_role_binding(
                     name=name,
                     _request_timeout=request_timeout,
@@ -553,8 +558,9 @@ class Role(NamespacedKubeMetadata[kube_client.V1Role]):
     _obj: kube_client.V1Role
 
     @classmethod
-    def _client(cls) -> NamespacedResourceClient[kube_client.V1Role, Self]:
-        return NamespacedResourceClient(
+    def _client(cls) -> ResourceClient[kube_client.V1Role, Self]:
+        return ResourceClient(
+            scope="namespaced",
             kind="Role",
             expected=kube_client.V1Role,
             list_type=kube_client.V1RoleList,
@@ -817,8 +823,9 @@ class RoleBinding(NamespacedKubeMetadata[kube_client.V1RoleBinding]):
     _obj: kube_client.V1RoleBinding
 
     @classmethod
-    def _client(cls) -> NamespacedResourceClient[kube_client.V1RoleBinding, Self]:
-        return NamespacedResourceClient(
+    def _client(cls) -> ResourceClient[kube_client.V1RoleBinding, Self]:
+        return ResourceClient(
+            scope="namespaced",
             kind="RoleBinding",
             expected=kube_client.V1RoleBinding,
             list_type=kube_client.V1RoleBindingList,

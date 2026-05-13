@@ -12,7 +12,7 @@ from kubernetes import client as kube_client
 from .api import (
     Kube,
     NamespacedKubeMetadata,
-    NamespacedResourceClient,
+    ResourceClient,
 )
 
 if TYPE_CHECKING:
@@ -33,8 +33,9 @@ class Secret(NamespacedKubeMetadata[kube_client.V1Secret]):
     _obj: kube_client.V1Secret
 
     @classmethod
-    def _client(cls) -> NamespacedResourceClient[kube_client.V1Secret, Self]:
-        return NamespacedResourceClient(
+    def _client(cls) -> ResourceClient[kube_client.V1Secret, Self]:
+        return ResourceClient(
+            scope="namespaced",
             kind="Secret",
             expected=kube_client.V1Secret,
             list_type=kube_client.V1SecretList,

@@ -9,7 +9,7 @@ from kubernetes import client as kube_client
 
 from .api import (
     NamespacedKubeMetadata,
-    NamespacedResourceClient,
+    ResourceClient,
 )
 
 if TYPE_CHECKING:
@@ -33,8 +33,9 @@ class Lease(NamespacedKubeMetadata[kube_client.V1Lease]):
     _obj: kube_client.V1Lease
 
     @classmethod
-    def _client(cls) -> NamespacedResourceClient[kube_client.V1Lease, Self]:
-        return NamespacedResourceClient(
+    def _client(cls) -> ResourceClient[kube_client.V1Lease, Self]:
+        return ResourceClient(
+            scope="namespaced",
             kind="Lease",
             expected=kube_client.V1Lease,
             list_type=kube_client.V1LeaseList,

@@ -14,8 +14,8 @@ from .api import (
     DeploymentStrategySpec,
     Kube,
     NamespacedKubeMetadata,
-    NamespacedResourceClient,
     PodTemplateSpec,
+    ResourceClient,
     WatchEvent,
 )
 from .api._render import (
@@ -49,8 +49,9 @@ class Deployment(NamespacedKubeMetadata[kubernetes.client.V1Deployment]):
     @classmethod
     def _client(
         cls,
-    ) -> NamespacedResourceClient[kubernetes.client.V1Deployment, Self]:
-        return NamespacedResourceClient(
+    ) -> ResourceClient[kubernetes.client.V1Deployment, Self]:
+        return ResourceClient(
+            scope="namespaced",
             kind="Deployment",
             expected=kubernetes.client.V1Deployment,
             list_type=kubernetes.client.V1DeploymentList,
@@ -244,16 +245,12 @@ class Deployment(NamespacedKubeMetadata[kubernetes.client.V1Deployment]):
                 payload: dict[str, object] = {"type": strategy_type}
                 if strategy_type == "Recreate":
                     payload["rollingUpdate"] = None
-                elif strategy.rolling_update_config is not None:
+                else:
                     rolling_update: dict[str, object] = {}
-                    if strategy.rolling_update_config.max_surge is not None:
-                        rolling_update["maxSurge"] = (
-                            strategy.rolling_update_config.max_surge
-                        )
-                    if strategy.rolling_update_config.max_unavailable is not None:
-                        rolling_update["maxUnavailable"] = (
-                            strategy.rolling_update_config.max_unavailable
-                        )
+                    if strategy.max_surge is not None:
+                        rolling_update["maxSurge"] = strategy.max_surge
+                    if strategy.max_unavailable is not None:
+                        rolling_update["maxUnavailable"] = strategy.max_unavailable
                     if rolling_update:
                         payload["rollingUpdate"] = rolling_update
                 spec["strategy"] = payload

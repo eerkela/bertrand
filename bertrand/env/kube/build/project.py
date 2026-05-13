@@ -8,38 +8,33 @@ import json
 import re
 import uuid
 from dataclasses import dataclass
-from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
 from bertrand.env.config import Bertrand, PyProject
 from bertrand.env.config.bertrand import project_image_tag
-from bertrand.env.git import (
-    BERTRAND_ENV,
-    ENV_ID_ENV,
-    IMAGE_TAG_ENV,
-    INFINITY,
-    REPO_ID_ENV,
-    WORKTREE_ENV,
-)
+from bertrand.env.git import INFINITY
 from bertrand.env.kube.build.containerfile import project_containerfile
-from bertrand.env.kube.build.job import BuildKitImageBuild
+from bertrand.env.kube.build.controller import (
+    BuildKitBuildRecord,
+    submit_buildkit_build,
+    wait_buildkit_build,
+)
 from bertrand.env.kube.build.lifecycle import (
+    ProjectImageIdentity,
     ProjectImagePublication,
     ensure_project_image_crd,
+    get_project_image,
     worktree_identity,
 )
-from bertrand.env.kube.build.manifest import publish_image_manifest
 from bertrand.env.kube.build.repository import IMAGES
 
-PROJECT_IMAGE_CONFIG_ID = "BERTRAND_IMAGE_CONFIG_ID"
 PROJECT_IMAGE_ENV_NAMESPACE = uuid.UUID("36eb88bb-c284-4cb2-ab0a-57f5e850868a")
-PROJECT_IMAGE_CONTEXT_PREFIX = "bertrand-project-image"
 _PROJECT_IMAGE_COMPONENT_RE = re.compile(r"[^a-z0-9._-]+")
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping, Sequence
+    from collections.abc import Awaitable, Callable, Mapping, Sequence
 
-    from bertrand.env.config.core import Config, KubeName, OCIImageRef
+    from bertrand.env.config.core import Config, KubeName
     from bertrand.env.kube.api import Kube
 
 
@@ -54,35 +49,33 @@ class ProjectImageBuild:
 
     Parameters
     ----------
-    repo_id : str
-        Stable repository UUID used to scope the image and capabilities.
-    worktree : str
-        Repository-relative worktree path, or ``"."`` for the repository root.
-    tag : str
-        Configured image key from ``[tool.bertrand.image]``.
-    env_id : str
-        Deterministic environment UUID used for capability resolution.
-    config_id : str
-        Deterministic hash of the image configuration inputs.
+    identity : ProjectImageIdentity
+        Stable publication identity shared by the request, manifest, and lifecycle
+        record layers.
     oci_tag : str
         Derived OCI tag used for internal and external registry references.
-    image : OCIImageRef
-        Mutable registry reference published by this build.
-    channels : tuple[str, ...]
-        Moving channel tags to publish as aliases of this image.
-    build : BuildKitImageBuild
-        Underlying BuildKit Job contract.
+    dockerfile : str
+        Rendered Containerfile text submitted with the durable request.
+    build_args : dict[str, str]
+        Dockerfile build arguments.
+    target : str | None
+        Optional target stage in a multi-stage Containerfile.
+    secrets : Mapping[KubeName, bool]
+        Secret capability requests exposed to the build.
+    ssh : Mapping[KubeName, bool]
+        SSH capability requests exposed to the build.
+    devices : Mapping[KubeName, bool]
+        CDI device capability requests exposed to the build.
     """
 
-    repo_id: str
-    worktree: str
-    tag: str
-    env_id: str
-    config_id: str
+    identity: ProjectImageIdentity
     oci_tag: str
-    image: OCIImageRef
-    channels: tuple[str, ...]
-    build: BuildKitImageBuild
+    dockerfile: str
+    build_args: dict[str, str]
+    target: str | None
+    secrets: Mapping[KubeName, bool]
+    ssh: Mapping[KubeName, bool]
+    devices: Mapping[KubeName, bool]
 
     async def publish(
         self,
@@ -91,6 +84,7 @@ class ProjectImageBuild:
         timeout: float = INFINITY,
         external_image: str | None = None,
         auth_id: KubeName | None = None,
+        on_update: Callable[[BuildKitBuildRecord], Awaitable[None]] | None = None,
     ) -> ProjectImagePublication:
         """Publish this project image manifest and update its lifecycle record.
 
@@ -105,6 +99,8 @@ class ProjectImageBuild:
         auth_id : KubeName | None, optional
             Secret capability ID containing Docker auth JSON for the external
             registry.
+        on_update : Callable[[BuildKitBuildRecord], Awaitable[None]] | None, optional
+            Async callback invoked when the durable request status changes.
 
         Returns
         -------
@@ -116,26 +112,103 @@ class ProjectImageBuild:
         TimeoutError
             If CRD convergence, image publication, or record updates exceed
             `timeout`.
+        OSError
+            If the durable build request fails or its lifecycle record is missing.
         """
         if timeout <= 0:
             msg = "project image publish timeout must be non-negative"
             raise TimeoutError(msg)
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
-        await ensure_project_image_crd(kube, timeout=deadline - loop.time())
-        platform_results = await self.build.publish_platforms(
+        request = await self.submit(
             kube,
-            env_id=self.env_id,
-            timeout=deadline - loop.time(),
-        )
-        return await publish_image_manifest(
-            kube,
-            plan=self,
-            platform_results=platform_results,
             timeout=deadline - loop.time(),
             external_image=external_image,
             auth_id=auth_id,
-            env_id=self.env_id,
+        )
+        request = await wait_buildkit_build(
+            kube,
+            name=request.name,
+            timeout=deadline - loop.time(),
+            on_update=on_update,
+        )
+        status = request.status
+        if status.phase != "Succeeded":
+            detail = status.message or f"BuildKitBuild {request.name!r} failed"
+            logs = status.log_excerpt.strip()
+            if logs:
+                detail = f"{detail}\n\nBuild logs:\n{logs}"
+            raise OSError(detail)
+        if not status.record_name:
+            msg = f"BuildKitBuild {request.name!r} succeeded without a record name"
+            raise OSError(msg)
+        record = await get_project_image(
+            kube,
+            name=status.record_name,
+            timeout=deadline - loop.time(),
+        )
+        if record is None:
+            msg = (
+                f"BuildKitBuild {request.name!r} recorded missing project image "
+                f"{status.record_name!r}"
+            )
+            raise OSError(msg)
+        return ProjectImagePublication(
+            record=record,
+            external_digest_ref=status.external_digest_ref or None,
+            external_channel_digest_refs=status.external_channel_digest_refs,
+        )
+
+    async def submit(
+        self,
+        kube: Kube,
+        *,
+        timeout: float = INFINITY,
+        external_image: str | None = None,
+        auth_id: KubeName | None = None,
+    ) -> BuildKitBuildRecord:
+        """Submit this project image as a durable BuildKit request.
+
+        Parameters
+        ----------
+        kube : Kube
+            Active Kubernetes API context.
+        timeout : float, optional
+            Maximum submission budget in seconds. If infinite, wait indefinitely.
+        external_image : str | None, optional
+            Optional external image reference to copy the assembled manifest to.
+        auth_id : KubeName | None, optional
+            Secret capability ID containing Docker auth JSON for the external
+            registry.
+
+        Returns
+        -------
+        BuildKitBuildRecord
+            Submitted durable build request.
+
+        Raises
+        ------
+        TimeoutError
+            If CRD convergence or request creation exceeds `timeout`.
+        """
+        if timeout <= 0:
+            msg = "project image submit timeout must be non-negative"
+            raise TimeoutError(msg)
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        await ensure_project_image_crd(kube, timeout=deadline - loop.time())
+        return await submit_buildkit_build(
+            kube,
+            identity=self.identity,
+            dockerfile=self.dockerfile,
+            build_args=self.build_args,
+            target=self.target,
+            secrets=self.secrets,
+            ssh=self.ssh,
+            devices=self.devices,
+            timeout=deadline - loop.time(),
+            external_image=external_image,
+            auth_id=auth_id,
         )
 
 
@@ -223,34 +296,24 @@ def project_image_build(
             name for name, channel in bertrand.channel.items() if channel.image == tag
         )
     )
-    return ProjectImageBuild(
+    identity = ProjectImageIdentity(
         repo_id=repo_id,
         worktree=worktree,
         tag=tag,
         env_id=env_id,
         config_id=config_id,
-        oci_tag=oci_tag,
         image=image,
         channels=channels,
-        build=BuildKitImageBuild(
-            image=image,
-            dockerfile=dockerfile,
-            context_copies=((config.root, Path()),),
-            context_prefix=PROJECT_IMAGE_CONTEXT_PREFIX,
-            build_args=_build_args(image_config.args),
-            build_labels={
-                BERTRAND_ENV: "1",
-                REPO_ID_ENV: repo_id,
-                WORKTREE_ENV: worktree,
-                IMAGE_TAG_ENV: tag,
-                ENV_ID_ENV: env_id,
-                PROJECT_IMAGE_CONFIG_ID: config_id,
-            },
-            target=image_config.target,
-            secrets=_capability_requests(image_config.secrets),
-            ssh=_capability_requests(image_config.ssh),
-            devices=_capability_requests(image_config.devices),
-        ),
+    )
+    return ProjectImageBuild(
+        identity=identity,
+        oci_tag=oci_tag,
+        dockerfile=dockerfile,
+        build_args=_build_args(image_config.args),
+        target=image_config.target,
+        secrets=_capability_requests(image_config.secrets),
+        ssh=_capability_requests(image_config.ssh),
+        devices=_capability_requests(image_config.devices),
     )
 
 

@@ -43,7 +43,19 @@ class RepoVolume:
     pvc: PersistentVolumeClaim
 
     @staticmethod
-    def _kube_name(repo_id: str) -> str:
+    def claim_name(repo_id: str) -> str:
+        """Return the deterministic PVC name for a repository identity.
+
+        Parameters
+        ----------
+        repo_id : str
+            Repository UUID used to derive the managed claim name.
+
+        Returns
+        -------
+        str
+            Kubernetes PVC name for the repository volume.
+        """
         repo_id = _check_uuid(repo_id)
         h = hashlib.sha256()
         encoded: bytes = repo_id.encode("utf-8")
@@ -137,7 +149,7 @@ class RepoVolume:
         if not size_request:
             msg = "size request cannot be empty"
             raise ValueError(msg)
-        claim_name = cls._kube_name(repo_id)
+        claim_name = cls.claim_name(repo_id)
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
         storage = await StorageClass.select(
@@ -234,7 +246,7 @@ class RepoVolume:
             repo_id = _check_uuid(repo_id)
             cls._assert_managed_pvc(
                 pvc,
-                claim_name=cls._kube_name(repo_id),
+                claim_name=cls.claim_name(repo_id),
                 repo_id=repo_id,
                 storage_class=None,
                 require_rwx=False,
