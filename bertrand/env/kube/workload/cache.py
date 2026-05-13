@@ -1,4 +1,4 @@
-"""Build cache volume lifecycle helpers for Bertrand's Kubernetes runtime."""
+"""Resource cache volume lifecycle helpers for Bertrand workloads."""
 
 from __future__ import annotations
 
@@ -16,6 +16,7 @@ from bertrand.env.config.core import (
     _check_uuid,
 )
 from bertrand.env.git import BERTRAND_ENV, BERTRAND_NAMESPACE, ENV_ID_ENV
+from bertrand.env.kube.api import VolumeMountSpec, VolumeSpec
 from bertrand.env.kube.pod import Pod
 from bertrand.env.kube.volume import PersistentVolumeClaim, StorageClass
 
@@ -27,7 +28,7 @@ CACHE_VOLUME_ENV: str = "BERTRAND_CACHE_VOLUME"
 
 @dataclass(frozen=True)
 class CacheVolume:
-    """Structured metadata for one build cache volume.
+    """Structured metadata for one resource cache volume.
 
     Parameters
     ----------
@@ -40,16 +41,60 @@ class CacheVolume:
     name: KubeName
     target: AbsolutePosixPath
 
+    @property
+    def pod_volume_name(self) -> KubeName:
+        """Return a compact Pod-local volume name for this cache PVC.
+
+        Returns
+        -------
+        KubeName
+            Deterministic name used inside Pod specs. This is intentionally shorter
+            than the PVC name because Kubernetes volume names share DNS label
+            constraints while Bertrand cache claim names encode full fingerprints.
+        """
+        payload = f"{self.name}:{self.target.as_posix()}".encode()
+        return f"cache-{hashlib.sha256(payload).hexdigest()[:16]}"
+
+    def volume_spec(self) -> VolumeSpec:
+        """Render this cache as a PVC-backed pod volume.
+
+        Returns
+        -------
+        VolumeSpec
+            Pod volume specification that references this cache PVC.
+        """
+        return VolumeSpec.pvc(self.pod_volume_name, claim_name=self.name)
+
+    def volume_mount(self, *, read_only: bool | None = None) -> VolumeMountSpec:
+        """Render this cache as a container volume mount.
+
+        Parameters
+        ----------
+        read_only : bool | None, optional
+            Whether to mount the cache read-only. ``None`` leaves the Kubernetes
+            default, which is read-write for PVC mounts.
+
+        Returns
+        -------
+        VolumeMountSpec
+            Container volume mount specification for this cache target.
+        """
+        return VolumeMountSpec(
+            name=self.pod_volume_name,
+            mount_path=self.target.as_posix(),
+            read_only=read_only,
+        )
+
     @classmethod
     async def from_config(cls, config: Config, tag: str, env_id: str) -> list[Self]:
-        """Collect and validate cache volume specifications for a build tag.
+        """Collect and validate cache volume specifications for an image tag.
 
         Parameters
         ----------
         config : Config
             Active configuration context with resolved resources and registry.
         tag : str
-            Active build tag used to query each resource's volume declarations.
+            Active image tag used to query each resource's volume declarations.
         env_id : str
             Canonical environment UUID used for volume name derivation and collision
             checks.
@@ -194,7 +239,7 @@ class CacheVolume:
         storage_class: str,
         size_request: str,
     ) -> None:
-        """Ensure deterministic cache PVCs exist for one build tag.
+        """Ensure deterministic cache PVCs exist for one image tag.
 
         Parameters
         ----------
@@ -203,7 +248,7 @@ class CacheVolume:
         config : Config
             Active configuration context with resolved resources.
         tag : str
-            Build tag whose resource cache declarations should be converged.
+            Image tag whose resource cache declarations should be converged.
         env_id : str
             Canonical environment UUID used for cache ownership labels.
         timeout : float

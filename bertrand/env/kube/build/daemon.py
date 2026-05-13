@@ -68,32 +68,20 @@ class _BuildKitBuilder:
 
     Parameters
     ----------
-    namespace : str
-        Namespace that owns the builder pod.
-    pod : str
-        Builder pod name.
     node : str
         Node running the builder pod.
     platform : str
         Native OCI platform exposed by the node.
-    pod_ip : str
-        Pod IP used by short-lived ``buildctl`` Jobs.
     addr : str
         BuildKit client address, suitable for ``buildctl --addr``.
-    config_hash : str
-        BuildKit config hash annotation installed on the builder pod.
     config_current : bool
         Whether ``config_hash`` matches the expected hash passed by the caller, or
         ``True`` when no expected hash was provided.
     """
 
-    namespace: str
-    pod: str
     node: str
     platform: str
-    pod_ip: str
     addr: str
-    config_hash: str
     config_current: bool
 
 
@@ -468,20 +456,40 @@ class BuildKitPool:
         nodes = await Node.list(kube, timeout=timeout)
         return self._eligible_nodes_from(nodes)
 
-    def _eligible_nodes_from(self, nodes: Iterable[Node]) -> tuple[Node, ...]:
-        return tuple(
-            sorted(
-                (node for node in nodes if node.is_build_eligible),
-                key=lambda node: node.name,
-            )
-        )
-
-    def _candidate_groups(
+    async def _builder_candidates(
         self,
-        snapshot: _BuildKitPoolSnapshot,
+        kube: Kube,
         *,
+        timeout: float,
         config_hash: str | None,
     ) -> dict[str, tuple[_BuildKitBuilder, ...]]:
+        """Return ready BuildKit builders grouped by native platform.
+
+        Parameters
+        ----------
+        kube : Kube
+            Kubernetes API client for the target cluster.
+        timeout : float
+            Maximum discovery budget in seconds. If infinite, wait indefinitely.
+        config_hash : str | None
+            Expected BuildKit configuration hash. When provided, stale builder pods
+            are excluded from the returned candidates.
+
+        Returns
+        -------
+        dict[str, tuple[_BuildKitBuilder, ...]]
+            Current builder candidates keyed by eligible native platform.
+
+        Raises
+        ------
+        OSError
+            If no current builder is available for an eligible platform.
+        """
+        snapshot = await self._snapshot(
+            kube,
+            timeout=timeout,
+            config_hash=config_hash,
+        )
         targets = snapshot.expected_platforms
         if not targets:
             msg = "BuildKit scheduling requires at least one eligible platform"
@@ -496,13 +504,7 @@ class BuildKitPool:
             candidates = [
                 builder for builder in builders if builder.platform == platform
             ]
-            candidates.sort(
-                key=lambda builder: (
-                    builder.platform,
-                    builder.node,
-                    builder.pod,
-                )
-            )
+            candidates.sort(key=_builder_sort_key)
             if not candidates:
                 msg = f"BuildKit has no ready builder for platform {platform!r}"
                 if config_hash is not None:
@@ -513,6 +515,14 @@ class BuildKitPool:
                 raise OSError(msg)
             out[platform] = tuple(candidates)
         return out
+
+    def _eligible_nodes_from(self, nodes: Iterable[Node]) -> tuple[Node, ...]:
+        return tuple(
+            sorted(
+                (node for node in nodes if node.is_build_eligible),
+                key=lambda node: node.name,
+            )
+        )
 
     def _builders_from(
         self,
@@ -534,13 +544,9 @@ class BuildKitPool:
             pod_hash = pod.annotations.get(BUILDKIT_CONFIG_HASH_ANNOTATION, "")
             builders.append(
                 _BuildKitBuilder(
-                    namespace=pod.namespace,
-                    pod=pod.name,
                     node=node.name,
                     platform=node.platform,
-                    pod_ip=pod.pod_ip,
                     addr=f"tcp://{pod.pod_ip}:{self.port}",
-                    config_hash=pod_hash,
                     config_current=config_hash is None or pod_hash == config_hash,
                 )
             )
@@ -548,7 +554,7 @@ class BuildKitPool:
 
 
 def _builder_sort_key(builder: _BuildKitBuilder) -> tuple[str, str, str]:
-    return (builder.platform, builder.node, builder.pod)
+    return (builder.platform, builder.node, builder.addr)
 
 
 BUILDKIT_POOL = BuildKitPool(

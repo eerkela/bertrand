@@ -45,15 +45,13 @@ class _CapabilityRequest(Protocol):
 
 @dataclass(frozen=True)
 class ProjectImageBuild:
-    """Cluster-native image build plan for one configured project image key.
+    """Cluster-native image build request for one configured project image key.
 
     Parameters
     ----------
     identity : ProjectImageIdentity
         Stable publication identity shared by the request, manifest, and lifecycle
         record layers.
-    oci_tag : str
-        Derived OCI tag used for internal and external registry references.
     dockerfile : str
         Rendered Containerfile text submitted with the durable request.
     build_args : dict[str, str]
@@ -69,7 +67,6 @@ class ProjectImageBuild:
     """
 
     identity: ProjectImageIdentity
-    oci_tag: str
     dockerfile: str
     build_args: dict[str, str]
     target: str | None
@@ -232,7 +229,7 @@ def project_image_build(
     Returns
     -------
     ProjectImageBuild
-        Build plan containing deterministic identity, target image, and BuildKit
+        Build request containing deterministic identity, target image, and BuildKit
         execution contract.
 
     Raises
@@ -307,7 +304,6 @@ def project_image_build(
     )
     return ProjectImageBuild(
         identity=identity,
-        oci_tag=oci_tag,
         dockerfile=dockerfile,
         build_args=_build_args(image_config.args),
         target=image_config.target,

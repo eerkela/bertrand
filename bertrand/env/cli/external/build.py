@@ -19,7 +19,7 @@ from bertrand.env.kube.build.daemon import BUILDKIT_POOL
 from bertrand.env.kube.build.execution import job_logs
 from bertrand.env.kube.build.lifecycle import gc_project_images
 from bertrand.env.kube.build.project import project_image_build
-from bertrand.env.kube.build.refs import validate_tag
+from bertrand.env.kube.build.refs import split_tagged_ref
 from bertrand.env.kube.build.repository import IMAGES
 from bertrand.env.kube.deployment import Deployment
 from bertrand.env.kube.job import Job
@@ -98,14 +98,14 @@ async def bertrand_build(
             repo_id = resolve_repo_id(config.repo)
             tags = _image_tags(config)
             for tag in tags:
-                plan = project_image_build(config, tag, repo_id=repo_id)
+                build = project_image_build(config, tag, repo_id=repo_id)
                 external_image = (
-                    _external_image(publish_repo, plan.oci_tag)
+                    _external_image(publish_repo, build.identity.image)
                     if publish_repo is not None
                     else None
                 )
                 if detach:
-                    request = await plan.submit(
+                    request = await build.submit(
                         kube,
                         timeout=INFINITY,
                         external_image=external_image,
@@ -116,7 +116,7 @@ async def bertrand_build(
                     follower = None if quiet else _BuildLogFollower(kube)
                     try:
                         on_update = None if follower is None else follower.update
-                        result = await plan.publish(
+                        result = await build.publish(
                             kube,
                             timeout=INFINITY,
                             external_image=external_image,
@@ -258,12 +258,8 @@ def _github_remote_identity(url: str) -> tuple[str, str] | None:
     return None
 
 
-def _external_image(repo: str, tag: str) -> str:
-    try:
-        validate_tag(tag, label="derived image tag")
-    except ValueError as err:
-        msg = f"derived image tag is not a valid OCI tag: {tag!r}"
-        raise ValueError(msg) from err
+def _external_image(repo: str, image: str) -> str:
+    _, tag = split_tagged_ref(image, label="internal project image")
     return f"{repo}:{tag}"
 
 

@@ -9,7 +9,6 @@ import uuid
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from types import MappingProxyType
 from typing import TYPE_CHECKING
 
 from bertrand.env.config.core import _check_kube_name, _check_uuid
@@ -81,15 +80,6 @@ class _PreparedBuildContext:
     volumes: tuple[VolumeSpec, ...]
     mounts: tuple[VolumeMountSpec, ...]
     cleanup_config_map: str | None
-
-
-@dataclass(frozen=True)
-class _BuildKitExecutionWorkspace:
-    source: _PreparedBuildContext
-    capability_volumes: tuple[VolumeSpec, ...]
-    capability_mounts: tuple[VolumeMountSpec, ...]
-    secret_paths: Mapping[str, str]
-    ssh_paths: Mapping[str, str]
 
 
 @dataclass(frozen=True)
@@ -359,11 +349,20 @@ class _ProjectBuildExecutor:
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
 
-        async with self._execution_workspace(
+        async with self._prepared_source(
             kube,
-            env_id=env_id,
             timeout=deadline - loop.time(),
-        ) as workspace:
+        ) as source:
+            (
+                capability_volumes,
+                capability_mounts,
+                secret_paths,
+                ssh_paths,
+            ) = await self._capability_mounts(
+                kube,
+                env_id=env_id,
+                timeout=deadline - loop.time(),
+            )
             targets = await self._schedule(
                 kube,
                 env_id=env_id,
@@ -389,12 +388,11 @@ class _ProjectBuildExecutor:
                     builder=builder,
                     device_selectors=device_selectors,
                     image=image,
-                    source=workspace.source,
-                    capability_volumes=workspace.capability_volumes,
-                    capability_mounts=workspace.capability_mounts,
-                    secret_paths=workspace.secret_paths,
-                    ssh_paths=workspace.ssh_paths,
-                    node_name=builder.node,
+                    source=source,
+                    capability_volumes=tuple(capability_volumes),
+                    capability_mounts=tuple(capability_mounts),
+                    secret_paths=secret_paths,
+                    ssh_paths=ssh_paths,
                     job_observer=(
                         None
                         if job_observer is None
@@ -408,40 +406,6 @@ class _ProjectBuildExecutor:
                 results[platform] = digest_ref(image, digest)
             return dict(sorted(results.items()))
 
-    @asynccontextmanager
-    async def _execution_workspace(
-        self,
-        kube: Kube,
-        *,
-        env_id: str | None,
-        timeout: float,
-    ) -> AsyncIterator[_BuildKitExecutionWorkspace]:
-        if timeout <= 0:
-            msg = "BuildKit execution workspace timeout must be non-negative"
-            raise TimeoutError(msg)
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + timeout
-        async with self._prepared_source(
-            kube, timeout=deadline - loop.time()
-        ) as source:
-            (
-                capability_volumes,
-                capability_mounts,
-                secret_paths,
-                ssh_paths,
-            ) = await self._capability_mounts(
-                kube,
-                env_id=env_id,
-                timeout=deadline - loop.time(),
-            )
-            yield _BuildKitExecutionWorkspace(
-                source=source,
-                capability_volumes=tuple(capability_volumes),
-                capability_mounts=tuple(capability_mounts),
-                secret_paths=MappingProxyType(secret_paths),
-                ssh_paths=MappingProxyType(ssh_paths),
-            )
-
     async def _publish_target(
         self,
         kube: Kube,
@@ -454,7 +418,6 @@ class _ProjectBuildExecutor:
         capability_mounts: tuple[VolumeMountSpec, ...],
         secret_paths: Mapping[str, str],
         ssh_paths: Mapping[str, str],
-        node_name: str,
         timeout: float,
         job_observer: Callable[[Job], Awaitable[None]] | None = None,
     ) -> str:
@@ -504,7 +467,7 @@ class _ProjectBuildExecutor:
                     VolumeSpec.empty_dir(BUILD_JOB_METADATA_VOLUME),
                     *capability_volumes,
                 ],
-                node_name=node_name,
+                node_name=builder.node,
             ),
             ttl_seconds_after_finished=BUILD_JOB_TTL_SECONDS,
             timeout=deadline - loop.time(),
@@ -698,13 +661,9 @@ class _ProjectBuildExecutor:
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
         config_hash = IMAGES.buildkit_config_hash
-        snapshot = await BUILDKIT_POOL._snapshot(
+        groups = await BUILDKIT_POOL._builder_candidates(
             kube,
             timeout=deadline - loop.time(),
-            config_hash=config_hash,
-        )
-        groups = BUILDKIT_POOL._candidate_groups(
-            snapshot,
             config_hash=config_hash,
         )
 
