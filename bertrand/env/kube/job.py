@@ -34,6 +34,28 @@ JOB_WAIT_POLL_INTERVAL_SECONDS = 0.5
 type DeletionPropagationPolicy = Literal["Background", "Foreground", "Orphan"]
 
 
+def _job_spec_manifest(
+    *,
+    labels: Mapping[str, str],
+    pod_template: PodTemplateSpec,
+    backoff_limit: int,
+    ttl_seconds_after_finished: int | None,
+) -> dict[str, object]:
+    template_labels = dict(labels)
+    template_labels.update(pod_template.labels)
+    if pod_template.restart_policy is None:
+        pod_template = replace(pod_template, restart_policy="Never")
+    spec: dict[str, object] = {
+        "backoffLimit": backoff_limit,
+        "template": _pod_template_manifest(
+            replace(pod_template, labels=template_labels),
+        ),
+    }
+    if ttl_seconds_after_finished is not None:
+        spec["ttlSecondsAfterFinished"] = ttl_seconds_after_finished
+    return spec
+
+
 @dataclass(frozen=True)
 class Job(NamespacedKubeMetadata[kubernetes.client.V1Job]):
     """General-purpose wrapper around one Kubernetes Job object.
@@ -209,19 +231,6 @@ class Job(NamespacedKubeMetadata[kubernetes.client.V1Job]):
         ttl_seconds_after_finished: int | None,
         annotations: Mapping[str, str] | None,
     ) -> dict[str, object]:
-        template_labels = dict(labels)
-        template_labels.update(pod_template.labels)
-        if pod_template.restart_policy is None:
-            pod_template = replace(pod_template, restart_policy="Never")
-        spec: dict[str, object] = {
-            "backoffLimit": backoff_limit,
-            "template": _pod_template_manifest(
-                replace(pod_template, labels=template_labels),
-            ),
-        }
-        if ttl_seconds_after_finished is not None:
-            spec["ttlSecondsAfterFinished"] = ttl_seconds_after_finished
-
         return {
             "apiVersion": "batch/v1",
             "kind": "Job",
@@ -231,7 +240,12 @@ class Job(NamespacedKubeMetadata[kubernetes.client.V1Job]):
                 "labels": dict(labels),
                 "annotations": dict(annotations or {}),
             },
-            "spec": spec,
+            "spec": _job_spec_manifest(
+                labels=labels,
+                pod_template=pod_template,
+                backoff_limit=backoff_limit,
+                ttl_seconds_after_finished=ttl_seconds_after_finished,
+            ),
         }
 
     @classmethod

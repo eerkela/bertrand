@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal, Self
 
 import kubernetes
@@ -14,7 +14,7 @@ from .api import (
     ResourceClient,
     WatchEvent,
 )
-from .api._render import _pod_template_manifest
+from .job import _job_spec_manifest
 
 if TYPE_CHECKING:
     import builtins
@@ -226,20 +226,6 @@ class CronJob(NamespacedKubeMetadata[kubernetes.client.V1CronJob]):
         failed_jobs_history_limit: int | None,
         time_zone: str | None,
     ) -> dict[str, object]:
-        template_labels = dict(labels)
-        template_labels.update(pod_template.labels)
-        if pod_template.restart_policy is None:
-            pod_template = replace(pod_template, restart_policy="Never")
-
-        job_spec: dict[str, object] = {
-            "backoffLimit": backoff_limit,
-            "template": _pod_template_manifest(
-                replace(pod_template, labels=template_labels),
-            ),
-        }
-        if ttl_seconds_after_finished is not None:
-            job_spec["ttlSecondsAfterFinished"] = ttl_seconds_after_finished
-
         spec: dict[str, object] = {
             "schedule": schedule,
             "concurrencyPolicy": concurrency_policy,
@@ -248,7 +234,12 @@ class CronJob(NamespacedKubeMetadata[kubernetes.client.V1CronJob]):
                     "labels": dict(labels),
                     "annotations": dict(annotations or {}),
                 },
-                "spec": job_spec,
+                "spec": _job_spec_manifest(
+                    labels=labels,
+                    pod_template=pod_template,
+                    backoff_limit=backoff_limit,
+                    ttl_seconds_after_finished=ttl_seconds_after_finished,
+                ),
             },
         }
         optional: dict[str, object | None] = {

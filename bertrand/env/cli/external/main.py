@@ -57,6 +57,7 @@ class External:
             self.version()
             self.init()
             self.build()
+            self.network()
             self.start()
             self.enter()
             self.code()
@@ -184,6 +185,90 @@ class External:
                 "publication.",
             )
             command.set_defaults(handler=External.build)
+
+        def network(self) -> None:
+            """Add the 'network' command namespace to the parser."""
+            command = self.commands.add_parser(
+                "network",
+                help="Inspect and configure cluster-level Bertrand networking.",
+            )
+            subcommands = command.add_subparsers(
+                dest="network_command",
+                title="network commands",
+                metavar="(command)",
+                required=True,
+            )
+
+            status = subcommands.add_parser(
+                "status",
+                help="Show the cluster networking profile and BuildKit config state.",
+            )
+            status.add_argument(
+                "--json",
+                action="store_true",
+                help="Emit machine-readable JSON instead of human-readable text.",
+            )
+            status.set_defaults(handler=External.network)
+
+            dns = subcommands.add_parser(
+                "dns",
+                help="Configure cluster DNS facts consumed by Bertrand infrastructure.",
+            )
+            dns_commands = dns.add_subparsers(
+                dest="dns_command",
+                title="dns commands",
+                metavar="(command)",
+                required=True,
+            )
+            dns_set = dns_commands.add_parser(
+                "set",
+                help="Replace the cluster DNS profile and roll BuildKit builders.",
+            )
+            dns_set.add_argument(
+                "--server",
+                action="append",
+                nargs="+",
+                required=True,
+                metavar="IP",
+                help="DNS nameserver IP address. Repeat or pass multiple values.",
+            )
+            dns_set.add_argument(
+                "--search",
+                action="append",
+                nargs="+",
+                default=[],
+                metavar="DOMAIN",
+                help="DNS search domain. Repeat or pass multiple values.",
+            )
+            dns_set.add_argument(
+                "--option",
+                action="append",
+                nargs="+",
+                default=[],
+                metavar="OPTION",
+                help="Resolver option. Repeat or pass multiple values.",
+            )
+            dns_set.add_argument(
+                "-t",
+                "--timeout",
+                type=float,
+                default=INFINITY,
+                help="Maximum time in seconds for DNS profile convergence.",
+            )
+            dns_set.set_defaults(handler=External.network)
+
+            dns_clear = dns_commands.add_parser(
+                "clear",
+                help="Clear cluster DNS overrides and roll BuildKit builders.",
+            )
+            dns_clear.add_argument(
+                "-t",
+                "--timeout",
+                type=float,
+                default=INFINITY,
+                help="Maximum time in seconds for DNS profile convergence.",
+            )
+            dns_clear.set_defaults(handler=External.network)
 
         def start(self) -> None:
             """Add the 'start' command to the parser."""
@@ -773,6 +858,44 @@ class External:
                 raise TimeoutExpired(
                     cmd=cmd,
                     timeout=0.0,  # indefinite
+                    output=None,
+                    stderr=f"started: {start}\nstopped: {datetime.now(UTC)}\n",
+                ) from err
+
+    @staticmethod
+    def network(args: argparse.Namespace) -> None:
+        """Execute a `bertrand network` CLI subcommand.
+
+        Parameters
+        ----------
+        args : argparse.Namespace
+            The parsed command-line arguments.
+
+        Raises
+        ------
+        OSError
+            If timeout is invalid.
+        TimeoutExpired
+            If the network command does not complete within its timeout.
+        """
+        from bertrand.env.cli.external.network import bertrand_network
+
+        now = time.time()
+        timeout = getattr(args, "timeout", INFINITY)
+        if math.isnan(timeout) or timeout <= 0:
+            msg = f"invalid network timeout: {timeout} (must be > 0 seconds or inf)"
+            raise OSError(msg)
+        with asyncio.Runner() as runner:
+            try:
+                runner.run(bertrand_network(args))
+            except (TimeoutError, TimeoutExpired) as err:
+                start = datetime.fromtimestamp(now, UTC)
+                cmd = ["bertrand", "network", args.network_command]
+                if args.network_command == "dns":
+                    cmd.append(args.dns_command)
+                raise TimeoutExpired(
+                    cmd=cmd,
+                    timeout=timeout,
                     output=None,
                     stderr=f"started: {start}\nstopped: {datetime.now(UTC)}\n",
                 ) from err

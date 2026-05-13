@@ -158,22 +158,6 @@ max-replicas = 1        # maximum number of pods to deploy when `services` is no
                         # scale up to this many pods based on resource utilization
                         # metrics (if available) or manual scaling commands.
 
-[tool.bertrand.network.build]
-mode = "pasta"          # -> --network (none|host|private|slirp4netns|pasta|ns:path)
-options = []            # mode-specific option tokens (see podman docs)
-dns = []                # -> --dns (ip addresses of custom DNS servers)
-dns-search = []         # -> --dns-search (custom DNS search domains)
-dns-options = []        # -> --dns-option (DNS options, stored in `/etc/resolv.conf`)
-add-host = {}           # -> --add-host (hostname = ip|"host-gateway", stored in `/etc/hosts`)
-
-[tool.bertrand.network.run]
-mode = "pasta"          # -> --network (none|host|private|slirp4netns|pasta|ns:path)
-options = []            # mode-specific option tokens (see podman docs)
-dns = []                # -> --dns (ip addresses of custom DNS servers)
-dns-search = []         # -> --dns-search (custom DNS search domains)
-dns-options = []        # -> --dns-option (DNS options, stored in `/etc/resolv.conf`)
-add-host = {}           # -> --add-host (hostname = ip|"host-gateway", stored in `/etc/hosts`)
-
 ############################
 ####    BUILD MATRIX    ####
 ############################

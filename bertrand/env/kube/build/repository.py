@@ -39,6 +39,7 @@ from bertrand.env.kube.build.refs import (
 from bertrand.env.kube.ceph.volume import CEPHFS_STORAGE_CLASS_PREFERENCES
 from bertrand.env.kube.configmap import ConfigMap
 from bertrand.env.kube.deployment import Deployment
+from bertrand.env.kube.network import NetworkProfile
 from bertrand.env.kube.node import Node
 from bertrand.env.kube.service import Service
 from bertrand.env.kube.volume import PersistentVolumeClaim, StorageClass
@@ -206,34 +207,79 @@ class ImageRepository:
             IMAGE_REPOSITORY_LABEL: IMAGE_REPOSITORY_LABEL_VALUE,
         }
 
-    @property
-    def buildkit_config_data(self) -> dict[str, str]:
-        """Return BuildKit registry routing ConfigMap data.
+    def buildkit_config_data(self, profile: NetworkProfile) -> dict[str, str]:
+        """Return BuildKit daemon ConfigMap data.
+
+        Parameters
+        ----------
+        profile : NetworkProfile
+            Cluster networking profile to compose into BuildKit daemon
+            configuration.
 
         Returns
         -------
         dict[str, str]
-            Data payload for the BuildKit registry configuration ConfigMap.
+            Data payload for the BuildKit daemon configuration ConfigMap.
         """
+        network_config = profile.buildkit_toml()
+        registry_config = (
+            f"[registry.\"{self.pull_host}\"]\n"
+            f"  mirrors = [\"{self.service_addr}\"]\n"
+            "  http = true\n"
+            "  insecure = true\n"
+        )
         return {
-            BUILDKIT_CONFIG_KEY: (
-                f"[registry.\"{self.pull_host}\"]\n"
-                f"  mirrors = [\"{self.service_addr}\"]\n"
-                "  http = true\n"
-                "  insecure = true\n"
-            )
+            BUILDKIT_CONFIG_KEY: registry_config
+            if not network_config
+            else f"{network_config}\n{registry_config}"
         }
 
-    @property
-    def buildkit_config_hash(self) -> str:
-        """Return a deterministic hash for BuildKit registry configuration.
+    async def current_buildkit_config_data(
+        self,
+        kube: Kube,
+        *,
+        timeout: float,
+    ) -> dict[str, str]:
+        """Return BuildKit daemon ConfigMap data for the active cluster profile.
+
+        Parameters
+        ----------
+        kube : Kube
+            Active Kubernetes API context.
+        timeout : float
+            Maximum request budget in seconds. If infinite, wait indefinitely.
+
+        Returns
+        -------
+        dict[str, str]
+            Data payload for the BuildKit daemon configuration ConfigMap.
+        """
+        profile = await NetworkProfile.get(kube, timeout=timeout)
+        return self.buildkit_config_data(profile)
+
+    async def current_buildkit_config_hash(
+        self,
+        kube: Kube,
+        *,
+        timeout: float,
+    ) -> str:
+        """Return the expected BuildKit daemon ConfigMap hash.
+
+        Parameters
+        ----------
+        kube : Kube
+            Active Kubernetes API context.
+        timeout : float
+            Maximum request budget in seconds. If infinite, wait indefinitely.
 
         Returns
         -------
         str
-            SHA-256 digest of the BuildKit registry configuration data.
+            SHA-256 digest of the BuildKit daemon configuration data.
         """
-        return _config_hash(self.buildkit_config_data)
+        return _config_hash(
+            await self.current_buildkit_config_data(kube, timeout=timeout)
+        )
 
     async def ensure_trust(self, *, timeout: float = INFINITY) -> None:
         """Converge local MicroK8s containerd trust for this repository.
@@ -536,7 +582,11 @@ class ImageRepository:
                 and bool(storage_class)
                 and pvc.has_access_mode("ReadWriteMany")
             )
-            desired_config_hash = self.buildkit_config_hash
+            desired_config_data = await self.current_buildkit_config_data(
+                kube,
+                timeout=deadline - loop.time(),
+            )
+            desired_config_hash = _config_hash(desired_config_data)
             installed_config_hash = (
                 _config_hash(config.data) if config is not None else ""
             )
@@ -565,7 +615,7 @@ class ImageRepository:
             if not delete_enabled:
                 failures.append("image registry manifest deletion is not enabled")
             if not config_current:
-                failures.append("BuildKit registry routing config is stale")
+                failures.append("BuildKit daemon config is stale")
             if not node_trust_ready:
                 failures.append(
                     "one or more Kubernetes nodes do not trust the image registry"
@@ -667,7 +717,10 @@ class ImageRepository:
             namespace=self.namespace,
             name=BUILDKIT_CONFIG_NAME,
             labels=self.labels,
-            data=self.buildkit_config_data,
+            data=await self.current_buildkit_config_data(
+                kube,
+                timeout=deadline - loop.time(),
+            ),
             timeout=deadline - loop.time(),
         )
         deployment = await Deployment.upsert(

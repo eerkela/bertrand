@@ -41,6 +41,11 @@ BUILDKIT_CONFIG_NAME = f"{BUILDKIT_NAME}-registry"
 BUILDKIT_CONFIG_HASH_ANNOTATION = "bertrand.dev/buildkit-config-hash"
 BUILDKIT_CONFIG_VOLUME = "buildkit-config"
 BUILDKIT_DEVICE_ENTITLEMENT = "device"
+BUILDKIT_NETWORK_HOST_ENTITLEMENT = "network.host"
+BUILDKIT_INSECURE_ENTITLEMENTS = (
+    BUILDKIT_DEVICE_ENTITLEMENT,
+    BUILDKIT_NETWORK_HOST_ENTITLEMENT,
+)
 BUILDKIT_CDI_SPEC_MOUNTS = (
     ("buildkit-cdi-etc", "/etc/cdi"),
     ("buildkit-cdi-run", "/var/run/cdi"),
@@ -222,9 +227,14 @@ class BuildKitPool:
             if config_hash is not None
             else None
         )
-        buildkitd_flags = (
-            f"--addr {BUILDKIT_LISTEN_ADDR!r} "
-            f"--allow-insecure-entitlement {BUILDKIT_DEVICE_ENTITLEMENT!r}"
+        buildkitd_flags = " ".join(
+            (
+                f"--addr {BUILDKIT_LISTEN_ADDR!r}",
+                *(
+                    f"--allow-insecure-entitlement {entitlement!r}"
+                    for entitlement in BUILDKIT_INSECURE_ENTITLEMENTS
+                ),
+            )
         )
         daemonset = await DaemonSet.upsert(
             kube,

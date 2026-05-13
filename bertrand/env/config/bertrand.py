@@ -597,6 +597,7 @@ type NetworkAlias = Annotated[
     NonEmpty[NoWhiteSpace],
     AfterValidator(_check_network_alias),
 ]
+type ImageNetworkMode = Literal["default", "none", "host"]
 type Memory = Annotated[
     str,
     StringConstraints(strip_whitespace=True, pattern=r"^\d+[bkmg]?$"),
@@ -803,7 +804,7 @@ class Bertrand(Resource):
             model_config = ConfigDict(extra="forbid")
 
             class Table(BaseModel):
-                """Validate common fields in `[bertrand.network.*]` tables."""
+                """Validate common fields in `[bertrand.network.run]` tables."""
 
                 model_config = ConfigDict(extra="forbid")
                 mode: Annotated[
@@ -828,7 +829,7 @@ class Bertrand(Resource):
                         ],
                         description=(
                             "The networking driver to use within containers for this "
-                            "project.  Equivalent to `podman build|create --network`\n"
+                            "project.  Equivalent to `podman create --network`\n"
                             "   `none`: disable networking within the container.\n"
                             "   `host`: use the host's network stack directly (best "
                             "performance, no isolation, potentially insecure).\n"
@@ -886,12 +887,10 @@ class Bertrand(Resource):
                         default_factory=list,
                         description=(
                             "Set custom DNS servers.  Equivalent to "
-                            "`podman build|create --dns`.  The special value `none` "
+                            "`podman create --dns`.  The special value `none` "
                             "disables "
                             "creation of `/etc/resolv.conf` by Podman, so the image's "
-                            "`/etc/resolv.conf` is used unchanged.  For builds, this "
-                            "setting only affects `RUN` instructions and does not "
-                            "change `/etc/resolv.conf` in the final image."
+                            "`/etc/resolv.conf` is used unchanged."
                         ),
                     ),
                 ]
@@ -901,9 +900,7 @@ class Bertrand(Resource):
                         default_factory=list,
                         alias="dns-search",
                         description="Set custom DNS search domains.  Equivalent to "
-                        "`podman build|create --dns-search`.  For builds, this setting "
-                        "only affects `RUN` instructions and does not change "
-                        "`/etc/resolv.conf` in the final image.",
+                        "`podman create --dns-search`.",
                     ),
                 ]
                 dns_options: Annotated[
@@ -912,9 +909,7 @@ class Bertrand(Resource):
                         default_factory=list,
                         alias="dns-options",
                         description="Set custom DNS resolver options.  Equivalent to "
-                        "`podman build|create --dns-option`.  For builds, this setting "
-                        "only affects `RUN` instructions and does not change "
-                        "`/etc/resolv.conf` in the final image.",
+                        "`podman create --dns-option`.",
                     ),
                 ]
                 add_host: Annotated[
@@ -925,7 +920,7 @@ class Bertrand(Resource):
                         description=(
                             "Mapping of additional host entries to add to container "
                             "`/etc/hosts`.  Equivalent to "
-                            "`podman build|create --add-host`.  Keys are hostnames, "
+                            "`podman create --add-host`.  Keys are hostnames, "
                             "and values are IPv4/IPv6 addresses or the special value "
                             "`host-gateway`."
                         ),
@@ -963,15 +958,6 @@ class Bertrand(Resource):
                         raise ValueError(msg)
                     return self
 
-            class Build(Table):
-                """Validate the `[bertrand.network.build]` table."""
-
-                @model_validator(mode="after")
-                def _validate_build_table(self) -> Self:
-                    # TODO: build-specific networking restrictions should be added
-                    # here when build and run contracts diverge further.
-                    return self
-
             class Run(Table):
                 """Validate the `[bertrand.network.run]` table."""
 
@@ -981,16 +967,6 @@ class Bertrand(Resource):
                     # here when runtime networking coverage expands.
                     return self
 
-            build: Annotated[
-                Build,
-                Field(
-                    default_factory=Build.model_construct,
-                    description=(
-                        "Global networking policy to use during build-time `RUN` "
-                        "instructions."
-                    ),
-                ),
-            ]
             run: Annotated[
                 Run,
                 Field(
@@ -1110,6 +1086,20 @@ class Bertrand(Resource):
                         "instructions "
                         "to constrain the base image, but custom Containerfiles are "
                         "unrestricted."
+                    ),
+                ),
+            ]
+            network: Annotated[
+                ImageNetworkMode,
+                Field(
+                    default="default",
+                    examples=["default", "none", "host"],
+                    description=(
+                        "BuildKit network mode applied to build-time `RUN` "
+                        "instructions.  `default` uses the configured BuildKit "
+                        "builder network, `none` disables network access, and "
+                        "`host` requests host networking via BuildKit's "
+                        "`network.host` entitlement."
                     ),
                 ),
             ]

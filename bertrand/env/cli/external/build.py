@@ -306,7 +306,10 @@ async def _assert_build_runtime(kube: Kube, *, timeout: float) -> None:
     buildkit = await BUILDKIT_POOL.status(
         kube,
         timeout=deadline - loop.time(),
-        config_hash=IMAGES.buildkit_config_hash,
+        config_hash=await IMAGES.current_buildkit_config_hash(
+            kube,
+            timeout=deadline - loop.time(),
+        ),
     )
     controller = await Deployment.get(
         kube,

@@ -8,7 +8,7 @@ import json
 import re
 import uuid
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Literal, Protocol
 
 from bertrand.env.config import Bertrand, PyProject
 from bertrand.env.config.bertrand import project_image_tag
@@ -43,6 +43,9 @@ class _CapabilityRequest(Protocol):
     required: bool
 
 
+type _BuildNetworkMode = Literal["default", "none", "host"]
+
+
 @dataclass(frozen=True)
 class ProjectImageBuild:
     """Cluster-native image build request for one configured project image key.
@@ -58,6 +61,8 @@ class ProjectImageBuild:
         Dockerfile build arguments.
     target : str | None
         Optional target stage in a multi-stage Containerfile.
+    network : {'default', 'none', 'host'}
+        BuildKit network mode applied to build-time `RUN` instructions.
     secrets : Mapping[KubeName, bool]
         Secret capability requests exposed to the build.
     ssh : Mapping[KubeName, bool]
@@ -70,6 +75,7 @@ class ProjectImageBuild:
     dockerfile: str
     build_args: dict[str, str]
     target: str | None
+    network: _BuildNetworkMode
     secrets: Mapping[KubeName, bool]
     ssh: Mapping[KubeName, bool]
     devices: Mapping[KubeName, bool]
@@ -200,6 +206,7 @@ class ProjectImageBuild:
             dockerfile=self.dockerfile,
             build_args=self.build_args,
             target=self.target,
+            network=self.network,
             secrets=self.secrets,
             ssh=self.ssh,
             devices=self.devices,
@@ -307,6 +314,7 @@ def project_image_build(
         dockerfile=dockerfile,
         build_args=_build_args(image_config.args),
         target=image_config.target,
+        network=image_config.network,
         secrets=_capability_requests(image_config.secrets),
         ssh=_capability_requests(image_config.ssh),
         devices=_capability_requests(image_config.devices),

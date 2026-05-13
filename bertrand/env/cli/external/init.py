@@ -917,7 +917,10 @@ async def _converge_build_runtime(kube: Kube, *, timeout: float) -> None:
     await BUILDKIT_POOL.ensure(
         kube,
         timeout=deadline - loop.time(),
-        config_hash=IMAGES.buildkit_config_hash,
+        config_hash=await IMAGES.current_buildkit_config_hash(
+            kube,
+            timeout=deadline - loop.time(),
+        ),
     )
     await ensure_buildkit_build_controller(
         kube,

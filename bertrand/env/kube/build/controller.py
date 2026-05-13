@@ -7,7 +7,6 @@ import hashlib
 import json
 import sys
 import uuid
-from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Annotated, Literal
 
@@ -68,6 +67,7 @@ BUILDKIT_BUILD_WAIT_POLL_SECONDS = 2.0
 BUILDKIT_BUILD_LOG_EXCERPT_CHARS = 4000
 
 type _BuildKitBuildPhase = Literal["Pending", "Running", "Succeeded", "Failed"]
+type _BuildNetworkMode = Literal["default", "none", "host"]
 type _NonEmptyString = Annotated[str, Field(min_length=1)]
 
 
@@ -75,7 +75,6 @@ class _ObjectMeta(BaseModel):
     """Validated subset of Kubernetes object metadata."""
 
     model_config = ConfigDict(extra="ignore")
-
     name: str = ""
     namespace: str = ""
     generation: int = 0
@@ -83,11 +82,46 @@ class _ObjectMeta(BaseModel):
     labels: dict[str, str] = Field(default_factory=dict)
 
 
-class _BuildKitBuildSpecPayload(BaseModel):
-    """Validated project-only `BuildKitBuild.spec` payload."""
+class BuildKitBuildSpec(BaseModel):
+    """Validated project-only `BuildKitBuild.spec` payload.
 
-    model_config = ConfigDict(extra="forbid")
+    Parameters
+    ----------
+    repo_id : str
+        Stable repository UUID containing the project source PVC.
+    worktree : str, optional
+        Repository-volume subpath for the project worktree.
+    tag : str
+        Configured project image key.
+    env_id : str
+        Deterministic capability environment UUID.
+    config_id : str
+        Deterministic hash of project image configuration inputs.
+    image : str
+        Internal mutable image reference to publish.
+    dockerfile : str
+        Rendered Containerfile text.
+    build_args : dict[str, str], optional
+        Dockerfile build arguments.
+    target : str | None, optional
+        Optional target stage in a multi-stage Containerfile.
+    network : {'default', 'none', 'host'}
+        BuildKit network mode applied to build-time `RUN` instructions.
+    secrets : dict[str, bool], optional
+        Secret capability requests keyed by capability ID.
+    ssh : dict[str, bool], optional
+        SSH capability requests keyed by capability ID.
+    devices : dict[str, bool], optional
+        CDI device capability requests keyed by capability ID.
+    channels : list[str], optional
+        Mutable channel names to publish after the build.
+    external_image : str | None, optional
+        Optional external image reference to copy the assembled manifest to.
+    auth_id : str | None, optional
+        Secret capability ID containing Docker auth JSON for external publishing.
+    """
 
+    model_config = ConfigDict(extra="forbid", frozen=True)
     repo_id: _NonEmptyString
     worktree: _NonEmptyString = "."
     tag: str
@@ -97,6 +131,7 @@ class _BuildKitBuildSpecPayload(BaseModel):
     dockerfile: _NonEmptyString
     build_args: dict[str, str] = Field(default_factory=dict)
     target: str | None = None
+    network: _BuildNetworkMode
     secrets: dict[_NonEmptyString, bool] = Field(default_factory=dict)
     ssh: dict[_NonEmptyString, bool] = Field(default_factory=dict)
     devices: dict[_NonEmptyString, bool] = Field(default_factory=dict)
@@ -112,12 +147,13 @@ class _BuildKitBuildSpecPayload(BaseModel):
         dockerfile: str,
         build_args: Mapping[str, str],
         target: str | None,
+        network: _BuildNetworkMode,
         secrets: Mapping[str, bool],
         ssh: Mapping[str, bool],
         devices: Mapping[str, bool],
         external_image: str | None,
         auth_id: str | None,
-    ) -> _BuildKitBuildSpecPayload:
+    ) -> BuildKitBuildSpec:
         """Create a request spec from one project image identity.
 
         Parameters
@@ -130,6 +166,8 @@ class _BuildKitBuildSpecPayload(BaseModel):
             Dockerfile build arguments.
         target : str | None
             Optional target stage in a multi-stage Containerfile.
+        network : {'default', 'none', 'host'}
+            BuildKit network mode applied to build-time `RUN` instructions.
         secrets : Mapping[str, bool]
             Secret capability requests exposed to the build.
         ssh : Mapping[str, bool]
@@ -143,7 +181,7 @@ class _BuildKitBuildSpecPayload(BaseModel):
 
         Returns
         -------
-        _BuildKitBuildSpecPayload
+        BuildKitBuildSpec
             Validated request spec.
         """
         return cls(
@@ -156,6 +194,7 @@ class _BuildKitBuildSpecPayload(BaseModel):
             dockerfile=dockerfile,
             build_args=dict(sorted(build_args.items())),
             target=target,
+            network=network,
             secrets=dict(sorted(secrets.items())),
             ssh=dict(sorted(ssh.items())),
             devices=dict(sorted(devices.items())),
@@ -255,7 +294,6 @@ class BuildKitBuildStatus(BaseModel):
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True, populate_by_name=True)
-
     phase: _BuildKitBuildPhase = "Pending"
     observed_generation: int | None = Field(default=None, alias="observedGeneration")
     started_at: datetime | None = None
@@ -267,18 +305,6 @@ class BuildKitBuildStatus(BaseModel):
     record_name: str = ""
     message: str = ""
     log_excerpt: str = ""
-
-
-class _BuildKitBuildPayload(BaseModel):
-    """Validated `BuildKitBuild` custom-object payload."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    api_version: str = Field(alias="apiVersion")
-    kind: Literal["BuildKitBuild"]
-    metadata: _ObjectMeta
-    spec: _BuildKitBuildSpecPayload
-    status: BuildKitBuildStatus = Field(default_factory=BuildKitBuildStatus)
 
 
 _STRING_MAP_SCHEMA = {"type": "object", "additionalProperties": {"type": "string"}}
@@ -298,6 +324,7 @@ _BUILDKIT_BUILD_SPEC_SCHEMA = {
         "config_id",
         "image",
         "dockerfile",
+        "network",
         "channels",
     ],
     "properties": {
@@ -310,6 +337,7 @@ _BUILDKIT_BUILD_SPEC_SCHEMA = {
         "dockerfile": {"type": "string", "minLength": 1},
         "build_args": _STRING_MAP_SCHEMA,
         "target": {"type": "string", "nullable": True},
+        "network": {"type": "string", "enum": ["default", "none", "host"]},
         "secrets": _BOOL_MAP_SCHEMA,
         "ssh": _BOOL_MAP_SCHEMA,
         "devices": _BOOL_MAP_SCHEMA,
@@ -351,44 +379,82 @@ _BUILDKIT_BUILD_SPEC = CustomResourceSpec(
 _BUILDKIT_BUILD_CLIENT = CustomResourceClient(_BUILDKIT_BUILD_SPEC)
 
 
-@dataclass(frozen=True)
-class BuildKitBuildRecord:
-    """Read-only wrapper for one `BuildKitBuild` custom object.
+class BuildKitBuildRecord(BaseModel):
+    """Read-only model for one `BuildKitBuild` custom object.
 
     Parameters
     ----------
-    name : str
-        Kubernetes custom object name.
-    namespace : str
-        Kubernetes namespace that owns the build request.
-    generation : int
-        Kubernetes metadata generation for the request.
-    resource_version : str
-        Kubernetes resource version used by wait loops.
+    api_version : str
+        Kubernetes API version reported by the custom object.
+    kind : {"BuildKitBuild"}
+        Kubernetes custom object kind.
+    metadata : _ObjectMeta
+        Kubernetes object metadata.
+    spec : BuildKitBuildSpec
+        Validated project build request spec.
     status : BuildKitBuildStatus
         Validated build status payload.
     """
 
-    name: str
-    namespace: str
-    generation: int
-    resource_version: str
-    status: BuildKitBuildStatus
+    model_config = ConfigDict(extra="forbid", frozen=True, populate_by_name=True)
+
+    api_version: str = Field(alias="apiVersion")
+    kind: Literal["BuildKitBuild"]
+    metadata: _ObjectMeta
+    spec: BuildKitBuildSpec
+    status: BuildKitBuildStatus = Field(default_factory=BuildKitBuildStatus)
 
     @classmethod
     def _from_payload(cls, payload: object) -> BuildKitBuildRecord:
         try:
-            request = _BuildKitBuildPayload.model_validate(payload)
+            return cls.model_validate(payload)
         except ValidationError as err:
             msg = f"malformed {BUILDKIT_BUILD_KIND} custom object: {err}"
             raise OSError(msg) from err
-        return cls(
-            name=request.metadata.name,
-            namespace=request.metadata.namespace,
-            generation=request.metadata.generation,
-            resource_version=request.metadata.resource_version,
-            status=request.status,
-        )
+
+    @property
+    def name(self) -> str:
+        """Return the Kubernetes custom object name.
+
+        Returns
+        -------
+        str
+            Kubernetes custom object name.
+        """
+        return self.metadata.name
+
+    @property
+    def namespace(self) -> str:
+        """Return the namespace that owns this build request.
+
+        Returns
+        -------
+        str
+            Kubernetes namespace that owns this build request.
+        """
+        return self.metadata.namespace
+
+    @property
+    def generation(self) -> int:
+        """Return the Kubernetes metadata generation.
+
+        Returns
+        -------
+        int
+            Kubernetes metadata generation for this build request.
+        """
+        return self.metadata.generation
+
+    @property
+    def resource_version(self) -> str:
+        """Return the Kubernetes resource version.
+
+        Returns
+        -------
+        str
+            Kubernetes resource version used by wait loops.
+        """
+        return self.metadata.resource_version
 
 
 class _BuildKitBuildController:
@@ -444,7 +510,7 @@ class _BuildKitBuildController:
             labels={BUILDKIT_BUILD_LABEL: BUILDKIT_BUILD_LABEL_VALUE},
             timeout=deadline - loop.time(),
         )
-        requests = [_build_payload(obj.payload) for obj in objects]
+        requests = [BuildKitBuildRecord._from_payload(obj.payload) for obj in objects]
         for request in sorted(requests, key=lambda item: item.metadata.name):
             if (
                 request.status.observed_generation == request.metadata.generation
@@ -457,7 +523,7 @@ class _BuildKitBuildController:
         self,
         kube: Kube,
         *,
-        request: _BuildKitBuildPayload,
+        request: BuildKitBuildRecord,
         deadline: float,
     ) -> None:
         """Reconcile one build request generation.
@@ -466,7 +532,7 @@ class _BuildKitBuildController:
         ----------
         kube : Kube
             Active Kubernetes API context.
-        request : _BuildKitBuildPayload
+        request : BuildKitBuildRecord
             Build request to execute.
         deadline : float
             Absolute event-loop deadline for this reconciliation.
@@ -533,7 +599,7 @@ class _BuildKitBuildController:
         self,
         kube: Kube,
         *,
-        request: _BuildKitBuildPayload,
+        request: BuildKitBuildRecord,
         deadline: float,
     ) -> dict[str, str]:
         spec = request.spec
@@ -546,6 +612,7 @@ class _BuildKitBuildController:
             build_args=dict(spec.build_args),
             image_labels=spec.image_labels,
             target=spec.target,
+            network=spec.network,
             secrets=dict(spec.secrets),
             ssh=dict(spec.ssh),
             devices=dict(spec.devices),
@@ -575,7 +642,7 @@ class _BuildKitBuildController:
         self,
         kube: Kube,
         *,
-        request: _BuildKitBuildPayload,
+        request: BuildKitBuildRecord,
         platform_refs: Mapping[str, str],
         deadline: float,
     ) -> ProjectImagePublication:
@@ -736,6 +803,7 @@ async def submit_buildkit_build(
     dockerfile: str,
     build_args: Mapping[str, str],
     target: str | None,
+    network: _BuildNetworkMode,
     secrets: Mapping[KubeName, bool],
     ssh: Mapping[KubeName, bool],
     devices: Mapping[KubeName, bool],
@@ -757,6 +825,8 @@ async def submit_buildkit_build(
         Dockerfile build arguments.
     target : str | None
         Optional target stage in a multi-stage Containerfile.
+    network : {'default', 'none', 'host'}
+        BuildKit network mode applied to build-time `RUN` instructions.
     secrets : Mapping[KubeName, bool]
         Secret capability requests exposed to the build.
     ssh : Mapping[KubeName, bool]
@@ -786,11 +856,12 @@ async def submit_buildkit_build(
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout
     await ensure_buildkit_build_crd(kube, timeout=deadline - loop.time())
-    spec = _BuildKitBuildSpecPayload.from_identity(
+    spec = BuildKitBuildSpec.from_identity(
         identity=identity,
         dockerfile=dockerfile,
         build_args=build_args,
         target=target,
+        network=network,
         secrets=secrets,
         ssh=ssh,
         devices=devices,
@@ -947,7 +1018,7 @@ def _controller_rules() -> tuple[PolicyRuleSpec, ...]:
     )
 
 
-def _buildkit_build_name(spec: _BuildKitBuildSpecPayload) -> str:
+def _buildkit_build_name(spec: BuildKitBuildSpec) -> str:
     text = json.dumps(
         spec.model_dump(mode="json"),
         sort_keys=True,
@@ -988,14 +1059,6 @@ async def _patch_build_status(
         timeout=deadline - loop.time(),
     )
     return BuildKitBuildRecord._from_payload(obj.payload)
-
-
-def _build_payload(payload: object) -> _BuildKitBuildPayload:
-    try:
-        return _BuildKitBuildPayload.model_validate(payload)
-    except ValidationError as err:
-        msg = f"malformed {BUILDKIT_BUILD_KIND} custom object: {err}"
-        raise OSError(msg) from err
 
 
 def _log_excerpt(text: str) -> str:

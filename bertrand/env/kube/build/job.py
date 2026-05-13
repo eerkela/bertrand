@@ -9,7 +9,7 @@ import uuid
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from bertrand.env.config.core import _check_kube_name, _check_uuid
 from bertrand.env.git import (
@@ -71,6 +71,7 @@ CAPABILITY_VALUE_KEY = "value"
 BUILD_PLATFORM_RUN_ID_BYTES = 12
 
 type _BuildKitTarget = tuple[_BuildKitBuilder, tuple[str, ...]]
+type _BuildNetworkMode = Literal["default", "none", "host"]
 
 
 @dataclass(frozen=True)
@@ -102,6 +103,8 @@ class _ProjectBuildExecutor:
         Image labels applied by the Dockerfile frontend.
     target : str | None
         Optional target stage in a multi-stage Containerfile.
+    network : {'default', 'none', 'host'}
+        BuildKit network mode applied to build-time `RUN` instructions.
     secrets : Mapping[KubeName, bool]
         Secret capability IDs to expose to the build. Values indicate whether the
         capability is required.
@@ -120,6 +123,7 @@ class _ProjectBuildExecutor:
     build_args: dict[str, str] = field(default_factory=dict)
     image_labels: dict[str, str] = field(default_factory=dict)
     target: str | None = None
+    network: _BuildNetworkMode = "default"
     secrets: Mapping[KubeName, bool] = field(default_factory=dict)
     ssh: Mapping[KubeName, bool] = field(default_factory=dict)
     devices: Mapping[KubeName, bool] = field(default_factory=dict)
@@ -140,6 +144,9 @@ class _ProjectBuildExecutor:
             raise ValueError(msg)
         if self.target is not None and not self.target.strip():
             msg = "BuildKit target stage cannot be empty"
+            raise ValueError(msg)
+        if self.network not in ("default", "none", "host"):
+            msg = f"unsupported BuildKit network mode: {self.network!r}"
             raise ValueError(msg)
         object.__setattr__(self, "repo_id", _check_uuid(self.repo_id))
         object.__setattr__(self, "worktree", _normalize_worktree(self.worktree))
@@ -193,6 +200,7 @@ class _ProjectBuildExecutor:
             "build_args": self.build_args,
             "image_labels": self.image_labels,
             "target": self.target,
+            "network": self.network,
             "secrets": dict(sorted(self.secrets.items())),
             "ssh": dict(sorted(self.ssh.items())),
             "devices": dict(sorted(self.devices.items())),
@@ -277,6 +285,8 @@ class _ProjectBuildExecutor:
         ]
         if self.target is not None:
             args.extend(["--opt", f"target={self.target}"])
+        if self.network != "default":
+            args.extend(["--opt", f"force-network-mode={self.network}"])
         for key, value in sorted(self.build_args.items()):
             args.extend(["--opt", f"build-arg:{key}={value}"])
         for key, value in sorted(self.image_labels.items()):
@@ -287,6 +297,8 @@ class _ProjectBuildExecutor:
             args.extend(["--ssh", f"{capability_id}={path}"])
         for selector in sorted(set(device_selectors)):
             args.extend(["--allow", f"device={selector}"])
+        if self.network == "host":
+            args.extend(["--allow", "network.host"])
         cache_ref = _default_cache_ref(self.image)
         args.extend(["--import-cache", f"type=registry,ref={cache_ref}"])
         args.extend(
@@ -660,7 +672,10 @@ class _ProjectBuildExecutor:
             raise ValueError(msg)
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
-        config_hash = IMAGES.buildkit_config_hash
+        config_hash = await IMAGES.current_buildkit_config_hash(
+            kube,
+            timeout=deadline - loop.time(),
+        )
         groups = await BUILDKIT_POOL._builder_candidates(
             kube,
             timeout=deadline - loop.time(),

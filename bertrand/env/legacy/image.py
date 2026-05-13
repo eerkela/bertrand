@@ -67,7 +67,6 @@ from ..git import (
 from ..version import VERSION
 from .container import Container, container_args
 from .nerdctl import nerdctl, nerdctl_ids, start_buildkit
-from .network import format_network
 
 
 def _to_utc(value: datetime) -> datetime:
@@ -539,7 +538,6 @@ async def image_args(
         "--label",
         f"{IMAGE_TAG_ENV}={tag}",
         *_format_build_args(build.args),
-        *format_network(bertrand.network.build),
         str(config.root),
     ]
     return ImageArgs(
