@@ -1,4 +1,4 @@
-"""TODO"""
+"""Define project configuration resource plumbing."""
 
 from __future__ import annotations
 
@@ -31,9 +31,8 @@ from pydantic import (
     ValidationError,
 )
 
+from bertrand.env.git import INFINITY, GitRepository
 from bertrand.env.kube.lock.cluster import ClusterLock
-
-from ..git import INFINITY, GitRepository
 
 if TYPE_CHECKING:
     from types import TracebackType
@@ -63,11 +62,12 @@ SANITIZE_RE = re.compile(r"[^a-zA-Z0-9._]+")
 
 def _check_kube_name(value: str) -> str:
     if not KUBE_NAME_RE.fullmatch(value):
-        raise ValueError(
+        msg = (
             f"invalid Kubernetes name: {value!r} (must be lowercase alphanumeric, "
             "'.', or '-', must not be empty, and must start with a letter and end with "
             "a letter or number)"
         )
+        raise ValueError(msg)
     return value
 
 
@@ -75,7 +75,8 @@ def _check_uuid(value: str) -> str:
     try:
         return uuid.UUID(value).hex
     except ValueError as err:
-        raise ValueError(f"invalid UUID hex string: {value}") from err
+        msg = f"invalid UUID hex string: {value}"
+        raise ValueError(msg) from err
 
 
 def _metadata_lock_key(repo: GitRepository, worktree: Path) -> str:
@@ -84,35 +85,42 @@ def _metadata_lock_key(repo: GitRepository, worktree: Path) -> str:
 
 def _check_glob(pattern: str) -> str:
     if not GLOB_RE.fullmatch(pattern):
-        raise ValueError(f"invalid glob pattern: '{pattern}'")
+        msg = f"invalid glob pattern: '{pattern}'"
+        raise ValueError(msg)
     if pattern.startswith("/"):
-        raise ValueError(f"glob pattern cannot be absolute: '{pattern}'")
+        msg = f"glob pattern cannot be absolute: '{pattern}'"
+        raise ValueError(msg)
     if any(part in ("..", ".") for part in pattern.split("/")):
-        raise ValueError(
-            f"glob pattern cannot contain '.' or '..' segments: '{pattern}'"
-        )
+        msg = f"glob pattern cannot contain '.' or '..' segments: '{pattern}'"
+        raise ValueError(msg)
     return pattern
 
 
 def _check_absolute_path[PathT: Path](path: PathT) -> PathT:
     if not path.is_absolute():
-        raise ValueError(f"path must be absolute: '{path}'")
+        msg = f"path must be absolute: '{path}'"
+        raise ValueError(msg)
     parts = path.parts
     if not parts:
-        raise ValueError("path cannot be empty")
+        msg = "path cannot be empty"
+        raise ValueError(msg)
     if any(p == "." or p == ".." for p in parts):
-        raise ValueError(f"path cannot contain '.' or '..' segments: '{path}'")
+        msg = f"path cannot contain '.' or '..' segments: '{path}'"
+        raise ValueError(msg)
     return path
 
 
 def _check_relative_path(path: PosixPath) -> PosixPath:
     if path.is_absolute():
-        raise ValueError(f"path cannot be absolute: '{path}'")
+        msg = f"path cannot be absolute: '{path}'"
+        raise ValueError(msg)
     parts = path.parts
     if not parts:
-        raise ValueError("path cannot be empty")
+        msg = "path cannot be empty"
+        raise ValueError(msg)
     if any(p == "." or p == ".." for p in parts):
-        raise ValueError(f"path cannot contain '.' or '..' segments: '{path}'")
+        msg = f"path cannot contain '.' or '..' segments: '{path}'"
+        raise ValueError(msg)
     return path
 
 
@@ -120,7 +128,8 @@ def _check_regex_pattern(value: str) -> str:
     try:
         re.compile(value)
     except re.error as err:
-        raise ValueError(f"invalid regex pattern '{value}': {err}") from err
+        msg = f"invalid regex pattern '{value}': {err}"
+        raise ValueError(msg) from err
     return value
 
 
@@ -128,7 +137,8 @@ def _check_url(url: str) -> str:
     try:
         return str(HTTP_URL.validate_python(url))
     except ValidationError as err:
-        raise ValueError(f"invalid URL: {url}") from err
+        msg = f"invalid URL: {url}"
+        raise ValueError(msg) from err
 
 
 def _check_url_label(label: str) -> str:
@@ -141,10 +151,12 @@ def _check_oci_image_ref(value: str) -> str:
     # match regex
     ref = value.strip()
     if not ref:
-        raise ValueError("OCI image reference cannot be empty")
+        msg = "OCI image reference cannot be empty"
+        raise ValueError(msg)
     match = OCI_IMAGE_REF_RE.fullmatch(ref)
     if match is None:
-        raise ValueError(f"invalid OCI image reference: '{ref}'")
+        msg = f"invalid OCI image reference: '{ref}'"
+        raise ValueError(msg)
 
     # verify OCI registry
     registry = match.group("registry")
@@ -153,20 +165,24 @@ def _check_oci_image_ref(value: str) -> str:
         host = port
         port = ""
     if not host or (port and not port.isdigit()):
-        raise ValueError(f"invalid registry host/port in OCI image reference: '{ref}'")
+        msg = f"invalid registry host/port in OCI image reference: '{ref}'"
+        raise ValueError(msg)
     if not all(OCI_HOST_LABEL_RE.fullmatch(part) for part in host.split(".")):
-        raise ValueError(f"invalid registry host in OCI image reference: '{ref}'")
+        msg = f"invalid registry host in OCI image reference: '{ref}'"
+        raise ValueError(msg)
     if host != "localhost" and "." not in host and not port:
-        raise ValueError(
+        msg = (
             "OCI image reference registry must be explicit: use 'localhost', "
             "a dotted hostname, or a host with ':<port>'"
         )
+        raise ValueError(msg)
 
     # enforce at least one of tag or digest to ensure portability
     if match.group("tag") is None and match.group("digest") is None:
-        raise ValueError(
+        msg = (
             f"OCI image reference must include a tag or sha256 digest pin (got '{ref}')"
         )
+        raise ValueError(msg)
     return ref
 
 
@@ -248,14 +264,13 @@ def locate_template(namespace: str, name: str) -> Path:
         env.joinpath("templates", namespace, f"{name}.j2")
     ) as source:
         if not source.exists() or not source.is_file():
-            raise FileNotFoundError(
-                f"missing Bertrand template {namespace}/{name}: {source}"
-            )
+            msg = f"missing Bertrand template {namespace}/{name}: {source}"
+            raise FileNotFoundError(msg)
         return source
 
 
 def dump_yaml(payload: dict[str, Any], *, resource_name: str) -> str:
-    """A simple YAML serializer.
+    """Serialize a mapping to YAML text.
 
     Parameters
     ----------
@@ -285,17 +300,15 @@ def dump_yaml(payload: dict[str, Any], *, resource_name: str) -> str:
             allow_unicode=False,
         )
     except yaml.YAMLError as err:
-        raise OSError(
-            f"failed to serialize YAML payload for resource '{resource_name}': {err}"
-        ) from err
+        msg = f"failed to serialize YAML payload for resource '{resource_name}': {err}"
+        raise OSError(msg) from err
     if not text.endswith("\n"):
         text += "\n"
     return text
 
 
 class Resource:
-    """A base class describing a single configuration entity that can be parsed,
-    validated, and/or rendered by Bertrand's layout system.
+    """Represent one parseable or renderable configuration entity.
 
     Attributes
     ----------
@@ -315,9 +328,23 @@ class Resource:
     paths: ClassVar[frozenset[RelativePath]]
 
     def __hash__(self) -> int:
+        """Hash by resource name.
+
+        Returns
+        -------
+        int
+            Hash of the resource name.
+        """
         return hash(self.name)
 
     def __lt__(self, other: object) -> bool:
+        """Compare resource order by name.
+
+        Returns
+        -------
+        bool
+            True if this resource sorts before `other`.
+        """
         if isinstance(other, Resource):
             return self.name < other.name
         if isinstance(other, str):
@@ -325,6 +352,13 @@ class Resource:
         return NotImplemented
 
     def __le__(self, other: object) -> bool:
+        """Compare resource order by name.
+
+        Returns
+        -------
+        bool
+            True if this resource sorts at or before `other`.
+        """
         if isinstance(other, Resource):
             return self.name <= other.name
         if isinstance(other, str):
@@ -332,6 +366,13 @@ class Resource:
         return NotImplemented
 
     def __eq__(self, other: object) -> bool:
+        """Compare resource equality by name.
+
+        Returns
+        -------
+        bool
+            True if `other` identifies the same resource.
+        """
         if isinstance(other, Resource):
             return self.name == other.name
         if isinstance(other, str):
@@ -339,6 +380,13 @@ class Resource:
         return NotImplemented
 
     def __ne__(self, other: object) -> bool:
+        """Compare resource inequality by name.
+
+        Returns
+        -------
+        bool
+            True if `other` identifies a different resource.
+        """
         if isinstance(other, Resource):
             return self.name != other.name
         if isinstance(other, str):
@@ -346,6 +394,13 @@ class Resource:
         return NotImplemented
 
     def __ge__(self, other: object) -> bool:
+        """Compare resource order by name.
+
+        Returns
+        -------
+        bool
+            True if this resource sorts at or after `other`.
+        """
         if isinstance(other, Resource):
             return self.name >= other.name
         if isinstance(other, str):
@@ -353,6 +408,13 @@ class Resource:
         return NotImplemented
 
     def __gt__(self, other: object) -> bool:
+        """Compare resource order by name.
+
+        Returns
+        -------
+        bool
+            True if this resource sorts after `other`.
+        """
         if isinstance(other, Resource):
             return self.name > other.name
         if isinstance(other, str):
@@ -388,11 +450,11 @@ class Resource:
         always expects to find valid config data from other resources via their
         `parse()` hooks.
         """
+        _ = config, cli
         return {}
 
     async def parse(self, config: Config) -> dict[str, dict[str, Any]]:
-        """A parse function that can extract normalized config data from this
-        resource when entering the `Config` context.
+        """Extract normalized config data from this resource.
 
         Parameters
         ----------
@@ -419,11 +481,11 @@ class Resource:
 
         Resources that do not implement this function will be treated as output-only.
         """
+        _ = config
         return {}
 
     async def validate(self, config: Config, fragment: Any) -> BaseModel | None:
-        """A function that validates the merged output of the `parse()` phase against
-        this resource.
+        """Validate merged `parse()` output for this resource.
 
         Parameters
         ----------
@@ -443,12 +505,6 @@ class Resource:
              fields, or the resource is purely output-oriented and does not have any
              state to validate.
 
-        Raises
-        ------
-        ValidationError
-            If the config fields relevant to this resource are present but fail
-            validation.
-
         Notes
         -----
         If a Pydantic model is returned, then it means this resource should be added to
@@ -456,11 +512,11 @@ class Resource:
         is what allows resources mentioned in config to always be rendered during
         `sync()`, even if their original source files are missing.
         """
+        _ = config, fragment
         return None
 
     async def render(self, config: Config, tag: TOMLKey | None) -> None:
-        """A render function that writes content for this resource during
-        `Config.sync()`.
+        """Write derived content for this resource during `Config.sync()`.
 
         Parameters
         ----------
@@ -508,8 +564,10 @@ def resource[ResourceT: Resource](
     *,
     paths: set[RelativePath] | frozenset[RelativePath] = frozenset(),
 ) -> Callable[[type[ResourceT]], type[ResourceT]]:
-    """A class decorator for defining layout resources.  See `Resource` for more
-    details on the parameters and intended semantics of layout resources.
+    """Define a layout resource class decorator.
+
+    See `Resource` for more details on the parameters and intended semantics of
+    layout resources.
 
     Parameters
     ----------
@@ -528,11 +586,6 @@ def resource[ResourceT: Resource](
         A class decorator that registers the decorated class as a layout resource in the
         global catalog under the given names, with the specified path/groups.
 
-    Raises
-    ------
-    TypeError
-        If any resource name is not sanitized, or if any path is absolute or contains
-        `..` segments.
     """
 
     def _decorator(cls: type[ResourceT]) -> type[ResourceT]:
@@ -540,27 +593,30 @@ def resource[ResourceT: Resource](
 
         # reserve name
         if not RESOURCE_NAME_RE.fullmatch(name):
-            raise TypeError(
+            msg = (
                 f"invalid resource name {name!r} (must match regex "
                 f"{RESOURCE_NAME_RE.pattern})"
             )
+            raise TypeError(msg)
         if RESOURCE_NAMES.setdefault(name, self) is not self:
-            raise TypeError(f"duplicate resource name: {name!r}")
+            msg = f"duplicate resource name: {name!r}"
+            raise TypeError(msg)
 
         # reserve paths
         for path in paths:
             if path.is_absolute():
-                raise TypeError(f"invalid resource path '{path}': must be relative")
+                msg = f"invalid resource path '{path}': must be relative"
+                raise TypeError(msg)
             if any(part == ".." for part in path.parts):
-                raise TypeError(
-                    f"invalid resource path '{path}': cannot contain '..' segments"
-                )
+                msg = f"invalid resource path '{path}': cannot contain '..' segments"
+                raise TypeError(msg)
             other = RESOURCE_PATHS.setdefault(path, self)
             if other is not self:
-                raise TypeError(
+                msg = (
                     f"duplicate resource path maps to both {name!r} and "
                     f"{other.name!r}: {path}"
                 )
+                raise TypeError(msg)
 
         # stamp variables at class level to simplify `Config.get(T)`
         cls.name = name
@@ -575,8 +631,10 @@ _ResourceModel_co = TypeVar("_ResourceModel_co", bound=BaseModel, covariant=True
 
 
 class _ResourceLike(Protocol[_ResourceModel_co]):
-    """A type helper that allows `Config.get()` to infer a resource's validated model
-    type by inspecting its `validate()` method.
+    """Infer a resource's validated model type.
+
+    The protocol lets `Config.get()` inspect a resource's `validate()` method without
+    requiring a concrete `Resource` subclass.
     """
 
     # pylint: disable=missing-function-docstring
@@ -589,16 +647,18 @@ class _ResourceLike(Protocol[_ResourceModel_co]):
 
 @dataclass
 class Config:
-    """Read-only view representing resource placements within a worktree, as well as
-    normalized config data parsed from those resources, without coupling to any
-    particular schema.
+    """Represent resource placements and parsed config data.
+
+    The context holds a read-only view over a worktree without coupling to any
+    particular resource schema.
     """
 
     @dataclass(frozen=True)
     class Init:
-        """A context object representing normalized CLI input to the `bertrand init`
-        command, which is passed to each resource's `init()` hook to drive their
-        initial values.
+        """Represent normalized `bertrand init` input.
+
+        This context is passed to each resource's `init()` hook to drive initial
+        values.
 
         Attributes
         ----------
@@ -630,7 +690,8 @@ class Config:
 
     @property
     def root(self) -> AbsolutePath:
-        """
+        """Return the absolute environment root.
+
         Returns
         -------
         AbsolutePath
@@ -648,9 +709,10 @@ class Config:
         repo: GitRepository | None = None,
         timeout: float = INFINITY,
     ) -> Self:
-        """Load a worktree configuration by scanning the environment root for known
-        resource placements based on their managed paths, and resolving any collisions
-        or invalid placements.
+        """Load a worktree configuration.
+
+        This scans the environment root for known resource placements based on their
+        managed paths, then resolves collisions and invalid placements.
 
         Parameters
         ----------
@@ -677,29 +739,28 @@ class Config:
 
         Raises
         ------
-        TimeoutError
-            If the worktree lock cannot be acquired within the specified timeout.
         ValueError
-            If any resource placements reference unknown resource IDs, or if there are
-            any path collisions between resources in the environment (either from
-            multiple resources mapping to the same path, or from a single resource
-            mapping to multiple paths).
+            If the worktree does not belong to a Git repository.
+
         """
         worktree = worktree.expanduser().resolve()
         if repo is None:
             repo = await GitRepository.discover(worktree)
             if repo is None:
-                raise ValueError(f"no git repository found for worktree: {worktree}")
+                msg = f"no git repository found for worktree: {worktree}"
+                raise ValueError(msg)
         if not any(wt.path == worktree for wt in await repo.worktrees()):
-            raise ValueError(
+            msg = (
                 f"worktree {worktree} is not a valid worktree for repository at "
                 f"{repo.root}"
             )
+            raise ValueError(msg)
         if not worktree.is_relative_to(repo.root):
-            raise ValueError(
+            msg = (
                 f"worktree {worktree} is not a subdirectory of repository root at "
                 f"{repo.root}"
             )
+            raise ValueError(msg)
 
         async with ClusterLock(
             kube,
@@ -733,16 +794,17 @@ class Config:
         for key, value in fragment.items():
             if not isinstance(key, str):
                 parent = ".".join(path_prefix)
-                raise OSError(
+                msg = (
                     f"parse hook for resource '{r.name}' returned non-string key "
                     f"under '{parent}': '{key}'"
                 )
+                raise OSError(msg)
             value_is_map = isinstance(value, dict)
 
             # reserve ownership to prevent collisions with other parsed resources.
             # Note that the default values provided by `init()` hooks are not
             # considered, and will therefore be overwritten
-            key_path = path_prefix + (key,)
+            key_path = (*path_prefix, key)
             owner = key_owner.setdefault(key_path, r.name)
 
             # if the key is already present, then do a deep merge if both values are
@@ -758,16 +820,23 @@ class Config:
                     path_prefix=key_path,
                 )
             elif owner != r.name or existing_is_map or value_is_map:
-                raise OSError(
+                msg = (
                     f"config parse key collision at '{'.'.join(key_path)}' between "
                     f"resources '{owner}' and '{r.name}'"
                 )
+                raise OSError(msg)
             else:
                 snapshot[key] = value
 
     async def __aenter__(self) -> Self:
-        """Parse and validate config data from resources in the environment, which
-        remains valid until the outermost context is exited.
+        """Parse and validate resource config data.
+
+        The parsed snapshot remains valid until the outermost context is exited.
+
+        Returns
+        -------
+        Self
+            The active configuration context.
 
         Raises
         ------
@@ -804,27 +873,29 @@ class Config:
                     try:
                         fragment = await r.parse(self)
                     except Exception as err:
-                        raise OSError(
-                            f"failed to parse resource {r.name!r}: {err}"
-                        ) from err
+                        msg = f"failed to parse resource {r.name!r}: {err}"
+                        raise OSError(msg) from err
                     if not isinstance(fragment, dict):
-                        raise OSError(
+                        msg = (
                             f"parse hook for resource {r.name!r} must return a string "
                             f"mapping: {fragment}"
                         )
+                        raise OSError(msg)
 
                     # normalize aliases and merge fragment, checking for key collisions
                     for raw_key, table in fragment.items():
                         if not isinstance(raw_key, str):
-                            raise OSError(
+                            msg = (
                                 f"parse hook for resource {r.name!r} returned "
                                 f"non-string key: {raw_key}"
                             )
+                            raise OSError(msg)
                         if not isinstance(table, dict):
-                            raise OSError(
+                            msg = (
                                 f"parse hook for resource {r.name!r} returned "
                                 f"non-mapping value for key '{raw_key}': {table}"
                             )
+                            raise OSError(msg)
                         lookup = RESOURCE_NAMES.get(raw_key)
                         if lookup is not None:
                             self._merge_fragment(
@@ -844,10 +915,12 @@ class Config:
                     # record validated output for future, type-safe access
                     model = await lookup.validate(self, table)
                     if self.resources.get(lookup.name) is not None:
-                        raise OSError(
-                            f"config validation collision for resource '{lookup.name}': "
+                        msg = (
+                            f"config validation collision for resource "
+                            f"'{lookup.name}': "
                             f"multiple resources writing to the same top-level table"
                         )
+                        raise OSError(msg)
                     self.resources[lookup.name] = model
 
                 self._entered += 1
@@ -863,20 +936,48 @@ class Config:
         exc: BaseException | None,
         traceback: TracebackType | None,
     ) -> None:
-        """Release one context level and clear snapshot on outermost exit."""
+        """Release one context level and clear snapshot on outermost exit.
+
+        Raises
+        ------
+        RuntimeError
+            If the config context is not active.
+        """
         if self._entered <= 0:
-            raise RuntimeError("layout context is not active")
+            msg = "layout context is not active"
+            raise RuntimeError(msg)
         self._entered -= 1
         if self._entered == 0:
             self.resources = dict.fromkeys(self.resources)
 
     def __bool__(self) -> bool:
+        """Return whether the config context is active.
+
+        Returns
+        -------
+        bool
+            True when inside an active config context.
+        """
         return self._entered > 0
 
     def __hash__(self) -> int:
+        """Hash by environment root.
+
+        Returns
+        -------
+        int
+            Hash of the absolute environment root.
+        """
         return hash(self.root)
 
     def __eq__(self, other: object) -> bool:
+        """Compare configuration equality by environment root.
+
+        Returns
+        -------
+        bool
+            True if both configs refer to the same environment root.
+        """
         if isinstance(other, Config):
             return self.root == other.root
         return NotImplemented
@@ -906,8 +1007,9 @@ class Config:
         self,
         r: _ResourceLike[_ResourceModel_co] | type[_ResourceLike[_ResourceModel_co]],
     ) -> _ResourceModel_co | None:
-        """Retrieve the parsed config model for the given resource ID, assuming it is
-        present in the environment.
+        """Retrieve the parsed config model for the given resource ID.
+
+        This assumes the resource is present in the environment.
 
         Parameters
         ----------
@@ -966,9 +1068,8 @@ class Config:
             If any render hooks fail.
         """
         if not self:
-            raise RuntimeError(
-                "sync() artifact rendering requires an active config context"
-            )
+            msg = "sync() artifact rendering requires an active config context"
+            raise RuntimeError(msg)
 
         # invoke render hooks for all resources in deterministic order
         async with ClusterLock(
@@ -981,6 +1082,5 @@ class Config:
                 try:
                     await r.render(self, tag)
                 except Exception as err:
-                    raise OSError(
-                        f"failed to render resource '{r.name}': {err}"
-                    ) from err
+                    msg = f"failed to render resource '{r.name}': {err}"
+                    raise OSError(msg) from err

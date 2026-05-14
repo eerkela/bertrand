@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING, Annotated, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, PositiveInt, StringConstraints
 
-from bertrand.env.config import RESOURCE_NAMES, Config, Resource
+from bertrand.env.config.core import RESOURCE_NAMES, Config, Resource
 from bertrand.env.config.repository import resolve_repo_id
 from bertrand.env.git import (
     BERTRAND_NAMESPACE,

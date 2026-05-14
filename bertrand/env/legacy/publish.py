@@ -5,7 +5,8 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING
 
-from bertrand.env.config import DEFAULT_TAG, Bertrand, PyProject
+from bertrand.env.config.bertrand import DEFAULT_TAG, Bertrand
+from bertrand.env.config.python import PyProject
 from bertrand.env.git import NORMALIZE_ARCH
 from bertrand.env.legacy.environment import Environment
 from bertrand.env.legacy.nerdctl import TIMEOUT, nerdctl

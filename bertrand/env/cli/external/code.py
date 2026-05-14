@@ -5,7 +5,7 @@ from __future__ import annotations
 import time
 from typing import TYPE_CHECKING
 
-from bertrand.env.config import DEFAULT_TAG
+from bertrand.env.config.bertrand import DEFAULT_TAG
 from bertrand.env.legacy.container import start_rpc_sidecar, stop_rpc_sidecar
 from bertrand.env.legacy.environment import Environment
 from bertrand.env.legacy.nerdctl import NERDCTL_BIN, TIMEOUT, nerdctl

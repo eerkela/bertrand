@@ -1,5 +1,4 @@
-"""A configuration resource for clang-format, which allows automatic formatting of C++
-code according to a specified style.
+"""Render clang-format configuration.
 
 This resource generates a `.clang-format` artifact from a standardized `[clang-format]`
 schema stored in project configuration.  The default settings represent an opinionated
@@ -7,6 +6,8 @@ style designed to make C++ code more recognizable and readable to Python develop
 but can be customized as needed, and are exhaustively listed in a self-documenting
 fashion.
 """
+# ruff: noqa: E501
+
 from __future__ import annotations
 
 from typing import Annotated, Any, Literal, Self
@@ -20,7 +21,8 @@ from pydantic import (
     model_validator,
 )
 
-from ..git import CONTAINER_TMP_MOUNT, atomic_write_text
+from bertrand.env.git import CONTAINER_TMP_MOUNT, atomic_write_text
+
 from .core import (
     Config,
     NoWhiteSpace,
@@ -40,10 +42,12 @@ from .core import (
 
 @resource("clang-format")
 class ClangFormat(Resource):
-    """A resource describing a `.clang-format` file, which is used to configure
-    clang-format for C++ code formatting.  The `[tool.clang-format]` table is
-    projected directly to YAML with no key remapping.
+    """Describe a `.clang-format` configuration file.
+
+    The `[tool.clang-format]` table is projected directly to YAML with no key
+    remapping.
     """
+
     # pylint: disable=missing-function-docstring, unused-argument, missing-return-doc
 
     class Model(BaseModel):
@@ -54,24 +58,31 @@ class ClangFormat(Resource):
         or you prefer a more traditional C++ style, feel free to disable automatic
         formatting or modify these settings as needed.
         """
+
         model_config = ConfigDict(extra="forbid")
-        Enable: Annotated[bool, Field(
-            default=False,
-            description="Whether to enable clang-format auto formatting.",
-        )]
-        AccessModifierOffset: Annotated[NonNegativeInt, Field(
-            default=0,
-            description=
-                "Indentation offset for access modifiers (e.g. `public`, `private`, "
+        Enable: Annotated[
+            bool,
+            Field(
+                default=False,
+                description="Whether to enable clang-format auto formatting.",
+            ),
+        ]
+        AccessModifierOffset: Annotated[
+            NonNegativeInt,
+            Field(
+                default=0,
+                description="Indentation offset for access modifiers (e.g. `public`, `private`, "
                 "`protected`).  This is added to the normal indentation level of the "
                 "line.  For example, an offset of 1 would indent access modifiers one "
                 "additional level compared to other code, while an offset of -1 would "
                 "outdent them by one level.",
-        )]
-        AlwaysBreakBeforeMultilineStrings: Annotated[bool, Field(
-            default=True,
-            description=
-                "Whether to always break before multiline string literals.\n"
+            ),
+        ]
+        AlwaysBreakBeforeMultilineStrings: Annotated[
+            bool,
+            Field(
+                default=True,
+                description="Whether to always break before multiline string literals.\n"
                 "   `true`:\n"
                 "       ```cpp\n"
                 "       aaaa =\n"
@@ -83,18 +94,22 @@ class ClangFormat(Resource):
                 "       aaaa = \"bbbb\"\n"
                 "              \"cccc\";\n"
                 "       ```",
-        )]
-        AttributeMacros: Annotated[list[NoWhiteSpace], Field(
-            default_factory=list,
-            examples=["[\"__declspec\"]"],
-            description=
-                "List of names to treat as custom language attributes, similar to "
+            ),
+        ]
+        AttributeMacros: Annotated[
+            list[NoWhiteSpace],
+            Field(
+                default_factory=list,
+                examples=["[\"__declspec\"]"],
+                description="List of names to treat as custom language attributes, similar to "
                 "`[[nodiscard]]`, etc.",
-        )]
-        BinPackArguments: Annotated[bool, Field(
-            default=False,
-            description=
-                "Control whether to bin-pack function call arguments.\n"
+            ),
+        ]
+        BinPackArguments: Annotated[
+            bool,
+            Field(
+                default=False,
+                description="Control whether to bin-pack function call arguments.\n"
                 "   `true`:\n"
                 "       ```cpp\n"
                 "       void f() {\n"
@@ -110,18 +125,22 @@ class ClangFormat(Resource):
                 "             aaaaaaaaaaaaaaaaaaaa);\n"
                 "       }\n"
                 "       ```",
-        )]
-        BinPackLongBracedList: Annotated[bool, Field(
-            default=True,
-            description=
-                "Override 'BinPackArguments=false' for excessively long braced lists, "
+            ),
+        ]
+        BinPackLongBracedList: Annotated[
+            bool,
+            Field(
+                default=True,
+                description="Override 'BinPackArguments=false' for excessively long braced lists, "
                 "which can help compress array definitions, for example.",
-        )]
-        BinPackParameters: Annotated[Literal["BinPack", "OnePerLine", "AlwaysOnePerLine"], Field(
-            default="OnePerLine",
-            examples=["BinPack", "OnePerLine", "AlwaysOnePerLine"],
-            description=
-                "Control how to format function parameters.\n"
+            ),
+        ]
+        BinPackParameters: Annotated[
+            Literal["BinPack", "OnePerLine", "AlwaysOnePerLine"],
+            Field(
+                default="OnePerLine",
+                examples=["BinPack", "OnePerLine", "AlwaysOnePerLine"],
+                description="Control how to format function parameters.\n"
                 "   `BinPack`:\n"
                 "       ```cpp\n"
                 "       void f(int a, int bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb,\n"
@@ -142,12 +161,14 @@ class ClangFormat(Resource):
                 "              int b,\n"
                 "              int c);\n"
                 "       ```",
-        )]
-        BitFieldColonSpacing: Annotated[Literal["None", "Before", "After", "Both"], Field(
-            default="Both",
-            examples=["None", "Before", "After", "Both"],
-            description=
-                "Control the spacing around the colon in C++ bitfield declarations.\n"
+            ),
+        ]
+        BitFieldColonSpacing: Annotated[
+            Literal["None", "Before", "After", "Both"],
+            Field(
+                default="Both",
+                examples=["None", "Before", "After", "Both"],
+                description="Control the spacing around the colon in C++ bitfield declarations.\n"
                 "   `None`:\n"
                 "       ```cpp\n"
                 "       unsigned bf:2;\n"
@@ -164,19 +185,23 @@ class ClangFormat(Resource):
                 "       ```cpp\n"
                 "       unsigned bf : 2;\n"
                 "       ```",
-        )]
-        ColumnLimit: Annotated[NonNegativeInt, Field(
-            default=88,
-            description=
-                "The column beyond which clang-format will try to wrap lines.  This "
+            ),
+        ]
+        ColumnLimit: Annotated[
+            NonNegativeInt,
+            Field(
+                default=88,
+                description="The column beyond which clang-format will try to wrap lines.  This "
                 "is not a hard limit, and clang-format may exceed it if necessary to "
                 "avoid breaking the code in undesirable ways, but it serves as a "
                 "guideline for how aggressively to break lines.",
-        )]
-        CompactNamespaces: Annotated[bool, Field(
-            default=False,
-            description=
-                "If true, consecutive namespace declarations will be on the same "
+            ),
+        ]
+        CompactNamespaces: Annotated[
+            bool,
+            Field(
+                default=False,
+                description="If true, consecutive namespace declarations will be on the same "
                 "line.  If false, each namespace is declared on a new line.\n"
                 "   `true`:\n"
                 "       ```cpp\n"
@@ -190,12 +215,14 @@ class ClangFormat(Resource):
                 "       }\n"
                 "       }\n"
                 "       ```",
-        )]
-        EmptyLineAfterAccessModifier: Annotated[Literal["Never", "Leave", "Always"], Field(
-            default="Leave",
-            examples=["Never", "Leave", "Always"],
-            description=
-                "Control whether to insert an empty line after access modifiers "
+            ),
+        ]
+        EmptyLineAfterAccessModifier: Annotated[
+            Literal["Never", "Leave", "Always"],
+            Field(
+                default="Leave",
+                examples=["Never", "Leave", "Always"],
+                description="Control whether to insert an empty line after access modifiers "
                 "(e.g. `public`, `private`, `protected`):\n"
                 "   `Never`: remove all empty lines after access modifiers\n"
                 "       ```cpp\n"
@@ -232,71 +259,72 @@ class ClangFormat(Resource):
                 "\n"
                 "       };\n"
                 "       ```",
-        )]
+            ),
+        ]
         EmptyLineBeforeAccessModifier: Annotated[
             Literal["Never", "Leave", "LogicalBlock", "Always"],
             Field(
                 default="Leave",
                 examples=["Never", "Leave", "LogicalBlock", "Always"],
-                description=
-                    "Control whether to insert an empty line before access modifiers "
-                    "(e.g. `public`, `private`, `protected`):\n"
-                    "   `Never`: remove all empty lines before access modifiers\n"
-                    "       ```cpp\n"
-                    "       struct foo {\n"
-                    "       private:\n"
-                    "           int i;\n"
-                    "       protected:\n"
-                    "           int j;\n"
-                    "           /* comment */\n"
-                    "       public:\n"
-                    "           foo() {}\n"
-                    "       private:\n"
-                    "       protected:\n"
-                    "       };\n"
-                    "       ```\n"
-                    "   `Leave`: preserve user formatting\n"
-                    "   `LogicalBlock`: add empty line only when access modifier starts "
-                    "a new logical block.\n"
-                    "       ```cpp\n"
-                    "       struct foo {\n"
-                    "       private:\n"
-                    "           int i;\n"
-                    "\n"
-                    "       protected:\n"
-                    "           int j;\n"
-                    "           /* comment */\n"
-                    "       public:\n"
-                    "           foo() {}\n"
-                    "\n"
-                    "       private:\n"
-                    "       protected:\n"
-                    "       };\n"
-                    "       ```\n"
-                    "   `Always`:\n"
-                    "       ```cpp\n"
-                    "       struct foo {\n"
-                    "       private:\n"
-                    "           int i;\n"
-                    "\n"
-                    "       protected:\n"
-                    "           int j;\n"
-                    "           /* comment */\n"
-                    "\n"
-                    "       public:\n"
-                    "           foo() {}\n"
-                    "\n"
-                    "       private:\n"
-                    "\n"
-                    "       protected:\n"
-                    "       };\n"
-                    "       ```",
-            )
+                description="Control whether to insert an empty line before access modifiers "
+                "(e.g. `public`, `private`, `protected`):\n"
+                "   `Never`: remove all empty lines before access modifiers\n"
+                "       ```cpp\n"
+                "       struct foo {\n"
+                "       private:\n"
+                "           int i;\n"
+                "       protected:\n"
+                "           int j;\n"
+                "           /* comment */\n"
+                "       public:\n"
+                "           foo() {}\n"
+                "       private:\n"
+                "       protected:\n"
+                "       };\n"
+                "       ```\n"
+                "   `Leave`: preserve user formatting\n"
+                "   `LogicalBlock`: add empty line only when access modifier starts "
+                "a new logical block.\n"
+                "       ```cpp\n"
+                "       struct foo {\n"
+                "       private:\n"
+                "           int i;\n"
+                "\n"
+                "       protected:\n"
+                "           int j;\n"
+                "           /* comment */\n"
+                "       public:\n"
+                "           foo() {}\n"
+                "\n"
+                "       private:\n"
+                "       protected:\n"
+                "       };\n"
+                "       ```\n"
+                "   `Always`:\n"
+                "       ```cpp\n"
+                "       struct foo {\n"
+                "       private:\n"
+                "           int i;\n"
+                "\n"
+                "       protected:\n"
+                "           int j;\n"
+                "           /* comment */\n"
+                "\n"
+                "       public:\n"
+                "           foo() {}\n"
+                "\n"
+                "       private:\n"
+                "\n"
+                "       protected:\n"
+                "       };\n"
+                "       ```",
+            ),
         ]
-        FixNamespaceComments: Annotated[bool, Field(
-            default=True,
-            description=
-                "Add namespace end comments for long namespaces, and fix them if they "
+        FixNamespaceComments: Annotated[
+            bool,
+            Field(
+                default=True,
+                description="Add namespace end comments for long namespaces, and fix them if they "
                 "are wrong.\n"
                 "   `true`:\n"
                 "       ```cpp\n"
@@ -314,26 +342,32 @@ class ClangFormat(Resource):
                 "       }\n"
                 "       namespace shortNamespace { void baz(); }\n"
                 "       ```",
-        )]
-        ForEachMacros: Annotated[list[NoWhiteSpace], Field(
-            default_factory=list,
-            examples=["[\"BOOST_FOREACH\"]"],
-            description=
-                "List of macros to treat as foreach loops, which affects how their "
+            ),
+        ]
+        ForEachMacros: Annotated[
+            list[NoWhiteSpace],
+            Field(
+                default_factory=list,
+                examples=["[\"BOOST_FOREACH\"]"],
+                description="List of macros to treat as foreach loops, which affects how their "
                 "bodies are formatted.",
-        )]
-        IfMacros: Annotated[list[NoWhiteSpace], Field(
-            default_factory=list,
-            examples=["[\"Q_IF\"]"],
-            description=
-                "List of macros to treat as if statements, which affects how their "
+            ),
+        ]
+        IfMacros: Annotated[
+            list[NoWhiteSpace],
+            Field(
+                default_factory=list,
+                examples=["[\"Q_IF\"]"],
+                description="List of macros to treat as if statements, which affects how their "
                 "bodies are formatted.",
-        )]
-        IncludeBlocks: Annotated[Literal["Preserve", "Merge"], Field(
-            default="Preserve",
-            examples=["Preserve", "Merge"],
-            description=
-                "Control how to format blocks of consecutive #include directives.\n"
+            ),
+        ]
+        IncludeBlocks: Annotated[
+            Literal["Preserve", "Merge"],
+            Field(
+                default="Preserve",
+                examples=["Preserve", "Merge"],
+                description="Control how to format blocks of consecutive #include directives.\n"
                 "   `Preserve`: sort each #include block individually\n"
                 "       ```cpp\n"
                 "       #include \"b.h\"\n          ->      #include \"b.h\"\n"
@@ -348,11 +382,13 @@ class ClangFormat(Resource):
                 "       #include <lib/main.h>               #include <lib/main.h>\n"
                 "       #include \"b.h\"\n"
                 "       ```",
-        )]
-        InsertBraces: Annotated[bool, Field(
-            default=True,
-            description=
-                "Controls whether to insert braces after control statements:\n"
+            ),
+        ]
+        InsertBraces: Annotated[
+            bool,
+            Field(
+                default=True,
+                description="Controls whether to insert braces after control statements:\n"
                 "   `true`:\n"
                 "       ```cpp\n"
                 "       if (isa<FunctionDecl>(D)) {\n"
@@ -390,26 +426,32 @@ class ClangFormat(Resource):
                 "           --i;\n"
                 "       while (i);\n"
                 "       ```",
-        )]
-        InsertNewlineAtEOF: Annotated[bool, Field(
-            default=True,
-            description=
-                "Whether to insert a newline at the end of the file if it is missing.",
-        )]
-        LineEnding: Annotated[Literal["LF", "CRLF", "DeriveLF", "DeriveCRLF"], Field(
-            default="DeriveLF",
-            description=
-                "Line ending style (\\n or \\r\\n) to use:\n"
+            ),
+        ]
+        InsertNewlineAtEOF: Annotated[
+            bool,
+            Field(
+                default=True,
+                description="Whether to insert a newline at the end of the file if it is missing.",
+            ),
+        ]
+        LineEnding: Annotated[
+            Literal["LF", "CRLF", "DeriveLF", "DeriveCRLF"],
+            Field(
+                default="DeriveLF",
+                description="Line ending style (\\n or \\r\\n) to use:\n"
                 "   `LF`: use Unix-style line endings (\\n)\n"
                 "   `CRLF`: use Windows-style line endings (\\r\\n)\n"
                 "   `DeriveLF`: Use \\n unless the input has more lines ending in \\r\\n.\n"
                 "   `DeriveCRLF`: Use \\r\\n unless the input has more lines "
                 "ending in \\n.",
-        )]
-        NamespaceIndentation: Annotated[Literal["None", "Inner", "All"], Field(
-            default="None",
-            description=
-                "The indentation used for namespaces:\n"
+            ),
+        ]
+        NamespaceIndentation: Annotated[
+            Literal["None", "Inner", "All"],
+            Field(
+                default="None",
+                description="The indentation used for namespaces:\n"
                 "   `None`: don't indent in namespaces\n"
                 "       ````cpp\n"
                 "       namespace out {\n"
@@ -437,79 +479,90 @@ class ClangFormat(Resource):
                 "           }\n"
                 "       }\n"
                 "       ```",
-        )]
-        NamespaceMacros: Annotated[list[NoWhiteSpace], Field(
-            default_factory=list,
-            examples=["[\"__LIBCPP_BEGIN_NAMESPACE_STD\"]"],
-            description=
-                "List of macros to treat as namespace declarations, which affects how "
+            ),
+        ]
+        NamespaceMacros: Annotated[
+            list[NoWhiteSpace],
+            Field(
+                default_factory=list,
+                examples=["[\"__LIBCPP_BEGIN_NAMESPACE_STD\"]"],
+                description="List of macros to treat as namespace declarations, which affects how "
                 "their bodies are formatted.",
-        )]
-        OneLineFormatOffRegex: Annotated[RegexPattern, Field(
-            default="NOFORMAT",
-            description=
-                "A regex pattern to match in a `//` line comment to disable "
+            ),
+        ]
+        OneLineFormatOffRegex: Annotated[
+            RegexPattern,
+            Field(
+                default="NOFORMAT",
+                description="A regex pattern to match in a `//` line comment to disable "
                 "clang-format for that line.",
-        )]
+            ),
+        ]
         PackConstructorInitializers: Annotated[
             Literal["Never", "BinPack", "CurrentLine", "NextLine", "NextLineOnly"],
             Field(
                 default="CurrentLine",
-                examples=["Never", "BinPack", "CurrentLine", "NextLine", "NextLineOnly"],
-                description=
-                    "Control how to format constructor initializers:\n"
-                    "   `Never`: always put each constructor initializer on its own line\n"
-                    "       ```cpp\n"
-                    "       Constructor()\n"
-                    "           : a(),\n"
-                    "             b()\n"
-                    "       ```\n"
-                    "   `BinPack`: bin-pack constructor initializers\n"
-                    "       ```cpp\n"
-                    "       Constructor()\n"
-                    "           : aaaaaaaaaaaaaaaaaaaa(), bbbbbbbbbbbbbbbbbbbb(),\n"
-                    "             cccccccccccccccccccc()\n"
-                    "       ```\n"
-                    "   `CurrentLine`: put all constructor initializers on the current "
-                    "line if they fit. Otherwise, put each one on its own line.\n"
-                    "       ```cpp\n"
-                    "       Constructor() : a(), b(), c()\n"
-                    "       Constructor()\n"
-                    "           : aaaaaaaaaaaaaaaaaaaa(),\n"
-                    "             bbbbbbbbbbbbbbbbbbbb()\n"
-                    "             cccccccccccccccccccc()\n"
-                    "       ```\n"
-                    "   `NextLine`: same as `CurrentLine., except that if all "
-                    "constructor initializers do not fit on the current line, try to "
-                    "fit them on the next line.\n"
-                    "       ```cpp\n"
-                    "       Constructor() : a(), b(), c()\n"
-                    "       Constructor()\n"
-                    "           : a(), bbbbbbbbbbbbbbbbbbbb(), cccccccccccccccccccc()"
-                    "       Constructor()\n"
-                    "           : aaaaaaaaaaaaaaaaaaaa(),\n"
-                    "             bbbbbbbbbbbbbbbbbbbb()\n"
-                    "             cccccccccccccccccccc()\n"
-                    "       ```\n"
-                    "   `NextLineOnly`: put all constructor initializers on the next "
-                    "line if they fit. Otherwise, put each one on its own line.\n"
-                    "       ```cpp\n"
-                    "       Constructor()\n"
-                    "           : a(), b(), c()\n"
-                    "       Constructor()\n"
-                    "           : a(), bbbbbbbbbbbbbbbbbbbb(), cccccccccccccccccccc()"
-                    "       Constructor()\n"
-                    "           : aaaaaaaaaaaaaaaaaaaa(),\n"
-                    "             bbbbbbbbbbbbbbbbbbbb()\n"
-                    "             cccccccccccccccccccc()\n"
-                    "       ```",
-            )
+                examples=[
+                    "Never",
+                    "BinPack",
+                    "CurrentLine",
+                    "NextLine",
+                    "NextLineOnly",
+                ],
+                description="Control how to format constructor initializers:\n"
+                "   `Never`: always put each constructor initializer on its own line\n"
+                "       ```cpp\n"
+                "       Constructor()\n"
+                "           : a(),\n"
+                "             b()\n"
+                "       ```\n"
+                "   `BinPack`: bin-pack constructor initializers\n"
+                "       ```cpp\n"
+                "       Constructor()\n"
+                "           : aaaaaaaaaaaaaaaaaaaa(), bbbbbbbbbbbbbbbbbbbb(),\n"
+                "             cccccccccccccccccccc()\n"
+                "       ```\n"
+                "   `CurrentLine`: put all constructor initializers on the current "
+                "line if they fit. Otherwise, put each one on its own line.\n"
+                "       ```cpp\n"
+                "       Constructor() : a(), b(), c()\n"
+                "       Constructor()\n"
+                "           : aaaaaaaaaaaaaaaaaaaa(),\n"
+                "             bbbbbbbbbbbbbbbbbbbb()\n"
+                "             cccccccccccccccccccc()\n"
+                "       ```\n"
+                "   `NextLine`: same as `CurrentLine., except that if all "
+                "constructor initializers do not fit on the current line, try to "
+                "fit them on the next line.\n"
+                "       ```cpp\n"
+                "       Constructor() : a(), b(), c()\n"
+                "       Constructor()\n"
+                "           : a(), bbbbbbbbbbbbbbbbbbbb(), cccccccccccccccccccc()"
+                "       Constructor()\n"
+                "           : aaaaaaaaaaaaaaaaaaaa(),\n"
+                "             bbbbbbbbbbbbbbbbbbbb()\n"
+                "             cccccccccccccccccccc()\n"
+                "       ```\n"
+                "   `NextLineOnly`: put all constructor initializers on the next "
+                "line if they fit. Otherwise, put each one on its own line.\n"
+                "       ```cpp\n"
+                "       Constructor()\n"
+                "           : a(), b(), c()\n"
+                "       Constructor()\n"
+                "           : a(), bbbbbbbbbbbbbbbbbbbb(), cccccccccccccccccccc()"
+                "       Constructor()\n"
+                "           : aaaaaaaaaaaaaaaaaaaa(),\n"
+                "             bbbbbbbbbbbbbbbbbbbb()\n"
+                "             cccccccccccccccccccc()\n"
+                "       ```",
+            ),
         ]
-        PointerAlignment: Annotated[Literal["Left", "Right", "Middle"], Field(
-            default="Left",
-            examples=["Left", "Right", "Middle"],
-            description=
-                "Pointer alignment style:\n"
+        PointerAlignment: Annotated[
+            Literal["Left", "Right", "Middle"],
+            Field(
+                default="Left",
+                examples=["Left", "Right", "Middle"],
+                description="Pointer alignment style:\n"
                 "   `Left`: align pointers to the left.\n"
                 "       ```cpp\n"
                 "       int* a;\n"
@@ -522,59 +575,80 @@ class ClangFormat(Resource):
                 "       ```cpp\n"
                 "       int * a;\n"
                 "       ```",
-        )]
+            ),
+        ]
 
         @staticmethod
         def _check_qualifier_order(value: list[str]) -> list[str]:
             seen: set[str] = set()
             for qualifier in value:
                 if qualifier in seen:
-                    raise ValueError(
+                    msg = (
                         "duplicate qualifier in ClangFormat.QualifierOrder: "
                         f"'{qualifier}'"
                     )
+                    raise ValueError(msg)
                 seen.add(qualifier)
             if "type" not in seen:
-                raise ValueError(
-                    "ClangFormat.QualifierOrder must include a 'type' qualifier"
-                )
+                msg = "ClangFormat.QualifierOrder must include a 'type' qualifier"
+                raise ValueError(msg)
             return value
 
         QualifierOrder: Annotated[
-            list[Literal[
-                "inline", "static", "constexpr", "friend", "const", "volatile",
-                "restrict", "type"
-            ]],
+            list[
+                Literal[
+                    "inline",
+                    "static",
+                    "constexpr",
+                    "friend",
+                    "const",
+                    "volatile",
+                    "restrict",
+                    "type",
+                ]
+            ],
             AfterValidator(_check_qualifier_order),
             Field(
                 default_factory=lambda: [
-                    "inline", "static", "constexpr", "friend", "const", "volatile",
-                    "restrict", "type"
+                    "inline",
+                    "static",
+                    "constexpr",
+                    "friend",
+                    "const",
+                    "volatile",
+                    "restrict",
+                    "type",
                 ],
                 examples=[
-                    "inline", "static", "constexpr", "friend", "const", "volatile",
-                    "restrict", "type"
+                    "inline",
+                    "static",
+                    "constexpr",
+                    "friend",
+                    "const",
+                    "volatile",
+                    "restrict",
+                    "type",
                 ],
-                description=
-                    "The canonical order in which to format qualifiers.  Must include "
-                    "each of the following qualifiers exactly once: `inline`, "
-                    "`static`, `constexpr`, `friend`, `const`, `volatile`, "
-                    "`restrict`, and `type` (for the type itself).  With the default"
-                    "order:\n"
-                    "   ````cpp\n"
-                    "   friend static inline const int* foo();\n"
-                    "   ```\n"
-                    "would format to:\n"
-                    "   ```cpp\n"
-                    "   inline static friend const int* foo();\n"
-                    "   ```",
-            )
+                description="The canonical order in which to format qualifiers.  Must include "
+                "each of the following qualifiers exactly once: `inline`, "
+                "`static`, `constexpr`, `friend`, `const`, `volatile`, "
+                "`restrict`, and `type` (for the type itself).  With the default"
+                "order:\n"
+                "   ````cpp\n"
+                "   friend static inline const int* foo();\n"
+                "   ```\n"
+                "would format to:\n"
+                "   ```cpp\n"
+                "   inline static friend const int* foo();\n"
+                "   ```",
+            ),
         ]
-        ReferenceAlignment: Annotated[Literal["Left", "Right", "Middle"], Field(
-            default="Left",
-            examples=["Left", "Right", "Middle"],
-            description=
-                "Reference alignment style:\n"
+        ReferenceAlignment: Annotated[
+            Literal["Left", "Right", "Middle"],
+            Field(
+                default="Left",
+                examples=["Left", "Right", "Middle"],
+                description="Reference alignment style:\n"
                 "   `Left`: align references to the left.\n"
                 "       ```cpp\n"
                 "       int& a = b;\n"
@@ -587,12 +661,14 @@ class ClangFormat(Resource):
                 "       ```cpp\n"
                 "       int & a = b;\n"
                 "       ```",
-        )]
-        ReflowComments: Annotated[Literal["Never", "IndentOnly", "Always"], Field(
-            default="Always",
-            examples=["Never", "IndentOnly", "Always"],
-            description=
-                "Control automatic line wrapping for comments:\n"
+            ),
+        ]
+        ReflowComments: Annotated[
+            Literal["Never", "IndentOnly", "Always"],
+            Field(
+                default="Always",
+                examples=["Never", "IndentOnly", "Always"],
+                description="Control automatic line wrapping for comments:\n"
                 "   `Never`: never reflow comments\n"
                 "       ```cpp\n"
                 "       // veryVeryVeryVeryVeryVeryVeryVeryVeryVeryVeryLongComment "
@@ -627,11 +703,13 @@ class ClangFormat(Resource):
                 "with plenty of\n"
                 "        * information and a misaligned second line */\n"
                 "       ```",
-        )]
-        RemoveEmptyLinesInUnwrappedLines: Annotated[bool, Field(
-            default=True,
-            description=
-                "Controls whether to remove empty lines within unwrapped lines:\n"
+            ),
+        ]
+        RemoveEmptyLinesInUnwrappedLines: Annotated[
+            bool,
+            Field(
+                default=True,
+                description="Controls whether to remove empty lines within unwrapped lines:\n"
                 "   `true`:\n"
                 "       ```cpp\n"
                 "       int c = a + b;\n"
@@ -662,114 +740,121 @@ class ClangFormat(Resource):
                 "           true) {\n"
                 "       }\n"
                 "       ```",
-        )]
+            ),
+        ]
         RequiresClausePosition: Annotated[
             Literal[
-                "OwnLine", "OwnLineWithBrace", "WithPreceding", "WithFollowing",
-                "SingleLine"
+                "OwnLine",
+                "OwnLineWithBrace",
+                "WithPreceding",
+                "WithFollowing",
+                "SingleLine",
             ],
             Field(
                 default="WithPreceding",
                 examples=[
-                    "OwnLine", "OwnLineWithBrace", "WithPreceding", "WithFollowing",
-                    "SingleLine"
+                    "OwnLine",
+                    "OwnLineWithBrace",
+                    "WithPreceding",
+                    "WithFollowing",
+                    "SingleLine",
                 ],
-                description=
-                    "Controls the position of the `requires` clause in C++20 template "
-                    "constraints:\n"
-                    "   `OwnLine`: always put the requires clause on its own line "
-                    "(possibly followed by a semicolon).\n"
-                    "       ```cpp\n"
-                    "       template <typename T>\n"
-                    "           requires C<T>\n"
-                    "       struct Foo {...};\n"
-                    "\n"
-                    "       template <typename T>\n"
-                    "       void bar(T t)\n"
-                    "           requires C<T>;\n"
-                    "\n"
-                    "       template <typename T>\n"
-                    "           requires C<T>\n"
-                    "       void bar(T t) {...}\n"
-                    "\n"
-                    "       template <typename T>\n"
-                    "       void baz(T t)\n"
-                    "           requires C<T>\n"
-                    "       {...}\n"
-                    "       ```\n"
-                    "   `OwnLineWithBrace`: as with 'OwnLine', except, unless "
-                    "otherwise prohibited, place a following open brace (of a "
-                    "function definition) to follow on the same line.\n"
-                    "       ```cpp\n"
-                    "       void bar(T t)\n"
-                    "           requires C<T> {\n"
-                    "           return;\n"
-                    "       }\n"
-                    "\n"
-                    "       void bar(T t)\n"
-                    "           requires C<T> {}\n"
-                    "\n"
-                    "       template <typename T>\n"
-                    "           requires C<T>\n"
-                    "       void baz(T t) {...}\n"
-                    "       ```\n"
-                    "   `WithPreceding`: try to put the clause together with the "
-                    "preceding part of a declaration. For class templates: stick to "
-                    "the template declaration. For function templates: stick to the "
-                    "template declaration. For function declaration followed by a "
-                    "requires clause: stick to the parameter list.\n"
-                    "       ```cpp\n"
-                    "       template <typename T> requires C<T>\n"
-                    "       struct Foo {...};\n"
-                    "\n"
-                    "       template <typename T> requires C<T>\n"
-                    "       void bar(T t) {...}"
-                    "\n"
-                    "       template <typename T>\n"
-                    "       void baz(T t) requires C<T>\n"
-                    "       {...}\n"
-                    "       ```\n"
-                    "   `WithFollowing`: try to put the requires clause together with "
-                    "the class or function declaration.\n"
-                    "       ```cpp\n"
-                    "       template <typename T>\n"
-                    "       requires C<T> struct Foo {...};\n"
-                    "\n"
-                    "       template <typename T>\n"
-                    "       requires C<T> void bar(T t) {...}\n"
-                    "\n"
-                    "       template <typename T>\n"
-                    "       void baz(T t)\n"
-                    "       requires C<T> {...}\n"
-                    "       ```\n"
-                    "   `SingleLine`: try to put everything in the same line if "
-                    "possible.  Otherwise normal line breaking rules take over.\n"
-                    "       ```cpp\n"
-                    "       // Fitting:\n"
-                    "       template <typename T> requires C<T> struct Foo {...};\n"
-                    "       template <typename T> requires C<T> void bar(T t) {...}\n"
-                    "       template <typename T> void bar(T t) requires C<T> {...}\n"
-                    "\n"
-                    "       // Not fitting, one possible example:\n"
-                    "       template <typename LongName>\n"
-                    "       requires C<LongName>\n"
-                    "       struct Foo {...};\n"
-                    "\n"
-                    "       template <typename LongName>\n"
-                    "       requires C<LongName>\n"
-                    "       void bar(LongName ln) {...}\n"
-                    "\n"
-                    "       template <typename LongName>\n"
-                    "       void bar(LongName ln)\n"
-                    "           requires C<LongName> {...}\n"
-                    "       ```",
-            )
+                description="Controls the position of the `requires` clause in C++20 template "
+                "constraints:\n"
+                "   `OwnLine`: always put the requires clause on its own line "
+                "(possibly followed by a semicolon).\n"
+                "       ```cpp\n"
+                "       template <typename T>\n"
+                "           requires C<T>\n"
+                "       struct Foo {...};\n"
+                "\n"
+                "       template <typename T>\n"
+                "       void bar(T t)\n"
+                "           requires C<T>;\n"
+                "\n"
+                "       template <typename T>\n"
+                "           requires C<T>\n"
+                "       void bar(T t) {...}\n"
+                "\n"
+                "       template <typename T>\n"
+                "       void baz(T t)\n"
+                "           requires C<T>\n"
+                "       {...}\n"
+                "       ```\n"
+                "   `OwnLineWithBrace`: as with 'OwnLine', except, unless "
+                "otherwise prohibited, place a following open brace (of a "
+                "function definition) to follow on the same line.\n"
+                "       ```cpp\n"
+                "       void bar(T t)\n"
+                "           requires C<T> {\n"
+                "           return;\n"
+                "       }\n"
+                "\n"
+                "       void bar(T t)\n"
+                "           requires C<T> {}\n"
+                "\n"
+                "       template <typename T>\n"
+                "           requires C<T>\n"
+                "       void baz(T t) {...}\n"
+                "       ```\n"
+                "   `WithPreceding`: try to put the clause together with the "
+                "preceding part of a declaration. For class templates: stick to "
+                "the template declaration. For function templates: stick to the "
+                "template declaration. For function declaration followed by a "
+                "requires clause: stick to the parameter list.\n"
+                "       ```cpp\n"
+                "       template <typename T> requires C<T>\n"
+                "       struct Foo {...};\n"
+                "\n"
+                "       template <typename T> requires C<T>\n"
+                "       void bar(T t) {...}"
+                "\n"
+                "       template <typename T>\n"
+                "       void baz(T t) requires C<T>\n"
+                "       {...}\n"
+                "       ```\n"
+                "   `WithFollowing`: try to put the requires clause together with "
+                "the class or function declaration.\n"
+                "       ```cpp\n"
+                "       template <typename T>\n"
+                "       requires C<T> struct Foo {...};\n"
+                "\n"
+                "       template <typename T>\n"
+                "       requires C<T> void bar(T t) {...}\n"
+                "\n"
+                "       template <typename T>\n"
+                "       void baz(T t)\n"
+                "       requires C<T> {...}\n"
+                "       ```\n"
+                "   `SingleLine`: try to put everything in the same line if "
+                "possible.  Otherwise normal line breaking rules take over.\n"
+                "       ```cpp\n"
+                "       // Fitting:\n"
+                "       template <typename T> requires C<T> struct Foo {...};\n"
+                "       template <typename T> requires C<T> void bar(T t) {...}\n"
+                "       template <typename T> void bar(T t) requires C<T> {...}\n"
+                "\n"
+                "       // Not fitting, one possible example:\n"
+                "       template <typename LongName>\n"
+                "       requires C<LongName>\n"
+                "       struct Foo {...};\n"
+                "\n"
+                "       template <typename LongName>\n"
+                "       requires C<LongName>\n"
+                "       void bar(LongName ln) {...}\n"
+                "\n"
+                "       template <typename LongName>\n"
+                "       void bar(LongName ln)\n"
+                "           requires C<LongName> {...}\n"
+                "       ```",
+            ),
         ]
-        RequiresExpressionIndentation: Annotated[Literal["OuterScope", "Keyword"], Field(
-            default="OuterScope",
-            examples=["OuterScope", "Keyword"],
-            description=
-                "Controls the indentation used for requires expression bodies:\n"
+        RequiresExpressionIndentation: Annotated[
+            Literal["OuterScope", "Keyword"],
+            Field(
+                default="OuterScope",
+                examples=["OuterScope", "Keyword"],
+                description="Controls the indentation used for requires expression bodies:\n"
                 "   `OuterScope`: align requires expression body relative to the "
                 "indentation level of the outer scope the requires expression resides "
                 "in.\n"
@@ -787,12 +872,14 @@ class ClangFormat(Resource):
                 "                       ...\n"
                 "                   }\n"
                 "       ```",
-        )]
-        SeparateDefinitionBlocks: Annotated[Literal["Never", "Leave", "Always"], Field(
-            default="Leave",
-            examples=["Never", "Leave", "Always"],
-            description=
-                "Controls how empty lines are used to separate definition blocks, "
+            ),
+        ]
+        SeparateDefinitionBlocks: Annotated[
+            Literal["Never", "Leave", "Always"],
+            Field(
+                default="Leave",
+                examples=["Never", "Leave", "Always"],
+                description="Controls how empty lines are used to separate definition blocks, "
                 "including classes, structs, enums, and functions:\n"
                 "   `Never`:\n"
                 "       ```cpp\n"
@@ -871,119 +958,136 @@ class ClangFormat(Resource):
                 "       class C {};\n"
                 "       }\n"
                 "       ```",
-        )]
-        ShortNamespaceLines: Annotated[NonNegativeInt, Field(
-            default=20,
-            description=
-                "The maximum number of lines in a namespace definition for it to "
+            ),
+        ]
+        ShortNamespaceLines: Annotated[
+            NonNegativeInt,
+            Field(
+                default=20,
+                description="The maximum number of lines in a namespace definition for it to "
                 "be considered a short namespace.  Short namespaces may be "
                 "formatted more compactly, possibly without ending comments.",
-        )]
+            ),
+        ]
         SortUsingDeclarations: Annotated[
             Literal["Never", "Lexicographic", "LexicographicNumeric"],
             Field(
                 default="Lexicographic",
                 examples=["Never", "Lexicographic", "LexicographicNumeric"],
-                description=
-                    "Controls whether and how to sort using declarations:\n"
-                    "   `Never`: don't sort using declarations\n"
-                    "       ```cpp\n"
-                    "       using std::chrono::duration_cast;\n"
-                    "       using std::move;\n"
-                    "       using boost::regex;\n"
-                    "       using boost::regex_constants::icase;\n"
-                    "       using std::string;\n"
-                    "       ```\n"
-                    "   `Lexicographic`: Using declarations are sorted in the order "
-                    "defined as follows: Split the strings by :: and discard any "
-                    "initial empty strings. Sort the lists of names lexicographically, "
-                    "and within those groups, names are in case-insensitive "
-                    "lexicographic order.\n"
-                    "       ```cpp\n"
-                    "       using boost::regex;\n"
-                    "       using boost::regex_constants::icase;\n"
-                    "       using std::chrono::duration_cast;\n"
-                    "       using std::move;\n"
-                    "       using std::string;\n"
-                    "       ```\n"
-                    "   `LexicographicNumeric`: using declarations are sorted in the "
-                    "order defined as follows: Split the strings by :: and discard any "
-                    "initial empty strings. The last element of each list is a "
-                    "non-namespace name; all others are namespace names. Sort the "
-                    "lists of names lexicographically, where the sort order of "
-                    "individual names is that all non-namespace names come before all "
-                    "namespace names, and within those groups, names are in "
-                    "case-insensitive lexicographic order.\n"
-                    "       ```cpp\n"
-                    "       using boost::regex;\n"
-                    "       using boost::regex_constants::icase;\n"
-                    "       using std::move;\n"
-                    "       using std::string;\n"
-                    "       using std::chrono::duration_cast;\n"
-                    "       ```",
-            )
+                description="Controls whether and how to sort using declarations:\n"
+                "   `Never`: don't sort using declarations\n"
+                "       ```cpp\n"
+                "       using std::chrono::duration_cast;\n"
+                "       using std::move;\n"
+                "       using boost::regex;\n"
+                "       using boost::regex_constants::icase;\n"
+                "       using std::string;\n"
+                "       ```\n"
+                "   `Lexicographic`: Using declarations are sorted in the order "
+                "defined as follows: Split the strings by :: and discard any "
+                "initial empty strings. Sort the lists of names lexicographically, "
+                "and within those groups, names are in case-insensitive "
+                "lexicographic order.\n"
+                "       ```cpp\n"
+                "       using boost::regex;\n"
+                "       using boost::regex_constants::icase;\n"
+                "       using std::chrono::duration_cast;\n"
+                "       using std::move;\n"
+                "       using std::string;\n"
+                "       ```\n"
+                "   `LexicographicNumeric`: using declarations are sorted in the "
+                "order defined as follows: Split the strings by :: and discard any "
+                "initial empty strings. The last element of each list is a "
+                "non-namespace name; all others are namespace names. Sort the "
+                "lists of names lexicographically, where the sort order of "
+                "individual names is that all non-namespace names come before all "
+                "namespace names, and within those groups, names are in "
+                "case-insensitive lexicographic order.\n"
+                "       ```cpp\n"
+                "       using boost::regex;\n"
+                "       using boost::regex_constants::icase;\n"
+                "       using std::move;\n"
+                "       using std::string;\n"
+                "       using std::chrono::duration_cast;\n"
+                "       ```",
+            ),
         ]
-        TabWidth: Annotated[NonNegativeInt, Field(
-            default=4,
-            description="The number of columns used for tab stops.",
-        )]
-        TemplateNames: Annotated[list[NoWhiteSpace], Field(
-            default_factory=list,
-            examples=["MYTEMPLATE -> MYTEMPLATE<arg> void func() {...}"],
-            description=
-                "A list of non-keyword identifiers that should be interpreted as "
+        TabWidth: Annotated[
+            NonNegativeInt,
+            Field(
+                default=4,
+                description="The number of columns used for tab stops.",
+            ),
+        ]
+        TemplateNames: Annotated[
+            list[NoWhiteSpace],
+            Field(
+                default_factory=list,
+                examples=["MYTEMPLATE -> MYTEMPLATE<arg> void func() {...}"],
+                description="A list of non-keyword identifiers that should be interpreted as "
                 "template names.  A < after a template name is annotated as a template "
                 "opener instead of a binary operator.",
-        )]
-        TypeNames: Annotated[list[NoWhiteSpace], Field(
-            default_factory=list,
-            examples=["MYTYPE -> MYTYPE* var;"],
-            description=
-                "A list of non-keyword identifiers that should be interpreted as type "
+            ),
+        ]
+        TypeNames: Annotated[
+            list[NoWhiteSpace],
+            Field(
+                default_factory=list,
+                examples=["MYTYPE -> MYTYPE* var;"],
+                description="A list of non-keyword identifiers that should be interpreted as type "
                 "names.  A *, &, or && between a type name and another non-keyword "
                 "identifier is annotated as a pointer or reference token instead of "
                 "a binary operator.",
-        )]
-        TypenameMacros: Annotated[list[NoWhiteSpace], Field(
-            default_factory=list,
-            examples=["MYTYPENAME -> MYTYPENAME(typename) var;"],
-            description=
-                "A list of macros that should be interpreted as type declarations "
+            ),
+        ]
+        TypenameMacros: Annotated[
+            list[NoWhiteSpace],
+            Field(
+                default_factory=list,
+                examples=["MYTYPENAME -> MYTYPENAME(typename) var;"],
+                description="A list of macros that should be interpreted as type declarations "
                 "instead of as function calls.  These are expected to be macros of the "
                 "form:\n"
                 "   ```cpp\n"
                 "   STACK_OF(...)\n"
                 "   ```",
-        )]
+            ),
+        ]
         UseTab: Annotated[
             Literal[
-                "Never", "ForIndentation", "ForContinuationAndIndentation",
-                "AlignWithSpaces", "Always"
+                "Never",
+                "ForIndentation",
+                "ForContinuationAndIndentation",
+                "AlignWithSpaces",
+                "Always",
             ],
             Field(
                 default="Never",
                 examples=[
-                    "Never", "ForIndentation", "ForContinuationAndIndentation",
-                    "AlignWithSpaces", "Always"
+                    "Never",
+                    "ForIndentation",
+                    "ForContinuationAndIndentation",
+                    "AlignWithSpaces",
+                    "Always",
                 ],
-                description=
-                    "Controls if and when to use tab characters in the resulting file:\n"
-                    "   `Never`: never use tab.\n"
-                    "   `ForIndentation`: use tabs only for indentation.\n"
-                    "   `ForContinuationAndIndentation`: fill all leading whitespace "
-                    "with tabs, and use spaces for alignment that appears within a "
-                    "line (e.g. consecutive assignments and declarations).\n"
-                    "   `AlignWithSpaces`: use tabs for line continuation and "
-                    "indentation, and spaces for alignment.\n"
-                    "   `Always`: use tabs whenever we need to fill whitespace that "
-                    "spans at least from one tab stop to the next one.",
-            )
+                description="Controls if and when to use tab characters in the resulting file:\n"
+                "   `Never`: never use tab.\n"
+                "   `ForIndentation`: use tabs only for indentation.\n"
+                "   `ForContinuationAndIndentation`: fill all leading whitespace "
+                "with tabs, and use spaces for alignment that appears within a "
+                "line (e.g. consecutive assignments and declarations).\n"
+                "   `AlignWithSpaces`: use tabs for line continuation and "
+                "indentation, and spaces for alignment.\n"
+                "   `Always`: use tabs whenever we need to fill whitespace that "
+                "spans at least from one tab stop to the next one.",
+            ),
         ]
-        WrapNamespaceBodyWithEmptyLines: Annotated[Literal["Never", "Leave", "Always"], Field(
-            default="Leave",
-            examples=["Never", "Leave", "Always"],
-            description=
-                "Controls whether to wrap the body of a namespace with empty lines:\n"
+        WrapNamespaceBodyWithEmptyLines: Annotated[
+            Literal["Never", "Leave", "Always"],
+            Field(
+                default="Leave",
+                examples=["Never", "Leave", "Always"],
+                description="Controls whether to wrap the body of a namespace with empty lines:\n"
                 "   `Never`: remove all empty lines at the beginning and the end of "
                 "namespace body.\n"
                 "       ```cpp\n"
@@ -1006,15 +1110,18 @@ class ClangFormat(Resource):
                 "       }\n"
                 "       }\n"
                 "       ```",
-        )]
+            ),
+        ]
 
         class _Align(BaseModel):
             """Validate the `[tool.clang-format.Align]` table."""
+
             model_config = ConfigDict(extra="forbid")
-            AfterOpenBracket: Annotated[bool, Field(
-                default=False,
-                description=
-                    "Controls whether to align arguments after an open bracket:\n"
+            AfterOpenBracket: Annotated[
+                bool,
+                Field(
+                    default=False,
+                    description="Controls whether to align arguments after an open bracket:\n"
                     "   `true`:\n"
                     "       ```cpp\n"
                     "       someLongFunction(argument1,\n"
@@ -1024,13 +1131,15 @@ class ClangFormat(Resource):
                     "       ```cpp\n"
                     "       someLongFunction(argument1,\n"
                     "           argument2);\n"
-                    "       ```"
-            )]
-            ArrayOfStructures: Annotated[Literal["Left", "Right", "None"], Field(
-                default="None",
-                examples=["Left", "Right", "None"],
-                description=
-                    "Controls the alignment of array of structure initializers:\n"
+                    "       ```",
+                ),
+            ]
+            ArrayOfStructures: Annotated[
+                Literal["Left", "Right", "None"],
+                Field(
+                    default="None",
+                    examples=["Left", "Right", "None"],
+                    description="Controls the alignment of array of structure initializers:\n"
                     "   `Left`:\n"
                     "       ```cpp\n"
                     "       struct test demo[] =\n"
@@ -1049,52 +1158,53 @@ class ClangFormat(Resource):
                     "           { 7,     5,    \"!!\"}\n"
                     "       };\n"
                     "       ```\n"
-                    "   `None`: preserve user formatting."
-            )]
+                    "   `None`: preserve user formatting.",
+                ),
+            ]
             EscapedNewlines: Annotated[
                 Literal["DontAlign", "Left", "LeftWithLastLine", "Right"],
                 Field(
                     default="Right",
                     examples=["DontAlign", "Left", "LeftWithLastLine", "Right"],
-                    description=
-                        "Controls the alignment of backslashes in escaped newlines:\n"
-                        "   `DontAlign`: don't align escaped newlines\n"
-                        "       ```cpp\n"
-                        "       #define A \\\n"
-                        "           int aaaa; \\\n"
-                        "           int b; \\\n"
-                        "           int dddddddddd;\n"
-                        "       ```"
-                        "   `Left`: align escaped newlines as far left as possible.\n"
-                        "       ```cpp\n"
-                        "       #define A     \\\n"
-                        "           int aaaa; \\\n"
-                        "           int b;    \\\n"
-                        "           int dddddddddd;\n"
-                        "       ```"
-                        "   `LeftWithLastLine`: align escaped newlines as far left as "
-                        "possible, using the last line of the preprocessor directive "
-                        "as the reference if it's the longest.\n"
-                        "       ```cpp\n"
-                        "       #define A           \\\n"
-                        "           int aaaa;       \\\n"
-                        "           int b;          \\\n"
-                        "           int dddddddddd;\n"
-                        "       ```"
-                        "   `Right`: align escaped newlines to the rightmost position.\n"
-                        "       ```cpp\n"
-                        "       #define A                                           \\\n"
-                        "           int aaaa;                                       \\\n"
-                        "           int b;                                          \\\n"
-                        "           int dddddddddd;\n"
-                        "       ```"
-                )
+                    description="Controls the alignment of backslashes in escaped newlines:\n"
+                    "   `DontAlign`: don't align escaped newlines\n"
+                    "       ```cpp\n"
+                    "       #define A \\\n"
+                    "           int aaaa; \\\n"
+                    "           int b; \\\n"
+                    "           int dddddddddd;\n"
+                    "       ```"
+                    "   `Left`: align escaped newlines as far left as possible.\n"
+                    "       ```cpp\n"
+                    "       #define A     \\\n"
+                    "           int aaaa; \\\n"
+                    "           int b;    \\\n"
+                    "           int dddddddddd;\n"
+                    "       ```"
+                    "   `LeftWithLastLine`: align escaped newlines as far left as "
+                    "possible, using the last line of the preprocessor directive "
+                    "as the reference if it's the longest.\n"
+                    "       ```cpp\n"
+                    "       #define A           \\\n"
+                    "           int aaaa;       \\\n"
+                    "           int b;          \\\n"
+                    "           int dddddddddd;\n"
+                    "       ```"
+                    "   `Right`: align escaped newlines to the rightmost position.\n"
+                    "       ```cpp\n"
+                    "       #define A                                           \\\n"
+                    "           int aaaa;                                       \\\n"
+                    "           int b;                                          \\\n"
+                    "           int dddddddddd;\n"
+                    "       ```",
+                ),
             ]
-            Operands: Annotated[Literal["DontAlign", "Align", "AlignAfterOperator"], Field(
-                default="Align",
-                examples=["DontAlign", "Align", "AlignAfterOperator"],
-                description=
-                    "Controls the alignment of binary and ternary operators:\n"
+            Operands: Annotated[
+                Literal["DontAlign", "Align", "AlignAfterOperator"],
+                Field(
+                    default="Align",
+                    examples=["DontAlign", "Align", "AlignAfterOperator"],
+                    description="Controls the alignment of binary and ternary operators:\n"
                     "   `DontAlign`: don't align operands when wrapping lines.\n"
                     "   `Align`: Horizontally align operands of binary and ternary "
                     "expressions.\n"
@@ -1113,17 +1223,18 @@ class ClangFormat(Resource):
                     "       int aaa = bbbbbbbbbbbbbbb\n"
                     "               + ccccccccccccccc;\n"
                     "       ```",
-            )]
+                ),
+            ]
 
             class _ConsecutiveAssignments(BaseModel):
-                """Validate the `[tool.clang-format.align.ConsecutiveAssignments]`
-                table.
-                """
+                """Validate consecutive assignment alignment options."""
+
                 model_config = ConfigDict(extra="forbid")
-                Enabled: Annotated[bool, Field(
-                    default=False,
-                    description=
-                        "Controls whether to align consecutive assignments:\n"
+                Enabled: Annotated[
+                    bool,
+                    Field(
+                        default=False,
+                        description="Controls whether to align consecutive assignments:\n"
                         "    `true`:\n"
                         "       ```cpp\n"
                         "       int a            = 1;\n"
@@ -1131,11 +1242,13 @@ class ClangFormat(Resource):
                         "       double c         = 3;\n"
                         "       ```\n"
                         "    `false`: preserve user formatting.",
-                )]
-                AcrossEmptyLines: Annotated[bool, Field(
-                    default=False,
-                    description=
-                        "Controls whether to align across empty lines:\n"
+                    ),
+                ]
+                AcrossEmptyLines: Annotated[
+                    bool,
+                    Field(
+                        default=False,
+                        description="Controls whether to align across empty lines:\n"
                         "   `true`:\n"
                         "       ```cpp\n"
                         "       int a            = 1;\n"
@@ -1152,11 +1265,13 @@ class ClangFormat(Resource):
                         "\n"
                         "       int d = 3;\n"
                         "       ```",
-                )]
-                AcrossComments: Annotated[bool, Field(
-                    default=False,
-                    description=
-                        "Controls whether to align across comments:\n"
+                    ),
+                ]
+                AcrossComments: Annotated[
+                    bool,
+                    Field(
+                        default=False,
+                        description="Controls whether to align across comments:\n"
                         "   `true`:\n"
                         "       ```cpp\n"
                         "       int d    = 3;\n"
@@ -1169,11 +1284,13 @@ class ClangFormat(Resource):
                         "       /* A comment. */\n"
                         "       double e = 4;\n"
                         "       ```",
-                )]
-                AlignCompound: Annotated[bool, Field(
-                    default=False,
-                    description=
-                        "Controls whether compound assignments like `+=` are aligned "
+                    ),
+                ]
+                AlignCompound: Annotated[
+                    bool,
+                    Field(
+                        default=False,
+                        description="Controls whether compound assignments like `+=` are aligned "
                         "along with `=`:\n"
                         "   `true`:\n"
                         "       ```cpp\n"
@@ -1185,11 +1302,13 @@ class ClangFormat(Resource):
                         "       a &= 2;\n"
                         "       bbb = 2;\n"
                         "       ```",
-                )]
-                PadOperators: Annotated[bool, Field(
-                    default=False,
-                    description=
-                        "Controls whether short assignment operators are left-padded "
+                    ),
+                ]
+                PadOperators: Annotated[
+                    bool,
+                    Field(
+                        default=False,
+                        description="Controls whether short assignment operators are left-padded "
                         "to the same length as long ones in order to put all "
                         "assignment operators to the right of the left hand side.\n"
                         "   `true`:\n"
@@ -1208,22 +1327,26 @@ class ClangFormat(Resource):
                         "       a     = 2;\n"
                         "       bbb >>= 2;\n"
                         "       ```",
-                )]
+                    ),
+                ]
 
-            ConsecutiveAssignments: Annotated[_ConsecutiveAssignments, Field(
-                default_factory=_ConsecutiveAssignments.model_construct,
-                description="Options for aligning consecutive assignments",
-            )]
+            ConsecutiveAssignments: Annotated[
+                _ConsecutiveAssignments,
+                Field(
+                    default_factory=_ConsecutiveAssignments.model_construct,
+                    description="Options for aligning consecutive assignments",
+                ),
+            ]
 
             class _ConsecutiveBitFields(BaseModel):
-                """Validate the `[tool.clang-format.align.ConsecutiveBitFields]`
-                table.
-                """
+                """Validate consecutive bit-field alignment options."""
+
                 model_config = ConfigDict(extra="forbid")
-                Enabled: Annotated[bool, Field(
-                    default=False,
-                    description=
-                        "Controls whether to align consecutive bit field declarations:\n"
+                Enabled: Annotated[
+                    bool,
+                    Field(
+                        default=False,
+                        description="Controls whether to align consecutive bit field declarations:\n"
                         "    `true`:\n"
                         "       ```cpp\n"
                         "       int aaaa : 1;\n"
@@ -1231,11 +1354,13 @@ class ClangFormat(Resource):
                         "       int ccc  : 8;\n"
                         "       ```\n"
                         "    `false`: preserve user formatting.",
-                )]
-                AcrossEmptyLines: Annotated[bool, Field(
-                    default=False,
-                    description=
-                        "Controls whether to align across empty lines:\n"
+                    ),
+                ]
+                AcrossEmptyLines: Annotated[
+                    bool,
+                    Field(
+                        default=False,
+                        description="Controls whether to align across empty lines:\n"
                         "   `true`:\n"
                         "       ```cpp\n"
                         "       int aaaa : 1;\n"
@@ -1252,11 +1377,13 @@ class ClangFormat(Resource):
                         "\n"
                         "       int d : 3;\n"
                         "       ```",
-                )]
-                AcrossComments: Annotated[bool, Field(
-                    default=False,
-                    description=
-                        "Controls whether to align across comments:\n"
+                    ),
+                ]
+                AcrossComments: Annotated[
+                    bool,
+                    Field(
+                        default=False,
+                        description="Controls whether to align across comments:\n"
                         "   `true`:\n"
                         "       ```cpp\n"
                         "       int d    : 3;\n"
@@ -1269,22 +1396,26 @@ class ClangFormat(Resource):
                         "       /* A comment. */\n"
                         "       int eeee : 4;\n"
                         "       ```",
-                )]
+                    ),
+                ]
 
-            ConsecutiveBitFields: Annotated[_ConsecutiveBitFields, Field(
-                default_factory=_ConsecutiveBitFields.model_construct,
-                description="Options for aligning consecutive bit field declarations",
-            )]
+            ConsecutiveBitFields: Annotated[
+                _ConsecutiveBitFields,
+                Field(
+                    default_factory=_ConsecutiveBitFields.model_construct,
+                    description="Options for aligning consecutive bit field declarations",
+                ),
+            ]
 
             class _ConsecutiveDeclarations(BaseModel):
-                """Validate the `[tool.clang-format.align.ConsecutiveDeclarations]`
-                table.
-                """
+                """Validate consecutive declaration alignment options."""
+
                 model_config = ConfigDict(extra="forbid")
-                Enabled: Annotated[bool, Field(
-                    default=False,
-                    description=
-                        "Controls whether to align consecutive declarations:\n"
+                Enabled: Annotated[
+                    bool,
+                    Field(
+                        default=False,
+                        description="Controls whether to align consecutive declarations:\n"
                         "    `true`:\n"
                         "       ```cpp\n"
                         "       int         aaaa = 12;\n"
@@ -1292,11 +1423,13 @@ class ClangFormat(Resource):
                         "       std::string ccc;\n"
                         "       ```\n"
                         "    `false`: preserve user formatting.",
-                )]
-                AcrossEmptyLines: Annotated[bool, Field(
-                    default=False,
-                    description=
-                        "Controls whether to align across empty lines:\n"
+                    ),
+                ]
+                AcrossEmptyLines: Annotated[
+                    bool,
+                    Field(
+                        default=False,
+                        description="Controls whether to align across empty lines:\n"
                         "   `true`:\n"
                         "       ```cpp\n"
                         "       int         aaaa = 12;\n"
@@ -1313,11 +1446,13 @@ class ClangFormat(Resource):
                         "\n"
                         "       double d = 3.14;\n"
                         "       ```",
-                )]
-                AcrossComments: Annotated[bool, Field(
-                    default=False,
-                    description=
-                        "Controls whether to align across comments:\n"
+                    ),
+                ]
+                AcrossComments: Annotated[
+                    bool,
+                    Field(
+                        default=False,
+                        description="Controls whether to align across comments:\n"
                         "   `true`:\n"
                         "       ```cpp\n"
                         "       int    d = 3;\n"
@@ -1330,11 +1465,13 @@ class ClangFormat(Resource):
                         "       /* A comment. */\n"
                         "       double eee;\n"
                         "       ```",
-                )]
-                AlignFunctionDeclarations: Annotated[bool, Field(
-                    default=False,
-                    description=
-                        "Controls whether to horizontally align function declarations "
+                    ),
+                ]
+                AlignFunctionDeclarations: Annotated[
+                    bool,
+                    Field(
+                        default=False,
+                        description="Controls whether to horizontally align function declarations "
                         "similar to variable declarations:\n"
                         "   `true`:\n"
                         "       ```cpp\n"
@@ -1348,11 +1485,13 @@ class ClangFormat(Resource):
                         "       void f2(void);\n"
                         "       size_t f3(void);\n"
                         "       ```",
-                )]
-                AlignFunctionPointers: Annotated[bool, Field(
-                    default=False,
-                    description=
-                        "Controls whether to horizontally align function pointer "
+                    ),
+                ]
+                AlignFunctionPointers: Annotated[
+                    bool,
+                    Field(
+                        default=False,
+                        description="Controls whether to horizontally align function pointer "
                         "declarations similar to variable declarations:\n"
                         "   `true`:\n"
                         "       ```cpp\n"
@@ -1368,23 +1507,26 @@ class ClangFormat(Resource):
                         "       int     *p;\n"
                         "       int (*f)();\n"
                         "       ```",
-                )]
+                    ),
+                ]
 
-            ConsecutiveDeclarations: Annotated[_ConsecutiveDeclarations, Field(
-                default_factory=_ConsecutiveDeclarations.model_construct,
-                description=
-                    "Options for aligning consecutive function/variable declarations",
-            )]
+            ConsecutiveDeclarations: Annotated[
+                _ConsecutiveDeclarations,
+                Field(
+                    default_factory=_ConsecutiveDeclarations.model_construct,
+                    description="Options for aligning consecutive function/variable declarations",
+                ),
+            ]
 
             class _ConsecutiveMacros(BaseModel):
-                """Validate the `[tool.clang-format.align.ConsecutiveMacros]`
-                table.
-                """
+                """Validate consecutive macro alignment options."""
+
                 model_config = ConfigDict(extra="forbid")
-                Enabled: Annotated[bool, Field(
-                    default=False,
-                    description=
-                        "Controls whether to align consecutive macro definitions:\n"
+                Enabled: Annotated[
+                    bool,
+                    Field(
+                        default=False,
+                        description="Controls whether to align consecutive macro definitions:\n"
                         "    `true`:\n"
                         "       ```cpp\n"
                         "       #define SHORT_NAME       42\n"
@@ -1394,11 +1536,13 @@ class ClangFormat(Resource):
                         "       #define bar(y, z)        (y + z)\n"
                         "       ```\n"
                         "    `false`: preserve user formatting.",
-                )]
-                AcrossEmptyLines: Annotated[bool, Field(
-                    default=False,
-                    description=
-                        "Controls whether to align across empty lines:\n"
+                    ),
+                ]
+                AcrossEmptyLines: Annotated[
+                    bool,
+                    Field(
+                        default=False,
+                        description="Controls whether to align across empty lines:\n"
                         "   `true`:\n"
                         "       ```cpp\n"
                         "       #define SHORT_NAME       42\n"
@@ -1417,11 +1561,13 @@ class ClangFormat(Resource):
                         "       #define foo(x) (x * x)\n"
                         "       #define bar(y, z) (y + z)\n"
                         "       ```",
-                )]
-                AcrossComments: Annotated[bool, Field(
-                    default=False,
-                    description=
-                        "Controls whether to align across comments:\n"
+                    ),
+                ]
+                AcrossComments: Annotated[
+                    bool,
+                    Field(
+                        default=False,
+                        description="Controls whether to align across comments:\n"
                         "   `true`:\n"
                         "       ```cpp\n"
                         "       #define foo(x)           (x * x)\n"
@@ -1434,22 +1580,26 @@ class ClangFormat(Resource):
                         "       /* A comment. */\n"
                         "       #define bar(y, z) (y + z)\n"
                         "       ```",
-                )]
+                    ),
+                ]
 
-            ConsecutiveMacros: Annotated[_ConsecutiveMacros, Field(
-                default_factory=_ConsecutiveMacros.model_construct,
-                description="Options for aligning consecutive macro definitions",
-            )]
+            ConsecutiveMacros: Annotated[
+                _ConsecutiveMacros,
+                Field(
+                    default_factory=_ConsecutiveMacros.model_construct,
+                    description="Options for aligning consecutive macro definitions",
+                ),
+            ]
 
             class _ConsecutiveShortCaseStatements(BaseModel):
-                """Validate the `[tool.clang-format.align.ConsecutiveShortCaseStatements]`
-                table.
-                """
+                """Validate consecutive short case-statement alignment options."""
+
                 model_config = ConfigDict(extra="forbid")
-                Enabled: Annotated[bool, Field(
-                    default=False,
-                    description=
-                        "Controls whether to align consecutive short case labels:\n"
+                Enabled: Annotated[
+                    bool,
+                    Field(
+                        default=False,
+                        description="Controls whether to align consecutive short case labels:\n"
                         "   `true`:\n"
                         "       ```cpp\n"
                         "       switch (level) {\n"
@@ -1459,11 +1609,13 @@ class ClangFormat(Resource):
                         "       }\n"
                         "       ```\n"
                         "   `false`: preserve user formatting.",
-                )]
-                AcrossEmptyLines: Annotated[bool, Field(
-                    default=False,
-                    description=
-                        "Controls whether to align across empty lines:\n"
+                    ),
+                ]
+                AcrossEmptyLines: Annotated[
+                    bool,
+                    Field(
+                        default=False,
+                        description="Controls whether to align across empty lines:\n"
                         "   `true`:\n"
                         "       ```cpp\n"
                         "       switch (level) {\n"
@@ -1482,11 +1634,13 @@ class ClangFormat(Resource):
                         "       default: return \"\";\n"
                         "       }\n"
                         "       ```",
-                )]
-                AcrossComments: Annotated[bool, Field(
-                    default=False,
-                    description=
-                        "Controls whether to align across comments:\n"
+                    ),
+                ]
+                AcrossComments: Annotated[
+                    bool,
+                    Field(
+                        default=False,
+                        description="Controls whether to align across comments:\n"
                         "   `true`:\n"
                         "       ```cpp\n"
                         "       switch (level) {\n"
@@ -1505,11 +1659,13 @@ class ClangFormat(Resource):
                         "       default: return \"\";\n"
                         "       }\n"
                         "       ```",
-                )]
-                AlignCaseArrows: Annotated[bool, Field(
-                    default=False,
-                    description=
-                        "Controls whether to also align case arrows when aligning "
+                    ),
+                ]
+                AlignCaseArrows: Annotated[
+                    bool,
+                    Field(
+                        default=False,
+                        description="Controls whether to also align case arrows when aligning "
                         "short case expressions.\n"
                         "   `true`:\n"
                         "       ```cpp\n"
@@ -1527,11 +1683,13 @@ class ClangFormat(Resource):
                         "           default ->                 0;\n"
                         "       };\n"
                         "       ```",
-                )]
-                AlignCaseColons: Annotated[bool, Field(
-                    default=False,
-                    description=
-                        "Controls whether to also align case colons when aligning "
+                    ),
+                ]
+                AlignCaseColons: Annotated[
+                    bool,
+                    Field(
+                        default=False,
+                        description="Controls whether to also align case colons when aligning "
                         "short case labels.\n"
                         "   `true`:\n"
                         "       ```cpp\n"
@@ -1549,21 +1707,27 @@ class ClangFormat(Resource):
                         "       default:           return \"\";\n"
                         "       }\n"
                         "       ```",
-                )]
+                    ),
+                ]
 
-            ConsecutiveShortCaseStatements: Annotated[_ConsecutiveShortCaseStatements, Field(
-                default_factory=_ConsecutiveShortCaseStatements.model_construct,
-                description="Options for aligning consecutive short case labels",
-            )]
+            ConsecutiveShortCaseStatements: Annotated[
+                _ConsecutiveShortCaseStatements,
+                Field(
+                    default_factory=_ConsecutiveShortCaseStatements.model_construct,
+                    description="Options for aligning consecutive short case labels",
+                ),
+            ]
 
             class _TrailingComments(BaseModel):
                 """Validate the `[tool.clang-format.align.TrailingComments]` table."""
+
                 model_config = ConfigDict(extra="forbid")
-                Kind: Annotated[Literal["Never", "Leave", "Always"], Field(
-                    default="Leave",
-                    examples=["Never", "Leave", "Always"],
-                    description=
-                        "Controls the alignment of trailing comments before a line"
+                Kind: Annotated[
+                    Literal["Never", "Leave", "Always"],
+                    Field(
+                        default="Leave",
+                        examples=["Never", "Leave", "Always"],
+                        description="Controls the alignment of trailing comments before a line"
                         "break or scope change:\n"
                         "   `Never`: don't align trailing comments but other "
                         "formatting still applies.\n"
@@ -1589,12 +1753,14 @@ class ClangFormat(Resource):
                         "\n"
                         "       int abc;  // comment\n"
                         "       int abcd; // comment\n"
-                        "       ```\n"
-                )]
-                OverEmptyLines: Annotated[NonNegativeInt, Field(
-                    default=1,
-                    description=
-                        "Controls how many empty lines are needed to reset alignment.  "
+                        "       ```\n",
+                    ),
+                ]
+                OverEmptyLines: Annotated[
+                    NonNegativeInt,
+                    Field(
+                        default=1,
+                        description="Controls how many empty lines are needed to reset alignment.  "
                         "When set to 2, it formats like below:\n"
                         "   ```cpp\n"
                         "   int a;      // all these\n"
@@ -1612,12 +1778,14 @@ class ClangFormat(Resource):
                         "\n"
                         "\n"
                         "   int abcdef; // but this isn't\n"
-                        "   ```\n"
-                )]
-                AlignPPAndNotPP: Annotated[bool, Field(
-                    default=True,
-                    description=
-                        "Controls whether comments following a preprocessor directive "
+                        "   ```\n",
+                    ),
+                ]
+                AlignPPAndNotPP: Annotated[
+                    bool,
+                    Field(
+                        default=True,
+                        description="Controls whether comments following a preprocessor directive "
                         "should be aligned with comments that don't.\n"
                         "   `true`:\n"
                         "       ```cpp\n"
@@ -1631,25 +1799,34 @@ class ClangFormat(Resource):
                         "       #define AB // Aligned\n"
                         "       int i; // Not aligned\n"
                         "       ```",
-                )]
+                    ),
+                ]
 
-            TrailingComments: Annotated[_TrailingComments, Field(
-                default_factory=_TrailingComments.model_construct,
-                description="Options for aligning trailing `//` comments",
-            )]
+            TrailingComments: Annotated[
+                _TrailingComments,
+                Field(
+                    default_factory=_TrailingComments.model_construct,
+                    description="Options for aligning trailing `//` comments",
+                ),
+            ]
 
-        Align: Annotated[_Align, Field(
-            default_factory=_Align.model_construct,
-            description="Options for horizontally aligning code",
-        )]
+        Align: Annotated[
+            _Align,
+            Field(
+                default_factory=_Align.model_construct,
+                description="Options for horizontally aligning code",
+            ),
+        ]
 
         class _Allow(BaseModel):
             """Validate the `[tool.clang-format.Allow]` table."""
+
             model_config = ConfigDict(extra="forbid")
-            AllArgumentsOnNextLine: Annotated[bool, Field(
-                default=False,
-                description=
-                    "Controls whether to allow putting all arguments of a function "
+            AllArgumentsOnNextLine: Annotated[
+                bool,
+                Field(
+                    default=False,
+                    description="Controls whether to allow putting all arguments of a function "
                     "call on the next line if they don't fit on the current line, "
                     "even if `BinPackArguments` is false.\n"
                     "   `true`:\n"
@@ -1658,11 +1835,13 @@ class ClangFormat(Resource):
                     "           a, b, c, d);\n"
                     "       ```\n"
                     "   `false`: preserve other formatting.",
-            )]
-            AllParametersOfDeclarationOnNextLine: Annotated[bool, Field(
-                default=False,
-                description=
-                    "Controls whether to allow putting all parameters of a function "
+                ),
+            ]
+            AllParametersOfDeclarationOnNextLine: Annotated[
+                bool,
+                Field(
+                    default=False,
+                    description="Controls whether to allow putting all parameters of a function "
                     "declaration on the next line if they don't fit on the current "
                     "line, even if `BinPackParameters` is set to `OnePerLine`.\n"
                     "   `true`:\n"
@@ -1671,51 +1850,52 @@ class ClangFormat(Resource):
                     "           int a, int b, int c, int d, int e);\n"
                     "       ```\n"
                     "   `false`: preserve other formatting.",
-            )]
+                ),
+            ]
             BreakBeforeNoexceptSpecifier: Annotated[
                 Literal["Never", "OnlyWithParen", "Always"],
                 Field(
                     default="OnlyWithParen",
                     examples=["Never", "OnlyWithParen", "Always"],
-                    description=
-                        "Controls whether there could be a line break before a "
-                        "`noexcept` specifier.\n"
-                        "   `Never`: no line break allowed.\n"
-                        "       ```cpp\n"
-                        "       void foo(int arg1,\n"
-                        "                double arg2) noexcept;\n"
-                        "\n"
-                        "       void bar(int arg1, double arg2) noexcept(\n"
-                        "           noexcept(baz(arg1)) &&\n"
-                        "           noexcept(baz(arg2)));\n"
-                        "       ```\n"
-                        "   `OnlyWithParen`: line breaks are only allowed for "
-                        "conditional `noexcept` specifiers.\n"
-                        "       ```cpp\n"
-                        "       void foo(int arg1,\n"
-                        "                double arg2) noexcept;\n"
-                        "\n"
-                        "       void bar(int arg1, double arg2)\n"
-                        "           noexcept(noexcept(baz(arg1)) &&\n"
-                        "                    noexcept(baz(arg2)));\n"
-                        "       ```\n"
-                        "   `Always`: line breaks are allowed, but may be suppressed "
-                        "by other formatting rules.\n"
-                        "       ```cpp\n"
-                        "       void foo(int arg1,\n"
-                        "                double arg2) noexcept;\n"
-                        "\n"
-                        "       void bar(int arg1, double arg2)\n"
-                        "           noexcept(noexcept(baz(arg1)) &&\n"
-                        "                    noexcept(baz(arg2)));\n"
-                        "       ```",
-                )
+                    description="Controls whether there could be a line break before a "
+                    "`noexcept` specifier.\n"
+                    "   `Never`: no line break allowed.\n"
+                    "       ```cpp\n"
+                    "       void foo(int arg1,\n"
+                    "                double arg2) noexcept;\n"
+                    "\n"
+                    "       void bar(int arg1, double arg2) noexcept(\n"
+                    "           noexcept(baz(arg1)) &&\n"
+                    "           noexcept(baz(arg2)));\n"
+                    "       ```\n"
+                    "   `OnlyWithParen`: line breaks are only allowed for "
+                    "conditional `noexcept` specifiers.\n"
+                    "       ```cpp\n"
+                    "       void foo(int arg1,\n"
+                    "                double arg2) noexcept;\n"
+                    "\n"
+                    "       void bar(int arg1, double arg2)\n"
+                    "           noexcept(noexcept(baz(arg1)) &&\n"
+                    "                    noexcept(baz(arg2)));\n"
+                    "       ```\n"
+                    "   `Always`: line breaks are allowed, but may be suppressed "
+                    "by other formatting rules.\n"
+                    "       ```cpp\n"
+                    "       void foo(int arg1,\n"
+                    "                double arg2) noexcept;\n"
+                    "\n"
+                    "       void bar(int arg1, double arg2)\n"
+                    "           noexcept(noexcept(baz(arg1)) &&\n"
+                    "                    noexcept(baz(arg2)));\n"
+                    "       ```",
+                ),
             ]
-            ShortBlocksOnASingleLine: Annotated[Literal["Never", "Empty", "Always"], Field(
-                default="Empty",
-                examples=["Never", "Empty", "Always"],
-                description=
-                    "Controls whether to attempt to place short control blocks on a "
+            ShortBlocksOnASingleLine: Annotated[
+                Literal["Never", "Empty", "Always"],
+                Field(
+                    default="Empty",
+                    examples=["Never", "Empty", "Always"],
+                    description="Controls whether to attempt to place short control blocks on a "
                     "single line.\n"
                     "   `Never`: never merge blocks into a single line.\n"
                     "       ```cpp\n"
@@ -1737,11 +1917,13 @@ class ClangFormat(Resource):
                     "       while (true) {}\n"
                     "       while (true) { continue; }\n"
                     "       ```",
-            )]
-            ShortCaseExpressionsOnASingleLine: Annotated[bool, Field(
-                default=True,
-                description=
-                    "Controls whether to merge a short switch labeled rule into a "
+                ),
+            ]
+            ShortCaseExpressionsOnASingleLine: Annotated[
+                bool,
+                Field(
+                    default=True,
+                    description="Controls whether to merge a short switch labeled rule into a "
                     "single line.\n"
                     "   `true`:\n"
                     "       ```cpp\n"
@@ -1759,11 +1941,13 @@ class ClangFormat(Resource):
                     "           0;\n"
                     "       }\n"
                     "       ```",
-            )]
-            ShortCaseLabelsOnASingleLine: Annotated[bool, Field(
-                default=True,
-                description=
-                    "Controls whether to contract short case labels to a single line.\n"
+                ),
+            ]
+            ShortCaseLabelsOnASingleLine: Annotated[
+                bool,
+                Field(
+                    default=True,
+                    description="Controls whether to contract short case labels to a single line.\n"
                     "   `true`:\n"
                     "       ```cpp\n"
                     "       switch (a) {\n"
@@ -1781,11 +1965,13 @@ class ClangFormat(Resource):
                     "           return;\n"
                     "       }\n"
                     "       ```",
-            )]
-            ShortCompoundRequirementsOnASingleLine: Annotated[bool, Field(
-                default=True,
-                description=
-                    "Controls whether to allow short compound requirements on a "
+                ),
+            ]
+            ShortCompoundRequirementsOnASingleLine: Annotated[
+                bool,
+                Field(
+                    default=True,
+                    description="Controls whether to allow short compound requirements on a "
                     "single line.\n"
                     "   `true`:\n"
                     "       ```cpp\n"
@@ -1803,11 +1989,13 @@ class ClangFormat(Resource):
                     "           } -> std::same_as<int>;\n"
                     "       };\n"
                     "       ```",
-            )]
-            ShortEnumsOnASingleLine: Annotated[bool, Field(
-                default=True,
-                description=
-                    "Controls whether to allow short enums on a single line.\n"
+                ),
+            ]
+            ShortEnumsOnASingleLine: Annotated[
+                bool,
+                Field(
+                    default=True,
+                    description="Controls whether to allow short enums on a single line.\n"
                     "   `true`:\n"
                     "       ```cpp\n"
                     "       enum { A, B } myEnum;\n"
@@ -1819,17 +2007,18 @@ class ClangFormat(Resource):
                     "           B\n"
                     "       } myEnum;\n"
                     "       ```",
-            )]
+                ),
+            ]
 
             class _ShortFunctionsOnASingleLine(BaseModel):
-                """Validate the `[tool.clang-format.Allow.ShortFunctionsOnASingleLine]`
-                table.
-                """
+                """Validate short-function single-line options."""
+
                 model_config = ConfigDict(extra="forbid")
-                Empty: Annotated[bool, Field(
-                    default=True,
-                    description=
-                        "Controls whether to allow empty functions on a single line.\n"
+                Empty: Annotated[
+                    bool,
+                    Field(
+                        default=True,
+                        description="Controls whether to allow empty functions on a single line.\n"
                         "   `true`:\n"
                         "       ```cpp\n"
                         "       void f() {}\n"
@@ -1839,11 +2028,13 @@ class ClangFormat(Resource):
                         "       void f3() { /* comment */ }\n"
                         "       ```\n"
                         "   `false`: preserve user formatting.",
-                )]
-                Inline: Annotated[bool, Field(
-                    default=True,
-                    description=
-                        "Controls whether to merge functions defined inside a class.\n"
+                    ),
+                ]
+                Inline: Annotated[
+                    bool,
+                    Field(
+                        default=True,
+                        description="Controls whether to merge functions defined inside a class.\n"
                         "   `true`:\n"
                         "       ```cpp\n"
                         "       class Foo {\n"
@@ -1857,11 +2048,13 @@ class ClangFormat(Resource):
                         "       }\n"
                         "       ```\n"
                         "   `false`: preserve user formatting.",
-                )]
-                Other: Annotated[bool, Field(
-                    default=True,
-                    description=
-                        "Controls whether to merge all functions fitting on a single "
+                    ),
+                ]
+                Other: Annotated[
+                    bool,
+                    Field(
+                        default=True,
+                        description="Controls whether to merge all functions fitting on a single "
                         "line.  Note that this control does not include 'Empty'.\n"
                         "   `true`:\n"
                         "       ```cpp\n"
@@ -1871,118 +2064,121 @@ class ClangFormat(Resource):
                         "       void f() { bar(); }\n"
                         "       ```\n"
                         "   `false`: preserve user formatting.",
-                )]
+                    ),
+                ]
 
-            ShortFunctionsOnASingleLine: Annotated[_ShortFunctionsOnASingleLine, Field(
-                default_factory=_ShortFunctionsOnASingleLine.model_construct,
-                description="Options for allowing short functions on a single line",
-            )]
+            ShortFunctionsOnASingleLine: Annotated[
+                _ShortFunctionsOnASingleLine,
+                Field(
+                    default_factory=_ShortFunctionsOnASingleLine.model_construct,
+                    description="Options for allowing short functions on a single line",
+                ),
+            ]
             ShortIfStatementsOnASingleLine: Annotated[
                 Literal["None", "WithoutElse", "OnlyFirstIf", "AllIfsAndElse"],
                 Field(
                     default="WithoutElse",
                     examples=["None", "WithoutElse", "OnlyFirstIf", "AllIfsAndElse"],
-                    description=
-                        "Controls whether to attempt to place short if statements on a "
-                        "single line.\n"
-                        "   `None`: never put if statements into a single line.\n"
-                        "       ```cpp\n"
-                        "       if (a)\n"
-                        "           return;\n"
-                        "\n"
-                        "       if (b)\n"
-                        "           return;\n"
-                        "       else\n"
-                        "           return;\n"
-                        "\n"
-                        "       if (c)\n"
-                        "           return;"
-                        "       else {\n"
-                        "           return;\n"
-                        "       }\n"
-                        "       ```\n"
-                        "   `WithoutElse`: put short ifs on the same line only if they "
-                        "lack an `else` statement.\n"
-                        "       ```cpp\n"
-                        "       if (a) return;\n"
-                        "\n"
-                        "       if (b)\n"
-                        "           return;\n"
-                        "       else\n"
-                        "           return;\n"
-                        "\n"
-                        "       if (c)\n"
-                        "           return;"
-                        "       else {\n"
-                        "           return;\n"
-                        "       }\n"
-                        "       ```\n"
-                        "   `OnlyFirstIf`: put short ifs, but not else ifs nor else "
-                        "statements, on the same line.\n"
-                        "       ```cpp\n"
-                        "       if (a) return;\n"
-                        "\n"
-                        "       if (b) return;\n"
-                        "       else if (b)\n"
-                        "           return;\n"
-                        "       else\n"
-                        "           return;\n"
-                        "\n"
-                        "       if (c) return;"
-                        "       else {\n"
-                        "           return;\n"
-                        "       }\n"
-                        "       ```\n"
-                        "   `AllIfsAndElse`: always put short ifs, else ifs, and else "
-                        "statements on the same line.\n"
-                        "       ```cpp\n"
-                        "       if (a) return;\n"
-                        "\n"
-                        "       if (b) return;\n"
-                        "       else return;\n"
-                        "\n"
-                        "       if (c) return;"
-                        "       else {\n"
-                        "           return;\n"
-                        "       }\n"
-                        "       ```",
-                )
+                    description="Controls whether to attempt to place short if statements on a "
+                    "single line.\n"
+                    "   `None`: never put if statements into a single line.\n"
+                    "       ```cpp\n"
+                    "       if (a)\n"
+                    "           return;\n"
+                    "\n"
+                    "       if (b)\n"
+                    "           return;\n"
+                    "       else\n"
+                    "           return;\n"
+                    "\n"
+                    "       if (c)\n"
+                    "           return;"
+                    "       else {\n"
+                    "           return;\n"
+                    "       }\n"
+                    "       ```\n"
+                    "   `WithoutElse`: put short ifs on the same line only if they "
+                    "lack an `else` statement.\n"
+                    "       ```cpp\n"
+                    "       if (a) return;\n"
+                    "\n"
+                    "       if (b)\n"
+                    "           return;\n"
+                    "       else\n"
+                    "           return;\n"
+                    "\n"
+                    "       if (c)\n"
+                    "           return;"
+                    "       else {\n"
+                    "           return;\n"
+                    "       }\n"
+                    "       ```\n"
+                    "   `OnlyFirstIf`: put short ifs, but not else ifs nor else "
+                    "statements, on the same line.\n"
+                    "       ```cpp\n"
+                    "       if (a) return;\n"
+                    "\n"
+                    "       if (b) return;\n"
+                    "       else if (b)\n"
+                    "           return;\n"
+                    "       else\n"
+                    "           return;\n"
+                    "\n"
+                    "       if (c) return;"
+                    "       else {\n"
+                    "           return;\n"
+                    "       }\n"
+                    "       ```\n"
+                    "   `AllIfsAndElse`: always put short ifs, else ifs, and else "
+                    "statements on the same line.\n"
+                    "       ```cpp\n"
+                    "       if (a) return;\n"
+                    "\n"
+                    "       if (b) return;\n"
+                    "       else return;\n"
+                    "\n"
+                    "       if (c) return;"
+                    "       else {\n"
+                    "           return;\n"
+                    "       }\n"
+                    "       ```",
+                ),
             ]
             ShortLambdasOnASingleLine: Annotated[
                 Literal["None", "Empty", "Inline", "All"],
                 Field(
                     default="All",
                     examples=["None", "Empty", "Inline", "All"],
-                    description=
-                        "Controls whether to attempt to place short lambda expressions "
-                        "on a single line.\n"
-                        "   `None`: never merge lambda expressions into a single line.\n"
-                        "   `Empty`: only merge empty lambdas.\n"
-                        "       ```cpp\n"
-                        "       auto lambda = [](int a) {};\n"
-                        "       auto lambda2 = [](int a) {\n"
-                        "           return a;\n"
-                        "       };\n"
-                        "       ```\n"
-                        "   `Inline`: only merge lambdas into a single line if they are "
-                        "an argument of a function.\n"
-                        "       ```cpp\n"
-                        "       auto lambda = [](int x, int y) {\n"
-                        "           return x < y;\n"
-                        "       };\n"
-                        "       sort(a.begin(), a.end(), [](int x, int y) { return x < y; });\n"
-                        "       ```\n"
-                        "   `All`: merge all lambdas that fit on a single line.\n"
-                        "       ```cpp\n"
-                        "       auto lambda = [](int a) {};\n"
-                        "       auto lambda2 = [](int a) { return a; };\n"
-                        "       ```",
-                )
+                    description="Controls whether to attempt to place short lambda expressions "
+                    "on a single line.\n"
+                    "   `None`: never merge lambda expressions into a single line.\n"
+                    "   `Empty`: only merge empty lambdas.\n"
+                    "       ```cpp\n"
+                    "       auto lambda = [](int a) {};\n"
+                    "       auto lambda2 = [](int a) {\n"
+                    "           return a;\n"
+                    "       };\n"
+                    "       ```\n"
+                    "   `Inline`: only merge lambdas into a single line if they are "
+                    "an argument of a function.\n"
+                    "       ```cpp\n"
+                    "       auto lambda = [](int x, int y) {\n"
+                    "           return x < y;\n"
+                    "       };\n"
+                    "       sort(a.begin(), a.end(), [](int x, int y) { return x < y; });\n"
+                    "       ```\n"
+                    "   `All`: merge all lambdas that fit on a single line.\n"
+                    "       ```cpp\n"
+                    "       auto lambda = [](int a) {};\n"
+                    "       auto lambda2 = [](int a) { return a; };\n"
+                    "       ```",
+                ),
             ]
-            ShortLoopsOnASingleLine: Annotated[bool, Field(
-                default=True,
-                description=
-                    "Controls whether to attempt to place short loops on a single line.\n"
+            ShortLoopsOnASingleLine: Annotated[
+                bool,
+                Field(
+                    default=True,
+                    description="Controls whether to attempt to place short loops on a single line.\n"
                     "   `true`:\n"
                     "       ```cpp\n"
                     "       while (true) {}\n"
@@ -1990,47 +2186,57 @@ class ClangFormat(Resource):
                     "       do {} while (true);\n"
                     "       ```\n"
                     "   `false`: preserve user formatting.",
-            )]
-            ShortNamespacesOnASingleLine: Annotated[bool, Field(
-                default=False,
-                description=
-                    "Controls whether to attempt to place short namespaces on a single line.\n"
+                ),
+            ]
+            ShortNamespacesOnASingleLine: Annotated[
+                bool,
+                Field(
+                    default=False,
+                    description="Controls whether to attempt to place short namespaces on a single line.\n"
                     "   `true`: merge short namespaces into a single line.\n"
                     "       ```cpp\n"
                     "       namespace a { class b; }\n"
                     "       ```\n"
                     "   `false`: preserve user formatting.",
-            )]
+                ),
+            ]
 
-        Allow: Annotated[_Allow, Field(
-            default_factory=_Allow.model_construct,
-            description="Options for compacting short constructs.",
-        )]
+        Allow: Annotated[
+            _Allow,
+            Field(
+                default_factory=_Allow.model_construct,
+                description="Options for compacting short constructs.",
+            ),
+        ]
 
         class _Break(BaseModel):
             """Validate the `[tool.clang-format.Break]` table."""
+
             model_config = ConfigDict(extra="forbid")
-            AdjacentStringLiterals: Annotated[bool, Field(
-                default=True,
-                description=
-                    "Controls whether to break adjacent string literals.\n"
+            AdjacentStringLiterals: Annotated[
+                bool,
+                Field(
+                    default=True,
+                    description="Controls whether to break adjacent string literals.\n"
                     "   `true`:\n"
                     "       ```cpp\n"
                     "       return \"Code\"\n"
                     "              \"\0\52\26\55\55\0\"\n"
                     "              \"x013\"\n"
-                    "              \"\02\xBA\"\n"
+                    "              \"\02\xba\"\n"
                     "       ```\n"
                     "   `false`:\n"
                     "       ```cpp\n"
-                    "       return \"Code\" \"\0\52\26\55\55\0\" \"x013\" \"\02\xBA\";\n"
+                    "       return \"Code\" \"\0\52\26\55\55\0\" \"x013\" \"\02\xba\";\n"
                     "       ```",
-            )]
-            AfterAttributes: Annotated[Literal["Never", "Leave", "Always"], Field(
-                default="Never",
-                examples=["Never", "Leave", "Always"],
-                description=
-                    "Controls line breaks after groups of C++11 attributes before "
+                ),
+            ]
+            AfterAttributes: Annotated[
+                Literal["Never", "Leave", "Always"],
+                Field(
+                    default="Never",
+                    examples=["Never", "Leave", "Always"],
+                    description="Controls line breaks after groups of C++11 attributes before "
                     "declarations or control statements.\n"
                     "   `Never`: never break after the last attribute of the group.\n"
                     "       ```cpp\n"
@@ -2119,11 +2325,13 @@ class ClangFormat(Resource):
                     "           return;\n"
                     "       }\n"
                     "       ```",
-            )]
-            AfterOpenBracketBracedList: Annotated[bool, Field(
-                default=True,
-                description=
-                    "Controls whether to force a break after the left bracket of a "
+                ),
+            ]
+            AfterOpenBracketBracedList: Annotated[
+                bool,
+                Field(
+                    default=True,
+                    description="Controls whether to force a break after the left bracket of a "
                     "braced initializer list when the list exceeds `ColumnLimit`.\n"
                     "   `true`:\n"
                     "       ```cpp\n"
@@ -2135,11 +2343,13 @@ class ClangFormat(Resource):
                     "       vector<int> x {1,\n"
                     "           2, 3}\n"
                     "       ```",
-            )]
-            AfterOpenBracketFunction: Annotated[bool, Field(
-                default=True,
-                description=
-                    "Controls whether to force a break after the left parenthesis of a "
+                ),
+            ]
+            AfterOpenBracketFunction: Annotated[
+                bool,
+                Field(
+                    default=True,
+                    description="Controls whether to force a break after the left parenthesis of a "
                     "function (declaration, definition, call) when the parameters "
                     "exceed `ColumnLimit`.\n"
                     "   `true`:\n"
@@ -2152,11 +2362,13 @@ class ClangFormat(Resource):
                     "       foo(a,\n"
                     "           b)\n"
                     "       ```",
-            )]
-            AfterOpenBracketIf: Annotated[bool, Field(
-                default=True,
-                description=
-                    "Controls whether to force a break after the left parenthesis of "
+                ),
+            ]
+            AfterOpenBracketIf: Annotated[
+                bool,
+                Field(
+                    default=True,
+                    description="Controls whether to force a break after the left parenthesis of "
                     "an `if` control statement once the expression exceeds `ColumnLimit`.\n"
                     "   `true`:\n"
                     "       ```cpp\n"
@@ -2168,11 +2380,13 @@ class ClangFormat(Resource):
                     "       if constexpr (a ||\n"
                     "                     b)\n"
                     "       ```",
-            )]
-            AfterOpenBracketLoop: Annotated[bool, Field(
-                default=True,
-                description=
-                    "Controls whether to force a break after the left parenthesis in "
+                ),
+            ]
+            AfterOpenBracketLoop: Annotated[
+                bool,
+                Field(
+                    default=True,
+                    description="Controls whether to force a break after the left parenthesis in "
                     "a loop control statement once the condition exceeds `ColumnLimit`.\n"
                     "   `true`:\n"
                     "       ```cpp\n"
@@ -2186,11 +2400,13 @@ class ClangFormat(Resource):
                     "              b) {\n"
                     "       }\n"
                     "       ```",
-            )]
-            AfterOpenBracketSwitch: Annotated[bool, Field(
-                default=True,
-                description=
-                    "Controls whether to force a break after the left parenthesis in "
+                ),
+            ]
+            AfterOpenBracketSwitch: Annotated[
+                bool,
+                Field(
+                    default=True,
+                    description="Controls whether to force a break after the left parenthesis in "
                     "`switch` control statements once the condition exceeds `ColumnLimit`.\n"
                     "   `true`:\n"
                     "       ```cpp\n"
@@ -2204,112 +2420,121 @@ class ClangFormat(Resource):
                     "               b) {\n"
                     "       }\n"
                     "       ```",
-            )]
+                ),
+            ]
             AfterReturnType: Annotated[
                 Literal[
-                    "Automatic", "ExceptShortType", "TopLevel",
-                    "TopLevelDefinitions", "All", "AllDefinitions",
+                    "Automatic",
+                    "ExceptShortType",
+                    "TopLevel",
+                    "TopLevelDefinitions",
+                    "All",
+                    "AllDefinitions",
                 ],
                 Field(
                     default="ExceptShortType",
                     examples=[
-                        "Automatic", "ExceptShortType", "TopLevel",
-                        "TopLevelDefinitions", "All", "AllDefinitions",
+                        "Automatic",
+                        "ExceptShortType",
+                        "TopLevel",
+                        "TopLevelDefinitions",
+                        "All",
+                        "AllDefinitions",
                     ],
-                    description=
-                        "Controls line breaks around return types in function "
-                        "declarations and definitions.\n"
-                        "   `Automatic`: break after the return type based on "
-                        "configured penalties.\n"
-                        "       ```cpp\n"
-                        "       class A {\n"
-                        "           int f() { return 0; };\n"
-                        "       };\n"
-                        "       int f();\n"
-                        "       int f() { return 1; }\n"
-                        "       int\n"
-                        "       LongName::AnotherLongName();\n"
-                        "       ```\n"
-                        "   `ExceptShortType`: same as `Automatic`, except that there "
-                        "is no break after short return types.\n"
-                        "       ```cpp\n"
-                        "       class A {\n"
-                        "           int f() { return 0; };\n"
-                        "       };\n"
-                        "       int f();\n"
-                        "       int f() { return 1; }\n"
-                        "       int LongName::\n"
-                        "           AnotherLongName();\n"
-                        "       ```\n"
-                        "   `TopLevel`: always break after the return types of "
-                        "top-level functions.\n"
-                        "       ```cpp\n"
-                        "       class A {\n"
-                        "           int f() { return 0; };\n"
-                        "       };\n"
-                        "       int\n"
-                        "       f();\n"
-                        "       int f() {\n"
-                        "           return 1;\n"
-                        "       }\n"
-                        "       int\n"
-                        "       LongName::AnotherLongName();\n"
-                        "       ```\n"
-                        "   `TopLevelDefinitions`: always break after the return type "
-                        "of top-level definitions.\n"
-                        "       ```cpp\n"
-                        "       class A {\n"
-                        "           int f() { return 0; };\n"
-                        "       };\n"
-                        "       int f();\n"
-                        "       int\n"
-                        "       f() {\n"
-                        "           return 1;\n"
-                        "       }\n"
-                        "       int\n"
-                        "       LongName::AnotherLongName();\n"
-                        "       ```\n"
-                        "   `All`: always break after the return type.\n"
-                        "       ```cpp\n"
-                        "       class A {\n"
-                        "           int\n"
-                        "           f() {\n"
-                        "               return 0;\n"
-                        "           };\n"
-                        "       };\n"
-                        "       int\n"
-                        "       f();\n"
-                        "       int\n"
-                        "       f() {\n"
-                        "           return 1;\n"
-                        "       }\n"
-                        "       int\n"
-                        "       LongName::AnotherLongName();\n"
-                        "       ```\n"
-                        "   `AllDefinitions`: always break after the return type of "
-                        "function definitions.\n"
-                        "    ```cpp\n"
-                        "       class A {\n"
-                        "           int\n"
-                        "           f() {\n"
-                        "               return 0;\n"
-                        "           };\n"
-                        "       };\n"
-                        "       int f();\n"
-                        "       int\n"
-                        "       f() {\n"
-                        "           return 1;\n"
-                        "       }\n"
-                        "       int\n"
-                        "       LongName::AnotherLongName();\n"
-                        "    ```",
-                )
+                    description="Controls line breaks around return types in function "
+                    "declarations and definitions.\n"
+                    "   `Automatic`: break after the return type based on "
+                    "configured penalties.\n"
+                    "       ```cpp\n"
+                    "       class A {\n"
+                    "           int f() { return 0; };\n"
+                    "       };\n"
+                    "       int f();\n"
+                    "       int f() { return 1; }\n"
+                    "       int\n"
+                    "       LongName::AnotherLongName();\n"
+                    "       ```\n"
+                    "   `ExceptShortType`: same as `Automatic`, except that there "
+                    "is no break after short return types.\n"
+                    "       ```cpp\n"
+                    "       class A {\n"
+                    "           int f() { return 0; };\n"
+                    "       };\n"
+                    "       int f();\n"
+                    "       int f() { return 1; }\n"
+                    "       int LongName::\n"
+                    "           AnotherLongName();\n"
+                    "       ```\n"
+                    "   `TopLevel`: always break after the return types of "
+                    "top-level functions.\n"
+                    "       ```cpp\n"
+                    "       class A {\n"
+                    "           int f() { return 0; };\n"
+                    "       };\n"
+                    "       int\n"
+                    "       f();\n"
+                    "       int f() {\n"
+                    "           return 1;\n"
+                    "       }\n"
+                    "       int\n"
+                    "       LongName::AnotherLongName();\n"
+                    "       ```\n"
+                    "   `TopLevelDefinitions`: always break after the return type "
+                    "of top-level definitions.\n"
+                    "       ```cpp\n"
+                    "       class A {\n"
+                    "           int f() { return 0; };\n"
+                    "       };\n"
+                    "       int f();\n"
+                    "       int\n"
+                    "       f() {\n"
+                    "           return 1;\n"
+                    "       }\n"
+                    "       int\n"
+                    "       LongName::AnotherLongName();\n"
+                    "       ```\n"
+                    "   `All`: always break after the return type.\n"
+                    "       ```cpp\n"
+                    "       class A {\n"
+                    "           int\n"
+                    "           f() {\n"
+                    "               return 0;\n"
+                    "           };\n"
+                    "       };\n"
+                    "       int\n"
+                    "       f();\n"
+                    "       int\n"
+                    "       f() {\n"
+                    "           return 1;\n"
+                    "       }\n"
+                    "       int\n"
+                    "       LongName::AnotherLongName();\n"
+                    "       ```\n"
+                    "   `AllDefinitions`: always break after the return type of "
+                    "function definitions.\n"
+                    "    ```cpp\n"
+                    "       class A {\n"
+                    "           int\n"
+                    "           f() {\n"
+                    "               return 0;\n"
+                    "           };\n"
+                    "       };\n"
+                    "       int f();\n"
+                    "       int\n"
+                    "       f() {\n"
+                    "           return 1;\n"
+                    "       }\n"
+                    "       int\n"
+                    "       LongName::AnotherLongName();\n"
+                    "    ```",
+                ),
             ]
-            BeforeBinaryOperators: Annotated[Literal["None", "NonAssignment", "All"], Field(
-                default="None",
-                examples=["None", "NonAssignment", "All"],
-                description=
-                    "Controls where wrapped binary operators are placed.\n"
+            BeforeBinaryOperators: Annotated[
+                Literal["None", "NonAssignment", "All"],
+                Field(
+                    default="None",
+                    examples=["None", "NonAssignment", "All"],
+                    description="Controls where wrapped binary operators are placed.\n"
                     "   `None`: break after operators.\n"
                     "       ```cpp\n"
                     "       LooooooooooongType loooooooooooooooooooooongVariable =\n"
@@ -2343,11 +2568,13 @@ class ClangFormat(Resource):
                     "                    && aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"
                     "                           > ccccccccccccccccccccccccccccccccccccccccc;\n"
                     "       ```",
-            )]
-            BeforeCloseBracketBracedList: Annotated[bool, Field(
-                default=True,
-                description=
-                    "Controls whether to force a break before the right bracket of a "
+                ),
+            ]
+            BeforeCloseBracketBracedList: Annotated[
+                bool,
+                Field(
+                    default=True,
+                    description="Controls whether to force a break before the right bracket of a "
                     "braced initializer list when the list exceeds `ColumnLimit`.  This "
                     "only applies when there is a break after the opening bracket.\n"
                     "   `true`:\n"
@@ -2361,11 +2588,13 @@ class ClangFormat(Resource):
                     "       vector<int> x {\n"
                     "           1, 2, 3}\n"
                     "       ```",
-            )]
-            BeforeCloseBracketFunction: Annotated[bool, Field(
-                default=True,
-                description=
-                    "Controls whether to force a break before the right parenthesis of "
+                ),
+            ]
+            BeforeCloseBracketFunction: Annotated[
+                bool,
+                Field(
+                    default=True,
+                    description="Controls whether to force a break before the right parenthesis of "
                     "a function (declaration, definition, call) when the parameters "
                     "exceed `ColumnLimit`.\n"
                     "   `true`:\n"
@@ -2379,11 +2608,13 @@ class ClangFormat(Resource):
                     "       foo(\n"
                     "           a, b)\n"
                     "       ```",
-            )]
-            BeforeCloseBracketIf: Annotated[bool, Field(
-                default=True,
-                description=
-                    "Controls whether to force a break before the right parenthesis of "
+                ),
+            ]
+            BeforeCloseBracketIf: Annotated[
+                bool,
+                Field(
+                    default=True,
+                    description="Controls whether to force a break before the right parenthesis of "
                     "an `if` control statement when the condition exceeds `ColumnLimit`.  "
                     "This only applies when there is a break after the opening parenthesis.\n"
                     "   `true`:\n"
@@ -2397,11 +2628,13 @@ class ClangFormat(Resource):
                     "       if constexpr (\n"
                     "           a || b)\n"
                     "       ```",
-            )]
-            BeforeCloseBracketLoop: Annotated[bool, Field(
-                default=True,
-                description=
-                    "Controls whether to force a break before the right parenthesis of "
+                ),
+            ]
+            BeforeCloseBracketLoop: Annotated[
+                bool,
+                Field(
+                    default=True,
+                    description="Controls whether to force a break before the right parenthesis of "
                     "a loop control statement when the condition exceeds `ColumnLimit`.  "
                     "This only applies when there is a break after the opening parenthesis.\n"
                     "   `true`:\n"
@@ -2415,11 +2648,13 @@ class ClangFormat(Resource):
                     "       while (\n"
                     "           a && b)\n"
                     "       ```",
-            )]
-            BeforeCloseBracketSwitch: Annotated[bool, Field(
-                default=True,
-                description=
-                    "Controls whether to force a break before the right parenthesis of "
+                ),
+            ]
+            BeforeCloseBracketSwitch: Annotated[
+                bool,
+                Field(
+                    default=True,
+                    description="Controls whether to force a break before the right parenthesis of "
                     "a `switch` control statement when the condition exceeds `ColumnLimit`.  "
                     "This only applies when there is a break after the opening parenthesis.\n"
                     "   `true`:\n"
@@ -2433,12 +2668,14 @@ class ClangFormat(Resource):
                     "       switch (\n"
                     "           a + b)\n"
                     "       ```",
-            )]
-            BeforeConceptDeclarations: Annotated[Literal["Never", "Allowed", "Always"], Field(
-                default="Always",
-                examples=["Never", "Allowed", "Always"],
-                description=
-                    "Controls line breaking before concept declarations.\n"
+                ),
+            ]
+            BeforeConceptDeclarations: Annotated[
+                Literal["Never", "Allowed", "Always"],
+                Field(
+                    default="Always",
+                    examples=["Never", "Allowed", "Always"],
+                    description="Controls line breaking before concept declarations.\n"
                     "   `Never`: keep the template declaration and `concept` on one line.\n"
                     "       ```cpp\n"
                     "       template <typename T> concept C = ...;\n"
@@ -2450,12 +2687,14 @@ class ClangFormat(Resource):
                     "       template <typename T>\n"
                     "       concept C = ...;\n"
                     "       ```",
-            )]
-            BeforeInlineASMColon: Annotated[Literal["Never", "OnlyMultiline", "Always"], Field(
-                default="OnlyMultiline",
-                examples=["Never", "OnlyMultiline", "Always"],
-                description=
-                    "Controls line breaking before inline ASM colons.\n"
+                ),
+            ]
+            BeforeInlineASMColon: Annotated[
+                Literal["Never", "OnlyMultiline", "Always"],
+                Field(
+                    default="OnlyMultiline",
+                    examples=["Never", "OnlyMultiline", "Always"],
+                    description="Controls line breaking before inline ASM colons.\n"
                     "   `Never`: never break before the inline ASM colon.\n"
                     "       ```cpp\n"
                     "       asm volatile(\"string\", : : val);\n"
@@ -2474,11 +2713,13 @@ class ClangFormat(Resource):
                     "                    :\n"
                     "                    : val);\n"
                     "       ```",
-            )]
-            BeforeTemplateCloser: Annotated[bool, Field(
-                default=True,
-                description=
-                    "Controls whether to break before a template closing bracket (`>`) "
+                ),
+            ]
+            BeforeTemplateCloser: Annotated[
+                bool,
+                Field(
+                    default=True,
+                    description="Controls whether to break before a template closing bracket (`>`) "
                     "when there is a line break after the matching opening bracket (`<`).\n"
                     "   `true`:\n"
                     "       ```cpp\n"
@@ -2503,11 +2744,13 @@ class ClangFormat(Resource):
                     "           typename Foo,\n"
                     "           typename Bar>\n"
                     "       ```",
-            )]
-            BeforeTernaryOperators: Annotated[bool, Field(
-                default=False,
-                description=
-                    "Controls whether ternary operators are placed after a line break.\n"
+                ),
+            ]
+            BeforeTernaryOperators: Annotated[
+                bool,
+                Field(
+                    default=False,
+                    description="Controls whether ternary operators are placed after a line break.\n"
                     "   `true`:\n"
                     "       ```cpp\n"
                     "       veryVeryVeryVeryVeryVeryVeryVeryVeryVeryVeryLongDescription\n"
@@ -2520,74 +2763,74 @@ class ClangFormat(Resource):
                     "           firstValue :\n"
                     "           SecondValueVeryVeryVeryVeryLong;\n"
                     "       ```",
-            )]
+                ),
+            ]
             BinaryOperations: Annotated[
                 Literal["Never", "OnePerLine", "RespectPrecedence"],
                 Field(
                     default="Never",
                     examples=["Never", "OnePerLine", "RespectPrecedence"],
-                    description=
-                        "Controls line breaking for chains of binary operations.\n"
-                        "   `Never`: do not force per-operation breaking.\n"
-                        "       ```cpp\n"
-                        "       aaa + bbbb * ccccc - ddddd +\n"
-                        "       eeeeeeeeeeeeeeee;\n"
-                        "       ```\n"
-                        "   `OnePerLine`: if the chain does not fit on one line, put "
-                        "each operation on its own line.\n"
-                        "       ```cpp\n"
-                        "       aaa +\n"
-                        "       bbbb *\n"
-                        "       ccccc -\n"
-                        "       ddddd +\n"
-                        "       eeeeeeeeeeeeeeee;\n"
-                        "       ```\n"
-                        "   `RespectPrecedence`: break long chains by precedence groups.\n"
-                        "       ```cpp\n"
-                        "       aaa +\n"
-                        "       bbbb * ccccc -\n"
-                        "       ddddd +\n"
-                        "       eeeeeeeeeeeeeeee;\n"
-                        "       ```",
-                )
+                    description="Controls line breaking for chains of binary operations.\n"
+                    "   `Never`: do not force per-operation breaking.\n"
+                    "       ```cpp\n"
+                    "       aaa + bbbb * ccccc - ddddd +\n"
+                    "       eeeeeeeeeeeeeeee;\n"
+                    "       ```\n"
+                    "   `OnePerLine`: if the chain does not fit on one line, put "
+                    "each operation on its own line.\n"
+                    "       ```cpp\n"
+                    "       aaa +\n"
+                    "       bbbb *\n"
+                    "       ccccc -\n"
+                    "       ddddd +\n"
+                    "       eeeeeeeeeeeeeeee;\n"
+                    "       ```\n"
+                    "   `RespectPrecedence`: break long chains by precedence groups.\n"
+                    "       ```cpp\n"
+                    "       aaa +\n"
+                    "       bbbb * ccccc -\n"
+                    "       ddddd +\n"
+                    "       eeeeeeeeeeeeeeee;\n"
+                    "       ```",
+                ),
             ]
             ConstructorInitializers: Annotated[
                 Literal["BeforeColon", "BeforeComma", "AfterColon", "AfterComma"],
                 Field(
                     default="AfterColon",
                     examples=["BeforeColon", "BeforeComma", "AfterColon", "AfterComma"],
-                    description=
-                        "Controls line breaking for constructor initializer lists.\n"
-                        "   `BeforeColon`: break before `:` and after commas.\n"
-                        "       ```cpp\n"
-                        "       Constructor()\n"
-                        "           : initializer1(),\n"
-                        "             initializer2()\n"
-                        "       ```\n"
-                        "   `BeforeComma`: break before `:` and before commas, aligning "
-                        "commas with the colon.\n"
-                        "       ```cpp\n"
-                        "       Constructor()\n"
-                        "           : initializer1()\n"
-                        "           , initializer2()\n"
-                        "       ```\n"
-                        "   `AfterColon`: break after `:` and after commas.\n"
-                        "       ```cpp\n"
-                        "       Constructor() :\n"
-                        "           initializer1(),\n"
-                        "           initializer2()\n"
-                        "       ```\n"
-                        "   `AfterComma`: break only after commas.\n"
-                        "       ```cpp\n"
-                        "       Constructor() : initializer1(),\n"
-                        "                       initializer2()\n"
-                        "       ```",
-                )
+                    description="Controls line breaking for constructor initializer lists.\n"
+                    "   `BeforeColon`: break before `:` and after commas.\n"
+                    "       ```cpp\n"
+                    "       Constructor()\n"
+                    "           : initializer1(),\n"
+                    "             initializer2()\n"
+                    "       ```\n"
+                    "   `BeforeComma`: break before `:` and before commas, aligning "
+                    "commas with the colon.\n"
+                    "       ```cpp\n"
+                    "       Constructor()\n"
+                    "           : initializer1()\n"
+                    "           , initializer2()\n"
+                    "       ```\n"
+                    "   `AfterColon`: break after `:` and after commas.\n"
+                    "       ```cpp\n"
+                    "       Constructor() :\n"
+                    "           initializer1(),\n"
+                    "           initializer2()\n"
+                    "       ```\n"
+                    "   `AfterComma`: break only after commas.\n"
+                    "       ```cpp\n"
+                    "       Constructor() : initializer1(),\n"
+                    "                       initializer2()\n"
+                    "       ```",
+                ),
             ]
-            FunctionDefinitionParameters: Annotated[bool, Field(
-                default=False,
-                description=
-                    "Controls whether to always break before function definition "
+            FunctionDefinitionParameters: Annotated[
+                bool,
+                Field(
+                    default=False,
+                    description="Controls whether to always break before function definition "
                     "parameters.\n"
                     "   `true`:\n"
                     "       ```cpp\n"
@@ -2598,48 +2841,49 @@ class ClangFormat(Resource):
                     "       ```cpp\n"
                     "       void functionDefinition(int A, int B) {}\n"
                     "       ```",
-            )]
+                ),
+            ]
             InheritanceList: Annotated[
                 Literal["BeforeColon", "BeforeComma", "AfterColon", "AfterComma"],
                 Field(
                     default="AfterColon",
                     examples=["BeforeColon", "BeforeComma", "AfterColon", "AfterComma"],
-                    description=
-                        "Controls line breaking for class inheritance lists.\n"
-                        "   `BeforeColon`: break before `:` and after commas.\n"
-                        "       ```cpp\n"
-                        "       class Foo\n"
-                        "           : Base1,\n"
-                        "             Base2\n"
-                        "       {};\n"
-                        "       ```\n"
-                        "   `BeforeComma`: break before `:` and before commas, aligning "
-                        "commas with the colon.\n"
-                        "       ```cpp\n"
-                        "       class Foo\n"
-                        "           : Base1\n"
-                        "           , Base2\n"
-                        "       {};\n"
-                        "       ```\n"
-                        "   `AfterColon`: break after `:` and after commas.\n"
-                        "       ```cpp\n"
-                        "       class Foo :\n"
-                        "           Base1,\n"
-                        "           Base2\n"
-                        "       {};\n"
-                        "       ```\n"
-                        "   `AfterComma`: break only after commas.\n"
-                        "       ```cpp\n"
-                        "       class Foo : Base1,\n"
-                        "                   Base2\n"
-                        "       {};\n"
-                        "       ```",
-                )
+                    description="Controls line breaking for class inheritance lists.\n"
+                    "   `BeforeColon`: break before `:` and after commas.\n"
+                    "       ```cpp\n"
+                    "       class Foo\n"
+                    "           : Base1,\n"
+                    "             Base2\n"
+                    "       {};\n"
+                    "       ```\n"
+                    "   `BeforeComma`: break before `:` and before commas, aligning "
+                    "commas with the colon.\n"
+                    "       ```cpp\n"
+                    "       class Foo\n"
+                    "           : Base1\n"
+                    "           , Base2\n"
+                    "       {};\n"
+                    "       ```\n"
+                    "   `AfterColon`: break after `:` and after commas.\n"
+                    "       ```cpp\n"
+                    "       class Foo :\n"
+                    "           Base1,\n"
+                    "           Base2\n"
+                    "       {};\n"
+                    "       ```\n"
+                    "   `AfterComma`: break only after commas.\n"
+                    "       ```cpp\n"
+                    "       class Foo : Base1,\n"
+                    "                   Base2\n"
+                    "       {};\n"
+                    "       ```",
+                ),
             ]
-            StringLiterals: Annotated[bool, Field(
-                default=True,
-                description=
-                    "Controls whether clang-format may break long string literals.\n"
+            StringLiterals: Annotated[
+                bool,
+                Field(
+                    default=True,
+                    description="Controls whether clang-format may break long string literals.\n"
                     "   `true`:\n"
                     "       ```cpp\n"
                     "       const char* x = \"veryVeryVeryVeryVeryVe\"\n"
@@ -2651,68 +2895,73 @@ class ClangFormat(Resource):
                     "       const char* x =\n"
                     "           \"veryVeryVeryVeryVeryVeryVeryVeryVeryVeryVeryVeryLongString\";\n"
                     "       ```",
-            )]
+                ),
+            ]
             TemplateDeclarations: Annotated[
                 Literal["Leave", "No", "Multiline", "Yes"],
                 Field(
                     default="Yes",
                     examples=["Leave", "No", "Multiline", "Yes"],
-                    description=
-                        "Controls line breaking between template declarations and the "
-                        "following declaration.\n"
-                        "   `Leave`: preserve user formatting.\n"
-                        "       ```cpp\n"
-                        "       template <typename T>\n"
-                        "       T foo() {\n"
-                        "       }\n"
-                        "       template <typename T> T foo(int aaaaaaaaaaaaaaaaaaaaa,\n"
-                        "                                   int bbbbbbbbbbbbbbbbbbbbb) {\n"
-                        "       }\n"
-                        "       ```\n"
-                        "   `No`: do not force a break before the declaration, unless "
-                        "other formatting rules require it.\n"
-                        "       ```cpp\n"
-                        "       template <typename T> T foo() {\n"
-                        "       }\n"
-                        "       template <typename T> T foo(int aaaaaaaaaaaaaaaaaaaaa,\n"
-                        "                                   int bbbbbbbbbbbbbbbbbbbbb) {\n"
-                        "       }\n"
-                        "       ```\n"
-                        "   `Multiline`: force a break when the following declaration "
-                        "spans multiple lines.\n"
-                        "       ```cpp\n"
-                        "       template <typename T> T foo() {\n"
-                        "       }\n"
-                        "       template <typename T>\n"
-                        "       T foo(int aaaaaaaaaaaaaaaaaaaaa,\n"
-                        "             int bbbbbbbbbbbbbbbbbbbbb) {\n"
-                        "       }\n"
-                        "       ```\n"
-                        "   `Yes`: always break after the template declaration.\n"
-                        "       ```cpp\n"
-                        "       template <typename T>\n"
-                        "       T foo() {\n"
-                        "       }\n"
-                        "       template <typename T>\n"
-                        "       T foo(int aaaaaaaaaaaaaaaaaaaaa,\n"
-                        "             int bbbbbbbbbbbbbbbbbbbbb) {\n"
-                        "       }\n"
-                        "       ```",
-                )
+                    description="Controls line breaking between template declarations and the "
+                    "following declaration.\n"
+                    "   `Leave`: preserve user formatting.\n"
+                    "       ```cpp\n"
+                    "       template <typename T>\n"
+                    "       T foo() {\n"
+                    "       }\n"
+                    "       template <typename T> T foo(int aaaaaaaaaaaaaaaaaaaaa,\n"
+                    "                                   int bbbbbbbbbbbbbbbbbbbbb) {\n"
+                    "       }\n"
+                    "       ```\n"
+                    "   `No`: do not force a break before the declaration, unless "
+                    "other formatting rules require it.\n"
+                    "       ```cpp\n"
+                    "       template <typename T> T foo() {\n"
+                    "       }\n"
+                    "       template <typename T> T foo(int aaaaaaaaaaaaaaaaaaaaa,\n"
+                    "                                   int bbbbbbbbbbbbbbbbbbbbb) {\n"
+                    "       }\n"
+                    "       ```\n"
+                    "   `Multiline`: force a break when the following declaration "
+                    "spans multiple lines.\n"
+                    "       ```cpp\n"
+                    "       template <typename T> T foo() {\n"
+                    "       }\n"
+                    "       template <typename T>\n"
+                    "       T foo(int aaaaaaaaaaaaaaaaaaaaa,\n"
+                    "             int bbbbbbbbbbbbbbbbbbbbb) {\n"
+                    "       }\n"
+                    "       ```\n"
+                    "   `Yes`: always break after the template declaration.\n"
+                    "       ```cpp\n"
+                    "       template <typename T>\n"
+                    "       T foo() {\n"
+                    "       }\n"
+                    "       template <typename T>\n"
+                    "       T foo(int aaaaaaaaaaaaaaaaaaaaa,\n"
+                    "             int bbbbbbbbbbbbbbbbbbbbb) {\n"
+                    "       }\n"
+                    "       ```",
+                ),
             ]
 
-        Break: Annotated[_Break, Field(
-            default_factory=_Break.model_construct,
-            description="Options for controlling line breaks.",
-        )]
+        Break: Annotated[
+            _Break,
+            Field(
+                default_factory=_Break.model_construct,
+                description="Options for controlling line breaks.",
+            ),
+        ]
 
         class _BraceWrapping(BaseModel):
             """Validate the `[tool.clang-format.BraceWrapping]` table."""
+
             model_config = ConfigDict(extra="forbid")
-            AfterCaseLabel: Annotated[bool, Field(
-                default=False,
-                description=
-                    "Controls whether to wrap braces after case labels.\n"
+            AfterCaseLabel: Annotated[
+                bool,
+                Field(
+                    default=False,
+                    description="Controls whether to wrap braces after case labels.\n"
                     "   `true`:\n"
                     "       ```cpp\n"
                     "       switch (foo) {\n"
@@ -2739,11 +2988,13 @@ class ClangFormat(Resource):
                     "           }\n"
                     "       }\n"
                     "       ```",
-            )]
-            AfterClass: Annotated[bool, Field(
-                default=False,
-                description=
-                    "Controls whether to wrap braces after class definitions.\n"
+                ),
+            ]
+            AfterClass: Annotated[
+                bool,
+                Field(
+                    default=False,
+                    description="Controls whether to wrap braces after class definitions.\n"
                     "   `true`:\n"
                     "       ```cpp\n"
                     "       class foo\n"
@@ -2753,12 +3004,14 @@ class ClangFormat(Resource):
                     "       ```cpp\n"
                     "       class foo {};\n"
                     "       ```",
-            )]
-            AfterControlStatement: Annotated[Literal["Never", "Multiline", "Always"], Field(
-                default="Never",
-                examples=["Never", "Multiline", "Always"],
-                description=
-                    "Controls whether to wrap braces after control statements "
+                ),
+            ]
+            AfterControlStatement: Annotated[
+                Literal["Never", "Multiline", "Always"],
+                Field(
+                    default="Never",
+                    examples=["Never", "Multiline", "Always"],
+                    description="Controls whether to wrap braces after control statements "
                     "(`if`/`for`/`while`/`switch`/...).\n"
                     "   `Never`: never wrap braces after a control statement.\n"
                     "       ```cpp\n"
@@ -2787,11 +3040,13 @@ class ClangFormat(Resource):
                     "       for (int i = 0; i < 10; ++i)\n"
                     "       {}\n"
                     "       ```",
-            )]
-            AfterEnum: Annotated[bool, Field(
-                default=False,
-                description=
-                    "Controls whether to wrap braces after enum definitions.\n"
+                ),
+            ]
+            AfterEnum: Annotated[
+                bool,
+                Field(
+                    default=False,
+                    description="Controls whether to wrap braces after enum definitions.\n"
                     "   `true`:\n"
                     "       ```cpp\n"
                     "       enum X : int\n"
@@ -2803,11 +3058,13 @@ class ClangFormat(Resource):
                     "       ```cpp\n"
                     "       enum X : int { B };\n"
                     "       ```",
-            )]
-            AfterFunction: Annotated[bool, Field(
-                default=False,
-                description=
-                    "Controls whether to wrap braces after function definitions.\n"
+                ),
+            ]
+            AfterFunction: Annotated[
+                bool,
+                Field(
+                    default=False,
+                    description="Controls whether to wrap braces after function definitions.\n"
                     "   `true`:\n"
                     "       ```cpp\n"
                     "       void foo()\n"
@@ -2823,11 +3080,13 @@ class ClangFormat(Resource):
                     "           bar2();\n"
                     "       }\n"
                     "       ```",
-            )]
-            AfterNamespace: Annotated[bool, Field(
-                default=False,
-                description=
-                    "Controls whether to wrap braces after namespace definitions.\n"
+                ),
+            ]
+            AfterNamespace: Annotated[
+                bool,
+                Field(
+                    default=False,
+                    description="Controls whether to wrap braces after namespace definitions.\n"
                     "   `true`:\n"
                     "       ```cpp\n"
                     "       namespace\n"
@@ -2843,11 +3102,13 @@ class ClangFormat(Resource):
                     "       int bar();\n"
                     "       }\n"
                     "       ```",
-            )]
-            AfterStruct: Annotated[bool, Field(
-                default=False,
-                description=
-                    "Controls whether to wrap braces after struct definitions.\n"
+                ),
+            ]
+            AfterStruct: Annotated[
+                bool,
+                Field(
+                    default=False,
+                    description="Controls whether to wrap braces after struct definitions.\n"
                     "   `true`:\n"
                     "       ```cpp\n"
                     "       struct foo\n"
@@ -2861,11 +3122,13 @@ class ClangFormat(Resource):
                     "           int x;\n"
                     "       };\n"
                     "       ```",
-            )]
-            AfterUnion: Annotated[bool, Field(
-                default=False,
-                description=
-                    "Controls whether to wrap braces after union definitions.\n"
+                ),
+            ]
+            AfterUnion: Annotated[
+                bool,
+                Field(
+                    default=False,
+                    description="Controls whether to wrap braces after union definitions.\n"
                     "   `true`:\n"
                     "       ```cpp\n"
                     "       union foo\n"
@@ -2879,11 +3142,13 @@ class ClangFormat(Resource):
                     "           int x;\n"
                     "       }\n"
                     "       ```",
-            )]
-            AfterExternBlock: Annotated[bool, Field(
-                default=False,
-                description=
-                    "Controls whether to wrap braces after extern blocks.\n"
+                ),
+            ]
+            AfterExternBlock: Annotated[
+                bool,
+                Field(
+                    default=False,
+                    description="Controls whether to wrap braces after extern blocks.\n"
                     "   `true`:\n"
                     "       ```cpp\n"
                     "       extern \"C\"\n"
@@ -2897,11 +3162,13 @@ class ClangFormat(Resource):
                     "       int foo();\n"
                     "       }\n"
                     "       ```",
-            )]
-            BeforeCatch: Annotated[bool, Field(
-                default=False,
-                description=
-                    "Controls whether to wrap before `catch`.\n"
+                ),
+            ]
+            BeforeCatch: Annotated[
+                bool,
+                Field(
+                    default=False,
+                    description="Controls whether to wrap before `catch`.\n"
                     "   `true`:\n"
                     "       ```cpp\n"
                     "       try {\n"
@@ -2917,11 +3184,13 @@ class ClangFormat(Resource):
                     "       } catch () {\n"
                     "       }\n"
                     "       ```",
-            )]
-            BeforeElse: Annotated[bool, Field(
-                default=False,
-                description=
-                    "Controls whether to wrap before `else`.\n"
+                ),
+            ]
+            BeforeElse: Annotated[
+                bool,
+                Field(
+                    default=False,
+                    description="Controls whether to wrap before `else`.\n"
                     "   `true`:\n"
                     "       ```cpp\n"
                     "       if (foo()) {\n"
@@ -2935,11 +3204,13 @@ class ClangFormat(Resource):
                     "       } else {\n"
                     "       }\n"
                     "       ```",
-            )]
-            BeforeLambdaBody: Annotated[bool, Field(
-                default=False,
-                description=
-                    "Controls whether to wrap braces in lambda bodies.\n"
+                ),
+            ]
+            BeforeLambdaBody: Annotated[
+                bool,
+                Field(
+                    default=False,
+                    description="Controls whether to wrap braces in lambda bodies.\n"
                     "   `true`:\n"
                     "       ```cpp\n"
                     "       connect(\n"
@@ -2956,11 +3227,13 @@ class ClangFormat(Resource):
                     "           bar();\n"
                     "       });\n"
                     "       ```",
-            )]
-            BeforeWhile: Annotated[bool, Field(
-                default=False,
-                description=
-                    "Controls whether to wrap before `while`.\n"
+                ),
+            ]
+            BeforeWhile: Annotated[
+                bool,
+                Field(
+                    default=False,
+                    description="Controls whether to wrap before `while`.\n"
                     "   `true`:\n"
                     "       ```cpp\n"
                     "       do {\n"
@@ -2974,15 +3247,20 @@ class ClangFormat(Resource):
                     "           foo();\n"
                     "       } while (1);\n"
                     "       ```",
-            )]
-            IndentBraces: Annotated[bool, Field(
-                default=False,
-                description="Controls whether wrapped braces are indented.",
-            )]
-            SplitEmptyFunction: Annotated[bool, Field(
-                default=False,
-                description=
-                    "Controls whether empty function bodies can be put on a single "
+                ),
+            ]
+            IndentBraces: Annotated[
+                bool,
+                Field(
+                    default=False,
+                    description="Controls whether wrapped braces are indented.",
+                ),
+            ]
+            SplitEmptyFunction: Annotated[
+                bool,
+                Field(
+                    default=False,
+                    description="Controls whether empty function bodies can be put on a single "
                     "line.  This option is used only if the opening brace of the function "
                     "has already been wrapped (i.e. `AfterFunction` is enabled), and "
                     "other rules indicate the function could/should not be put on a "
@@ -2998,11 +3276,13 @@ class ClangFormat(Resource):
                     "       int f()\n"
                     "       {}\n"
                     "       ```",
-            )]
-            SplitEmptyRecord: Annotated[bool, Field(
-                default=False,
-                description=
-                    "Controls whether empty records (e.g. class, struct, or union) can "
+                ),
+            ]
+            SplitEmptyRecord: Annotated[
+                bool,
+                Field(
+                    default=False,
+                    description="Controls whether empty records (e.g. class, struct, or union) can "
                     "be put on a single line.  This option is used only if the opening "
                     "brace of the record has already been wrapped (i.e. `AfterClass` "
                     "for classes is enabled).\n"
@@ -3017,11 +3297,13 @@ class ClangFormat(Resource):
                     "       class Foo\n"
                     "       {}\n"
                     "       ```",
-            )]
-            SplitEmptyNamespace: Annotated[bool, Field(
-                default=False,
-                description=
-                    "Controls whether empty namespace bodies can be put on a single "
+                ),
+            ]
+            SplitEmptyNamespace: Annotated[
+                bool,
+                Field(
+                    default=False,
+                    description="Controls whether empty namespace bodies can be put on a single "
                     "line.  This option is used only if the opening brace of the "
                     "namespace has already been wrapped (i.e. `AfterNamespace` is "
                     "enabled).\n"
@@ -3036,20 +3318,26 @@ class ClangFormat(Resource):
                     "       namespace Foo\n"
                     "       {}\n"
                     "       ```",
-            )]
+                ),
+            ]
 
-        BraceWrapping: Annotated[_BraceWrapping, Field(
-            default_factory=_BraceWrapping.model_construct,
-            description="Options for fine-grained brace wrapping.",
-        )]
+        BraceWrapping: Annotated[
+            _BraceWrapping,
+            Field(
+                default_factory=_BraceWrapping.model_construct,
+                description="Options for fine-grained brace wrapping.",
+            ),
+        ]
 
         class _Indent(BaseModel):
             """Validate the `[tool.clang-format.Indent]` table."""
+
             model_config = ConfigDict(extra="forbid")
-            CaseLabels: Annotated[bool, Field(
-                default=True,
-                description=
-                    "Controls whether to indent case labels one level from the switch "
+            CaseLabels: Annotated[
+                bool,
+                Field(
+                    default=True,
+                    description="Controls whether to indent case labels one level from the switch "
                     "statement.\n"
                     "   `true`:\n"
                     "       ```cpp\n"
@@ -3071,11 +3359,13 @@ class ClangFormat(Resource):
                     "           plop();\n"
                     "       }\n"
                     "       ```",
-            )]
-            ExportBlock: Annotated[bool, Field(
-                default=True,
-                description=
-                    "Controls whether to indent the body of an `export { ... }` block.\n"
+                ),
+            ]
+            ExportBlock: Annotated[
+                bool,
+                Field(
+                    default=True,
+                    description="Controls whether to indent the body of an `export { ... }` block.\n"
                     "   `true`:\n"
                     "       ```cpp\n"
                     "       export {\n"
@@ -3090,11 +3380,13 @@ class ClangFormat(Resource):
                     "       void bar();\n"
                     "       }\n"
                     "       ```",
-            )]
-            ExternBlock: Annotated[bool, Field(
-                default=True,
-                description=
-                    "Controls whether to indent extern blocks.\n"
+                ),
+            ]
+            ExternBlock: Annotated[
+                bool,
+                Field(
+                    default=True,
+                    description="Controls whether to indent extern blocks.\n"
                     "   `true`:\n"
                     "       ```cpp\n"
                     "       extern \"C\" {\n"
@@ -3107,108 +3399,108 @@ class ClangFormat(Resource):
                     "       void foo();\n"
                     "       }\n"
                     "       ```",
-            )]
+                ),
+            ]
             GotoLabels: Annotated[
                 Literal["NoIndent", "OuterIndent", "InnerIndent", "HalfIndent"],
                 Field(
                     default="InnerIndent",
                     examples=["NoIndent", "OuterIndent", "InnerIndent", "HalfIndent"],
-                    description=
-                        "Controls how goto labels are indented.\n"
-                        "   `NoIndent`: do not indent goto labels.\n"
-                        "       ```cpp\n"
-                        "       int f() {\n"
-                        "           if (foo()) {\n"
-                        "           label1:\n"
-                        "               bar();\n"
-                        "           }\n"
-                        "       label2:\n"
-                        "           return 1;\n"
-                        "       }\n"
-                        "       ```\n"
-                        "   `OuterIndent`: indent goto labels one level from the "
-                        "surrounding block.\n"
-                        "       ```cpp\n"
-                        "       int f() {\n"
-                        "           if (foo()) {\n"
-                        "               label1:\n"
-                        "               bar();\n"
-                        "           }\n"
-                        "           label2:\n"
-                        "           return 1;\n"
-                        "       }\n"
-                        "       ```\n"
-                        "   `InnerIndent`: indent goto labels one level and "
-                        "statements under labels one additional level.\n"
-                        "       ```cpp\n"
-                        "       int f() {\n"
-                        "           if (foo()) {\n"
-                        "               label1:\n"
-                        "                   bar();\n"
-                        "           }\n"
-                        "           label2:\n"
-                        "               return 1;\n"
-                        "       }\n"
-                        "       ```\n"
-                        "   `HalfIndent`: indent goto labels by half an indent "
-                        "width.\n"
-                        "       ```cpp\n"
-                        "       int f() {\n"
-                        "           if (foo()) {\n"
-                        "             label1:\n"
-                        "               bar();\n"
-                        "           }\n"
-                        "         label2:\n"
-                        "           return 1;\n"
-                        "       }\n"
-                        "       ```",
-                )
+                    description="Controls how goto labels are indented.\n"
+                    "   `NoIndent`: do not indent goto labels.\n"
+                    "       ```cpp\n"
+                    "       int f() {\n"
+                    "           if (foo()) {\n"
+                    "           label1:\n"
+                    "               bar();\n"
+                    "           }\n"
+                    "       label2:\n"
+                    "           return 1;\n"
+                    "       }\n"
+                    "       ```\n"
+                    "   `OuterIndent`: indent goto labels one level from the "
+                    "surrounding block.\n"
+                    "       ```cpp\n"
+                    "       int f() {\n"
+                    "           if (foo()) {\n"
+                    "               label1:\n"
+                    "               bar();\n"
+                    "           }\n"
+                    "           label2:\n"
+                    "           return 1;\n"
+                    "       }\n"
+                    "       ```\n"
+                    "   `InnerIndent`: indent goto labels one level and "
+                    "statements under labels one additional level.\n"
+                    "       ```cpp\n"
+                    "       int f() {\n"
+                    "           if (foo()) {\n"
+                    "               label1:\n"
+                    "                   bar();\n"
+                    "           }\n"
+                    "           label2:\n"
+                    "               return 1;\n"
+                    "       }\n"
+                    "       ```\n"
+                    "   `HalfIndent`: indent goto labels by half an indent "
+                    "width.\n"
+                    "       ```cpp\n"
+                    "       int f() {\n"
+                    "           if (foo()) {\n"
+                    "             label1:\n"
+                    "               bar();\n"
+                    "           }\n"
+                    "         label2:\n"
+                    "           return 1;\n"
+                    "       }\n"
+                    "       ```",
+                ),
             ]
             PPDirectives: Annotated[
                 Literal["None", "AfterHash", "BeforeHash", "Leave"],
                 Field(
                     default="BeforeHash",
                     examples=["None", "AfterHash", "BeforeHash", "Leave"],
-                    description=
-                        "Controls preprocessor directive indentation style.\n"
-                        "   `None`: do not indent any directives.\n"
-                        "       ```cpp\n"
-                        "       #if FOO\n"
-                        "       #if BAR\n"
-                        "       #include <foo>\n"
-                        "       #endif\n"
-                        "       #endif\n"
-                        "       ```\n"
-                        "   `AfterHash`: indent directives after the hash.\n"
-                        "       ```cpp\n"
-                        "       #if FOO\n"
-                        "       #   if BAR\n"
-                        "       #       include <foo>\n"
-                        "       #   endif\n"
-                        "       #endif\n"
-                        "       ```\n"
-                        "   `BeforeHash`: indent directives before the hash.\n"
-                        "       ```cpp\n"
-                        "       #if FOO\n"
-                        "           #if BAR\n"
-                        "               #include <foo>\n"
-                        "           #endif\n"
-                        "       #endif\n"
-                        "       ```\n"
-                        "   `Leave`: preserve user formatting.\n"
-                        "       ```cpp\n"
-                        "       #if FOO\n"
-                        "           #if BAR\n"
-                        "       #include <foo>\n"
-                        "           #endif\n"
-                        "       #endif\n"
-                        "       ```",
-                )
+                    description="Controls preprocessor directive indentation style.\n"
+                    "   `None`: do not indent any directives.\n"
+                    "       ```cpp\n"
+                    "       #if FOO\n"
+                    "       #if BAR\n"
+                    "       #include <foo>\n"
+                    "       #endif\n"
+                    "       #endif\n"
+                    "       ```\n"
+                    "   `AfterHash`: indent directives after the hash.\n"
+                    "       ```cpp\n"
+                    "       #if FOO\n"
+                    "       #   if BAR\n"
+                    "       #       include <foo>\n"
+                    "       #   endif\n"
+                    "       #endif\n"
+                    "       ```\n"
+                    "   `BeforeHash`: indent directives before the hash.\n"
+                    "       ```cpp\n"
+                    "       #if FOO\n"
+                    "           #if BAR\n"
+                    "               #include <foo>\n"
+                    "           #endif\n"
+                    "       #endif\n"
+                    "       ```\n"
+                    "   `Leave`: preserve user formatting.\n"
+                    "       ```cpp\n"
+                    "       #if FOO\n"
+                    "           #if BAR\n"
+                    "       #include <foo>\n"
+                    "           #endif\n"
+                    "       #endif\n"
+                    "       ```",
+                ),
             ]
-            RequiresClause: Annotated[bool, Field(
-                default=True,
-                description=
-                    "Controls whether to indent the requires clause in a template.\n"
+            RequiresClause: Annotated[
+                bool,
+                Field(
+                    default=True,
+                    description="Controls whether to indent the requires clause in a template.\n"
                     "   `true`:\n"
                     "       ```cpp\n"
                     "       template <typename It>\n"
@@ -3225,11 +3517,13 @@ class ClangFormat(Resource):
                     "           //....\n"
                     "       }\n"
                     "       ```",
-            )]
-            Width: Annotated[NonNegativeInt, Field(
-                default=4,
-                description=
-                    "Controls the number of columns to use for indentation.  For example, "
+                ),
+            ]
+            Width: Annotated[
+                NonNegativeInt,
+                Field(
+                    default=4,
+                    description="Controls the number of columns to use for indentation.  For example, "
                     "if set to 3:\n"
                     "   ```cpp\n"
                     "   void f() {\n"
@@ -3239,11 +3533,13 @@ class ClangFormat(Resource):
                     "      }\n"
                     "   }\n"
                     "   ```",
-            )]
-            WrappedFunctionNames: Annotated[bool, Field(
-                default=False,
-                description=
-                    "Controls whether to indent function names when a declaration or "
+                ),
+            ]
+            WrappedFunctionNames: Annotated[
+                bool,
+                Field(
+                    default=False,
+                    description="Controls whether to indent function names when a declaration or "
                     "definition wraps after the return type.\n"
                     "   `true`:\n"
                     "       ```cpp\n"
@@ -3255,27 +3551,32 @@ class ClangFormat(Resource):
                     "       LoooooooooooooooooooooooooooooooooooooooongReturnType\n"
                     "       LoooooooooooooooooooooooooooooooongFunctionDeclaration();\n"
                     "       ```",
-            )]
+                ),
+            ]
 
-        Indent: Annotated[_Indent, Field(
-            default_factory=_Indent.model_construct,
-            description="Options for controlling indentation.",
-        )]
+        Indent: Annotated[
+            _Indent,
+            Field(
+                default_factory=_Indent.model_construct,
+                description="Options for controlling indentation.",
+            ),
+        ]
 
         class _IntegerLiteralSeparator(BaseModel):
             """Validate the `[tool.clang-format.IntegerLiteralSeparator]` table."""
+
             model_config = ConfigDict(extra="forbid")
 
             class _Base(BaseModel):
-                """Validate a `[tool.clang-format.IntegerLiteralSeparator.<base>]`
-                table.
-                """
+                """Validate integer literal separator options for a base."""
+
                 model_config = ConfigDict(extra="forbid")
-                Every: Annotated[int, Field(
-                    default=0,
-                    ge=-1,
-                    description=
-                        "Controls how often separators are inserted for this base.  "
+                Every: Annotated[
+                    int,
+                    Field(
+                        default=0,
+                        ge=-1,
+                        description="Controls how often separators are inserted for this base.  "
                         "`-1` removes all separators, `0` preserves existing "
                         "separators, and positive values insert separators from the "
                         "rightmost digit.\n"
@@ -3285,12 +3586,14 @@ class ClangFormat(Resource):
                         "   /*  3: */ b = 0b100'111'101'101;\n"
                         "   /*  4: */ b = 0b1001'1110'1101;\n"
                         "   ```",
-                )]
-                Min: Annotated[int, Field(
-                    default=-1,
-                    ge=-1,
-                    description=
-                        "Controls the minimum number of digits required before "
+                    ),
+                ]
+                Min: Annotated[
+                    int,
+                    Field(
+                        default=-1,
+                        ge=-1,
+                        description="Controls the minimum number of digits required before "
                         "separators are inserted.  `-1` disables this threshold.\n"
                         "   ```cpp\n"
                         "   // Every: 3\n"
@@ -3298,12 +3601,14 @@ class ClangFormat(Resource):
                         "   b1 = 0b101101;\n"
                         "   b2 = 0b1'101'101;\n"
                         "   ```",
-                )]
-                Max: Annotated[int, Field(
-                    default=-1,
-                    ge=-1,
-                    description=
-                        "Controls the maximum number of digits for which separators "
+                    ),
+                ]
+                Max: Annotated[
+                    int,
+                    Field(
+                        default=-1,
+                        ge=-1,
+                        description="Controls the maximum number of digits for which separators "
                         "are removed.  `-1` disables this threshold.\n"
                         "   ```cpp\n"
                         "   // Every: 3\n"
@@ -3315,43 +3620,62 @@ class ClangFormat(Resource):
                         "   b3 = 0b1'101'101; // Always added.\n"
                         "   b4 = 0b10'1101; // Corrected to 0b101'101.\n"
                         "   ```",
-                )]
+                    ),
+                ]
 
                 @model_validator(mode="after")
                 def _validate_min_max(self) -> Self:
                     if self.Min != -1 and self.Max != -1 and self.Max <= self.Min:
-                        raise ValueError("Max must be greater than Min when both are set.")
+                        msg = "Max must be greater than Min when both are set."
+                        raise ValueError(msg)
                     return self
 
-            Binary: Annotated[_Base, Field(
-                default_factory=_Base.model_construct,
-                description="Options for formatting separators in binary literals.",
-            )]
-            Decimal: Annotated[_Base, Field(
-                default_factory=_Base.model_construct,
-                description="Options for formatting separators in decimal literals.",
-            )]
-            Hex: Annotated[_Base, Field(
-                default_factory=_Base.model_construct,
-                description="Options for formatting separators in hexadecimal literals.",
-            )]
+            Binary: Annotated[
+                _Base,
+                Field(
+                    default_factory=_Base.model_construct,
+                    description="Options for formatting separators in binary literals.",
+                ),
+            ]
+            Decimal: Annotated[
+                _Base,
+                Field(
+                    default_factory=_Base.model_construct,
+                    description="Options for formatting separators in decimal literals.",
+                ),
+            ]
+            Hex: Annotated[
+                _Base,
+                Field(
+                    default_factory=_Base.model_construct,
+                    description="Options for formatting separators in hexadecimal literals.",
+                ),
+            ]
 
-        IntegerLiteralSeparator: Annotated[_IntegerLiteralSeparator, Field(
-            default_factory=_IntegerLiteralSeparator.model_construct,
-            description="Options for formatting integer literal separators.",
-        )]
+        IntegerLiteralSeparator: Annotated[
+            _IntegerLiteralSeparator,
+            Field(
+                default_factory=_IntegerLiteralSeparator.model_construct,
+                description="Options for formatting integer literal separators.",
+            ),
+        ]
 
         class _KeepEmptyLines(BaseModel):
             """Validate the `[tool.clang-format.KeepEmptyLines]` table."""
+
             model_config = ConfigDict(extra="forbid")
-            AtEndOfFile: Annotated[bool, Field(
-                default=False,
-                description="Controls whether to keep empty lines at end of file.",
-            )]
-            AtStartOfBlock: Annotated[bool, Field(
-                default=False,
-                description=
-                    "Controls whether to keep empty lines at start of a block.\n"
+            AtEndOfFile: Annotated[
+                bool,
+                Field(
+                    default=False,
+                    description="Controls whether to keep empty lines at end of file.",
+                ),
+            ]
+            AtStartOfBlock: Annotated[
+                bool,
+                Field(
+                    default=False,
+                    description="Controls whether to keep empty lines at start of a block.\n"
                     "   `true`:\n"
                     "       ```cpp\n"
                     "       if (foo) {\n"
@@ -3365,25 +3689,34 @@ class ClangFormat(Resource):
                     "           bar();\n"
                     "       }\n"
                     "       ```",
-            )]
-            AtStartOfFile: Annotated[bool, Field(
-                default=False,
-                description="Controls whether to keep empty lines at start of file.",
-            )]
+                ),
+            ]
+            AtStartOfFile: Annotated[
+                bool,
+                Field(
+                    default=False,
+                    description="Controls whether to keep empty lines at start of file.",
+                ),
+            ]
 
-        KeepEmptyLines: Annotated[_KeepEmptyLines, Field(
-            default_factory=_KeepEmptyLines.model_construct,
-            description="Options for explicitly keeping or removing empty lines.",
-        )]
+        KeepEmptyLines: Annotated[
+            _KeepEmptyLines,
+            Field(
+                default_factory=_KeepEmptyLines.model_construct,
+                description="Options for explicitly keeping or removing empty lines.",
+            ),
+        ]
 
         class _NumericLiteralCase(BaseModel):
             """Validate the `[tool.clang-format.NumericLiteralCase]` table."""
+
             model_config = ConfigDict(extra="forbid")
-            ExponentLetter: Annotated[Literal["Leave", "Upper", "Lower"], Field(
-                default="Lower",
-                examples=["Leave", "Upper", "Lower"],
-                description=
-                    "Controls floating point exponent separator letter case.\n"
+            ExponentLetter: Annotated[
+                Literal["Leave", "Upper", "Lower"],
+                Field(
+                    default="Lower",
+                    examples=["Leave", "Upper", "Lower"],
+                    description="Controls floating point exponent separator letter case.\n"
                     "   `Leave`: preserve user formatting.\n"
                     "       ```cpp\n"
                     "       float a = 6.02e23 + 1.0E10;\n"
@@ -3396,12 +3729,14 @@ class ClangFormat(Resource):
                     "       ```cpp\n"
                     "       float a = 6.02e23 + 1.0e10;\n"
                     "       ```",
-            )]
-            HexDigit: Annotated[Literal["Leave", "Upper", "Lower"], Field(
-                default="Upper",
-                examples=["Leave", "Upper", "Lower"],
-                description=
-                    "Controls hexadecimal digit case.\n"
+                ),
+            ]
+            HexDigit: Annotated[
+                Literal["Leave", "Upper", "Lower"],
+                Field(
+                    default="Upper",
+                    examples=["Leave", "Upper", "Lower"],
+                    description="Controls hexadecimal digit case.\n"
                     "   `Leave`: preserve user formatting.\n"
                     "       ```cpp\n"
                     "       a = 0xaBcDeF;\n"
@@ -3414,12 +3749,14 @@ class ClangFormat(Resource):
                     "       ```cpp\n"
                     "       a = 0xabcdef;\n"
                     "       ```",
-            )]
-            Prefix: Annotated[Literal["Leave", "Upper", "Lower"], Field(
-                default="Lower",
-                examples=["Leave", "Upper", "Lower"],
-                description=
-                    "Controls integer prefix case.\n"
+                ),
+            ]
+            Prefix: Annotated[
+                Literal["Leave", "Upper", "Lower"],
+                Field(
+                    default="Lower",
+                    examples=["Leave", "Upper", "Lower"],
+                    description="Controls integer prefix case.\n"
                     "   `Leave`: preserve user formatting.\n"
                     "       ```cpp\n"
                     "       a = 0XF0 | 0b1;\n"
@@ -3432,12 +3769,14 @@ class ClangFormat(Resource):
                     "       ```cpp\n"
                     "       a = 0xF0 | 0b1;\n"
                     "       ```",
-            )]
-            Suffix: Annotated[Literal["Leave", "Upper", "Lower"], Field(
-                default="Lower",
-                examples=["Leave", "Upper", "Lower"],
-                description=
-                    "Controls suffix case.  This excludes case-sensitive reserved "
+                ),
+            ]
+            Suffix: Annotated[
+                Literal["Leave", "Upper", "Lower"],
+                Field(
+                    default="Lower",
+                    examples=["Leave", "Upper", "Lower"],
+                    description="Controls suffix case.  This excludes case-sensitive reserved "
                     "suffixes, such as `min` in C++.\n"
                     "   `Leave`: preserve user formatting.\n"
                     "       ```cpp\n"
@@ -3454,24 +3793,33 @@ class ClangFormat(Resource):
                     "       a = 1ull;\n"
                     "       b = 1ull;\n"
                     "       ```",
-            )]
+                ),
+            ]
 
-        NumericLiteralCase: Annotated[_NumericLiteralCase, Field(
-            default_factory=_NumericLiteralCase.model_construct,
-            description="Options for capitalization style of numeric literals.",
-        )]
+        NumericLiteralCase: Annotated[
+            _NumericLiteralCase,
+            Field(
+                default_factory=_NumericLiteralCase.model_construct,
+                description="Options for capitalization style of numeric literals.",
+            ),
+        ]
 
         class _SortIncludes(BaseModel):
             """Validate the `[tool.clang-format.SortIncludes]` table."""
+
             model_config = ConfigDict(extra="forbid")
-            Enabled: Annotated[bool, Field(
-                default=True,
-                description="Controls whether include sorting is applied.",
-            )]
-            IgnoreCase: Annotated[bool, Field(
-                default=False,
-                description=
-                    "Controls whether includes are sorted case-insensitively.\n"
+            Enabled: Annotated[
+                bool,
+                Field(
+                    default=True,
+                    description="Controls whether include sorting is applied.",
+                ),
+            ]
+            IgnoreCase: Annotated[
+                bool,
+                Field(
+                    default=False,
+                    description="Controls whether includes are sorted case-insensitively.\n"
                     "   `true`:\n"
                     "       ```cpp\n"
                     "       #include \"A/B.h\"\n"
@@ -3488,11 +3836,13 @@ class ClangFormat(Resource):
                     "       #include \"B/a.h\"\n"
                     "       #include \"a/b.h\"\n"
                     "       ```",
-            )]
-            IgnoreExtension: Annotated[bool, Field(
-                default=False,
-                description=
-                    "Controls whether file extensions are considered only when two "
+                ),
+            ]
+            IgnoreExtension: Annotated[
+                bool,
+                Field(
+                    default=False,
+                    description="Controls whether file extensions are considered only when two "
                     "includes compare equal otherwise.\n"
                     "   `true`:\n"
                     "       ```cpp\n"
@@ -3506,20 +3856,26 @@ class ClangFormat(Resource):
                     "       #include \"A.h\"\n"
                     "       #include \"A.inc\"\n"
                     "       ```",
-            )]
+                ),
+            ]
 
-        SortIncludes: Annotated[_SortIncludes, Field(
-            default_factory=_SortIncludes.model_construct,
-            description="Options for if and how includes are sorted.",
-        )]
+        SortIncludes: Annotated[
+            _SortIncludes,
+            Field(
+                default_factory=_SortIncludes.model_construct,
+                description="Options for if and how includes are sorted.",
+            ),
+        ]
 
         class _Space(BaseModel):
             """Validate the `[tool.clang-format.Space]` table."""
+
             model_config = ConfigDict(extra="forbid")
-            AfterCStyleCast: Annotated[bool, Field(
-                default=False,
-                description=
-                    "Controls whether to add a space after a C-style cast.\n"
+            AfterCStyleCast: Annotated[
+                bool,
+                Field(
+                    default=False,
+                    description="Controls whether to add a space after a C-style cast.\n"
                     "   `true`:\n"
                     "       ```cpp\n"
                     "       int x = (int) y;\n"
@@ -3528,11 +3884,13 @@ class ClangFormat(Resource):
                     "       ```cpp\n"
                     "       int x = (int)y;\n"
                     "       ```",
-            )]
-            AfterLogicalNot: Annotated[bool, Field(
-                default=False,
-                description=
-                    "Controls whether to add a space after logical not (`!`).\n"
+                ),
+            ]
+            AfterLogicalNot: Annotated[
+                bool,
+                Field(
+                    default=False,
+                    description="Controls whether to add a space after logical not (`!`).\n"
                     "   `true`:\n"
                     "       ```cpp\n"
                     "       bool value = ! some_condition;\n"
@@ -3541,19 +3899,27 @@ class ClangFormat(Resource):
                     "       ```cpp\n"
                     "       bool value = !some_condition;\n"
                     "       ```",
-            )]
-            AfterOperatorKeyword: Annotated[bool, Field(
-                default=False,
-                description="Controls whether to add a space after the `operator` keyword.",
-            )]
-            AfterTemplateKeyword: Annotated[bool, Field(
-                default=False,
-                description="Controls whether to add a space after the `template` keyword.",
-            )]
-            BeforeAssignmentOperators: Annotated[bool, Field(
-                default=True,
-                description=
-                    "Controls whether to add a space before assignment operators.\n"
+                ),
+            ]
+            AfterOperatorKeyword: Annotated[
+                bool,
+                Field(
+                    default=False,
+                    description="Controls whether to add a space after the `operator` keyword.",
+                ),
+            ]
+            AfterTemplateKeyword: Annotated[
+                bool,
+                Field(
+                    default=False,
+                    description="Controls whether to add a space after the `template` keyword.",
+                ),
+            ]
+            BeforeAssignmentOperators: Annotated[
+                bool,
+                Field(
+                    default=True,
+                    description="Controls whether to add a space before assignment operators.\n"
                     "   `true`:\n"
                     "       ```cpp\n"
                     "       int a = 5;\n"
@@ -3564,11 +3930,13 @@ class ClangFormat(Resource):
                     "       int a= 5;\n"
                     "       a+= 2;\n"
                     "       ```",
-            )]
-            BeforeCaseColon: Annotated[bool, Field(
-                default=False,
-                description=
-                    "Controls whether to add a space before case label colons.\n"
+                ),
+            ]
+            BeforeCaseColon: Annotated[
+                bool,
+                Field(
+                    default=False,
+                    description="Controls whether to add a space before case label colons.\n"
                     "   `true`:\n"
                     "       ```cpp\n"
                     "       case 1 : break;\n"
@@ -3577,11 +3945,13 @@ class ClangFormat(Resource):
                     "       ```cpp\n"
                     "       case 1: break;\n"
                     "       ```",
-            )]
-            BeforeCpp11BracedList: Annotated[bool, Field(
-                default=False,
-                description=
-                    "Controls whether to add a space before a C++11 braced list.\n"
+                ),
+            ]
+            BeforeCpp11BracedList: Annotated[
+                bool,
+                Field(
+                    default=False,
+                    description="Controls whether to add a space before a C++11 braced list.\n"
                     "   `true`:\n"
                     "       ```cpp\n"
                     "       Foo foo {1, 2, 3};\n"
@@ -3590,11 +3960,13 @@ class ClangFormat(Resource):
                     "       ```cpp\n"
                     "       Foo foo{1, 2, 3};\n"
                     "       ```",
-            )]
-            BeforeCtorInitializerColon: Annotated[bool, Field(
-                default=True,
-                description=
-                    "Controls whether to add a space before a constructor "
+                ),
+            ]
+            BeforeCtorInitializerColon: Annotated[
+                bool,
+                Field(
+                    default=True,
+                    description="Controls whether to add a space before a constructor "
                     "initializer colon.\n"
                     "   `true`:\n"
                     "       ```cpp\n"
@@ -3604,11 +3976,13 @@ class ClangFormat(Resource):
                     "       ```cpp\n"
                     "       Foo::Foo(): a(1), b(2) {}\n"
                     "       ```",
-            )]
-            BeforeInheritanceColon: Annotated[bool, Field(
-                default=True,
-                description=
-                    "Controls whether to add a space before an inheritance colon.\n"
+                ),
+            ]
+            BeforeInheritanceColon: Annotated[
+                bool,
+                Field(
+                    default=True,
+                    description="Controls whether to add a space before an inheritance colon.\n"
                     "   `true`:\n"
                     "       ```cpp\n"
                     "       class Foo : public Bar {};\n"
@@ -3617,18 +3991,22 @@ class ClangFormat(Resource):
                     "       ```cpp\n"
                     "       class Foo: public Bar {};\n"
                     "       ```",
-            )]
-            BeforeJsonColon: Annotated[bool, Field(
-                default=False,
-                description=
-                    "Controls whether to add a space before a JSON colon.\n"
+                ),
+            ]
+            BeforeJsonColon: Annotated[
+                bool,
+                Field(
+                    default=False,
+                    description="Controls whether to add a space before a JSON colon.\n"
                     "   `true`: add a space before colons in JSON.\n"
                     "   `false`: keep no space before JSON colons.",
-            )]
-            BeforeRangeBasedForLoopColon: Annotated[bool, Field(
-                default=True,
-                description=
-                    "Controls whether to add a space before a range-based for loop "
+                ),
+            ]
+            BeforeRangeBasedForLoopColon: Annotated[
+                bool,
+                Field(
+                    default=True,
+                    description="Controls whether to add a space before a range-based for loop "
                     "colon.\n"
                     "   `true`:\n"
                     "       ```cpp\n"
@@ -3640,11 +4018,13 @@ class ClangFormat(Resource):
                     "       for (auto v: values) {\n"
                     "       }\n"
                     "       ```",
-            )]
-            BeforeSquareBrackets: Annotated[bool, Field(
-                default=False,
-                description=
-                    "Controls whether to add a space before an opening square "
+                ),
+            ]
+            BeforeSquareBrackets: Annotated[
+                bool,
+                Field(
+                    default=False,
+                    description="Controls whether to add a space before an opening square "
                     "bracket.\n"
                     "   `true`:\n"
                     "       ```cpp\n"
@@ -3654,18 +4034,22 @@ class ClangFormat(Resource):
                     "       ```cpp\n"
                     "       int a[5];\n"
                     "       ```",
-            )]
-            BeforeTrailingComments: Annotated[NonNegativeInt, Field(
-                default=2,
-                description=
-                    "Controls the minimum number of spaces before trailing line `//` "
+                ),
+            ]
+            BeforeTrailingComments: Annotated[
+                NonNegativeInt,
+                Field(
+                    default=2,
+                    description="Controls the minimum number of spaces before trailing line `//` "
                     "comments on the same line.",
-            )]
-            InAngles: Annotated[Literal["Never", "Leave", "Always"], Field(
-                default="Never",
-                examples=["Never", "Leave", "Always"],
-                description=
-                    "Controls whether to add spaces between `<`/`>` brackets in "
+                ),
+            ]
+            InAngles: Annotated[
+                Literal["Never", "Leave", "Always"],
+                Field(
+                    default="Never",
+                    examples=["Never", "Leave", "Always"],
+                    description="Controls whether to add spaces between `<`/`>` brackets in "
                     "template argument lists:\n"
                     "   `Never`: remove spaces after < and before >.\n"
                     "       ```cpp\n"
@@ -3678,12 +4062,14 @@ class ClangFormat(Resource):
                     "       static_cast< int >(arg);\n"
                     "       std::function< void(int) > fct;\n"
                     "       ```",
-            )]
-            InEmptyBraces: Annotated[Literal["Never", "Block", "Always"], Field(
-                default="Never",
-                examples=["Never", "Block", "Always"],
-                description=
-                    "Controls whether to add spaces inside empty braces.\n"
+                ),
+            ]
+            InEmptyBraces: Annotated[
+                Literal["Never", "Block", "Always"],
+                Field(
+                    default="Never",
+                    examples=["Never", "Block", "Always"],
+                    description="Controls whether to add spaces inside empty braces.\n"
                     "   `Never`: never add spaces inside empty braces.\n"
                     "       ```cpp\n"
                     "       int f() {}\n"
@@ -3699,153 +4085,195 @@ class ClangFormat(Resource):
                     "       int f() { }\n"
                     "       std::array<int, 0> a{ };\n"
                     "       ```",
-            )]
+                ),
+            ]
 
             class _BeforeParensOptions(BaseModel):
-                """Validate the `[tool.clang-format.Space.BeforeParensOptions]`
-                table.
-                """
-                model_config = ConfigDict(extra="forbid")
-                AfterControlStatements: Annotated[bool, Field(
-                    default=True,
-                    description=
-                        "Controls whether to add a space before parentheses in control "
-                        "statements.",
-                )]
-                AfterForeachMacros: Annotated[bool, Field(
-                    default=True,
-                    description=
-                        "Controls whether to add a space before parentheses in foreach "
-                        "macros.",
-                )]
-                AfterFunctionDeclarationName: Annotated[bool, Field(
-                    default=False,
-                    description=
-                        "Controls whether to add a space before parentheses in function "
-                        "declarations.",
-                )]
-                AfterFunctionDefinitionName: Annotated[bool, Field(
-                    default=False,
-                    description=
-                        "Controls whether to add a space before parentheses in function "
-                        "definitions.",
-                )]
-                AfterIfMacros: Annotated[bool, Field(
-                    default=True,
-                    description=
-                        "Controls whether to add a space before parentheses in if-like "
-                        "macros.",
-                )]
-                AfterNot: Annotated[bool, Field(
-                    default=True,
-                    description=
-                        "Controls whether to add a space after the `not` operator.",
-                )]
-                AfterOverloadedOperator: Annotated[bool, Field(
-                    default=False,
-                    description=
-                        "Controls whether to add a space after overloaded operator "
-                        "names.",
-                )]
-                AfterPlacementOperator: Annotated[bool, Field(
-                    default=True,
-                    description=
-                        "Controls whether to add a space after placement operator "
-                        "names.",
-                )]
-                AfterRequiresInClause: Annotated[bool, Field(
-                    default=False,
-                    description=
-                        "Controls whether to add a space after `requires` in requires "
-                        "clauses.",
-                )]
-                AfterRequiresInExpression: Annotated[bool, Field(
-                    default=False,
-                    description=
-                        "Controls whether to add a space after `requires` in requires "
-                        "expressions.",
-                )]
-                BeforeNonEmptyParentheses: Annotated[bool, Field(
-                    default=False,
-                    description=
-                        "Controls whether to add a space before non-empty parentheses.",
-                )]
+                """Validate spacing-before-parentheses options."""
 
-            BeforeParensOptions: Annotated[_BeforeParensOptions, Field(
-                default_factory=_BeforeParensOptions.model_construct,
-                description=
-                    "Options for spacing before parentheses in specific contexts.",
-            )]
+                model_config = ConfigDict(extra="forbid")
+                AfterControlStatements: Annotated[
+                    bool,
+                    Field(
+                        default=True,
+                        description="Controls whether to add a space before parentheses in control "
+                        "statements.",
+                    ),
+                ]
+                AfterForeachMacros: Annotated[
+                    bool,
+                    Field(
+                        default=True,
+                        description="Controls whether to add a space before parentheses in foreach "
+                        "macros.",
+                    ),
+                ]
+                AfterFunctionDeclarationName: Annotated[
+                    bool,
+                    Field(
+                        default=False,
+                        description="Controls whether to add a space before parentheses in function "
+                        "declarations.",
+                    ),
+                ]
+                AfterFunctionDefinitionName: Annotated[
+                    bool,
+                    Field(
+                        default=False,
+                        description="Controls whether to add a space before parentheses in function "
+                        "definitions.",
+                    ),
+                ]
+                AfterIfMacros: Annotated[
+                    bool,
+                    Field(
+                        default=True,
+                        description="Controls whether to add a space before parentheses in if-like "
+                        "macros.",
+                    ),
+                ]
+                AfterNot: Annotated[
+                    bool,
+                    Field(
+                        default=True,
+                        description="Controls whether to add a space after the `not` operator.",
+                    ),
+                ]
+                AfterOverloadedOperator: Annotated[
+                    bool,
+                    Field(
+                        default=False,
+                        description="Controls whether to add a space after overloaded operator "
+                        "names.",
+                    ),
+                ]
+                AfterPlacementOperator: Annotated[
+                    bool,
+                    Field(
+                        default=True,
+                        description="Controls whether to add a space after placement operator "
+                        "names.",
+                    ),
+                ]
+                AfterRequiresInClause: Annotated[
+                    bool,
+                    Field(
+                        default=False,
+                        description="Controls whether to add a space after `requires` in requires "
+                        "clauses.",
+                    ),
+                ]
+                AfterRequiresInExpression: Annotated[
+                    bool,
+                    Field(
+                        default=False,
+                        description="Controls whether to add a space after `requires` in requires "
+                        "expressions.",
+                    ),
+                ]
+                BeforeNonEmptyParentheses: Annotated[
+                    bool,
+                    Field(
+                        default=False,
+                        description="Controls whether to add a space before non-empty parentheses.",
+                    ),
+                ]
+
+            BeforeParensOptions: Annotated[
+                _BeforeParensOptions,
+                Field(
+                    default_factory=_BeforeParensOptions.model_construct,
+                    description="Options for spacing before parentheses in specific contexts.",
+                ),
+            ]
 
             class _InLineCommentPrefix(BaseModel):
-                """Validate the `[tool.clang-format.Space.InLineCommentPrefix]`
-                table.
-                """
-                model_config = ConfigDict(extra="forbid")
-                Minimum: Annotated[NonNegativeInt, Field(
-                    default=1,
-                    description=
-                        "Controls the minimum number of spaces after `//` at the "
-                        "start of a line comment.",
-                )]
-                Maximum: Annotated[int, Field(
-                    default=-1,
-                    ge=-1,
-                    description=
-                        "Controls the maximum number of spaces after `//` at the "
-                        "start of a line comment.  Set to `-1` to disable.",
-                )]
+                """Validate inline comment prefix spacing options."""
 
-            InLineCommentPrefix: Annotated[_InLineCommentPrefix, Field(
-                default_factory=_InLineCommentPrefix.model_construct,
-                description=
-                    "Options for spacing at the start of `//` line comments.  These "
+                model_config = ConfigDict(extra="forbid")
+                Minimum: Annotated[
+                    NonNegativeInt,
+                    Field(
+                        default=1,
+                        description="Controls the minimum number of spaces after `//` at the "
+                        "start of a line comment.",
+                    ),
+                ]
+                Maximum: Annotated[
+                    int,
+                    Field(
+                        default=-1,
+                        ge=-1,
+                        description="Controls the maximum number of spaces after `//` at the "
+                        "start of a line comment.  Set to `-1` to disable.",
+                    ),
+                ]
+
+            InLineCommentPrefix: Annotated[
+                _InLineCommentPrefix,
+                Field(
+                    default_factory=_InLineCommentPrefix.model_construct,
+                    description="Options for spacing at the start of `//` line comments.  These "
                     "settings only apply when `ReflowComments` is enabled.",
-            )]
+                ),
+            ]
 
             class _InParensOptions(BaseModel):
-                """Validate the `[tool.clang-format.Space.InParensOptions]`
-                table.
-                """
-                model_config = ConfigDict(extra="forbid")
-                ExceptDoubleParentheses: Annotated[bool, Field(
-                    default=False,
-                    description=
-                        "Controls whether spaces in parentheses are suppressed for "
-                        "double parentheses.",
-                )]
-                InConditionalStatements: Annotated[bool, Field(
-                    default=False,
-                    description=
-                        "Controls whether to add spaces inside parentheses in "
-                        "conditional statements.",
-                )]
-                InCStyleCasts: Annotated[bool, Field(
-                    default=False,
-                    description=
-                        "Controls whether to add spaces inside parentheses in C-style "
-                        "casts.",
-                )]
-                InEmptyParentheses: Annotated[bool, Field(
-                    default=False,
-                    description=
-                        "Controls whether to add spaces inside empty parentheses.",
-                )]
-                Other: Annotated[bool, Field(
-                    default=False,
-                    description=
-                        "Controls whether to add spaces inside parentheses in other "
-                        "contexts.",
-                )]
+                """Validate in-parentheses spacing options."""
 
-            InParensOptions: Annotated[_InParensOptions, Field(
-                default_factory=_InParensOptions.model_construct,
-                description="Options for spacing inside parentheses.",
-            )]
-            InSquareBrackets: Annotated[bool, Field(
-                default=False,
-                description=
-                    "Controls whether to add spaces inside square brackets.\n"
+                model_config = ConfigDict(extra="forbid")
+                ExceptDoubleParentheses: Annotated[
+                    bool,
+                    Field(
+                        default=False,
+                        description="Controls whether spaces in parentheses are suppressed for "
+                        "double parentheses.",
+                    ),
+                ]
+                InConditionalStatements: Annotated[
+                    bool,
+                    Field(
+                        default=False,
+                        description="Controls whether to add spaces inside parentheses in "
+                        "conditional statements.",
+                    ),
+                ]
+                InCStyleCasts: Annotated[
+                    bool,
+                    Field(
+                        default=False,
+                        description="Controls whether to add spaces inside parentheses in C-style "
+                        "casts.",
+                    ),
+                ]
+                InEmptyParentheses: Annotated[
+                    bool,
+                    Field(
+                        default=False,
+                        description="Controls whether to add spaces inside empty parentheses.",
+                    ),
+                ]
+                Other: Annotated[
+                    bool,
+                    Field(
+                        default=False,
+                        description="Controls whether to add spaces inside parentheses in other "
+                        "contexts.",
+                    ),
+                ]
+
+            InParensOptions: Annotated[
+                _InParensOptions,
+                Field(
+                    default_factory=_InParensOptions.model_construct,
+                    description="Options for spacing inside parentheses.",
+                ),
+            ]
+            InSquareBrackets: Annotated[
+                bool,
+                Field(
+                    default=False,
+                    description="Controls whether to add spaces inside square brackets.\n"
                     "   `true`:\n"
                     "       ```cpp\n"
                     "       int a[ 5 ];\n"
@@ -3854,17 +4282,37 @@ class ClangFormat(Resource):
                     "       ```cpp\n"
                     "       int a[5];\n"
                     "       ```",
-            )]
+                ),
+            ]
 
-        Space: Annotated[_Space, Field(
-            default_factory=_Space.model_construct,
-            description="Options for spacing around language tokens and delimiters.",
-        )]
+        Space: Annotated[
+            _Space,
+            Field(
+                default_factory=_Space.model_construct,
+                description="Options for spacing around language tokens and delimiters.",
+            ),
+        ]
 
     async def init(self, config: Config, cli: Config.Init) -> dict[str, Any]:
+        """Return default clang-format configuration.
+
+        Returns
+        -------
+        dict[str, Any]
+            Default clang-format configuration data.
+        """
+        _ = config, cli
         return self.Model.model_construct().model_dump(by_alias=True)
 
     async def validate(self, config: Config, fragment: Any) -> Model | None:
+        """Validate clang-format configuration.
+
+        Returns
+        -------
+        Model | None
+            Validated clang-format configuration.
+        """
+        _ = config
         return self.Model.model_validate(fragment)
 
     def _integer_literal_separator(self, name: str) -> dict[str, int]:
@@ -3877,6 +4325,7 @@ class ClangFormat(Resource):
         return result
 
     async def render(self, config: Config, tag: str | None) -> None:
+        """Render the `.clang-format` artifact."""
         model = config.get(ClangFormat)
         if tag is None or model is None:
             return
@@ -3904,10 +4353,8 @@ class ClangFormat(Resource):
                 "Enabled": model.Align.ConsecutiveDeclarations.Enabled,
                 "AcrossEmptyLines": model.Align.ConsecutiveDeclarations.AcrossEmptyLines,
                 "AcrossComments": model.Align.ConsecutiveDeclarations.AcrossComments,
-                "AlignFunctionDeclarations":
-                    model.Align.ConsecutiveDeclarations.AlignFunctionDeclarations,
-                "AlignFunctionPointers":
-                    model.Align.ConsecutiveDeclarations.AlignFunctionPointers,
+                "AlignFunctionDeclarations": model.Align.ConsecutiveDeclarations.AlignFunctionDeclarations,
+                "AlignFunctionPointers": model.Align.ConsecutiveDeclarations.AlignFunctionPointers,
             },
             "AlignConsecutiveMacros": {
                 "Enabled": model.Align.ConsecutiveMacros.Enabled,
@@ -3927,15 +4374,12 @@ class ClangFormat(Resource):
                 "AlignPPAndNotPP": model.Align.TrailingComments.AlignPPAndNotPP,
             },
             "AllowAllArgumentsOnNextLine": model.Allow.AllArgumentsOnNextLine,
-            "AllowAllParametersOfDeclarationOnNextLine":
-                model.Allow.AllParametersOfDeclarationOnNextLine,
+            "AllowAllParametersOfDeclarationOnNextLine": model.Allow.AllParametersOfDeclarationOnNextLine,
             "AllowBreakBeforeNoexceptSpecifier": model.Allow.BreakBeforeNoexceptSpecifier,
             "AllowShortBlocksOnASingleLine": model.Allow.ShortBlocksOnASingleLine,
-            "AllowShortCaseExpressionsOnASingleLine":
-                model.Allow.ShortCaseExpressionsOnASingleLine,
+            "AllowShortCaseExpressionsOnASingleLine": model.Allow.ShortCaseExpressionsOnASingleLine,
             "AllowShortCaseLabelsOnASingleLine": model.Allow.ShortCaseLabelsOnASingleLine,
-            "AllowShortCompoundRequirementsOnASingleLine":
-                model.Allow.ShortCompoundRequirementsOnASingleLine,
+            "AllowShortCompoundRequirementsOnASingleLine": model.Allow.ShortCompoundRequirementsOnASingleLine,
             "AllowShortEnumsOnASingleLine": model.Allow.ShortEnumsOnASingleLine,
             "AllowShortFunctionsOnASingleLine": {
                 "Empty": model.Allow.ShortFunctionsOnASingleLine.Empty,
@@ -4016,9 +4460,9 @@ class ClangFormat(Resource):
             "InsertBraces": model.InsertBraces,
             "InsertNewlineAtEOF": model.InsertNewlineAtEOF,
             "IntegerLiteralSeparator": (
-                self._integer_literal_separator("Binary") |
-                self._integer_literal_separator("Decimal") |
-                self._integer_literal_separator("Hex")
+                self._integer_literal_separator("Binary")
+                | self._integer_literal_separator("Decimal")
+                | self._integer_literal_separator("Hex")
             ),
             "KeepEmptyLines": {
                 "AtEndOfFile": model.KeepEmptyLines.AtEndOfFile,
@@ -4063,26 +4507,17 @@ class ClangFormat(Resource):
             "SpaceBeforeJsonColon": model.Space.BeforeJsonColon,
             "SpaceBeforeParens": "Custom",  # defer to Space.BeforeParensOptions
             "SpaceBeforeParensOptions": {
-                "AfterControlStatements":
-                    model.Space.BeforeParensOptions.AfterControlStatements,
-                "AfterForeachMacros":
-                    model.Space.BeforeParensOptions.AfterForeachMacros,
-                "AfterFunctionDeclarationName":
-                    model.Space.BeforeParensOptions.AfterFunctionDeclarationName,
-                "AfterFunctionDefinitionName":
-                    model.Space.BeforeParensOptions.AfterFunctionDefinitionName,
+                "AfterControlStatements": model.Space.BeforeParensOptions.AfterControlStatements,
+                "AfterForeachMacros": model.Space.BeforeParensOptions.AfterForeachMacros,
+                "AfterFunctionDeclarationName": model.Space.BeforeParensOptions.AfterFunctionDeclarationName,
+                "AfterFunctionDefinitionName": model.Space.BeforeParensOptions.AfterFunctionDefinitionName,
                 "AfterIfMacros": model.Space.BeforeParensOptions.AfterIfMacros,
                 "AfterNot": model.Space.BeforeParensOptions.AfterNot,
-                "AfterOverloadedOperator":
-                    model.Space.BeforeParensOptions.AfterOverloadedOperator,
-                "AfterPlacementOperator":
-                    model.Space.BeforeParensOptions.AfterPlacementOperator,
-                "AfterRequiresInClause":
-                    model.Space.BeforeParensOptions.AfterRequiresInClause,
-                "AfterRequiresInExpression":
-                    model.Space.BeforeParensOptions.AfterRequiresInExpression,
-                "BeforeNonEmptyParentheses":
-                    model.Space.BeforeParensOptions.BeforeNonEmptyParentheses,
+                "AfterOverloadedOperator": model.Space.BeforeParensOptions.AfterOverloadedOperator,
+                "AfterPlacementOperator": model.Space.BeforeParensOptions.AfterPlacementOperator,
+                "AfterRequiresInClause": model.Space.BeforeParensOptions.AfterRequiresInClause,
+                "AfterRequiresInExpression": model.Space.BeforeParensOptions.AfterRequiresInExpression,
+                "BeforeNonEmptyParentheses": model.Space.BeforeParensOptions.BeforeNonEmptyParentheses,
             },
             "SpaceBeforeRangeBasedForLoopColon": model.Space.BeforeRangeBasedForLoopColon,
             "SpaceBeforeSquareBrackets": model.Space.BeforeSquareBrackets,
@@ -4095,10 +4530,8 @@ class ClangFormat(Resource):
             },
             "SpacesInParens": "Custom",  # defer to Space.InParensOptions
             "SpacesInParensOptions": {
-                "ExceptDoubleParentheses":
-                    model.Space.InParensOptions.ExceptDoubleParentheses,
-                "InConditionalStatements":
-                    model.Space.InParensOptions.InConditionalStatements,
+                "ExceptDoubleParentheses": model.Space.InParensOptions.ExceptDoubleParentheses,
+                "InConditionalStatements": model.Space.InParensOptions.InConditionalStatements,
                 "InCStyleCasts": model.Space.InParensOptions.InCStyleCasts,
                 "InEmptyParentheses": model.Space.InParensOptions.InEmptyParentheses,
                 "Other": model.Space.InParensOptions.Other,
@@ -4119,4 +4552,11 @@ class ClangFormat(Resource):
         )
 
     async def schema(self) -> dict[str, Any]:
+        """Return the clang-format configuration schema.
+
+        Returns
+        -------
+        dict[str, Any]
+            JSON Schema for the clang-format configuration.
+        """
         return self.Model.model_json_schema(by_alias=True, mode="validation")

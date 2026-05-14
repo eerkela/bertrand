@@ -6,7 +6,7 @@ import sys
 import time
 from typing import TYPE_CHECKING
 
-from bertrand.env.config import DEFAULT_TAG, SHELLS, Bertrand
+from bertrand.env.config.bertrand import DEFAULT_TAG, SHELLS, Bertrand
 from bertrand.env.git import CommandError
 from bertrand.env.legacy.container import start_rpc_sidecar, stop_rpc_sidecar
 from bertrand.env.legacy.environment import Environment

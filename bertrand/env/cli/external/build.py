@@ -9,7 +9,7 @@ import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from bertrand.env.config import Bertrand
+from bertrand.env.config.bertrand import Bertrand
 from bertrand.env.config.core import Config, _check_kube_name
 from bertrand.env.config.repository import resolve_repo_id
 from bertrand.env.git import BERTRAND_NAMESPACE, INFINITY, GitRepository

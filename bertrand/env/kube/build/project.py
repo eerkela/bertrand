@@ -11,8 +11,8 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal, Protocol
 
 from bertrand.env.build_args import normalize_image_build_args
-from bertrand.env.config import Bertrand, PyProject
-from bertrand.env.config.bertrand import project_image_tag
+from bertrand.env.config.bertrand import Bertrand, project_image_tag
+from bertrand.env.config.python import PyProject
 from bertrand.env.git import INFINITY
 from bertrand.env.kube.build.containerfile import project_containerfile
 from bertrand.env.kube.build.controller import (

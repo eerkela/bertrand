@@ -20,7 +20,7 @@ if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
     from pathlib import Path
 
-    from bertrand.env.config import Bertrand
+    from bertrand.env.config.bertrand import Bertrand
 
 
 class _CapabilityRequest(Protocol):

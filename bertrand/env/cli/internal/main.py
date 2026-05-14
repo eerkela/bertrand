@@ -12,7 +12,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Iterable
 
 from bertrand.env.cli.internal.build import bertrand_build
-from bertrand.env.config import Config
+from bertrand.env.config.core import Config
 from bertrand.env.git import (
     CONTAINER_TMP_MOUNT,
     IMAGE_TAG_ENV,

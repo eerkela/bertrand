@@ -1,5 +1,4 @@
-"""A configuration resource for Conan, which is a C/C++ package manager that can be
-used to manage C++ dependencies similar to `pip`/`uv` for Python.
+"""Render Conan dependency configuration.
 
 This resource generates `conanfile.py`, `default` conan profile, and `conanremotes.json`
 artifacts from a standardized `[tool.conan]` schema stored in project configuration.
@@ -13,7 +12,7 @@ import json
 import os
 import re
 from pathlib import PosixPath
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, ClassVar, Literal
 
 from conan.api.model.list import ListPattern, VersionRange
 from conan.api.model.refs import RecipeReference
@@ -21,8 +20,9 @@ from conan.errors import ConanException
 from conan.internal.model.conf import ConfDefinition
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, StringConstraints
 
-from ..git import CONTAINER_TMP_MOUNT, Scalar, atomic_write_text, run
-from ..version import VERSION
+from bertrand.env.git import CONTAINER_TMP_MOUNT, Scalar, atomic_write_text, run
+from bertrand.env.version import VERSION
+
 from .core import (
     URL,
     Config,
@@ -46,52 +46,54 @@ def _check_conan_requirement(requirement: str) -> str:
     try:
         ref = RecipeReference.loads(requirement)
     except ConanException as err:
-        raise ValueError(
+        msg = (
             f"invalid conan requirement '{requirement}' "
             "(expected name/version[@user/channel][#revision])"
-        ) from err
+        )
+        raise ValueError(msg) from err
     if ref.timestamp is not None:
-        raise ValueError(
+        msg = (
             f"invalid conan requirement '{requirement}' (timestamp suffixes are not "
             "supported)"
         )
+        raise ValueError(msg)
     if not CONAN_REF_TOKEN_RE.fullmatch(ref.name):
-        raise ValueError(
-            f"invalid conan package name '{ref.name}' in requirement '{requirement}'"
-        )
+        msg = f"invalid conan package name '{ref.name}' in requirement '{requirement}'"
+        raise ValueError(msg)
     if ref.user and not CONAN_REF_TOKEN_RE.fullmatch(ref.user):
-        raise ValueError(
-            f"invalid conan package user '{ref.user}' in requirement '{requirement}'"
-        )
+        msg = f"invalid conan package user '{ref.user}' in requirement '{requirement}'"
+        raise ValueError(msg)
     if ref.channel and not CONAN_REF_TOKEN_RE.fullmatch(ref.channel):
-        raise ValueError(
-            f"invalid conan package channel '{ref.channel}' in requirement '{requirement}'"
+        msg = (
+            f"invalid conan package channel '{ref.channel}' in requirement "
+            f"'{requirement}'"
         )
+        raise ValueError(msg)
 
     # validate version ranges
     version = repr(ref.version)
     if version.startswith("(") and version.endswith(")"):
-        raise ValueError(
+        msg = (
             f"invalid conan requirement '{requirement}' (alias references are not "
             "supported)"
         )
+        raise ValueError(msg)
     if version.startswith("[") and version.endswith("]"):
         expression = version[1:-1].strip()
         if not expression:
-            raise ValueError(
-                f"invalid conan requirement '{requirement}' (empty version range)"
-            )
+            msg = f"invalid conan requirement '{requirement}' (empty version range)"
+            raise ValueError(msg)
         try:
             VersionRange(expression)
         except ConanException as err:
-            raise ValueError(
-                f"invalid conan version range in requirement '{requirement}'"
-            ) from err
+            msg = f"invalid conan version range in requirement '{requirement}'"
+            raise ValueError(msg) from err
     else:
         try:
             ref.validate_ref()
         except ConanException as err:
-            raise ValueError(f"invalid conan requirement '{requirement}'") from err
+            msg = f"invalid conan requirement '{requirement}'"
+            raise ValueError(msg) from err
 
     # return normalized requirement string and strip any timestamp suffix
     return ref.repr_notime()
@@ -107,29 +109,31 @@ def _check_conan_conf(
             try:
                 conf_def.update(entry, value, profile=True)
             except ConanException as err:
-                raise ValueError(
-                    f"invalid conan conf entry '{entry}' with value {value!r}"
-                ) from err
+                msg = f"invalid conan conf entry '{entry}' with value {value!r}"
+                raise ValueError(msg) from err
 
 
 def _check_conan_allowed_pattern(pattern: str) -> str:
     if pattern.startswith(("!", "~")) or pattern == "&":
-        raise ValueError(
+        msg = (
             f"invalid conan allowed-packages pattern '{pattern}' (negation/consumer "
             "patterns are not supported)"
         )
+        raise ValueError(msg)
 
     # Use conan's own parser to validate the pattern string and extract/verify its
     # components.  We require at least a name and version component
     try:
         parsed = ListPattern(pattern, only_recipe=True)
     except ConanException as err:
-        raise ValueError(f"invalid conan allowed-packages pattern '{pattern}'") from err
+        msg = f"invalid conan allowed-packages pattern '{pattern}'"
+        raise ValueError(msg) from err
     if not parsed.name or not parsed.version:
-        raise ValueError(
+        msg = (
             f"invalid conan allowed-packages pattern '{pattern}' (expected a recipe "
             "pattern with name/version)"
         )
+        raise ValueError(msg)
     return pattern
 
 
@@ -170,21 +174,22 @@ type ConanOptions = dict[ConanOptionPattern, dict[ConanOptionName, Scalar]]
 
 @resource("conan")
 class ConanConfig(Resource):
-    """A resource that validates Conan configuration data sourced from project config
-    files (e.g. `[tool.conan]` in `pyproject.toml`) and renders derived `conanfile.py`,
+    """Validate and render Conan configuration data.
+
+    This resource reads project config files and renders derived `conanfile.py`,
     `remotes.json`, and default profile artifacts.
     """
 
     # pylint: disable=missing-function-docstring, unused-argument, missing-return-doc
 
-    GENERATORS: tuple[str, ...] = (
+    GENERATORS: ClassVar[tuple[str, ...]] = (
         "CMakeDeps",
         "CMakeToolchain",
         "VirtualBuildEnv",
         "VirtualRunEnv",
     )
 
-    ARCH_MAP: dict[str, str] = {
+    ARCH_MAP: ClassVar[dict[str, str]] = {
         "x86_64": "x86_64",
         "amd64": "x86_64",
         "aarch64": "armv8",
@@ -201,28 +206,28 @@ class ConanConfig(Resource):
                 default="Release",
                 alias="build-type",
                 examples=["Release", "Debug"],
-                description="Global default build type for Conan builds, which can be overridden "
-                "by individual images.",
+                description="Global default build type for Conan builds, which can "
+                "be overridden by individual images.",
             ),
         ]
         conf: Annotated[
             ConanConf,
             Field(
                 default_factory=dict,
-                description="Global mapping of namespace tables to conf entries, which get "
-                "converted into '<namespace>:<name>=<value>' format in the generated "
-                "Conan profile.  Individual images can specify additional entries "
-                "that merge with these global defaults.",
+                description="Global mapping of namespace tables to conf entries, "
+                "which get converted into '<namespace>:<name>=<value>' format in "
+                "the generated Conan profile.  Individual images can specify "
+                "additional entries that merge with these global defaults.",
             ),
         ]
         options: Annotated[
             ConanOptions,
             Field(
                 default_factory=dict,
-                description="Global mapping of namespace tables to package options, which get "
-                "converted into '<package-pattern>:<option>=<value>' format in the "
-                "generated Conan profile.  Individual images can specify additional "
-                "options that merge with these global defaults.",
+                description="Global mapping of namespace tables to package options, "
+                "which get converted into '<package-pattern>:<option>=<value>' "
+                "format in the generated Conan profile.  Individual images can "
+                "specify additional options that merge with these global defaults.",
             ),
         ]
 
@@ -238,21 +243,22 @@ class ConanConfig(Resource):
                 Field(
                     default="host",
                     examples=["host", "tool"],
-                    description="The kind of requirement, which controls how the requirement gets "
-                    "injected into the generated Conan profile.  'tool' requirements "
-                    "apply only to the build context, whereas 'host' requirements "
-                    "specify runtime dependencies.",
+                    description="The kind of requirement, which controls how the "
+                    "requirement gets injected into the generated Conan profile.  "
+                    "'tool' requirements apply only to the build context, whereas "
+                    "'host' requirements specify runtime dependencies.",
                 ),
             ]
             options: Annotated[
                 dict[ConanOptionName, Scalar],
                 Field(
                     default_factory=dict,
-                    description="Mapping of option names to their values for this requirement, "
-                    "which get converted into '<package>:<option>=<value>' format in "
-                    "the generated Conan profile.  These options merge with any global "
-                    "options specified in the `options` field, and take precedence "
-                    "over any conflicting values.",
+                    description="Mapping of option names to their values for this "
+                    "requirement, which get converted into "
+                    "'<package>:<option>=<value>' format in the generated Conan "
+                    "profile.  These options merge with any global options "
+                    "specified in the `options` field, and take precedence over any "
+                    "conflicting values.",
                 ),
             ]
 
@@ -266,9 +272,8 @@ class ConanConfig(Resource):
                 seen: set[ConanAllowedPattern] = set()
                 for pattern in value:
                     if pattern in seen:
-                        raise ValueError(
-                            f"duplicate conan allowed-packages pattern: '{pattern}'"
-                        )
+                        msg = f"duplicate conan allowed-packages pattern: '{pattern}'"
+                        raise ValueError(msg)
                     seen.add(pattern)
                 return value
 
@@ -290,19 +295,19 @@ class ConanConfig(Resource):
                 Field(
                     default=True,
                     alias="verify-ssl",
-                    description="Whether to verify SSL certificates when communicating with this "
-                    "remote.  Should generally be left enabled unless the remote is "
-                    "known to have an invalid certificate, or is only accessible over "
-                    "insecure HTTP.",
+                    description="Whether to verify SSL certificates when "
+                    "communicating with this remote.  Should generally be left "
+                    "enabled unless the remote is known to have an invalid "
+                    "certificate, or is only accessible over insecure HTTP.",
                 ),
             ]
             enabled: Annotated[
                 bool,
                 Field(
                     default=True,
-                    description="Whether to include this remote in Conan operations.  This can be "
-                    "used to temporarily disable a remote without removing it from "
-                    "config.",
+                    description="Whether to include this remote in Conan operations.  "
+                    "This can be used to temporarily disable a remote without "
+                    "removing it from config.",
                 ),
             ]
             recipes_only: Annotated[
@@ -310,8 +315,8 @@ class ConanConfig(Resource):
                 Field(
                     default=False,
                     alias="recipes-only",
-                    description="If true, only recipes will be loaded from this remote, and no "
-                    "binaries will be downloaded.",
+                    description="If true, only recipes will be loaded from this "
+                    "remote, and no binaries will be downloaded.",
                 ),
             ]
             allowed_packages: Annotated[
@@ -320,9 +325,9 @@ class ConanConfig(Resource):
                 Field(
                     default_factory=list,
                     alias="allowed-packages",
-                    description="List of recipes that are allowed to be downloaded from this "
-                    "remote. If the list is empty or not present, all packages "
-                    "are allowed. Uses fnmatch rules.",
+                    description="List of recipes that are allowed to be downloaded "
+                    "from this remote. If the list is empty or not present, all "
+                    "packages are allowed. Uses fnmatch rules.",
                 ),
             ]
 
@@ -332,10 +337,11 @@ class ConanConfig(Resource):
             for req in value:
                 identity = (req.kind, req.package)
                 if identity in seen:
-                    raise ValueError(
+                    msg = (
                         f"duplicate conan requirement identity for kind='{req.kind}', "
                         f"package='{req.package}'"
                     )
+                    raise ValueError(msg)
                 seen.add(identity)
             return value
 
@@ -344,9 +350,10 @@ class ConanConfig(Resource):
             seen: set[ConanRemoteName] = set()
             for remote in value:
                 if remote.name in seen:
-                    raise ValueError(
+                    msg = (
                         f"duplicate conan remote name in [tool.conan]: '{remote.name}'"
                     )
+                    raise ValueError(msg)
                 seen.add(remote.name)
             return value
 
@@ -355,8 +362,8 @@ class ConanConfig(Resource):
             AfterValidator(_check_requires),
             Field(
                 default_factory=list,
-                description="Global list of Conan dependencies to install for the project, which "
-                "can be extended for individual images.",
+                description="Global list of Conan dependencies to install for the "
+                "project, which can be extended for individual images.",
             ),
         ]
         remotes: Annotated[
@@ -364,10 +371,11 @@ class ConanConfig(Resource):
             AfterValidator(_check_remotes),
             Field(
                 default_factory=list,
-                description="List of Conan remotes to use when resolving Conan dependencies for "
-                "this project.  NOTE: Conan remotes are resolved in declaration "
-                "order.  Prefer private remotes first, then optional public fallback "
-                "remotes last.  Credentials are host-local and must never be stored "
+                description="List of Conan remotes to use when resolving Conan "
+                "dependencies for this project.  NOTE: Conan remotes are resolved "
+                "in declaration order.  Prefer private remotes first, then optional "
+                "public fallback remotes last.  Credentials are host-local and must "
+                "never be stored "
                 "here; resolve through env/secret channels (e.g. "
                 "CONAN_LOGIN_USERNAME_<REMOTE>, CONAN_PASSWORD_<REMOTE>, with remote "
                 "names normalized to SCREAMING_SNAKE_CASE)",
@@ -375,9 +383,25 @@ class ConanConfig(Resource):
         ]
 
     async def init(self, config: Config, cli: Config.Init) -> dict[str, Any]:
+        """Return default Conan configuration.
+
+        Returns
+        -------
+        dict[str, Any]
+            Default Conan configuration data.
+        """
+        _ = config, cli
         return self.Model.model_construct().model_dump(by_alias=True)
 
     async def validate(self, config: Config, fragment: Any) -> Model | None:
+        """Validate Conan configuration.
+
+        Returns
+        -------
+        Model | None
+            Validated Conan configuration.
+        """
+        _ = config
         return self.Model.model_validate(fragment)
 
     @staticmethod
@@ -405,22 +429,23 @@ class ConanConfig(Resource):
                 requires.extend(active.conan.requires)
 
         # check merged requirement identities and sort into host/tool requirements
-        _requires: list[ConanConfig.Model.Require] = []
+        host_requires: list[ConanConfig.Model.Require] = []
         tool_requires: list[ConanConfig.Model.Require] = []
         seen: set[tuple[str, str]] = set()
         for req in requires:
             identity = (req.kind, req.package)
             if identity in seen:
-                raise OSError(
+                msg = (
                     f"duplicate effective conan requirement identity for tag '{tag}': "
                     f"kind='{req.kind}', package='{req.package}'"
                 )
+                raise OSError(msg)
             if req.kind == "host":
-                _requires.append(req)
+                host_requires.append(req)
             elif req.kind == "tool":
                 tool_requires.append(req)
             seen.add(identity)
-        requires = sorted(_requires, key=lambda r: r.package)
+        requires = sorted(host_requires, key=lambda r: r.package)
         tool_requires.sort(key=lambda r: r.package)
 
         # merge global + tag-level Conan options mapping for global/tag tables, then
@@ -438,10 +463,11 @@ class ConanConfig(Resource):
                 key = f"{package}/*:{option}"
                 inserted = default_options.setdefault(key, value)
                 if inserted != value:
-                    raise OSError(
+                    msg = (
                         f"conflicting conan option values for '{key}' across "
                         f"requirements: {inserted!r} vs {value!r}"
                     )
+                    raise OSError(msg)
 
         # render lines for Conanfile.py
         lines: list[str] = [
@@ -510,9 +536,11 @@ class ConanConfig(Resource):
         raw_arch = os.uname().machine.strip().lower()
         arch = self.ARCH_MAP.get(raw_arch)
         if arch is None:
-            raise OSError(
-                f"unsupported Conan architecture for current runtime machine: '{raw_arch}'"
+            msg = (
+                f"unsupported Conan architecture for current runtime machine: "
+                f"'{raw_arch}'"
             )
+            raise OSError(msg)
         return arch
 
     @staticmethod
@@ -521,20 +549,22 @@ class ConanConfig(Resource):
         version = result.stdout.strip()
         major = version.split(".", maxsplit=1)[0]
         if not major or not major.isdigit():
-            raise OSError(
+            msg = (
                 "failed to parse clang major version during conan profile generation: "
                 f"{version!r}"
             )
+            raise OSError(msg)
         return major
 
     @staticmethod
     def _cppstd() -> str:
         value = "" if VERSION.cxx_std is None else str(VERSION.cxx_std).strip()
         if not value or not value.isdigit():
-            raise OSError(
+            msg = (
                 "invalid VERSION.cxx_std during conan profile generation: "
                 f"{VERSION.cxx_std!r}"
             )
+            raise OSError(msg)
         return value
 
     async def _render_conanprofile(self, config: Config, tag: TOMLKey) -> None:
@@ -603,6 +633,7 @@ class ConanConfig(Resource):
         )
 
     async def _render_conanremotes(self, config: Config, tag: TOMLKey) -> None:
+        _ = tag
         conan = config.get(ConanConfig)
         assert conan is not None
 
@@ -622,15 +653,15 @@ class ConanConfig(Resource):
         try:
             text = json.dumps(payload, indent=4, ensure_ascii=False)
         except (TypeError, ValueError) as err:
-            raise OSError(
-                f"failed to serialize JSON payload for resource '{self.name}': {err}"
-            ) from err
+            msg = f"failed to serialize JSON payload for resource '{self.name}': {err}"
+            raise OSError(msg) from err
         if not text.endswith("\n"):
             text += "\n"
 
         atomic_write_text(CONAN_HOME / "remotes.json", text, encoding="utf-8")
 
     async def render(self, config: Config, tag: TOMLKey | None) -> None:
+        """Render Conan artifacts for the active image tag."""
         if tag is None or config.get(ConanConfig) is None:
             return
         await self._render_conanfile(config, tag)
@@ -638,4 +669,11 @@ class ConanConfig(Resource):
         await self._render_conanremotes(config, tag)
 
     async def schema(self) -> dict[str, Any]:
+        """Return the Conan configuration schema.
+
+        Returns
+        -------
+        dict[str, Any]
+            JSON Schema for the Conan configuration.
+        """
         return self.Model.model_json_schema(by_alias=True, mode="validation")

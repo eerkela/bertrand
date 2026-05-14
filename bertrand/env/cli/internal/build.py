@@ -13,9 +13,9 @@ from bertrand.env.build_args import (
     encode_image_build_args,
     normalize_image_build_args,
 )
-from bertrand.env.config import Bertrand, PyProject
-from bertrand.env.config.bertrand import DEFAULT_TAG
+from bertrand.env.config.bertrand import DEFAULT_TAG, Bertrand
 from bertrand.env.config.core import Config, _metadata_lock_key
+from bertrand.env.config.python import PyProject
 from bertrand.env.git import (
     IMAGE_TAG_ENV,
     INFINITY,
