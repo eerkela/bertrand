@@ -8,16 +8,15 @@ from typing import TYPE_CHECKING, Self
 
 import kubernetes
 
-from .api import (
-    Kube,
-    NamespacedKubeMetadata,
-    ResourceClient,
-    WatchEvent,
-)
+from .api.metadata import NamespacedKubeMetadata
+from .api.resource import ResourceClient
 
 if TYPE_CHECKING:
     import builtins
     from collections.abc import AsyncIterator, Collection, Mapping
+
+    from .api.client import Kube
+    from .api.watch import WatchEvent
 
 POD_MIRROR_ANNOTATION = "kubernetes.io/config.mirror"
 POD_SUPPORTED_CONTROLLER_KINDS = frozenset(

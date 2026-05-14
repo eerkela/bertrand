@@ -14,7 +14,7 @@ from bertrand.env.git import BERTRAND_ENV, BERTRAND_NAMESPACE
 from bertrand.env.kube.configmap import ConfigMap
 
 if TYPE_CHECKING:
-    from bertrand.env.kube.api import Kube
+    from bertrand.env.kube.api.client import Kube
 
 NETWORK_PROFILE_NAME = "bertrand-network"
 NETWORK_PROFILE_KEY = "profile.json"

@@ -8,17 +8,16 @@ from typing import TYPE_CHECKING, Literal, Self
 
 import kubernetes
 
-from .api import (
-    Kube,
-    NamespacedKubeMetadata,
-    ResourceClient,
-    ServicePortSpec,
-)
+from .api.metadata import NamespacedKubeMetadata
+from .api.resource import ResourceClient
 from .api.view import ServicePortView
 
 if TYPE_CHECKING:
     import builtins
     from collections.abc import Collection, Mapping
+
+    from .api.client import Kube
+    from .api.spec import ServicePortSpec
 
 SERVICE_WAIT_INTERVAL = 0.5
 type ServiceType = Literal["ClusterIP", "NodePort", "LoadBalancer", "ExternalName"]

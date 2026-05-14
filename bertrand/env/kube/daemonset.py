@@ -10,22 +10,21 @@ import kubernetes
 
 from bertrand.env.git import until
 
-from .api import (
-    Kube,
-    NamespacedKubeMetadata,
-    PodTemplateSpec,
-    ResourceClient,
-    WatchEvent,
-)
 from .api._render import (
     _pod_template_manifest,
 )
+from .api.metadata import NamespacedKubeMetadata
+from .api.resource import ResourceClient
 
 DAEMONSET_WAIT_POLL_INTERVAL_SECONDS = 0.5
 
 if TYPE_CHECKING:
     import builtins
     from collections.abc import AsyncIterator, Collection, Mapping
+
+    from .api.client import Kube
+    from .api.spec import PodTemplateSpec
+    from .api.watch import WatchEvent
 
 
 @dataclass(frozen=True)

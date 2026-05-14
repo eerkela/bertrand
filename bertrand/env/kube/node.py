@@ -10,13 +10,17 @@ from typing import TYPE_CHECKING, Literal, Self
 
 import kubernetes
 
-from .api import Kube, KubeMetadata, ResourceClient, WatchEvent
+from .api.metadata import KubeMetadata
+from .api.resource import ResourceClient
 from .api.view import TaintView
 from .pod import Pod
 
 if TYPE_CHECKING:
     import builtins
     from collections.abc import AsyncIterator, Collection, Mapping
+
+    from .api.client import Kube
+    from .api.watch import WatchEvent
 
 NODE_SYSTEM_NAMESPACES = frozenset(
     {

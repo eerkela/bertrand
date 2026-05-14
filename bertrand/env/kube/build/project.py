@@ -8,7 +8,7 @@ import json
 import re
 import uuid
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal, Protocol
+from typing import TYPE_CHECKING, Protocol
 
 from bertrand.env.build_args import normalize_image_build_args
 from bertrand.env.config.bertrand import Bertrand, project_image_tag
@@ -16,18 +16,21 @@ from bertrand.env.config.python import PyProject
 from bertrand.env.git import INFINITY
 from bertrand.env.kube.build.containerfile import project_containerfile
 from bertrand.env.kube.build.controller import (
-    BuildKitBuildRecord,
     submit_buildkit_build,
     wait_buildkit_build,
 )
 from bertrand.env.kube.build.lifecycle import (
-    ProjectImageIdentity,
     ProjectImagePublication,
     ensure_project_image_crd,
     get_project_image,
     worktree_identity,
 )
 from bertrand.env.kube.build.repository import IMAGES
+from bertrand.env.kube.build.request import (
+    BuildKitBuildRecord,
+    BuildKitBuildSpec,
+    ProjectImageIdentity,
+)
 
 PROJECT_IMAGE_ENV_NAMESPACE = uuid.UUID("36eb88bb-c284-4cb2-ab0a-57f5e850868a")
 _PROJECT_IMAGE_COMPONENT_RE = re.compile(r"[^a-z0-9._-]+")
@@ -36,15 +39,12 @@ if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Mapping, Sequence
 
     from bertrand.env.config.core import Config, KubeName
-    from bertrand.env.kube.api import Kube
+    from bertrand.env.kube.api.client import Kube
 
 
 class _CapabilityRequest(Protocol):
     id: KubeName
     required: bool
-
-
-type _BuildNetworkMode = Literal["default", "none", "host"]
 
 
 @dataclass(frozen=True)
@@ -53,33 +53,22 @@ class ProjectImageBuild:
 
     Parameters
     ----------
-    identity : ProjectImageIdentity
-        Stable publication identity shared by the request, manifest, and lifecycle
-        record layers.
-    dockerfile : str
-        Rendered Containerfile text submitted with the durable request.
-    build_args : dict[str, str]
-        Dockerfile build arguments.
-    target : str | None
-        Optional target stage in a multi-stage Containerfile.
-    network : {'default', 'none', 'host'}
-        BuildKit network mode applied to build-time `RUN` instructions.
-    secrets : Mapping[KubeName, bool]
-        Secret capability requests exposed to the build.
-    ssh : Mapping[KubeName, bool]
-        SSH capability requests exposed to the build.
-    devices : Mapping[KubeName, bool]
-        CDI device capability requests exposed to the build.
+    spec : BuildKitBuildSpec
+        Durable project image build request submitted to the BuildKit controller.
     """
 
-    identity: ProjectImageIdentity
-    dockerfile: str
-    build_args: dict[str, str]
-    target: str | None
-    network: _BuildNetworkMode
-    secrets: Mapping[KubeName, bool]
-    ssh: Mapping[KubeName, bool]
-    devices: Mapping[KubeName, bool]
+    spec: BuildKitBuildSpec
+
+    @property
+    def identity(self) -> ProjectImageIdentity:
+        """Return the stable project image publication identity.
+
+        Returns
+        -------
+        ProjectImageIdentity
+            Identity shared by the request, manifest, and lifecycle record layers.
+        """
+        return self.spec.identity
 
     async def publish(
         self,
@@ -201,19 +190,14 @@ class ProjectImageBuild:
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
         await ensure_project_image_crd(kube, timeout=deadline - loop.time())
-        return await submit_buildkit_build(
-            kube,
-            identity=self.identity,
-            dockerfile=self.dockerfile,
-            build_args=self.build_args,
-            target=self.target,
-            network=self.network,
-            secrets=self.secrets,
-            ssh=self.ssh,
-            devices=self.devices,
-            timeout=deadline - loop.time(),
+        spec = self.spec.with_external_publication(
             external_image=external_image,
             auth_id=auth_id,
+        )
+        return await submit_buildkit_build(
+            kube,
+            spec=spec,
+            timeout=deadline - loop.time(),
         )
 
 
@@ -316,14 +300,16 @@ def project_image_build(
         channels=channels,
     )
     return ProjectImageBuild(
-        identity=identity,
-        dockerfile=dockerfile,
-        build_args=_build_args(image_config.args),
-        target=image_config.target,
-        network=image_config.network,
-        secrets=_capability_requests(image_config.secrets),
-        ssh=_capability_requests(image_config.ssh),
-        devices=_capability_requests(image_config.devices),
+        spec=BuildKitBuildSpec.from_identity(
+            identity=identity,
+            dockerfile=dockerfile,
+            build_args=_build_args(image_config.args),
+            target=image_config.target,
+            network=image_config.network,
+            secrets=_capability_requests(image_config.secrets),
+            ssh=_capability_requests(image_config.ssh),
+            devices=_capability_requests(image_config.devices),
+        )
     )
 
 

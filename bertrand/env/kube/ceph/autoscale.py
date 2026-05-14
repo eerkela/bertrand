@@ -23,13 +23,15 @@ from pydantic import (
 )
 
 from bertrand.env.git import BERTRAND_ENV, BERTRAND_NAMESPACE, INFINITY
-from bertrand.env.kube.api import (
+from bertrand.env.kube.api.client import (
     CLUSTER_REGISTRY_READY_LABEL,
     CLUSTER_REGISTRY_READY_VALUE,
+    Kube,
+)
+from bertrand.env.kube.api.spec import (
     ContainerSpec,
     CustomResourceSpec,
     EnvVarSpec,
-    Kube,
     PodTemplateSpec,
     PolicyRuleSpec,
     SecurityContextSpec,
@@ -47,7 +49,11 @@ from bertrand.env.kube.ceph.api import (
     parse_loop_osd_spec,
     parse_size_bytes,
 )
-from bertrand.env.kube.crd import CustomResourceClient, CustomResourceDefinition
+from bertrand.env.kube.crd import (
+    CustomObjectMetadata,
+    CustomResourceClient,
+    CustomResourceDefinition,
+)
 from bertrand.env.kube.daemonset import DaemonSet
 from bertrand.env.kube.deployment import Deployment
 from bertrand.env.kube.node import Node
@@ -84,18 +90,6 @@ type _Watermark = Annotated[float, Field(gt=0.0, lt=1.0)]
 type _LoopSize = Annotated[str, Field(pattern=LOOP_OSD_SIZE_PATTERN)]
 type _LoopSpec = Annotated[str, Field(pattern=LOOP_OSD_SPEC_PATTERN)]
 type _ActionPhase = Literal["Pending", "Running", "Succeeded", "Failed"]
-
-
-class _ObjectMeta(BaseModel):
-    """Validated subset of Kubernetes object metadata."""
-
-    model_config = ConfigDict(extra="ignore")
-
-    name: str = ""
-    namespace: str = ""
-    generation: int = 0
-    resource_version: str = Field(default="", alias="resourceVersion")
-    labels: dict[str, str] = Field(default_factory=dict)
 
 
 class _CephAutoscalerSpec(BaseModel):
@@ -140,7 +134,7 @@ class _CephAutoscaler(BaseModel):
 
     api_version: str = Field(alias="apiVersion")
     kind: Literal["CephStorageAutoscaler"]
-    metadata: _ObjectMeta
+    metadata: CustomObjectMetadata
     spec: _CephAutoscalerSpec = Field(default_factory=_CephAutoscalerSpec)
     status: _CephAutoscalerStatus | None = None
 
@@ -180,7 +174,7 @@ class _CephStorageAction(BaseModel):
 
     api_version: str = Field(alias="apiVersion")
     kind: Literal["CephStorageAction"]
-    metadata: _ObjectMeta
+    metadata: CustomObjectMetadata
     spec: _CephStorageActionSpec
     status: _CephStorageActionStatus = Field(default_factory=_CephStorageActionStatus)
 
@@ -211,7 +205,7 @@ class _CephStorageNode(BaseModel):
 
     api_version: str = Field(alias="apiVersion")
     kind: Literal["CephStorageNode"]
-    metadata: _ObjectMeta
+    metadata: CustomObjectMetadata
     spec: _CephStorageNodeSpec
     status: _CephStorageNodeStatus | None = None
 

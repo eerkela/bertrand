@@ -20,7 +20,7 @@ from bertrand.env.kube.lease import Lease
 if TYPE_CHECKING:
     from types import TracebackType
 
-    from bertrand.env.kube.api import Kube
+    from bertrand.env.kube.api.client import Kube
 
 CLUSTER_LOCK_DURATION_SECONDS = 30
 CLUSTER_LOCK_RENEW_SECONDS = 10

@@ -20,7 +20,7 @@ if TYPE_CHECKING:
     import builtins
     from pathlib import PosixPath
 
-    from bertrand.env.kube.api import Kube
+    from bertrand.env.kube.api.client import Kube
 
 REPO_VOLUME_ENV: str = "BERTRAND_REPO_VOLUME"
 DEFAULT_VOLUME_SIZE = "16Mi"

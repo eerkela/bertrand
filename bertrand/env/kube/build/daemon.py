@@ -8,10 +8,9 @@ from typing import TYPE_CHECKING
 
 from bertrand.env.git import BERTRAND_NAMESPACE, INFINITY
 from bertrand.env.host import CACHE_DIR
-from bertrand.env.kube.api import (
+from bertrand.env.kube.api.spec import (
     ContainerPortSpec,
     ContainerSpec,
-    Kube,
     PodTemplateSpec,
     ProbeSpec,
     SecurityContextSpec,
@@ -26,6 +25,8 @@ from bertrand.env.kube.pod import Pod
 if TYPE_CHECKING:
     from collections.abc import Iterable
     from pathlib import Path
+
+    from bertrand.env.kube.api.client import Kube
 
 BUILDKIT_NAME = "bertrand-buildkit"
 BUILDKIT_IMAGE = "moby/buildkit:v0.29.0"

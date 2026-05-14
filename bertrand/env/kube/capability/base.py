@@ -25,7 +25,7 @@ if TYPE_CHECKING:
     from collections.abc import Mapping
 
     from bertrand.env.config.core import KubeName
-    from bertrand.env.kube.api import Kube
+    from bertrand.env.kube.api.client import Kube
 
 type CapabilityKind = Literal["secret", "ssh", "device"]
 type CapabilityScope = Literal["env", "node", "shared"]

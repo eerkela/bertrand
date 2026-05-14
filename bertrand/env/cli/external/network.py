@@ -7,7 +7,7 @@ import json
 from typing import TYPE_CHECKING
 
 from bertrand.env.git import BERTRAND_NAMESPACE, INFINITY
-from bertrand.env.kube.api import Kube
+from bertrand.env.kube.api.client import Kube
 from bertrand.env.kube.build.daemon import BUILDKIT_POOL
 from bertrand.env.kube.build.repository import IMAGES
 from bertrand.env.kube.namespace import Namespace

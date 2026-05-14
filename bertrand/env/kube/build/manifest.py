@@ -5,12 +5,13 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import shlex
+import uuid
 from types import MappingProxyType
 from typing import TYPE_CHECKING
 
 from bertrand.env.config.core import _check_kube_name, _check_uuid
 from bertrand.env.git import BERTRAND_ENV, BERTRAND_NAMESPACE
-from bertrand.env.kube.api import ContainerSpec, EnvVarSpec, Kube, PodTemplateSpec
+from bertrand.env.kube.api.spec import ContainerSpec, EnvVarSpec, PodTemplateSpec
 from bertrand.env.kube.build.execution import run_observed_job
 from bertrand.env.kube.build.lifecycle import (
     ProjectImagePublication,
@@ -30,7 +31,8 @@ if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Mapping
 
     from bertrand.env.config.core import KubeName
-    from bertrand.env.kube.build.lifecycle import ProjectImageIdentity
+    from bertrand.env.kube.api.client import Kube
+    from bertrand.env.kube.build.request import ProjectImageIdentity
 
 MANIFEST_JOB_IMAGE = "ghcr.io/regclient/regctl:v0.10.0-alpine"
 MANIFEST_JOB_LABEL = "bertrand.dev/manifest-job"
@@ -285,8 +287,6 @@ async def _resolve_auth_secret(
     )
     if capability is None:
         return None
-    payload = capability.payload
-    del payload
     return capability.secret.name
 
 
@@ -488,5 +488,4 @@ def _manifest_job_name(
         digest.update(platform.encode("utf-8"))
         digest.update(b"\0")
         digest.update(ref.encode("utf-8"))
-    nonce = hashlib.sha256(str(asyncio.get_running_loop().time()).encode()).hexdigest()
-    return f"bertrand-manifest-{digest.hexdigest()[:24]}-{nonce[:8]}"
+    return f"bertrand-manifest-{digest.hexdigest()[:24]}-{uuid.uuid4().hex[:8]}"

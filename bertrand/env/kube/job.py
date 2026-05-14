@@ -9,19 +9,14 @@ import kubernetes
 
 from bertrand.env.git import until
 
-from .api import (
-    Kube,
-    NamespacedKubeMetadata,
-    PodTemplateSpec,
-    ResourceClient,
-    WatchEvent,
-)
 from .api._helpers import (
     _validate_delete_status,
 )
 from .api._render import (
     _pod_template_manifest,
 )
+from .api.metadata import NamespacedKubeMetadata
+from .api.resource import ResourceClient
 
 if TYPE_CHECKING:
     import builtins
@@ -29,6 +24,10 @@ if TYPE_CHECKING:
     from datetime import datetime
 
     from bertrand.env.kube.pod import Pod
+
+    from .api.client import Kube
+    from .api.spec import PodTemplateSpec
+    from .api.watch import WatchEvent
 
 JOB_WAIT_POLL_INTERVAL_SECONDS = 0.5
 type DeletionPropagationPolicy = Literal["Background", "Foreground", "Orphan"]

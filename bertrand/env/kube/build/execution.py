@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
-    from bertrand.env.kube.api import Kube
+    from bertrand.env.kube.api.client import Kube
     from bertrand.env.kube.job import Job
 
 
@@ -252,6 +252,8 @@ async def run_observed_job(
             cleanup_timeout=cleanup_timeout,
             include_log_headers=include_log_headers,
         )
+    except TimeoutError:
+        raise
     except OSError as err:
         raise OSError(str(err)) from err
     return await job_logs(

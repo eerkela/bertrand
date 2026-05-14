@@ -43,7 +43,7 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
     from types import TracebackType
 
-    from bertrand.env.kube.api import Kube
+    from bertrand.env.kube.api.client import Kube
     from bertrand.env.kube.ceph.auth import RepoCredentials
     from bertrand.env.kube.ceph.volume import RepoVolume
 

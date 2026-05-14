@@ -9,15 +9,14 @@ from typing import TYPE_CHECKING, Self
 
 from kubernetes import client as kube_client
 
-from .api import (
-    Kube,
-    NamespacedKubeMetadata,
-    ResourceClient,
-)
+from .api.metadata import NamespacedKubeMetadata
+from .api.resource import ResourceClient
 
 if TYPE_CHECKING:
     import builtins
     from collections.abc import Collection, Mapping
+
+    from .api.client import Kube
 
 
 @dataclass(frozen=True)

@@ -7,16 +7,14 @@ from typing import TYPE_CHECKING, Self
 
 from kubernetes import client as kube_client
 
-from .api import (
-    NamespacedKubeMetadata,
-    ResourceClient,
-)
+from .api.metadata import NamespacedKubeMetadata
+from .api.resource import ResourceClient
 
 if TYPE_CHECKING:
     import builtins
     from collections.abc import Collection, Mapping
 
-    from .api import Kube
+    from .api.client import Kube
 
 SERVICE_ACCOUNT_WAIT_POLL_INTERVAL_SECONDS = 0.5
 

@@ -14,11 +14,6 @@ import kubernetes
 
 from bertrand.env.git import until
 
-from .api import (
-    Kube,
-    KubeMetadata,
-    NamespacedKubeMetadata,
-)
 from .api._helpers import (
     _list_cluster_items,
     _list_namespaced_items,
@@ -26,10 +21,13 @@ from .api._helpers import (
     _validate_delete_status,
     _wait_until_deleted,
 )
+from .api.metadata import KubeMetadata, NamespacedKubeMetadata
 
 if TYPE_CHECKING:
     import builtins
     from collections.abc import Collection, Mapping
+
+    from .api.client import Kube
 
 PVC_GROW_RETRIES = 4
 VOLUME_WAIT_POLL_INTERVAL_SECONDS = 0.5

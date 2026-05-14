@@ -13,7 +13,7 @@ from bertrand.env.config.bertrand import Bertrand
 from bertrand.env.config.core import Config, _check_kube_name
 from bertrand.env.config.repository import resolve_repo_id
 from bertrand.env.git import BERTRAND_NAMESPACE, INFINITY, GitRepository
-from bertrand.env.kube.api import Kube
+from bertrand.env.kube.api.client import Kube
 from bertrand.env.kube.build.controller import BUILDKIT_BUILD_CONTROLLER
 from bertrand.env.kube.build.daemon import BUILDKIT_POOL
 from bertrand.env.kube.build.execution import job_logs
@@ -24,8 +24,8 @@ from bertrand.env.kube.deployment import Deployment
 from bertrand.env.kube.job import Job
 
 if TYPE_CHECKING:
-    from bertrand.env.kube.build.controller import BuildKitBuildRecord
     from bertrand.env.kube.build.lifecycle import ProjectImagePublication
+    from bertrand.env.kube.build.request import BuildKitBuildRecord
 
 
 _GITHUB_HTTPS_REMOTE = re.compile(

@@ -7,10 +7,8 @@ from typing import TYPE_CHECKING, Self
 
 from kubernetes import client as kube_client
 
-from .api import (
-    NamespacedKubeMetadata,
-    ResourceClient,
-)
+from .api.metadata import NamespacedKubeMetadata
+from .api.resource import ResourceClient
 from .api.view import ObjectReference
 
 if TYPE_CHECKING:
@@ -18,7 +16,8 @@ if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Collection, Mapping
     from datetime import datetime
 
-    from .api import Kube, WatchEvent
+    from .api.client import Kube
+    from .api.watch import WatchEvent
 
 
 def _object_identity(

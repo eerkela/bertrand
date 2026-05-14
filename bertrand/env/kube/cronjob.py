@@ -7,19 +7,18 @@ from typing import TYPE_CHECKING, Literal, Self
 
 import kubernetes
 
-from .api import (
-    Kube,
-    NamespacedKubeMetadata,
-    PodTemplateSpec,
-    ResourceClient,
-    WatchEvent,
-)
+from .api.metadata import NamespacedKubeMetadata
+from .api.resource import ResourceClient
 from .job import _job_spec_manifest
 
 if TYPE_CHECKING:
     import builtins
     from collections.abc import AsyncIterator, Collection, Mapping
     from datetime import datetime
+
+    from .api.client import Kube
+    from .api.spec import PodTemplateSpec
+    from .api.watch import WatchEvent
 
 type CronJobConcurrencyPolicy = Literal["Allow", "Forbid", "Replace"]
 

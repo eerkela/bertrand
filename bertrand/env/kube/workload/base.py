@@ -8,10 +8,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    from bertrand.env.kube.api import (
-        ContainerSpec,
-        PodTemplateSpec,
-    )
+    from bertrand.env.kube.api.spec import ContainerSpec, PodTemplateSpec
 
 
 @dataclass(frozen=True)

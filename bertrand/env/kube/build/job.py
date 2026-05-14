@@ -7,18 +7,17 @@ import hashlib
 import json
 import uuid
 from contextlib import asynccontextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING
 
 from bertrand.env.config.core import _check_kube_name, _check_uuid
 from bertrand.env.git import (
     BERTRAND_ENV,
     BERTRAND_NAMESPACE,
 )
-from bertrand.env.kube.api import (
+from bertrand.env.kube.api.spec import (
     ContainerSpec,
-    Kube,
     PodTemplateSpec,
     VolumeMountSpec,
     VolumeSpec,
@@ -44,7 +43,9 @@ from bertrand.env.kube.job import Job
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 
-    from bertrand.env.config.core import KubeName, NonEmpty, OCIImageRef, Trimmed
+    from bertrand.env.config.core import KubeName
+    from bertrand.env.kube.api.client import Kube
+    from bertrand.env.kube.build.request import BuildKitBuildSpec
 
 BUILD_JOB_CONTEXT_MOUNT = "/workspace"
 BUILD_JOB_CONTEXT_VOLUME = "context"
@@ -71,7 +72,6 @@ CAPABILITY_VALUE_KEY = "value"
 BUILD_PLATFORM_RUN_ID_BYTES = 12
 
 type _BuildKitTarget = tuple[_BuildKitBuilder, tuple[str, ...]]
-type _BuildNetworkMode = Literal["default", "none", "host"]
 
 
 @dataclass(frozen=True)
@@ -87,46 +87,13 @@ class _PreparedBuildContext:
 class _ProjectBuildExecutor:
     """Low-level BuildKit Job executor for one project image request.
 
-    Attributes
+    Parameters
     ----------
-    image : OCIImageRef
-        Fully-qualified image reference to build and push.
-    dockerfile : NonEmpty[Trimmed]
-        Containerfile text to stage as the build frontend input.
-    repo_id : str
-        Stable repository UUID used to locate the managed repository PVC.
-    worktree : str
-        Repository-volume subpath for the worktree. ``"."`` targets the PVC root.
-    build_args : dict[str, str]
-        Dockerfile build arguments passed to BuildKit.
-    image_labels : dict[str, str]
-        Image labels applied by the Dockerfile frontend.
-    target : str | None
-        Optional target stage in a multi-stage Containerfile.
-    network : {'default', 'none', 'host'}
-        BuildKit network mode applied to build-time `RUN` instructions.
-    secrets : Mapping[KubeName, bool]
-        Secret capability IDs to expose to the build. Values indicate whether the
-        capability is required.
-    ssh : Mapping[KubeName, bool]
-        SSH capability IDs to expose to the build. Values indicate whether the
-        capability is required.
-    devices : Mapping[KubeName, bool]
-        CDI device capability IDs to allow during the build. Values indicate
-        whether the capability is required.
+    spec : BuildKitBuildSpec
+        Project image build request executed by short-lived BuildKit client Jobs.
     """
 
-    image: OCIImageRef
-    dockerfile: NonEmpty[Trimmed]
-    repo_id: str
-    worktree: str = "."
-    build_args: dict[str, str] = field(default_factory=dict)
-    image_labels: dict[str, str] = field(default_factory=dict)
-    target: str | None = None
-    network: _BuildNetworkMode = "default"
-    secrets: Mapping[KubeName, bool] = field(default_factory=dict)
-    ssh: Mapping[KubeName, bool] = field(default_factory=dict)
-    devices: Mapping[KubeName, bool] = field(default_factory=dict)
+    spec: BuildKitBuildSpec
 
     def __post_init__(self) -> None:
         """Validate immutable build contract fields.
@@ -136,36 +103,38 @@ class _ProjectBuildExecutor:
         ValueError
             If any build contract field is empty or structurally invalid.
         """
-        if not self.image.strip():
+        spec = self.spec
+        if not spec.image.strip():
             msg = "BuildKit image reference cannot be empty"
             raise ValueError(msg)
-        if not self.dockerfile.strip():
+        if not spec.dockerfile.strip():
             msg = "BuildKit image Containerfile cannot be empty"
             raise ValueError(msg)
-        if self.target is not None and not self.target.strip():
+        if spec.target is not None and not spec.target.strip():
             msg = "BuildKit target stage cannot be empty"
             raise ValueError(msg)
-        if self.network not in ("default", "none", "host"):
-            msg = f"unsupported BuildKit network mode: {self.network!r}"
+        if spec.network not in ("default", "none", "host"):
+            msg = f"unsupported BuildKit network mode: {spec.network!r}"
             raise ValueError(msg)
-        object.__setattr__(self, "repo_id", _check_uuid(self.repo_id))
-        object.__setattr__(self, "worktree", _normalize_worktree(self.worktree))
         object.__setattr__(
             self,
-            "secrets",
-            _normalize_capability_requests(self.secrets, kind="secret"),
+            "spec",
+            spec.model_copy(
+                update={
+                    "repo_id": _check_uuid(spec.repo_id),
+                    "worktree": _normalize_worktree(spec.worktree),
+                    "secrets": _normalize_capability_requests(
+                        spec.secrets,
+                        kind="secret",
+                    ),
+                    "ssh": _normalize_capability_requests(spec.ssh, kind="ssh"),
+                    "devices": _normalize_capability_requests(
+                        spec.devices,
+                        kind="device",
+                    ),
+                }
+            ),
         )
-        object.__setattr__(
-            self,
-            "ssh",
-            _normalize_capability_requests(self.ssh, kind="ssh"),
-        )
-        object.__setattr__(
-            self,
-            "devices",
-            _normalize_capability_requests(self.devices, kind="device"),
-        )
-        _default_cache_ref(self.image)
 
     @property
     def labels(self) -> dict[str, str]:
@@ -183,28 +152,8 @@ class _ProjectBuildExecutor:
             BUILD_JOB_LABEL: BUILD_JOB_LABEL_VALUE,
         }
 
-    @property
-    def job_name(self) -> str:
-        """Return a unique Kubernetes Job name for this build.
-
-        Returns
-        -------
-        str
-            Unique Kubernetes Job name for this build execution.
-        """
-        payload = {
-            "image": self.image,
-            "dockerfile": self.dockerfile,
-            "repo_id": self.repo_id,
-            "worktree": self.worktree,
-            "build_args": self.build_args,
-            "image_labels": self.image_labels,
-            "target": self.target,
-            "network": self.network,
-            "secrets": dict(sorted(self.secrets.items())),
-            "ssh": dict(sorted(self.ssh.items())),
-            "devices": dict(sorted(self.devices.items())),
-        }
+    def _job_name(self) -> str:
+        payload = self.spec.model_dump(mode="json")
         text = json.dumps(
             payload,
             sort_keys=True,
@@ -259,7 +208,8 @@ class _ProjectBuildExecutor:
         ValueError
             If the output image reference is empty.
         """
-        image = self.image if image is None else image.strip()
+        spec = self.spec
+        image = spec.image if image is None else image.strip()
         if not image:
             msg = "BuildKit output image reference cannot be empty"
             raise ValueError(msg)
@@ -283,13 +233,13 @@ class _ProjectBuildExecutor:
             "--opt",
             "filename=Containerfile",
         ]
-        if self.target is not None:
-            args.extend(["--opt", f"target={self.target}"])
-        if self.network != "default":
-            args.extend(["--opt", f"force-network-mode={self.network}"])
-        for key, value in sorted(self.build_args.items()):
+        if spec.target is not None:
+            args.extend(["--opt", f"target={spec.target}"])
+        if spec.network != "default":
+            args.extend(["--opt", f"force-network-mode={spec.network}"])
+        for key, value in sorted(spec.build_args.items()):
             args.extend(["--opt", f"build-arg:{key}={value}"])
-        for key, value in sorted(self.image_labels.items()):
+        for key, value in sorted(spec.image_labels.items()):
             args.extend(["--opt", f"label:{key}={value}"])
         for capability_id, path in sorted((secret_paths or {}).items()):
             args.extend(["--secret", f"id={capability_id},src={path}"])
@@ -297,9 +247,9 @@ class _ProjectBuildExecutor:
             args.extend(["--ssh", f"{capability_id}={path}"])
         for selector in sorted(set(device_selectors)):
             args.extend(["--allow", f"device={selector}"])
-        if self.network == "host":
+        if spec.network == "host":
             args.extend(["--allow", "network.host"])
-        cache_ref = _default_cache_ref(self.image)
+        cache_ref = _default_cache_ref(spec.image)
         args.extend(["--import-cache", f"type=registry,ref={cache_ref}"])
         args.extend(
             [
@@ -318,7 +268,6 @@ class _ProjectBuildExecutor:
         self,
         kube: Kube,
         *,
-        env_id: str | None,
         timeout: float,
         job_observer: Callable[[str, Job], Awaitable[None]] | None = None,
     ) -> dict[str, str]:
@@ -328,8 +277,6 @@ class _ProjectBuildExecutor:
         ----------
         kube : Kube
             Active Kubernetes API context.
-        env_id : str | None
-            Environment UUID used to resolve secret, SSH, and device capabilities.
         timeout : float
             Maximum runtime budget in seconds. If infinite, wait indefinitely.
         job_observer : Callable[[str, Job], Awaitable[None]] | None, optional
@@ -347,17 +294,13 @@ class _ProjectBuildExecutor:
             If staging, scheduling, Job creation, or Job completion exceeds
             `timeout`.
         ValueError
-            If capability inputs are present without `env_id`, or if a platform
-            output ref is invalid.
+            If a platform output ref is invalid.
         """
         if timeout <= 0:
             msg = "BuildKit platform image build timeout must be non-negative"
             raise TimeoutError(msg)
-        if env_id is None and (self.secrets or self.ssh or self.devices):
-            msg = "BuildKit capability inputs require an environment identity"
-            raise ValueError(msg)
-        if env_id is not None:
-            env_id = _check_uuid(env_id)
+        spec = self.spec
+        env_id = _check_uuid(spec.env_id)
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
 
@@ -387,7 +330,7 @@ class _ProjectBuildExecutor:
                 key=lambda item: item[0].platform,
             ):
                 platform = builder.platform
-                image = platform_output_ref(self.image, platform, run_id)
+                image = platform_output_ref(spec.image, platform, run_id)
                 image = image.strip()
                 if not image:
                     msg = (
@@ -441,7 +384,7 @@ class _ProjectBuildExecutor:
         job = await Job.create(
             kube,
             namespace=BERTRAND_NAMESPACE,
-            name=self.job_name,
+            name=self._job_name(),
             labels=self.labels,
             pod_template=PodTemplateSpec(
                 containers=[
@@ -530,8 +473,8 @@ class _ProjectBuildExecutor:
         deadline = loop.time() + timeout
         await _assert_repo_volume(
             kube,
-            repo_id=self.repo_id,
-            claim_name=RepoVolume.claim_name(self.repo_id),
+            repo_id=self.spec.repo_id,
+            claim_name=RepoVolume.claim_name(self.spec.repo_id),
             timeout=deadline - loop.time(),
         )
         config_name = _dockerfile_config_name()
@@ -540,7 +483,7 @@ class _ProjectBuildExecutor:
             namespace=BERTRAND_NAMESPACE,
             name=config_name,
             labels=self.labels,
-            data={BUILD_JOB_DOCKERFILE_KEY: self.dockerfile},
+            data={BUILD_JOB_DOCKERFILE_KEY: self.spec.dockerfile},
             timeout=deadline - loop.time(),
         )
         return _PreparedBuildContext(
@@ -549,7 +492,7 @@ class _ProjectBuildExecutor:
             volumes=(
                 VolumeSpec.pvc(
                     BUILD_JOB_CONTEXT_VOLUME,
-                    claim_name=RepoVolume.claim_name(self.repo_id),
+                    claim_name=RepoVolume.claim_name(self.spec.repo_id),
                 ),
                 VolumeSpec.config_map(
                     BUILD_JOB_DOCKERFILE_VOLUME,
@@ -561,7 +504,7 @@ class _ProjectBuildExecutor:
                     name=BUILD_JOB_CONTEXT_VOLUME,
                     mount_path=BUILD_JOB_CONTEXT_MOUNT,
                     read_only=True,
-                    sub_path=_worktree_sub_path(self.worktree),
+                    sub_path=_worktree_sub_path(self.spec.worktree),
                 ),
                 VolumeMountSpec(
                     name=BUILD_JOB_DOCKERFILE_VOLUME,
@@ -576,7 +519,7 @@ class _ProjectBuildExecutor:
         self,
         kube: Kube,
         *,
-        env_id: str | None,
+        env_id: str,
         timeout: float,
     ) -> tuple[
         list[VolumeSpec],
@@ -584,8 +527,6 @@ class _ProjectBuildExecutor:
         dict[str, str],
         dict[str, str],
     ]:
-        if env_id is None:
-            return [], [], {}, {}
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
         volumes: list[VolumeSpec] = []
@@ -596,8 +537,8 @@ class _ProjectBuildExecutor:
             tuple[CapabilityKind, Mapping[KubeName, bool], str, dict[str, str]],
             ...,
         ] = (
-            ("secret", self.secrets, BUILD_JOB_SECRET_MOUNT, secret_paths),
-            ("ssh", self.ssh, BUILD_JOB_SSH_MOUNT, ssh_paths),
+            ("secret", self.spec.secrets, BUILD_JOB_SECRET_MOUNT, secret_paths),
+            ("ssh", self.spec.ssh, BUILD_JOB_SSH_MOUNT, ssh_paths),
         )
 
         for kind, requests, mount_root, paths in groups:
@@ -636,7 +577,7 @@ class _ProjectBuildExecutor:
         self,
         kube: Kube,
         *,
-        env_id: str | None,
+        env_id: str,
         timeout: float,
     ) -> tuple[_BuildKitTarget, ...]:
         """Schedule this build onto native BuildKit builders.
@@ -645,7 +586,7 @@ class _ProjectBuildExecutor:
         ----------
         kube : Kube
             Active Kubernetes API context.
-        env_id : str | None
+        env_id : str
             Environment UUID used to resolve device capabilities.
         timeout : float
             Maximum request budget in seconds. If infinite, wait indefinitely.
@@ -659,17 +600,12 @@ class _ProjectBuildExecutor:
         ------
         TimeoutError
             If ``timeout`` is non-positive.
-        ValueError
-            If device inputs are present without ``env_id``.
         OSError
             If no scheduled builder can satisfy required device capabilities.
         """
         if timeout <= 0:
             msg = "BuildKit build scheduling timeout must be non-negative"
             raise TimeoutError(msg)
-        if self.devices and env_id is None:
-            msg = "BuildKit device inputs require an environment identity"
-            raise ValueError(msg)
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
         config_hash = await IMAGES.current_buildkit_config_hash(
@@ -684,7 +620,7 @@ class _ProjectBuildExecutor:
 
         targets: list[_BuildKitTarget] = []
         for platform, candidates in groups.items():
-            if not self.devices:
+            if not self.spec.devices:
                 targets.append((candidates[0], ()))
                 continue
             errors: list[str] = []
@@ -716,22 +652,19 @@ class _ProjectBuildExecutor:
         self,
         kube: Kube,
         *,
-        env_id: str | None,
+        env_id: str,
         node: str | None,
         timeout: float,
     ) -> tuple[str, ...]:
-        if not self.devices:
+        if not self.spec.devices:
             return ()
         if timeout <= 0:
             msg = "BuildKit device capability resolution timeout must be non-negative"
             raise TimeoutError(msg)
-        if env_id is None:
-            msg = "BuildKit device inputs require an environment identity"
-            raise ValueError(msg)
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
         selectors: list[str] = []
-        for capability_id, required in sorted(self.devices.items()):
+        for capability_id, required in sorted(self.spec.devices.items()):
             capability = await Capability.resolve_device(
                 kube,
                 capability_id=capability_id,
@@ -746,7 +679,7 @@ class _ProjectBuildExecutor:
 
 
 def _normalize_capability_requests(
-    requests: Mapping[KubeName, bool],
+    requests: Mapping[str, bool],
     *,
     kind: str,
 ) -> dict[KubeName, bool]:

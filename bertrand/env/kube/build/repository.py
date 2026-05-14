@@ -15,14 +15,16 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from bertrand.env.git import BERTRAND_ENV, BERTRAND_NAMESPACE, INFINITY, run, sudo
-from bertrand.env.kube.api import (
+from bertrand.env.kube.api.client import (
     CLUSTER_REGISTRY_READY_LABEL,
     CLUSTER_REGISTRY_READY_VALUE,
+    Kube,
+)
+from bertrand.env.kube.api.spec import (
     ContainerPortSpec,
     ContainerSpec,
     DeploymentStrategySpec,
     EnvVarSpec,
-    Kube,
     PodTemplateSpec,
     ProbeSpec,
     ServicePortSpec,

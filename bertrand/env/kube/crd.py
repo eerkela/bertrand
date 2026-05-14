@@ -9,16 +9,10 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Self, cast
 
 from kubernetes import client as kube_client
+from pydantic import BaseModel, ConfigDict, Field
 
 from bertrand.env.git import until
 
-from .api import (
-    CustomResourceSpec,
-    Kube,
-    KubeMetadata,
-    WatchEvent,
-    WatchExpired,
-)
 from .api._helpers import (
     _create_or_patch,
     _label_selector,
@@ -27,6 +21,8 @@ from .api._helpers import (
     _validate_delete_status,
     _wait_until_deleted,
 )
+from .api.metadata import KubeMetadata
+from .api.watch import WatchEvent, WatchExpired
 from .api.watch import watch as kube_watch
 
 CRD_WAIT_POLL_INTERVAL_SECONDS = 0.5
@@ -34,11 +30,40 @@ CRD_WAIT_POLL_INTERVAL_SECONDS = 0.5
 if TYPE_CHECKING:
     import builtins
 
+    from .api.client import Kube
+    from .api.spec import CustomResourceSpec
+
 
 @dataclass(frozen=True)
 class _CustomResourceSnapshot:
     items: list[NamespacedCustomObject]
     resource_version: str
+
+
+class CustomObjectMetadata(BaseModel):
+    """Validated subset of Kubernetes custom-object metadata.
+
+    Parameters
+    ----------
+    name : str
+        Kubernetes object name.
+    namespace : str
+        Namespace that owns the object.
+    generation : int
+        Kubernetes metadata generation.
+    resource_version : str
+        Kubernetes resource version, parsed from ``resourceVersion``.
+    labels : dict[str, str]
+        Kubernetes metadata labels.
+    """
+
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+    name: str = ""
+    namespace: str = ""
+    generation: int = 0
+    resource_version: str = Field(default="", alias="resourceVersion")
+    labels: dict[str, str] = Field(default_factory=dict)
 
 
 @dataclass(frozen=True)
