@@ -17,7 +17,6 @@ from bertrand.env.kube.api import Kube
 from bertrand.env.kube.build.controller import BUILDKIT_BUILD_CONTROLLER
 from bertrand.env.kube.build.daemon import BUILDKIT_POOL
 from bertrand.env.kube.build.execution import job_logs
-from bertrand.env.kube.build.lifecycle import gc_project_images
 from bertrand.env.kube.build.project import project_image_build
 from bertrand.env.kube.build.refs import split_tagged_ref
 from bertrand.env.kube.build.repository import IMAGES
@@ -127,8 +126,6 @@ async def bertrand_build(
                         if follower is not None:
                             await follower.close()
                     results.append((tag, result))
-            if not detach:
-                await _best_effort_gc(kube, quiet=quiet)
 
     if not quiet:
         if detach:
@@ -329,17 +326,6 @@ async def _assert_build_runtime(kube: Kube, *, timeout: float) -> None:
             f"to converge the Kubernetes build service.\n{detail}"
         )
         raise OSError(msg)
-
-
-async def _best_effort_gc(kube: Kube, *, quiet: bool) -> None:
-    try:
-        await gc_project_images(kube, timeout=INFINITY)
-    except (OSError, TimeoutError, ValueError) as err:
-        if not quiet:
-            print(
-                f"warning: project image garbage collection failed: {err}",
-                file=sys.stderr,
-            )
 
 
 class _BuildLogFollower:

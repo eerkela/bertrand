@@ -380,29 +380,6 @@ class ConanConfig(Resource):
     async def validate(self, config: Config, fragment: Any) -> Model | None:
         return self.Model.model_validate(fragment)
 
-    async def volumes(self, config: Config, tag: TOMLKey) -> list[Resource.Volume]:
-        from .bertrand import Bertrand
-
-        model = config.get(ConanConfig)
-        if model is None:
-            return []
-
-        bertrand = config.get(Bertrand)
-        active = None if bertrand is None else bertrand.image.get(tag)
-        fingerprint = {
-            "conan": model.model_dump(by_alias=True, mode="json"),
-            "tag-conan": (
-                {}
-                if active is None
-                else active.conan.model_dump(by_alias=True, mode="json")
-            ),
-            "build-args": {} if active is None else dict(sorted(active.args.items())),
-        }
-        return [
-            Resource.Volume(target=CONAN_CACHE, fingerprint=fingerprint),
-            Resource.Volume(target=CCACHE_CACHE, fingerprint=fingerprint),
-        ]
-
     @staticmethod
     def _merge_options(out: dict[str, Scalar], options: ConanOptions) -> None:
         for pattern, pattern_options in sorted(options.items(), key=lambda i: i[0]):

@@ -610,6 +610,68 @@ async def gc_project_images(
     return collected
 
 
+async def next_project_image_gc_time(
+    kube: Kube,
+    *,
+    timeout: float,
+    grace_seconds: int = PROJECT_IMAGE_GC_GRACE_SECONDS,
+) -> datetime | None:
+    """Return the next time retired project images may be GC-eligible.
+
+    Parameters
+    ----------
+    kube : Kube
+        Active Kubernetes API context.
+    timeout : float
+        Maximum request budget in seconds.
+    grace_seconds : int, optional
+        Minimum time a record must remain retired before collection.
+
+    Returns
+    -------
+    datetime | None
+        Earliest retirement grace boundary among retired records, or `None` when
+        there are no retired records.
+
+    Raises
+    ------
+    TimeoutError
+        If `timeout` is non-positive.
+    ValueError
+        If `grace_seconds` is negative.
+
+    Notes
+    -----
+    This is a cheap scheduling hint only.  Manifest deletion safety remains centralized
+    in :func:`gc_project_images`.
+    """
+    if timeout <= 0:
+        msg = "project image GC scheduling timeout must be non-negative"
+        raise TimeoutError(msg)
+    if grace_seconds < 0:
+        msg = "project image GC scheduling grace_seconds must be non-negative"
+        raise ValueError(msg)
+
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    await ensure_project_image_crd(kube, timeout=deadline - loop.time())
+    records = await list_project_images(
+        kube,
+        labels={PROJECT_IMAGE_PHASE_LABEL: "retired"},
+        timeout=deadline - loop.time(),
+    )
+    if not records:
+        return None
+
+    now = datetime.now(UTC)
+    grace = timedelta(seconds=grace_seconds)
+    next_times = [
+        record.retired_at + grace if record.retired_at is not None else now
+        for record in records
+    ]
+    return min(next_times)
+
+
 async def record_project_image(
     kube: Kube,
     *,

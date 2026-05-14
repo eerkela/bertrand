@@ -18,11 +18,10 @@ import shutil
 import tempfile
 import time
 import uuid
-from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Annotated
+from typing import TYPE_CHECKING, Annotated, Protocol
 
 import jinja2
 import packaging.version
@@ -34,6 +33,7 @@ from pydantic import (
     PositiveInt,
 )
 
+from bertrand.env.build_args import normalize_image_build_args
 from bertrand.env.kube.api import (
     CLUSTER_REGISTRY_READY_LABEL,
     CLUSTER_REGISTRY_READY_VALUE,
@@ -41,9 +41,8 @@ from bertrand.env.kube.api import (
 )
 from bertrand.env.kube.build.repository import IMAGES
 from bertrand.env.kube.node import Node
-from bertrand.env.kube.workload.cache import CacheVolume
 
-from ..config import Bertrand, Config, PyProject
+from ..config import CCACHE_CACHE, CONAN_HOME, UV_CACHE, Bertrand, Config, PyProject
 from ..config.core import (
     NonEmpty,
     NoWhiteSpace,
@@ -67,6 +66,14 @@ from ..git import (
 from ..version import VERSION
 from .container import Container, container_args
 from .nerdctl import nerdctl, nerdctl_ids, start_buildkit
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping, Sequence
+
+
+class _CapabilityRequest(Protocol):
+    id: str
+    required: bool
 
 
 def _to_utc(value: datetime) -> datetime:
@@ -342,8 +349,6 @@ def _dependency_copy_specs(from_images: Sequence[OCIImageRef]) -> list[dict[str,
 def render_containerfile(
     model: Bertrand.Model,
     tag: TOMLKey,
-    *,
-    build_mounts: Sequence[str] = (),
 ) -> str:
     """Render a generated Containerfile for one build tag.
 
@@ -353,8 +358,6 @@ def render_containerfile(
         The validated Bertrand model containing the build matrix.
     tag : TOMLKey
         The build tag to render.
-    build_mounts : Sequence[str], optional
-        Additional mount fragments injected into the generated build step.
 
     Returns
     -------
@@ -402,16 +405,39 @@ def render_containerfile(
         cpus=0,
         page_size_kib=page_size_kib,
         env_mount=str(WORKTREE_MOUNT),
-        build_mounts=list(build_mounts),
+        uv_cache=str(UV_CACHE),
+        conan_home=str(CONAN_HOME),
+        ccache_dir=str(CCACHE_CACHE),
+        image_tag_env=IMAGE_TAG_ENV,
+        image_tag=tag,
+        build_args=[
+            {"key": key, "value": value}
+            for key, value in normalize_image_build_args(build.args).items()
+        ],
+        run_mounts=[
+            *_capability_mount_specs("secret", build.secrets),
+            *_capability_mount_specs("ssh", build.ssh),
+        ],
         dependency_copies=_dependency_copy_specs(build.from_),
     )
 
 
 def _format_build_args(build_args: dict[str, Scalar]) -> list[str]:
     args: list[str] = []
-    for key, value in build_args.items():
+    for key, value in normalize_image_build_args(build_args).items():
         args.extend(["--build-arg", f"{key}={value}"])
     return args
+
+
+def _capability_mount_specs(
+    kind: str,
+    requests: Sequence[_CapabilityRequest],
+) -> list[str]:
+    out: list[str] = []
+    for request in sorted(requests, key=lambda entry: entry.id):
+        required = "true" if request.required else "false"
+        out.append(f"type={kind},id={request.id},required={required}")
+    return out
 
 
 async def _resolve_scope(config: Config) -> str:
@@ -491,12 +517,6 @@ async def image_args(
     if build is None:
         raise ValueError(f"unknown build tag '{tag}' for environment at {config.root}")
 
-    try:
-        with await Kube.host(timeout=INFINITY) as kube:
-            await CacheVolume.gc(kube, config, env_id, timeout=INFINITY)
-    except Exception:
-        pass
-
     run_id = uuid.uuid4().hex
     scope = await _resolve_scope(config)
     image_name = f"{python.project.name}.{scope}.{tag}.{run_id[:7]}"
@@ -506,18 +526,11 @@ async def image_args(
     if build.containerfile is None:
         containerfile = config.root / METADATA_DIR / "images" / tag / "Containerfile"
         containerfile.parent.mkdir(parents=True, exist_ok=True)
-        build_mounts: list[str] = [
-            (
-                f"--mount=type=cache,id={volume.name},target={volume.target},sharing=locked"
-            )
-            for volume in await CacheVolume.from_config(config, tag, env_id)
-        ]
         atomic_write_text(
             containerfile,
             render_containerfile(
                 bertrand,
                 tag,
-                build_mounts=build_mounts,
             ),
             encoding="utf-8",
         )

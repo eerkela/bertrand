@@ -1,17 +1,22 @@
-"""A PEP517/660-compliant build backend for Bertrand projects, which runs an
-instrumented CMake build to detect and compile C++ dependencies, and generate bindings
-to back cross-language imports.
+"""A PEP517/660-compliant build backend for Bertrand projects.
+
+This backend runs an instrumented CMake build to detect and compile C++ dependencies,
+and generate bindings to back cross-language imports.
 """
+
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Mapping, Sequence
 
 import setuptools.build_meta
 
+from .build_args import (
+    IMAGE_BUILD_ARGS_CONFIG_SETTING,
+    decode_image_build_args,
+)
 from .git import run
-
 
 ARTIFACT_ROOT = Path("/tmp/bertrand/artifacts")
 CONANFILE = ARTIFACT_ROOT / "conanfile.py"
@@ -26,45 +31,76 @@ type SetuptoolsConfigSettings = dict[str, SetuptoolsConfigValue] | None
 
 
 async def _conan_lock(*, quiet: bool) -> None:
-    await run([
-        "conan",
-        "lock",
-        "create",
-        str(CONANFILE),
-        "--profile:host=default",  # always use generated default profile
-        "--profile:build=default",  # always use generated default profile
-        "--build=missing",  # incrementally build missing dependencies
-        "--update",  # refresh dependency graph similarly to `uv lock`
-        f"--lockfile-out={CONAN_LOCK}",  # write deterministic lock into artifact root
-        "-cc", "core:non_interactive=True",  # avoid prompts in image/container builds
-    ], capture_output=quiet)
+    await run(
+        [
+            "conan",
+            "lock",
+            "create",
+            str(CONANFILE),
+            "--profile:host=default",  # always use generated default profile
+            "--profile:build=default",  # always use generated default profile
+            "--build=missing",  # incrementally build missing dependencies
+            "--update",  # refresh dependency graph similarly to `uv lock`
+            # write deterministic lock into artifact root
+            f"--lockfile-out={CONAN_LOCK}",
+            "-cc",
+            "core:non_interactive=True",  # avoid prompts in image/container builds
+        ],
+        capture_output=quiet,
+    )
 
 
 async def _conan_install_lock(*, quiet: bool) -> None:
-    await run([
-        "conan",
-        "install",
-        str(CONANFILE),
-        "--profile:host=default",  # always use generated default profile
-        "--profile:build=default",  # always use generated default profile
-        "--build=missing",  # incrementally build missing dependencies
-        f"--lockfile={CONAN_LOCK}",  # install using deterministic lockfile
-        f"--output-folder={CONAN_OUTPUT}",  # install into artifact directory
-        "-cc", "core:non_interactive=True",  # avoid prompts in image/container builds
-    ], capture_output=quiet)
+    await run(
+        [
+            "conan",
+            "install",
+            str(CONANFILE),
+            "--profile:host=default",  # always use generated default profile
+            "--profile:build=default",  # always use generated default profile
+            "--build=missing",  # incrementally build missing dependencies
+            f"--lockfile={CONAN_LOCK}",  # install using deterministic lockfile
+            f"--output-folder={CONAN_OUTPUT}",  # install into artifact directory
+            "-cc",
+            "core:non_interactive=True",  # avoid prompts in image/container builds
+        ],
+        capture_output=quiet,
+    )
 
 
-def _setuptools_config_settings(config_settings: ConfigSettings) -> SetuptoolsConfigSettings:
+def read_image_build_args(config_settings: ConfigSettings = None) -> dict[str, str]:
+    """Read Bertrand image build arguments from PEP 517 config settings.
+
+    Parameters
+    ----------
+    config_settings : Mapping[str, str | Sequence[str]] | None, optional
+        Frontend-provided PEP 517/660 config settings.
+
+    Returns
+    -------
+    dict[str, str]
+        Normalized image build arguments provided by the internal CLI.
+
+    """
+    build_args, _ = _split_bertrand_config_settings(config_settings)
+    return build_args
+
+
+def _setuptools_config_settings(
+    config_settings: ConfigSettings,
+) -> SetuptoolsConfigSettings:
+    _, config_settings = _split_bertrand_config_settings(config_settings)
     if config_settings is None:
         return None
 
     normalized: dict[str, SetuptoolsConfigValue] = {}
     for key, value in config_settings.items():
         if not isinstance(key, str):
-            raise TypeError(
+            msg = (
                 "invalid build backend config_settings key type: "
                 f"expected 'str', got {type(key).__name__}"
             )
+            raise TypeError(msg)
         if isinstance(value, str):
             normalized[key] = value
             continue
@@ -72,19 +108,56 @@ def _setuptools_config_settings(config_settings: ConfigSettings) -> SetuptoolsCo
             entries: list[str] = []
             for entry in value:
                 if not isinstance(entry, str):
-                    raise TypeError(
+                    msg = (
                         "invalid build backend config_settings sequence value for key "
-                        f"{repr(key)}: expected 'str', got {type(entry).__name__}"
+                        f"{key!r}: expected 'str', got {type(entry).__name__}"
                     )
+                    raise TypeError(msg)
                 entries.append(entry)
             normalized[key] = entries
             continue
-        raise TypeError(
+        msg = (
             "invalid build backend config_settings value for key "
-            f"{repr(key)}: expected 'str | Sequence[str]', got "
+            f"{key!r}: expected 'str | Sequence[str]', got "
             f"{type(value).__name__}"
         )
+        raise TypeError(msg)
     return normalized
+
+
+def _split_bertrand_config_settings(
+    config_settings: ConfigSettings,
+) -> tuple[dict[str, str], ConfigSettings]:
+    if config_settings is None:
+        return {}, None
+
+    build_args: dict[str, str] = {}
+    remaining: dict[str, PEP517ConfigValue] = {}
+    for key, value in config_settings.items():
+        if key == IMAGE_BUILD_ARGS_CONFIG_SETTING:
+            build_args = _decode_build_args_config_setting(value)
+        else:
+            remaining[key] = value
+    return build_args, remaining or None
+
+
+def _decode_build_args_config_setting(value: PEP517ConfigValue) -> dict[str, str]:
+    if isinstance(value, str):
+        return decode_image_build_args(value)
+    if isinstance(value, Sequence):
+        entries = list(value)
+        if len(entries) != 1:
+            msg = f"{IMAGE_BUILD_ARGS_CONFIG_SETTING!r} must be provided exactly once"
+            raise TypeError(msg)
+        entry = entries[0]
+        if not isinstance(entry, str):
+            msg = (
+                f"{IMAGE_BUILD_ARGS_CONFIG_SETTING!r} must be encoded as a JSON string"
+            )
+            raise TypeError(msg)
+        return decode_image_build_args(entry)
+    msg = f"{IMAGE_BUILD_ARGS_CONFIG_SETTING!r} must be encoded as a JSON string"
+    raise TypeError(msg)
 
 
 def get_requires_for_build_wheel(config_settings: ConfigSettings = None) -> list[str]:
@@ -99,11 +172,6 @@ def get_requires_for_build_wheel(config_settings: ConfigSettings = None) -> list
     -------
     list[str]
         Build requirements requested by setuptools for wheel builds.
-
-    Raises
-    ------
-    TypeError
-        If `config_settings` contains unsupported key or value types.
 
     Notes
     -----
@@ -130,11 +198,6 @@ def prepare_metadata_for_build_wheel(
     -------
     str
         The relative path to the generated metadata directory.
-
-    Raises
-    ------
-    TypeError
-        If `config_settings` contains unsupported key or value types.
 
     Notes
     -----
@@ -169,13 +232,6 @@ def build_wheel(
     str
         The wheel filename generated by setuptools.
 
-    Raises
-    ------
-    TypeError
-        If `config_settings` contains unsupported key or value types.
-    OSError
-        If Conan dependency installation fails.
-
     Notes
     -----
     This hook performs Bertrand's package-manager pre-step by running Conan install
@@ -206,11 +262,6 @@ def get_requires_for_build_sdist(config_settings: ConfigSettings = None) -> list
     list[str]
         Build requirements requested by setuptools for sdist builds.
 
-    Raises
-    ------
-    TypeError
-        If `config_settings` contains unsupported key or value types.
-
     Notes
     -----
     This hook delegates directly to setuptools and does not invoke Conan.
@@ -234,11 +285,6 @@ def build_sdist(sdist_directory: str, config_settings: ConfigSettings = None) ->
     str
         The sdist filename generated by setuptools.
 
-    Raises
-    ------
-    TypeError
-        If `config_settings` contains unsupported key or value types.
-
     Notes
     -----
     This hook delegates directly to setuptools and does not invoke Conan.
@@ -247,7 +293,9 @@ def build_sdist(sdist_directory: str, config_settings: ConfigSettings = None) ->
     return setuptools.build_meta.build_sdist(sdist_directory, settings)
 
 
-def get_requires_for_build_editable(config_settings: ConfigSettings = None) -> list[str]:
+def get_requires_for_build_editable(
+    config_settings: ConfigSettings = None,
+) -> list[str]:
     """Return additional requirements needed to build an editable wheel.
 
     Parameters
@@ -259,11 +307,6 @@ def get_requires_for_build_editable(config_settings: ConfigSettings = None) -> l
     -------
     list[str]
         Build requirements requested by setuptools for editable wheel builds.
-
-    Raises
-    ------
-    TypeError
-        If `config_settings` contains unsupported key or value types.
 
     Notes
     -----
@@ -290,11 +333,6 @@ def prepare_metadata_for_build_editable(
     -------
     str
         The relative path to the generated metadata directory.
-
-    Raises
-    ------
-    TypeError
-        If `config_settings` contains unsupported key or value types.
 
     Notes
     -----
@@ -328,13 +366,6 @@ def build_editable(
     -------
     str
         The editable wheel filename generated by setuptools.
-
-    Raises
-    ------
-    TypeError
-        If `config_settings` contains unsupported key or value types.
-    OSError
-        If Conan dependency installation fails.
 
     Notes
     -----

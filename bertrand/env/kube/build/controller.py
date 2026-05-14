@@ -7,7 +7,7 @@ import hashlib
 import json
 import sys
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -33,9 +33,12 @@ from bertrand.env.kube.api import (
 from bertrand.env.kube.build.job import _ProjectBuildExecutor
 from bertrand.env.kube.build.lifecycle import (
     PROJECT_IMAGE_CONFIG_ID,
+    PROJECT_IMAGE_GC_GRACE_SECONDS,
     ProjectImageIdentity,
     ProjectImagePublication,
     ensure_project_image_crd,
+    gc_project_images,
+    next_project_image_gc_time,
 )
 from bertrand.env.kube.build.manifest import _publish_project_image_manifest
 from bertrand.env.kube.crd import CustomResourceClient, CustomResourceDefinition
@@ -65,6 +68,10 @@ BUILDKIT_BUILD_SERVICE_ACCOUNT = "bertrand-build-controller"
 BUILDKIT_BUILD_RECONCILE_SECONDS = 2.0
 BUILDKIT_BUILD_WAIT_POLL_SECONDS = 2.0
 BUILDKIT_BUILD_LOG_EXCERPT_CHARS = 4000
+PROJECT_IMAGE_GC_EMPTY_CHECK_SECONDS = 3600.0
+PROJECT_IMAGE_GC_READY_CHECK_SECONDS = 900.0
+PROJECT_IMAGE_GC_FAILURE_RETRY_SECONDS = 300.0
+PROJECT_IMAGE_GC_TIMEOUT_SECONDS = 60.0
 
 type _BuildKitBuildPhase = Literal["Pending", "Running", "Succeeded", "Failed"]
 type _BuildNetworkMode = Literal["default", "none", "host"]
@@ -460,6 +467,9 @@ class BuildKitBuildRecord(BaseModel):
 class _BuildKitBuildController:
     """In-cluster reconciler for durable BuildKit build requests."""
 
+    def __init__(self) -> None:
+        self._next_gc_at = datetime.min.replace(tzinfo=UTC)
+
     async def run(self, *, timeout: float = INFINITY) -> None:
         """Run the controller reconciliation loop.
 
@@ -488,6 +498,7 @@ class _BuildKitBuildController:
                         file=sys.stderr,
                         flush=True,
                     )
+                await self._maybe_gc(kube, deadline=deadline)
                 remaining = deadline - loop.time()
                 if remaining <= 0:
                     break
@@ -581,6 +592,9 @@ class _BuildKitBuildController:
                 log_excerpt="",
                 timeout=deadline - loop.time(),
             )
+            self._schedule_gc_no_later_than(
+                datetime.now(UTC) + timedelta(seconds=PROJECT_IMAGE_GC_GRACE_SECONDS)
+            )
         except (OSError, TimeoutError, ValueError) as err:
             await _patch_build_status(
                 kube,
@@ -672,6 +686,51 @@ class _BuildKitBuildController:
             job_observer=observe_job,
             timeout=deadline - loop.time(),
         )
+
+    async def _maybe_gc(self, kube: Kube, *, deadline: float) -> None:
+        now = datetime.now(UTC)
+        if now < self._next_gc_at:
+            return
+
+        loop = asyncio.get_running_loop()
+        pass_deadline = min(
+            deadline,
+            loop.time() + PROJECT_IMAGE_GC_TIMEOUT_SECONDS,
+        )
+        if pass_deadline <= loop.time():
+            return
+
+        try:
+            next_gc = await next_project_image_gc_time(
+                kube,
+                timeout=pass_deadline - loop.time(),
+            )
+            if next_gc is None:
+                self._schedule_gc_after(PROJECT_IMAGE_GC_EMPTY_CHECK_SECONDS)
+                return
+            if next_gc > now:
+                self._next_gc_at = next_gc
+                return
+
+            await gc_project_images(
+                kube,
+                timeout=pass_deadline - loop.time(),
+            )
+            self._schedule_gc_after(PROJECT_IMAGE_GC_READY_CHECK_SECONDS)
+        except (OSError, TimeoutError, ValueError) as err:
+            self._schedule_gc_after(PROJECT_IMAGE_GC_FAILURE_RETRY_SECONDS)
+            print(
+                f"warning: project image garbage collection failed: {err}",
+                file=sys.stderr,
+                flush=True,
+            )
+
+    def _schedule_gc_after(self, seconds: float) -> None:
+        self._next_gc_at = datetime.now(UTC) + timedelta(seconds=seconds)
+
+    def _schedule_gc_no_later_than(self, when: datetime) -> None:
+        if self._next_gc_at <= datetime.now(UTC) or when < self._next_gc_at:
+            self._next_gc_at = when
 
 
 async def ensure_buildkit_build_crd(kube: Kube, *, timeout: float) -> None:

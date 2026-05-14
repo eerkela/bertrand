@@ -6,16 +6,16 @@ import importlib.resources as importlib_resources
 import re
 import string
 import uuid
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path, PosixPath
 from typing import (
+    TYPE_CHECKING,
     Annotated,
     Any,
     ClassVar,
     Protocol,
     Self,
-    TYPE_CHECKING,
     TypeVar,
     cast,
 )
@@ -33,7 +33,7 @@ from pydantic import (
 
 from bertrand.env.kube.lock.cluster import ClusterLock
 
-from ..git import INFINITY, GitRepository, inside_container, inside_image, run
+from ..git import INFINITY, GitRepository
 
 if TYPE_CHECKING:
     from types import TracebackType
@@ -480,39 +480,6 @@ class Resource:
         coupling to any particular output schema.
         """
 
-    @dataclass(frozen=True)
-    class Volume:
-        """A resource-owned cache volume declaration used for build and runtime args.
-
-        Attributes
-        ----------
-        target : PosixPath
-            Absolute in-container mount target.
-        fingerprint : Mapping[str, Any]
-            JSON-compatible semantic payload that determines cache coherence for this
-            volume.
-        """
-
-        target: PosixPath
-        fingerprint: Mapping[str, Any]
-
-    async def volumes(self, config: Config, tag: TOMLKey) -> list[Resource.Volume]:
-        """Declare resource-owned cache volumes for a given image tag.
-
-        Parameters
-        ----------
-        config : Config
-            The active configuration context.
-        tag : str
-            The active image tag.
-
-        Returns
-        -------
-        list[Resource.Volume]
-            A list of volume declarations owned by this resource.  Empty by default.
-        """
-        return []
-
     async def schema(self) -> dict[str, Any] | None:
         """Return a JSON Schema description for this resource, if available.
 
@@ -901,7 +868,7 @@ class Config:
             raise RuntimeError("layout context is not active")
         self._entered -= 1
         if self._entered == 0:
-            self.resources = {r: None for r in self.resources}
+            self.resources = dict.fromkeys(self.resources)
 
     def __bool__(self) -> bool:
         return self._entered > 0
@@ -955,7 +922,7 @@ class Config:
             matches the return type of the resource's `validate()` method, in order to
             safely propagate static type information.
         """
-        return cast(_ResourceModel_co | None, self.resources.get(r.name))
+        return cast("_ResourceModel_co | None", self.resources.get(r.name))
 
     @staticmethod
     async def schema() -> dict[ResourceName, dict[str, Any] | None]:
@@ -1017,76 +984,3 @@ class Config:
                     raise OSError(
                         f"failed to render resource '{r.name}': {err}"
                     ) from err
-
-    async def build(self, tag: TOMLKey) -> None:
-        """Invoke Bertrand's PEP517 backend from within an image or container context.
-
-        Parameters
-        ----------
-        tag : str
-            The active image tag for this build.
-
-        Raises
-        ------
-        RuntimeError
-            If called outside an image context or without an active config context.
-        OSError
-            If required config state is missing, tag/group resolution fails.
-        CommandError
-            If a build command fails.
-        """
-        from .bertrand import Bertrand
-        from .python import PyProject
-
-        if not inside_image():
-            raise RuntimeError("build() requires access to a container filesystem")
-        if not self:
-            raise RuntimeError("build() requires an active config context")
-        python = self.get(PyProject)
-        bertrand = self.get(Bertrand)
-        if python is None:
-            raise OSError("build() requires parsed 'pyproject' configuration")
-        if bertrand is None:
-            raise OSError("build() requires parsed 'bertrand' configuration")
-
-        # confirm tag is declared and has a matching optional-dependencies group, which
-        # is the simplest and most efficient way to get pip to install the correct set
-        # of Python dependencies for this build, without needing a multi-stage build
-        if tag not in bertrand.image:
-            raise OSError(
-                f"build() received unknown active tag '{tag}' (declared tags: "
-                f"{', '.join(sorted(repr(name) for name in bertrand.image))})"
-            )
-        groups = python.project.optional_dependencies
-        if tag not in groups:
-            raise OSError(
-                "build() requires matching [project.optional-dependencies] group for "
-                f"active tag '{tag}'"
-            )
-
-        # form 1-step sync command
-        sync_cmd = [
-            "uv",
-            "sync",
-            "--locked",
-            "--system",  # install into system Python
-            "--inexact",  # preserve existing compatible dependencies where possible
-            "--no-default-groups",  # don't install any extras
-            "--no-dev",  # don't install extra dependency groups
-            "--extra",
-            tag,  # only install the group matching the active tag
-            "--no-build-isolation-package",
-            python.project.name,  # no isolation
-        ]
-        if not inside_container():
-            sync_cmd.append("--no-editable")  # image build context -> non-editable
-
-        # render output artifacts, update lockfile, and invoke PEP517/660 backend
-        async with ClusterLock(
-            self.kube,
-            _metadata_lock_key(self.repo, self.root),
-            timeout=self.timeout,
-        ):
-            await self.sync(tag)  # render artifacts to container filesystem
-            await run(["uv", "lock"], cwd=self.root)  # update lockfile
-            await run(sync_cmd, cwd=self.root)  # orchestrate build

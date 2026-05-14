@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, cast
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable
 
+from bertrand.env.cli.internal.build import bertrand_build
 from bertrand.env.config import Config
 from bertrand.env.git import (
     CONTAINER_TMP_MOUNT,
@@ -25,11 +26,10 @@ from bertrand.env.version import __version__
 
 
 def _require_active_image_tag() -> str:
-    tag = os.environ.get(IMAGE_TAG_ENV, "").strip()
-    if not tag:
+    if IMAGE_TAG_ENV not in os.environ:
         msg = f"missing active image tag in container environment: '{IMAGE_TAG_ENV}'"
         raise OSError(msg)
-    return tag
+    return os.environ[IMAGE_TAG_ENV].strip()
 
 
 class Internal:
@@ -100,6 +100,14 @@ class Internal:
                 "build",
                 help="Build and install the current workspace into this container "
                 "using Bertrand's default 'uv install' command.",
+            )
+            command.add_argument(
+                "--build-arg",
+                action="append",
+                default=[],
+                metavar="KEY=VALUE",
+                help="Image-build-only argument to persist into the image build "
+                "contract and forward to the PEP 517/660 backend.",
             )
             command.set_defaults(handler=Internal.build)
 
@@ -185,38 +193,18 @@ class Internal:
             )
 
     @staticmethod
-    def build(_args: argparse.Namespace) -> None:
+    def build(args: argparse.Namespace) -> None:
         """Execute the `bertrand build` CLI command.
 
         This command runs from within a containerized environment.
 
         Parameters
         ----------
-        _args : argparse.Namespace
+        args : argparse.Namespace
             The parsed command-line arguments.
 
-        Raises
-        ------
-        OSError
-            If artifact sync or Python dependency/build orchestration fails.
         """
-        tag = os.environ.get(IMAGE_TAG_ENV, "").strip()
-        if not tag:
-            msg = (
-                "could not determine active image tag in container environment: "
-                f"'{IMAGE_TAG_ENV}'"
-            )
-            raise OSError(msg)
-
-        async def build() -> None:
-            with await Kube.host(timeout=INFINITY) as kube:
-                async with await Config.load(
-                    WORKTREE_MOUNT,
-                    kube=kube,
-                ) as config:
-                    await config.build(tag)
-
-        asyncio.run(build())
+        bertrand_build(args)
 
     @staticmethod
     def check(_args: argparse.Namespace) -> None:

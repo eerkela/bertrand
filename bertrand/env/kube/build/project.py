@@ -10,6 +10,7 @@ import uuid
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal, Protocol
 
+from bertrand.env.build_args import normalize_image_build_args
 from bertrand.env.config import Bertrand, PyProject
 from bertrand.env.config.bertrand import project_image_tag
 from bertrand.env.git import INFINITY
@@ -287,7 +288,12 @@ def project_image_build(
         ),
         oci_tag,
     )
-    dockerfile = project_containerfile(config.root, bertrand, tag, image_config)
+    dockerfile = project_containerfile(
+        config.root,
+        bertrand,
+        tag,
+        image_config,
+    )
     config_id = _config_id(
         repo_id=repo_id,
         worktree=worktree,
@@ -335,7 +341,7 @@ def _image_component(value: str, *, fallback: str) -> str:
 
 
 def _build_args(args: Mapping[str, object]) -> dict[str, str]:
-    return {str(key): str(value) for key, value in args.items()}
+    return normalize_image_build_args(dict(args))
 
 
 def _capability_requests(

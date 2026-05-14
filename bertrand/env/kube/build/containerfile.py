@@ -4,20 +4,28 @@ from __future__ import annotations
 
 import os
 import re
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol
 
 import jinja2
 import packaging.version
 
+from bertrand.env.build_args import normalize_image_build_args
+from bertrand.env.config.conan import CCACHE_CACHE, CONAN_HOME
 from bertrand.env.config.core import locate_template
-from bertrand.env.git import WORKTREE_MOUNT
+from bertrand.env.config.uv import UV_CACHE
+from bertrand.env.git import IMAGE_TAG_ENV, WORKTREE_MOUNT
 from bertrand.env.version import VERSION
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Mapping, Sequence
     from pathlib import Path
 
     from bertrand.env.config import Bertrand
+
+
+class _CapabilityRequest(Protocol):
+    id: str
+    required: bool
 
 
 def project_containerfile(
@@ -100,9 +108,36 @@ def _render_containerfile(model: Bertrand.Model, tag: str) -> str:
         cpus=0,
         page_size_kib=page_size_kib,
         env_mount=str(WORKTREE_MOUNT),
-        build_mounts=[],
+        uv_cache=str(UV_CACHE),
+        conan_home=str(CONAN_HOME),
+        ccache_dir=str(CCACHE_CACHE),
+        image_tag_env=IMAGE_TAG_ENV,
+        image_tag=tag,
+        build_args=_build_arg_specs(image_config.args),
+        run_mounts=[
+            *_capability_mount_specs("secret", image_config.secrets),
+            *_capability_mount_specs("ssh", image_config.ssh),
+        ],
         dependency_copies=_dependency_copy_specs(image_config.from_),
     )
+
+
+def _build_arg_specs(args: Mapping[str, object]) -> list[dict[str, str]]:
+    return [
+        {"key": key, "value": value}
+        for key, value in normalize_image_build_args(args).items()
+    ]
+
+
+def _capability_mount_specs(
+    kind: str,
+    requests: Sequence[_CapabilityRequest],
+) -> list[str]:
+    out: list[str] = []
+    for request in sorted(requests, key=lambda entry: entry.id):
+        required = "true" if request.required else "false"
+        out.append(f"type={kind},id={request.id},required={required}")
+    return out
 
 
 def _dependency_copy_specs(from_images: Sequence[str]) -> list[dict[str, str]]:

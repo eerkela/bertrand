@@ -3,7 +3,14 @@ ARG DEBUG=true
 ARG DEV=true
 ARG CPUS={{ cpus }}
 FROM bertrand:${BERTRAND}.${DEBUG}.${DEV}.${CPUS}.{{ page_size_kib }}
-ENV PIP_DISABLE_PIP_VERSION_CHECK=1
+{% for arg in build_args %}
+ARG {{ arg.key }}
+{% endfor %}
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    {{ image_tag_env }}={{ image_tag }} \
+    UV_CACHE_DIR={{ uv_cache }} \
+    CONAN_HOME={{ conan_home }} \
+    CCACHE_DIR={{ ccache_dir }}
 WORKDIR {{ env_mount }}
 COPY . {{ env_mount }}
 
@@ -11,9 +18,5 @@ COPY . {{ env_mount }}
 COPY --from={{ dep.image }} / {{ dep.target }}
 {% endfor %}
 
-{% if build_mounts %}
-RUN {{ build_mounts | join(' \\\n    ') }} \
-    bertrand build
-{% else %}
-RUN bertrand build
-{% endif %}
+RUN{% for mount in run_mounts %} --mount={{ mount }}{% endfor %} bertrand build{% for arg in build_args %} \
+    --build-arg {{ arg.key }}="${{ "{" }}{{ arg.key }}{{ "}" }}"{% endfor %}
