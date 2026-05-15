@@ -22,8 +22,6 @@ UV_CACHE: PosixPath = PosixPath("/root/.cache/uv")
 class UvConfig(Resource):
     """A resource describing the `[tool.uv]` table in `pyproject.toml`."""
 
-    # pylint: disable=missing-function-docstring, unused-argument, missing-return-doc
-
     class Model(BaseModel):
         """Validate the `[tool.uv]` table."""
 

@@ -40,9 +40,6 @@ from ..git import (
     run,
 )
 
-# pylint: disable=bare-except, broad-exception-caught
-
-
 JSON_RPC_VERSION: JSONRPCVersion = "2.0"
 JSON_RPC_PARSE_ERROR: int = -32700              # Invalid JSON was received by the server
 JSON_RPC_INTERNAL_ERROR: int = -32603           # Internal JSON-RPC error
@@ -84,13 +81,13 @@ def _check_worktree(worktree: AbsolutePath) -> AbsolutePath:
     return worktree.expanduser().resolve()
 
 
-type ContainerID = Annotated[  # pylint: disable=invalid-name
+type ContainerID = Annotated[
     str,
     AfterValidator(_check_container_id),
 ]
 type JSONRPCVersion = Literal["2.0"]
 type MethodName = Annotated[str, AfterValidator(_check_method_name)]
-type RequestID = Annotated[  # pylint: disable=invalid-name
+type RequestID = Annotated[
     str,
     AfterValidator(_check_request_id),
 ]
@@ -172,7 +169,6 @@ class RPCMethod(Protocol):
         the client.  This method will be registered as the handler for the RPC request
         returned by `request()`.
     """
-    # pylint: disable=missing-function-docstring
     async def request(self) -> RPCRequest: ...
     @staticmethod
     async def response(listener: Listener, request: RPCRequest) -> RPCResponse: ...

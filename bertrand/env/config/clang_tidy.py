@@ -50,58 +50,8 @@ class ClangTidy(Resource):
     to comma-separated strings.
     """
 
-    # pylint: disable=missing-function-docstring, unused-argument, missing-return-doc
-
     class Model(BaseModel):
         """Validate the `[clang-tidy]` table."""
-
-        model_config = ConfigDict(extra="forbid")
-        DisableFormat: Annotated[
-            bool,
-            Field(
-                default=False,
-                description="Enable clang-format fixes for clang-tidy diagnostics.",
-            ),
-        ]
-        HeaderFilterRegex: Annotated[
-            RegexPattern,
-            Field(
-                default="^.*$",
-                description="A regex pattern to filter which headers are included "
-                "in clang-tidy diagnostics.  Only diagnostics from headers that "
-                "match this pattern will be included.  This can be used to focus "
-                "diagnostics on project headers and exclude external "
-                "dependencies, which often have noisy diagnostics that the user "
-                "cannot fix.",
-            ),
-        ]
-        ExcludeHeaderFilterRegex: Annotated[
-            RegexPattern,
-            Field(
-                default="^$",
-                description="A regex pattern to filter which headers are excluded from "
-                "clang-tidy diagnostics.  Only diagnostics from headers that do not "
-                "match this pattern will be included, regardless of whether they "
-                "match 'HeaderFilterRegex'.",
-            ),
-        ]
-        SystemHeaders: Annotated[
-            bool,
-            Field(
-                default=False,
-                description="Control whether diagnostics from system headers are "
-                "included.  This overrides 'HeaderFilterRegex' and "
-                "'ExcludeHeaderFilterRegex' for system headers.",
-            ),
-        ]
-        UseColor: Annotated[
-            bool,
-            Field(
-                default=True,
-                description="Use color output where possible, if the terminal "
-                "supports it.",
-            ),
-        ]
 
         class Check(BaseModel):
             """Validate entries in the `[[tool.clang-tidy.Checks]]` AoT."""
@@ -112,8 +62,10 @@ class ClangTidy(Resource):
                 Field(
                     default=None,
                     examples=["modernize-use-auto", "performance-*"],
-                    description="A clang-tidy check pattern to enable.  Must be "
-                    "unique across both 'Enable' and 'Disable' entries.",
+                    description=(
+                        "A clang-tidy check pattern to enable.  Must be unique across "
+                        "both 'Enable' and 'Disable' entries."
+                    ),
                 ),
             ]
             Disable: Annotated[
@@ -121,8 +73,10 @@ class ClangTidy(Resource):
                 Field(
                     default=None,
                     examples=["modernize-use-auto", "performance-*"],
-                    description="A clang-tidy check pattern to explicitly disable.  "
-                    "This may be a subset of the 'Enabled' checks.",
+                    description=(
+                        "A clang-tidy check pattern to explicitly disable.  This may "
+                        "be a subset of the 'Enabled' checks."
+                    ),
                 ),
             ]
             Action: Annotated[
@@ -130,19 +84,23 @@ class ClangTidy(Resource):
                 Field(
                     default="warn",
                     examples=["disable", "warn", "error"],
-                    description="The action to take for this check pattern.  "
-                    "'disable' turns off the check, 'warn' enables the check and "
-                    "reports diagnostics as warnings, and 'error' promotes the "
-                    "check to an error.",
+                    description=(
+                        "The action to take for this check pattern.  'disable' turns "
+                        "off the check, 'warn' enables the check and reports "
+                        "diagnostics as warnings, and 'error' promotes the check to an "
+                        "error."
+                    ),
                 ),
             ]
             Options: Annotated[
                 dict[ClangTidyOptionName, Scalar],
                 Field(
                     default_factory=dict,
-                    description="A mapping of custom options for this check.  See "
-                    "the clang-tidy documentation for which options are supported "
-                    "by each check, and how to format their values.",
+                    description=(
+                        "A mapping of custom options for this check.  See the "
+                        "clang-tidy documentation for which options are supported by "
+                        "each check, and how to format their values."
+                    ),
                 ),
             ]
 
@@ -172,15 +130,70 @@ class ClangTidy(Resource):
                     seen.add(entry.Disable)
             return value
 
+        model_config = ConfigDict(extra="forbid")
+        DisableFormat: Annotated[
+            bool,
+            Field(
+                default=False,
+                description="Enable clang-format fixes for clang-tidy diagnostics.",
+            ),
+        ]
+        HeaderFilterRegex: Annotated[
+            RegexPattern,
+            Field(
+                default="^.*$",
+                description=(
+                    "A regex pattern to filter which headers are included in "
+                    "clang-tidy diagnostics.  Only diagnostics from headers that match "
+                    "this pattern will be included.  This can be used to focus "
+                    "diagnostics on project headers and exclude external dependencies, "
+                    "which often have noisy diagnostics that the user cannot fix."
+                ),
+            ),
+        ]
+        ExcludeHeaderFilterRegex: Annotated[
+            RegexPattern,
+            Field(
+                default="^$",
+                description=(
+                    "A regex pattern to filter which headers are excluded from "
+                    "clang-tidy diagnostics.  Only diagnostics from headers that do "
+                    "not match this pattern will be included, regardless of whether "
+                    "they match 'HeaderFilterRegex'."
+                ),
+            ),
+        ]
+        SystemHeaders: Annotated[
+            bool,
+            Field(
+                default=False,
+                description=(
+                    "Control whether diagnostics from system headers are included.  "
+                    "This overrides 'HeaderFilterRegex' and 'ExcludeHeaderFilterRegex' "
+                    "for system headers."
+                ),
+            ),
+        ]
+        UseColor: Annotated[
+            bool,
+            Field(
+                default=True,
+                description=(
+                    "Use color output where possible, if the terminal supports it."
+                ),
+            ),
+        ]
         Checks: Annotated[
             list[Check],
             AfterValidator(_check_duplicate_checks),
             Field(
                 default_factory=list,
-                description="List of clang-tidy checks to enable or disable.  "
-                "Checks will be processed in order, so later entries can override "
-                "earlier ones.  See the clang-tidy documentation for available "
-                "checks and their options.",
+                description=(
+                    "List of clang-tidy checks to enable or disable.  Checks will be "
+                    "processed in order, so later entries can override earlier ones.  "
+                    "See the clang-tidy documentation for available checks and their "
+                    "options."
+                ),
             ),
         ]
 

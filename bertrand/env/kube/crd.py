@@ -58,7 +58,6 @@ class CustomObjectMetadata(BaseModel):
     """
 
     model_config = ConfigDict(extra="ignore", frozen=True)
-
     name: str = ""
     namespace: str = ""
     generation: int = 0

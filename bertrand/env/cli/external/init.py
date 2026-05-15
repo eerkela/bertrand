@@ -22,7 +22,6 @@ from typing import TYPE_CHECKING, Annotated, Literal, Self
 from pydantic import BaseModel, ConfigDict, PositiveInt, StringConstraints
 
 from bertrand.env.config.core import RESOURCE_NAMES, Config, Resource
-from bertrand.env.config.repository import resolve_repo_id
 from bertrand.env.git import (
     BERTRAND_NAMESPACE,
     INFINITY,
@@ -47,13 +46,13 @@ from bertrand.env.host import (
     ensure_host_state,
     host_state_backend_trustworthy,
 )
-from bertrand.env.kube.api import Kube
 from bertrand.env.kube.api.bootstrap import (
     assert_microk8s_installed,
     ensure_microk8s_kubeconfig,
     install_microk8s,
     start_microk8s,
 )
+from bertrand.env.kube.api.client import Kube
 from bertrand.env.kube.build.controller import ensure_buildkit_build_controller
 from bertrand.env.kube.build.daemon import BUILDKIT_POOL
 from bertrand.env.kube.build.repository import IMAGES
@@ -1128,7 +1127,7 @@ async def bertrand_init(
 
             # resolve deterministic repository identity from managed metadata if
             # available, otherwise derive from the canonical repository root.
-            repo_id = recovered_repo_id or resolve_repo_id(repo)
+            repo_id = recovered_repo_id or repo.repo_id
             repo_context = _RepoContext(
                 enable=enabled,
                 disable=disabled,

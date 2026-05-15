@@ -96,7 +96,6 @@ class _CephAutoscalerSpec(BaseModel):
     """Desired policy for Ceph capacity autoscaling."""
 
     model_config = ConfigDict(extra="forbid")
-
     enabled: bool = True
     high_watermark: _Watermark = 0.75
     target_watermark: _Watermark = 0.65
@@ -114,7 +113,6 @@ class _CephAutoscalerStatus(BaseModel):
     """Observed status emitted by the Ceph capacity controller."""
 
     model_config = ConfigDict(extra="forbid")
-
     observed_generation: int | None = Field(default=None, alias="observedGeneration")
     total_bytes: int | None = None
     used_bytes: int | None = None
@@ -131,7 +129,6 @@ class _CephAutoscaler(BaseModel):
     """Validated `CephStorageAutoscaler` custom-resource payload."""
 
     model_config = ConfigDict(extra="forbid")
-
     api_version: str = Field(alias="apiVersion")
     kind: Literal["CephStorageAutoscaler"]
     metadata: CustomObjectMetadata
@@ -143,7 +140,6 @@ class _CephStorageActionSpec(BaseModel):
     """Desired node-local growth action contract."""
 
     model_config = ConfigDict(extra="forbid")
-
     policy_generation: Annotated[int, Field(ge=0)]
     node_name: Annotated[str, Field(min_length=1)]
     loop_spec: _LoopSpec
@@ -159,7 +155,6 @@ class _CephStorageActionStatus(BaseModel):
     """Observed lifecycle state for one node-local growth action."""
 
     model_config = ConfigDict(extra="forbid")
-
     phase: _ActionPhase = "Pending"
     started_at: datetime | None = None
     finished_at: datetime | None = None
@@ -171,7 +166,6 @@ class _CephStorageAction(BaseModel):
     """Validated `CephStorageAction` custom-resource payload."""
 
     model_config = ConfigDict(extra="forbid")
-
     api_version: str = Field(alias="apiVersion")
     kind: Literal["CephStorageAction"]
     metadata: CustomObjectMetadata
@@ -183,7 +177,6 @@ class _CephStorageNodeSpec(BaseModel):
     """Desired identity contract for one node capacity report."""
 
     model_config = ConfigDict(extra="forbid")
-
     node_name: Annotated[str, Field(min_length=1)]
 
 
@@ -191,7 +184,6 @@ class _CephStorageNodeStatus(BaseModel):
     """Observed host-local capacity state reported by one node agent."""
 
     model_config = ConfigDict(extra="forbid")
-
     free_bytes: Annotated[int, Field(ge=0)] = 0
     path: str = ""
     heartbeat_at: datetime | None = None
@@ -202,7 +194,6 @@ class _CephStorageNode(BaseModel):
     """Validated `CephStorageNode` custom-resource payload."""
 
     model_config = ConfigDict(extra="forbid")
-
     api_version: str = Field(alias="apiVersion")
     kind: Literal["CephStorageNode"]
     metadata: CustomObjectMetadata

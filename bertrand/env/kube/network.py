@@ -62,7 +62,6 @@ class NetworkProfile(BaseModel):
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
-
     nameservers: tuple[str, ...] = Field(default_factory=tuple)
     search_domains: tuple[str, ...] = Field(default_factory=tuple)
     options: tuple[str, ...] = Field(default_factory=tuple)

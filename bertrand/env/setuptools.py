@@ -25,9 +25,6 @@ from .package import Package
 from .version import __version__
 
 
-# pylint: disable=protected-access
-
-
 class Source(setuptools.Extension):
     """Describes an arbitrary source file that can be scanned for dependencies and used
     to generate automated bindings.  One of these should be specified for every source

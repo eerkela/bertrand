@@ -11,7 +11,6 @@ from typing import TYPE_CHECKING
 
 from bertrand.env.config.bertrand import Bertrand
 from bertrand.env.config.core import Config, _check_kube_name
-from bertrand.env.config.repository import resolve_repo_id
 from bertrand.env.git import BERTRAND_NAMESPACE, INFINITY, GitRepository
 from bertrand.env.kube.api.client import Kube
 from bertrand.env.kube.build.controller import BUILDKIT_BUILD_CONTROLLER
@@ -94,7 +93,7 @@ async def bertrand_build(
         async with config:
             await _assert_build_runtime(kube, timeout=INFINITY)
             publish_repo = await _publish_repository(config.repo, publish)
-            repo_id = resolve_repo_id(config.repo)
+            repo_id = config.repo.repo_id
             tags = _image_tags(config)
             for tag in tags:
                 build = project_image_build(config, tag, repo_id=repo_id)

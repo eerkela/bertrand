@@ -37,7 +37,7 @@ from bertrand.env.kube.lock.cluster import ClusterLock
 if TYPE_CHECKING:
     from types import TracebackType
 
-    from bertrand.env.kube.api import Kube
+    from bertrand.env.kube.api.client import Kube
 
 CACHE_MOUNT: PosixPath = PosixPath("/tmp/.cache")
 SNAKE_CASE_RE = re.compile(r"^([a-zA-Z]([a-zA-Z0-9_]*[a-zA-Z0-9])?)?$")
@@ -191,7 +191,7 @@ type Unique[SequenceT: Sequence[Any]] = Annotated[
     SequenceT, AfterValidator(lambda x: len(set(x)) == len(x))
 ]
 type Trimmed = Annotated[str, StringConstraints(strip_whitespace=True)]
-type NoCRLF = Annotated[  # pylint: disable=invalid-name
+type NoCRLF = Annotated[
     str, StringConstraints(strip_whitespace=True, pattern=r"^[^\r\n]*$")
 ]
 type NoWhiteSpace = Annotated[
@@ -229,9 +229,7 @@ type ResourceName = Annotated[
         strip_whitespace=True, min_length=1, pattern=RESOURCE_NAME_RE.pattern
     ),
 ]
-type URL = Annotated[  # pylint: disable=invalid-name
-    NonEmpty[NoCRLF], AfterValidator(_check_url)
-]
+type URL = Annotated[NonEmpty[NoCRLF], AfterValidator(_check_url)]
 type URLLabel = Annotated[NonEmpty[Trimmed], AfterValidator(_check_url_label)]
 type OCIImageRef = Annotated[
     NonEmpty[NoWhiteSpace], AfterValidator(_check_oci_image_ref)
@@ -323,7 +321,6 @@ class Resource:
         the resource to its context if ALL paths are found.
     """
 
-    # pylint: disable=unused-argument, redundant-returns-doc
     name: ClassVar[ResourceName]
     paths: ClassVar[frozenset[RelativePath]]
 
@@ -637,7 +634,6 @@ class _ResourceLike(Protocol[_ResourceModel_co]):
     requiring a concrete `Resource` subclass.
     """
 
-    # pylint: disable=missing-function-docstring
     name: ClassVar[ResourceName]
 
     async def validate(

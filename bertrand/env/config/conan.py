@@ -180,8 +180,6 @@ class ConanConfig(Resource):
     `remotes.json`, and default profile artifacts.
     """
 
-    # pylint: disable=missing-function-docstring, unused-argument, missing-return-doc
-
     GENERATORS: ClassVar[tuple[str, ...]] = (
         "CMakeDeps",
         "CMakeToolchain",
@@ -199,38 +197,6 @@ class ConanConfig(Resource):
     class Model(BaseModel):
         """Validate the global `[tool.conan]` table."""
 
-        model_config = ConfigDict(extra="forbid")
-        build_type: Annotated[
-            Literal["Release", "Debug"],
-            Field(
-                default="Release",
-                alias="build-type",
-                examples=["Release", "Debug"],
-                description="Global default build type for Conan builds, which can "
-                "be overridden by individual images.",
-            ),
-        ]
-        conf: Annotated[
-            ConanConf,
-            Field(
-                default_factory=dict,
-                description="Global mapping of namespace tables to conf entries, "
-                "which get converted into '<namespace>:<name>=<value>' format in "
-                "the generated Conan profile.  Individual images can specify "
-                "additional entries that merge with these global defaults.",
-            ),
-        ]
-        options: Annotated[
-            ConanOptions,
-            Field(
-                default_factory=dict,
-                description="Global mapping of namespace tables to package options, "
-                "which get converted into '<package-pattern>:<option>=<value>' "
-                "format in the generated Conan profile.  Individual images can "
-                "specify additional options that merge with these global defaults.",
-            ),
-        ]
-
         class Require(BaseModel):
             """Validate entries in `[[tool.conan.requires]]`."""
 
@@ -243,22 +209,25 @@ class ConanConfig(Resource):
                 Field(
                     default="host",
                     examples=["host", "tool"],
-                    description="The kind of requirement, which controls how the "
-                    "requirement gets injected into the generated Conan profile.  "
-                    "'tool' requirements apply only to the build context, whereas "
-                    "'host' requirements specify runtime dependencies.",
+                    description=(
+                        "The kind of requirement, which controls how the requirement "
+                        "gets injected into the generated Conan profile.  'tool' "
+                        "requirements apply only to the build context, whereas 'host' "
+                        "requirements specify runtime dependencies."
+                    ),
                 ),
             ]
             options: Annotated[
                 dict[ConanOptionName, Scalar],
                 Field(
                     default_factory=dict,
-                    description="Mapping of option names to their values for this "
-                    "requirement, which get converted into "
-                    "'<package>:<option>=<value>' format in the generated Conan "
-                    "profile.  These options merge with any global options "
-                    "specified in the `options` field, and take precedence over any "
-                    "conflicting values.",
+                    description=(
+                        "Mapping of option names to their values for this requirement, "
+                        "which get converted into '<package>:<option>=<value>' format "
+                        "in the generated Conan profile.  These options merge with any "
+                        "global options specified in the `options` field, and take "
+                        "precedence over any conflicting values."
+                    ),
                 ),
             ]
 
@@ -295,19 +264,23 @@ class ConanConfig(Resource):
                 Field(
                     default=True,
                     alias="verify-ssl",
-                    description="Whether to verify SSL certificates when "
-                    "communicating with this remote.  Should generally be left "
-                    "enabled unless the remote is known to have an invalid "
-                    "certificate, or is only accessible over insecure HTTP.",
+                    description=(
+                        "Whether to verify SSL certificates when communicating with "
+                        "this remote.  Should generally be left enabled unless the "
+                        "remote is known to have an invalid certificate, or is only "
+                        "accessible over insecure HTTP."
+                    ),
                 ),
             ]
             enabled: Annotated[
                 bool,
                 Field(
                     default=True,
-                    description="Whether to include this remote in Conan operations.  "
-                    "This can be used to temporarily disable a remote without "
-                    "removing it from config.",
+                    description=(
+                        "Whether to include this remote in Conan operations.  This can "
+                        "be used to temporarily disable a remote without removing it "
+                        "from config."
+                    ),
                 ),
             ]
             recipes_only: Annotated[
@@ -315,8 +288,10 @@ class ConanConfig(Resource):
                 Field(
                     default=False,
                     alias="recipes-only",
-                    description="If true, only recipes will be loaded from this "
-                    "remote, and no binaries will be downloaded.",
+                    description=(
+                        "If true, only recipes will be loaded from this remote, and no "
+                        "binaries will be downloaded."
+                    ),
                 ),
             ]
             allowed_packages: Annotated[
@@ -325,9 +300,11 @@ class ConanConfig(Resource):
                 Field(
                     default_factory=list,
                     alias="allowed-packages",
-                    description="List of recipes that are allowed to be downloaded "
-                    "from this remote. If the list is empty or not present, all "
-                    "packages are allowed. Uses fnmatch rules.",
+                    description=(
+                        "List of recipes that are allowed to be downloaded from this "
+                        "remote. If the list is empty or not present, all packages are "
+                        "allowed. Uses fnmatch rules."
+                    ),
                 ),
             ]
 
@@ -357,13 +334,52 @@ class ConanConfig(Resource):
                 seen.add(remote.name)
             return value
 
+        model_config = ConfigDict(extra="forbid")
+        build_type: Annotated[
+            Literal["Release", "Debug"],
+            Field(
+                default="Release",
+                alias="build-type",
+                examples=["Release", "Debug"],
+                description=(
+                    "Global default build type for Conan builds, which can be "
+                    "overridden by individual images."
+                ),
+            ),
+        ]
+        conf: Annotated[
+            ConanConf,
+            Field(
+                default_factory=dict,
+                description=(
+                    "Global mapping of namespace tables to conf entries, which get "
+                    "converted into '<namespace>:<name>=<value>' format in the "
+                    "generated Conan profile.  Individual images can specify "
+                    "additional entries that merge with these global defaults."
+                ),
+            ),
+        ]
+        options: Annotated[
+            ConanOptions,
+            Field(
+                default_factory=dict,
+                description=(
+                    "Global mapping of namespace tables to package options, which get "
+                    "converted into '<package-pattern>:<option>=<value>' format in the "
+                    "generated Conan profile.  Individual images can specify "
+                    "additional options that merge with these global defaults."
+                ),
+            ),
+        ]
         requires: Annotated[
             list[Require],
             AfterValidator(_check_requires),
             Field(
                 default_factory=list,
-                description="Global list of Conan dependencies to install for the "
-                "project, which can be extended for individual images.",
+                description=(
+                    "Global list of Conan dependencies to install for the project, "
+                    "which can be extended for individual images."
+                ),
             ),
         ]
         remotes: Annotated[
@@ -371,14 +387,15 @@ class ConanConfig(Resource):
             AfterValidator(_check_remotes),
             Field(
                 default_factory=list,
-                description="List of Conan remotes to use when resolving Conan "
-                "dependencies for this project.  NOTE: Conan remotes are resolved "
-                "in declaration order.  Prefer private remotes first, then optional "
-                "public fallback remotes last.  Credentials are host-local and must "
-                "never be stored "
-                "here; resolve through env/secret channels (e.g. "
-                "CONAN_LOGIN_USERNAME_<REMOTE>, CONAN_PASSWORD_<REMOTE>, with remote "
-                "names normalized to SCREAMING_SNAKE_CASE)",
+                description=(
+                    "List of Conan remotes to use when resolving Conan dependencies "
+                    "for this project.  NOTE: Conan remotes are resolved in "
+                    "declaration order.  Prefer private remotes first, then optional "
+                    "public fallback remotes last.  Credentials are host-local and "
+                    "must never be stored here; resolve through env/secret channels "
+                    "(e.g. CONAN_LOGIN_USERNAME_<REMOTE>, CONAN_PASSWORD_<REMOTE>, "
+                    "with remote names normalized to SCREAMING_SNAKE_CASE)"
+                ),
             ),
         ]
 

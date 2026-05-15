@@ -40,7 +40,6 @@ class DeviceCapability:
 
 class _DevicePayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
-
     version: Literal[1]
     source: Literal["cdi"]
     selector: str

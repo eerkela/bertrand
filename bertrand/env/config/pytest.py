@@ -32,8 +32,6 @@ def _pytest_minversion() -> str:
 class PytestConfig(Resource):
     """A resource describing the `[tool.pytest]` table in `pyproject.toml`."""
 
-    # pylint: disable=missing-function-docstring, unused-argument, missing-return-doc
-
     class Model(BaseModel):
         """Validate the `[tool.pytest]` table."""
 

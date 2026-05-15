@@ -110,7 +110,6 @@ class BuildKitBuildSpec(BaseModel):
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
-
     repo_id: _NonEmptyString
     worktree: _NonEmptyString = "."
     tag: str
@@ -312,7 +311,6 @@ class BuildKitBuildStatus(BaseModel):
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True, populate_by_name=True)
-
     phase: BuildKitBuildPhase = "Pending"
     observed_generation: int | None = Field(default=None, alias="observedGeneration")
     started_at: datetime | None = None
@@ -344,7 +342,6 @@ class BuildKitBuildRecord(BaseModel):
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True, populate_by_name=True)
-
     api_version: str = Field(alias="apiVersion")
     kind: Literal["BuildKitBuild"]
     metadata: CustomObjectMetadata

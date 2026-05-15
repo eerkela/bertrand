@@ -86,6 +86,7 @@ METADATA_FILE: PosixPath = METADATA_DIR / "env.json"
 METADATA_LOCK: PosixPath = METADATA_DIR / ".lock"
 METADATA_REPO_ID: PosixPath = METADATA_DIR / "repo_id"
 METADATA_TMP: PosixPath = METADATA_DIR / "tmp"
+_REPO_ID_NAMESPACE = uuid.UUID("7b1506f4-4a3f-4b46-94bb-471e0f59d1a0")
 WORKTREE_MOUNT: PosixPath = PosixPath("/bertrand")
 PROJECT_MOUNT: PosixPath = PosixPath("/.bertrand")
 CONTAINER_RUNTIME_MOUNT: PosixPath = PosixPath("/run/bertrand")
@@ -1478,7 +1479,7 @@ class HostLock:
 
         try:
             await self._release_file()
-        except Exception:  # pylint: disable=broad-except
+        except Exception:
             if not ignore_errors:
                 raise
         finally:
@@ -1648,6 +1649,29 @@ class GitRepository:
             the .git directory.
         """
         return self.git_dir.parent
+
+    @property
+    def repo_id(self) -> str:
+        """Return the stable Bertrand repository identity.
+
+        Returns
+        -------
+        str
+            Stable UUID hex string used to scope cluster resources for the repository.
+
+        Notes
+        -----
+        Managed repository metadata takes precedence when present. Otherwise, the ID
+        is deterministically derived from the repository root path so uninitialized
+        repositories can still address cluster resources consistently.
+        """
+        repo_id_file = self.root / METADATA_REPO_ID
+        if repo_id_file.is_file():
+            try:
+                return uuid.UUID(repo_id_file.read_text(encoding="utf-8").strip()).hex
+            except (OSError, ValueError):
+                pass
+        return uuid.uuid5(_REPO_ID_NAMESPACE, self.root.as_posix()).hex
 
     def __post_init__(self) -> None:  # noqa: D105
         object.__setattr__(self, "git_dir", self.git_dir.expanduser().resolve())

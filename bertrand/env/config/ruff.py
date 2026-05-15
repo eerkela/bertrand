@@ -30,12 +30,8 @@ def _ruff_target_version() -> str:
 class RuffConfig(Resource):
     """A resource describing the `[tool.ruff]` table in `pyproject.toml`."""
 
-    # pylint: disable=missing-function-docstring, unused-argument, missing-return-doc
-
     class Model(BaseModel):
         """Validate the `[tool.ruff]` table."""
-
-        model_config = ConfigDict(extra="allow")
 
         class Format(BaseModel):
             """Validate the `[tool.ruff.format]` table."""
@@ -69,8 +65,6 @@ class RuffConfig(Resource):
         class Lint(BaseModel):
             """Validate the `[tool.ruff.lint]` table."""
 
-            model_config = ConfigDict(extra="allow")
-
             class Pydocstyle(BaseModel):
                 """Validate the `[tool.ruff.lint.pydocstyle]` table."""
 
@@ -79,8 +73,9 @@ class RuffConfig(Resource):
                     Trimmed,
                     Field(
                         default="numpy",
-                        description="Docstring convention used by Ruff pydocstyle "
-                        "rules.",
+                        description=(
+                            "Docstring convention used by Ruff pydocstyle rules."
+                        ),
                     ),
                 ]
 
@@ -93,11 +88,13 @@ class RuffConfig(Resource):
                     Field(
                         default=True,
                         alias="mypy-init-return",
-                        description="Whether `__init__` is allowed to omit explicit "
-                        "`-> None`.",
+                        description=(
+                            "Whether `__init__` is allowed to omit explicit `-> None`."
+                        ),
                     ),
                 ]
 
+            model_config = ConfigDict(extra="allow")
             select: Annotated[
                 list[RuffRule],
                 Field(
@@ -128,13 +125,15 @@ class RuffConfig(Resource):
                 ),
             ]
 
+        model_config = ConfigDict(extra="allow")
         target_version: Annotated[
             Trimmed,
             Field(
                 default_factory=_ruff_target_version,
                 alias="target-version",
-                description="Target Python version used by Ruff for "
-                "analysis/formatting.",
+                description=(
+                    "Target Python version used by Ruff for analysis/formatting."
+                ),
             ),
         ]
         line_length: Annotated[
@@ -142,8 +141,9 @@ class RuffConfig(Resource):
             Field(
                 default=100,
                 alias="line-length",
-                description="Maximum allowed line length for formatting/linting "
-                "context.",
+                description=(
+                    "Maximum allowed line length for formatting/linting context."
+                ),
             ),
         ]
         indent_width: Annotated[

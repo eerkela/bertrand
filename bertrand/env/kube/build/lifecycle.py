@@ -56,7 +56,6 @@ class _ProjectImageSpec(BaseModel):
     """Desired identity for one published project image digest."""
 
     model_config = ConfigDict(extra="forbid")
-
     repo_id: _NonEmptyString
     worktree: _NonEmptyString
     tag: str
@@ -177,7 +176,6 @@ class ProjectImageRecord(BaseModel):
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
-
     name: _NonEmptyString
     namespace: _NonEmptyString
     repo_id: _NonEmptyString

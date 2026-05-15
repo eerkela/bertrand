@@ -18,8 +18,6 @@ from pydantic import BaseModel, ConfigDict
 from ..config import MOUNT
 from ..git import atomic_write_text
 
-# pylint: disable=broad-exception-caught
-
 
 MCP_SERVER_KEY: str = "bertrand"
 MCP_COMMAND: str = "bertrand-mcp"

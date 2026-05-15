@@ -20,12 +20,8 @@ type TyRuleSeverity = Literal["ignore", "warn", "error"]
 class TyConfig(Resource):
     """A resource describing the `[tool.ty]` table in `pyproject.toml`."""
 
-    # pylint: disable=missing-function-docstring, unused-argument, missing-return-doc
-
     class Model(BaseModel):
         """Validate the `[tool.ty]` table."""
-
-        model_config = ConfigDict(extra="allow")
 
         class Src(BaseModel):
             """Validate the `[tool.ty.src]` table."""
@@ -63,8 +59,9 @@ class TyConfig(Resource):
                 Field(
                     default_factory=lambda: ["conan.**"],
                     alias="replace-imports-with-any",
-                    description="Module globs whose imports should be treated as "
-                    "`typing.Any`.",
+                    description=(
+                        "Module globs whose imports should be treated as `typing.Any`."
+                    ),
                 ),
             ]
 
@@ -77,11 +74,13 @@ class TyConfig(Resource):
                 Field(
                     default=False,
                     alias="error-on-warning",
-                    description="Whether warnings should produce a non-zero exit "
-                    "status.",
+                    description=(
+                        "Whether warnings should produce a non-zero exit status."
+                    ),
                 ),
             ]
 
+        model_config = ConfigDict(extra="allow")
         src: Annotated[
             Src,
             Field(

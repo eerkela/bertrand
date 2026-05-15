@@ -152,17 +152,11 @@ class PyProject(Resource):
     well as Bertrand itself and its toolchain through the `[tool.bertrand]` table.
     """
 
-    # pylint: disable=missing-function-docstring, unused-argument, missing-return-doc
-
     class Model(BaseModel):
         """Validate the core `pyproject.toml` fields, as defined by PEP 518/621."""
 
-        model_config = ConfigDict(extra="forbid")
-
         class BuildSystem(BaseModel):
             """Validate the `[build-system]` table."""
-
-            model_config = ConfigDict(extra="forbid")
 
             @staticmethod
             def _check_requires(
@@ -173,6 +167,7 @@ class PyProject(Resource):
                     raise ValueError(msg)
                 return value
 
+            model_config = ConfigDict(extra="forbid")
             requires: Annotated[
                 list[PEP508Requirement],
                 AfterValidator(_check_requires),
@@ -183,29 +178,54 @@ class PyProject(Resource):
                 Field(default="bertrand.env.build", alias="build-backend"),
             ]
 
-        build_system: Annotated[
-            BuildSystem,
-            Field(default_factory=BuildSystem.model_construct, alias="build-system"),
-        ]
-
         class Project(BaseModel):
             """Validate the `[project]` table."""
+
+            class Author(BaseModel):
+                """Validate entries in the `authors` and `maintainers` lists."""
+
+                model_config = ConfigDict(extra="forbid")
+                name: Annotated[
+                    EmailName | None,
+                    Field(
+                        default=None,
+                        description=(
+                            "Author name, which can be an email local-part but must "
+                            "not contain commas or newlines (to avoid ambiguity when "
+                            "parsing)"
+                        ),
+                    ),
+                ]
+                email: Annotated[
+                    Email | None,
+                    Field(default=None, description="Contact email address"),
+                ]
+
+                @model_validator(mode="after")
+                def _require_name_or_email(self) -> Self:
+                    if self.name is None and self.email is None:
+                        msg = "at least one of 'name' or 'email' must be provided"
+                        raise ValueError(msg)
+                    return self
 
             model_config = ConfigDict(extra="allow")
             name: Annotated[
                 PEP508Name,
                 Field(
-                    description="Canonical project name, which is initially seeded "
-                    "from the worktree root directory name, but can be overridden by "
-                    "the user.",
+                    description=(
+                        "Canonical project name, which is initially seeded from the "
+                        "worktree root directory name, but can be overridden by the "
+                        "user."
+                    ),
                 ),
             ]
             version: Annotated[
                 str,
                 Field(
-                    description="Project version string, which should ideally follow "
-                    "semantic versioning (MAJOR.MINOR.MICRO), but is not required "
-                    "to.",
+                    description=(
+                        "Project version string, which should ideally follow semantic "
+                        "versioning (MAJOR.MINOR.MICRO), but is not required to."
+                    ),
                 ),
             ]
             requires_python: Annotated[
@@ -227,8 +247,10 @@ class PyProject(Resource):
                 PosixPath | None,
                 Field(
                     default=None,
-                    description="Relative (POSIX) path to the project's README file, "
-                    "starting from the worktree root.",
+                    description=(
+                        "Relative (POSIX) path to the project's README file, starting "
+                        "from the worktree root."
+                    ),
                 ),
             ]
             license: Annotated[
@@ -243,36 +265,12 @@ class PyProject(Resource):
                 Field(
                     default=None,
                     alias="license-files",
-                    description="list of relative (POSIX) paths from worktree root to "
-                    "license files, supporting glob patterns.",
+                    description=(
+                        "list of relative (POSIX) paths from worktree root to license "
+                        "files, supporting glob patterns."
+                    ),
                 ),
             ]
-
-            class Author(BaseModel):
-                """Validate entries in the `authors` and `maintainers` lists."""
-
-                model_config = ConfigDict(extra="forbid")
-                name: Annotated[
-                    EmailName | None,
-                    Field(
-                        default=None,
-                        description="Author name, which can be an email local-part but "
-                        "must not contain commas or newlines (to avoid ambiguity "
-                        "when parsing)",
-                    ),
-                ]
-                email: Annotated[
-                    Email | None,
-                    Field(default=None, description="Contact email address"),
-                ]
-
-                @model_validator(mode="after")
-                def _require_name_or_email(self) -> Self:
-                    if self.name is None and self.email is None:
-                        msg = "at least one of 'name' or 'email' must be provided"
-                        raise ValueError(msg)
-                    return self
-
             authors: Annotated[
                 list[Author],
                 Field(default_factory=list, description="List of project authors."),
@@ -285,32 +283,39 @@ class PyProject(Resource):
                 list[str],
                 Field(
                     default_factory=list,
-                    description="Arbitrary list of keywords describing the project, "
-                    "for search optimization.",
+                    description=(
+                        "Arbitrary list of keywords describing the project, for search "
+                        "optimization."
+                    ),
                 ),
             ]
             classifiers: Annotated[
                 list[str],
                 Field(
                     default_factory=list,
-                    description="List of PyPI classifiers (https://pypi.org/classifiers/).",
+                    description=(
+                        "List of PyPI classifiers (https://pypi.org/classifiers/)."
+                    ),
                 ),
             ]
             urls: Annotated[
                 dict[URLLabel, URL],
                 Field(
                     default_factory=dict,
-                    description="Mapping of URL labels to project URLs (e.g. "
-                    "documentation, source code repository, etc.).  PEP753 defines "
-                    "a standard set of labels that third-party tools may recognize.",
+                    description=(
+                        "Mapping of URL labels to project URLs (e.g. documentation, "
+                        "source code repository, etc.).  PEP753 defines a standard set "
+                        "of labels that third-party tools may recognize."
+                    ),
                 ),
             ]
             dependencies: Annotated[
                 list[PEP508Requirement],
                 Field(
                     default_factory=list,
-                    description="Python-level dependencies as PEP508 requirement "
-                    "specifiers.",
+                    description=(
+                        "Python-level dependencies as PEP508 requirement specifiers."
+                    ),
                 ),
             ]
             optional_dependencies: Annotated[
@@ -318,23 +323,26 @@ class PyProject(Resource):
                 Field(
                     default_factory=dict,
                     alias="optional-dependencies",
-                    description="Mapping of optional dependency groups, which should "
-                    "exactly match the declared tags in [tool.bertrand.tags], to "
-                    "further Python-level dependencies.  Using dependency groups "
-                    "allows package managers to select tags via normal 'extras' "
-                    "syntax (e.g. "
-                    "`pip install myproject[dev]`).",
+                    description=(
+                        "Mapping of optional dependency groups, which should exactly "
+                        "match the declared tags in [tool.bertrand.tags], to further "
+                        "Python-level dependencies.  Using dependency groups allows "
+                        "package managers to select tags via normal 'extras' syntax "
+                        "(e.g. `pip install myproject[dev]`)."
+                    ),
                 ),
             ]
             scripts: Annotated[
                 dict[EntrypointName, Entrypoint],
                 Field(
                     default_factory=dict,
-                    description="Mapping of console script entry points, where keys "
-                    "are the exposed command names and values are the corresponding "
-                    "importable entry points in 'module:object' format.  ':object' "
-                    "typically points to a 'main' function, which may be implemented "
-                    "in C++.",
+                    description=(
+                        "Mapping of console script entry points, where keys are the "
+                        "exposed command names and values are the corresponding "
+                        "importable entry points in 'module:object' format.  ':object' "
+                        "typically points to a 'main' function, which may be "
+                        "implemented in C++."
+                    ),
                 ),
             ]
             gui_scripts: Annotated[
@@ -342,11 +350,13 @@ class PyProject(Resource):
                 Field(
                     default_factory=dict,
                     alias="gui-scripts",
-                    description="Mapping of GUI script entry points, where keys are "
-                    "the exposed command names and values are the corresponding "
-                    "importable entry points in 'module:object' format.  These "
-                    "behave similarly to 'scripts', but additionally mount a "
-                    "Wayland socket to allow GUI access from within the container.",
+                    description=(
+                        "Mapping of GUI script entry points, where keys are the "
+                        "exposed command names and values are the corresponding "
+                        "importable entry points in 'module:object' format.  These "
+                        "behave similarly to 'scripts', but additionally mount a "
+                        "Wayland socket to allow GUI access from within the container."
+                    ),
                 ),
             ]
 
@@ -387,6 +397,11 @@ class PyProject(Resource):
                                 raise OSError(msg) from err
                             seen.add(relative)
 
+        model_config = ConfigDict(extra="forbid")
+        build_system: Annotated[
+            BuildSystem,
+            Field(default_factory=BuildSystem.model_construct, alias="build-system"),
+        ]
         project: Project
 
     async def init(self, config: Config, cli: Config.Init) -> dict[str, Any]:
