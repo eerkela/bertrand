@@ -8,10 +8,8 @@ import json
 import uuid
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from pathlib import Path
 from typing import TYPE_CHECKING
 
-from bertrand.env.config.core import _check_kube_name, _check_uuid
 from bertrand.env.git import (
     BERTRAND_ENV,
     BERTRAND_NAMESPACE,
@@ -35,7 +33,7 @@ from bertrand.env.kube.build.refs import (
 )
 from bertrand.env.kube.build.repository import IMAGES
 from bertrand.env.kube.capability.base import Capability, CapabilityKind
-from bertrand.env.kube.ceph.volume import RepoVolume
+from bertrand.env.kube.ceph.snapshot import prepared_repository_build_source
 from bertrand.env.kube.configmap import ConfigMap
 from bertrand.env.kube.job import Job
 
@@ -77,7 +75,6 @@ class _PreparedBuildContext:
     dockerfile_path: str
     volumes: tuple[VolumeSpec, ...]
     mounts: tuple[VolumeMountSpec, ...]
-    cleanup_config_map: str | None
 
 
 @dataclass(frozen=True)
@@ -91,47 +88,6 @@ class _ProjectBuildExecutor:
     """
 
     spec: BuildKitBuildSpec
-
-    def __post_init__(self) -> None:
-        """Validate immutable build contract fields.
-
-        Raises
-        ------
-        ValueError
-            If any build contract field is empty or structurally invalid.
-        """
-        spec = self.spec
-        if not spec.image.strip():
-            msg = "BuildKit image reference cannot be empty"
-            raise ValueError(msg)
-        if not spec.dockerfile.strip():
-            msg = "BuildKit image Containerfile cannot be empty"
-            raise ValueError(msg)
-        if spec.target is not None and not spec.target.strip():
-            msg = "BuildKit target stage cannot be empty"
-            raise ValueError(msg)
-        if spec.network not in ("default", "none", "host"):
-            msg = f"unsupported BuildKit network mode: {spec.network!r}"
-            raise ValueError(msg)
-        object.__setattr__(
-            self,
-            "spec",
-            spec.model_copy(
-                update={
-                    "repo_id": _check_uuid(spec.repo_id),
-                    "worktree": _normalize_worktree(spec.worktree),
-                    "secrets": _normalize_capability_requests(
-                        spec.secrets,
-                        kind="secret",
-                    ),
-                    "ssh": _normalize_capability_requests(spec.ssh, kind="ssh"),
-                    "devices": _normalize_capability_requests(
-                        spec.devices,
-                        kind="device",
-                    ),
-                }
-            ),
-        )
 
     @property
     def labels(self) -> dict[str, str]:
@@ -257,6 +213,7 @@ class _ProjectBuildExecutor:
         self,
         kube: Kube,
         *,
+        build_name: str,
         timeout: float,
         job_observer: Callable[[str, Job], Awaitable[None]] | None = None,
     ) -> dict[str, str]:
@@ -266,6 +223,9 @@ class _ProjectBuildExecutor:
         ----------
         kube : Kube
             Active Kubernetes API context.
+        build_name : str
+            Durable `BuildKitBuild` request name used to label temporary snapshot
+            source resources.
         timeout : float
             Maximum runtime budget in seconds. If infinite, wait indefinitely.
         job_observer : Callable[[str, Job], Awaitable[None]] | None, optional
@@ -289,12 +249,13 @@ class _ProjectBuildExecutor:
             msg = "BuildKit platform image build timeout must be non-negative"
             raise TimeoutError(msg)
         spec = self.spec
-        env_id = _check_uuid(spec.env_id)
+        env_id = spec.env_id
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
 
         async with self._prepared_source(
             kube,
+            build_name=build_name,
             timeout=deadline - loop.time(),
         ) as source:
             (
@@ -436,73 +397,64 @@ class _ProjectBuildExecutor:
         self,
         kube: Kube,
         *,
+        build_name: str,
         timeout: float,
     ) -> AsyncIterator[_PreparedBuildContext]:
         if timeout <= 0:
             msg = "BuildKit source preparation timeout must be non-negative"
             raise TimeoutError(msg)
-        source = await self._prepare_pvc_source(kube, timeout=timeout)
-        try:
-            yield source
-        finally:
-            if source.cleanup_config_map is not None:
-                await _delete_config_map(
-                    kube,
-                    name=source.cleanup_config_map,
-                    timeout=BUILD_JOB_CLEANUP_TIMEOUT_SECONDS,
-                )
-
-    async def _prepare_pvc_source(
-        self,
-        kube: Kube,
-        *,
-        timeout: float,
-    ) -> _PreparedBuildContext:
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
-        await _assert_repo_volume(
+        config_name: str | None = None
+        async with prepared_repository_build_source(
             kube,
             repo_id=self.spec.repo_id,
-            claim_name=RepoVolume.claim_name(self.spec.repo_id),
+            build_name=build_name,
             timeout=deadline - loop.time(),
-        )
-        config_name = _dockerfile_config_name()
-        await ConfigMap.upsert(
-            kube,
-            namespace=BERTRAND_NAMESPACE,
-            name=config_name,
-            labels=self.labels,
-            data={BUILD_JOB_DOCKERFILE_KEY: self.spec.dockerfile},
-            timeout=deadline - loop.time(),
-        )
-        return _PreparedBuildContext(
-            path=BUILD_JOB_CONTEXT_MOUNT,
-            dockerfile_path=BUILD_JOB_DOCKERFILE_MOUNT,
-            volumes=(
-                VolumeSpec.pvc(
-                    BUILD_JOB_CONTEXT_VOLUME,
-                    claim_name=RepoVolume.claim_name(self.spec.repo_id),
-                ),
-                VolumeSpec.config_map(
-                    BUILD_JOB_DOCKERFILE_VOLUME,
-                    config_map_name=config_name,
-                ),
-            ),
-            mounts=(
-                VolumeMountSpec(
-                    name=BUILD_JOB_CONTEXT_VOLUME,
-                    mount_path=BUILD_JOB_CONTEXT_MOUNT,
-                    read_only=True,
-                    sub_path=_worktree_sub_path(self.spec.worktree),
-                ),
-                VolumeMountSpec(
-                    name=BUILD_JOB_DOCKERFILE_VOLUME,
-                    mount_path=BUILD_JOB_DOCKERFILE_MOUNT,
-                    read_only=True,
-                ),
-            ),
-            cleanup_config_map=config_name,
-        )
+        ) as repo_source:
+            config_name = _dockerfile_config_name()
+            await ConfigMap.upsert(
+                kube,
+                namespace=BERTRAND_NAMESPACE,
+                name=config_name,
+                labels=self.labels,
+                data={BUILD_JOB_DOCKERFILE_KEY: self.spec.dockerfile},
+                timeout=deadline - loop.time(),
+            )
+            try:
+                yield _PreparedBuildContext(
+                    path=BUILD_JOB_CONTEXT_MOUNT,
+                    dockerfile_path=BUILD_JOB_DOCKERFILE_MOUNT,
+                    volumes=(
+                        VolumeSpec.pvc(
+                            BUILD_JOB_CONTEXT_VOLUME,
+                            claim_name=repo_source,
+                        ),
+                        VolumeSpec.config_map(
+                            BUILD_JOB_DOCKERFILE_VOLUME,
+                            config_map_name=config_name,
+                        ),
+                    ),
+                    mounts=(
+                        VolumeMountSpec(
+                            name=BUILD_JOB_CONTEXT_VOLUME,
+                            mount_path=BUILD_JOB_CONTEXT_MOUNT,
+                            read_only=True,
+                            sub_path=_worktree_sub_path(self.spec.worktree),
+                        ),
+                        VolumeMountSpec(
+                            name=BUILD_JOB_DOCKERFILE_VOLUME,
+                            mount_path=BUILD_JOB_DOCKERFILE_MOUNT,
+                            read_only=True,
+                        ),
+                    ),
+                )
+            finally:
+                await _delete_config_map(
+                    kube,
+                    name=config_name,
+                    timeout=BUILD_JOB_CLEANUP_TIMEOUT_SECONDS,
+                )
 
     async def _capability_mounts(
         self,
@@ -667,39 +619,10 @@ class _ProjectBuildExecutor:
         return tuple(selectors)
 
 
-def _normalize_capability_requests(
-    requests: Mapping[str, bool],
-    *,
-    kind: str,
-) -> dict[KubeName, bool]:
-    normalized: dict[KubeName, bool] = {}
-    for capability_id, required in requests.items():
-        checked = _check_kube_name(capability_id)
-        if checked in normalized:
-            msg = f"duplicate BuildKit {kind} capability ID: {checked!r}"
-            raise ValueError(msg)
-        if not isinstance(required, bool):
-            msg = f"BuildKit {kind} capability {checked!r} required flag must be bool"
-            raise TypeError(msg)
-        normalized[checked] = required
-    return normalized
-
-
 def _capability_volume_name(kind: CapabilityKind, capability_id: str) -> str:
     payload = f"{kind}:{capability_id}".encode()
     digest = hashlib.sha256(payload).hexdigest()[:16]
     return f"build-{kind}-{digest}"
-
-
-def _normalize_worktree(worktree: str) -> str:
-    value = worktree.strip().strip("/")
-    if not value or value == ".":
-        return "."
-    path = Path(value)
-    if path.is_absolute() or any(part in ("", ".", "..") for part in path.parts):
-        msg = f"BuildKit PVC worktree must be a relative subpath: {worktree!r}"
-        raise ValueError(msg)
-    return path.as_posix()
 
 
 def _build_job_script() -> str:
@@ -735,28 +658,6 @@ def _parse_build_digest(logs: str) -> str:
         return digest
     msg = "BuildKit Job did not emit a pushed image digest"
     raise OSError(msg)
-
-
-async def _assert_repo_volume(
-    kube: Kube,
-    *,
-    repo_id: str,
-    claim_name: str,
-    timeout: float,
-) -> None:
-    volumes = await RepoVolume.list(kube, repo_id, timeout=timeout)
-    if len(volumes) != 1:
-        msg = (
-            f"project image build requires one managed repository PVC for "
-            f"{repo_id!r}, found {len(volumes)}"
-        )
-        raise OSError(msg)
-    if volumes[0].pvc.name != claim_name:
-        msg = (
-            f"managed repository PVC for {repo_id!r} has unexpected name "
-            f"{volumes[0].pvc.name!r}, expected {claim_name!r}"
-        )
-        raise OSError(msg)
 
 
 def _worktree_sub_path(worktree: str) -> str | None:

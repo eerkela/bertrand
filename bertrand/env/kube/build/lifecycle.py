@@ -4,17 +4,15 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Annotated, Literal, cast
+from typing import TYPE_CHECKING, Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from bertrand.env.git import BERTRAND_ENV, BERTRAND_NAMESPACE
-from bertrand.env.kube.api.spec import CustomResourceSpec
 from bertrand.env.kube.build.refs import (
     DIGEST_REF_RE,
     channel_refs,
@@ -22,14 +20,17 @@ from bertrand.env.kube.build.refs import (
     digest_ref,
 )
 from bertrand.env.kube.build.repository import IMAGES, ImageRepository
-from bertrand.env.kube.crd import (
+from bertrand.env.kube.crd import CustomResourceDefinition
+from bertrand.env.kube.custom_object import (
+    CustomObjectClient,
     CustomObjectMetadata,
-    CustomResourceClient,
-    CustomResourceDefinition,
+    CustomObjectSpec,
 )
 from bertrand.env.kube.pod import Pod
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping, Sequence
+
     from bertrand.env.kube.api.client import Kube
     from bertrand.env.kube.build.request import ProjectImageIdentity
 
@@ -70,6 +71,80 @@ class _ProjectImageSpec(BaseModel):
     retired_at: datetime | None = None
     last_gc_at: datetime | None = None
     last_error: str = ""
+
+    @classmethod
+    def published(
+        cls,
+        *,
+        identity: ProjectImageIdentity,
+        digest_ref: str,
+        platform_images: Mapping[str, str],
+        channel_names: Sequence[str],
+        published_at: datetime,
+    ) -> _ProjectImageSpec:
+        return cls(
+            repo_id=identity.repo_id,
+            worktree=identity.worktree,
+            tag=identity.tag,
+            env_id=identity.env_id,
+            image=identity.image,
+            digest_ref=digest_ref,
+            platform_images=dict(sorted(platform_images.items())),
+            channels=sorted(channel_names),
+            config_id=identity.config_id,
+            phase="Active",
+            published_at=published_at,
+            retired_at=None,
+            last_gc_at=None,
+            last_error="",
+        )
+
+    @staticmethod
+    def identity_labels(
+        *,
+        repo_id: str,
+        worktree: str,
+        tag: str | None,
+    ) -> dict[str, str]:
+        labels = {
+            PROJECT_IMAGE_REPO_LABEL: _label_hash(repo_id),
+            PROJECT_IMAGE_WORKTREE_LABEL: _label_hash(worktree),
+        }
+        if tag is not None:
+            labels[PROJECT_IMAGE_TAG_LABEL] = _label_hash(tag)
+        return labels
+
+    @property
+    def labels(self) -> dict[str, str]:
+        return {
+            **_PROJECT_IMAGE_LABELS,
+            **self.identity_labels(
+                repo_id=self.repo_id,
+                worktree=self.worktree,
+                tag=self.tag,
+            ),
+            PROJECT_IMAGE_ENV_LABEL: _label_hash(self.env_id),
+            PROJECT_IMAGE_CONFIG_LABEL: _label_hash(self.config_id),
+            PROJECT_IMAGE_PHASE_LABEL: self.phase.lower(),
+        }
+
+    def payload(self) -> dict[str, object]:
+        return {
+            "repo_id": self.repo_id,
+            "worktree": self.worktree,
+            "tag": self.tag,
+            "env_id": self.env_id,
+            "image": self.image,
+            "digest_ref": self.digest_ref,
+            "platform_images": dict(sorted(self.platform_images.items())),
+            "channels": sorted(self.channels),
+            "config_id": self.config_id,
+            "phase": self.phase,
+            "published_at": _datetime_payload(self.published_at),
+            "retired_at": _datetime_payload(self.retired_at),
+            "last_gc_at": _datetime_payload(self.last_gc_at),
+            "last_error": self.last_error,
+        }
 
 
 _PROJECT_IMAGE_SPEC_SCHEMA = {
@@ -122,14 +197,14 @@ _PROJECT_IMAGE_LABELS = {
     BERTRAND_ENV: "1",
     PROJECT_IMAGE_LABEL: PROJECT_IMAGE_LABEL_VALUE,
 }
-_PROJECT_IMAGE_SPEC = CustomResourceSpec(
+_PROJECT_IMAGE_SPEC = CustomObjectSpec(
     group=PROJECT_IMAGE_GROUP,
     version=PROJECT_IMAGE_VERSION,
     kind=PROJECT_IMAGE_KIND,
     plural=PROJECT_IMAGE_PLURAL,
     labels=_PROJECT_IMAGE_LABELS,
 )
-_PROJECT_IMAGE_CLIENT = CustomResourceClient(_PROJECT_IMAGE_SPEC)
+_PROJECT_IMAGE_CLIENT = CustomObjectClient(_PROJECT_IMAGE_SPEC)
 
 
 class ProjectImageRecord(BaseModel):
@@ -137,63 +212,21 @@ class ProjectImageRecord(BaseModel):
 
     Parameters
     ----------
-    name : str
-        Kubernetes custom object name.
-    namespace : str
-        Kubernetes namespace that owns the record.
-    repo_id : str
-        Stable repository UUID.
-    worktree : str
-        Repository-relative worktree identity.
-    tag : str
-        Configured image key from ``[tool.bertrand.image]``.
-    env_id : str
-        Deterministic capability environment UUID.
-    image : str
-        Mutable image reference published by the build.
-    digest_ref : str
-        Immutable digest-pinned image reference.
-    digest : str
-        OCI manifest digest derived from ``digest_ref``.
-    platforms : tuple[str, ...]
-        Platforms derived from ``platform_images``.
-    platform_images : Mapping[str, str]
-        Read-only mapping from platform to owned platform-image digest ref.
-    channels : Mapping[str, str]
-        Read-only mapping from channel name to internal mutable channel ref.
-    config_id : str
-        Deterministic hash of the image configuration inputs.
-    phase : {"Active", "Retired"}
-        Lifecycle phase used by bounded garbage collection.
-    published_at : datetime | None
-        Time the digest was published.
-    retired_at : datetime | None
-        Time the digest was retired, if any.
-    last_gc_at : datetime | None
-        Last time GC attempted to collect this record.
-    last_error : str
-        Last GC error message, if any.
+    api_version : str
+        Kubernetes API version reported by the custom object.
+    kind : {"BertrandImage"}
+        Kubernetes custom object kind.
+    metadata : CustomObjectMetadata
+        Kubernetes object metadata.
+    spec : _ProjectImageSpec
+        Project image lifecycle spec.
     """
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
-    name: _NonEmptyString
-    namespace: _NonEmptyString
-    repo_id: _NonEmptyString
-    worktree: _NonEmptyString
-    tag: str
-    env_id: _NonEmptyString
-    image: _NonEmptyString
-    digest_ref: _NonEmptyString
-    digest: _NonEmptyString
-    platforms: tuple[_NonEmptyString, ...]
-    platform_images: Mapping[_NonEmptyString, _NonEmptyString]
-    channels: Mapping[_NonEmptyString, _NonEmptyString]
-    config_id: _NonEmptyString
-    phase: _ProjectImagePhase
-    published_at: datetime | None
-    retired_at: datetime | None
-    last_gc_at: datetime | None
-    last_error: str
+    model_config = ConfigDict(extra="forbid", frozen=True, populate_by_name=True)
+    api_version: str = Field(alias="apiVersion")
+    kind: Literal["BertrandImage"]
+    metadata: CustomObjectMetadata
+    spec: _ProjectImageSpec
 
     @classmethod
     def from_payload(cls, payload: object) -> ProjectImageRecord:
@@ -215,69 +248,236 @@ class ProjectImageRecord(BaseModel):
             If the payload is malformed.
         """
         try:
-            mapping = _object_mapping(payload)
-            metadata = CustomObjectMetadata.model_validate(mapping.get("metadata"))
-            spec = _ProjectImageSpec.model_validate(mapping.get("spec"))
+            record = cls.model_validate(payload)
         except ValidationError as err:
             msg = f"malformed {PROJECT_IMAGE_KIND} custom object: {err}"
             raise OSError(msg) from err
-        kind = str(mapping.get("kind") or "").strip()
-        if kind != PROJECT_IMAGE_KIND:
+        label_phase = record.metadata.labels.get(PROJECT_IMAGE_PHASE_LABEL, "").strip()
+        if label_phase != record.spec.phase.lower():
             msg = (
-                f"malformed {PROJECT_IMAGE_KIND} {metadata.name!r}: "
-                f"unexpected kind {kind!r}"
+                f"malformed {PROJECT_IMAGE_KIND} {record.name!r}: phase label "
+                f"{label_phase!r} does not match spec phase {record.spec.phase!r}"
             )
             raise OSError(msg)
-        label_phase = metadata.labels.get(PROJECT_IMAGE_PHASE_LABEL, "").strip()
-        if label_phase != spec.phase.lower():
+        if not DIGEST_REF_RE.fullmatch(record.spec.digest_ref):
             msg = (
-                f"malformed {PROJECT_IMAGE_KIND} {metadata.name!r}: phase label "
-                f"{label_phase!r} does not match spec phase {spec.phase!r}"
-            )
-            raise OSError(msg)
-        if not DIGEST_REF_RE.fullmatch(spec.digest_ref):
-            msg = (
-                f"malformed {PROJECT_IMAGE_KIND} {metadata.name!r}: unsupported "
-                f"digest ref {spec.digest_ref!r}"
+                f"malformed {PROJECT_IMAGE_KIND} {record.name!r}: unsupported "
+                f"digest ref {record.spec.digest_ref!r}"
             )
             raise OSError(msg)
         try:
-            digest = digest_from_ref(spec.digest_ref)
+            _ = record.digest
         except ValueError as err:
-            msg = f"malformed {PROJECT_IMAGE_KIND} {metadata.name!r}: {err}"
+            msg = f"malformed {PROJECT_IMAGE_KIND} {record.name!r}: {err}"
             raise OSError(msg) from err
-        platform_images = MappingProxyType(dict(sorted(spec.platform_images.items())))
-        platforms = tuple(platform_images)
-        channel_names = _normalize_channel_names(spec.channels)
-        channels = MappingProxyType(channel_refs(spec.image, channel_names))
         _validate_platform_images(
-            platform_images=platform_images,
-            context=f"{PROJECT_IMAGE_KIND} {metadata.name!r}",
+            platform_images=record.platform_images,
+            context=f"{PROJECT_IMAGE_KIND} {record.name!r}",
         )
         _validate_channels(
-            channels=channels,
-            context=f"{PROJECT_IMAGE_KIND} {metadata.name!r}",
+            channels=record.channels,
+            context=f"{PROJECT_IMAGE_KIND} {record.name!r}",
         )
-        return cls(
-            name=metadata.name,
-            namespace=metadata.namespace,
-            repo_id=spec.repo_id,
-            worktree=spec.worktree,
-            tag=spec.tag,
-            env_id=spec.env_id,
-            image=spec.image,
-            digest_ref=spec.digest_ref,
-            digest=digest,
-            platforms=platforms,
-            platform_images=platform_images,
-            channels=channels,
-            config_id=spec.config_id,
-            phase=spec.phase,
-            published_at=_utc_datetime(spec.published_at),
-            retired_at=_utc_datetime(spec.retired_at),
-            last_gc_at=_utc_datetime(spec.last_gc_at),
-            last_error=spec.last_error,
-        )
+        return record
+
+    @property
+    def name(self) -> str:
+        """Return the Kubernetes custom object name.
+
+        Returns
+        -------
+        str
+            Kubernetes custom object name.
+        """
+        return self.metadata.name
+
+    @property
+    def namespace(self) -> str:
+        """Return the namespace that owns this record.
+
+        Returns
+        -------
+        str
+            Kubernetes namespace that owns this record.
+        """
+        return self.metadata.namespace
+
+    @property
+    def repo_id(self) -> str:
+        """Return the stable repository identity.
+
+        Returns
+        -------
+        str
+            Stable repository UUID.
+        """
+        return self.spec.repo_id
+
+    @property
+    def worktree(self) -> str:
+        """Return the repository worktree identity.
+
+        Returns
+        -------
+        str
+            Repository-relative worktree identity.
+        """
+        return self.spec.worktree
+
+    @property
+    def tag(self) -> str:
+        """Return the configured project image key.
+
+        Returns
+        -------
+        str
+            Configured image key from ``[tool.bertrand.image]``.
+        """
+        return self.spec.tag
+
+    @property
+    def env_id(self) -> str:
+        """Return the deterministic capability environment identity.
+
+        Returns
+        -------
+        str
+            Deterministic capability environment UUID.
+        """
+        return self.spec.env_id
+
+    @property
+    def image(self) -> str:
+        """Return the mutable image reference.
+
+        Returns
+        -------
+        str
+            Mutable image reference published by the build.
+        """
+        return self.spec.image
+
+    @property
+    def digest_ref(self) -> str:
+        """Return the immutable digest-pinned image reference.
+
+        Returns
+        -------
+        str
+            Digest-pinned image reference for the published manifest.
+        """
+        return self.spec.digest_ref
+
+    @property
+    def digest(self) -> str:
+        """Return the OCI manifest digest.
+
+        Returns
+        -------
+        str
+            OCI manifest digest derived from ``digest_ref``.
+        """
+        return digest_from_ref(self.spec.digest_ref)
+
+    @property
+    def platforms(self) -> tuple[str, ...]:
+        """Return platforms included in this publication.
+
+        Returns
+        -------
+        tuple[str, ...]
+            Platforms derived from ``platform_images``.
+        """
+        return tuple(self.platform_images)
+
+    @property
+    def platform_images(self) -> Mapping[str, str]:
+        """Return platform-specific digest refs.
+
+        Returns
+        -------
+        Mapping[str, str]
+            Read-only mapping from platform to owned platform-image digest ref.
+        """
+        return MappingProxyType(dict(sorted(self.spec.platform_images.items())))
+
+    @property
+    def channels(self) -> Mapping[str, str]:
+        """Return internal mutable channel refs.
+
+        Returns
+        -------
+        Mapping[str, str]
+            Read-only mapping from channel name to internal mutable channel ref.
+        """
+        channel_names = _normalize_channel_names(self.spec.channels)
+        return MappingProxyType(channel_refs(self.spec.image, channel_names))
+
+    @property
+    def config_id(self) -> str:
+        """Return the project image configuration identity.
+
+        Returns
+        -------
+        str
+            Deterministic hash of the image configuration inputs.
+        """
+        return self.spec.config_id
+
+    @property
+    def phase(self) -> _ProjectImagePhase:
+        """Return the lifecycle phase.
+
+        Returns
+        -------
+        {"Active", "Retired"}
+            Lifecycle phase used by bounded garbage collection.
+        """
+        return self.spec.phase
+
+    @property
+    def published_at(self) -> datetime | None:
+        """Return the publication timestamp.
+
+        Returns
+        -------
+        datetime | None
+            Time the digest was published.
+        """
+        return _utc_datetime(self.spec.published_at)
+
+    @property
+    def retired_at(self) -> datetime | None:
+        """Return the retirement timestamp.
+
+        Returns
+        -------
+        datetime | None
+            Time the digest was retired, if retired.
+        """
+        return _utc_datetime(self.spec.retired_at)
+
+    @property
+    def last_gc_at(self) -> datetime | None:
+        """Return the last GC attempt timestamp.
+
+        Returns
+        -------
+        datetime | None
+            Time this record was last considered by GC.
+        """
+        return _utc_datetime(self.spec.last_gc_at)
+
+    @property
+    def last_error(self) -> str:
+        """Return the last project-image GC error.
+
+        Returns
+        -------
+        str
+            Last non-fatal GC error recorded for this image.
+        """
+        return self.spec.last_error
 
     @property
     def channel_digest_refs(self) -> Mapping[str, str]:
@@ -291,6 +491,31 @@ class ProjectImageRecord(BaseModel):
         """
         return MappingProxyType(
             {name: digest_ref(ref, self.digest) for name, ref in self.channels.items()}
+        )
+
+    def _lifecycle_spec(
+        self,
+        *,
+        phase: _ProjectImagePhase,
+        retired_at: datetime | None,
+        last_gc_at: datetime | None,
+        last_error: str,
+    ) -> _ProjectImageSpec:
+        return _ProjectImageSpec(
+            repo_id=self.repo_id,
+            worktree=self.worktree,
+            tag=self.tag,
+            env_id=self.env_id,
+            image=self.image,
+            digest_ref=self.digest_ref,
+            platform_images=dict(self.platform_images),
+            channels=list(self.spec.channels),
+            config_id=self.config_id,
+            phase=phase,
+            published_at=self.published_at,
+            retired_at=retired_at,
+            last_gc_at=last_gc_at,
+            last_error=last_error,
         )
 
 
@@ -461,7 +686,11 @@ async def retire_project_images(
     await ensure_project_image_crd(kube, timeout=deadline - loop.time())
     records = await list_project_images(
         kube,
-        labels=_identity_labels(repo_id=repo_id, worktree=worktree, tag=tag),
+        labels=_ProjectImageSpec.identity_labels(
+            repo_id=repo_id,
+            worktree=worktree,
+            tag=tag,
+        ),
         timeout=deadline - loop.time(),
     )
     now = datetime.now(UTC)
@@ -563,7 +792,7 @@ async def gc_project_images(
                     digest_ref,
                     timeout=deadline - loop.time(),
                 )
-            await _PROJECT_IMAGE_CLIENT.delete(
+            await _PROJECT_IMAGE_CLIENT.delete_by_name(
                 kube,
                 namespace=BERTRAND_NAMESPACE,
                 name=record.name,
@@ -725,7 +954,7 @@ async def record_project_image(
     deadline = loop.time() + timeout
     peers = await list_project_images(
         kube,
-        labels=_identity_labels(
+        labels=_ProjectImageSpec.identity_labels(
             repo_id=identity.repo_id,
             worktree=identity.worktree,
             tag=identity.tag,
@@ -780,29 +1009,12 @@ async def _upsert_project_image_record(
         tag=identity.tag,
         digest=digest,
     )
-    labels = _record_labels(
-        repo_id=identity.repo_id,
-        worktree=identity.worktree,
-        tag=identity.tag,
-        env_id=identity.env_id,
-        config_id=identity.config_id,
-        phase="Active",
-    )
-    spec = _project_image_spec_payload(
-        repo_id=identity.repo_id,
-        worktree=identity.worktree,
-        tag=identity.tag,
-        env_id=identity.env_id,
-        image=identity.image,
+    spec = _ProjectImageSpec.published(
+        identity=identity,
         digest_ref=digest_ref,
         platform_images=platform_images,
         channel_names=channel_names,
-        config_id=identity.config_id,
-        phase="Active",
         published_at=published_at,
-        retired_at=None,
-        last_gc_at=None,
-        last_error="",
     )
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout
@@ -810,8 +1022,8 @@ async def _upsert_project_image_record(
         kube,
         namespace=BERTRAND_NAMESPACE,
         name=name,
-        spec=spec,
-        labels=labels,
+        spec=spec.payload(),
+        labels=spec.labels,
         timeout=deadline - loop.time(),
     )
     return ProjectImageRecord.from_payload(obj.payload)
@@ -832,96 +1044,21 @@ async def _transition_project_image(
         raise TimeoutError(msg)
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout
+    spec = record._lifecycle_spec(
+        phase=phase,
+        retired_at=retired_at,
+        last_gc_at=record.last_gc_at if last_gc_at is None else last_gc_at,
+        last_error=last_error,
+    )
     obj = await _PROJECT_IMAGE_CLIENT.upsert(
         kube,
         namespace=BERTRAND_NAMESPACE,
         name=record.name,
-        spec=_record_spec_payload(
-            record,
-            phase=phase,
-            retired_at=retired_at,
-            last_gc_at=record.last_gc_at if last_gc_at is None else last_gc_at,
-            last_error=last_error,
-        ),
-        labels=_record_labels(
-            repo_id=record.repo_id,
-            worktree=record.worktree,
-            tag=record.tag,
-            env_id=record.env_id,
-            config_id=record.config_id,
-            phase=phase,
-        ),
+        spec=spec.payload(),
+        labels=spec.labels,
         timeout=deadline - loop.time(),
     )
     return ProjectImageRecord.from_payload(obj.payload)
-
-
-def _object_mapping(payload: object) -> Mapping[str, object]:
-    if isinstance(payload, Mapping):
-        return cast("Mapping[str, object]", payload)
-    msg = f"malformed {PROJECT_IMAGE_KIND} custom object: expected mapping payload"
-    raise OSError(msg)
-
-
-def _record_spec_payload(
-    record: ProjectImageRecord,
-    *,
-    phase: _ProjectImagePhase,
-    retired_at: datetime | None,
-    last_gc_at: datetime | None,
-    last_error: str,
-) -> dict[str, object]:
-    return _project_image_spec_payload(
-        repo_id=record.repo_id,
-        worktree=record.worktree,
-        tag=record.tag,
-        env_id=record.env_id,
-        image=record.image,
-        digest_ref=record.digest_ref,
-        platform_images=record.platform_images,
-        channel_names=tuple(record.channels),
-        config_id=record.config_id,
-        phase=phase,
-        published_at=record.published_at,
-        retired_at=retired_at,
-        last_gc_at=last_gc_at,
-        last_error=last_error,
-    )
-
-
-def _project_image_spec_payload(
-    *,
-    repo_id: str,
-    worktree: str,
-    tag: str,
-    env_id: str,
-    image: str,
-    digest_ref: str,
-    platform_images: Mapping[str, str],
-    channel_names: Sequence[str],
-    config_id: str,
-    phase: _ProjectImagePhase,
-    published_at: datetime | None,
-    retired_at: datetime | None,
-    last_gc_at: datetime | None,
-    last_error: str,
-) -> dict[str, object]:
-    return {
-        "repo_id": repo_id,
-        "worktree": worktree,
-        "tag": tag,
-        "env_id": env_id,
-        "image": image,
-        "digest_ref": digest_ref,
-        "platform_images": dict(sorted(platform_images.items())),
-        "channels": sorted(channel_names),
-        "config_id": config_id,
-        "phase": phase,
-        "published_at": _datetime_payload(published_at),
-        "retired_at": _datetime_payload(retired_at),
-        "last_gc_at": _datetime_payload(last_gc_at),
-        "last_error": last_error,
-    }
 
 
 async def _active_pod_image_refs(kube: Kube, *, timeout: float) -> frozenset[str]:
@@ -979,39 +1116,6 @@ def _gc_sort_key(record: ProjectImageRecord) -> tuple[datetime, str]:
         record.retired_at or datetime.max.replace(tzinfo=UTC),
         record.name,
     )
-
-
-def _identity_labels(
-    *,
-    repo_id: str,
-    worktree: str,
-    tag: str | None,
-) -> dict[str, str]:
-    labels = {
-        PROJECT_IMAGE_REPO_LABEL: _label_hash(repo_id),
-        PROJECT_IMAGE_WORKTREE_LABEL: _label_hash(worktree),
-    }
-    if tag is not None:
-        labels[PROJECT_IMAGE_TAG_LABEL] = _label_hash(tag)
-    return labels
-
-
-def _record_labels(
-    *,
-    repo_id: str,
-    worktree: str,
-    tag: str,
-    env_id: str,
-    config_id: str,
-    phase: _ProjectImagePhase,
-) -> dict[str, str]:
-    return {
-        **_PROJECT_IMAGE_LABELS,
-        **_identity_labels(repo_id=repo_id, worktree=worktree, tag=tag),
-        PROJECT_IMAGE_ENV_LABEL: _label_hash(env_id),
-        PROJECT_IMAGE_CONFIG_LABEL: _label_hash(config_id),
-        PROJECT_IMAGE_PHASE_LABEL: phase.lower(),
-    }
 
 
 def _record_name(*, repo_id: str, worktree: str, tag: str, digest: str) -> str:

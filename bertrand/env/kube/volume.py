@@ -386,7 +386,19 @@ class PersistentVolumeClaim(
         storage_request: str,
         labels: Mapping[str, str] | None,
         annotations: Mapping[str, str] | None,
+        data_source: Mapping[str, object] | None = None,
     ) -> dict[str, object]:
+        spec: dict[str, object] = {
+            "accessModes": list(access_modes),
+            "storageClassName": storage_class,
+            "resources": {
+                "requests": {
+                    "storage": storage_request,
+                },
+            },
+        }
+        if data_source is not None:
+            spec["dataSource"] = dict(data_source)
         return {
             "apiVersion": "v1",
             "kind": "PersistentVolumeClaim",
@@ -396,15 +408,7 @@ class PersistentVolumeClaim(
                 "labels": dict(labels or {}),
                 "annotations": dict(annotations or {}),
             },
-            "spec": {
-                "accessModes": list(access_modes),
-                "storageClassName": storage_class,
-                "resources": {
-                    "requests": {
-                        "storage": storage_request,
-                    },
-                },
-            },
+            "spec": spec,
         }
 
     @classmethod
@@ -531,6 +535,114 @@ class PersistentVolumeClaim(
             kube=kube,
             timeout=deadline - loop.time(),
         )
+
+    @classmethod
+    async def create_from_snapshot(
+        cls,
+        kube: Kube,
+        *,
+        namespace: str,
+        name: str,
+        access_modes: Collection[str],
+        storage_class: str,
+        storage_request: str,
+        snapshot_name: str,
+        timeout: float,
+        labels: Mapping[str, str] | None = None,
+        annotations: Mapping[str, str] | None = None,
+    ) -> Self:
+        """Create a PVC restored from a `VolumeSnapshot`.
+
+        Parameters
+        ----------
+        kube : Kube
+            Active Kubernetes API context.
+        namespace : str
+            Namespace that owns the claim and snapshot.
+        name : str
+            Claim name to create.
+        access_modes : Collection[str]
+            Required claim access modes, for example `"ReadWriteMany"`.
+        storage_class : str
+            Required StorageClass name.
+        storage_request : str
+            Requested storage quantity for the restored claim.
+        snapshot_name : str
+            Source `VolumeSnapshot` name.
+        timeout : float
+            Maximum request budget in seconds. If infinite, wait indefinitely.
+        labels : Mapping[str, str] | None, optional
+            Labels to apply to `metadata.labels`.
+        annotations : Mapping[str, str] | None, optional
+            Annotations to apply to `metadata.annotations`.
+
+        Returns
+        -------
+        PersistentVolumeClaim
+            Wrapped restored claim.
+
+        Raises
+        ------
+        OSError
+            If intent fields are empty, creation fails, or Kubernetes returns a
+            malformed payload.
+        """
+        namespace = namespace.strip()
+        name = name.strip()
+        storage_class = storage_class.strip()
+        storage_request = storage_request.strip()
+        snapshot_name = snapshot_name.strip()
+        modes = tuple(mode.strip() for mode in access_modes if mode and mode.strip())
+        if not namespace or not name:
+            msg = "snapshot PVC creation requires non-empty namespace and name"
+            raise OSError(msg)
+        if not modes:
+            msg = "snapshot PVC creation requires at least one access mode"
+            raise OSError(msg)
+        if not storage_class:
+            msg = "snapshot PVC creation requires a non-empty storage class"
+            raise OSError(msg)
+        if not storage_request:
+            msg = "snapshot PVC creation requires a non-empty storage request"
+            raise OSError(msg)
+        if not snapshot_name:
+            msg = "snapshot PVC creation requires a non-empty snapshot name"
+            raise OSError(msg)
+        parse_pvc_size(storage_request)
+
+        manifest = cls._manifest(
+            namespace=namespace,
+            name=name,
+            access_modes=modes,
+            storage_class=storage_class,
+            storage_request=storage_request,
+            labels=labels,
+            annotations=annotations,
+            data_source={
+                "apiGroup": "snapshot.storage.k8s.io",
+                "kind": "VolumeSnapshot",
+                "name": snapshot_name,
+            },
+        )
+        payload = await kube.run(
+            lambda request_timeout: kube.core.create_namespaced_persistent_volume_claim(
+                namespace=namespace,
+                body=manifest,
+                _request_timeout=request_timeout,
+            ),
+            timeout=timeout,
+            context=(
+                f"failed to create PersistentVolumeClaim {namespace}/{name} "
+                f"from VolumeSnapshot {snapshot_name!r}"
+            ),
+        )
+        if not isinstance(payload, kubernetes.client.V1PersistentVolumeClaim):
+            msg = (
+                "malformed Kubernetes PVC payload while creating "
+                f"{namespace}/{name} from VolumeSnapshot {snapshot_name!r}"
+            )
+            raise OSError(msg)
+        return cls(_obj=payload)
 
     def _assert_upsert_compatible(
         self,

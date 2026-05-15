@@ -15,7 +15,7 @@ from bertrand.env.kube.capability.base import Capability
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from bertrand.env.kube.api import Kube
+    from bertrand.env.kube.api.client import Kube
 
 CAPABILITY_DIR = CACHE_DIR / "capabilities"
 

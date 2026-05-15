@@ -8,15 +8,16 @@ from pathlib import Path
 from types import TracebackType
 from typing import Any, Self
 
-from ..config import Bertrand, Config
-from ..config.core import TOMLKey
-from ..git import (
+from bertrand.env.config.bertrand import Bertrand
+from bertrand.env.config.core import Config, TOMLKey
+from bertrand.env.git import (
     ENV_ID_ENV,
     INFINITY,
     METADATA_DIR,
 )
-from bertrand.env.kube.api import Kube
+from bertrand.env.kube.api.client import Kube
 from bertrand.env.kube.lock.cluster import ClusterLock
+
 from .capability import DeviceConfigMap, build_secret_flags, cleanup_secret_staged
 from .container import Container
 from .image import Image, image_args

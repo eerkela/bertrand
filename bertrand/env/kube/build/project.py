@@ -15,10 +15,6 @@ from bertrand.env.config.bertrand import Bertrand, project_image_tag
 from bertrand.env.config.python import PyProject
 from bertrand.env.git import INFINITY
 from bertrand.env.kube.build.containerfile import project_containerfile
-from bertrand.env.kube.build.controller import (
-    submit_buildkit_build,
-    wait_buildkit_build,
-)
 from bertrand.env.kube.build.lifecycle import (
     ProjectImagePublication,
     ensure_project_image_crd,
@@ -30,6 +26,9 @@ from bertrand.env.kube.build.request import (
     BuildKitBuildRecord,
     BuildKitBuildSpec,
     ProjectImageIdentity,
+    ensure_buildkit_build_crd,
+    submit_buildkit_build,
+    wait_buildkit_build,
 )
 
 PROJECT_IMAGE_ENV_NAMESPACE = uuid.UUID("36eb88bb-c284-4cb2-ab0a-57f5e850868a")
@@ -189,6 +188,7 @@ class ProjectImageBuild:
             raise TimeoutError(msg)
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
+        await ensure_buildkit_build_crd(kube, timeout=deadline - loop.time())
         await ensure_project_image_crd(kube, timeout=deadline - loop.time())
         spec = self.spec.with_external_publication(
             external_image=external_image,

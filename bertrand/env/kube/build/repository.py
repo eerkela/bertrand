@@ -98,39 +98,6 @@ IMAGE_REPOSITORY_ROUTE_READY_STATUS = frozenset({200, 401})
 IMAGE_REPOSITORY_DELETE_SUCCESS_STATUS = frozenset({202, 404})
 
 
-def _datetime_payload(value: datetime | None) -> str:
-    return value.isoformat() if value is not None else ""
-
-
-def _parse_maintenance_datetime(field: str, value: str) -> datetime | None:
-    value = value.strip()
-    if not value:
-        return None
-    try:
-        parsed = datetime.fromisoformat(value)
-    except ValueError as err:
-        msg = f"registry maintenance status field {field!r} is not a timestamp"
-        raise OSError(msg) from err
-    if parsed.tzinfo is None:
-        return parsed.replace(tzinfo=UTC)
-    return parsed.astimezone(UTC)
-
-
-def _parse_maintenance_count(value: str) -> int:
-    value = value.strip()
-    if not value:
-        return 0
-    try:
-        count = int(value)
-    except ValueError as err:
-        msg = "registry maintenance dirty_count is not an integer"
-        raise OSError(msg) from err
-    if count < 0:
-        msg = "registry maintenance dirty_count cannot be negative"
-        raise OSError(msg)
-    return count
-
-
 def _config_hash(data: Mapping[str, str]) -> str:
     payload = json.dumps(data, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
@@ -218,6 +185,92 @@ class ImageRepositoryMaintenanceStatus:
     dirty_count: int = 0
     dirty_since: datetime | None = None
     last_gc_at: datetime | None = None
+
+    @staticmethod
+    def _datetime_payload(value: datetime | None) -> str:
+        return value.isoformat() if value is not None else ""
+
+    @staticmethod
+    def _parse_datetime(field: str, value: str) -> datetime | None:
+        value = value.strip()
+        if not value:
+            return None
+        try:
+            parsed = datetime.fromisoformat(value)
+        except ValueError as err:
+            msg = f"registry maintenance status field {field!r} is not a timestamp"
+            raise OSError(msg) from err
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=UTC)
+        return parsed.astimezone(UTC)
+
+    @staticmethod
+    def _parse_count(value: str) -> int:
+        value = value.strip()
+        if not value:
+            return 0
+        try:
+            count = int(value)
+        except ValueError as err:
+            msg = "registry maintenance dirty_count is not an integer"
+            raise OSError(msg) from err
+        if count < 0:
+            msg = "registry maintenance dirty_count cannot be negative"
+            raise OSError(msg)
+        return count
+
+    @classmethod
+    def from_data(
+        cls,
+        data: Mapping[str, str],
+    ) -> ImageRepositoryMaintenanceStatus:
+        """Parse ConfigMap data into registry maintenance status.
+
+        Parameters
+        ----------
+        data : Mapping[str, str]
+            Raw ConfigMap data.
+
+        Returns
+        -------
+        ImageRepositoryMaintenanceStatus
+            Parsed maintenance status.
+        """
+        return cls(
+            active=data.get("active", "").strip().lower() == "true",
+            reason=data.get("reason", "").strip(),
+            started_at=cls._parse_datetime("started_at", data.get("started_at", "")),
+            message=data.get("message", "").strip(),
+            dirty_count=cls._parse_count(data.get("dirty_count", "")),
+            dirty_since=cls._parse_datetime("dirty_since", data.get("dirty_since", "")),
+            last_gc_at=cls._parse_datetime("last_gc_at", data.get("last_gc_at", "")),
+        )
+
+    def data(self) -> dict[str, str]:
+        """Render registry maintenance status as ConfigMap data.
+
+        Returns
+        -------
+        dict[str, str]
+            Deterministic ConfigMap data payload.
+
+        Raises
+        ------
+        OSError
+            If `dirty_count` is negative.
+        """
+        if self.dirty_count < 0:
+            msg = "registry maintenance dirty_count cannot be negative"
+            raise OSError(msg)
+        return {
+            "active": "true" if self.active else "false",
+            "reason": self.reason,
+            "started_at": self._datetime_payload(self.started_at),
+            "message": self.message,
+            "dirty_count": str(self.dirty_count),
+            "dirty_since": self._datetime_payload(self.dirty_since),
+            "last_gc_at": self._datetime_payload(self.last_gc_at),
+        }
 
     @property
     def storage_dirty(self) -> bool:
@@ -416,26 +469,7 @@ class ImageRepository:
         )
         if status is None:
             return ImageRepositoryMaintenanceStatus(active=False)
-        data = status.data
-        active = data.get("active", "").strip().lower() == "true"
-        return ImageRepositoryMaintenanceStatus(
-            active=active,
-            reason=data.get("reason", "").strip(),
-            started_at=_parse_maintenance_datetime(
-                "started_at",
-                data.get("started_at", ""),
-            ),
-            message=data.get("message", "").strip(),
-            dirty_count=_parse_maintenance_count(data.get("dirty_count", "")),
-            dirty_since=_parse_maintenance_datetime(
-                "dirty_since",
-                data.get("dirty_since", ""),
-            ),
-            last_gc_at=_parse_maintenance_datetime(
-                "last_gc_at",
-                data.get("last_gc_at", ""),
-            ),
-        )
+        return ImageRepositoryMaintenanceStatus.from_data(status.data)
 
     async def _write_maintenance_status(
         self,
@@ -444,23 +478,12 @@ class ImageRepository:
         status: ImageRepositoryMaintenanceStatus,
         timeout: float,
     ) -> None:
-        if status.dirty_count < 0:
-            msg = "registry maintenance dirty_count cannot be negative"
-            raise OSError(msg)
         await ConfigMap.upsert(
             kube,
             namespace=self.namespace,
             name=IMAGE_REPOSITORY_MAINTENANCE_NAME,
             labels=self.maintenance_labels,
-            data={
-                "active": "true" if status.active else "false",
-                "reason": status.reason,
-                "started_at": _datetime_payload(status.started_at),
-                "message": status.message,
-                "dirty_count": str(status.dirty_count),
-                "dirty_since": _datetime_payload(status.dirty_since),
-                "last_gc_at": _datetime_payload(status.last_gc_at),
-            },
+            data=status.data(),
             timeout=timeout,
         )
 

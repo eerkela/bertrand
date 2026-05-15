@@ -34,10 +34,16 @@ from pydantic import (
     Field,
 )
 
-from ..config import Bertrand, Config
-from ..config.core import AbsolutePath, NonEmpty, NoWhiteSpace, TOMLKey, Trimmed
-from ..rpc.listener import RPC_TIMEOUT
-from ..git import (
+from bertrand.env.config.bertrand import Bertrand
+from bertrand.env.config.core import (
+    AbsolutePath,
+    Config,
+    NonEmpty,
+    NoWhiteSpace,
+    TOMLKey,
+    Trimmed,
+)
+from bertrand.env.git import (
     BERTRAND_ENV,
     CONTAINER_ID_ENV,
     CONTAINER_RUNTIME_ENV,
@@ -55,6 +61,8 @@ from ..git import (
     atomic_write_text,
     inside_image,
 )
+from bertrand.env.rpc.listener import RPC_TIMEOUT
+
 from .nerdctl import nerdctl
 from .network import format_cpus, format_network
 from .volume import format_volumes
@@ -120,7 +128,9 @@ class Container(BaseModel):
         Source: AbsolutePath
         Destination: AbsolutePath
         RW: bool
-        Propagation: Literal["shared", "slave", "private", "rshared", "rslave", "rprivate"]
+        Propagation: Literal[
+            "shared", "slave", "private", "rshared", "rslave", "rprivate"
+        ]
 
     Mounts: list[_Mounts]
 
@@ -202,7 +212,11 @@ class Container(BaseModel):
         if not value:
             return None
         path = Path(value)
-        if path.is_absolute() or not path.parts or any(part in (".", "..") for part in path.parts):
+        if (
+            path.is_absolute()
+            or not path.parts
+            or any(part in (".", "..") for part in path.parts)
+        ):
             return None
         try:
             candidate = (worktree / path).resolve()
@@ -398,10 +412,14 @@ async def container_args(
 
     bertrand = config.get(Bertrand)
     if bertrand is None:
-        raise TypeError(f"missing 'bertrand' configuration for environment at {config.root}")
+        raise TypeError(
+            f"missing 'bertrand' configuration for environment at {config.root}"
+        )
     workload = bertrand.workload.get(tag)
     if workload is None:
-        raise ValueError(f"unknown workload tag '{tag}' for environment at {config.root}")
+        raise ValueError(
+            f"unknown workload tag '{tag}' for environment at {config.root}"
+        )
     if cmd:
         _cmd: list[str] = []
         for part in cmd:
@@ -566,11 +584,15 @@ async def start_rpc_sidecar(
             stderr=asyncio.subprocess.DEVNULL,
         )
         while True:
-            socket_ready = host_socket.exists() and stat.S_ISSOCK(host_socket.lstat().st_mode)
+            socket_ready = host_socket.exists() and stat.S_ISSOCK(
+                host_socket.lstat().st_mode
+            )
             if socket_ready:
                 return sidecar
             if sidecar.returncode is not None:
-                raise OSError(f"bertrand-rpc exited early with code {sidecar.returncode}")
+                raise OSError(
+                    f"bertrand-rpc exited early with code {sidecar.returncode}"
+                )
             if time.monotonic() >= deadline:
                 raise TimeoutError(
                     f"timed out waiting for bertrand-rpc sidecar readiness (socket={host_socket})"

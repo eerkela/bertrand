@@ -58,42 +58,6 @@ class PolicyRuleSpec:
 
 
 @dataclass(frozen=True)
-class CustomResourceSpec:
-    """Intent-level namespaced Kubernetes custom resource specification.
-
-    Parameters
-    ----------
-    group : str
-        Kubernetes API group that owns the resource.
-    version : str
-        Served API version for the resource.
-    kind : str
-        Kubernetes kind name.
-    plural : str
-        Plural REST resource name.
-    labels : Mapping[str, str], optional
-        Default labels to apply to objects created through this spec.
-    """
-
-    group: str
-    version: str
-    kind: str
-    plural: str
-    labels: Mapping[str, str] = MappingProxyType({})
-
-    @property
-    def api_version(self) -> str:
-        """Return the fully qualified Kubernetes API version.
-
-        Returns
-        -------
-        str
-            Fully qualified Kubernetes API version for objects of this type.
-        """
-        return f"{self.group}/{self.version}"
-
-
-@dataclass(frozen=True)
 class ContainerPortSpec:
     """Intent-level Kubernetes container port specification.
 

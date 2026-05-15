@@ -352,10 +352,7 @@ class _BuildLogFollower:
             Build request status snapshot.
         """
         await self._set_job(record.status.active_job)
-        if not record.status.active_job.strip() and record.status.phase not in (
-            "Succeeded",
-            "Failed",
-        ):
+        if not record.status.active_job.strip() and record.is_active:
             await self._maybe_print_maintenance()
 
     async def close(self) -> None:

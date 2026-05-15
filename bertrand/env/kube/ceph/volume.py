@@ -12,11 +12,11 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 
 from bertrand.env.config.core import _check_uuid
 from bertrand.env.git import BERTRAND_ENV, BERTRAND_NAMESPACE, REPO_ID_ENV
-from bertrand.env.kube.api.spec import CustomResourceSpec
-from bertrand.env.kube.crd import (
+from bertrand.env.kube.crd import CustomResourceDefinition
+from bertrand.env.kube.custom_object import (
+    CustomObjectClient,
     CustomObjectMetadata,
-    CustomResourceClient,
-    CustomResourceDefinition,
+    CustomObjectSpec,
 )
 from bertrand.env.kube.pod import Pod
 from bertrand.env.kube.volume import (
@@ -432,6 +432,46 @@ class _RepositoryVolumeSpec(BaseModel):
             return value.replace(tzinfo=UTC)
         return value.astimezone(UTC)
 
+    @classmethod
+    def active(
+        cls,
+        *,
+        repo_id: str,
+        created_at: datetime,
+        last_seen_at: datetime,
+    ) -> _RepositoryVolumeSpec:
+        repo_id = _check_uuid(repo_id)
+        return cls(
+            repo_id=repo_id,
+            claim_name=RepoVolume.claim_name(repo_id),
+            phase="Active",
+            created_at=created_at,
+            last_seen_at=last_seen_at,
+            retired_at=None,
+            last_gc_at=None,
+            last_error="",
+        )
+
+    @property
+    def labels(self) -> dict[str, str]:
+        return {
+            **_REPOSITORY_VOLUME_LABELS,
+            REPO_ID_ENV: self.repo_id,
+            REPOSITORY_VOLUME_PHASE_LABEL: self.phase.lower(),
+        }
+
+    def payload(self) -> dict[str, object]:
+        return {
+            "repo_id": self.repo_id,
+            "claim_name": self.claim_name,
+            "phase": self.phase,
+            "created_at": _datetime_payload(self.created_at),
+            "last_seen_at": _datetime_payload(self.last_seen_at),
+            "retired_at": _datetime_payload(self.retired_at),
+            "last_gc_at": _datetime_payload(self.last_gc_at),
+            "last_error": self.last_error,
+        }
+
 
 class CephRepositoryVolumeRecord(BaseModel):
     """Read-only model for one `CephRepositoryVolume` custom object.
@@ -636,6 +676,26 @@ class CephRepositoryVolumeRecord(BaseModel):
         """
         return self.spec.last_error
 
+    def _lifecycle_spec(
+        self,
+        *,
+        phase: _RepositoryVolumePhase,
+        last_seen_at: datetime,
+        retired_at: datetime | None,
+        last_gc_at: datetime | None,
+        last_error: str,
+    ) -> _RepositoryVolumeSpec:
+        return _RepositoryVolumeSpec(
+            repo_id=self.repo_id,
+            claim_name=self.claim_name,
+            phase=phase,
+            created_at=self.created_at,
+            last_seen_at=last_seen_at,
+            retired_at=retired_at,
+            last_gc_at=last_gc_at,
+            last_error=last_error,
+        )
+
 
 _REPOSITORY_VOLUME_SPEC_SCHEMA = {
     "type": "object",
@@ -658,14 +718,14 @@ _REPOSITORY_VOLUME_SPEC_SCHEMA = {
         "last_error": {"type": "string"},
     },
 }
-_REPOSITORY_VOLUME_SPEC = CustomResourceSpec(
+_REPOSITORY_VOLUME_SPEC = CustomObjectSpec(
     group=REPOSITORY_VOLUME_GROUP,
     version=REPOSITORY_VOLUME_VERSION,
     kind=REPOSITORY_VOLUME_KIND,
     plural=REPOSITORY_VOLUME_PLURAL,
     labels=_REPOSITORY_VOLUME_LABELS,
 )
-_REPOSITORY_VOLUME_CLIENT = CustomResourceClient(_REPOSITORY_VOLUME_SPEC)
+_REPOSITORY_VOLUME_CLIENT = CustomObjectClient(_REPOSITORY_VOLUME_SPEC)
 
 
 async def ensure_repository_volume_crd(kube: Kube, *, timeout: float) -> None:
@@ -809,20 +869,17 @@ async def ensure_repository_volume_record(
     )
     now = datetime.now(UTC)
     created_at = existing.created_at if existing is not None else now
+    spec = _RepositoryVolumeSpec.active(
+        repo_id=repo_id,
+        created_at=created_at,
+        last_seen_at=now,
+    )
     obj = await _REPOSITORY_VOLUME_CLIENT.upsert(
         kube,
         namespace=BERTRAND_NAMESPACE,
         name=RepoVolume.claim_name(repo_id),
-        spec=_repository_volume_spec_payload(
-            repo_id=repo_id,
-            phase="Active",
-            created_at=created_at,
-            last_seen_at=now,
-            retired_at=None,
-            last_gc_at=None,
-            last_error="",
-        ),
-        labels=_repository_volume_labels(repo_id=repo_id, phase="Active"),
+        spec=spec.payload(),
+        labels=spec.labels,
         timeout=deadline - loop.time(),
     )
     return CephRepositoryVolumeRecord.from_payload(obj.payload)
@@ -917,8 +974,9 @@ async def gc_repository_volumes(
     ValueError
         If `grace_seconds` or `limit` is negative.
     """
-    from bertrand.env.kube.build.controller import has_active_buildkit_builds
+    from bertrand.env.kube.build.request import has_active_buildkit_builds
     from bertrand.env.kube.ceph.auth import RepoCredentials
+    from bertrand.env.kube.ceph.snapshot import delete_repository_snapshot_artifacts
 
     if timeout <= 0:
         msg = "repository volume GC timeout must be non-negative"
@@ -954,6 +1012,11 @@ async def gc_repository_volumes(
                 timeout=deadline - loop.time(),
             ):
                 continue
+            await delete_repository_snapshot_artifacts(
+                kube,
+                repo_id=record.repo_id,
+                timeout=deadline - loop.time(),
+            )
             volumes = await RepoVolume.list(
                 kube,
                 record.repo_id,
@@ -977,7 +1040,7 @@ async def gc_repository_volumes(
             )
             if credentials is not None:
                 await credentials.delete(timeout=deadline - loop.time())
-            await _REPOSITORY_VOLUME_CLIENT.delete(
+            await _REPOSITORY_VOLUME_CLIENT.delete_by_name(
                 kube,
                 namespace=BERTRAND_NAMESPACE,
                 name=record.name,
@@ -1071,57 +1134,22 @@ async def _transition_repository_volume(
         raise TimeoutError(msg)
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout
+    spec = record._lifecycle_spec(
+        phase=phase,
+        last_seen_at=last_seen_at,
+        retired_at=retired_at,
+        last_gc_at=last_gc_at,
+        last_error=last_error,
+    )
     obj = await _REPOSITORY_VOLUME_CLIENT.upsert(
         kube,
         namespace=BERTRAND_NAMESPACE,
         name=record.name,
-        spec=_repository_volume_spec_payload(
-            repo_id=record.repo_id,
-            phase=phase,
-            created_at=record.created_at,
-            last_seen_at=last_seen_at,
-            retired_at=retired_at,
-            last_gc_at=last_gc_at,
-            last_error=last_error,
-        ),
-        labels=_repository_volume_labels(repo_id=record.repo_id, phase=phase),
+        spec=spec.payload(),
+        labels=spec.labels,
         timeout=deadline - loop.time(),
     )
     return CephRepositoryVolumeRecord.from_payload(obj.payload)
-
-
-def _repository_volume_spec_payload(
-    *,
-    repo_id: str,
-    phase: _RepositoryVolumePhase,
-    created_at: datetime,
-    last_seen_at: datetime,
-    retired_at: datetime | None,
-    last_gc_at: datetime | None,
-    last_error: str,
-) -> dict[str, object]:
-    return {
-        "repo_id": repo_id,
-        "claim_name": RepoVolume.claim_name(repo_id),
-        "phase": phase,
-        "created_at": _datetime_payload(created_at),
-        "last_seen_at": _datetime_payload(last_seen_at),
-        "retired_at": _datetime_payload(retired_at),
-        "last_gc_at": _datetime_payload(last_gc_at),
-        "last_error": last_error,
-    }
-
-
-def _repository_volume_labels(
-    *,
-    repo_id: str,
-    phase: _RepositoryVolumePhase,
-) -> dict[str, str]:
-    return {
-        **_REPOSITORY_VOLUME_LABELS,
-        REPO_ID_ENV: repo_id,
-        REPOSITORY_VOLUME_PHASE_LABEL: phase.lower(),
-    }
 
 
 def _repository_volume_gc_eligible(

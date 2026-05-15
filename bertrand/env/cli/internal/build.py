@@ -25,7 +25,7 @@ from bertrand.env.git import (
     inside_image,
     run,
 )
-from bertrand.env.kube.api import Kube
+from bertrand.env.kube.api.client import Kube
 from bertrand.env.kube.lock.cluster import ClusterLock
 
 if TYPE_CHECKING:

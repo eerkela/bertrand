@@ -15,11 +15,8 @@ from pydantic import (
     PositiveInt,
 )
 
-from ..config import Config
-from ..config.core import AbsolutePath, TOMLKey, UUIDHex
-from ..kube.api import Kube
-from bertrand.env.kube.lock.cluster import ClusterLock
-from ..git import (
+from bertrand.env.config.core import AbsolutePath, Config, TOMLKey, UUIDHex
+from bertrand.env.git import (
     ENV_ID_ENV,
     IMAGE_ID_ENV,
     INFINITY,
@@ -27,7 +24,10 @@ from ..git import (
     HostLock,
     atomic_write_text,
 )
-from ..host import STATE_DIR
+from bertrand.env.host import STATE_DIR
+from bertrand.env.kube.api.client import Kube
+from bertrand.env.kube.lock.cluster import ClusterLock
+
 from .container import Container
 from .image import Image
 from .nerdctl import nerdctl_ids
@@ -119,7 +119,9 @@ class EnvironmentMetadata(BaseModel):
     retired: list[RetiredImage] = Field(default_factory=list)
 
 
-def read_metadata(worktree: Path, *, missing_ok: bool = False) -> EnvironmentMetadata | None:
+def read_metadata(
+    worktree: Path, *, missing_ok: bool = False
+) -> EnvironmentMetadata | None:
     """Read and validate environment metadata from a worktree root.
 
     Parameters
@@ -145,7 +147,9 @@ def read_metadata(worktree: Path, *, missing_ok: bool = False) -> EnvironmentMet
     try:
         data = json_parser.loads(env_file.read_text(encoding="utf-8"))
     except Exception as err:
-        raise OSError(f"failed to parse environment metadata at {env_file}: {err}") from err
+        raise OSError(
+            f"failed to parse environment metadata at {env_file}: {err}"
+        ) from err
     if not isinstance(data, dict):
         raise OSError(f"environment metadata at {env_file} must be a JSON object")
 
@@ -308,7 +312,9 @@ class Registry(BaseModel):
                             env = await cls._check_env(root, kube=kube)
                             if env is None:
                                 continue
-                        self.environments.setdefault(env.id, root.expanduser().resolve())
+                        self.environments.setdefault(
+                            env.id, root.expanduser().resolve()
+                        )
                 changed = True
 
         if changed:

@@ -20,7 +20,7 @@ from bertrand.env.git import (
     WORKTREE_MOUNT,
     inside_container,
 )
-from bertrand.env.kube.api import Kube
+from bertrand.env.kube.api.client import Kube
 from bertrand.env.rpc import CodeOpen, rpc
 from bertrand.env.version import __version__
 
