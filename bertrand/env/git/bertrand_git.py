@@ -86,7 +86,6 @@ METADATA_FILE: PosixPath = METADATA_DIR / "env.json"
 METADATA_LOCK: PosixPath = METADATA_DIR / ".lock"
 METADATA_REPO_ID: PosixPath = METADATA_DIR / "repo_id"
 METADATA_TMP: PosixPath = METADATA_DIR / "tmp"
-_REPO_ID_NAMESPACE = uuid.UUID("7b1506f4-4a3f-4b46-94bb-471e0f59d1a0")
 WORKTREE_MOUNT: PosixPath = PosixPath("/bertrand")
 PROJECT_MOUNT: PosixPath = PosixPath("/.bertrand")
 CONTAINER_RUNTIME_MOUNT: PosixPath = PosixPath("/run/bertrand")
@@ -117,6 +116,7 @@ CONTAINER_RUNTIME_ENV: str = "BERTRAND_RUNTIME"
 BERTRAND_NAMESPACE = "bertrand"
 BERTRAND_GROUP = "bertrand"
 STATE_DIR = Path("/var/lib/bertrand")
+HOST_ID_FILE = STATE_DIR / "host_id"
 REPO_DIR = STATE_DIR / "repositories"
 REPO_ALIASES_EXT = Path("aliases.json")
 REPO_LOCK_EXT = Path("lock")
@@ -1611,31 +1611,6 @@ class GitRepository:
         directory.
     """
 
-    @dataclass(frozen=True)
-    class Worktree:
-        """A parsed entry from `git worktree list --porcelain`.
-
-        Attributes
-        ----------
-        path : Path
-            The absolute path to the worktree checkout.
-        branch : str | None
-            The short branch name if this worktree is attached to `refs/heads/*`,
-            otherwise None.
-        """
-
-        path: Path
-        branch: str | None = None
-
-        def __post_init__(self) -> None:  # noqa: D105
-            object.__setattr__(self, "path", self.path.expanduser().resolve())
-            if not self.path.exists():
-                msg = f"worktree path does not exist: {self.path}"
-                raise FileNotFoundError(msg)
-            if not self.path.is_dir():
-                msg = f"invalid worktree path: {self.path}"
-                raise NotADirectoryError(msg)
-
     git_dir: Path
 
     @property
@@ -1659,11 +1634,18 @@ class GitRepository:
         str
             Stable UUID hex string used to scope cluster resources for the repository.
 
+        Raises
+        ------
+        OSError
+            If Bertrand's host identity is missing or malformed. Run `bertrand init`
+            to converge host state before resolving unmanaged repository identities.
+
         Notes
         -----
         Managed repository metadata takes precedence when present. Otherwise, the ID
-        is deterministically derived from the repository root path so uninitialized
-        repositories can still address cluster resources consistently.
+        is deterministically derived from the Bertrand host identity and repository
+        root path so uninitialized repositories can still address cluster resources
+        consistently without colliding with matching paths on other hosts.
         """
         repo_id_file = self.root / METADATA_REPO_ID
         if repo_id_file.is_file():
@@ -1671,7 +1653,15 @@ class GitRepository:
                 return uuid.UUID(repo_id_file.read_text(encoding="utf-8").strip()).hex
             except (OSError, ValueError):
                 pass
-        return uuid.uuid5(_REPO_ID_NAMESPACE, self.root.as_posix()).hex
+        try:
+            host_id = uuid.UUID(HOST_ID_FILE.read_text(encoding="utf-8").strip())
+        except (OSError, ValueError) as err:
+            msg = (
+                "Bertrand host identity is missing or malformed. Run `bertrand init` "
+                "to converge host state before resolving unmanaged repository IDs."
+            )
+            raise OSError(msg) from err
+        return uuid.uuid5(host_id, self.root.as_posix()).hex
 
     def __post_init__(self) -> None:  # noqa: D105
         object.__setattr__(self, "git_dir", self.git_dir.expanduser().resolve())
@@ -2056,6 +2046,31 @@ class GitRepository:
         )
         move_text = f"{move_help.stdout}\n{move_help.stderr}".lower()
         return move_help.returncode == 0 and "--relative-paths" in move_text
+
+    @dataclass(frozen=True)
+    class Worktree:
+        """A parsed entry from `git worktree list --porcelain`.
+
+        Attributes
+        ----------
+        path : Path
+            The absolute path to the worktree checkout.
+        branch : str | None
+            The short branch name if this worktree is attached to `refs/heads/*`,
+            otherwise None.
+        """
+
+        path: Path
+        branch: str | None = None
+
+        def __post_init__(self) -> None:  # noqa: D105
+            object.__setattr__(self, "path", self.path.expanduser().resolve())
+            if not self.path.exists():
+                msg = f"worktree path does not exist: {self.path}"
+                raise FileNotFoundError(msg)
+            if not self.path.is_dir():
+                msg = f"invalid worktree path: {self.path}"
+                raise NotADirectoryError(msg)
 
     @staticmethod
     async def default_branch() -> str:

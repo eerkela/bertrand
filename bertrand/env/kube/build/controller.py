@@ -10,6 +10,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
+from bertrand.env.config.core import _check_uuid
 from bertrand.env.git import (
     BERTRAND_NAMESPACE,
     INFINITY,
@@ -34,6 +35,7 @@ from bertrand.env.kube.build.lifecycle import (
     next_project_image_gc_time,
 )
 from bertrand.env.kube.build.manifest import _publish_project_image_manifest
+from bertrand.env.kube.build.repository import IMAGES
 from bertrand.env.kube.build.request import (
     BUILDKIT_BUILD_KIND,
     BUILDKIT_BUILD_LABEL,
@@ -70,6 +72,14 @@ PROJECT_IMAGE_GC_EMPTY_CHECK_SECONDS = 3600.0
 PROJECT_IMAGE_GC_READY_CHECK_SECONDS = 900.0
 PROJECT_IMAGE_GC_FAILURE_RETRY_SECONDS = 300.0
 PROJECT_IMAGE_GC_TIMEOUT_SECONDS = 60.0
+REGISTRY_STORAGE_GC_MIN_INTERVAL_SECONDS = 21_600.0
+REGISTRY_STORAGE_GC_DIRTY_THRESHOLD = 16
+REGISTRY_STORAGE_GC_IDLE_GRACE_SECONDS = 60.0
+REGISTRY_STORAGE_GC_FAILURE_RETRY_SECONDS = 1800.0
+REGISTRY_STORAGE_GC_ACTIVE_BUILD_RETRY_SECONDS = 120.0
+REGISTRY_STORAGE_GC_NOT_READY_RETRY_SECONDS = 300.0
+REGISTRY_STORAGE_GC_RESTORE_TIMEOUT_SECONDS = 120.0
+REGISTRY_STORAGE_GC_TIMEOUT_SECONDS = 300.0
 
 
 _STRING_MAP_SCHEMA = {"type": "object", "additionalProperties": {"type": "string"}}
@@ -145,6 +155,7 @@ class _BuildKitBuildController:
 
     def __init__(self) -> None:
         self._next_gc_at = datetime.min.replace(tzinfo=UTC)
+        self._next_registry_gc_at = datetime.min.replace(tzinfo=UTC)
 
     async def run(self, *, timeout: float = INFINITY) -> None:
         """Run the controller reconciliation loop.
@@ -165,6 +176,7 @@ class _BuildKitBuildController:
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
         with Kube.inside_cluster(namespace=BERTRAND_NAMESPACE) as kube:
+            await self._restore_registry_writable(kube, deadline=deadline)
             while loop.time() < deadline:
                 try:
                     await self.reconcile_all(kube, deadline=deadline)
@@ -350,6 +362,10 @@ class _BuildKitBuildController:
         )
 
     async def _maybe_gc(self, kube: Kube, *, deadline: float) -> None:
+        await self._maybe_project_image_gc(kube, deadline=deadline)
+        await self._maybe_registry_storage_gc(kube, deadline=deadline)
+
+    async def _maybe_project_image_gc(self, kube: Kube, *, deadline: float) -> None:
         now = datetime.now(UTC)
         if now < self._next_gc_at:
             return
@@ -374,15 +390,138 @@ class _BuildKitBuildController:
                 self._next_gc_at = next_gc
                 return
 
-            await gc_project_images(
+            prior_maintenance = await IMAGES.maintenance_status(
                 kube,
                 timeout=pass_deadline - loop.time(),
             )
+            marker_was_clean = not prior_maintenance.storage_dirty
+            if marker_was_clean:
+                await IMAGES.mark_storage_dirty(
+                    kube,
+                    count=1,
+                    timeout=pass_deadline - loop.time(),
+                )
+            collected = await gc_project_images(
+                kube,
+                timeout=pass_deadline - loop.time(),
+            )
+            if collected:
+                extra_count = len(collected) - 1 if marker_was_clean else len(collected)
+                if extra_count > 0:
+                    await IMAGES.mark_storage_dirty(
+                        kube,
+                        count=extra_count,
+                        timeout=pass_deadline - loop.time(),
+                    )
+                updated_maintenance = await IMAGES.maintenance_status(
+                    kube,
+                    timeout=pass_deadline - loop.time(),
+                )
+                if (
+                    updated_maintenance.dirty_count
+                    >= REGISTRY_STORAGE_GC_DIRTY_THRESHOLD
+                ):
+                    self._next_registry_gc_at = datetime.min.replace(tzinfo=UTC)
+            elif marker_was_clean:
+                await IMAGES.clear_storage_dirty(
+                    kube,
+                    timeout=pass_deadline - loop.time(),
+                )
             self._schedule_gc_after(PROJECT_IMAGE_GC_READY_CHECK_SECONDS)
         except (OSError, TimeoutError, ValueError) as err:
             self._schedule_gc_after(PROJECT_IMAGE_GC_FAILURE_RETRY_SECONDS)
             print(
                 f"warning: project image garbage collection failed: {err}",
+                file=sys.stderr,
+                flush=True,
+            )
+
+    async def _maybe_registry_storage_gc(
+        self,
+        kube: Kube,
+        *,
+        deadline: float,
+    ) -> None:
+        loop = asyncio.get_running_loop()
+        pass_deadline = min(
+            deadline,
+            loop.time() + REGISTRY_STORAGE_GC_TIMEOUT_SECONDS,
+        )
+        if pass_deadline <= loop.time():
+            return
+
+        try:
+            maintenance = await IMAGES.maintenance_status(
+                kube,
+                timeout=pass_deadline - loop.time(),
+            )
+            if not maintenance.storage_dirty:
+                return
+
+            now = datetime.now(UTC)
+            if now < self._next_registry_gc_at:
+                return
+            dirty_since = maintenance.dirty_since or now
+            idle_boundary = dirty_since + timedelta(
+                seconds=REGISTRY_STORAGE_GC_IDLE_GRACE_SECONDS
+            )
+            if now < idle_boundary:
+                self._next_registry_gc_at = idle_boundary
+                return
+
+            last_gc_at = maintenance.last_gc_at
+            if (
+                maintenance.dirty_count < REGISTRY_STORAGE_GC_DIRTY_THRESHOLD
+                and last_gc_at is not None
+                and now
+                < last_gc_at
+                + timedelta(seconds=REGISTRY_STORAGE_GC_MIN_INTERVAL_SECONDS)
+            ):
+                self._next_registry_gc_at = last_gc_at + timedelta(
+                    seconds=REGISTRY_STORAGE_GC_MIN_INTERVAL_SECONDS
+                )
+                return
+
+            if await self._has_active_build_requests(
+                kube,
+                timeout=pass_deadline - loop.time(),
+            ):
+                self._schedule_registry_gc_after(
+                    REGISTRY_STORAGE_GC_ACTIVE_BUILD_RETRY_SECONDS
+                )
+                return
+            if not await self._registry_deployment_ready(
+                kube,
+                timeout=pass_deadline - loop.time(),
+            ):
+                self._schedule_registry_gc_after(
+                    REGISTRY_STORAGE_GC_NOT_READY_RETRY_SECONDS
+                )
+                return
+
+            ran = await IMAGES.garbage_collect_storage(
+                kube,
+                timeout=pass_deadline - loop.time(),
+                preflight=lambda remaining: self._registry_storage_gc_still_idle(
+                    kube,
+                    timeout=remaining,
+                ),
+            )
+            if not ran:
+                self._schedule_registry_gc_after(
+                    REGISTRY_STORAGE_GC_ACTIVE_BUILD_RETRY_SECONDS
+                )
+                return
+            await IMAGES.clear_storage_dirty(
+                kube,
+                last_gc_at=datetime.now(UTC),
+                timeout=pass_deadline - loop.time(),
+            )
+            self._schedule_registry_gc_after(REGISTRY_STORAGE_GC_MIN_INTERVAL_SECONDS)
+        except (OSError, TimeoutError, ValueError) as err:
+            self._schedule_registry_gc_after(REGISTRY_STORAGE_GC_FAILURE_RETRY_SECONDS)
+            print(
+                f"warning: image registry storage garbage collection failed: {err}",
                 file=sys.stderr,
                 flush=True,
             )
@@ -393,6 +532,66 @@ class _BuildKitBuildController:
     def _schedule_gc_no_later_than(self, when: datetime) -> None:
         if self._next_gc_at <= datetime.now(UTC) or when < self._next_gc_at:
             self._next_gc_at = when
+
+    def _schedule_registry_gc_after(self, seconds: float) -> None:
+        self._next_registry_gc_at = datetime.now(UTC) + timedelta(seconds=seconds)
+
+    async def _restore_registry_writable(self, kube: Kube, *, deadline: float) -> None:
+        loop = asyncio.get_running_loop()
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            return
+        timeout = min(REGISTRY_STORAGE_GC_RESTORE_TIMEOUT_SECONDS, remaining)
+        try:
+            await IMAGES.restore_writable(kube, timeout=timeout)
+        except (OSError, TimeoutError, ValueError) as err:
+            print(
+                f"warning: failed to restore image registry writable mode: {err}",
+                file=sys.stderr,
+                flush=True,
+            )
+
+    async def _has_active_build_requests(
+        self,
+        kube: Kube,
+        *,
+        timeout: float,
+    ) -> bool:
+        objects = await _BUILDKIT_BUILD_CLIENT.list(
+            kube,
+            namespace=BERTRAND_NAMESPACE,
+            labels={BUILDKIT_BUILD_LABEL: BUILDKIT_BUILD_LABEL_VALUE},
+            timeout=timeout,
+        )
+        for obj in objects:
+            request = BuildKitBuildRecord.from_payload(obj.payload)
+            if request.status.observed_generation != request.metadata.generation:
+                return True
+            if request.status.phase not in ("Succeeded", "Failed"):
+                return True
+        return False
+
+    async def _registry_storage_gc_still_idle(
+        self,
+        kube: Kube,
+        *,
+        timeout: float,
+    ) -> bool:
+        return not await self._has_active_build_requests(kube, timeout=timeout)
+
+    async def _registry_deployment_ready(
+        self,
+        kube: Kube,
+        *,
+        timeout: float,
+    ) -> bool:
+        deployment = await Deployment.get(
+            kube,
+            namespace=BERTRAND_NAMESPACE,
+            name=IMAGES.service,
+            timeout=timeout,
+        )
+        return deployment is not None and deployment.rollout_ready(minimum=1)
 
 
 async def ensure_buildkit_build_crd(kube: Kube, *, timeout: float) -> None:
@@ -594,6 +793,63 @@ async def get_buildkit_build(
     return BuildKitBuildRecord.from_payload(obj.payload)
 
 
+async def has_active_buildkit_builds(
+    kube: Kube,
+    *,
+    repo_id: str,
+    timeout: float,
+) -> bool:
+    """Return whether a repository has non-terminal build requests.
+
+    Parameters
+    ----------
+    kube : Kube
+        Active Kubernetes API context.
+    repo_id : str
+        Stable repository UUID to check.
+    timeout : float
+        Maximum request budget in seconds.
+
+    Returns
+    -------
+    bool
+        True when any current-generation or stale-generation build request for the
+        repository has not reached a terminal phase.
+
+    Raises
+    ------
+    OSError
+        If BuildKit request records are malformed or cannot be listed.
+    TimeoutError
+        If `timeout` is non-positive.
+    """
+    if timeout <= 0:
+        msg = "BuildKitBuild active-request check timeout must be non-negative"
+        raise TimeoutError(msg)
+    repo_id = _check_uuid(repo_id)
+    try:
+        objects = await _BUILDKIT_BUILD_CLIENT.list(
+            kube,
+            namespace=BERTRAND_NAMESPACE,
+            labels={BUILDKIT_BUILD_LABEL: BUILDKIT_BUILD_LABEL_VALUE},
+            timeout=timeout,
+        )
+    except OSError as err:
+        detail = str(err).lower()
+        if "not found" in detail or "status 404" in detail:
+            return False
+        raise
+    records = [BuildKitBuildRecord.from_payload(obj.payload) for obj in objects]
+    for record in records:
+        if record.spec.repo_id != repo_id:
+            continue
+        if record.status.observed_generation != record.metadata.generation:
+            return True
+        if record.status.phase not in ("Succeeded", "Failed"):
+            return True
+    return False
+
+
 async def wait_buildkit_build(
     kube: Kube,
     *,
@@ -691,6 +947,11 @@ def _controller_rules() -> tuple[PolicyRuleSpec, ...]:
             api_groups=["batch"],
             resources=["jobs"],
             verbs=["get", "list", "watch", "create", "delete"],
+        ),
+        PolicyRuleSpec(
+            api_groups=["apps"],
+            resources=["deployments"],
+            verbs=["get", "list", "watch", "create", "update", "patch"],
         ),
         PolicyRuleSpec(
             api_groups=[""],

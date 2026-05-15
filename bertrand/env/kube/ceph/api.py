@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import math
 import re
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from bertrand.env.git import (
     INFINITY,
@@ -21,6 +23,7 @@ if TYPE_CHECKING:
 
 MICROCEPH_HOST_ROOT = Path("/host")
 MICROCEPH_LOOP_STORAGE_PATH = Path("/var/snap/microceph/common")
+MICROCEPH_DISK_REMOVE_TIMEOUT_SECONDS = 300
 LOOP_OSD_SIZE_PATTERN = r"^[1-9][0-9]*[MGT]$"
 LOOP_OSD_SPEC_PATTERN = r"^loop,[1-9][0-9]*[MGT],[1-9][0-9]*$"
 
@@ -58,6 +61,59 @@ class NodeCapacitySnapshot:
 
     free_bytes: int
     path: Path
+
+
+@dataclass(frozen=True)
+class CephHealthSnapshot:
+    """Cluster health state used by shrink safety planning.
+
+    Attributes
+    ----------
+    status : str
+        Ceph health status, such as ``"HEALTH_OK"``.
+    clean : bool
+        Whether Ceph reports healthy placement groups with no active recovery or
+        degradation states.
+    detail : str
+        Concise diagnostic text explaining the health decision.
+    """
+
+    status: str
+    clean: bool
+    detail: str
+
+
+@dataclass(frozen=True)
+class CephOSD:
+    """One OSD reported by Ceph's CRUSH tree.
+
+    Attributes
+    ----------
+    osd_id : int
+        Numeric OSD identifier.
+    node_name : str
+        Host bucket that currently owns the OSD.
+    up : bool
+        Whether the OSD is up.
+    in_cluster : bool
+        Whether the OSD currently has nonzero cluster weight.
+    """
+
+    osd_id: int
+    node_name: str
+    up: bool
+    in_cluster: bool
+
+    @property
+    def name(self) -> str:
+        """Return the canonical Ceph OSD name.
+
+        Returns
+        -------
+        str
+            OSD name in ``osd.<id>`` form.
+        """
+        return f"osd.{self.osd_id}"
 
 
 @dataclass(frozen=True)
@@ -181,6 +237,28 @@ def _normalize_size(size: str) -> str:
     return normalized
 
 
+def _json_payload(stdout: str, *, context: str) -> Mapping[str, Any]:
+    try:
+        payload = json.loads(stdout)
+    except json.JSONDecodeError as err:
+        msg = f"{context} returned malformed JSON: {err}"
+        raise OSError(msg) from err
+    if not isinstance(payload, dict):
+        msg = f"{context} returned malformed JSON: expected an object"
+        raise OSError(msg)
+    return payload
+
+
+def _osd_id(value: object) -> int | None:
+    if isinstance(value, int) and value >= 0:
+        return value
+    if isinstance(value, str):
+        match = re.fullmatch(r"osd\.([0-9]+)", value.strip())
+        if match is not None:
+            return int(match.group(1))
+    return None
+
+
 def parse_size_bytes(size: str) -> int:
     """Parse a MicroCeph size string into bytes.
 
@@ -293,11 +371,7 @@ async def ceph_df(*, timeout: float) -> CephCapacitySnapshot:
     if result.returncode != 0:
         msg = f"failed to inspect Ceph capacity:\n{result}"
         raise OSError(msg)
-    try:
-        payload = json.loads(result.stdout)
-    except json.JSONDecodeError as err:
-        msg = f"ceph df returned malformed JSON: {err}"
-        raise OSError(msg) from err
+    payload = _json_payload(result.stdout, context="ceph df")
 
     stats = payload.get("stats", {}) if isinstance(payload, dict) else {}
     total = int(stats.get("total_bytes") or stats.get("total_space") or 0)
@@ -318,6 +392,123 @@ async def ceph_df(*, timeout: float) -> CephCapacitySnapshot:
     )
 
 
+async def ceph_health(*, timeout: float) -> CephHealthSnapshot:
+    """Inspect Ceph health and placement-group cleanliness.
+
+    Parameters
+    ----------
+    timeout : float
+        Maximum command runtime in seconds.
+
+    Returns
+    -------
+    CephHealthSnapshot
+        Parsed Ceph health and cleanliness state.
+
+    Raises
+    ------
+    OSError
+        If Ceph health cannot be queried or parsed.
+    """
+    result = await host_command(
+        ["microceph.ceph", "status", "--format", "json"],
+        timeout=timeout,
+    )
+    if result.returncode != 0:
+        msg = f"failed to inspect Ceph health:\n{result}"
+        raise OSError(msg)
+    payload = _json_payload(result.stdout, context="ceph status")
+    health = payload.get("health", {})
+    status = ""
+    if isinstance(health, dict):
+        status = str(health.get("status") or "").strip().upper()
+    pgmap = payload.get("pgmap", {})
+    states = pgmap.get("pgs_by_state", []) if isinstance(pgmap, dict) else []
+    non_clean: list[str] = []
+    if isinstance(states, list):
+        for item in states:
+            if not isinstance(item, dict):
+                continue
+            state = str(item.get("state_name") or "").strip()
+            count = int(item.get("count") or 0)
+            if count > 0 and state != "active+clean":
+                non_clean.append(f"{count} {state}")
+    clean = status == "HEALTH_OK" and not non_clean
+    detail = status or "UNKNOWN"
+    if non_clean:
+        detail = f"{detail}; non-clean PGs: {', '.join(non_clean)}"
+    return CephHealthSnapshot(status=status, clean=clean, detail=detail)
+
+
+async def ceph_osds(*, timeout: float) -> tuple[CephOSD, ...]:
+    """Inspect the current Ceph OSD tree.
+
+    Parameters
+    ----------
+    timeout : float
+        Maximum command runtime in seconds.
+
+    Returns
+    -------
+    tuple[CephOSD, ...]
+        Live OSD inventory sorted by OSD ID.
+
+    Raises
+    ------
+    OSError
+        If the OSD tree cannot be queried or parsed.
+    """
+    result = await host_command(
+        ["microceph.ceph", "osd", "tree", "--format", "json"],
+        timeout=timeout,
+    )
+    if result.returncode != 0:
+        msg = f"failed to inspect Ceph OSD tree:\n{result}"
+        raise OSError(msg)
+    payload = _json_payload(result.stdout, context="ceph osd tree")
+    nodes = payload.get("nodes")
+    if not isinstance(nodes, list):
+        msg = "ceph osd tree returned malformed JSON: expected 'nodes' list"
+        raise OSError(msg)
+
+    host_by_osd: dict[int, str] = {}
+    for node in nodes:
+        if not isinstance(node, dict) or node.get("type") != "host":
+            continue
+        name = str(node.get("name") or "").strip()
+        children = node.get("children")
+        if not name or not isinstance(children, list):
+            continue
+        for child in children:
+            osd_id = _osd_id(child)
+            if osd_id is not None:
+                host_by_osd[osd_id] = name
+
+    osds: list[CephOSD] = []
+    for node in nodes:
+        if not isinstance(node, dict) or node.get("type") != "osd":
+            continue
+        osd_id = _osd_id(node.get("id"))
+        if osd_id is None:
+            osd_id = _osd_id(node.get("name"))
+        if osd_id is None:
+            continue
+        status = str(node.get("status") or "").strip().lower()
+        try:
+            reweight = float(node.get("reweight", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            reweight = 0.0
+        osds.append(
+            CephOSD(
+                osd_id=osd_id,
+                node_name=host_by_osd.get(osd_id, ""),
+                up=status == "up",
+                in_cluster=reweight > 0.0,
+            )
+        )
+    return tuple(sorted(osds, key=lambda item: item.osd_id))
+
+
 def host_free_bytes(path: Path = MICROCEPH_LOOP_STORAGE_PATH) -> NodeCapacitySnapshot:
     """Inspect free host bytes for MicroCeph loop-backed OSD storage.
 
@@ -336,7 +527,11 @@ def host_free_bytes(path: Path = MICROCEPH_LOOP_STORAGE_PATH) -> NodeCapacitySna
     return NodeCapacitySnapshot(free_bytes=int(usage.free), path=path)
 
 
-async def add_loop_osd(loop_spec: LoopOSDSpec | str, *, timeout: float) -> None:
+async def add_loop_osd(
+    loop_spec: LoopOSDSpec | str,
+    *,
+    timeout: float,
+) -> tuple[int, ...]:
     """Add one or more loop-backed OSDs through MicroCeph.
 
     Parameters
@@ -345,6 +540,11 @@ async def add_loop_osd(loop_spec: LoopOSDSpec | str, *, timeout: float) -> None:
         Loop OSD allocation request.
     timeout : float
         Maximum command runtime in seconds.
+
+    Returns
+    -------
+    tuple[int, ...]
+        Numeric OSD IDs created by the add operation, when they can be inferred.
 
     Raises
     ------
@@ -357,7 +557,63 @@ async def add_loop_osd(loop_spec: LoopOSDSpec | str, *, timeout: float) -> None:
         else parse_loop_osd_spec(loop_spec)
     )
     rendered = spec.render()
-    result = await host_command(["microceph", "disk", "add", rendered], timeout=timeout)
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    before = {osd.osd_id for osd in await ceph_osds(timeout=deadline - loop.time())}
+    result = await host_command(
+        ["microceph", "disk", "add", rendered],
+        timeout=deadline - loop.time(),
+    )
     if result.returncode != 0:
         msg = f"microceph disk add failed for {rendered}:\n{result}"
+        raise OSError(msg)
+    after = {osd.osd_id for osd in await ceph_osds(timeout=deadline - loop.time())}
+    return tuple(sorted(after - before))
+
+
+async def remove_osd(osd_id: int, *, timeout: float) -> None:
+    """Remove one OSD through MicroCeph's guarded disk removal command.
+
+    Parameters
+    ----------
+    osd_id : int
+        Numeric OSD identifier to remove.
+    timeout : float
+        Maximum command runtime in seconds.
+
+    Raises
+    ------
+    TimeoutError
+        If `timeout` is non-positive.
+    OSError
+        If MicroCeph rejects the disk removal or the OSD remains present.
+    ValueError
+        If `osd_id` is negative.
+    """
+    if osd_id < 0:
+        msg = f"invalid Ceph OSD ID: {osd_id!r}"
+        raise ValueError(msg)
+    if timeout <= 0:
+        msg = "MicroCeph OSD removal timeout must be non-negative"
+        raise TimeoutError(msg)
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    if math.isinf(timeout):
+        remove_timeout = MICROCEPH_DISK_REMOVE_TIMEOUT_SECONDS
+    else:
+        remove_timeout = max(
+            1,
+            min(MICROCEPH_DISK_REMOVE_TIMEOUT_SECONDS, int(timeout)),
+        )
+    name = f"osd.{osd_id}"
+    result = await host_command(
+        ["microceph", "disk", "remove", name, "--timeout", str(remove_timeout)],
+        timeout=deadline - loop.time(),
+    )
+    if result.returncode != 0:
+        msg = f"microceph disk remove failed for {name}:\n{result}"
+        raise OSError(msg)
+    remaining = {osd.osd_id for osd in await ceph_osds(timeout=deadline - loop.time())}
+    if osd_id in remaining:
+        msg = f"microceph disk remove completed but {name} is still present"
         raise OSError(msg)

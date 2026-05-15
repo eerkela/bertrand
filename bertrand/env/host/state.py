@@ -9,12 +9,14 @@ import os
 import shutil
 import subprocess
 import tempfile
+import uuid
 from pathlib import Path
 
 from bertrand.env.git import bertrand_git as _git
 from bertrand.env.git.bertrand_git import (
     CommandError,
     GroupStatus,
+    atomic_write_text,
     can_escalate,
     confirm,
     run,
@@ -24,6 +26,7 @@ from bertrand.env.git.bertrand_git import (
 BERTRAND_GROUP = _git.BERTRAND_GROUP
 BIN_DIR = _git.BIN_DIR
 CACHE_DIR = _git.CACHE_DIR
+HOST_ID_FILE = _git.HOST_ID_FILE
 HOST_MOUNTS = _git.HOST_MOUNTS
 REPO_ALIASES_EXT = _git.REPO_ALIASES_EXT
 REPO_DIR = _git.REPO_DIR
@@ -51,6 +54,16 @@ def _state_root_configured(group_gid: int) -> bool:
         and stat_info.st_gid == group_gid
         and (stat_info.st_mode & 0o7777) == STATE_DIR_MODE
     )
+
+
+def _host_id_configured() -> bool:
+    try:
+        if not HOST_ID_FILE.is_file():
+            return False
+        uuid.UUID(HOST_ID_FILE.read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return False
+    return True
 
 
 def _state_acl_configured_sync(group: str) -> bool:
@@ -261,6 +274,7 @@ def host_state_backend_trustworthy() -> bool:
     return (
         _state_root_configured(group_gid=group_info.gr_gid)
         and _state_acl_configured_sync(BERTRAND_GROUP)
+        and _host_id_configured()
         and _run_mount_unit_configured(group_gid=group_info.gr_gid)
         and _run_dir_tmpfs_mounted()
     )
@@ -427,6 +441,13 @@ async def ensure_host_state(
             timeout=deadline - loop.time(),
         )
 
+    if not _host_id_configured():
+        atomic_write_text(
+            HOST_ID_FILE,
+            f"{uuid.uuid4().hex}\n",
+            encoding="utf-8",
+        )
+
     if not _state_root_configured(group_gid=group_info.gr_gid):
         msg = f"Failed to configure shared Bertrand state directory: {STATE_DIR}"
         raise OSError(msg)
@@ -435,6 +456,9 @@ async def ensure_host_state(
             f"Failed to configure strict ACL inheritance for shared Bertrand state: "
             f"{STATE_DIR}"
         )
+        raise OSError(msg)
+    if not _host_id_configured():
+        msg = f"Failed to configure durable Bertrand host identity: {HOST_ID_FILE}"
         raise OSError(msg)
     if not _run_mount_unit_configured(group_gid=group_info.gr_gid):
         msg = (

@@ -32,7 +32,6 @@ from bertrand.env.kube.build.refs import (
     DIGEST_RE,
     digest_ref,
     platform_output_ref,
-    replace_tag,
 )
 from bertrand.env.kube.build.repository import IMAGES
 from bertrand.env.kube.capability.base import Capability, CapabilityKind
@@ -64,8 +63,6 @@ BUILD_JOB_TTL_SECONDS = 3600
 BUILD_JOB_LOG_TAIL_LINES = 120
 BUILD_JOB_DIAGNOSTIC_TIMEOUT_SECONDS = 10.0
 BUILD_JOB_CLEANUP_TIMEOUT_SECONDS = 10.0
-BUILD_CACHE_TAG = "buildcache"
-BUILD_CACHE_MODE = "max"
 BUILD_PROGRESS = "plain"
 BUILD_CONTEXT_PREFIX = "bertrand-project-image"
 CAPABILITY_VALUE_KEY = "value"
@@ -249,14 +246,6 @@ class _ProjectBuildExecutor:
             args.extend(["--allow", f"device={selector}"])
         if spec.network == "host":
             args.extend(["--allow", "network.host"])
-        cache_ref = _default_cache_ref(spec.image)
-        args.extend(["--import-cache", f"type=registry,ref={cache_ref}"])
-        args.extend(
-            [
-                "--export-cache",
-                f"type=registry,ref={cache_ref},mode={BUILD_CACHE_MODE}",
-            ]
-        )
         if metadata_file is not None:
             metadata_file = metadata_file.strip()
             if metadata_file:
@@ -694,14 +683,6 @@ def _normalize_capability_requests(
             raise TypeError(msg)
         normalized[checked] = required
     return normalized
-
-
-def _default_cache_ref(image: str) -> str:
-    try:
-        return replace_tag(image, BUILD_CACHE_TAG, label="BuildKit image reference")
-    except ValueError as err:
-        msg = f"invalid BuildKit image reference {image!r}; cannot derive cache ref"
-        raise ValueError(msg) from err
 
 
 def _capability_volume_name(kind: CapabilityKind, capability_id: str) -> str:

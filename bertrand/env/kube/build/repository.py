@@ -10,7 +10,9 @@ import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -24,14 +26,18 @@ from bertrand.env.kube.api.spec import (
     ContainerPortSpec,
     ContainerSpec,
     DeploymentStrategySpec,
-    EnvVarSpec,
     PodTemplateSpec,
     ProbeSpec,
     ServicePortSpec,
     VolumeMountSpec,
     VolumeSpec,
 )
-from bertrand.env.kube.build.daemon import BUILDKIT_CONFIG_KEY, BUILDKIT_CONFIG_NAME
+from bertrand.env.kube.build.daemon import (
+    BUILDKIT_CONFIG_KEY,
+    BUILDKIT_CONFIG_NAME,
+    buildkit_worker_gc_toml,
+)
+from bertrand.env.kube.build.execution import run_observed_job
 from bertrand.env.kube.build.refs import (
     DIGEST_RE,
     IMAGE_REF_COMPONENT_RE,
@@ -41,13 +47,14 @@ from bertrand.env.kube.build.refs import (
 from bertrand.env.kube.ceph.volume import CEPHFS_STORAGE_CLASS_PREFERENCES
 from bertrand.env.kube.configmap import ConfigMap
 from bertrand.env.kube.deployment import Deployment
+from bertrand.env.kube.job import Job
 from bertrand.env.kube.network import NetworkProfile
 from bertrand.env.kube.node import Node
 from bertrand.env.kube.service import Service
 from bertrand.env.kube.volume import PersistentVolumeClaim, StorageClass
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Awaitable, Callable, Mapping
 
 IMAGE_REPOSITORY_NAME = "bertrand-registry"
 IMAGE_REPOSITORY_IMAGE = "registry:2"
@@ -61,12 +68,67 @@ IMAGE_REPOSITORY_SERVICE_ADDR = (
 IMAGE_REPOSITORY_SIZE = "4Gi"
 IMAGE_REPOSITORY_MOUNT = "/var/lib/registry"
 IMAGE_REPOSITORY_VOLUME = "registry-state"
+IMAGE_REPOSITORY_CONFIG_NAME = f"{IMAGE_REPOSITORY_NAME}-config"
+IMAGE_REPOSITORY_CONFIG_KEY = "config.yml"
+IMAGE_REPOSITORY_CONFIG_DIR = "/etc/docker/registry"
+IMAGE_REPOSITORY_CONFIG_FILE = (
+    f"{IMAGE_REPOSITORY_CONFIG_DIR}/{IMAGE_REPOSITORY_CONFIG_KEY}"
+)
+IMAGE_REPOSITORY_CONFIG_VOLUME = "registry-config"
+IMAGE_REPOSITORY_CONFIG_HASH_ANNOTATION = "bertrand.dev/registry-config-hash"
 IMAGE_REPOSITORY_LABEL = "bertrand.dev/image-repository"
 IMAGE_REPOSITORY_LABEL_VALUE = "v1"
+IMAGE_REPOSITORY_GC_JOB_LABEL = "bertrand.dev/registry-gc-job"
+IMAGE_REPOSITORY_GC_JOB_LABEL_VALUE = "v1"
+IMAGE_REPOSITORY_GC_TTL_SECONDS = 3600
+IMAGE_REPOSITORY_GC_LOG_TAIL_LINES = 120
+IMAGE_REPOSITORY_GC_DIAGNOSTIC_TIMEOUT_SECONDS = 10.0
+IMAGE_REPOSITORY_GC_CLEANUP_TIMEOUT_SECONDS = 10.0
+IMAGE_REPOSITORY_GC_RESTORE_TIMEOUT_SECONDS = 120.0
+IMAGE_REPOSITORY_MAINTENANCE_NAME = f"{IMAGE_REPOSITORY_NAME}-maintenance"
+IMAGE_REPOSITORY_MAINTENANCE_LABEL = "bertrand.dev/image-repository-maintenance"
+IMAGE_REPOSITORY_MAINTENANCE_LABEL_VALUE = "v1"
+IMAGE_REPOSITORY_MAINTENANCE_REASON_GC = "storage-gc"
+IMAGE_REPOSITORY_MAINTENANCE_MESSAGE_GC = (
+    "image registry maintenance is running; build is queued"
+)
 IMAGE_REPOSITORY_ROUTE_POLL_INTERVAL_SECONDS = 0.5
 IMAGE_REPOSITORY_ROUTE_REQUEST_TIMEOUT_SECONDS = 2.0
 IMAGE_REPOSITORY_ROUTE_READY_STATUS = frozenset({200, 401})
 IMAGE_REPOSITORY_DELETE_SUCCESS_STATUS = frozenset({202, 404})
+
+
+def _datetime_payload(value: datetime | None) -> str:
+    return value.isoformat() if value is not None else ""
+
+
+def _parse_maintenance_datetime(field: str, value: str) -> datetime | None:
+    value = value.strip()
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError as err:
+        msg = f"registry maintenance status field {field!r} is not a timestamp"
+        raise OSError(msg) from err
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
+
+
+def _parse_maintenance_count(value: str) -> int:
+    value = value.strip()
+    if not value:
+        return 0
+    try:
+        count = int(value)
+    except ValueError as err:
+        msg = "registry maintenance dirty_count is not an integer"
+        raise OSError(msg) from err
+    if count < 0:
+        msg = "registry maintenance dirty_count cannot be negative"
+        raise OSError(msg)
+    return count
 
 
 def _config_hash(data: Mapping[str, str]) -> str:
@@ -125,6 +187,48 @@ class ImageRepositoryStatus:
     untrusted_nodes: tuple[str, ...]
     ready: bool
     failures: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class ImageRepositoryMaintenanceStatus:
+    """Read-only registry maintenance report.
+
+    Parameters
+    ----------
+    active : bool
+        Whether registry maintenance is currently active.
+    reason : str
+        Stable maintenance reason identifier.
+    started_at : datetime | None
+        Timestamp recorded when maintenance began.
+    message : str
+        Concise user-facing maintenance message.
+    dirty_count : int
+        Number of collected image records since the last registry storage GC.
+    dirty_since : datetime | None
+        Timestamp when registry storage first became dirty.
+    last_gc_at : datetime | None
+        Timestamp for the last successful registry storage GC.
+    """
+
+    active: bool
+    reason: str = ""
+    started_at: datetime | None = None
+    message: str = ""
+    dirty_count: int = 0
+    dirty_since: datetime | None = None
+    last_gc_at: datetime | None = None
+
+    @property
+    def storage_dirty(self) -> bool:
+        """Return whether registry storage GC is due.
+
+        Returns
+        -------
+        bool
+            Whether manifest lifecycle GC has marked registry storage dirty.
+        """
+        return self.dirty_count > 0
 
 
 @dataclass(frozen=True)
@@ -196,6 +300,22 @@ class ImageRepository:
         }
 
     @property
+    def maintenance_labels(self) -> dict[str, str]:
+        """Return labels shared by registry maintenance resources.
+
+        Returns
+        -------
+        dict[str, str]
+            Labels applied to the registry maintenance status ConfigMap.
+        """
+        return {
+            **self.labels,
+            IMAGE_REPOSITORY_MAINTENANCE_LABEL: (
+                IMAGE_REPOSITORY_MAINTENANCE_LABEL_VALUE
+            ),
+        }
+
+    @property
     def selector(self) -> dict[str, str]:
         """Return the image repository pod selector.
 
@@ -230,11 +350,277 @@ class ImageRepository:
             "  http = true\n"
             "  insecure = true\n"
         )
+        fragments = [buildkit_worker_gc_toml()]
+        if network_config:
+            fragments.append(network_config)
+        fragments.append(registry_config)
+        return {BUILDKIT_CONFIG_KEY: "\n".join(fragments)}
+
+    def registry_config_data(self, *, read_only: bool = False) -> dict[str, str]:
+        """Return OCI registry ConfigMap data.
+
+        Parameters
+        ----------
+        read_only : bool, optional
+            Whether the registry should reject writes for storage maintenance.
+
+        Returns
+        -------
+        dict[str, str]
+            Data payload for the registry configuration ConfigMap.
+        """
+        readonly = "true" if read_only else "false"
         return {
-            BUILDKIT_CONFIG_KEY: registry_config
-            if not network_config
-            else f"{network_config}\n{registry_config}"
+            IMAGE_REPOSITORY_CONFIG_KEY: (
+                "version: 0.1\n"
+                "log:\n"
+                "  level: info\n"
+                "storage:\n"
+                "  filesystem:\n"
+                f"    rootdirectory: {IMAGE_REPOSITORY_MOUNT}\n"
+                "  delete:\n"
+                "    enabled: true\n"
+                "  maintenance:\n"
+                "    readonly:\n"
+                f"      enabled: {readonly}\n"
+                "http:\n"
+                f"  addr: 0.0.0.0:{self.port}\n"
+            )
         }
+
+    async def maintenance_status(
+        self,
+        kube: Kube,
+        *,
+        timeout: float = INFINITY,
+    ) -> ImageRepositoryMaintenanceStatus:
+        """Read the current registry maintenance status.
+
+        Parameters
+        ----------
+        kube : Kube
+            Kubernetes API client for the target cluster.
+        timeout : float, optional
+            Maximum request budget in seconds. If infinite, wait indefinitely.
+
+        Returns
+        -------
+        ImageRepositoryMaintenanceStatus
+            Current registry maintenance status. Missing status means inactive.
+        """
+        status = await ConfigMap.get(
+            kube,
+            namespace=self.namespace,
+            name=IMAGE_REPOSITORY_MAINTENANCE_NAME,
+            timeout=timeout,
+        )
+        if status is None:
+            return ImageRepositoryMaintenanceStatus(active=False)
+        data = status.data
+        active = data.get("active", "").strip().lower() == "true"
+        return ImageRepositoryMaintenanceStatus(
+            active=active,
+            reason=data.get("reason", "").strip(),
+            started_at=_parse_maintenance_datetime(
+                "started_at",
+                data.get("started_at", ""),
+            ),
+            message=data.get("message", "").strip(),
+            dirty_count=_parse_maintenance_count(data.get("dirty_count", "")),
+            dirty_since=_parse_maintenance_datetime(
+                "dirty_since",
+                data.get("dirty_since", ""),
+            ),
+            last_gc_at=_parse_maintenance_datetime(
+                "last_gc_at",
+                data.get("last_gc_at", ""),
+            ),
+        )
+
+    async def _write_maintenance_status(
+        self,
+        kube: Kube,
+        *,
+        status: ImageRepositoryMaintenanceStatus,
+        timeout: float,
+    ) -> None:
+        if status.dirty_count < 0:
+            msg = "registry maintenance dirty_count cannot be negative"
+            raise OSError(msg)
+        await ConfigMap.upsert(
+            kube,
+            namespace=self.namespace,
+            name=IMAGE_REPOSITORY_MAINTENANCE_NAME,
+            labels=self.maintenance_labels,
+            data={
+                "active": "true" if status.active else "false",
+                "reason": status.reason,
+                "started_at": _datetime_payload(status.started_at),
+                "message": status.message,
+                "dirty_count": str(status.dirty_count),
+                "dirty_since": _datetime_payload(status.dirty_since),
+                "last_gc_at": _datetime_payload(status.last_gc_at),
+            },
+            timeout=timeout,
+        )
+
+    async def start_maintenance(
+        self,
+        kube: Kube,
+        *,
+        reason: str,
+        message: str,
+        timeout: float = INFINITY,
+    ) -> None:
+        """Mark registry maintenance as active.
+
+        Parameters
+        ----------
+        kube : Kube
+            Kubernetes API client for the target cluster.
+        reason : str
+            Stable maintenance reason identifier.
+        message : str
+            Concise user-facing maintenance message.
+        timeout : float, optional
+            Maximum request budget in seconds. If infinite, wait indefinitely.
+
+        Raises
+        ------
+        OSError
+            If `reason` or `message` is empty, or Kubernetes upsert fails.
+        """
+        reason = reason.strip()
+        message = message.strip()
+        if not reason or not message:
+            msg = "registry maintenance status requires reason and message"
+            raise OSError(msg)
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        current = await self.maintenance_status(kube, timeout=deadline - loop.time())
+        await self._write_maintenance_status(
+            kube,
+            status=ImageRepositoryMaintenanceStatus(
+                active=True,
+                reason=reason,
+                started_at=datetime.now(UTC),
+                message=message,
+                dirty_count=current.dirty_count,
+                dirty_since=current.dirty_since,
+                last_gc_at=current.last_gc_at,
+            ),
+            timeout=deadline - loop.time(),
+        )
+
+    async def clear_maintenance(
+        self,
+        kube: Kube,
+        *,
+        timeout: float = INFINITY,
+    ) -> None:
+        """Clear registry maintenance status.
+
+        Parameters
+        ----------
+        kube : Kube
+            Kubernetes API client for the target cluster.
+        timeout : float, optional
+            Maximum request budget in seconds. If infinite, wait indefinitely.
+        """
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        current = await self.maintenance_status(kube, timeout=deadline - loop.time())
+        await self._write_maintenance_status(
+            kube,
+            status=ImageRepositoryMaintenanceStatus(
+                active=False,
+                dirty_count=current.dirty_count,
+                dirty_since=current.dirty_since,
+                last_gc_at=current.last_gc_at,
+            ),
+            timeout=deadline - loop.time(),
+        )
+
+    async def mark_storage_dirty(
+        self,
+        kube: Kube,
+        *,
+        count: int,
+        timeout: float = INFINITY,
+    ) -> None:
+        """Mark registry storage as needing garbage collection.
+
+        Parameters
+        ----------
+        kube : Kube
+            Kubernetes API client for the target cluster.
+        count : int
+            Number of newly collected image records to add to the dirty count.
+        timeout : float, optional
+            Maximum request budget in seconds. If infinite, wait indefinitely.
+
+        Raises
+        ------
+        ValueError
+            If `count` is negative.
+        """
+        if count < 0:
+            msg = "registry storage dirty count cannot be negative"
+            raise ValueError(msg)
+        if count == 0:
+            return
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        current = await self.maintenance_status(kube, timeout=deadline - loop.time())
+        await self._write_maintenance_status(
+            kube,
+            status=ImageRepositoryMaintenanceStatus(
+                active=current.active,
+                reason=current.reason,
+                started_at=current.started_at,
+                message=current.message,
+                dirty_count=current.dirty_count + count,
+                dirty_since=current.dirty_since or datetime.now(UTC),
+                last_gc_at=current.last_gc_at,
+            ),
+            timeout=deadline - loop.time(),
+        )
+
+    async def clear_storage_dirty(
+        self,
+        kube: Kube,
+        *,
+        last_gc_at: datetime | None = None,
+        timeout: float = INFINITY,
+    ) -> None:
+        """Clear the durable registry storage dirty marker.
+
+        Parameters
+        ----------
+        kube : Kube
+            Kubernetes API client for the target cluster.
+        last_gc_at : datetime | None, optional
+            Timestamp to record for a successful registry storage GC. If omitted,
+            preserve the existing timestamp.
+        timeout : float, optional
+            Maximum request budget in seconds. If infinite, wait indefinitely.
+        """
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        current = await self.maintenance_status(kube, timeout=deadline - loop.time())
+        await self._write_maintenance_status(
+            kube,
+            status=ImageRepositoryMaintenanceStatus(
+                active=current.active,
+                reason=current.reason,
+                started_at=current.started_at,
+                message=current.message,
+                dirty_count=0,
+                dirty_since=None,
+                last_gc_at=last_gc_at or current.last_gc_at,
+            ),
+            timeout=deadline - loop.time(),
+        )
 
     async def current_buildkit_config_data(
         self,
@@ -510,11 +896,21 @@ class ImageRepository:
                 timeout=deadline - loop.time(),
                 name=self.service,
             )
-            config = await ConfigMap.get(
+            buildkit_config = await ConfigMap.get(
                 kube,
                 namespace=self.namespace,
                 timeout=deadline - loop.time(),
                 name=BUILDKIT_CONFIG_NAME,
+            )
+            registry_config = await ConfigMap.get(
+                kube,
+                namespace=self.namespace,
+                timeout=deadline - loop.time(),
+                name=IMAGE_REPOSITORY_CONFIG_NAME,
+            )
+            maintenance = await self.maintenance_status(
+                kube,
+                timeout=deadline - loop.time(),
             )
             nodes = await Node.list(kube=kube, timeout=deadline - loop.time())
 
@@ -545,13 +941,6 @@ class ImageRepository:
             generation = deployment.generation if deployment is not None else 0
             rollout_ready = (
                 deployment.rollout_ready(minimum=1) if deployment is not None else False
-            )
-            delete_enabled = (
-                deployment is not None
-                and deployment.container_env("registry").get(
-                    "REGISTRY_STORAGE_DELETE_ENABLED"
-                )
-                == "true"
             )
             pvc_managed = (
                 all(
@@ -590,9 +979,22 @@ class ImageRepository:
             )
             desired_config_hash = _config_hash(desired_config_data)
             installed_config_hash = (
-                _config_hash(config.data) if config is not None else ""
+                _config_hash(buildkit_config.data)
+                if buildkit_config is not None
+                else ""
             )
             config_current = installed_config_hash == desired_config_hash
+            desired_registry_config = self.registry_config_data(read_only=False)
+            desired_read_only_registry_config = self.registry_config_data(
+                read_only=True
+            )
+            registry_config_current = registry_config is not None and (
+                registry_config.data == desired_registry_config
+                or (
+                    maintenance.active
+                    and registry_config.data == desired_read_only_registry_config
+                )
+            )
 
             named_nodes = sorted(node.name for node in nodes if node.name)
             trusted = sorted(
@@ -614,8 +1016,8 @@ class ImageRepository:
                 failures.append("image registry Deployment rollout is not ready")
             if not storage_ready:
                 failures.append("image registry storage is not bound and ready")
-            if not delete_enabled:
-                failures.append("image registry manifest deletion is not enabled")
+            if not registry_config_current:
+                failures.append("image registry config is missing or stale")
             if not config_current:
                 failures.append("BuildKit daemon config is stale")
             if not node_trust_ready:
@@ -714,6 +1116,14 @@ class ImageRepository:
             ],
             timeout=deadline - loop.time(),
         )
+        registry_config = await ConfigMap.upsert(
+            kube,
+            namespace=self.namespace,
+            name=IMAGE_REPOSITORY_CONFIG_NAME,
+            labels=self.labels,
+            data=self.registry_config_data(read_only=False),
+            timeout=deadline - loop.time(),
+        )
         await ConfigMap.upsert(
             kube,
             namespace=self.namespace,
@@ -725,7 +1135,202 @@ class ImageRepository:
             ),
             timeout=deadline - loop.time(),
         )
-        deployment = await Deployment.upsert(
+        deployment = await self._upsert_deployment(
+            kube,
+            config_hash=_config_hash(registry_config.data),
+            timeout=deadline - loop.time(),
+        )
+        await deployment.wait_rollout(kube, timeout=deadline - loop.time())
+
+    async def restore_writable(
+        self,
+        kube: Kube,
+        *,
+        timeout: float = INFINITY,
+    ) -> None:
+        """Converge the registry Deployment back to writable mode.
+
+        Parameters
+        ----------
+        kube : Kube
+            Kubernetes API client for the target cluster.
+        timeout : float, optional
+            Maximum runtime budget in seconds. If infinite, wait indefinitely.
+
+        Raises
+        ------
+        TimeoutError
+            If `timeout` is non-positive or rollout exceeds the budget.
+        OSError
+            If Kubernetes create/patch/read operations fail.
+        """
+        if timeout <= 0:
+            msg = "image repository writable restore timeout must be non-negative"
+            raise TimeoutError(msg)
+        try:
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + timeout
+            await self._set_read_only(
+                kube,
+                read_only=False,
+                timeout=deadline - loop.time(),
+            )
+            await self.clear_maintenance(kube, timeout=deadline - loop.time())
+        except TimeoutError:
+            raise
+        except OSError as err:
+            msg = f"failed to restore image registry writable mode: {err}"
+            raise OSError(msg) from err
+
+    async def garbage_collect_storage(
+        self,
+        kube: Kube,
+        *,
+        timeout: float = INFINITY,
+        preflight: Callable[[float], Awaitable[bool]] | None = None,
+    ) -> bool:
+        """Run registry storage garbage collection with writes disabled.
+
+        Parameters
+        ----------
+        kube : Kube
+            Kubernetes API client for the target cluster.
+        timeout : float, optional
+            Maximum runtime budget in seconds. If infinite, wait indefinitely.
+        preflight : Callable[[float], Awaitable[bool]] | None, optional
+            Async callback invoked after maintenance status is published but before
+            the registry is rolled into read-only mode. A false result skips GC.
+
+        Returns
+        -------
+        bool
+            Whether registry storage GC actually ran.
+
+        Raises
+        ------
+        TimeoutError
+            If `timeout` is non-positive or GC exceeds the budget.
+        OSError
+            If Kubernetes operations fail or the GC Job fails.
+        """
+        if timeout <= 0:
+            msg = "image repository storage GC timeout must be non-negative"
+            raise TimeoutError(msg)
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        restore_required = False
+        try:
+            try:
+                await self.start_maintenance(
+                    kube,
+                    reason=IMAGE_REPOSITORY_MAINTENANCE_REASON_GC,
+                    message=IMAGE_REPOSITORY_MAINTENANCE_MESSAGE_GC,
+                    timeout=deadline - loop.time(),
+                )
+                if preflight is not None and not await preflight(
+                    deadline - loop.time()
+                ):
+                    return False
+                restore_required = True
+                await self._set_read_only(
+                    kube,
+                    read_only=True,
+                    timeout=deadline - loop.time(),
+                )
+                job = await Job.create(
+                    kube,
+                    namespace=self.namespace,
+                    name=f"{self.service}-gc-{uuid.uuid4().hex[:8]}",
+                    labels={
+                        **self.labels,
+                        IMAGE_REPOSITORY_GC_JOB_LABEL: (
+                            IMAGE_REPOSITORY_GC_JOB_LABEL_VALUE
+                        ),
+                    },
+                    pod_template=PodTemplateSpec(
+                        containers=[
+                            ContainerSpec(
+                                name="registry-gc",
+                                image=IMAGE_REPOSITORY_IMAGE,
+                                image_pull_policy="IfNotPresent",
+                                command=["registry"],
+                                args=[
+                                    "garbage-collect",
+                                    "--quiet",
+                                    IMAGE_REPOSITORY_CONFIG_FILE,
+                                ],
+                                volume_mounts=self._volume_mounts(),
+                            )
+                        ],
+                        volumes=self._volumes(),
+                    ),
+                    ttl_seconds_after_finished=IMAGE_REPOSITORY_GC_TTL_SECONDS,
+                    timeout=deadline - loop.time(),
+                )
+                await run_observed_job(
+                    kube,
+                    job,
+                    timeout=deadline - loop.time(),
+                    failure_context="image registry storage garbage collection failed",
+                    log_heading="registry GC Job logs",
+                    log_failure_label="registry GC Job pod logs",
+                    tail_lines=IMAGE_REPOSITORY_GC_LOG_TAIL_LINES,
+                    diagnostic_timeout=IMAGE_REPOSITORY_GC_DIAGNOSTIC_TIMEOUT_SECONDS,
+                    cleanup_timeout=IMAGE_REPOSITORY_GC_CLEANUP_TIMEOUT_SECONDS,
+                )
+            except TimeoutError:
+                raise
+            except OSError as err:
+                msg = f"image registry storage garbage collection failed: {err}"
+                raise OSError(msg) from err
+            return True
+        finally:
+            if restore_required:
+                await self.restore_writable(
+                    kube,
+                    timeout=IMAGE_REPOSITORY_GC_RESTORE_TIMEOUT_SECONDS,
+                )
+            else:
+                await self.clear_maintenance(
+                    kube,
+                    timeout=IMAGE_REPOSITORY_GC_RESTORE_TIMEOUT_SECONDS,
+                )
+
+    async def _set_read_only(
+        self,
+        kube: Kube,
+        *,
+        read_only: bool,
+        timeout: float,
+    ) -> None:
+        if timeout <= 0:
+            msg = "image repository config rollout timeout must be non-negative"
+            raise TimeoutError(msg)
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        config = await ConfigMap.upsert(
+            kube,
+            namespace=self.namespace,
+            name=IMAGE_REPOSITORY_CONFIG_NAME,
+            labels=self.labels,
+            data=self.registry_config_data(read_only=read_only),
+            timeout=deadline - loop.time(),
+        )
+        deployment = await self._upsert_deployment(
+            kube,
+            config_hash=_config_hash(config.data),
+            timeout=deadline - loop.time(),
+        )
+        await deployment.wait_rollout(kube, timeout=deadline - loop.time())
+
+    async def _upsert_deployment(
+        self,
+        kube: Kube,
+        *,
+        config_hash: str,
+        timeout: float,
+    ) -> Deployment:
+        return await Deployment.upsert(
             kube,
             namespace=self.namespace,
             name=self.service,
@@ -737,21 +1342,13 @@ class ImageRepository:
                         name="registry",
                         image=IMAGE_REPOSITORY_IMAGE,
                         image_pull_policy="IfNotPresent",
+                        command=["registry"],
+                        args=["serve", IMAGE_REPOSITORY_CONFIG_FILE],
                         ports=[
                             ContainerPortSpec(
                                 name="registry",
                                 container_port=self.port,
                             )
-                        ],
-                        env=[
-                            EnvVarSpec(
-                                name="REGISTRY_HTTP_ADDR",
-                                value=f"0.0.0.0:{self.port}",
-                            ),
-                            EnvVarSpec(
-                                name="REGISTRY_STORAGE_DELETE_ENABLED",
-                                value="true",
-                            ),
                         ],
                         readiness_probe=ProbeSpec.http(
                             path="/v2/",
@@ -766,25 +1363,40 @@ class ImageRepository:
                             period_seconds=10,
                             failure_threshold=3,
                         ),
-                        volume_mounts=[
-                            VolumeMountSpec(
-                                name=IMAGE_REPOSITORY_VOLUME,
-                                mount_path=IMAGE_REPOSITORY_MOUNT,
-                            )
-                        ],
+                        volume_mounts=self._volume_mounts(),
                     )
                 ],
-                volumes=[
-                    VolumeSpec.pvc(
-                        IMAGE_REPOSITORY_VOLUME,
-                        claim_name=self.service,
-                    )
-                ],
+                volumes=self._volumes(),
+                annotations={IMAGE_REPOSITORY_CONFIG_HASH_ANNOTATION: config_hash},
             ),
             strategy=DeploymentStrategySpec.recreate(),
-            timeout=deadline - loop.time(),
+            timeout=timeout,
         )
-        await deployment.wait_rollout(kube, timeout=deadline - loop.time())
+
+    def _volume_mounts(self) -> tuple[VolumeMountSpec, ...]:
+        return (
+            VolumeMountSpec(
+                name=IMAGE_REPOSITORY_VOLUME,
+                mount_path=IMAGE_REPOSITORY_MOUNT,
+            ),
+            VolumeMountSpec(
+                name=IMAGE_REPOSITORY_CONFIG_VOLUME,
+                mount_path=IMAGE_REPOSITORY_CONFIG_DIR,
+                read_only=True,
+            ),
+        )
+
+    def _volumes(self) -> tuple[VolumeSpec, ...]:
+        return (
+            VolumeSpec.pvc(
+                IMAGE_REPOSITORY_VOLUME,
+                claim_name=self.service,
+            ),
+            VolumeSpec.config_map(
+                IMAGE_REPOSITORY_CONFIG_VOLUME,
+                config_map_name=IMAGE_REPOSITORY_CONFIG_NAME,
+            ),
+        )
 
     def ref(self, name: str, tag: str) -> str:
         """Render a stable Bertrand image reference.

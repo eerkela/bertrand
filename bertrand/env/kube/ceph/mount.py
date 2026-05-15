@@ -1032,7 +1032,10 @@ async def ensure_repository_mount(
         If `timeout` is non-positive.
     """
     from bertrand.env.kube.ceph.auth import RepoCredentials
-    from bertrand.env.kube.ceph.volume import RepoVolume
+    from bertrand.env.kube.ceph.volume import (
+        RepoVolume,
+        ensure_repository_volume_record,
+    )
 
     repo_id = _check_uuid(repo_id)
     target = abspath(target)
@@ -1082,6 +1085,11 @@ async def ensure_repository_mount(
             kube,
             timeout=deadline - loop.time(),
         )
+    await ensure_repository_volume_record(
+        kube,
+        repo_id=repo_id,
+        timeout=deadline - loop.time(),
+    )
 
     credentials: RepoCredentials = await RepoCredentials.ensure(
         repo_id=repo_id,

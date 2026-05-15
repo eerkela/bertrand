@@ -3,6 +3,7 @@
 from bertrand.env.host.state import BERTRAND_GROUP as BERTRAND_GROUP
 from bertrand.env.host.state import BIN_DIR as BIN_DIR
 from bertrand.env.host.state import CACHE_DIR as CACHE_DIR
+from bertrand.env.host.state import HOST_ID_FILE as HOST_ID_FILE
 from bertrand.env.host.state import HOST_MOUNTS as HOST_MOUNTS
 from bertrand.env.host.state import REPO_ALIASES_EXT as REPO_ALIASES_EXT
 from bertrand.env.host.state import REPO_DIR as REPO_DIR

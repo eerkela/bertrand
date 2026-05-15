@@ -1125,8 +1125,9 @@ async def bertrand_init(
                 )
                 raise OSError(msg)
 
-            # resolve deterministic repository identity from managed metadata if
-            # available, otherwise derive from the canonical repository root.
+            # resolve deterministic repository identity from recovered/managed
+            # metadata if available, otherwise derive from this host identity and the
+            # canonical repository root.
             repo_id = recovered_repo_id or repo.repo_id
             repo_context = _RepoContext(
                 enable=enabled,

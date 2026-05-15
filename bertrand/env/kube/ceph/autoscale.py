@@ -10,7 +10,7 @@ import sys
 import uuid
 from contextlib import suppress
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Annotated, Literal, cast
 
 from pydantic import (
@@ -20,6 +20,7 @@ from pydantic import (
     PositiveInt,
     ValidationError,
     field_validator,
+    model_validator,
 )
 
 from bertrand.env.git import BERTRAND_ENV, BERTRAND_NAMESPACE, INFINITY
@@ -42,12 +43,22 @@ from bertrand.env.kube.ceph.api import (
     LOOP_OSD_SIZE_PATTERN,
     LOOP_OSD_SPEC_PATTERN,
     CephCapacitySnapshot,
+    CephOSD,
     LoopOSDSpec,
     add_loop_osd,
     ceph_df,
+    ceph_health,
+    ceph_osds,
     host_free_bytes,
     parse_loop_osd_spec,
     parse_size_bytes,
+    remove_osd,
+)
+from bertrand.env.kube.ceph.volume import (
+    REPOSITORY_VOLUME_PLURAL,
+    ensure_repository_volume_crd,
+    gc_repository_volumes,
+    next_repository_volume_gc_time,
 )
 from bertrand.env.kube.crd import (
     CustomObjectMetadata,
@@ -71,6 +82,8 @@ AUTOSCALE_ACTION_KIND = "CephStorageAction"
 AUTOSCALE_ACTION_PLURAL = "cephstorageactions"
 AUTOSCALE_NODE_KIND = "CephStorageNode"
 AUTOSCALE_NODE_PLURAL = "cephstoragenodes"
+BUILDKIT_BUILD_GROUP = "build.bertrand.dev"
+BUILDKIT_BUILD_PLURAL = "buildkitbuilds"
 AUTOSCALE_DEFAULT_NAME = "default"
 AUTOSCALE_SERVICE_ACCOUNT = "bertrand-ceph-autoscaler"
 AUTOSCALE_CONTROLLER_NAME = "bertrand-ceph-autoscaler"
@@ -82,6 +95,10 @@ AUTOSCALE_NODE_REPORT_MAX_AGE_SECONDS = 120
 AUTOSCALE_WATCH_RESTART_DELAY_SECONDS = 1.0
 AUTOSCALE_CONTROLLER_DEFAULT_RECONCILE_SECONDS = 30.0
 AUTOSCALE_AGENT_SYNC_INTERVAL_SECONDS = 5.0
+REPOSITORY_VOLUME_GC_EMPTY_CHECK_SECONDS = 3600.0
+REPOSITORY_VOLUME_GC_READY_CHECK_SECONDS = 900.0
+REPOSITORY_VOLUME_GC_FAILURE_RETRY_SECONDS = 300.0
+REPOSITORY_VOLUME_GC_TIMEOUT_SECONDS = 60.0
 HOST_ROOT_VOLUME = "host-root"
 HOST_ROOT_MOUNT = "/host"
 AUTOSCALE_LABELS = {BERTRAND_ENV: "1", AUTOSCALE_LABEL: AUTOSCALE_LABEL_VALUE}
@@ -89,6 +106,7 @@ AUTOSCALE_LABELS = {BERTRAND_ENV: "1", AUTOSCALE_LABEL: AUTOSCALE_LABEL_VALUE}
 type _Watermark = Annotated[float, Field(gt=0.0, lt=1.0)]
 type _LoopSize = Annotated[str, Field(pattern=LOOP_OSD_SIZE_PATTERN)]
 type _LoopSpec = Annotated[str, Field(pattern=LOOP_OSD_SPEC_PATTERN)]
+type _ActionOperation = Literal["grow", "shrink"]
 type _ActionPhase = Literal["Pending", "Running", "Succeeded", "Failed"]
 
 
@@ -99,6 +117,10 @@ class _CephAutoscalerSpec(BaseModel):
     enabled: bool = True
     high_watermark: _Watermark = 0.75
     target_watermark: _Watermark = 0.65
+    shrink_enabled: bool = True
+    low_watermark: _Watermark = 0.45
+    shrink_target_watermark: _Watermark = 0.60
+    shrink_cooldown_seconds: PositiveInt = 3600
     loop_size: _LoopSize = "4G"
     max_actions_per_reconcile: PositiveInt = 3
     reconcile_interval_seconds: PositiveInt = 30
@@ -107,6 +129,16 @@ class _CephAutoscalerSpec(BaseModel):
     @classmethod
     def _validate_loop_size(cls, value: str) -> str:
         return LoopOSDSpec(size=value).size
+
+    @model_validator(mode="after")
+    def _validate_watermarks(self) -> _CephAutoscalerSpec:
+        if not self.low_watermark < self.shrink_target_watermark < self.high_watermark:
+            msg = (
+                "Ceph autoscaler watermarks must satisfy "
+                "low_watermark < shrink_target_watermark < high_watermark"
+            )
+            raise ValueError(msg)
+        return self
 
 
 class _CephAutoscalerStatus(BaseModel):
@@ -121,6 +153,9 @@ class _CephAutoscalerStatus(BaseModel):
     running_actions: int = 0
     succeeded_actions: int = 0
     failed_actions: int = 0
+    managed_osds: int = 0
+    shrink_candidates: int = 0
+    last_shrink_at: datetime | None = None
     last_reconciled_at: datetime | None = None
     last_error: str = ""
 
@@ -137,29 +172,48 @@ class _CephAutoscaler(BaseModel):
 
 
 class _CephStorageActionSpec(BaseModel):
-    """Desired node-local growth action contract."""
+    """Desired node-local storage action contract."""
 
     model_config = ConfigDict(extra="forbid")
     policy_generation: Annotated[int, Field(ge=0)]
+    operation: _ActionOperation
     node_name: Annotated[str, Field(min_length=1)]
-    loop_spec: _LoopSpec
+    loop_spec: _LoopSpec | None = None
+    osd_id: Annotated[int, Field(ge=0)] | None = None
     reason: Annotated[str, Field(min_length=1)]
 
     @field_validator("loop_spec")
     @classmethod
-    def _validate_loop_spec(cls, value: str) -> str:
+    def _validate_loop_spec(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
         return parse_loop_osd_spec(value).render()
+
+    @model_validator(mode="after")
+    def _validate_operation_contract(self) -> _CephStorageActionSpec:
+        if self.operation == "grow":
+            if self.loop_spec is None or self.osd_id is not None:
+                msg = "grow actions require loop_spec and cannot set osd_id"
+                raise ValueError(msg)
+            return self
+        if self.osd_id is None or self.loop_spec is not None:
+            msg = "shrink actions require osd_id and cannot set loop_spec"
+            raise ValueError(msg)
+        return self
 
 
 class _CephStorageActionStatus(BaseModel):
-    """Observed lifecycle state for one node-local growth action."""
+    """Observed lifecycle state for one node-local storage action."""
 
     model_config = ConfigDict(extra="forbid")
     phase: _ActionPhase = "Pending"
     started_at: datetime | None = None
     finished_at: datetime | None = None
     message: str = ""
+    diagnostics: str = ""
     worker_node: str = ""
+    created_osd_ids: tuple[int, ...] = ()
+    removed_osd_ids: tuple[int, ...] = ()
 
 
 class _CephStorageAction(BaseModel):
@@ -203,11 +257,23 @@ class _CephStorageNode(BaseModel):
 
 @dataclass(frozen=True)
 class _PlannedAction:
-    """One node-scoped MicroCeph growth action selected by policy planning."""
+    """One node-scoped MicroCeph storage action selected by policy planning."""
 
+    operation: _ActionOperation
     node_name: str
-    loop_spec: str
     reason: str
+    loop_spec: str | None = None
+    osd_id: int | None = None
+
+
+@dataclass(frozen=True)
+class _ManagedOSD:
+    """Autoscaler-created OSD that is eligible for shrink planning."""
+
+    osd_id: int
+    node_name: str
+    size_bytes: int
+    created_at: datetime | None
 
 
 _AUTOSCALER_SPEC_SCHEMA = {
@@ -225,6 +291,24 @@ _AUTOSCALER_SPEC_SCHEMA = {
             "minimum": 0,
             "maximum": 1,
             "default": 0.65,
+        },
+        "shrink_enabled": {"type": "boolean", "default": True},
+        "low_watermark": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "default": 0.45,
+        },
+        "shrink_target_watermark": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "default": 0.60,
+        },
+        "shrink_cooldown_seconds": {
+            "type": "integer",
+            "minimum": 1,
+            "default": 3600,
         },
         "loop_size": {
             "type": "string",
@@ -246,17 +330,30 @@ _AUTOSCALER_STATUS_SCHEMA = {
         "running_actions": {"type": "integer"},
         "succeeded_actions": {"type": "integer"},
         "failed_actions": {"type": "integer"},
+        "managed_osds": {"type": "integer"},
+        "shrink_candidates": {"type": "integer"},
+        "last_shrink_at": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": True,
+        },
         "last_reconciled_at": {"type": "string", "format": "date-time"},
         "last_error": {"type": "string"},
     },
 }
 _ACTION_SPEC_SCHEMA = {
     "type": "object",
-    "required": ["policy_generation", "node_name", "loop_spec", "reason"],
+    "required": ["policy_generation", "operation", "node_name", "reason"],
     "properties": {
         "policy_generation": {"type": "integer", "minimum": 0},
+        "operation": {"type": "string", "enum": ["grow", "shrink"]},
         "node_name": {"type": "string", "minLength": 1},
-        "loop_spec": {"type": "string", "pattern": LOOP_OSD_SPEC_PATTERN},
+        "loop_spec": {
+            "type": "string",
+            "pattern": LOOP_OSD_SPEC_PATTERN,
+            "nullable": True,
+        },
+        "osd_id": {"type": "integer", "minimum": 0, "nullable": True},
         "reason": {"type": "string", "minLength": 1},
     },
 }
@@ -267,7 +364,16 @@ _ACTION_STATUS_SCHEMA = {
         "started_at": {"type": "string", "format": "date-time"},
         "finished_at": {"type": "string", "format": "date-time"},
         "message": {"type": "string"},
+        "diagnostics": {"type": "string"},
         "worker_node": {"type": "string"},
+        "created_osd_ids": {
+            "type": "array",
+            "items": {"type": "integer", "minimum": 0},
+        },
+        "removed_osd_ids": {
+            "type": "array",
+            "items": {"type": "integer", "minimum": 0},
+        },
     },
 }
 _NODE_REPORT_SPEC_SCHEMA = {
@@ -359,6 +465,7 @@ async def _ensure_rbac(kube: Kube, *, deadline: float) -> None:
                     AUTOSCALE_AUTOSCALER_PLURAL,
                     AUTOSCALE_ACTION_PLURAL,
                     AUTOSCALE_NODE_PLURAL,
+                    REPOSITORY_VOLUME_PLURAL,
                 ],
                 verbs=["get", "list", "watch", "create", "update", "patch"],
             ),
@@ -372,9 +479,29 @@ async def _ensure_rbac(kube: Kube, *, deadline: float) -> None:
                 verbs=["get", "update", "patch"],
             ),
             PolicyRuleSpec(
+                api_groups=[AUTOSCALE_GROUP],
+                resources=[REPOSITORY_VOLUME_PLURAL],
+                verbs=["delete"],
+            ),
+            PolicyRuleSpec(
+                api_groups=[BUILDKIT_BUILD_GROUP],
+                resources=[BUILDKIT_BUILD_PLURAL],
+                verbs=["get", "list", "watch"],
+            ),
+            PolicyRuleSpec(
                 api_groups=[""],
                 resources=["nodes"],
                 verbs=["get", "list", "watch"],
+            ),
+            PolicyRuleSpec(
+                api_groups=[""],
+                resources=["pods"],
+                verbs=["get", "list", "watch"],
+            ),
+            PolicyRuleSpec(
+                api_groups=[""],
+                resources=["persistentvolumeclaims"],
+                verbs=["get", "list", "watch", "delete"],
             ),
         ],
         timeout=deadline - loop.time(),
@@ -523,6 +650,10 @@ async def ensure_ceph_autoscaler(kube: Kube, *, image: str, timeout: float) -> N
         status_schema=_NODE_REPORT_STATUS_SCHEMA,
         deadline=deadline,
     )
+    await ensure_repository_volume_crd(
+        kube,
+        timeout=deadline - asyncio.get_running_loop().time(),
+    )
     await _ensure_rbac(kube, deadline=deadline)
     await _ensure_default_policy(kube, deadline=deadline)
     await _ensure_workloads(kube, image=image, deadline=deadline)
@@ -533,6 +664,7 @@ class CephAutoscalerController:
 
     def __init__(self) -> None:
         self._offset = 0
+        self._next_repository_volume_gc_at = datetime.min.replace(tzinfo=UTC)
 
     async def _watch(
         self,
@@ -579,6 +711,85 @@ class CephAutoscalerController:
         return counts
 
     @staticmethod
+    def _in_flight(actions: Collection[_CephStorageAction]) -> int:
+        counts = CephAutoscalerController._action_counts(actions)
+        return counts["Pending"] + counts["Running"]
+
+    @staticmethod
+    def _utc(value: datetime | None) -> datetime | None:
+        if value is None:
+            return None
+        if value.tzinfo is None:
+            return value.replace(tzinfo=UTC)
+        return value.astimezone(UTC)
+
+    @classmethod
+    def _last_shrink_at(
+        cls,
+        actions: Collection[_CephStorageAction],
+    ) -> datetime | None:
+        timestamps = [
+            cls._utc(action.status.finished_at or action.status.started_at)
+            for action in actions
+            if action.spec.operation == "shrink"
+            and action.status.phase in ("Running", "Succeeded", "Failed")
+        ]
+        return max((item for item in timestamps if item is not None), default=None)
+
+    @staticmethod
+    def _managed_osd_ids(actions: Collection[_CephStorageAction]) -> set[int]:
+        created: set[int] = set()
+        consumed: set[int] = set()
+        for action in actions:
+            if action.spec.operation == "grow" and action.status.phase == "Succeeded":
+                created.update(action.status.created_osd_ids)
+                continue
+            if action.spec.operation != "shrink":
+                continue
+            if action.status.phase in ("Pending", "Running", "Succeeded"):
+                if action.spec.osd_id is not None:
+                    consumed.add(action.spec.osd_id)
+                consumed.update(action.status.removed_osd_ids)
+        return created - consumed
+
+    @classmethod
+    def _managed_osds(
+        cls,
+        *,
+        actions: Collection[_CephStorageAction],
+        osds: Collection[CephOSD],
+    ) -> list[_ManagedOSD]:
+        live = {
+            osd.osd_id: osd
+            for osd in osds
+            if osd.up and osd.in_cluster and osd.node_name
+        }
+        managed_ids = cls._managed_osd_ids(actions)
+        candidates: list[_ManagedOSD] = []
+        for action in actions:
+            if (
+                action.spec.operation != "grow"
+                or action.status.phase != "Succeeded"
+                or action.spec.loop_spec is None
+            ):
+                continue
+            loop_spec = parse_loop_osd_spec(action.spec.loop_spec)
+            size_bytes = parse_size_bytes(loop_spec.size)
+            for osd_id in action.status.created_osd_ids:
+                osd = live.get(osd_id)
+                if osd is None or osd_id not in managed_ids:
+                    continue
+                candidates.append(
+                    _ManagedOSD(
+                        osd_id=osd_id,
+                        node_name=action.spec.node_name or osd.node_name,
+                        size_bytes=size_bytes,
+                        created_at=cls._utc(action.status.finished_at),
+                    )
+                )
+        return candidates
+
+    @staticmethod
     def _eligible_nodes(
         *,
         ready_nodes: Collection[str],
@@ -606,7 +817,7 @@ class CephAutoscalerController:
             eligible.extend([report.spec.node_name] * min(slots, 32))
         return sorted(eligible)
 
-    def _plan_actions(
+    def _plan_grow_actions(
         self,
         *,
         policy: _CephAutoscaler,
@@ -627,8 +838,7 @@ class CephAutoscalerController:
         if deficit <= 0:
             return []
 
-        counts = self._action_counts(actions)
-        in_flight = counts["Pending"] + counts["Running"]
+        in_flight = self._in_flight(actions)
         budget = spec.max_actions_per_reconcile - in_flight
         if budget <= 0:
             return []
@@ -640,6 +850,7 @@ class CephAutoscalerController:
             node = eligible_nodes[(self._offset + index) % len(eligible_nodes)]
             planned.append(
                 _PlannedAction(
+                    operation="grow",
                     node_name=node,
                     loop_spec=LoopOSDSpec(size=spec.loop_size).render(),
                     reason=(
@@ -652,6 +863,70 @@ class CephAutoscalerController:
         if eligible_nodes:
             self._offset = (self._offset + count) % len(eligible_nodes)
         return planned
+
+    def _plan_shrink_action(
+        self,
+        *,
+        policy: _CephAutoscaler,
+        capacity: CephCapacitySnapshot,
+        actions: Collection[_CephStorageAction],
+        candidates: Collection[_ManagedOSD],
+    ) -> list[_PlannedAction]:
+        spec = policy.spec
+        if (
+            not spec.enabled
+            or not spec.shrink_enabled
+            or capacity.used_ratio >= spec.low_watermark
+            or self._in_flight(actions) > 0
+        ):
+            return []
+        last_shrink_at = self._last_shrink_at(actions)
+        if (
+            last_shrink_at is not None
+            and (datetime.now(UTC) - last_shrink_at).total_seconds()
+            < spec.shrink_cooldown_seconds
+        ):
+            return []
+        candidate = self._select_shrink_candidate(candidates)
+        if candidate is None:
+            return []
+        projected_total = capacity.total_bytes - candidate.size_bytes
+        if projected_total <= 0:
+            return []
+        projected_ratio = capacity.used_bytes / projected_total
+        if projected_ratio > spec.shrink_target_watermark:
+            return []
+        return [
+            _PlannedAction(
+                operation="shrink",
+                node_name=candidate.node_name,
+                osd_id=candidate.osd_id,
+                reason=(
+                    "cluster usage "
+                    f"{capacity.used_ratio:.2%} <= low watermark "
+                    f"{spec.low_watermark:.2%}; projected usage after removing "
+                    f"osd.{candidate.osd_id} is {projected_ratio:.2%}"
+                ),
+            )
+        ]
+
+    @staticmethod
+    def _select_shrink_candidate(
+        candidates: Collection[_ManagedOSD],
+    ) -> _ManagedOSD | None:
+        groups: dict[str, list[_ManagedOSD]] = {}
+        for candidate in candidates:
+            groups.setdefault(candidate.node_name, []).append(candidate)
+        if not groups:
+            return None
+        node = min(groups, key=lambda item: (-len(groups[item]), item))
+        return max(
+            groups[node],
+            key=lambda item: (
+                item.created_at or datetime.min.replace(tzinfo=UTC),
+                item.osd_id,
+            ),
+        )
 
     async def _read_policy(self, kube: Kube, *, timeout: float) -> _CephAutoscaler:
         """Read and validate the singleton autoscaler policy.
@@ -764,18 +1039,23 @@ class CephAutoscalerController:
         actions: Collection[_PlannedAction],
         timeout: float,
     ) -> None:
-        """Create node-scoped growth action resources."""
+        """Create node-scoped storage action resources."""
         for action in actions:
+            spec: dict[str, object] = {
+                "policy_generation": policy_generation,
+                "operation": action.operation,
+                "node_name": action.node_name,
+                "reason": action.reason,
+            }
+            if action.loop_spec is not None:
+                spec["loop_spec"] = action.loop_spec
+            if action.osd_id is not None:
+                spec["osd_id"] = action.osd_id
             await _ACTION_CLIENT.create(
                 kube,
                 namespace=BERTRAND_NAMESPACE,
                 name=f"{AUTOSCALE_DEFAULT_NAME}-{uuid.uuid4().hex[:12]}",
-                spec={
-                    "policy_generation": policy_generation,
-                    "node_name": action.node_name,
-                    "loop_spec": action.loop_spec,
-                    "reason": action.reason,
-                },
+                spec=spec,
                 timeout=timeout,
             )
 
@@ -824,13 +1104,34 @@ class CephAutoscalerController:
             reports=reports,
             loop_bytes=loop_bytes,
         )
-        planned = self._plan_actions(
+        planned = self._plan_grow_actions(
             policy=policy,
             capacity=capacity,
             actions=actions,
             eligible_nodes=eligible_nodes,
             loop_bytes=loop_bytes,
         )
+        managed_osds = self._managed_osd_ids(actions)
+        shrink_candidates: list[_ManagedOSD] = []
+        last_shrink_at = self._last_shrink_at(actions)
+        if (
+            not planned
+            and policy.spec.enabled
+            and policy.spec.shrink_enabled
+            and capacity.used_ratio < policy.spec.low_watermark
+        ):
+            health = await ceph_health(timeout=deadline - loop.time())
+            if health.clean:
+                shrink_candidates = self._managed_osds(
+                    actions=actions,
+                    osds=await ceph_osds(timeout=deadline - loop.time()),
+                )
+                planned = self._plan_shrink_action(
+                    policy=policy,
+                    capacity=capacity,
+                    actions=actions,
+                    candidates=shrink_candidates,
+                )
         if planned:
             await self._create_actions(
                 kube,
@@ -839,6 +1140,10 @@ class CephAutoscalerController:
                 timeout=deadline - loop.time(),
             )
             actions = await self._list_actions(kube, timeout=deadline - loop.time())
+            managed_osds = self._managed_osd_ids(actions)
+            last_shrink_at = self._last_shrink_at(actions)
+            if any(action.operation == "shrink" for action in planned):
+                shrink_candidates = []
         counts = self._action_counts(actions)
         await self._patch_status(
             kube,
@@ -851,12 +1156,70 @@ class CephAutoscalerController:
                 "running_actions": counts.get("Running", 0),
                 "succeeded_actions": counts.get("Succeeded", 0),
                 "failed_actions": counts.get("Failed", 0),
+                "managed_osds": len(managed_osds),
+                "shrink_candidates": len(shrink_candidates),
+                "last_shrink_at": (
+                    last_shrink_at.isoformat() if last_shrink_at is not None else None
+                ),
                 "last_reconciled_at": datetime.now(UTC).isoformat(),
                 "last_error": "",
             },
             timeout=deadline - loop.time(),
         )
         return float(policy.spec.reconcile_interval_seconds)
+
+    async def _maybe_repository_volume_gc(
+        self,
+        kube: Kube,
+        *,
+        deadline: float,
+    ) -> None:
+        now = datetime.now(UTC)
+        if now < self._next_repository_volume_gc_at:
+            return
+        loop = asyncio.get_running_loop()
+        pass_deadline = min(
+            deadline,
+            loop.time() + REPOSITORY_VOLUME_GC_TIMEOUT_SECONDS,
+        )
+        if pass_deadline <= loop.time():
+            return
+
+        try:
+            next_gc = await next_repository_volume_gc_time(
+                kube,
+                timeout=pass_deadline - loop.time(),
+            )
+            if next_gc is None:
+                self._schedule_repository_volume_gc_after(
+                    REPOSITORY_VOLUME_GC_EMPTY_CHECK_SECONDS
+                )
+                return
+            if next_gc > now:
+                self._next_repository_volume_gc_at = next_gc
+                return
+
+            await gc_repository_volumes(
+                kube,
+                timeout=pass_deadline - loop.time(),
+            )
+            self._schedule_repository_volume_gc_after(
+                REPOSITORY_VOLUME_GC_READY_CHECK_SECONDS
+            )
+        except (OSError, TimeoutError, ValueError) as err:
+            self._schedule_repository_volume_gc_after(
+                REPOSITORY_VOLUME_GC_FAILURE_RETRY_SECONDS
+            )
+            print(
+                f"bertrand: warning: repository volume garbage collection failed: "
+                f"{err}",
+                file=sys.stderr,
+            )
+
+    def _schedule_repository_volume_gc_after(self, seconds: float) -> None:
+        self._next_repository_volume_gc_at = datetime.now(UTC) + timedelta(
+            seconds=seconds
+        )
 
     async def _patch_error(self, kube: Kube, *, error: str, deadline: float) -> None:
         """Best-effort status patch for reconciliation failures."""
@@ -873,6 +1236,9 @@ class CephAutoscalerController:
                 "running_actions": 0,
                 "succeeded_actions": 0,
                 "failed_actions": 0,
+                "managed_osds": 0,
+                "shrink_candidates": 0,
+                "last_shrink_at": None,
                 "last_reconciled_at": datetime.now(UTC).isoformat(),
                 "last_error": error,
             },
@@ -961,6 +1327,7 @@ class CephAutoscalerController:
                                 error=error,
                                 deadline=deadline,
                             )
+                    await self._maybe_repository_volume_gc(kube, deadline=deadline)
 
 
 class CephAutoscalerAgent:
@@ -1125,6 +1492,20 @@ class CephAutoscalerAgent:
             timeout=timeout,
         )
 
+    @staticmethod
+    def _grow_loop_spec(action: _CephStorageAction) -> str:
+        if action.spec.loop_spec is None:
+            msg = "grow action is missing loop_spec"
+            raise ValueError(msg)
+        return action.spec.loop_spec
+
+    @staticmethod
+    def _shrink_osd_id(action: _CephStorageAction) -> int:
+        if action.spec.osd_id is None:
+            msg = "shrink action is missing osd_id"
+            raise ValueError(msg)
+        return action.spec.osd_id
+
     async def _execute_action(
         self, kube: Kube, *, action: _CephStorageAction, deadline: float
     ) -> None:
@@ -1157,14 +1538,34 @@ class CephAutoscalerAgent:
                 },
                 timeout=deadline - loop.time(),
             )
-            await add_loop_osd(action.spec.loop_spec, timeout=deadline - loop.time())
+            if action.spec.operation == "grow":
+                osd_ids = await add_loop_osd(
+                    self._grow_loop_spec(action),
+                    timeout=deadline - loop.time(),
+                )
+                await self._patch_action(
+                    kube,
+                    action=action,
+                    status={
+                        "phase": "Succeeded",
+                        "message": "microceph disk add completed",
+                        "worker_node": self.node_name,
+                        "created_osd_ids": list(osd_ids),
+                        "finished_at": datetime.now(UTC).isoformat(),
+                    },
+                    timeout=deadline - loop.time(),
+                )
+                return
+            osd_id = self._shrink_osd_id(action)
+            await remove_osd(osd_id, timeout=deadline - loop.time())
             await self._patch_action(
                 kube,
                 action=action,
                 status={
                     "phase": "Succeeded",
-                    "message": "microceph disk add completed",
+                    "message": f"microceph disk remove completed for osd.{osd_id}",
                     "worker_node": self.node_name,
+                    "removed_osd_ids": [osd_id],
                     "finished_at": datetime.now(UTC).isoformat(),
                 },
                 timeout=deadline - loop.time(),
@@ -1178,6 +1579,7 @@ class CephAutoscalerAgent:
                 status={
                     "phase": "Failed",
                     "message": str(err),
+                    "diagnostics": str(err),
                     "worker_node": self.node_name,
                     "finished_at": datetime.now(UTC).isoformat(),
                 },

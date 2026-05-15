@@ -47,6 +47,11 @@ BUILDKIT_INSECURE_ENTITLEMENTS = (
     BUILDKIT_DEVICE_ENTITLEMENT,
     BUILDKIT_NETWORK_HOST_ENTITLEMENT,
 )
+BUILDKIT_GC_RESERVED_SPACE = "4GB"
+BUILDKIT_GC_MAX_USED_SPACE = "20GB"
+BUILDKIT_GC_MIN_FREE_SPACE = "10GB"
+BUILDKIT_GC_LOCAL_KEEP_DURATION = "48h"
+BUILDKIT_GC_BROAD_KEEP_DURATION = "720h"
 BUILDKIT_CDI_SPEC_MOUNTS = (
     ("buildkit-cdi-etc", "/etc/cdi"),
     ("buildkit-cdi-run", "/var/run/cdi"),
@@ -66,6 +71,52 @@ BUILDKIT_CONTROL_PLANE_TOLERATIONS = (
         effect="NoSchedule",
     ),
 )
+
+
+def buildkit_worker_gc_toml() -> str:
+    """Return BuildKit worker garbage-collection TOML.
+
+    Returns
+    -------
+    str
+        TOML fragment that bounds the node-local OCI worker cache.
+    """
+    return (
+        "[worker.oci]\n"
+        "  enabled = true\n"
+        "  gc = true\n"
+        f"  reservedSpace = \"{BUILDKIT_GC_RESERVED_SPACE}\"\n"
+        f"  maxUsedSpace = \"{BUILDKIT_GC_MAX_USED_SPACE}\"\n"
+        f"  minFreeSpace = \"{BUILDKIT_GC_MIN_FREE_SPACE}\"\n"
+        "\n"
+        "[[worker.oci.gcpolicy]]\n"
+        "  filters = [\n"
+        "    \"type==source.local\",\n"
+        "    \"type==exec.cachemount\",\n"
+        "    \"type==source.git.checkout\",\n"
+        "  ]\n"
+        f"  keepDuration = \"{BUILDKIT_GC_LOCAL_KEEP_DURATION}\"\n"
+        f"  reservedSpace = \"{BUILDKIT_GC_RESERVED_SPACE}\"\n"
+        f"  maxUsedSpace = \"{BUILDKIT_GC_MAX_USED_SPACE}\"\n"
+        f"  minFreeSpace = \"{BUILDKIT_GC_MIN_FREE_SPACE}\"\n"
+        "\n"
+        "[[worker.oci.gcpolicy]]\n"
+        f"  keepDuration = \"{BUILDKIT_GC_BROAD_KEEP_DURATION}\"\n"
+        f"  reservedSpace = \"{BUILDKIT_GC_RESERVED_SPACE}\"\n"
+        f"  maxUsedSpace = \"{BUILDKIT_GC_MAX_USED_SPACE}\"\n"
+        f"  minFreeSpace = \"{BUILDKIT_GC_MIN_FREE_SPACE}\"\n"
+        "\n"
+        "[[worker.oci.gcpolicy]]\n"
+        f"  reservedSpace = \"{BUILDKIT_GC_RESERVED_SPACE}\"\n"
+        f"  maxUsedSpace = \"{BUILDKIT_GC_MAX_USED_SPACE}\"\n"
+        f"  minFreeSpace = \"{BUILDKIT_GC_MIN_FREE_SPACE}\"\n"
+        "\n"
+        "[[worker.oci.gcpolicy]]\n"
+        "  all = true\n"
+        f"  reservedSpace = \"{BUILDKIT_GC_RESERVED_SPACE}\"\n"
+        f"  maxUsedSpace = \"{BUILDKIT_GC_MAX_USED_SPACE}\"\n"
+        f"  minFreeSpace = \"{BUILDKIT_GC_MIN_FREE_SPACE}\"\n"
+    )
 
 
 @dataclass(frozen=True)

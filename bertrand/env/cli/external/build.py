@@ -341,6 +341,7 @@ class _BuildLogFollower:
         self._job_name = ""
         self._task: asyncio.Task[None] | None = None
         self._printed: dict[str, str] = {}
+        self._maintenance_notice = ""
 
     async def update(self, record: BuildKitBuildRecord) -> None:
         """Follow the current active Job from a BuildKit request status update.
@@ -351,6 +352,11 @@ class _BuildLogFollower:
             Build request status snapshot.
         """
         await self._set_job(record.status.active_job)
+        if not record.status.active_job.strip() and record.status.phase not in (
+            "Succeeded",
+            "Failed",
+        ):
+            await self._maybe_print_maintenance()
 
     async def close(self) -> None:
         """Stop any active log-following task."""
@@ -407,3 +413,20 @@ class _BuildLogFollower:
         if not chunk:
             return
         print(chunk, file=sys.stderr, flush=True)
+
+    async def _maybe_print_maintenance(self) -> None:
+        try:
+            status = await IMAGES.maintenance_status(
+                self._kube,
+                timeout=_BUILD_LOG_READ_TIMEOUT_SECONDS,
+            )
+        except (OSError, TimeoutError, ValueError):
+            return
+        if not status.active:
+            self._maintenance_notice = ""
+            return
+        message = status.message or "image registry maintenance is running"
+        if message == self._maintenance_notice:
+            return
+        self._maintenance_notice = message
+        print(message, file=sys.stderr, flush=True)
