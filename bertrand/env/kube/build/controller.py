@@ -47,6 +47,13 @@ from bertrand.env.kube.build.request import (
 from bertrand.env.kube.ceph.snapshot import cleanup_orphaned_build_sources
 from bertrand.env.kube.control import MaintenanceClock
 from bertrand.env.kube.deployment import Deployment
+from bertrand.env.kube.dra import (
+    BERTRAND_DEVICE_GROUP,
+    BERTRAND_DEVICE_PLURAL,
+    DRA_GROUP,
+    RESOURCE_CLAIM_PLURAL,
+    RESOURCE_CLAIM_TEMPLATE_PLURAL,
+)
 from bertrand.env.kube.rbac import ClusterRole, ClusterRoleBinding
 from bertrand.env.kube.service_account import ServiceAccount
 
@@ -683,6 +690,16 @@ def _controller_rules() -> tuple[PolicyRuleSpec, ...]:
             api_groups=["snapshot.storage.k8s.io"],
             resources=["volumesnapshotclasses"],
             verbs=["get", "list", "watch", "create"],
+        ),
+        PolicyRuleSpec(
+            api_groups=[DRA_GROUP],
+            resources=[RESOURCE_CLAIM_PLURAL, RESOURCE_CLAIM_TEMPLATE_PLURAL],
+            verbs=["get", "list", "watch", "create", "delete"],
+        ),
+        PolicyRuleSpec(
+            api_groups=[BERTRAND_DEVICE_GROUP],
+            resources=[BERTRAND_DEVICE_PLURAL],
+            verbs=["get", "list", "watch"],
         ),
     )
 

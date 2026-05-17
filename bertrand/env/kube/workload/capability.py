@@ -11,6 +11,11 @@ from typing import TYPE_CHECKING, Protocol
 from bertrand.env.config.core import _check_kube_name
 from bertrand.env.kube.api.spec import VolumeMountSpec, VolumeSpec
 from bertrand.env.kube.capability.base import Capability
+from bertrand.env.kube.dra import (
+    DRAResourceClaimIntent,
+    resource_claim_intents,
+    select_device_claims,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -105,31 +110,6 @@ class ResolvedWorkloadSecret:
 
 
 @dataclass(frozen=True)
-class ResolvedWorkloadDevice:
-    """Resolved runtime device capability kept as workload intent.
-
-    Parameters
-    ----------
-    capability_id : str
-        Host-agnostic capability ID from project configuration.
-    container_name : str
-        Container that requested this device capability.
-    selector : str
-        CDI selector from the resolved cluster capability.
-    container_path : str | None
-        Optional requested container-facing device path.
-    permissions : str
-        Requested device permissions.
-    """
-
-    capability_id: str
-    container_name: str
-    selector: str
-    container_path: str | None
-    permissions: str
-
-
-@dataclass(frozen=True)
 class WorkloadCapabilities:
     """Resolved capability additions for a native workload pod.
 
@@ -141,15 +121,14 @@ class WorkloadCapabilities:
         Secret mounts keyed by container name.
     secrets : tuple[ResolvedWorkloadSecret, ...]
         Resolved Secret capability records.
-    devices : tuple[ResolvedWorkloadDevice, ...]
-        Resolved device capability records. These are not rendered into Kubernetes
-        Pod fields yet.
+    resource_claims : tuple[DRAResourceClaimIntent, ...]
+        DRA resource claim templates requested by workload containers.
     """
 
     volumes: tuple[VolumeSpec, ...]
     mounts_by_container: Mapping[str, tuple[VolumeMountSpec, ...]]
     secrets: tuple[ResolvedWorkloadSecret, ...]
-    devices: tuple[ResolvedWorkloadDevice, ...]
+    resource_claims: tuple[DRAResourceClaimIntent, ...]
 
 
 async def resolve_workload_capabilities(
@@ -195,7 +174,7 @@ async def resolve_workload_capabilities(
         _check_kube_name(container.name): [] for container in containers
     }
     resolved_secrets: list[ResolvedWorkloadSecret] = []
-    resolved_devices: list[ResolvedWorkloadDevice] = []
+    resource_claims: list[DRAResourceClaimIntent] = []
 
     for container in containers:
         container_name = _check_kube_name(container.name)
@@ -240,31 +219,32 @@ async def resolve_workload_capabilities(
                 )
             )
 
-        for request in container.devices:
-            capability_id = _check_kube_name(str(request.id))
-            capability = await Capability.resolve_device(
-                kube,
-                capability_id=capability_id,
-                env_id=env_id,
-                node=node,
-                required=request.required,
-                timeout=deadline - loop.time(),
+        device_requests = await select_device_claims(
+            kube,
+            requests={
+                _check_kube_name(str(request.id)): request.required
+                for request in container.devices
+            },
+            node_names=(node,) if node is not None else None,
+            timeout=deadline - loop.time(),
+        )
+        device_metadata = {
+            _check_kube_name(str(request.id)): (
+                str(request.container_path)
+                if request.container_path is not None
+                else None,
+                request.permissions,
             )
-            if capability is None:
-                continue
-            resolved_devices.append(
-                ResolvedWorkloadDevice(
-                    capability_id=capability_id,
-                    container_name=container_name,
-                    selector=capability.selector,
-                    container_path=(
-                        str(request.container_path)
-                        if request.container_path is not None
-                        else None
-                    ),
-                    permissions=request.permissions,
-                )
+            for request in container.devices
+        }
+        resource_claims.extend(
+            resource_claim_intents(
+                owner=f"workload-{env_id}",
+                requests=device_requests,
+                container_name=container_name,
+                metadata=device_metadata,
             )
+        )
 
     mounts = MappingProxyType(
         {
@@ -276,7 +256,7 @@ async def resolve_workload_capabilities(
         volumes=tuple(volumes[name] for name in sorted(volumes)),
         mounts_by_container=mounts,
         secrets=tuple(resolved_secrets),
-        devices=tuple(resolved_devices),
+        resource_claims=tuple(resource_claims),
     )
 
 

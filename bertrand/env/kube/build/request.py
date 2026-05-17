@@ -172,7 +172,7 @@ class BuildKitBuildSpec(BaseModel):
     ssh : dict[str, bool], optional
         SSH capability requests keyed by capability ID.
     devices : dict[str, bool], optional
-        CDI device capability requests keyed by capability ID.
+        DRA device capability requests keyed by capability ID.
     external_image : str | None, optional
         Optional external image reference to copy the assembled manifest to.
     auth_id : str | None, optional
@@ -311,7 +311,7 @@ class BuildKitBuildSpec(BaseModel):
         ssh : Mapping[str, bool]
             SSH capability requests exposed to the build.
         devices : Mapping[str, bool]
-            CDI device capability requests exposed to the build.
+            DRA device capability requests exposed to the build.
         external_image : str | None, optional
             Optional external manifest destination.
         auth_id : str | None, optional

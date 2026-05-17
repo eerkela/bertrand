@@ -9,7 +9,6 @@ import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from bertrand.env.config.bertrand import Bertrand
 from bertrand.env.config.core import Config, _check_kube_name
 from bertrand.env.git import BERTRAND_NAMESPACE, INFINITY, GitRepository
 from bertrand.env.kube.api.client import Kube
@@ -49,7 +48,7 @@ async def bertrand_build(
     quiet: bool,
     detach: bool = False,
 ) -> None:
-    """Build all configured Bertrand images through the Kubernetes BuildKit service.
+    """Build the configured Bertrand image through the Kubernetes BuildKit service.
 
     Parameters
     ----------
@@ -67,6 +66,8 @@ async def bertrand_build(
 
     Raises
     ------
+    RuntimeError
+        If detached submission or synchronous publication returns no result.
     ValueError
         If external publish or auth inputs are invalid.
 
@@ -86,51 +87,54 @@ async def bertrand_build(
         auth = _check_kube_name(auth)
 
     repo, worktree = await _resolve_build_target(target)
-    results: list[tuple[str, ProjectImagePublication]] = []
-    requests: list[tuple[str, str]] = []
+    result: ProjectImagePublication | None = None
+    request_name: str | None = None
     with await Kube.host(timeout=INFINITY) as kube:
         config = await Config.load(worktree, kube=kube, repo=repo, timeout=INFINITY)
         async with config:
             await _assert_build_runtime(kube, timeout=INFINITY)
             publish_repo = await _publish_repository(config.repo, publish)
             repo_id = config.repo.repo_id
-            tags = _image_tags(config)
-            for tag in tags:
-                build = project_image_build(config, tag, repo_id=repo_id)
-                external_image = (
-                    _external_image(publish_repo, build.identity.image)
-                    if publish_repo is not None
-                    else None
+            build = project_image_build(config, repo_id=repo_id)
+            external_image = (
+                _external_image(publish_repo, build.identity.image)
+                if publish_repo is not None
+                else None
+            )
+            if detach:
+                request = await build.submit(
+                    kube,
+                    timeout=INFINITY,
+                    external_image=external_image,
+                    auth_id=auth,
                 )
-                if detach:
-                    request = await build.submit(
+                request_name = request.name
+            else:
+                follower = None if quiet else _BuildLogFollower(kube)
+                try:
+                    on_update = None if follower is None else follower.update
+                    result = await build.publish(
                         kube,
                         timeout=INFINITY,
                         external_image=external_image,
                         auth_id=auth,
+                        on_update=on_update,
                     )
-                    requests.append((tag, request.name))
-                else:
-                    follower = None if quiet else _BuildLogFollower(kube)
-                    try:
-                        on_update = None if follower is None else follower.update
-                        result = await build.publish(
-                            kube,
-                            timeout=INFINITY,
-                            external_image=external_image,
-                            auth_id=auth,
-                            on_update=on_update,
-                        )
-                    finally:
-                        if follower is not None:
-                            await follower.close()
-                    results.append((tag, result))
+                finally:
+                    if follower is not None:
+                        await follower.close()
 
     if not quiet:
         if detach:
-            _print_requests(requests)
+            if request_name is None:
+                msg = "detached image build did not return a request name"
+                raise RuntimeError(msg)
+            _print_request(request_name)
         else:
-            _print_results(results)
+            if result is None:
+                msg = "image build completed without a publication result"
+                raise RuntimeError(msg)
+            _print_result(result)
 
 
 async def _resolve_build_target(target: Path) -> tuple[GitRepository, Path]:
@@ -149,17 +153,6 @@ async def _resolve_build_target(target: Path) -> tuple[GitRepository, Path]:
         )
         raise OSError(msg)
     return repo, head.path
-
-
-def _image_tags(config: Config) -> tuple[str, ...]:
-    bertrand = config.get(Bertrand)
-    if bertrand is None:
-        msg = f"missing 'bertrand' configuration for environment at {config.root}"
-        raise OSError(msg)
-    if not bertrand.image:
-        msg = f"environment at {config.root} does not define any images"
-        raise OSError(msg)
-    return tuple(sorted(bertrand.image))
 
 
 async def _publish_repository(repo: GitRepository, publish: str | None) -> str | None:
@@ -259,37 +252,17 @@ def _external_image(repo: str, image: str) -> str:
     return f"{repo}:{tag}"
 
 
-def _print_results(results: list[tuple[str, ProjectImagePublication]]) -> None:
-    for index, (tag, result) in enumerate(results):
-        if index:
-            print()
-        record = result.record
-        print(f"image: {_display_image_key(tag)}")
-        print(f"  internal: {record.image}")
-        print(f"  digest: {record.digest_ref}")
-        print(f"  platforms: {', '.join(record.platforms)}")
-        if record.channel_digest_refs:
-            print("  channels:")
-            for name, ref in record.channel_digest_refs.items():
-                print(f"    {name}: {ref}")
-        if result.external_digest_ref is not None:
-            print(f"  external: {result.external_digest_ref}")
-        if result.external_channel_digest_refs:
-            print("  external channels:")
-            for name, ref in result.external_channel_digest_refs.items():
-                print(f"    {name}: {ref}")
+def _print_result(result: ProjectImagePublication) -> None:
+    record = result.record
+    print(f"image: {record.image}")
+    print(f"  digest: {record.digest_ref}")
+    print(f"  platforms: {', '.join(record.platforms)}")
+    if result.external_digest_ref is not None:
+        print(f"  external: {result.external_digest_ref}")
 
 
-def _print_requests(requests: list[tuple[str, str]]) -> None:
-    for index, (tag, name) in enumerate(requests):
-        if index:
-            print()
-        print(f"image: {_display_image_key(tag)}")
-        print(f"  build: {name}")
-
-
-def _display_image_key(tag: str) -> str:
-    return '""' if tag == "" else tag
+def _print_request(name: str) -> None:
+    print(f"build: {name}")
 
 
 async def _assert_build_runtime(kube: Kube, *, timeout: float) -> None:

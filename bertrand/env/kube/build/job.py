@@ -15,6 +15,7 @@ from bertrand.env.git import (
     BERTRAND_NAMESPACE,
 )
 from bertrand.env.kube.api.spec import (
+    ContainerResourcesSpec,
     ContainerSpec,
     PodTemplateSpec,
     VolumeMountSpec,
@@ -23,7 +24,9 @@ from bertrand.env.kube.api.spec import (
 from bertrand.env.kube.build.daemon import (
     BUILDKIT_IMAGE,
     BUILDKIT_POOL,
-    _BuildKitBuilder,
+    BUILDKIT_SOCKET_ADDR,
+    BUILDKIT_SOCKET_DIR,
+    BUILDKIT_SOCKET_VOLUME,
 )
 from bertrand.env.kube.build.execution import run_observed_job
 from bertrand.env.kube.build.refs import (
@@ -35,6 +38,13 @@ from bertrand.env.kube.build.repository import IMAGES
 from bertrand.env.kube.capability.base import Capability, CapabilityKind
 from bertrand.env.kube.ceph.snapshot import prepared_repository_build_source
 from bertrand.env.kube.configmap import ConfigMap
+from bertrand.env.kube.dra import (
+    DRADeviceRequest,
+    allocated_selector_script,
+    create_resource_claim_templates,
+    resource_claim_intents,
+    select_device_claims,
+)
 from bertrand.env.kube.job import Job
 
 if TYPE_CHECKING:
@@ -66,8 +76,6 @@ BUILD_CONTEXT_PREFIX = "bertrand-project-image"
 CAPABILITY_VALUE_KEY = "value"
 BUILD_PLATFORM_RUN_ID_BYTES = 12
 
-type _BuildKitTarget = tuple[_BuildKitBuilder, tuple[str, ...]]
-
 
 @dataclass(frozen=True)
 class _PreparedBuildContext:
@@ -75,6 +83,13 @@ class _PreparedBuildContext:
     dockerfile_path: str
     volumes: tuple[VolumeSpec, ...]
     mounts: tuple[VolumeMountSpec, ...]
+
+
+@dataclass(frozen=True)
+class _BuildKitTarget:
+    platform: str
+    node_selector: Mapping[str, str]
+    device_requests: tuple[DRADeviceRequest, ...]
 
 
 @dataclass(frozen=True)
@@ -119,22 +134,18 @@ class _ProjectBuildExecutor:
 
     def buildctl_args(
         self,
-        buildkit_addr: str,
         *,
         image: str | None = None,
         context_path: str = BUILD_JOB_CONTEXT_MOUNT,
         dockerfile_path: str = BUILD_JOB_CONTEXT_MOUNT,
         secret_paths: Mapping[str, str] | None = None,
         ssh_paths: Mapping[str, str] | None = None,
-        device_selectors: tuple[str, ...] = (),
         metadata_file: str | None = None,
     ) -> list[str]:
         """Render the `buildctl` command arguments for this build.
 
         Parameters
         ----------
-        buildkit_addr : str
-            BuildKit daemon address used by the client Job.
         image : str | None, optional
             Output image reference. If omitted, :attr:`image` is used.
         context_path : str, optional
@@ -145,8 +156,6 @@ class _ProjectBuildExecutor:
             BuildKit secret IDs mapped to mounted payload paths.
         ssh_paths : Mapping[str, str] | None, optional
             BuildKit SSH IDs mapped to mounted credential paths.
-        device_selectors : tuple[str, ...], optional
-            CDI selectors allowed for `RUN --device` instructions.
         metadata_file : str | None, optional
             Mounted path where BuildKit should write metadata JSON.
 
@@ -173,7 +182,7 @@ class _ProjectBuildExecutor:
             raise ValueError(msg)
         args = [
             "--addr",
-            buildkit_addr,
+            BUILDKIT_SOCKET_ADDR,
             "build",
             "--progress",
             BUILD_PROGRESS,
@@ -198,8 +207,6 @@ class _ProjectBuildExecutor:
             args.extend(["--secret", f"id={capability_id},src={path}"])
         for capability_id, path in sorted((ssh_paths or {}).items()):
             args.extend(["--ssh", f"{capability_id}={path}"])
-        for selector in sorted(set(device_selectors)):
-            args.extend(["--allow", f"device={selector}"])
         if spec.network == "host":
             args.extend(["--allow", "network.host"])
         if metadata_file is not None:
@@ -270,16 +277,12 @@ class _ProjectBuildExecutor:
             )
             targets = await self._schedule(
                 kube,
-                env_id=env_id,
                 timeout=deadline - loop.time(),
             )
             run_id = uuid.uuid4().hex[:BUILD_PLATFORM_RUN_ID_BYTES]
             results: dict[str, str] = {}
-            for builder, device_selectors in sorted(
-                targets,
-                key=lambda item: item[0].platform,
-            ):
-                platform = builder.platform
+            for target in sorted(targets, key=lambda item: item.platform):
+                platform = target.platform
                 image = platform_output_ref(spec.image, platform, run_id)
                 image = image.strip()
                 if not image:
@@ -290,8 +293,7 @@ class _ProjectBuildExecutor:
                     raise ValueError(msg)
                 digest = await self._publish_target(
                     kube,
-                    builder=builder,
-                    device_selectors=device_selectors,
+                    target=target,
                     image=image,
                     source=source,
                     capability_volumes=tuple(capability_volumes),
@@ -315,8 +317,7 @@ class _ProjectBuildExecutor:
         self,
         kube: Kube,
         *,
-        builder: _BuildKitBuilder,
-        device_selectors: tuple[str, ...],
+        target: _BuildKitTarget,
         image: str,
         source: _PreparedBuildContext,
         capability_volumes: tuple[VolumeSpec, ...],
@@ -331,66 +332,106 @@ class _ProjectBuildExecutor:
             raise TimeoutError(msg)
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
-        job = await Job.create(
+        job_name = self._job_name()
+        dra_claims = resource_claim_intents(
+            owner=job_name,
+            requests=target.device_requests,
+            container_name="buildctl",
+        )
+        created_claim_templates = await create_resource_claim_templates(
             kube,
             namespace=BERTRAND_NAMESPACE,
-            name=self._job_name(),
+            intents=dra_claims,
             labels=self.labels,
-            pod_template=PodTemplateSpec(
-                containers=[
-                    ContainerSpec(
-                        name="buildctl",
-                        image=BUILDKIT_IMAGE,
-                        image_pull_policy="IfNotPresent",
-                        command=["/bin/sh", "-ec"],
-                        args=[
-                            _build_job_script(),
-                            "buildctl",
-                            *self.buildctl_args(
-                                builder.addr,
-                                image=image,
-                                context_path=source.path,
-                                dockerfile_path=source.dockerfile_path,
-                                secret_paths=secret_paths,
-                                ssh_paths=ssh_paths,
-                                device_selectors=device_selectors,
-                                metadata_file=BUILD_JOB_METADATA_FILE,
+            timeout=deadline - loop.time(),
+        )
+        try:
+            job = await Job.create(
+                kube,
+                namespace=BERTRAND_NAMESPACE,
+                name=job_name,
+                labels=self.labels,
+                pod_template=PodTemplateSpec(
+                    containers=[
+                        ContainerSpec(
+                            name="buildctl",
+                            image=BUILDKIT_IMAGE,
+                            image_pull_policy="IfNotPresent",
+                            command=["/bin/sh", "-ec"],
+                            args=[
+                                _build_job_script(required_dra_claims=len(dra_claims)),
+                                "buildctl",
+                                *self.buildctl_args(
+                                    image=image,
+                                    context_path=source.path,
+                                    dockerfile_path=source.dockerfile_path,
+                                    secret_paths=secret_paths,
+                                    ssh_paths=ssh_paths,
+                                    metadata_file=BUILD_JOB_METADATA_FILE,
+                                ),
+                            ],
+                            volume_mounts=[
+                                *source.mounts,
+                                VolumeMountSpec(
+                                    name=BUILD_JOB_METADATA_VOLUME,
+                                    mount_path=BUILD_JOB_METADATA_MOUNT,
+                                ),
+                                *capability_mounts,
+                                VolumeMountSpec(
+                                    name=BUILDKIT_SOCKET_VOLUME,
+                                    mount_path=BUILDKIT_SOCKET_DIR,
+                                ),
+                            ],
+                            resources=(
+                                ContainerResourcesSpec(
+                                    claims=tuple(
+                                        claim.claim_name for claim in dra_claims
+                                    )
+                                )
+                                if dra_claims
+                                else None
                             ),
-                        ],
-                        volume_mounts=[
-                            *source.mounts,
-                            VolumeMountSpec(
-                                name=BUILD_JOB_METADATA_VOLUME,
-                                mount_path=BUILD_JOB_METADATA_MOUNT,
-                            ),
-                            *capability_mounts,
-                        ],
+                        )
+                    ],
+                    volumes=[
+                        *source.volumes,
+                        VolumeSpec.empty_dir(BUILD_JOB_METADATA_VOLUME),
+                        *capability_volumes,
+                        VolumeSpec.host_path(
+                            BUILDKIT_SOCKET_VOLUME,
+                            path=BUILDKIT_SOCKET_DIR,
+                            host_path_type="Directory",
+                        ),
+                    ],
+                    resource_claims=tuple(claim.pod_claim() for claim in dra_claims),
+                    node_selector=target.node_selector,
+                ),
+                ttl_seconds_after_finished=BUILD_JOB_TTL_SECONDS,
+                timeout=deadline - loop.time(),
+            )
+            logs = await run_observed_job(
+                kube,
+                job,
+                timeout=deadline - loop.time(),
+                failure_context=f"BuildKit image build for {image!r} failed",
+                log_heading="Build pod logs",
+                log_failure_label="BuildKit build pod logs",
+                tail_lines=BUILD_JOB_LOG_TAIL_LINES,
+                diagnostic_timeout=BUILD_JOB_DIAGNOSTIC_TIMEOUT_SECONDS,
+                cleanup_timeout=BUILD_JOB_CLEANUP_TIMEOUT_SECONDS,
+                include_log_headers=True,
+                observer=job_observer,
+            )
+            return _parse_build_digest(logs)
+        finally:
+            for template in created_claim_templates:
+                try:
+                    await template.delete(
+                        kube,
+                        timeout=BUILD_JOB_CLEANUP_TIMEOUT_SECONDS,
                     )
-                ],
-                volumes=[
-                    *source.volumes,
-                    VolumeSpec.empty_dir(BUILD_JOB_METADATA_VOLUME),
-                    *capability_volumes,
-                ],
-                node_name=builder.node,
-            ),
-            ttl_seconds_after_finished=BUILD_JOB_TTL_SECONDS,
-            timeout=deadline - loop.time(),
-        )
-        logs = await run_observed_job(
-            kube,
-            job,
-            timeout=deadline - loop.time(),
-            failure_context=f"BuildKit image build for {image!r} failed",
-            log_heading="Build pod logs",
-            log_failure_label="BuildKit build pod logs",
-            tail_lines=BUILD_JOB_LOG_TAIL_LINES,
-            diagnostic_timeout=BUILD_JOB_DIAGNOSTIC_TIMEOUT_SECONDS,
-            cleanup_timeout=BUILD_JOB_CLEANUP_TIMEOUT_SECONDS,
-            include_log_headers=True,
-            observer=job_observer,
-        )
-        return _parse_build_digest(logs)
+                except (OSError, TimeoutError):
+                    continue
 
     @asynccontextmanager
     async def _prepared_source(
@@ -518,7 +559,6 @@ class _ProjectBuildExecutor:
         self,
         kube: Kube,
         *,
-        env_id: str,
         timeout: float,
     ) -> tuple[_BuildKitTarget, ...]:
         """Schedule this build onto native BuildKit builders.
@@ -527,22 +567,18 @@ class _ProjectBuildExecutor:
         ----------
         kube : Kube
             Active Kubernetes API context.
-        env_id : str
-            Environment UUID used to resolve device capabilities.
         timeout : float
             Maximum request budget in seconds. If infinite, wait indefinitely.
 
         Returns
         -------
         tuple[_BuildKitTarget, ...]
-            Build-aware platform assignments with resolved device selectors.
+            Platform assignments whose device requests are expressed through DRA.
 
         Raises
         ------
         TimeoutError
             If ``timeout`` is non-positive.
-        OSError
-            If no scheduled builder can satisfy required device capabilities.
         """
         if timeout <= 0:
             msg = "BuildKit build scheduling timeout must be non-negative"
@@ -553,70 +589,28 @@ class _ProjectBuildExecutor:
             kube,
             timeout=deadline - loop.time(),
         )
-        groups = await BUILDKIT_POOL._builder_candidates(
+        groups = await BUILDKIT_POOL._ready_platform_nodes(
             kube,
             timeout=deadline - loop.time(),
             config_hash=config_hash,
         )
 
         targets: list[_BuildKitTarget] = []
-        for platform, candidates in groups.items():
-            if not self.spec.devices:
-                targets.append((candidates[0], ()))
-                continue
-            errors: list[str] = []
-            selected: _BuildKitTarget | None = None
-            for candidate in candidates:
-                try:
-                    selectors = await self._device_selectors(
-                        kube,
-                        env_id=env_id,
-                        node=candidate.node,
-                        timeout=deadline - loop.time(),
-                    )
-                except OSError as err:
-                    errors.append(f"{candidate.node}: {err}")
-                    continue
-                selected = (candidate, selectors)
-                break
-            if selected is None:
-                detail = "; ".join(errors) if errors else "no candidate builders"
-                msg = (
-                    f"no ready BuildKit builder for platform {platform!r} "
-                    f"can satisfy requested device capabilities: {detail}"
-                )
-                raise OSError(msg)
-            targets.append(selected)
-        return tuple(targets)
-
-    async def _device_selectors(
-        self,
-        kube: Kube,
-        *,
-        env_id: str,
-        node: str | None,
-        timeout: float,
-    ) -> tuple[str, ...]:
-        if not self.spec.devices:
-            return ()
-        if timeout <= 0:
-            msg = "BuildKit device capability resolution timeout must be non-negative"
-            raise TimeoutError(msg)
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + timeout
-        selectors: list[str] = []
-        for capability_id, required in sorted(self.spec.devices.items()):
-            capability = await Capability.resolve_device(
+        for platform, node_names in groups.items():
+            device_requests = await select_device_claims(
                 kube,
-                capability_id=capability_id,
-                env_id=env_id,
-                node=node,
-                required=required,
+                requests=self.spec.devices,
+                node_names=node_names,
                 timeout=deadline - loop.time(),
             )
-            if capability is not None:
-                selectors.append(capability.selector)
-        return tuple(selectors)
+            targets.append(
+                _BuildKitTarget(
+                    platform=platform,
+                    node_selector=_platform_node_selector(platform),
+                    device_requests=device_requests,
+                )
+            )
+        return tuple(targets)
 
 
 def _capability_volume_name(kind: CapabilityKind, capability_id: str) -> str:
@@ -625,10 +619,11 @@ def _capability_volume_name(kind: CapabilityKind, capability_id: str) -> str:
     return f"build-{kind}-{digest}"
 
 
-def _build_job_script() -> str:
+def _build_job_script(*, required_dra_claims: int) -> str:
     return "\n".join(
         (
             "set -eu",
+            allocated_selector_script(required_count=required_dra_claims),
             '"$0" "$@"',
             (
                 "digest=$(sed -n "
@@ -645,6 +640,17 @@ def _build_job_script() -> str:
             f"printf '%s%s\\n' {BUILD_JOB_DIGEST_SENTINEL!r} \"$digest\"",
         )
     )
+
+
+def _platform_node_selector(platform: str) -> dict[str, str]:
+    parts = platform.split("/")
+    if len(parts) < 2 or not parts[0].strip() or not parts[1].strip():
+        msg = f"BuildKit platform is not a supported OCI platform: {platform!r}"
+        raise ValueError(msg)
+    return {
+        "kubernetes.io/os": parts[0].strip(),
+        "kubernetes.io/arch": parts[1].strip(),
+    }
 
 
 def _parse_build_digest(logs: str) -> str:

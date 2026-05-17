@@ -14,10 +14,6 @@ from typing import TYPE_CHECKING, Literal, Self, cast
 
 from bertrand.env.config.core import _check_kube_name, _check_uuid
 from bertrand.env.git import BERTRAND_NAMESPACE
-from bertrand.env.kube.capability.device import (
-    DeviceCapability,
-    _parse_device_selector,
-)
 from bertrand.env.kube.secret import Secret
 
 if TYPE_CHECKING:
@@ -27,7 +23,7 @@ if TYPE_CHECKING:
     from bertrand.env.config.core import KubeName
     from bertrand.env.kube.api.client import Kube
 
-type CapabilityKind = Literal["secret", "ssh", "device"]
+type CapabilityKind = Literal["secret", "ssh"]
 type CapabilityScope = Literal["env", "node", "shared"]
 
 CAPABILITY_MANAGED_V1 = "bertrand.dev/capability-managed.v1"
@@ -35,7 +31,7 @@ CAPABILITY_KIND_V1 = "bertrand.dev/capability-kind.v1"
 CAPABILITY_SCOPE_V1 = "bertrand.dev/capability-scope.v1"
 CAPABILITY_SCOPE_VALUE_V1 = "bertrand.dev/capability-scope-value.v1"
 CAPABILITY_ID_V1 = "bertrand.dev/capability-id.v1"
-_CAPABILITY_KINDS = frozenset({"secret", "ssh", "device"})
+_CAPABILITY_KINDS = frozenset({"secret", "ssh"})
 _CAPABILITY_SCOPES = frozenset({"env", "node", "shared"})
 
 
@@ -46,8 +42,8 @@ class CapabilityRef:
     Parameters
     ----------
     kind : CapabilityKind
-        Capability category. Ordinary build secrets, SSH credentials, and device
-        selectors intentionally occupy separate identities.
+        Capability category. Ordinary build secrets and SSH credentials
+        intentionally occupy separate identities.
     capability_id : KubeName
         Host-agnostic capability ID from project configuration.
     scope : CapabilityScope
@@ -481,75 +477,10 @@ class Capability:
                 return capability
 
         if required:
-            if kind == "ssh":
-                label = "ssh credential"
-            elif kind == "device":
-                label = "device selector"
-            else:
-                label = "secret"
+            label = "ssh credential" if kind == "ssh" else "secret"
             msg = f"missing required {label}: {capability_id!r}"
             raise OSError(msg)
         return None
-
-    @classmethod
-    async def resolve_device(
-        cls,
-        kube: Kube,
-        *,
-        capability_id: KubeName,
-        env_id: str | None = None,
-        node: KubeName | None = None,
-        required: bool = True,
-        timeout: float,
-    ) -> DeviceCapability | None:
-        """Resolve a CDI device capability.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        capability_id : KubeName
-            Host-agnostic device capability ID.
-        env_id : str | None, optional
-            Optional environment UUID for the first lookup tier.
-        node : KubeName | None, optional
-            Optional Kubernetes node name for the second lookup tier.
-        required : bool, default=True
-            If true, raise when no device capability is found. If false, return
-            `None`.
-        timeout : float
-            Maximum request budget in seconds. If infinite, wait indefinitely.
-
-        Returns
-        -------
-        DeviceCapability | None
-            Resolved CDI selector, or `None` for missing optional capabilities.
-
-        Raises
-        ------
-        OSError
-            If a required device capability is missing or malformed.
-        """
-        capability = await cls.resolve(
-            kube,
-            kind="device",
-            capability_id=capability_id,
-            env_id=env_id,
-            node=node,
-            required=required,
-            timeout=timeout,
-        )
-        if capability is None:
-            return None
-
-        try:
-            return DeviceCapability(
-                capability_id=capability.ref.capability_id,
-                selector=capability.device_selector,
-            )
-        except ValueError as err:
-            msg = str(err)
-            raise OSError(msg) from err
 
     @property
     def payload(self) -> bytes:
@@ -583,35 +514,6 @@ class Capability:
                 f"cluster capability {self.ref.capability_id!r} payload must decode "
                 "as UTF-8 text"
             )
-            raise OSError(msg) from err
-
-    @property
-    def device_selector(self) -> str:
-        """Return this device capability's CDI selector.
-
-        Returns
-        -------
-        str
-            Validated CDI selector stored in `data.value`.
-
-        Raises
-        ------
-        OSError
-            If this is not a device capability or its payload is malformed.
-        """
-        if self.ref.kind != "device":
-            msg = (
-                f"capability {self.ref.capability_id!r} is kind {self.ref.kind!r}, "
-                "not 'device'"
-            )
-            raise OSError(msg)
-        try:
-            return _parse_device_selector(
-                self.payload,
-                capability_id=self.ref.capability_id,
-            )
-        except ValueError as err:
-            msg = str(err)
             raise OSError(msg) from err
 
     async def refresh(self, kube: Kube, *, timeout: float) -> Self | None:

@@ -70,6 +70,7 @@ from bertrand.env.kube.ceph.mount import (
 from bertrand.env.kube.ceph.storage import ensure_ceph_storage_controller
 from bertrand.env.kube.ceph.volume import DEFAULT_VOLUME_SIZE, RepoVolume
 from bertrand.env.kube.control import control_plane_image
+from bertrand.env.kube.dra import ensure_dra_backend
 from bertrand.env.kube.namespace import Namespace
 
 if TYPE_CHECKING:
@@ -920,6 +921,11 @@ async def _converge_build_runtime(kube: Kube, *, timeout: float) -> None:
             kube,
             timeout=deadline - loop.time(),
         ),
+    )
+    await ensure_dra_backend(
+        kube,
+        image=control_plane_image(),
+        timeout=deadline - loop.time(),
     )
     await ensure_buildkit_build_controller(
         kube,

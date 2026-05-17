@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from .spec import (
         ContainerSpec,
+        PodResourceClaimSpec,
         PodTemplateSpec,
         ProbeSpec,
         SecurityContextSpec,
@@ -198,6 +199,43 @@ def _container_manifest(container: ContainerSpec) -> dict[str, object]:
         security_context = _security_context_manifest(container.security_context)
         if security_context:
             payload["securityContext"] = security_context
+    if container.resources is not None:
+        claims = [
+            {"name": name}
+            for claim in container.resources.claims
+            if (name := claim.strip())
+        ]
+        if claims:
+            payload["resources"] = {"claims": claims}
+    return payload
+
+
+def _pod_resource_claim_manifest(claim: PodResourceClaimSpec) -> dict[str, object]:
+    name = claim.name.strip()
+    if not name:
+        msg = "pod resource claim name cannot be empty"
+        raise ValueError(msg)
+    resource_claim_name = (
+        claim.resource_claim_name.strip()
+        if claim.resource_claim_name is not None
+        else ""
+    )
+    template_name = (
+        claim.resource_claim_template_name.strip()
+        if claim.resource_claim_template_name is not None
+        else ""
+    )
+    if bool(resource_claim_name) == bool(template_name):
+        msg = (
+            "pod resource claim must reference exactly one existing claim or "
+            "claim template"
+        )
+        raise ValueError(msg)
+    payload: dict[str, object] = {"name": name}
+    if resource_claim_name:
+        payload["resourceClaimName"] = resource_claim_name
+    else:
+        payload["resourceClaimTemplateName"] = template_name
     return payload
 
 
@@ -258,6 +296,10 @@ def _pod_template_manifest(template: PodTemplateSpec) -> dict[str, object]:
         ],
         "volumes": [_volume_manifest(volume) for volume in template.volumes],
     }
+    if template.resource_claims:
+        spec["resourceClaims"] = [
+            _pod_resource_claim_manifest(claim) for claim in template.resource_claims
+        ]
     if template.restart_policy is not None:
         spec["restartPolicy"] = template.restart_policy
     if template.service_account_name is not None:

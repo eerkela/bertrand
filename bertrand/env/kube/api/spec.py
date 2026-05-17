@@ -362,6 +362,38 @@ class SecurityContextSpec:
 
 
 @dataclass(frozen=True)
+class ContainerResourcesSpec:
+    """Intent-level Kubernetes container resource requirements.
+
+    Parameters
+    ----------
+    claims : Collection[str], optional
+        Pod-level resource claim names referenced by this container.
+    """
+
+    claims: Collection[str] = ()
+
+
+@dataclass(frozen=True)
+class PodResourceClaimSpec:
+    """Intent-level Kubernetes pod resource claim reference.
+
+    Parameters
+    ----------
+    name : str
+        Pod-local resource claim name.
+    resource_claim_name : str | None, optional
+        Existing `ResourceClaim` name.
+    resource_claim_template_name : str | None, optional
+        `ResourceClaimTemplate` used to instantiate a claim for the pod.
+    """
+
+    name: str
+    resource_claim_name: str | None = None
+    resource_claim_template_name: str | None = None
+
+
+@dataclass(frozen=True)
 class TolerationSpec:
     """Intent-level Kubernetes pod toleration.
 
@@ -471,6 +503,8 @@ class ContainerSpec:
         Pod volume mounts for the container.
     security_context : SecurityContextSpec | None, optional
         Container security context intent.
+    resources : ContainerResourcesSpec | None, optional
+        Container resource requirements.
     """
 
     name: str
@@ -484,6 +518,7 @@ class ContainerSpec:
     liveness_probe: ProbeSpec | None = None
     volume_mounts: Collection[VolumeMountSpec] = ()
     security_context: SecurityContextSpec | None = None
+    resources: ContainerResourcesSpec | None = None
 
 
 @dataclass(frozen=True)
@@ -496,6 +531,8 @@ class PodTemplateSpec:
         Containers to render into the Pod template.
     volumes : Collection[VolumeSpec], optional
         Volumes to render into the Pod template.
+    resource_claims : Collection[PodResourceClaimSpec], optional
+        Pod-level DRA resource claims.
     labels : Mapping[str, str], optional
         Labels to apply to the Pod template metadata.
     annotations : Mapping[str, str] | None, optional
@@ -528,6 +565,7 @@ class PodTemplateSpec:
 
     containers: Collection[ContainerSpec]
     volumes: Collection[VolumeSpec] = ()
+    resource_claims: Collection[PodResourceClaimSpec] = ()
     labels: Mapping[str, str] = MappingProxyType({})
     annotations: Mapping[str, str] | None = None
     restart_policy: str | None = None

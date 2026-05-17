@@ -2,16 +2,17 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol, cast
 
 from bertrand.env.git.bertrand_git import ENV_ID_ENV
-from bertrand.env.kube.api.spec import ContainerPortSpec, ContainerSpec, PodTemplateSpec
-from bertrand.env.kube.workload.base import WorkloadPod, WorkloadRepository
-from bertrand.env.kube.workload.capability import (
-    ResolvedWorkloadDevice,
-    resolve_workload_capabilities,
+from bertrand.env.kube.api.spec import (
+    ContainerPortSpec,
+    ContainerResourcesSpec,
+    ContainerSpec,
+    PodTemplateSpec,
 )
+from bertrand.env.kube.workload.base import WorkloadPod, WorkloadRepository
+from bertrand.env.kube.workload.capability import resolve_workload_capabilities
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -44,23 +45,6 @@ class _WorkloadConfig(Protocol):
     containers: Sequence[_WorkloadContainer]
 
 
-@dataclass(frozen=True)
-class ConfiguredWorkloadPod:
-    """Rendered pod intent and unresolved native device handoff.
-
-    Parameters
-    ----------
-    pod : WorkloadPod
-        Workload pod intent rendered from validated config.
-    devices : tuple[ResolvedWorkloadDevice, ...]
-        Runtime device capabilities resolved from config. These are intentionally
-        kept out of the Kubernetes pod template until device projection is designed.
-    """
-
-    pod: WorkloadPod
-    devices: tuple[ResolvedWorkloadDevice, ...]
-
-
 async def workload_pod_from_config(
     kube: Kube,
     *,
@@ -71,7 +55,7 @@ async def workload_pod_from_config(
     image: str,
     node: str | None = None,
     timeout: float,
-) -> ConfiguredWorkloadPod | None:
+) -> WorkloadPod | None:
     """Render validated Bertrand workload config into a native pod intent.
 
     Parameters
@@ -96,9 +80,8 @@ async def workload_pod_from_config(
 
     Returns
     -------
-    ConfiguredWorkloadPod | None
-        Pod intent plus resolved device capability intent, or `None` when no
-        workload is configured.
+    WorkloadPod | None
+        Pod intent, or `None` when no workload is configured.
 
     Raises
     ------
@@ -123,28 +106,40 @@ async def workload_pod_from_config(
         node=node,
         timeout=timeout,
     )
-    rendered_containers = tuple(
-        ContainerSpec(
-            name=container.name,
-            image=image,
-            command=_workload_command(container.cmd, container=container.name),
-            args=_workload_args(container.args, container=container.name),
-            ports=_container_ports(container.ports, container=container.name),
-            volume_mounts=capabilities.mounts_by_container.get(container.name, ()),
+    rendered: list[ContainerSpec] = []
+    for container in containers:
+        claims = tuple(
+            claim.claim_name
+            for claim in capabilities.resource_claims
+            if claim.container_name == container.name
         )
-        for container in containers
-    )
-    return ConfiguredWorkloadPod(
-        pod=WorkloadPod(
-            template=PodTemplateSpec(
-                containers=rendered_containers,
-                volumes=capabilities.volumes,
+        rendered.append(
+            ContainerSpec(
+                name=container.name,
+                image=image,
+                command=_workload_command(container.cmd, container=container.name),
+                args=_workload_args(container.args, container=container.name),
+                ports=_container_ports(container.ports, container=container.name),
+                volume_mounts=capabilities.mounts_by_container.get(
+                    container.name,
+                    (),
+                ),
+                resources=ContainerResourcesSpec(claims=claims) if claims else None,
+            )
+        )
+    rendered_containers = tuple(rendered)
+    return WorkloadPod(
+        template=PodTemplateSpec(
+            containers=rendered_containers,
+            volumes=capabilities.volumes,
+            resource_claims=tuple(
+                claim.pod_claim() for claim in capabilities.resource_claims
             ),
-            primary_container=workload.primary,
-            repository=WorkloadRepository(repo_id=repo_id, worktree=worktree),
-            runtime_env={ENV_ID_ENV: env_id},
         ),
-        devices=capabilities.devices,
+        primary_container=workload.primary,
+        repository=WorkloadRepository(repo_id=repo_id, worktree=worktree),
+        resource_claim_templates=capabilities.resource_claims,
+        runtime_env={ENV_ID_ENV: env_id},
     )
 
 

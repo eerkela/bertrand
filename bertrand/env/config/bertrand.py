@@ -913,10 +913,9 @@ class Bertrand(Resource):
                     Field(
                         examples=["gpu", "cuda0"],
                         description=(
-                            "Host-agnostic capability ID for a build-time CDI device "
-                            "capability. The ID is resolved using a Kubernetes "
-                            "Secret-backed Bertrand capability, whose payload supplies "
-                            "the CDI selector."
+                            "Host-agnostic capability ID for a build-time DRA device "
+                            "capability. Kubernetes allocates the concrete device and "
+                            "Bertrand passes the allocated CDI selector to BuildKit."
                         ),
                     ),
                 ]
@@ -1122,7 +1121,7 @@ class Bertrand(Resource):
                         ),
                     ],
                     description=(
-                        "Build-time CDI device capabilities resolved from the local "
+                        "Build-time DRA device capabilities resolved from the local "
                         "Kubernetes cluster."
                     ),
                 ),
@@ -1202,7 +1201,7 @@ class Bertrand(Resource):
                 return aliases
 
             class ULimit(BaseModel):
-                """Validate entries in `[tool.bertrand.workload.<tag>.ulimit]`."""
+                """Validate entries in `[tool.bertrand.workload.ulimit]`."""
 
                 model_config = ConfigDict(extra="forbid")
                 name: ULimitName
@@ -1289,11 +1288,8 @@ class Bertrand(Resource):
             # TODO: SSH capability design (config-layer contract):
             # - `ssh` is a list of capability IDs only (SCREAMING_SNAKE_CASE),
             #   never key data.
-            # - IDs resolve via host-local channels at execution time:
-            #     1) BERTRAND_SSH_<ID> env override
-            #     2) host profile (e.g. .bertrand/host/ssh.toml)
-            # - Preferred source is SSH agent forwarding; key-file source is
-            #   fallback only.
+            # - IDs resolve through managed Kubernetes Secret capabilities at
+            #   execution time.
             # - Intended mapping target is `podman build --ssh` (build-time),
             #   not runtime mounts.
             # - Security invariants:
@@ -1301,7 +1297,7 @@ class Bertrand(Resource):
             #     * no host key paths committed to VCS
             #     * no secret material written to image layers or persisted state
             # - Runtime wiring/argv synthesis is deferred to container.py refactor.
-            # - Final usage is always in the tag's Containerfile, by appending
+            # - Final usage is always in the generated Containerfile, by appending
             #   `RUN --mount=type=ssh,id=id ...`
 
             class Device(BaseModel):
@@ -1359,7 +1355,7 @@ class Bertrand(Resource):
                 ]
 
             class Conan(BaseModel):
-                """Validate the `[tool.bertrand.workload.<tag>.conan]` table."""
+                """Validate the `[tool.bertrand.workload.conan]` table."""
 
                 model_config = ConfigDict(extra="forbid")
                 build_type: Annotated[
@@ -1375,7 +1371,7 @@ class Bertrand(Resource):
                 ]
 
             class Build(BaseModel):
-                """Validate the `[tool.bertrand.workload.<tag>.build]` table."""
+                """Validate the `[tool.bertrand.workload.build]` table."""
 
                 model_config = ConfigDict(extra="forbid")
                 context: Annotated[BuildContextPath, Field(default=PosixPath("."))]
@@ -1390,7 +1386,7 @@ class Bertrand(Resource):
                 ]
 
             class Stop(BaseModel):
-                """Validate the `[tool.bertrand.workload.<tag>.stop]` table."""
+                """Validate the `[tool.bertrand.workload.stop]` table."""
 
                 model_config = ConfigDict(extra="forbid")
                 signal: Annotated[
@@ -1405,7 +1401,7 @@ class Bertrand(Resource):
                 timeout: Annotated[NonNegativeInt, Field(default=10)]
 
             class Restart(BaseModel):
-                """Validate the `[tool.bertrand.workload.<tag>.restart]` table."""
+                """Validate the `[tool.bertrand.workload.restart]` table."""
 
                 model_config = ConfigDict(extra="forbid")
                 policy: Annotated[
@@ -1417,7 +1413,7 @@ class Bertrand(Resource):
                 ]
 
             class Healthcheck(BaseModel):
-                """Validate the `[tool.bertrand.workload.<tag>.healthcheck]` table."""
+                """Validate the `[tool.bertrand.workload.healthcheck]` table."""
 
                 class Startup(BaseModel):
                     """Validate the image startup healthcheck table."""
@@ -1488,7 +1484,7 @@ class Bertrand(Resource):
                     examples=[
                         "\n".join(
                             (
-                                '[tool.bertrand.workload."".build-args]',
+                                "[tool.bertrand.workload.build-args]",
                                 "CPUS = 8",
                                 "DEBUG = true",
                                 "PYTHON_VERSION = \"3.12.4\"",
@@ -1601,11 +1597,8 @@ class Bertrand(Resource):
             #   SCREAMING_SNAKE_CASE IDs, never raw host paths.
             # - Each request may override container-facing mapping details only:
             #   `container-path`, `permissions`, `required`.
-            # - IDs resolve via host-local channels at execution time:
-            #     1) BERTRAND_DEVICE_<ID> env override
-            #     2) host profile (e.g. .bertrand/host/devices.toml)
-            # - Resolver policy is CDI-preferred with host-path fallback for
-            #   compatibility across hosts that lack CDI specs.
+            # - IDs resolve through Kubernetes DRA inventory at execution time,
+            #   allowing the scheduler to pick the concrete device and node.
             # - Security invariants:
             #     * no host device paths committed in project configuration
             #     * no secret host topology persisted in project metadata
@@ -1622,9 +1615,8 @@ class Bertrand(Resource):
             # TODO: Secrets capability design (config-layer contract):
             # - `secrets` are capability requests keyed by SCREAMING_SNAKE_CASE
             #   IDs, never secret values.
-            # - IDs resolve via host-local channels at execution time:
-            #     1) BERTRAND_SECRET_<ID> env override
-            #     2) host profile / podman-backed secret resolver
+            # - IDs resolve through managed Kubernetes Secret capabilities at
+            #   execution time.
             # - Runtime resolution exposes secrets as files (e.g. under
             #   `/run/secrets`), not env vars.
             # - Security invariants:

@@ -32,6 +32,10 @@ BUILDKIT_NAME = "bertrand-buildkit"
 BUILDKIT_IMAGE = "moby/buildkit:v0.29.0"
 BUILDKIT_PORT = 1234
 BUILDKIT_LISTEN_ADDR = f"tcp://0.0.0.0:{BUILDKIT_PORT}"
+BUILDKIT_SOCKET_DIR = "/run/bertrand/buildkit"
+BUILDKIT_SOCKET_FILE = f"{BUILDKIT_SOCKET_DIR}/buildkitd.sock"
+BUILDKIT_SOCKET_ADDR = f"unix://{BUILDKIT_SOCKET_FILE}"
+BUILDKIT_SOCKET_VOLUME = "buildkit-socket"
 BUILDKIT_CACHE_MOUNT = "/var/lib/buildkit"
 BUILDKIT_CACHE_PATH = CACHE_DIR / "buildkit"
 BUILDKIT_CACHE_VOLUME = "buildkit-state"
@@ -129,8 +133,6 @@ class _BuildKitBuilder:
         Node running the builder pod.
     platform : str
         Native OCI platform exposed by the node.
-    addr : str
-        BuildKit client address, suitable for ``buildctl --addr``.
     config_current : bool
         Whether ``config_hash`` matches the expected hash passed by the caller, or
         ``True`` when no expected hash was provided.
@@ -138,7 +140,6 @@ class _BuildKitBuilder:
 
     node: str
     platform: str
-    addr: str
     config_current: bool
 
 
@@ -282,6 +283,7 @@ class BuildKitPool:
         buildkitd_flags = " ".join(
             (
                 f"--addr {BUILDKIT_LISTEN_ADDR!r}",
+                f"--addr {BUILDKIT_SOCKET_ADDR!r}",
                 *(
                     f"--allow-insecure-entitlement {entitlement!r}"
                     for entitlement in BUILDKIT_INSECURE_ENTITLEMENTS
@@ -341,6 +343,10 @@ class BuildKitPool:
                                 mount_path=BUILDKIT_CONFIG_DIR,
                                 read_only=True,
                             ),
+                            VolumeMountSpec(
+                                name=BUILDKIT_SOCKET_VOLUME,
+                                mount_path=BUILDKIT_SOCKET_DIR,
+                            ),
                             *(
                                 VolumeMountSpec(
                                     name=name,
@@ -362,6 +368,11 @@ class BuildKitPool:
                         BUILDKIT_CONFIG_VOLUME,
                         config_map_name=BUILDKIT_CONFIG_NAME,
                         optional=True,
+                    ),
+                    VolumeSpec.host_path(
+                        BUILDKIT_SOCKET_VOLUME,
+                        path=BUILDKIT_SOCKET_DIR,
+                        host_path_type="DirectoryOrCreate",
                     ),
                     *(
                         VolumeSpec.host_path(
@@ -518,14 +529,14 @@ class BuildKitPool:
         nodes = await Node.list(kube, timeout=timeout)
         return self._eligible_nodes_from(nodes)
 
-    async def _builder_candidates(
+    async def _ready_platform_nodes(
         self,
         kube: Kube,
         *,
         timeout: float,
         config_hash: str | None,
-    ) -> dict[str, tuple[_BuildKitBuilder, ...]]:
-        """Return ready BuildKit builders grouped by native platform.
+    ) -> dict[str, tuple[str, ...]]:
+        """Return ready BuildKit node names grouped by native platform.
 
         Parameters
         ----------
@@ -539,8 +550,8 @@ class BuildKitPool:
 
         Returns
         -------
-        dict[str, tuple[_BuildKitBuilder, ...]]
-            Current builder candidates keyed by eligible native platform.
+        dict[str, tuple[str, ...]]
+            Ready node names keyed by eligible native platform.
 
         Raises
         ------
@@ -561,7 +572,7 @@ class BuildKitPool:
         if config_hash is not None:
             builders = tuple(builder for builder in builders if builder.config_current)
 
-        out: dict[str, tuple[_BuildKitBuilder, ...]] = {}
+        out: dict[str, tuple[str, ...]] = {}
         for platform in targets:
             candidates = [
                 builder for builder in builders if builder.platform == platform
@@ -575,7 +586,7 @@ class BuildKitPool:
                         "`bertrand init` to refresh the builder pool"
                     )
                 raise OSError(msg)
-            out[platform] = tuple(candidates)
+            out[platform] = tuple(builder.node for builder in candidates)
         return out
 
     def _eligible_nodes_from(self, nodes: Iterable[Node]) -> tuple[Node, ...]:
@@ -608,15 +619,14 @@ class BuildKitPool:
                 _BuildKitBuilder(
                     node=node.name,
                     platform=node.platform,
-                    addr=f"tcp://{pod.pod_ip}:{self.port}",
                     config_current=config_hash is None or pod_hash == config_hash,
                 )
             )
         return tuple(sorted(builders, key=_builder_sort_key))
 
 
-def _builder_sort_key(builder: _BuildKitBuilder) -> tuple[str, str, str]:
-    return (builder.platform, builder.node, builder.addr)
+def _builder_sort_key(builder: _BuildKitBuilder) -> tuple[str, str]:
+    return (builder.platform, builder.node)
 
 
 BUILDKIT_POOL = BuildKitPool(

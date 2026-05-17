@@ -24,6 +24,7 @@ if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
     from bertrand.env.kube.api.spec import ContainerSpec, PodTemplateSpec
+    from bertrand.env.kube.dra import DRAResourceClaimIntent
 
 WORKLOAD_REPOSITORY_VOLUME = "bertrand-repository"
 WORKLOAD_BOOTSTRAP_COMMAND = ("/bin/sh", "-c")
@@ -119,6 +120,9 @@ class WorkloadPod:
         Container name that receives command overrides.
     repository : WorkloadRepository
         Managed repository volume and selected worktree intent.
+    resource_claim_templates : tuple[DRAResourceClaimIntent, ...], optional
+        DRA ResourceClaimTemplate intents that must be converged with this
+        workload.
     runtime_env : Mapping[str, str], optional
         Additional invariant runtime environment variables to apply to every
         container.
@@ -127,6 +131,7 @@ class WorkloadPod:
     template: PodTemplateSpec
     primary_container: str
     repository: WorkloadRepository
+    resource_claim_templates: tuple[DRAResourceClaimIntent, ...] = ()
     runtime_env: Mapping[str, str] = MappingProxyType({})
 
     def __post_init__(self) -> None:
@@ -153,9 +158,15 @@ class WorkloadPod:
                 self.template,
                 containers=containers,
                 volumes=tuple(self.template.volumes),
+                resource_claims=tuple(self.template.resource_claims),
             ),
         )
         object.__setattr__(self, "primary_container", primary)
+        object.__setattr__(
+            self,
+            "resource_claim_templates",
+            tuple(self.resource_claim_templates),
+        )
         object.__setattr__(self, "runtime_env", _runtime_env(self.runtime_env))
 
     def pod_template(
@@ -427,7 +438,14 @@ def _bootstrap_script(repository: WorkloadRepository) -> str:
             "    exit 1",
             "fi",
             "cd /",
-            f"rm -rf {worktree_mount}",
+            f"if [ -e {worktree_mount} ] && [ ! -L {worktree_mount} ]; then",
+            (
+                f"    echo \"Bertrand worktree mount exists and is not a symlink: "
+                f"{worktree_mount}\" >&2"
+            ),
+            "    exit 1",
+            "fi",
+            f"rm -f {worktree_mount}",
             f"ln -s \"$TARGET_WORKTREE\" {worktree_mount}",
             "if command -v git >/dev/null 2>&1; then",
             (

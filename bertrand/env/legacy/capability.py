@@ -149,42 +149,26 @@ class DeviceConfigMap:
 
         Raises
         ------
+        OSError
+            Always raised when legacy device requests are present.
         ValueError
             If a request declares a duplicate device capability ID.
         """
+        del kube, timeout
         requests: tuple[Any, ...] = tuple(getattr(build, "devices", ()))
         if not requests:
             return ()
 
-        validated_env = _check_uuid(env_id)
+        _check_uuid(env_id)
         seen: set[KubeName] = set()
-        flags: list[str] = []
         for request in requests:
             capability_id = _check_kube_name(request.id)
             if capability_id in seen:
                 msg = f"duplicate device capability ID: {capability_id!r}"
                 raise ValueError(msg)
             seen.add(capability_id)
-
-            capability = await Capability.resolve_device(
-                kube,
-                capability_id=capability_id,
-                env_id=validated_env,
-                required=request.required,
-                timeout=timeout,
-            )
-            if capability is None:
-                print(
-                    f"bertrand: optional device selector {capability_id!r} was not "
-                    "found; continuing without it",
-                    file=sys.stderr,
-                )
-                continue
-            flags.extend(
-                [
-                    "--device",
-                    capability.selector,
-                ]
-            )
-
-        return tuple(flags)
+        msg = (
+            "legacy Secret-backed device capabilities have been removed; use native "
+            "Kubernetes DRA-backed builds and workloads for device requests"
+        )
+        raise OSError(msg)
