@@ -1328,6 +1328,20 @@ class Bertrand(Resource):
                     seen.add(item)
                 return value
 
+            @staticmethod
+            def _check_unique_requests(
+                requests: list[Any],
+                *,
+                where: str,
+            ) -> list[Any]:
+                seen: set[KubeName] = set()
+                for req in requests:
+                    if req.id in seen:
+                        msg = f"duplicate {where} capability id: '{req.id}'"
+                        raise ValueError(msg)
+                    seen.add(req.id)
+                return requests
+
             class InstrumentEntry(BaseModel):
                 """Validate entries in the image instrument table."""
 
@@ -1352,98 +1366,24 @@ class Bertrand(Resource):
             # - Final usage is always in the tag's Containerfile, by appending
             #   `RUN --mount=type=ssh,id=id ...`
 
-            class Devices(BaseModel):
-                """Validate the `[tool.bertrand.workload.<tag>.devices]` table."""
-
-                class Request(BaseModel):
-                    """Validate one image device capability request."""
-
-                    model_config = ConfigDict(extra="forbid")
-                    id: KubeName
-                    required: bool = True
-                    container_path: Annotated[
-                        AbsolutePosixPath | None,
-                        Field(default=None, alias="container-path"),
-                    ]
-                    permissions: Annotated[DevicePermission, Field(default="rwm")]
-
-                @staticmethod
-                def _check_unique_ids(
-                    requests: list[Request],
-                    *,
-                    where: str,
-                ) -> list[Request]:
-                    seen: set[KubeName] = set()
-                    for req in requests:
-                        if req.id in seen:
-                            msg = f"duplicate {where} device id: '{req.id}'"
-                            raise ValueError(msg)
-                        seen.add(req.id)
-                    return requests
+            class Device(BaseModel):
+                """Validate one workload runtime device capability request."""
 
                 model_config = ConfigDict(extra="forbid")
-                build: Annotated[
-                    list[Request],
-                    AfterValidator(
-                        lambda x: Bertrand.Model.Workload.Devices._check_unique_ids(
-                            x, where="build"
-                        )
-                    ),
-                    Field(default_factory=list),
+                id: KubeName
+                required: bool = True
+                container_path: Annotated[
+                    AbsolutePosixPath | None,
+                    Field(default=None, alias="container-path"),
                 ]
-                run: Annotated[
-                    list[Request],
-                    AfterValidator(
-                        lambda x: Bertrand.Model.Workload.Devices._check_unique_ids(
-                            x, where="run"
-                        )
-                    ),
-                    Field(default_factory=list),
-                ]
+                permissions: Annotated[DevicePermission, Field(default="rwm")]
 
-            class Secrets(BaseModel):
-                """Validate the `[tool.bertrand.workload.<tag>.secrets]` table."""
-
-                class Request(BaseModel):
-                    """Validate an individual secret capability request."""
-
-                    model_config = ConfigDict(extra="forbid")
-                    id: KubeName
-                    required: bool = True
-
-                @staticmethod
-                def _check_unique_ids(
-                    requests: list[Request],
-                    *,
-                    where: str,
-                ) -> list[Request]:
-                    seen: set[KubeName] = set()
-                    for req in requests:
-                        if req.id in seen:
-                            msg = f"duplicate {where} secret id: '{req.id}'"
-                            raise ValueError(msg)
-                        seen.add(req.id)
-                    return requests
+            class Secret(BaseModel):
+                """Validate one workload runtime secret capability request."""
 
                 model_config = ConfigDict(extra="forbid")
-                build: Annotated[
-                    list[Request],
-                    AfterValidator(
-                        lambda x: Bertrand.Model.Workload.Secrets._check_unique_ids(
-                            x, where="build"
-                        )
-                    ),
-                    Field(default_factory=list),
-                ]
-                run: Annotated[
-                    list[Request],
-                    AfterValidator(
-                        lambda x: Bertrand.Model.Workload.Secrets._check_unique_ids(
-                            x, where="run"
-                        )
-                    ),
-                    Field(default_factory=list),
-                ]
+                id: KubeName
+                required: bool = True
 
             class Conan(BaseModel):
                 """Validate the `[tool.bertrand.workload.<tag>.conan]` table."""
@@ -1678,8 +1618,8 @@ class Bertrand(Resource):
             ssh: Annotated[list[KubeName], Field(default_factory=list)]
             instruments: Annotated[list[InstrumentEntry], Field(default_factory=list)]
             # TODO: Device capability design (config-layer contract):
-            # - `devices.build` and `devices.run` are host-agnostic capability
-            #   requests keyed by SCREAMING_SNAKE_CASE IDs, never raw host paths.
+            # - `devices` are host-agnostic capability requests keyed by
+            #   SCREAMING_SNAKE_CASE IDs, never raw host paths.
             # - Each request may override container-facing mapping details only:
             #   `container-path`, `permissions`, `required`.
             # - IDs resolve via host-local channels at execution time:
@@ -1691,22 +1631,37 @@ class Bertrand(Resource):
             #     * no host device paths committed in project configuration
             #     * no secret host topology persisted in project metadata
             # - Runtime wiring/argv synthesis is deferred to container.py refactor.
-            devices: Annotated[Devices, Field(default_factory=Devices.model_construct)]
+            devices: Annotated[
+                list[Device],
+                AfterValidator(
+                    lambda x: Bertrand.Model.Workload._check_unique_requests(
+                        x, where="device"
+                    )
+                ),
+                Field(default_factory=list),
+            ]
             # TODO: Secrets capability design (config-layer contract):
-            # - `secrets.build` and `secrets.run` are capability requests keyed
-            #   by SCREAMING_SNAKE_CASE IDs, never secret values.
+            # - `secrets` are capability requests keyed by SCREAMING_SNAKE_CASE
+            #   IDs, never secret values.
             # - IDs resolve via host-local channels at execution time:
             #     1) BERTRAND_SECRET_<ID> env override
             #     2) host profile / podman-backed secret resolver
-            # - Build-time resolution maps to `podman build --secret`.
-            # - Runtime resolution maps to `podman run --secret` and exposes
-            #   secrets as files (e.g. under `/run/secrets`), not env vars.
+            # - Runtime resolution exposes secrets as files (e.g. under
+            #   `/run/secrets`), not env vars.
             # - Security invariants:
             #     * no secret bytes in project configuration or metadata
             #     * no secret material persisted in logs or generated state
             #     * unresolved `required=true` entries fail closed at runtime
             # - Runtime wiring/argv synthesis is deferred to container.py refactor.
-            secrets: Annotated[Secrets, Field(default_factory=Secrets.model_construct)]
+            secrets: Annotated[
+                list[Secret],
+                AfterValidator(
+                    lambda x: Bertrand.Model.Workload._check_unique_requests(
+                        x, where="secret"
+                    )
+                ),
+                Field(default_factory=list),
+            ]
             conan: Annotated[Conan, Field(default_factory=Conan.model_construct)]
             build: Annotated[Build, Field(default_factory=Build.model_construct)]
             stop: Annotated[Stop, Field(default_factory=Stop.model_construct)]
