@@ -55,13 +55,12 @@ from .core import (
     locate_template,
     resource,
 )
-from .python import PyProject, _validate_dependency_groups
+from .python import PyProject
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
 # Configuration options that affect CLI behavior
-DEFAULT_TAG: str = ""
 SHELLS: dict[str, tuple[str, ...]] = {
     # NOTE: values are raw commands that override a container's normal entry point.
     "bash": ("bash", "-l"),
@@ -120,7 +119,6 @@ USERNS_MAPPING_RE = re.compile(r"^(?P<container>\d+):(?P<host>@?\d+):(?P<length>
 CAPABILITY_TOKEN_RE = re.compile(r"^CAP_[A-Z0-9_]+$")
 CAPABILITY_DEFINE_RE = re.compile(r"^\s*#define\s+(CAP_[A-Z0-9_]+)\s+([0-9]+)\b")
 SECURITY_OPT_KEY_RE = re.compile(r"^[a-z0-9][a-z0-9_.-]*$")
-BERTRAND_TAG_RE = re.compile(r"^(?:[a-zA-Z](?:[a-zA-Z0-9_-]*[a-zA-Z0-9])?)?$")
 IMAGE_TAG_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$")
 DEVICE_PERMISSIONS: frozenset[str] = frozenset({"r", "w", "m", "rw", "rm", "wm", "rwm"})
 LINUX_CAPABILITY_HEADERS: tuple[Path, ...] = (
@@ -498,16 +496,13 @@ def _check_build_context_path(path: PosixPath) -> PosixPath:
     return path
 
 
-def project_image_tag(project_version: str, image_key: str) -> str:
-    """Derive the OCI tag for a configured project image.
+def project_image_tag(project_version: str) -> str:
+    """Derive the OCI tag for the configured project image.
 
     Parameters
     ----------
     project_version : str
         Version from the worktree's ``[project].version`` field.
-    image_key : str
-        Key from the ``[tool.bertrand.image]`` table. The empty key is the default
-        image and maps directly to ``project_version``.
 
     Returns
     -------
@@ -517,21 +512,13 @@ def project_image_tag(project_version: str, image_key: str) -> str:
     Raises
     ------
     ValueError
-        If the image key or derived OCI tag is invalid.
+        If the project version is not a valid OCI tag.
     """
     version = project_version.strip()
-    key = image_key.strip()
-    if not BERTRAND_TAG_RE.fullmatch(key):
-        msg = f"invalid image key in 'tool.bertrand.image': {image_key!r}"
+    if not IMAGE_TAG_RE.fullmatch(version):
+        msg = f"project version does not form a valid OCI tag: {project_version!r}"
         raise ValueError(msg)
-    tag = version if not key else f"{version}-{key}"
-    if not IMAGE_TAG_RE.fullmatch(tag):
-        msg = (
-            "project version and image key do not form a valid OCI tag: "
-            f"{project_version!r}, {image_key!r} -> {tag!r}"
-        )
-        raise ValueError(msg)
-    return tag
+    return version
 
 
 def _project_version(config: Config, pyproject: PyProject.Model | None) -> str | None:
@@ -550,22 +537,6 @@ def _project_version(config: Config, pyproject: PyProject.Model | None) -> str |
     return None
 
 
-def _image_key_label(tag: str) -> str:
-    return '""' if tag == "" else tag
-
-
-def _image_table(tag: str) -> str:
-    return f'[tool.bertrand.image.{_image_key_label(tag)}]'
-
-
-def _image_subtable(tag: str, name: str) -> str:
-    return f'[tool.bertrand.image.{_image_key_label(tag)}.{name}]'
-
-
-def _image_array_table(tag: str, name: str) -> str:
-    return f'[[tool.bertrand.image.{_image_key_label(tag)}.{name}]]'
-
-
 type Shell = Annotated[NonEmpty[NoWhiteSpace], AfterValidator(_check_shell)]
 type Editor = Annotated[NonEmpty[NoWhiteSpace], AfterValidator(_check_editor)]
 type IgnoreList = Annotated[list[Glob], AfterValidator(_check_ignore_list)]
@@ -581,18 +552,6 @@ type HostName = Annotated[
     ),
 ]
 type HostIP = Literal["host-gateway"] | IPAddress
-type BertrandTag = Annotated[
-    str,
-    StringConstraints(strip_whitespace=True, pattern=BERTRAND_TAG_RE.pattern),
-]
-type OCIImageTag = Annotated[
-    str,
-    StringConstraints(
-        strip_whitespace=True,
-        min_length=1,
-        pattern=IMAGE_TAG_RE.pattern,
-    ),
-]
 type NetworkAlias = Annotated[
     NonEmpty[NoWhiteSpace],
     AfterValidator(_check_network_alias),
@@ -871,7 +830,7 @@ class Bertrand(Resource):
             """Validate entries in the `[tool.bertrand.image]` table."""
 
             class Secret(BaseModel):
-                """Validate an entry in `[[tool.bertrand.image.<tag>.secrets]]`."""
+                """Validate an entry in `[[tool.bertrand.image.secrets]]`."""
 
                 model_config = ConfigDict(extra="forbid")
                 id: Annotated[
@@ -908,7 +867,7 @@ class Bertrand(Resource):
                 return requests
 
             class SSH(BaseModel):
-                """Validate an entry in `[[tool.bertrand.image.<tag>.ssh]]`."""
+                """Validate an entry in `[[tool.bertrand.image.ssh]]`."""
 
                 model_config = ConfigDict(extra="forbid")
                 id: Annotated[
@@ -946,7 +905,7 @@ class Bertrand(Resource):
                 return requests
 
             class Device(BaseModel):
-                """Validate an entry in `[[tool.bertrand.image.<tag>.devices]]`."""
+                """Validate an entry in `[[tool.bertrand.image.devices]]`."""
 
                 model_config = ConfigDict(extra="forbid")
                 id: Annotated[
@@ -982,24 +941,6 @@ class Bertrand(Resource):
                         raise ValueError(msg)
                     seen.add(req.id)
                 return requests
-
-            # TODO: review + document conan configuration
-
-            class Conan(BaseModel):
-                """Validate the `[tool.bertrand.image.<tag>.conan]` table."""
-
-                model_config = ConfigDict(extra="forbid")
-                build_type: Annotated[
-                    Literal["", "Release", "Debug"],
-                    Field(default="", alias="build-type"),
-                ]
-                conf: Annotated[ConanConf, Field(default_factory=dict)]
-                options: Annotated[ConanOptions, Field(default_factory=dict)]
-                requires: Annotated[
-                    list[ConanConfig.Model.Require],
-                    AfterValidator(ConanConfig.Model._check_requires),
-                    Field(default_factory=list),
-                ]
 
             model_config = ConfigDict(extra="forbid")
             containerfile: Annotated[
@@ -1074,13 +1015,13 @@ class Bertrand(Resource):
                     examples=[
                         "\n".join(
                             (
-                                _image_table(DEFAULT_TAG),
+                                "[tool.bertrand.image]",
                                 "args = { DEBUG = true, JIT = true }",
                             )
                         ),
                         "\n".join(
                             (
-                                _image_subtable(DEFAULT_TAG, "args"),
+                                "[tool.bertrand.image.args]",
                                 "DEBUG = true",
                                 "JIT = true",
                                 "...",
@@ -1117,13 +1058,13 @@ class Bertrand(Resource):
                     examples=[
                         "\n".join(
                             (
-                                _image_table(DEFAULT_TAG),
+                                "[tool.bertrand.image]",
                                 "secrets = [{ id = \"pypi_token\", required = true }]",
                             )
                         ),
                         "\n".join(
                             (
-                                _image_array_table(DEFAULT_TAG, "secrets"),
+                                "[[tool.bertrand.image.secrets]]",
                                 "id = \"private_pkg_key\"",
                                 "required = false",
                             )
@@ -1142,13 +1083,13 @@ class Bertrand(Resource):
                     examples=[
                         "\n".join(
                             (
-                                _image_table(DEFAULT_TAG),
+                                "[tool.bertrand.image]",
                                 "ssh = [{ id = \"git_deploy_key\", required = true }]",
                             )
                         ),
                         "\n".join(
                             (
-                                _image_array_table(DEFAULT_TAG, "ssh"),
+                                "[[tool.bertrand.image.ssh]]",
                                 "id = \"github_readonly\"",
                                 "required = false",
                             )
@@ -1168,13 +1109,13 @@ class Bertrand(Resource):
                     examples=[
                         "\n".join(
                             (
-                                _image_table(DEFAULT_TAG),
+                                "[tool.bertrand.image]",
                                 "devices = [{ id = \"gpu\", required = true }]",
                             )
                         ),
                         "\n".join(
                             (
-                                _image_array_table(DEFAULT_TAG, "devices"),
+                                "[[tool.bertrand.image.devices]]",
                                 "id = \"fpga0\"",
                                 "required = false",
                             )
@@ -1186,7 +1127,6 @@ class Bertrand(Resource):
                     ),
                 ),
             ]
-            conan: Annotated[Conan, Field(default_factory=Conan.model_construct)]
 
             @model_validator(mode="after")
             def _validate_containerfile(self) -> Self:
@@ -1200,8 +1140,8 @@ class Bertrand(Resource):
                         raise ValueError(msg)
                 return self
 
-            def resolve_containerfile(self, root: Path, tag: BertrandTag) -> None:
-                """Validate the custom Containerfile path for one image key.
+            def resolve_containerfile(self, root: Path) -> None:
+                """Validate the custom Containerfile path.
 
                 Raises
                 ------
@@ -1212,31 +1152,16 @@ class Bertrand(Resource):
                     return
                 path = root / self.containerfile
                 if not path.exists():
-                    msg = f"path does not exist for tag '{tag}': {path}"
+                    msg = f"custom Containerfile path does not exist: {path}"
                     raise OSError(msg)
                 if not path.is_file():
-                    msg = f"path is not a file for tag '{tag}': {path}"
+                    msg = f"custom Containerfile path is not a file: {path}"
                     raise OSError(msg)
                 try:
                     path.read_text(encoding="utf-8")
                 except UnicodeDecodeError as err:
-                    msg = f"file is not UTF-8 encoded for tag '{tag}': {path}"
+                    msg = f"custom Containerfile is not UTF-8 encoded: {path}"
                     raise OSError(msg) from err
-
-        class Channel(BaseModel):
-            """Validate entries in the `[tool.bertrand.channel]` table."""
-
-            model_config = ConfigDict(extra="forbid")
-            image: Annotated[
-                BertrandTag,
-                Field(
-                    description=(
-                        "Configured image key from `[tool.bertrand.image]` that this "
-                        "moving channel should reference. Use `\"\"` for the base "
-                        "image."
-                    ),
-                ),
-            ]
 
         class Workload(BaseModel):
             """Validate entries in the `[tool.bertrand.workload]` table."""
@@ -1342,6 +1267,19 @@ class Bertrand(Resource):
                     seen.add(req.id)
                 return requests
 
+            @staticmethod
+            def _check_containers(containers: list[Container]) -> list[Container]:
+                if not containers:
+                    msg = "workload configuration requires at least one container"
+                    raise ValueError(msg)
+                seen: set[KubeName] = set()
+                for container in containers:
+                    if container.name in seen:
+                        msg = f"duplicate workload container name: '{container.name}'"
+                        raise ValueError(msg)
+                    seen.add(container.name)
+                return containers
+
             class InstrumentEntry(BaseModel):
                 """Validate entries in the image instrument table."""
 
@@ -1384,6 +1322,41 @@ class Bertrand(Resource):
                 model_config = ConfigDict(extra="forbid")
                 id: KubeName
                 required: bool = True
+
+            class Container(BaseModel):
+                """Validate one native workload container entry."""
+
+                model_config = ConfigDict(extra="forbid")
+                name: KubeName
+                cmd: Annotated[list[NonEmpty[Trimmed]], Field(min_length=1)]
+                args: Annotated[list[NonEmpty[Trimmed]], Field(default_factory=list)]
+                ports: Annotated[
+                    list[Bertrand.Model.Workload.Port],
+                    AfterValidator(lambda x: Bertrand.Model.Workload._check_ports(x)),
+                    Field(default_factory=list),
+                ]
+                secrets: Annotated[
+                    list[Bertrand.Model.Workload.Secret],
+                    AfterValidator(
+                        lambda x: Bertrand.Model.Workload._check_unique_requests(
+                            x, where="container secret"
+                        )
+                    ),
+                    Field(default_factory=list),
+                ]
+                devices: Annotated[
+                    list[Bertrand.Model.Workload.Device],
+                    AfterValidator(
+                        lambda x: Bertrand.Model.Workload._check_unique_requests(
+                            x, where="container device"
+                        )
+                    ),
+                    Field(default_factory=list),
+                ]
+                metadata: Annotated[
+                    dict[NonEmpty[SnakeCase], Scalar],
+                    Field(default_factory=dict),
+                ]
 
             class Conan(BaseModel):
                 """Validate the `[tool.bertrand.workload.<tag>.conan]` table."""
@@ -1483,6 +1456,12 @@ class Bertrand(Resource):
                 log: Annotated[Log, Field(default_factory=Log.model_construct)]
 
             model_config = ConfigDict(extra="forbid")
+            primary: Annotated[KubeName, Field(default="main")]
+            containers: Annotated[
+                list[Container],
+                AfterValidator(_check_containers),
+                Field(default_factory=list),
+            ]
             containerfile: Annotated[
                 RelativePosixPath | None,
                 Field(
@@ -1671,6 +1650,17 @@ class Bertrand(Resource):
             ]
 
             @model_validator(mode="after")
+            def _validate_primary_container(self) -> Self:
+                container_names = {container.name for container in self.containers}
+                if self.primary not in container_names:
+                    msg = (
+                        f"primary workload container {self.primary!r} is not present "
+                        "in `containers`"
+                    )
+                    raise ValueError(msg)
+                return self
+
+            @model_validator(mode="after")
             def _validate_capability_conflicts(self) -> Self:
                 if "ALL" in self.cap_add and len(self.cap_add) > 1:
                     msg = "cap-add cannot combine 'ALL' with specific capabilities"
@@ -1690,8 +1680,8 @@ class Bertrand(Resource):
                     raise ValueError(msg)
                 return self
 
-            def resolve_containerfile(self, root: Path, tag: BertrandTag) -> None:
-                """Validate the custom Containerfile path for one image key.
+            def resolve_containerfile(self, root: Path) -> None:
+                """Validate the custom Containerfile path.
 
                 Raises
                 ------
@@ -1702,15 +1692,15 @@ class Bertrand(Resource):
                     return
                 path = root / self.containerfile
                 if not path.exists():
-                    msg = f"path does not exist for tag '{tag}': {path}"
+                    msg = f"custom workload Containerfile path does not exist: {path}"
                     raise OSError(msg)
                 if not path.is_file():
-                    msg = f"path is not a file for tag '{tag}': {path}"
+                    msg = f"custom workload Containerfile path is not a file: {path}"
                     raise OSError(msg)
                 try:
                     path.read_text(encoding="utf-8")
                 except UnicodeDecodeError as err:
-                    msg = f"file is not UTF-8 encoded for tag '{tag}': {path}"
+                    msg = f"custom workload Containerfile is not UTF-8 encoded: {path}"
                     raise OSError(msg) from err
 
         model_config = ConfigDict(extra="forbid")
@@ -1832,59 +1822,13 @@ class Bertrand(Resource):
             ),
         ]
         image: Annotated[
-            dict[BertrandTag, Image],
-            Field(
-                default_factory=lambda: {
-                    DEFAULT_TAG: Bertrand.Model.Image.model_construct()
-                }
-            ),
-        ]
-        channel: Annotated[
-            dict[OCIImageTag, Channel],
-            Field(
-                default_factory=dict,
-                description=(
-                    "Moving image tags, such as `latest` or `stable`, published as "
-                    "aliases of configured versioned project images."
-                ),
-            ),
+            Image,
+            Field(default_factory=Image.model_construct),
         ]
         workload: Annotated[
-            dict[BertrandTag, Workload],
-            Field(
-                default_factory=lambda: {
-                    DEFAULT_TAG: Bertrand.Model.Workload.model_construct()
-                }
-            ),
+            Workload | None,
+            Field(default=None),
         ]
-
-        @model_validator(mode="after")
-        def _validate_image(self) -> Self:
-            seen: set[str] = set()
-            for tag in self.image:
-                if tag in seen:
-                    msg = f"duplicate image key in 'tool.bertrand.image': '{tag}'"
-                    raise ValueError(msg)
-                seen.add(tag)
-            if DEFAULT_TAG not in seen:
-                msg = (
-                    "missing required default image key in 'tool.bertrand.image': "
-                    f"'{DEFAULT_TAG}'"
-                )
-                raise ValueError(msg)
-            unknown_channels = sorted(
-                name
-                for name, channel in self.channel.items()
-                if channel.image not in seen
-            )
-            if unknown_channels:
-                formatted = ", ".join(repr(name) for name in unknown_channels)
-                msg = (
-                    "found channel entries with no matching image in "
-                    f"'tool.bertrand.image': {formatted}"
-                )
-                raise ValueError(msg)
-            return self
 
         # @model_validator(mode="after")
         # def _validate_services(self) -> Self:
@@ -1992,31 +1936,20 @@ class Bertrand(Resource):
         Model | None
             Parsed Bertrand configuration.
 
-        Raises
-        ------
-        ValueError
-            If image keys, image tags, or channel references are invalid.
         """
         result = self.Model.model_validate(fragment)
         pyproject = config.get(PyProject)
-        _validate_dependency_groups(pyproject=pyproject, bertrand=result)
         version = _project_version(config, pyproject)
         if version is not None:
-            image_tags = {tag: project_image_tag(version, tag) for tag in result.image}
-            collisions = sorted(set(result.channel).intersection(image_tags.values()))
-            if collisions:
-                formatted = ", ".join(repr(name) for name in collisions)
-                msg = (
-                    f"channel tags collide with version-derived image tags: {formatted}"
-                )
-                raise ValueError(msg)
-        for tag, image in result.image.items():
-            image.resolve_containerfile(config.root, tag)
+            project_image_tag(version)
+        result.image.resolve_containerfile(config.root)
+        if result.workload is not None:
+            result.workload.resolve_containerfile(config.root)
         return result
 
-    async def render(self, config: Config, tag: TOMLKey | None) -> None:
+    async def render(self, config: Config, *, image_build: bool) -> None:
         """Render Bertrand-managed project files."""
-        del tag
+        del image_build
         bertrand = config.get(Bertrand)
         if bertrand is None:
             return

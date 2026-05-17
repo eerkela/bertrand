@@ -512,7 +512,7 @@ class Resource:
         _ = config, fragment
         return None
 
-    async def render(self, config: Config, tag: TOMLKey | None) -> None:
+    async def render(self, config: Config, *, image_build: bool) -> None:
         """Write derived content for this resource during `Config.sync()`.
 
         Parameters
@@ -520,12 +520,9 @@ class Resource:
         config : Config
             The active configuration context, which provides access to the valid
             outputs from the `validate()` phase.
-        tag : str | None
-            The active image tag for the configured environment, which is used to
-            search the `config.get(Bertrand).image` table for tag-specific overrides
-            during image builds.  If None, then it means this hook was invoked during
-            a `bertrand init` command, and should therefore not attempt to render any
-            out-of-tree artifacts that would require access to a container filesystem.
+        image_build : bool
+            Whether this hook is being invoked from an image-build context.  Hooks
+            that write container-local artifacts should only do so when this is true.
 
         Notes
         -----
@@ -1040,21 +1037,17 @@ class Config:
         """
         return {r.name: await r.schema() for r in sorted(RESOURCES)}
 
-    async def sync(self, tag: TOMLKey | None) -> None:
+    async def sync(self, *, image_build: bool = False) -> None:
         """Render and write derived artifact resources from active context snapshot.
 
         This requires an active config context (`async with config:`).
 
         Parameters
         ----------
-        tag : str | None
-            The active image tag for the configured environment, which is used to
-            search the `bertrand.image` table for tag-specific overrides during
-            rendering.  If None, then this method was called as part of a
-            `bertrand init` command, and only the global configuration worktree
-            resources will be rendered.  Otherwise, it was called from a
-            `bertrand build` command, and out-of-tree resources may also be rendered
-            to the container filesystem for the active tag.
+        image_build : bool, optional
+            Whether this render pass is preparing an image-build context.  Normal
+            sync calls render only worktree artifacts; image-build sync calls may
+            also render container-local artifacts.
 
         Raises
         ------
@@ -1076,7 +1069,7 @@ class Config:
             for name in sorted(self.resources):
                 r = RESOURCE_NAMES[name]
                 try:
-                    await r.render(self, tag)
+                    await r.render(self, image_build=image_build)
                 except Exception as err:
                     msg = f"failed to render resource '{r.name}': {err}"
                     raise OSError(msg) from err

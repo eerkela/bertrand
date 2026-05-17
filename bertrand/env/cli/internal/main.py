@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import os
 import subprocess
 from typing import TYPE_CHECKING, cast
 
@@ -15,7 +14,6 @@ from bertrand.env.cli.internal.build import bertrand_build
 from bertrand.env.config.core import Config
 from bertrand.env.git import (
     CONTAINER_TMP_MOUNT,
-    IMAGE_TAG_ENV,
     INFINITY,
     WORKTREE_MOUNT,
     inside_container,
@@ -23,13 +21,6 @@ from bertrand.env.git import (
 from bertrand.env.kube.api.client import Kube
 from bertrand.env.rpc import CodeOpen, rpc
 from bertrand.env.version import __version__
-
-
-def _require_active_image_tag() -> str:
-    if IMAGE_TAG_ENV not in os.environ:
-        msg = f"missing active image tag in container environment: '{IMAGE_TAG_ENV}'"
-        raise OSError(msg)
-    return os.environ[IMAGE_TAG_ENV].strip()
 
 
 class Internal:
@@ -219,10 +210,14 @@ class Internal:
 
         Raises
         ------
+        RuntimeError
+            If not invoked from within a live container context.
         SystemExit
             If any check command exits non-zero.
         """
-        _require_active_image_tag()
+        if not inside_container():
+            msg = "`bertrand check` requires a live container context"
+            raise RuntimeError(msg)
 
         async def sources() -> list[object]:
             with await Kube.host(timeout=INFINITY) as kube:
@@ -275,10 +270,14 @@ class Internal:
 
         Raises
         ------
+        RuntimeError
+            If not invoked from within a live container context.
         SystemExit
             If formatting exits non-zero.
         """
-        _require_active_image_tag()
+        if not inside_container():
+            msg = "`bertrand format` requires a live container context"
+            raise RuntimeError(msg)
 
         async def sources() -> list[object]:
             with await Kube.host(timeout=INFINITY) as kube:

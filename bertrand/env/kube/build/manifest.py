@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import shlex
 import uuid
 from types import MappingProxyType
@@ -19,7 +18,6 @@ from bertrand.env.kube.build.lifecycle import (
 )
 from bertrand.env.kube.build.refs import (
     DIGEST_REF_RE,
-    channel_refs,
     tagged_repository,
     validate_tagged_ref,
 )
@@ -43,8 +41,6 @@ MANIFEST_JOB_DIAGNOSTIC_TIMEOUT_SECONDS = 10.0
 MANIFEST_JOB_CLEANUP_TIMEOUT_SECONDS = 10.0
 MANIFEST_INTERNAL_SENTINEL = "BERTRAND_INTERNAL_DIGEST_REF="
 MANIFEST_EXTERNAL_SENTINEL = "BERTRAND_EXTERNAL_DIGEST_REF="
-MANIFEST_INTERNAL_CHANNEL_SENTINEL = "BERTRAND_INTERNAL_CHANNEL_DIGEST_REF="
-MANIFEST_EXTERNAL_CHANNEL_SENTINEL = "BERTRAND_EXTERNAL_CHANNEL_DIGEST_REF="
 MANIFEST_AUTH_ENV = "DOCKER_AUTH_CONFIG"
 MANIFEST_AUTH_KEY = "value"
 
@@ -110,25 +106,6 @@ async def _publish_project_image_manifest(
         if external_image is not None
         else None
     )
-    internal_channels = channel_refs(image, identity.channels)
-    for name, ref in internal_channels.items():
-        if ref == image:
-            msg = f"internal manifest channel {name!r} duplicates target image"
-            raise ValueError(msg)
-        service_ref = repository.service_ref(ref)
-        if repository.pull_ref(service_ref) != ref:
-            msg = f"internal manifest channel is not canonical: {ref!r}"
-            raise ValueError(msg)
-    external_channel_refs = (
-        channel_refs(external_image, identity.channels)
-        if external_image is not None
-        else {}
-    )
-    if external_image is not None:
-        for name, ref in external_channel_refs.items():
-            if ref == external_image:
-                msg = f"external manifest channel {name!r} duplicates target image"
-                raise ValueError(msg)
     if auth_id is not None and env_id is None:
         msg = "external registry auth capability requires an environment identity"
         raise ValueError(msg)
@@ -153,22 +130,12 @@ async def _publish_project_image_manifest(
             for platform, ref in platform_refs.items()
         },
         external_image=external_image,
-        channels={
-            name: repository.service_ref(ref) for name, ref in internal_channels.items()
-        },
-        external_channels=external_channel_refs,
         repository=repository,
     )
     job = await Job.create(
         kube,
         namespace=BERTRAND_NAMESPACE,
-        name=_manifest_job_name(
-            image,
-            platform_refs,
-            external_image,
-            internal_channels,
-            external_channel_refs,
-        ),
+        name=_manifest_job_name(),
         labels={
             BERTRAND_ENV: "1",
             MANIFEST_JOB_LABEL: MANIFEST_JOB_LABEL_VALUE,
@@ -204,42 +171,21 @@ async def _publish_project_image_manifest(
     internal_digest_ref = repository.pull_ref(
         _parse_sentinel(logs, MANIFEST_INTERNAL_SENTINEL)
     )
-    channel_digest_refs = MappingProxyType(
-        {
-            name: repository.pull_ref(ref)
-            for name, ref in _parse_channel_sentinels(
-                logs,
-                MANIFEST_INTERNAL_CHANNEL_SENTINEL,
-                expected=internal_channels,
-            ).items()
-        }
-    )
     external_digest_ref = (
         _parse_sentinel(logs, MANIFEST_EXTERNAL_SENTINEL)
         if external_image is not None
         else None
-    )
-    external_channel_digest_refs = MappingProxyType(
-        _parse_channel_sentinels(
-            logs,
-            MANIFEST_EXTERNAL_CHANNEL_SENTINEL,
-            expected=external_channel_refs,
-        )
     )
     record = await record_project_image(
         kube,
         identity=identity,
         image_digest_ref=internal_digest_ref,
         platform_images=MappingProxyType(dict(platform_refs)),
-        channel_digest_refs=channel_digest_refs,
         timeout=deadline - loop.time(),
     )
     return ProjectImagePublication(
         record=record,
         external_digest_ref=external_digest_ref,
-        external_channel_digest_refs=MappingProxyType(
-            dict(external_channel_digest_refs)
-        ),
     )
 
 
@@ -308,8 +254,6 @@ def _manifest_script(
     image: str,
     platform_refs: Mapping[str, str],
     external_image: str | None,
-    channels: Mapping[str, str],
-    external_channels: Mapping[str, str],
     repository: ImageRepository,
 ) -> str:
     host = f"reg={repository.service_addr},tls=disabled"
@@ -346,15 +290,6 @@ def _manifest_script(
             ),
         ]
     )
-    lines.extend(
-        _channel_copy_lines(
-            host,
-            source=image,
-            channels=channels,
-            sentinel=MANIFEST_INTERNAL_CHANNEL_SENTINEL,
-            var_prefix="internal_channel_digest",
-        )
-    )
     if external_image is not None:
         external_repo = tagged_repository(external_image)
         lines.extend(
@@ -370,42 +305,7 @@ def _manifest_script(
                 ),
             ]
         )
-        lines.extend(
-            _channel_copy_lines(
-                host,
-                source=image,
-                channels=external_channels,
-                sentinel=MANIFEST_EXTERNAL_CHANNEL_SENTINEL,
-                var_prefix="external_channel_digest",
-            )
-        )
     return "\n".join(lines)
-
-
-def _channel_copy_lines(
-    host: str,
-    *,
-    source: str,
-    channels: Mapping[str, str],
-    sentinel: str,
-    var_prefix: str,
-) -> list[str]:
-    lines: list[str] = []
-    for index, (name, channel_ref) in enumerate(channels.items()):
-        channel_repo = tagged_repository(channel_ref)
-        digest_var = f"{var_prefix}_{index}"
-        lines.extend(
-            [
-                _regctl(host, "image", "copy", source, channel_ref),
-                f"{digest_var}=$({_regctl(host, 'image', 'digest', channel_ref)})",
-                (
-                    f"printf '%s%s=%s@%s\\n' "
-                    f"{shlex.quote(sentinel)} {shlex.quote(name)} "
-                    f"{shlex.quote(channel_repo)} \"${digest_var}\""
-                ),
-            ]
-        )
-    return lines
 
 
 def _regctl(host: str, *args: str) -> str:
@@ -431,61 +331,5 @@ def _parse_sentinel(logs: str, prefix: str) -> str:
     raise OSError(msg)
 
 
-def _parse_channel_sentinels(
-    logs: str,
-    prefix: str,
-    *,
-    expected: Mapping[str, str],
-) -> dict[str, str]:
-    out: dict[str, str] = {}
-    for line in logs.splitlines():
-        if not line.startswith(prefix):
-            continue
-        payload = line[len(prefix) :].strip()
-        name, sep, ref = payload.partition("=")
-        if not sep or not name:
-            msg = f"manifest Job emitted malformed channel sentinel: {payload!r}"
-            raise OSError(msg)
-        if name not in expected:
-            msg = f"manifest Job emitted unexpected channel digest: {name!r}"
-            raise OSError(msg)
-        if not DIGEST_REF_RE.fullmatch(ref):
-            msg = f"manifest Job emitted malformed channel digest ref: {ref!r}"
-            raise OSError(msg)
-        out[name] = ref
-    missing = set(expected).difference(out)
-    if missing:
-        formatted = ", ".join(repr(name) for name in sorted(missing))
-        msg = f"manifest Job did not emit digest refs for channel(s): {formatted}"
-        raise OSError(msg)
-    return dict(sorted(out.items()))
-
-
-def _manifest_job_name(
-    image: str,
-    platform_refs: Mapping[str, str],
-    external_image: str | None,
-    channels: Mapping[str, str],
-    external_channels: Mapping[str, str],
-) -> str:
-    digest = hashlib.sha256()
-    digest.update(image.encode("utf-8"))
-    digest.update(b"\0")
-    if external_image is not None:
-        digest.update(external_image.encode("utf-8"))
-    for name, ref in channels.items():
-        digest.update(b"\0")
-        digest.update(name.encode("utf-8"))
-        digest.update(b"\0")
-        digest.update(ref.encode("utf-8"))
-    for name, ref in external_channels.items():
-        digest.update(b"\0")
-        digest.update(name.encode("utf-8"))
-        digest.update(b"\0")
-        digest.update(ref.encode("utf-8"))
-    for platform, ref in platform_refs.items():
-        digest.update(b"\0")
-        digest.update(platform.encode("utf-8"))
-        digest.update(b"\0")
-        digest.update(ref.encode("utf-8"))
-    return f"bertrand-manifest-{digest.hexdigest()[:24]}-{uuid.uuid4().hex[:8]}"
+def _manifest_job_name() -> str:
+    return f"bertrand-manifest-{uuid.uuid4().hex[:32]}"

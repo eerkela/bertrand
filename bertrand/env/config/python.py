@@ -116,34 +116,6 @@ type EntrypointName = Annotated[
 ]
 
 
-def _validate_dependency_groups(*, pyproject: Any | None, bertrand: Any | None) -> None:
-    if pyproject is None or bertrand is None:
-        return  # only fire once both resources have been parsed
-
-    groups = set(pyproject.project.optional_dependencies)
-    tags = {tag.tag for tag in bertrand.tags}
-    unknown = sorted(groups.difference(tags))
-    missing = sorted(tags.difference(groups))
-
-    # enforce exact match
-    problems: list[str] = []
-    if unknown:
-        problems.append(
-            "unknown [project.optional-dependencies] groups with no matching "
-            "[[tool.bertrand.tags]].tag: "
-            f"{', '.join(repr(name) for name in unknown)}"
-        )
-    if missing:
-        problems.append(
-            "missing [project.optional-dependencies] groups for declared "
-            "[[tool.bertrand.tags]].tag values: "
-            f"{', '.join(repr(name) for name in missing)}"
-        )
-    if problems:
-        msg = "; ".join(problems)
-        raise ValueError(msg)
-
-
 @resource("python", paths={Path("pyproject.toml")})
 class PyProject(Resource):
     """Describe a managed `pyproject.toml` file.
@@ -324,11 +296,9 @@ class PyProject(Resource):
                     default_factory=dict,
                     alias="optional-dependencies",
                     description=(
-                        "Mapping of optional dependency groups, which should exactly "
-                        "match the declared tags in [tool.bertrand.tags], to further "
-                        "Python-level dependencies.  Using dependency groups allows "
-                        "package managers to select tags via normal 'extras' syntax "
-                        "(e.g. `pip install myproject[dev]`)."
+                        "Mapping of optional dependency groups to further "
+                        "Python-level dependencies.  These follow normal PEP 621 "
+                        "extras semantics (e.g. `pip install myproject[dev]`)."
                     ),
                 ),
             ]
@@ -495,14 +465,11 @@ class PyProject(Resource):
         Model | None
             Validated pyproject configuration.
         """
-        from .bertrand import Bertrand
-
         result = self.Model.model_validate(fragment)
         result.project.resolve_licenses(config.root)
-        _validate_dependency_groups(pyproject=result, bertrand=config.get(Bertrand))
         return result
 
-    async def render(self, config: Config, tag: str | None) -> None:
+    async def render(self, config: Config, *, image_build: bool) -> None:
         """Render managed pyproject configuration tables.
 
         Raises
@@ -510,7 +477,7 @@ class PyProject(Resource):
         OSError
             If the pyproject file cannot be read, parsed, or updated safely.
         """
-        _ = tag
+        del image_build
         python = config.get(PyProject)
         if python is None:
             return

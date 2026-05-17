@@ -26,7 +26,6 @@ from bertrand.env.git import (
     BERTRAND_ENV,
     BERTRAND_NAMESPACE,
     ENV_ID_ENV,
-    IMAGE_TAG_ENV,
     REPO_ID_ENV,
     WORKTREE_ENV,
 )
@@ -50,7 +49,6 @@ BUILDKIT_BUILD_KIND = "BuildKitBuild"
 BUILDKIT_BUILD_PLURAL = "buildkitbuilds"
 BUILDKIT_BUILD_REPO_LABEL = "bertrand.dev/buildkit-build-repo"
 BUILDKIT_BUILD_WORKTREE_LABEL = "bertrand.dev/buildkit-build-worktree"
-BUILDKIT_BUILD_TAG_LABEL = "bertrand.dev/buildkit-build-tag"
 BUILDKIT_BUILD_CONFIG_LABEL = "bertrand.dev/buildkit-build-config"
 BUILDKIT_BUILD_WAIT_POLL_SECONDS = 2.0
 BUILDKIT_BUILD_LABELS = {
@@ -73,28 +71,20 @@ _BUILDKIT_BUILD_SPEC = CustomObjectSpec(
 _BUILDKIT_BUILD_CLIENT = CustomObjectClient(_BUILDKIT_BUILD_SPEC)
 _STRING_MAP_SCHEMA = {"type": "object", "additionalProperties": {"type": "string"}}
 _BOOL_MAP_SCHEMA = {"type": "object", "additionalProperties": {"type": "boolean"}}
-_STRING_LIST_SCHEMA = {
-    "type": "array",
-    "items": {"type": "string", "minLength": 1},
-    "uniqueItems": True,
-}
 _BUILDKIT_BUILD_SPEC_SCHEMA = {
     "type": "object",
     "required": [
         "repo_id",
         "worktree",
-        "tag",
         "env_id",
         "config_id",
         "image",
         "dockerfile",
         "network",
-        "channels",
     ],
     "properties": {
         "repo_id": {"type": "string", "minLength": 1},
         "worktree": {"type": "string", "minLength": 1},
-        "tag": {"type": "string"},
         "env_id": {"type": "string", "minLength": 1},
         "config_id": {"type": "string", "minLength": 1},
         "image": {"type": "string", "minLength": 1},
@@ -105,7 +95,6 @@ _BUILDKIT_BUILD_SPEC_SCHEMA = {
         "secrets": _BOOL_MAP_SCHEMA,
         "ssh": _BOOL_MAP_SCHEMA,
         "devices": _BOOL_MAP_SCHEMA,
-        "channels": _STRING_LIST_SCHEMA,
         "external_image": {"type": "string", "nullable": True},
         "auth_id": {"type": "string", "nullable": True},
     },
@@ -123,7 +112,6 @@ _BUILDKIT_BUILD_STATUS_SCHEMA = {
         "active_job": {"type": "string"},
         "active_platform": {"type": "string"},
         "external_digest_ref": {"type": "string"},
-        "external_channel_digest_refs": _STRING_MAP_SCHEMA,
         "record_name": {"type": "string"},
         "message": {"type": "string"},
         "log_excerpt": {"type": "string"},
@@ -141,25 +129,19 @@ class ProjectImageIdentity:
         Stable repository UUID containing the project source.
     worktree : str
         Repository-volume subpath for this worktree.
-    tag : str
-        Project image configuration key.
     env_id : str
         Deterministic environment UUID for this project image.
     config_id : str
         Deterministic project image configuration fingerprint.
     image : str
         Internal mutable image reference.
-    channels : tuple[str, ...]
-        Mutable channel names this image should publish.
     """
 
     repo_id: str
     worktree: str
-    tag: str
     env_id: str
     config_id: str
     image: str
-    channels: tuple[str, ...]
 
 
 class BuildKitBuildSpec(BaseModel):
@@ -171,8 +153,6 @@ class BuildKitBuildSpec(BaseModel):
         Stable repository UUID containing the project source PVC.
     worktree : str, optional
         Repository-volume subpath for the project worktree.
-    tag : str
-        Configured project image key.
     env_id : str
         Deterministic capability environment UUID.
     config_id : str
@@ -193,8 +173,6 @@ class BuildKitBuildSpec(BaseModel):
         SSH capability requests keyed by capability ID.
     devices : dict[str, bool], optional
         CDI device capability requests keyed by capability ID.
-    channels : list[str], optional
-        Mutable channel names to publish after the build.
     external_image : str | None, optional
         Optional external image reference to copy the assembled manifest to.
     auth_id : str | None, optional
@@ -204,7 +182,6 @@ class BuildKitBuildSpec(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     repo_id: _NonEmptyString
     worktree: _NonEmptyString = "."
-    tag: str
     env_id: _NonEmptyString
     config_id: _NonEmptyString
     image: _NonEmptyString
@@ -215,7 +192,6 @@ class BuildKitBuildSpec(BaseModel):
     secrets: dict[_NonEmptyString, bool] = Field(default_factory=dict)
     ssh: dict[_NonEmptyString, bool] = Field(default_factory=dict)
     devices: dict[_NonEmptyString, bool] = Field(default_factory=dict)
-    channels: list[_NonEmptyString] = Field(default_factory=list)
     external_image: str | None = None
     auth_id: str | None = None
 
@@ -301,15 +277,6 @@ class BuildKitBuildSpec(BaseModel):
             normalized[checked] = required
         return dict(sorted(normalized.items()))
 
-    @field_validator("channels")
-    @classmethod
-    def _normalize_channels(cls, value: list[str]) -> list[str]:
-        normalized = sorted({channel.strip() for channel in value})
-        if any(not channel for channel in normalized):
-            msg = "BuildKitBuild channels cannot contain empty names"
-            raise ValueError(msg)
-        return normalized
-
     @classmethod
     def from_identity(
         cls,
@@ -358,7 +325,6 @@ class BuildKitBuildSpec(BaseModel):
         return cls(
             repo_id=identity.repo_id,
             worktree=identity.worktree,
-            tag=identity.tag,
             env_id=identity.env_id,
             config_id=identity.config_id,
             image=identity.image,
@@ -369,7 +335,6 @@ class BuildKitBuildSpec(BaseModel):
             secrets=dict(sorted(secrets.items())),
             ssh=dict(sorted(ssh.items())),
             devices=dict(sorted(devices.items())),
-            channels=sorted({channel.strip() for channel in identity.channels}),
             external_image=external_image,
             auth_id=auth_id,
         )
@@ -416,11 +381,9 @@ class BuildKitBuildSpec(BaseModel):
         return ProjectImageIdentity(
             repo_id=self.repo_id,
             worktree=self.worktree,
-            tag=self.tag,
             env_id=self.env_id,
             config_id=self.config_id,
             image=self.image,
-            channels=tuple(sorted({channel.strip() for channel in self.channels})),
         )
 
     @property
@@ -438,7 +401,6 @@ class BuildKitBuildSpec(BaseModel):
             {
                 BUILDKIT_BUILD_REPO_LABEL: _label_hash(identity.repo_id),
                 BUILDKIT_BUILD_WORKTREE_LABEL: _label_hash(identity.worktree),
-                BUILDKIT_BUILD_TAG_LABEL: _label_hash(identity.tag),
                 BUILDKIT_BUILD_CONFIG_LABEL: _label_hash(identity.config_id),
             }
         )
@@ -458,7 +420,6 @@ class BuildKitBuildSpec(BaseModel):
             BERTRAND_ENV: "1",
             REPO_ID_ENV: identity.repo_id,
             WORKTREE_ENV: identity.worktree,
-            IMAGE_TAG_ENV: identity.tag,
             ENV_ID_ENV: identity.env_id,
             PROJECT_IMAGE_CONFIG_ID: identity.config_id,
         }
@@ -483,8 +444,6 @@ class BuildKitBuildStatus(BaseModel):
         Native OCI platform currently being built, if any.
     external_digest_ref : str
         External digest ref emitted by manifest copy, if any.
-    external_channel_digest_refs : dict[str, str]
-        External digest-pinned channel refs.
     record_name : str
         `BertrandImage` lifecycle record written by project publication.
     message : str
@@ -501,7 +460,6 @@ class BuildKitBuildStatus(BaseModel):
     active_job: str = ""
     active_platform: str = ""
     external_digest_ref: str = ""
-    external_channel_digest_refs: dict[str, str] = Field(default_factory=dict)
     record_name: str = ""
     message: str = ""
     log_excerpt: str = ""

@@ -776,7 +776,7 @@ async def _render_config_artifacts(
                         shutil.rmtree(path, ignore_errors=True)
                     else:
                         path.unlink(missing_ok=True)
-            await config.sync(tag=None)
+            await config.sync()
 
 
 async def _make_initial_commit(

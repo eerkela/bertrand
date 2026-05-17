@@ -7,7 +7,6 @@ FROM bertrand:${BERTRAND}.${DEBUG}.${DEV}.${CPUS}.{{ page_size_kib }}
 ARG {{ arg.key }}
 {% endfor %}
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
-    {{ image_tag_env }}={{ image_tag }} \
     UV_CACHE_DIR={{ uv_cache }} \
     CONAN_HOME={{ conan_home }} \
     CCACHE_DIR={{ ccache_dir }}

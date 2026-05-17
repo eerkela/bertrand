@@ -3,10 +3,6 @@
 from __future__ import annotations
 
 import re
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from collections.abc import Mapping, Sequence
 
 IMAGE_REF_COMPONENT_RE = re.compile(r"^[a-z0-9]+(?:(?:[._]|__|[-]*)[a-z0-9]+)*$")
 IMAGE_TAG_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$")
@@ -160,27 +156,6 @@ def validate_tagged_ref(ref: str | None, *, label: str = "image reference") -> s
     return value
 
 
-def replace_tag(ref: str, tag: str, *, label: str = "image reference") -> str:
-    """Replace the tag on a mutable image reference.
-
-    Parameters
-    ----------
-    ref : str
-        Mutable image reference with an explicit tag.
-    tag : str
-        Replacement tag.
-    label : str, optional
-        Human-readable field label for diagnostics.
-
-    Returns
-    -------
-    str
-        Image reference with the replacement tag.
-    """
-    repository, _ = split_tagged_ref(ref, label=label)
-    return f"{repository}:{validate_tag(tag, label='image channel tag')}"
-
-
 def digest_ref(image: str, digest: str) -> str:
     """Render an immutable digest-pinned image reference.
 
@@ -237,24 +212,6 @@ def digest_from_ref(ref: str, *, label: str = "image digest ref") -> str:
         msg = f"{label} must include a sha256 digest: {ref!r}"
         raise ValueError(msg)
     return validate_digest(value.rpartition("@")[2], label=label)
-
-
-def channel_refs(image: str, channels: Sequence[str]) -> dict[str, str]:
-    """Derive tagged image refs for moving channel names.
-
-    Parameters
-    ----------
-    image : str
-        Versioned mutable image ref.
-    channels : Sequence[str]
-        Channel tag names.
-
-    Returns
-    -------
-    dict[str, str]
-        Mapping from channel name to mutable image ref.
-    """
-    return {channel: replace_tag(image, channel) for channel in channels}
 
 
 def platform_token(platform: str) -> str:
@@ -358,42 +315,3 @@ def rewrite_registry_ref(
         return f"{target_prefix}{normalized[len(source_prefix) :]}"
     msg = f"image reference {ref!r} does not belong to registry {canonical_host!r}"
     raise ValueError(msg)
-
-
-def validate_channel_refs(
-    refs: Mapping[str, str] | None,
-    *,
-    label: str,
-) -> dict[str, str]:
-    """Validate a mapping of named mutable channel refs.
-
-    Parameters
-    ----------
-    refs : Mapping[str, str] | None
-        Optional channel-name to image-ref mapping.
-    label : str
-        Human-readable channel label for diagnostics.
-
-    Returns
-    -------
-    dict[str, str]
-        Sorted channel mapping with validated tagged refs.
-
-    Raises
-    ------
-    ValueError
-        If any channel name or image reference is invalid.
-    """
-    if refs is None:
-        return {}
-    out: dict[str, str] = {}
-    for raw_name, raw_ref in refs.items():
-        name = str(raw_name).strip()
-        if not name:
-            msg = f"{label} name cannot be empty"
-            raise ValueError(msg)
-        if name in out:
-            msg = f"duplicate {label} name: {name!r}"
-            raise ValueError(msg)
-        out[name] = validate_tagged_ref(raw_ref, label=f"{label} {name!r}")
-    return dict(sorted(out.items()))

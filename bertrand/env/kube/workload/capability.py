@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 from dataclasses import dataclass
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Protocol
 
 from bertrand.env.config.core import _check_kube_name
@@ -12,6 +13,8 @@ from bertrand.env.kube.api.spec import VolumeMountSpec, VolumeSpec
 from bertrand.env.kube.capability.base import Capability
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping, Sequence
+
     from bertrand.env.config.core import KubeName
     from bertrand.env.kube.api.client import Kube
 
@@ -55,6 +58,24 @@ class WorkloadDeviceRequest(Protocol):
     permissions: str
 
 
+class WorkloadContainerCapabilityRequest(Protocol):
+    """Structural runtime capability request for one workload container.
+
+    Attributes
+    ----------
+    name : str
+        Container name that owns these runtime capability requests.
+    secrets : Sequence[WorkloadSecretRequest]
+        Secret capability requests mounted into this container.
+    devices : Sequence[WorkloadDeviceRequest]
+        Device capability requests resolved for this container.
+    """
+
+    name: str
+    secrets: Sequence[WorkloadSecretRequest]
+    devices: Sequence[WorkloadDeviceRequest]
+
+
 @dataclass(frozen=True)
 class ResolvedWorkloadSecret:
     """Resolved runtime Secret capability mounted into a workload.
@@ -63,6 +84,8 @@ class ResolvedWorkloadSecret:
     ----------
     capability_id : str
         Host-agnostic capability ID from project configuration.
+    container_name : str
+        Container that receives the Secret mount.
     secret_name : str
         Kubernetes Secret name backing the resolved capability.
     volume_name : str
@@ -74,6 +97,7 @@ class ResolvedWorkloadSecret:
     """
 
     capability_id: str
+    container_name: str
     secret_name: str
     volume_name: str
     mount_path: str
@@ -88,6 +112,8 @@ class ResolvedWorkloadDevice:
     ----------
     capability_id : str
         Host-agnostic capability ID from project configuration.
+    container_name : str
+        Container that requested this device capability.
     selector : str
         CDI selector from the resolved cluster capability.
     container_path : str | None
@@ -97,6 +123,7 @@ class ResolvedWorkloadDevice:
     """
 
     capability_id: str
+    container_name: str
     selector: str
     container_path: str | None
     permissions: str
@@ -110,8 +137,8 @@ class WorkloadCapabilities:
     ----------
     volumes : tuple[VolumeSpec, ...]
         Pod volumes required by resolved Secret capabilities.
-    primary_mounts : tuple[VolumeMountSpec, ...]
-        Volume mounts to apply only to the primary container.
+    mounts_by_container : Mapping[str, tuple[VolumeMountSpec, ...]]
+        Secret mounts keyed by container name.
     secrets : tuple[ResolvedWorkloadSecret, ...]
         Resolved Secret capability records.
     devices : tuple[ResolvedWorkloadDevice, ...]
@@ -120,7 +147,7 @@ class WorkloadCapabilities:
     """
 
     volumes: tuple[VolumeSpec, ...]
-    primary_mounts: tuple[VolumeMountSpec, ...]
+    mounts_by_container: Mapping[str, tuple[VolumeMountSpec, ...]]
     secrets: tuple[ResolvedWorkloadSecret, ...]
     devices: tuple[ResolvedWorkloadDevice, ...]
 
@@ -128,8 +155,7 @@ class WorkloadCapabilities:
 async def resolve_workload_capabilities(
     kube: Kube,
     *,
-    secrets: tuple[WorkloadSecretRequest, ...],
-    devices: tuple[WorkloadDeviceRequest, ...],
+    containers: tuple[WorkloadContainerCapabilityRequest, ...],
     env_id: str,
     node: str | None = None,
     timeout: float,
@@ -140,10 +166,8 @@ async def resolve_workload_capabilities(
     ----------
     kube : Kube
         Active Kubernetes API context.
-    secrets : tuple[WorkloadSecretRequest, ...]
-        Runtime Secret capability requests.
-    devices : tuple[WorkloadDeviceRequest, ...]
-        Runtime device capability requests.
+    containers : tuple[WorkloadContainerCapabilityRequest, ...]
+        Runtime capability requests grouped by container.
     env_id : str
         Environment UUID used for the first capability lookup tier.
     node : str | None, optional
@@ -166,78 +190,91 @@ async def resolve_workload_capabilities(
         raise TimeoutError(msg)
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout
-    volumes: list[VolumeSpec] = []
-    mounts: list[VolumeMountSpec] = []
+    volumes: dict[str, VolumeSpec] = {}
+    mounts_by_container: dict[str, list[VolumeMountSpec]] = {
+        _check_kube_name(container.name): [] for container in containers
+    }
     resolved_secrets: list[ResolvedWorkloadSecret] = []
     resolved_devices: list[ResolvedWorkloadDevice] = []
 
-    for request in secrets:
-        capability_id = _check_kube_name(str(request.id))
-        capability = await Capability.resolve(
-            kube,
-            kind="secret",
-            capability_id=capability_id,
-            env_id=env_id,
-            node=node,
-            required=request.required,
-            timeout=deadline - loop.time(),
-        )
-        if capability is None:
-            continue
-        volume_name = _capability_volume_name("secret", capability_id)
-        mount_path = f"{WORKLOAD_SECRET_MOUNT}/{capability_id}"
-        volumes.append(
-            VolumeSpec.secret(
+    for container in containers:
+        container_name = _check_kube_name(container.name)
+        for request in container.secrets:
+            capability_id = _check_kube_name(str(request.id))
+            capability = await Capability.resolve(
+                kube,
+                kind="secret",
+                capability_id=capability_id,
+                env_id=env_id,
+                node=node,
+                required=request.required,
+                timeout=deadline - loop.time(),
+            )
+            if capability is None:
+                continue
+            volume_name = _capability_volume_name("secret", capability_id)
+            mount_path = f"{WORKLOAD_SECRET_MOUNT}/{capability_id}"
+            volumes.setdefault(
                 volume_name,
-                secret_name=capability.ref.name,
-                default_mode=0o400,
-            )
-        )
-        mounts.append(
-            VolumeMountSpec(
-                name=volume_name,
-                mount_path=mount_path,
-                read_only=True,
-            )
-        )
-        resolved_secrets.append(
-            ResolvedWorkloadSecret(
-                capability_id=capability_id,
-                secret_name=capability.ref.name,
-                volume_name=volume_name,
-                mount_path=mount_path,
-                payload_path=f"{mount_path}/{CAPABILITY_VALUE_KEY}",
-            )
-        )
-
-    for request in devices:
-        capability_id = _check_kube_name(str(request.id))
-        capability = await Capability.resolve_device(
-            kube,
-            capability_id=capability_id,
-            env_id=env_id,
-            node=node,
-            required=request.required,
-            timeout=deadline - loop.time(),
-        )
-        if capability is None:
-            continue
-        resolved_devices.append(
-            ResolvedWorkloadDevice(
-                capability_id=capability_id,
-                selector=capability.selector,
-                container_path=(
-                    str(request.container_path)
-                    if request.container_path is not None
-                    else None
+                VolumeSpec.secret(
+                    volume_name,
+                    secret_name=capability.ref.name,
+                    default_mode=0o400,
                 ),
-                permissions=request.permissions,
             )
-        )
+            mounts_by_container[container_name].append(
+                VolumeMountSpec(
+                    name=volume_name,
+                    mount_path=mount_path,
+                    read_only=True,
+                )
+            )
+            resolved_secrets.append(
+                ResolvedWorkloadSecret(
+                    capability_id=capability_id,
+                    container_name=container_name,
+                    secret_name=capability.ref.name,
+                    volume_name=volume_name,
+                    mount_path=mount_path,
+                    payload_path=f"{mount_path}/{CAPABILITY_VALUE_KEY}",
+                )
+            )
 
+        for request in container.devices:
+            capability_id = _check_kube_name(str(request.id))
+            capability = await Capability.resolve_device(
+                kube,
+                capability_id=capability_id,
+                env_id=env_id,
+                node=node,
+                required=request.required,
+                timeout=deadline - loop.time(),
+            )
+            if capability is None:
+                continue
+            resolved_devices.append(
+                ResolvedWorkloadDevice(
+                    capability_id=capability_id,
+                    container_name=container_name,
+                    selector=capability.selector,
+                    container_path=(
+                        str(request.container_path)
+                        if request.container_path is not None
+                        else None
+                    ),
+                    permissions=request.permissions,
+                )
+            )
+
+    mounts = MappingProxyType(
+        {
+            container: tuple(entries)
+            for container, entries in sorted(mounts_by_container.items())
+        }
+    )
     return WorkloadCapabilities(
-        volumes=tuple(volumes),
-        primary_mounts=tuple(mounts),
+        volumes=tuple(volumes[name] for name in sorted(volumes)),
+        mounts_by_container=mounts,
         secrets=tuple(resolved_secrets),
         devices=tuple(resolved_devices),
     )

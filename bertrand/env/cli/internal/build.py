@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import os
 from typing import TYPE_CHECKING
 
 from bertrand.env.build_args import (
@@ -13,11 +12,10 @@ from bertrand.env.build_args import (
     encode_image_build_args,
     normalize_image_build_args,
 )
-from bertrand.env.config.bertrand import DEFAULT_TAG, Bertrand
+from bertrand.env.config.bertrand import Bertrand
 from bertrand.env.config.core import Config, _metadata_lock_key
 from bertrand.env.config.python import PyProject
 from bertrand.env.git import (
-    IMAGE_TAG_ENV,
     INFINITY,
     WORKTREE_MOUNT,
     atomic_write_text,
@@ -44,24 +42,13 @@ def bertrand_build(args: argparse.Namespace) -> None:
     """
 
     async def build() -> None:
-        tag = _active_image_tag()
         cli_args = _parse_build_args(args.build_arg)
         resolved_args = _resolve_image_build_args(cli_args)
         with await Kube.host(timeout=INFINITY) as kube:
             async with await Config.load(WORKTREE_MOUNT, kube=kube) as config:
-                await _build(config, tag=tag, build_args=resolved_args)
+                await _build(config, build_args=resolved_args)
 
     asyncio.run(build())
-
-
-def _active_image_tag() -> str:
-    if IMAGE_TAG_ENV not in os.environ:
-        msg = (
-            "could not determine active image tag in container environment: "
-            f"'{IMAGE_TAG_ENV}'"
-        )
-        raise OSError(msg)
-    return os.environ[IMAGE_TAG_ENV].strip()
 
 
 def _parse_build_args(entries: Sequence[str]) -> dict[str, str]:
@@ -124,7 +111,7 @@ def _write_stored_image_build_args(args: dict[str, str]) -> None:
     IMAGE_BUILD_ARGS_FILE.chmod(0o444)
 
 
-async def _build(config: Config, *, tag: str, build_args: dict[str, str]) -> None:
+async def _build(config: Config, *, build_args: dict[str, str]) -> None:
     if not config:
         msg = "build() requires an active config context"
         raise RuntimeError(msg)
@@ -136,21 +123,6 @@ async def _build(config: Config, *, tag: str, build_args: dict[str, str]) -> Non
     if bertrand is None:
         msg = "build() requires parsed 'bertrand' configuration"
         raise OSError(msg)
-    if tag not in bertrand.image:
-        msg = (
-            f"build() received unknown active tag '{tag}' (declared tags: "
-            f"{', '.join(sorted(repr(name) for name in bertrand.image))})"
-        )
-        raise OSError(msg)
-
-    extra = "" if tag == DEFAULT_TAG else tag
-    groups = python.project.optional_dependencies
-    if extra and extra not in groups:
-        msg = (
-            "build() requires matching [project.optional-dependencies] group for "
-            f"active non-default tag '{tag}'"
-        )
-        raise OSError(msg)
 
     sync_cmd = [
         "uv",
@@ -158,12 +130,8 @@ async def _build(config: Config, *, tag: str, build_args: dict[str, str]) -> Non
         "--locked",
         "--system",
         "--inexact",
-        "--no-default-groups",
-        "--no-dev",
         *_uv_build_arg_settings(build_args),
     ]
-    if extra:
-        sync_cmd.extend(("--extra", extra))
     sync_cmd.extend(
         [
             "--no-build-isolation-package",
@@ -178,7 +146,7 @@ async def _build(config: Config, *, tag: str, build_args: dict[str, str]) -> Non
         _metadata_lock_key(config.repo, config.root),
         timeout=config.timeout,
     ):
-        await config.sync(tag)
+        await config.sync(image_build=True)
         await run(
             [
                 "uv",

@@ -30,7 +30,6 @@ from .core import (
     NonEmpty,
     NoWhiteSpace,
     Resource,
-    TOMLKey,
     resource,
 )
 
@@ -341,10 +340,7 @@ class ConanConfig(Resource):
                 default="Release",
                 alias="build-type",
                 examples=["Release", "Debug"],
-                description=(
-                    "Global default build type for Conan builds, which can be "
-                    "overridden by individual images."
-                ),
+                description=("Global default build type for Conan builds."),
             ),
         ]
         conf: Annotated[
@@ -354,8 +350,7 @@ class ConanConfig(Resource):
                 description=(
                     "Global mapping of namespace tables to conf entries, which get "
                     "converted into '<namespace>:<name>=<value>' format in the "
-                    "generated Conan profile.  Individual images can specify "
-                    "additional entries that merge with these global defaults."
+                    "generated Conan profile."
                 ),
             ),
         ]
@@ -366,8 +361,7 @@ class ConanConfig(Resource):
                 description=(
                     "Global mapping of namespace tables to package options, which get "
                     "converted into '<package-pattern>:<option>=<value>' format in the "
-                    "generated Conan profile.  Individual images can specify "
-                    "additional options that merge with these global defaults."
+                    "generated Conan profile."
                 ),
             ),
         ]
@@ -377,8 +371,7 @@ class ConanConfig(Resource):
             Field(
                 default_factory=list,
                 description=(
-                    "Global list of Conan dependencies to install for the project, "
-                    "which can be extended for individual images."
+                    "Global list of Conan dependencies to install for the project."
                 ),
             ),
         ]
@@ -427,25 +420,15 @@ class ConanConfig(Resource):
             for option, value in sorted(pattern_options.items()):
                 out[f"{pattern}:{option}"] = value
 
-    async def _render_conanfile(self, config: Config, tag: TOMLKey) -> None:
-        from .bertrand import Bertrand
+    async def _render_conanfile(self, config: Config) -> None:
         from .python import PyProject
 
         python = config.get(PyProject)
-        bertrand = config.get(Bertrand)
         conan = config.get(ConanConfig)
         assert conan is not None
 
-        # start with global requirements, then merge tag-specific additions if
-        # applicable
-        active = None
+        # check requirement identities and sort into host/tool requirements
         requires = list(conan.requires)
-        if bertrand is not None:
-            active = bertrand.image.get(tag)
-            if active is not None:
-                requires.extend(active.conan.requires)
-
-        # check merged requirement identities and sort into host/tool requirements
         host_requires: list[ConanConfig.Model.Require] = []
         tool_requires: list[ConanConfig.Model.Require] = []
         seen: set[tuple[str, str]] = set()
@@ -453,7 +436,7 @@ class ConanConfig(Resource):
             identity = (req.kind, req.package)
             if identity in seen:
                 msg = (
-                    f"duplicate effective conan requirement identity for tag '{tag}': "
+                    "duplicate effective conan requirement identity: "
                     f"kind='{req.kind}', package='{req.package}'"
                 )
                 raise OSError(msg)
@@ -465,12 +448,9 @@ class ConanConfig(Resource):
         requires = sorted(host_requires, key=lambda r: r.package)
         tool_requires.sort(key=lambda r: r.package)
 
-        # merge global + tag-level Conan options mapping for global/tag tables, then
-        # merge any per-require options
+        # merge global Conan options, then merge any per-require options
         default_options: dict[str, Scalar] = {}
         self._merge_options(default_options, conan.options)
-        if active is not None:
-            self._merge_options(default_options, active.conan.options)
         for req in requires + tool_requires:
             try:
                 package = RecipeReference.loads(req.package).name
@@ -584,14 +564,10 @@ class ConanConfig(Resource):
             raise OSError(msg)
         return value
 
-    async def _render_conanprofile(self, config: Config, tag: TOMLKey) -> None:
-        from .bertrand import Bertrand
-
-        bertrand = config.get(Bertrand)
+    async def _render_conanprofile(self, config: Config) -> None:
         conan = config.get(ConanConfig)
         assert conan is not None
 
-        # merge global and tag-specific build_type + conf settings
         build_type = conan.build_type
         conf = self._merge_conf(
             {
@@ -605,12 +581,6 @@ class ConanConfig(Resource):
             },
             conan.conf,
         )
-        if bertrand is not None:
-            active = bertrand.image.get(tag)
-            if active is not None:
-                if active.conan.build_type:
-                    build_type = active.conan.build_type
-                conf = self._merge_conf(conf, active.conan.conf)
         conf_def = ConfDefinition()
         for namespace in sorted(conf):
             for key, value in sorted(conf[namespace].items()):
@@ -649,8 +619,7 @@ class ConanConfig(Resource):
             CONAN_HOME / "profiles" / "default", "\n".join(lines), encoding="utf-8"
         )
 
-    async def _render_conanremotes(self, config: Config, tag: TOMLKey) -> None:
-        _ = tag
+    async def _render_conanremotes(self, config: Config) -> None:
         conan = config.get(ConanConfig)
         assert conan is not None
 
@@ -677,13 +646,13 @@ class ConanConfig(Resource):
 
         atomic_write_text(CONAN_HOME / "remotes.json", text, encoding="utf-8")
 
-    async def render(self, config: Config, tag: TOMLKey | None) -> None:
-        """Render Conan artifacts for the active image tag."""
-        if tag is None or config.get(ConanConfig) is None:
+    async def render(self, config: Config, *, image_build: bool) -> None:
+        """Render Conan artifacts for an image build."""
+        if not image_build or config.get(ConanConfig) is None:
             return
-        await self._render_conanfile(config, tag)
-        await self._render_conanprofile(config, tag)
-        await self._render_conanremotes(config, tag)
+        await self._render_conanfile(config)
+        await self._render_conanprofile(config)
+        await self._render_conanremotes(config)
 
     async def schema(self) -> dict[str, Any]:
         """Return the Conan configuration schema.

@@ -4683,10 +4683,10 @@ class ClangFormat(Resource):
             result[f"{name}MaxDigitsRemove"] = model.Max
         return result
 
-    async def render(self, config: Config, tag: str | None) -> None:
+    async def render(self, config: Config, *, image_build: bool) -> None:
         """Render the `.clang-format` artifact."""
         model = config.get(ClangFormat)
-        if tag is None or model is None:
+        if not image_build or model is None:
             return
         content: dict[str, Any] = {
             "DisableFormat": not model.Enable,

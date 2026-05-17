@@ -15,7 +15,6 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from bertrand.env.git import BERTRAND_ENV, BERTRAND_NAMESPACE
 from bertrand.env.kube.build.refs import (
     DIGEST_REF_RE,
-    channel_refs,
     digest_from_ref,
     digest_ref,
 )
@@ -42,7 +41,6 @@ PROJECT_IMAGE_LABEL = "bertrand.dev/project-image"
 PROJECT_IMAGE_LABEL_VALUE = "v1"
 PROJECT_IMAGE_REPO_LABEL = "bertrand.dev/project-image-repo"
 PROJECT_IMAGE_WORKTREE_LABEL = "bertrand.dev/project-image-worktree"
-PROJECT_IMAGE_TAG_LABEL = "bertrand.dev/project-image-tag"
 PROJECT_IMAGE_ENV_LABEL = "bertrand.dev/project-image-env"
 PROJECT_IMAGE_CONFIG_LABEL = "bertrand.dev/project-image-config"
 PROJECT_IMAGE_PHASE_LABEL = "bertrand.dev/project-image-phase"
@@ -59,12 +57,10 @@ class _ProjectImageSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
     repo_id: _NonEmptyString
     worktree: _NonEmptyString
-    tag: str
     env_id: _NonEmptyString
     image: _NonEmptyString
     digest_ref: _NonEmptyString
     platform_images: dict[_NonEmptyString, _NonEmptyString]
-    channels: list[_NonEmptyString] = Field(default_factory=list)
     config_id: _NonEmptyString
     phase: _ProjectImagePhase = "Active"
     published_at: datetime | None = None
@@ -79,18 +75,15 @@ class _ProjectImageSpec(BaseModel):
         identity: ProjectImageIdentity,
         digest_ref: str,
         platform_images: Mapping[str, str],
-        channel_names: Sequence[str],
         published_at: datetime,
     ) -> _ProjectImageSpec:
         return cls(
             repo_id=identity.repo_id,
             worktree=identity.worktree,
-            tag=identity.tag,
             env_id=identity.env_id,
             image=identity.image,
             digest_ref=digest_ref,
             platform_images=dict(sorted(platform_images.items())),
-            channels=sorted(channel_names),
             config_id=identity.config_id,
             phase="Active",
             published_at=published_at,
@@ -104,15 +97,11 @@ class _ProjectImageSpec(BaseModel):
         *,
         repo_id: str,
         worktree: str,
-        tag: str | None,
     ) -> dict[str, str]:
-        labels = {
+        return {
             PROJECT_IMAGE_REPO_LABEL: _label_hash(repo_id),
             PROJECT_IMAGE_WORKTREE_LABEL: _label_hash(worktree),
         }
-        if tag is not None:
-            labels[PROJECT_IMAGE_TAG_LABEL] = _label_hash(tag)
-        return labels
 
     @property
     def labels(self) -> dict[str, str]:
@@ -121,7 +110,6 @@ class _ProjectImageSpec(BaseModel):
             **self.identity_labels(
                 repo_id=self.repo_id,
                 worktree=self.worktree,
-                tag=self.tag,
             ),
             PROJECT_IMAGE_ENV_LABEL: _label_hash(self.env_id),
             PROJECT_IMAGE_CONFIG_LABEL: _label_hash(self.config_id),
@@ -132,12 +120,10 @@ class _ProjectImageSpec(BaseModel):
         return {
             "repo_id": self.repo_id,
             "worktree": self.worktree,
-            "tag": self.tag,
             "env_id": self.env_id,
             "image": self.image,
             "digest_ref": self.digest_ref,
             "platform_images": dict(sorted(self.platform_images.items())),
-            "channels": sorted(self.channels),
             "config_id": self.config_id,
             "phase": self.phase,
             "published_at": _datetime_payload(self.published_at),
@@ -152,7 +138,6 @@ _PROJECT_IMAGE_SPEC_SCHEMA = {
     "required": [
         "repo_id",
         "worktree",
-        "tag",
         "env_id",
         "image",
         "digest_ref",
@@ -164,7 +149,6 @@ _PROJECT_IMAGE_SPEC_SCHEMA = {
     "properties": {
         "repo_id": {"type": "string", "minLength": 1},
         "worktree": {"type": "string", "minLength": 1},
-        "tag": {"type": "string"},
         "env_id": {"type": "string", "minLength": 1},
         "image": {"type": "string", "minLength": 1},
         "digest_ref": {
@@ -179,11 +163,6 @@ _PROJECT_IMAGE_SPEC_SCHEMA = {
                 "type": "string",
                 "pattern": DIGEST_REF_RE.pattern,
             },
-        },
-        "channels": {
-            "type": "array",
-            "items": {"type": "string", "minLength": 1},
-            "uniqueItems": True,
         },
         "config_id": {"type": "string", "minLength": 1},
         "phase": {"type": "string", "enum": ["Active", "Retired"]},
@@ -274,10 +253,6 @@ class ProjectImageRecord(BaseModel):
             platform_images=record.platform_images,
             context=f"{PROJECT_IMAGE_KIND} {record.name!r}",
         )
-        _validate_channels(
-            channels=record.channels,
-            context=f"{PROJECT_IMAGE_KIND} {record.name!r}",
-        )
         return record
 
     @property
@@ -323,17 +298,6 @@ class ProjectImageRecord(BaseModel):
             Repository-relative worktree identity.
         """
         return self.spec.worktree
-
-    @property
-    def tag(self) -> str:
-        """Return the configured project image key.
-
-        Returns
-        -------
-        str
-            Configured image key from ``[tool.bertrand.image]``.
-        """
-        return self.spec.tag
 
     @property
     def env_id(self) -> str:
@@ -402,18 +366,6 @@ class ProjectImageRecord(BaseModel):
         return MappingProxyType(dict(sorted(self.spec.platform_images.items())))
 
     @property
-    def channels(self) -> Mapping[str, str]:
-        """Return internal mutable channel refs.
-
-        Returns
-        -------
-        Mapping[str, str]
-            Read-only mapping from channel name to internal mutable channel ref.
-        """
-        channel_names = _normalize_channel_names(self.spec.channels)
-        return MappingProxyType(channel_refs(self.spec.image, channel_names))
-
-    @property
     def config_id(self) -> str:
         """Return the project image configuration identity.
 
@@ -479,20 +431,6 @@ class ProjectImageRecord(BaseModel):
         """
         return self.spec.last_error
 
-    @property
-    def channel_digest_refs(self) -> Mapping[str, str]:
-        """Return internal digest-pinned channel refs.
-
-        Returns
-        -------
-        Mapping[str, str]
-            Read-only channel digest refs derived from this record's published
-            digest.
-        """
-        return MappingProxyType(
-            {name: digest_ref(ref, self.digest) for name, ref in self.channels.items()}
-        )
-
     def _lifecycle_spec(
         self,
         *,
@@ -504,12 +442,10 @@ class ProjectImageRecord(BaseModel):
         return _ProjectImageSpec(
             repo_id=self.repo_id,
             worktree=self.worktree,
-            tag=self.tag,
             env_id=self.env_id,
             image=self.image,
             digest_ref=self.digest_ref,
             platform_images=dict(self.platform_images),
-            channels=list(self.spec.channels),
             config_id=self.config_id,
             phase=phase,
             published_at=self.published_at,
@@ -529,13 +465,10 @@ class ProjectImagePublication:
         Active lifecycle record written for the published digest.
     external_digest_ref : str | None, optional
         External digest-pinned image reference reported after copy.
-    external_channel_digest_refs : Mapping[str, str], optional
-        Read-only mapping from external channel name to digest-pinned ref.
     """
 
     record: ProjectImageRecord
     external_digest_ref: str | None = None
-    external_channel_digest_refs: Mapping[str, str] = MappingProxyType({})
 
 
 async def ensure_project_image_crd(kube: Kube, *, timeout: float) -> None:
@@ -643,7 +576,6 @@ async def retire_project_images(
     repo_id: str,
     worktree: str,
     timeout: float,
-    tag: str | None = None,
 ) -> list[ProjectImageRecord]:
     """Retire active project image records without deleting registry manifests.
 
@@ -657,9 +589,6 @@ async def retire_project_images(
         Repository-relative worktree identity, or ``"."`` for the repository root.
     timeout : float
         Maximum request budget in seconds.
-    tag : str | None, optional
-        Optional configured image key filter. If omitted, active records for every
-        key in the repo/worktree identity are retired.
 
     Returns
     -------
@@ -678,8 +607,6 @@ async def retire_project_images(
         raise TimeoutError(msg)
     repo_id = _check_uuid(repo_id)
     worktree = worktree_identity(worktree)
-    if tag is not None:
-        tag = tag.strip()
 
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout
@@ -689,13 +616,12 @@ async def retire_project_images(
         labels=_ProjectImageSpec.identity_labels(
             repo_id=repo_id,
             worktree=worktree,
-            tag=tag,
         ),
         timeout=deadline - loop.time(),
     )
     now = datetime.now(UTC)
     retired: list[ProjectImageRecord] = []
-    for record in sorted(records, key=lambda item: (item.tag, item.name)):
+    for record in sorted(records, key=lambda item: item.name):
         if record.phase != "Active":
             continue
         retired.append(
@@ -881,7 +807,6 @@ async def record_project_image(
     identity: ProjectImageIdentity,
     image_digest_ref: str,
     platform_images: Mapping[str, str],
-    channel_digest_refs: Mapping[str, str],
     timeout: float,
 ) -> ProjectImageRecord:
     """Record a published project image manifest and retire superseded peers.
@@ -896,8 +821,6 @@ async def record_project_image(
         Immutable digest-pinned ref for the project image.
     platform_images : Mapping[str, str]
         Digest-pinned platform refs that were included in the manifest.
-    channel_digest_refs : Mapping[str, str]
-        Digest-pinned internal channel refs emitted by the manifest job.
     timeout : float
         Maximum record update budget in seconds.
 
@@ -928,16 +851,9 @@ async def record_project_image(
         )
         raise OSError(msg)
     platform_images = dict(platform_images)
-    channel_names = _normalize_channel_names(identity.channels)
-    channels = channel_refs(identity.image, channel_names)
-    _validate_channel_digests(
-        channels=channels,
-        digest=digest,
-        actual=channel_digest_refs,
-    )
     _validate_platform_images(
         platform_images=platform_images,
-        context=f"project image {identity.tag!r}",
+        context=f"project image {identity.image!r}",
     )
     now = datetime.now(UTC)
     record = await _upsert_project_image_record(
@@ -946,7 +862,6 @@ async def record_project_image(
         digest=digest,
         digest_ref=expected_digest_ref,
         platform_images=platform_images,
-        channel_names=channel_names,
         published_at=now,
         timeout=timeout,
     )
@@ -957,7 +872,6 @@ async def record_project_image(
         labels=_ProjectImageSpec.identity_labels(
             repo_id=identity.repo_id,
             worktree=identity.worktree,
-            tag=identity.tag,
         ),
         timeout=deadline - loop.time(),
     )
@@ -999,21 +913,18 @@ async def _upsert_project_image_record(
     digest: str,
     digest_ref: str,
     platform_images: Mapping[str, str],
-    channel_names: Sequence[str],
     published_at: datetime,
     timeout: float,
 ) -> ProjectImageRecord:
     name = _record_name(
         repo_id=identity.repo_id,
         worktree=identity.worktree,
-        tag=identity.tag,
         digest=digest,
     )
     spec = _ProjectImageSpec.published(
         identity=identity,
         digest_ref=digest_ref,
         platform_images=platform_images,
-        channel_names=channel_names,
         published_at=published_at,
     )
     loop = asyncio.get_running_loop()
@@ -1096,9 +1007,7 @@ def _active_record_digest_refs(records: Sequence[ProjectImageRecord]) -> frozens
 
 
 def _record_image_refs(record: ProjectImageRecord) -> frozenset[str]:
-    return frozenset(
-        (record.image, *record.channels.values(), *_record_digest_refs(record))
-    )
+    return frozenset((record.image, *_record_digest_refs(record)))
 
 
 def _record_digest_refs(record: ProjectImageRecord) -> tuple[str, ...]:
@@ -1118,8 +1027,8 @@ def _gc_sort_key(record: ProjectImageRecord) -> tuple[datetime, str]:
     )
 
 
-def _record_name(*, repo_id: str, worktree: str, tag: str, digest: str) -> str:
-    payload = f"{repo_id}\0{worktree}\0{tag}\0{digest}".encode()
+def _record_name(*, repo_id: str, worktree: str, digest: str) -> str:
+    payload = f"{repo_id}\0{worktree}\0{digest}".encode()
     return f"bertrand-image-{hashlib.sha256(payload).hexdigest()[:48]}"
 
 
@@ -1144,43 +1053,6 @@ def _validate_platform_images(
                 f"{context} platform {platform!r} has invalid digest ref: {image_ref!r}"
             )
             raise OSError(msg)
-
-
-def _normalize_channel_names(channels: Sequence[str]) -> tuple[str, ...]:
-    normalized: set[str] = set()
-    for channel in channels:
-        name = channel.strip()
-        if not name:
-            msg = "project image channel name cannot be empty"
-            raise OSError(msg)
-        normalized.add(name)
-    return tuple(sorted(normalized))
-
-
-def _validate_channels(*, channels: Mapping[str, str], context: str) -> None:
-    for name, ref in channels.items():
-        if not name.strip():
-            msg = f"{context} defines an empty channel name"
-            raise OSError(msg)
-        if not ref.strip():
-            msg = f"{context} channel {name!r} has an empty image ref"
-            raise OSError(msg)
-
-
-def _validate_channel_digests(
-    *,
-    channels: Mapping[str, str],
-    digest: str,
-    actual: Mapping[str, str],
-) -> None:
-    expected = {name: digest_ref(ref, digest) for name, ref in channels.items()}
-    normalized = dict(actual)
-    if normalized != expected:
-        msg = (
-            "project image manifest result channel digest refs do not match "
-            f"published channels: {normalized!r} != {expected!r}"
-        )
-        raise OSError(msg)
 
 
 def _datetime_payload(value: datetime | None) -> str | None:

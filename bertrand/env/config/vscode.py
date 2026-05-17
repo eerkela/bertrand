@@ -35,9 +35,9 @@ class VSCodeWorkspace(Resource):
     remote-containers extension and mount its internal toolchain.
     """
 
-    async def render(self, config: Config, tag: str | None) -> None:
+    async def render(self, config: Config, *, image_build: bool) -> None:
         """Render the workspace file."""
-        _ = tag
+        del image_build
         jinja = jinja2.Environment(
             autoescape=False,
             undefined=jinja2.StrictUndefined,

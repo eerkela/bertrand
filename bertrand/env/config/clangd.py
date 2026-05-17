@@ -623,10 +623,10 @@ class Clangd(Resource):
         _ = config
         return self.Model.model_validate(fragment)
 
-    async def render(self, config: Config, tag: str | None) -> None:
+    async def render(self, config: Config, *, image_build: bool) -> None:
         """Render the `.clangd` artifact."""
         model = config.get(Clangd)
-        if tag is None or model is None:
+        if not image_build or model is None:
             return
 
         # define top-level config

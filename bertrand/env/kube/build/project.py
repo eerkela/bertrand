@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Protocol
 
 from bertrand.env.build_args import normalize_image_build_args
 from bertrand.env.config.bertrand import Bertrand, project_image_tag
+from bertrand.env.config.conan import ConanConfig
 from bertrand.env.config.python import PyProject
 from bertrand.env.git import INFINITY
 from bertrand.env.kube.build.containerfile import project_containerfile
@@ -48,7 +49,7 @@ class _CapabilityRequest(Protocol):
 
 @dataclass(frozen=True)
 class ProjectImageBuild:
-    """Cluster-native image build request for one configured project image key.
+    """Cluster-native image build request for the configured project image.
 
     Parameters
     ----------
@@ -148,7 +149,6 @@ class ProjectImageBuild:
         return ProjectImagePublication(
             record=record,
             external_digest_ref=status.external_digest_ref or None,
-            external_channel_digest_refs=status.external_channel_digest_refs,
         )
 
     async def submit(
@@ -203,7 +203,6 @@ class ProjectImageBuild:
 
 def project_image_build(
     config: Config,
-    tag: str,
     *,
     repo_id: str,
 ) -> ProjectImageBuild:
@@ -213,8 +212,6 @@ def project_image_build(
     ----------
     config : Config
         Active project configuration context.
-    tag : str
-        Image key to build.
     repo_id : str
         Stable repository UUID.
 
@@ -233,8 +230,6 @@ def project_image_build(
     OSError
         If Bertrand configuration is missing or a custom Containerfile cannot be
         read.
-    ValueError
-        If the tag is unknown or the repository ID is invalid.
     """
     from bertrand.env.config.core import Config, _check_uuid
 
@@ -254,14 +249,11 @@ def project_image_build(
     if pyproject is None:
         msg = f"missing 'pyproject' configuration for environment at {config.root}"
         raise OSError(msg)
-    image_config = bertrand.image.get(tag)
-    if image_config is None:
-        msg = f"unknown image key '{tag}' for environment at {config.root}"
-        raise ValueError(msg)
+    image_config = bertrand.image
 
     worktree = worktree_identity(config.worktree)
     env_id = _env_id(repo_id=repo_id, worktree=worktree)
-    oci_tag = project_image_tag(pyproject.project.version, tag)
+    oci_tag = project_image_tag(pyproject.project.version)
     image = IMAGES.ref(
         "/".join(
             (
@@ -275,29 +267,21 @@ def project_image_build(
     dockerfile = project_containerfile(
         config.root,
         bertrand,
-        tag,
         image_config,
     )
     config_id = _config_id(
         repo_id=repo_id,
         worktree=worktree,
-        tag=tag,
         image_config=image_config,
+        conan_config=config.get(ConanConfig),
         dockerfile=dockerfile,
-    )
-    channels = tuple(
-        sorted(
-            name for name, channel in bertrand.channel.items() if channel.image == tag
-        )
     )
     identity = ProjectImageIdentity(
         repo_id=repo_id,
         worktree=worktree,
-        tag=tag,
         env_id=env_id,
         config_id=config_id,
         image=image,
-        channels=channels,
     )
     return ProjectImageBuild(
         spec=BuildKitBuildSpec.from_identity(
@@ -340,15 +324,19 @@ def _config_id(
     *,
     repo_id: str,
     worktree: str,
-    tag: str,
     image_config: Bertrand.Model.Image,
+    conan_config: ConanConfig.Model | None,
     dockerfile: str,
 ) -> str:
     payload = {
         "repo_id": repo_id,
         "worktree": worktree,
-        "tag": tag,
         "image": image_config.model_dump(by_alias=True, mode="json"),
+        "conan": (
+            None
+            if conan_config is None
+            else conan_config.model_dump(by_alias=True, mode="json")
+        ),
         "dockerfile_sha256": hashlib.sha256(dockerfile.encode("utf-8")).hexdigest(),
     }
     text = json.dumps(payload, sort_keys=True, separators=(",", ":"))

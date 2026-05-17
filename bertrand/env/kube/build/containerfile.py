@@ -13,7 +13,7 @@ from bertrand.env.build_args import normalize_image_build_args
 from bertrand.env.config.conan import CCACHE_CACHE, CONAN_HOME
 from bertrand.env.config.core import locate_template
 from bertrand.env.config.uv import UV_CACHE
-from bertrand.env.git import IMAGE_TAG_ENV, WORKTREE_MOUNT
+from bertrand.env.git import WORKTREE_MOUNT
 from bertrand.env.version import VERSION
 
 if TYPE_CHECKING:
@@ -31,10 +31,9 @@ class _CapabilityRequest(Protocol):
 def project_containerfile(
     root: Path,
     model: Bertrand.Model,
-    tag: str,
     image_config: Bertrand.Model.Image,
 ) -> str:
-    """Load or render the Containerfile for one configured image.
+    """Load or render the Containerfile for the configured project image.
 
     Parameters
     ----------
@@ -42,10 +41,8 @@ def project_containerfile(
         Project root directory.
     model : Bertrand.Model
         Bertrand project configuration.
-    tag : str
-        Configured image key.
     image_config : Bertrand.Model.Image
-        Image configuration for `tag`.
+        Image configuration.
 
     Returns
     -------
@@ -62,24 +59,18 @@ def project_containerfile(
         try:
             return path.read_text(encoding="utf-8")
         except OSError as err:
-            msg = f"failed to read Containerfile for tag '{tag}': {path}"
+            msg = f"failed to read Containerfile: {path}"
             raise OSError(msg) from err
         except UnicodeDecodeError as err:
-            msg = f"Containerfile for tag '{tag}' is not UTF-8 encoded: {path}"
+            msg = f"Containerfile is not UTF-8 encoded: {path}"
             raise OSError(msg) from err
-    return _render_containerfile(model, tag)
+    return _render_containerfile(model)
 
 
-def _render_containerfile(model: Bertrand.Model, tag: str) -> str:
-    image_config = model.image.get(tag)
-    if image_config is None:
-        msg = f"unknown image key '{tag}'"
-        raise ValueError(msg)
+def _render_containerfile(model: Bertrand.Model) -> str:
+    image_config = model.image
     if image_config.containerfile is not None:
-        msg = (
-            f"cannot render generated Containerfile for tag '{tag}' when a custom "
-            "`containerfile` is configured"
-        )
+        msg = "cannot render generated Containerfile when a custom one is configured"
         raise ValueError(msg)
 
     jinja = jinja2.Environment(
@@ -111,8 +102,6 @@ def _render_containerfile(model: Bertrand.Model, tag: str) -> str:
         uv_cache=str(UV_CACHE),
         conan_home=str(CONAN_HOME),
         ccache_dir=str(CCACHE_CACHE),
-        image_tag_env=IMAGE_TAG_ENV,
-        image_tag=tag,
         build_args=_build_arg_specs(image_config.args),
         run_mounts=[
             *_capability_mount_specs("secret", image_config.secrets),

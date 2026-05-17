@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol, cast
 
-from bertrand.env.git.bertrand_git import ENV_ID_ENV, IMAGE_TAG_ENV
+from bertrand.env.git.bertrand_git import ENV_ID_ENV
 from bertrand.env.kube.api.spec import ContainerPortSpec, ContainerSpec, PodTemplateSpec
 from bertrand.env.kube.workload.base import WorkloadPod, WorkloadRepository
 from bertrand.env.kube.workload.capability import (
@@ -24,19 +24,24 @@ if TYPE_CHECKING:
         WorkloadSecretRequest,
     )
 
-WORKLOAD_PRIMARY_CONTAINER = "main"
-
 
 class _WorkloadPort(Protocol):
     container: int
     protocol: str
 
 
-class _WorkloadConfig(Protocol):
+class _WorkloadContainer(Protocol):
+    name: str
     cmd: Sequence[str]
+    args: Sequence[str]
     ports: Sequence[_WorkloadPort]
     secrets: Sequence[WorkloadSecretRequest]
     devices: Sequence[WorkloadDeviceRequest]
+
+
+class _WorkloadConfig(Protocol):
+    primary: str
+    containers: Sequence[_WorkloadContainer]
 
 
 @dataclass(frozen=True)
@@ -59,15 +64,14 @@ class ConfiguredWorkloadPod:
 async def workload_pod_from_config(
     kube: Kube,
     *,
-    workload: _WorkloadConfig,
-    tag: str,
+    workload: _WorkloadConfig | None,
     repo_id: str,
     worktree: str | PurePosixPath,
     env_id: str,
     image: str,
     node: str | None = None,
     timeout: float,
-) -> ConfiguredWorkloadPod:
+) -> ConfiguredWorkloadPod | None:
     """Render validated Bertrand workload config into a native pod intent.
 
     Parameters
@@ -75,9 +79,8 @@ async def workload_pod_from_config(
     kube : Kube
         Active Kubernetes API context.
     workload : _WorkloadConfig
-        Validated `[tool.bertrand.workload.<tag>]` config object.
-    tag : str
-        Workload/image key used for diagnostics.
+        Validated `[tool.bertrand.workload]` config object, or `None` for
+        image/library-only worktrees.
     repo_id : str
         Stable repository UUID used to mount the managed Ceph repository PVC.
     worktree : str | PurePosixPath
@@ -93,69 +96,95 @@ async def workload_pod_from_config(
 
     Returns
     -------
-    ConfiguredWorkloadPod
-        Pod intent plus resolved device capability intent.
+    ConfiguredWorkloadPod | None
+        Pod intent plus resolved device capability intent, or `None` when no
+        workload is configured.
 
     Raises
     ------
     ValueError
-        If `image` or the workload command is empty.
+        If `image` or any workload container command is empty.
     """
+    if workload is None:
+        return None
     image = image.strip()
     if not image:
-        msg = f"workload image for tag {tag!r} cannot be empty"
+        msg = "workload image cannot be empty"
         raise ValueError(msg)
-    command = _workload_command(workload.cmd, tag=tag)
+    containers = tuple(workload.containers)
+    if not containers:
+        msg = "workload configuration requires at least one container"
+        raise ValueError(msg)
 
     capabilities = await resolve_workload_capabilities(
         kube,
-        secrets=tuple(workload.secrets),
-        devices=tuple(workload.devices),
+        containers=containers,
         env_id=env_id,
         node=node,
         timeout=timeout,
     )
-    primary = ContainerSpec(
-        name=WORKLOAD_PRIMARY_CONTAINER,
-        image=image,
-        command=command,
-        ports=_container_ports(workload.ports),
-        volume_mounts=capabilities.primary_mounts,
+    rendered_containers = tuple(
+        ContainerSpec(
+            name=container.name,
+            image=image,
+            command=_workload_command(container.cmd, container=container.name),
+            args=_workload_args(container.args, container=container.name),
+            ports=_container_ports(container.ports, container=container.name),
+            volume_mounts=capabilities.mounts_by_container.get(container.name, ()),
+        )
+        for container in containers
     )
     return ConfiguredWorkloadPod(
         pod=WorkloadPod(
             template=PodTemplateSpec(
-                containers=(primary,),
+                containers=rendered_containers,
                 volumes=capabilities.volumes,
             ),
-            primary_container=WORKLOAD_PRIMARY_CONTAINER,
+            primary_container=workload.primary,
             repository=WorkloadRepository(repo_id=repo_id, worktree=worktree),
-            runtime_env={ENV_ID_ENV: env_id, IMAGE_TAG_ENV: tag},
+            runtime_env={ENV_ID_ENV: env_id},
         ),
         devices=capabilities.devices,
     )
 
 
-def _workload_command(command: Sequence[str], *, tag: str) -> tuple[str, ...]:
+def _workload_command(command: Sequence[str], *, container: str) -> tuple[str, ...]:
     out: list[str] = []
     for part in command:
         value = part.strip()
         if not value:
-            msg = f"workload command entries for tag {tag!r} cannot be empty"
+            msg = (
+                f"workload command entries for container {container!r} cannot be empty"
+            )
             raise ValueError(msg)
         out.append(value)
     if not out:
-        msg = f"workload tag {tag!r} requires an explicit command"
+        msg = f"workload container {container!r} requires an explicit command"
         raise ValueError(msg)
     return tuple(out)
 
 
-def _container_ports(ports: Sequence[_WorkloadPort]) -> tuple[ContainerPortSpec, ...]:
+def _workload_args(args: Sequence[str], *, container: str) -> tuple[str, ...]:
+    out: list[str] = []
+    for part in args:
+        value = part.strip()
+        if not value:
+            msg = f"workload args entries for container {container!r} cannot be empty"
+            raise ValueError(msg)
+        out.append(value)
+    return tuple(out)
+
+
+def _container_ports(
+    ports: Sequence[_WorkloadPort],
+    *,
+    container: str,
+) -> tuple[ContainerPortSpec, ...]:
     rendered: list[ContainerPortSpec] = []
     for index, port in enumerate(ports):
         rendered.append(
             ContainerPortSpec(
-                name=f"port-{index}",
+                name=f"{container}-port-{index}",
                 container_port=port.container,
                 protocol=cast("PortProtocol", port.protocol.upper()),
             )

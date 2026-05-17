@@ -16,16 +16,10 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from ..config import (
-    EDITORS,
-    VSCODE_WORKSPACE_FILE,
-    Bertrand,
-    Config,
-)
-from ..config.bertrand import Editor
-from ..kube.api import Kube
-from ..git import (
-    IMAGE_TAG_ENV,
+from bertrand.env.config.bertrand import EDITORS, Bertrand, Editor
+from bertrand.env.config.core import Config
+from bertrand.env.config.vscode import VSCODE_WORKSPACE_FILE
+from bertrand.env.git import (
     INFINITY,
     PROJECT_ENV,
     PROJECT_MOUNT,
@@ -34,6 +28,7 @@ from ..git import (
     GitRepository,
     run,
 )
+from bertrand.env.kube.api.client import Kube
 from .listener import (
     JSON_RPC_VERSION,
     Listener,
@@ -261,16 +256,6 @@ class CodeOpen:
         if not worktree.exists() or not worktree.is_dir():
             raise RuntimeError(f"resolved worktree does not exist: {worktree}")
 
-        # load current image tag from environment
-        image_tag = os.environ.get(IMAGE_TAG_ENV)
-        if image_tag is None:
-            raise RuntimeError(
-                "image tag environment variable is missing.  This should never "
-                "occur; if you see this message, try re-entering the environment to "
-                "reset its environment variables, or report an issue if the problem "
-                "persists."
-            )
-
         # load editor selection from worktree config
         with await Kube.host(timeout=INFINITY) as kube:
             async with await Config.load(
@@ -278,7 +263,7 @@ class CodeOpen:
                 kube=kube,
                 repo=GitRepository(git_dir=PROJECT_MOUNT / ".git"),
             ) as config:
-                await config.sync(image_tag)  # ensure config is up-to-date
+                await config.sync(image_build=True)  # ensure config is up-to-date
                 bertrand = config.get(Bertrand)
             if not bertrand:
                 raise RuntimeError(
