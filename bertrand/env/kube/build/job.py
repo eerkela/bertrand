@@ -36,15 +36,15 @@ from bertrand.env.kube.build.refs import (
 )
 from bertrand.env.kube.build.repository import IMAGES
 from bertrand.env.kube.capability.base import Capability, CapabilityKind
-from bertrand.env.kube.ceph.snapshot import prepared_repository_build_source
-from bertrand.env.kube.configmap import ConfigMap
-from bertrand.env.kube.dra import (
+from bertrand.env.kube.capability.device import (
     DRADeviceRequest,
     allocated_selector_script,
     create_resource_claim_templates,
     resource_claim_intents,
     select_device_claims,
 )
+from bertrand.env.kube.ceph.snapshot import prepared_repository_build_source
+from bertrand.env.kube.configmap import ConfigMap
 from bertrand.env.kube.job import Job
 
 if TYPE_CHECKING:
@@ -197,8 +197,9 @@ class _ProjectBuildExecutor:
         ]
         if spec.target is not None:
             args.extend(["--opt", f"target={spec.target}"])
-        if spec.network != "default":
-            args.extend(["--opt", f"force-network-mode={spec.network}"])
+        if spec.pull != "missing":
+            mode = "pull" if spec.pull == "always" else "local"
+            args.extend(["--opt", f"image-resolve-mode={mode}"])
         for key, value in sorted(spec.build_args.items()):
             args.extend(["--opt", f"build-arg:{key}={value}"])
         for key, value in sorted(spec.image_labels.items()):
@@ -207,8 +208,6 @@ class _ProjectBuildExecutor:
             args.extend(["--secret", f"id={capability_id},src={path}"])
         for capability_id, path in sorted((ssh_paths or {}).items()):
             args.extend(["--ssh", f"{capability_id}={path}"])
-        if spec.network == "host":
-            args.extend(["--allow", "network.host"])
         if metadata_file is not None:
             metadata_file = metadata_file.strip()
             if metadata_file:

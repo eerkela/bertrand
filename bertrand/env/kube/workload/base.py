@@ -24,7 +24,7 @@ if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
     from bertrand.env.kube.api.spec import ContainerSpec, PodTemplateSpec
-    from bertrand.env.kube.dra import DRAResourceClaimIntent
+    from bertrand.env.kube.capability.device import DRAResourceClaimIntent
 
 WORKLOAD_REPOSITORY_VOLUME = "bertrand-repository"
 WORKLOAD_BOOTSTRAP_COMMAND = ("/bin/sh", "-c")

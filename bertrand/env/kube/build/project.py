@@ -289,7 +289,7 @@ def project_image_build(
             dockerfile=dockerfile,
             build_args=_build_args(image_config.args),
             target=image_config.target,
-            network=image_config.network,
+            pull=image_config.pull,
             secrets=_capability_requests(image_config.secrets),
             ssh=_capability_requests(image_config.ssh),
             devices=_capability_requests(image_config.devices),

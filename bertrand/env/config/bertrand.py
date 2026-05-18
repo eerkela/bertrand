@@ -8,11 +8,10 @@ artifacts needed by Bertrand's core functionality.
 
 from __future__ import annotations
 
-import ipaddress
 import re
 import tomllib
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, Any, Literal, Self
+from typing import Annotated, Any, Literal, Self
 
 import jinja2
 import packaging.version
@@ -30,14 +29,8 @@ from pydantic import (
 from bertrand.env.git import METADATA_DIR, Scalar, atomic_write_text
 from bertrand.env.version import VERSION
 
-from .conan import (
-    ConanConf,
-    ConanConfig,
-    ConanOptions,
-)
 from .core import (
     SANITIZE_RE,
-    AbsolutePosixPath,
     Config,
     Glob,
     KubeName,
@@ -51,14 +44,10 @@ from .core import (
     SnakeCase,
     TOMLKey,
     Trimmed,
-    UpperSnakeCase,
     locate_template,
     resource,
 )
 from .python import PyProject
-
-if TYPE_CHECKING:
-    from collections.abc import Callable
 
 # Configuration options that affect CLI behavior
 SHELLS: dict[str, tuple[str, ...]] = {
@@ -103,24 +92,16 @@ DEFAULT_EDITOR: str = "vscode"
 if DEFAULT_EDITOR not in EDITORS:
     msg = f"default editor is unsupported: {DEFAULT_EDITOR}"
     raise RuntimeError(msg)
-INSTRUMENTS: dict[str, Callable[[dict[str, Any]], Callable[[list[str]], list[str]]]] = {
-    # NOTE: instruments are identified by a unique name, which limits what can appear
-    # in a tag's `instruments` field as part of a configured build matrix.  The values
-    # are functions that accept the instrument's configuration as a parsed mapping,
-    # validate it, and then return another function that transforms the container's
-    # entry point command (as a list of strings) before execution.
-}
 
 
 NS_PATH_RE = re.compile(r"^ns:\S+$")
-NETWORK_ALIAS_LABEL_RE = re.compile(r"^(?!-)[a-z0-9-]{1,63}(?<!-)$")
+SERVICE_PORT_NAME_RE = re.compile(r"^[a-z0-9]([-a-z0-9]{0,13}[a-z0-9])?$")
 USERNS_CONTAINER_REF_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 USERNS_MAPPING_RE = re.compile(r"^(?P<container>\d+):(?P<host>@?\d+):(?P<length>\d+)$")
 CAPABILITY_TOKEN_RE = re.compile(r"^CAP_[A-Z0-9_]+$")
 CAPABILITY_DEFINE_RE = re.compile(r"^\s*#define\s+(CAP_[A-Z0-9_]+)\s+([0-9]+)\b")
 SECURITY_OPT_KEY_RE = re.compile(r"^[a-z0-9][a-z0-9_.-]*$")
 IMAGE_TAG_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$")
-DEVICE_PERMISSIONS: frozenset[str] = frozenset({"r", "w", "m", "rw", "rm", "wm", "rwm"})
 LINUX_CAPABILITY_HEADERS: tuple[Path, ...] = (
     Path("/usr/include/linux/capability.h"),
     Path("/usr/include/uapi/linux/capability.h"),
@@ -176,30 +157,15 @@ def _check_ignore_list(ignore: list[Glob]) -> list[Glob]:
     return out
 
 
-def _check_ip_address(address: str) -> str:
-    try:
-        return str(ipaddress.ip_address(address))
-    except ValueError as err:
-        msg = f"invalid IP address: {address}"
-        raise ValueError(msg) from err
-
-
-def _check_network_alias(alias: str) -> str:
-    alias = alias.lower()
-    if alias.startswith(".") or alias.endswith(".") or ".." in alias:
+def _check_service_port_name(name: str) -> str:
+    if not SERVICE_PORT_NAME_RE.fullmatch(name):
         msg = (
-            f"invalid network alias '{alias}' "
-            "(cannot start/end with '.', or contain '..')"
+            f"invalid service port name: {name!r} (must be lowercase alphanumeric "
+            "or '-', must start and end with an alphanumeric character, and must be "
+            "15 characters or fewer)"
         )
         raise ValueError(msg)
-    for label in alias.split("."):
-        if not NETWORK_ALIAS_LABEL_RE.fullmatch(label):
-            msg = (
-                f"invalid network alias label '{label}' in '{alias}' (labels must "
-                "match [a-z0-9-], max length 63, and cannot start/end with '-')"
-            )
-            raise ValueError(msg)
-    return alias
+    return name
 
 
 def _check_capability(capability: str) -> str:
@@ -445,16 +411,6 @@ def _check_uts(uts: str) -> str:
     )
 
 
-def _check_device_permission(permission: str) -> str:
-    if permission not in DEVICE_PERMISSIONS:
-        msg = (
-            f"invalid device permissions '{permission}' (expected one of: "
-            f"{'|'.join(sorted(DEVICE_PERMISSIONS, key=lambda x: len(x)))}"
-        )
-        raise ValueError(msg)
-    return permission
-
-
 def _check_health_log_destination(value: str) -> str:
     if value in ("local", "events_logger"):
         return value
@@ -480,20 +436,8 @@ def _check_health_log_destination(value: str) -> str:
     return path.as_posix()
 
 
-def _check_build_context_path(path: PosixPath) -> PosixPath:
-    if path.is_absolute():
-        msg = f"build context path cannot be absolute: '{path}'"
-        raise ValueError(msg)
-    if path == PosixPath("."):
-        return path
-    parts = path.parts
-    if not parts:
-        msg = "build context path cannot be empty"
-        raise ValueError(msg)
-    if any(p == "." or p == ".." for p in parts):
-        msg = f"build context path cannot contain '.' or '..' segments: '{path}'"
-        raise ValueError(msg)
-    return path
+def _default_workload_healthcheck() -> Any:
+    return Bertrand.Model.Healthcheck.model_construct()
 
 
 def project_image_tag(project_version: str) -> str:
@@ -540,7 +484,6 @@ def _project_version(config: Config, pyproject: PyProject.Model | None) -> str |
 type Shell = Annotated[NonEmpty[NoWhiteSpace], AfterValidator(_check_shell)]
 type Editor = Annotated[NonEmpty[NoWhiteSpace], AfterValidator(_check_editor)]
 type IgnoreList = Annotated[list[Glob], AfterValidator(_check_ignore_list)]
-type IPAddress = Annotated[NonEmpty[NoWhiteSpace], AfterValidator(_check_ip_address)]
 type HostName = Annotated[
     str,
     StringConstraints(
@@ -551,12 +494,13 @@ type HostName = Annotated[
         r"(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$",
     ),
 ]
-type HostIP = Literal["host-gateway"] | IPAddress
-type NetworkAlias = Annotated[
+type ServicePortName = Annotated[
     NonEmpty[NoWhiteSpace],
-    AfterValidator(_check_network_alias),
+    AfterValidator(_check_service_port_name),
 ]
-type ImageNetworkMode = Literal["default", "none", "host"]
+type NetworkPolicy = Literal["open", "isolated"]
+type NetworkProtocol = Literal["tcp", "udp", "sctp"]
+type ImagePullPolicy = Literal["missing", "always", "never"]
 type Memory = Annotated[
     str,
     StringConstraints(strip_whitespace=True, pattern=r"^\d+[bkmg]?$"),
@@ -581,18 +525,6 @@ type UserNS = Annotated[
 type IPCMode = Annotated[NonEmpty[NoWhiteSpace], AfterValidator(_check_ipc)]
 type PIDMode = Annotated[NonEmpty[NoWhiteSpace], AfterValidator(_check_pid)]
 type UTSMode = Annotated[NonEmpty[NoWhiteSpace], AfterValidator(_check_uts)]
-type InstrumentTool = Annotated[
-    str,
-    StringConstraints(
-        strip_whitespace=True,
-        min_length=1,
-        pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]*$",
-    ),
-]
-type DevicePermission = Annotated[
-    NonEmpty[NoWhiteSpace],
-    AfterValidator(_check_device_permission),
-]
 type Timeout = Annotated[
     str,
     StringConstraints(
@@ -605,7 +537,6 @@ type HealthLogDestination = Annotated[
     NonEmpty[NoCRLF],
     AfterValidator(_check_health_log_destination),
 ]
-type BuildContextPath = Annotated[PosixPath, AfterValidator(_check_build_context_path)]
 
 
 def _dump_ignore_list(patterns: list[str]) -> str:
@@ -646,300 +577,190 @@ class Bertrand(Resource):
         class Network(BaseModel):
             """Validate the `[bertrand.network]` table."""
 
-            class Table(BaseModel):
-                """Validate common fields in `[bertrand.network.run]` tables."""
+            # TODO: Native workload networking backend architecture:
+            # - Kubernetes networking is pod-scoped.  Every container in a rendered
+            #   workload Pod shares one network namespace, one Pod IP, and one
+            #   localhost interface.  Container config should only declare the ports
+            #   that each process listens on; Service discovery, isolation, and
+            #   publication belong to this workload-level network model.
+            # - The backend should render a canonical internal ClusterIP Service
+            #   automatically whenever any `[[tool.bertrand.containers]].ports` entry
+            #   exists.  There should be no `service = true|false|auto` config flag:
+            #   declared ports imply a Service, and no declared ports imply no
+            #   Service.  The Service should select the workload's Pods via stable
+            #   Bertrand labels and expose every unique named container port as a
+            #   Service port.  Duplicate port names are invalid because Gateway
+            #   routes and Service target ports need stable symbolic references.
+            # - `policy = "open"` should render no restrictive NetworkPolicy, which
+            #   keeps development ergonomics predictable.  `policy = "isolated"` is
+            #   reserved for a later NetworkPolicy pass that creates explicit
+            #   Kubernetes NetworkPolicy objects around the workload.  That policy
+            #   backend should remain best-effort/actionable when the CNI does not
+            #   enforce NetworkPolicy, because Kubernetes delegates enforcement to the
+            #   installed network plugin.
+            # - `routes` is the future external-publication surface and should target
+            #   Gateway API, not Ingress, NodePort, or LoadBalancer project config.
+            #   Route entries should become HTTPRoute/TCPRoute/etc. intents that bind
+            #   external host/path/listener rules to the canonical internal Service.
+            #   Gateway API support should be validated during workload convergence,
+            #   with actionable diagnostics if the cluster lacks the needed CRDs or
+            #   GatewayClass.
+            # - Aliases are intentionally omitted for now.  The one-worktree,
+            #   one-workload model gives each workload one canonical Service DNS
+            #   identity, and extra in-cluster Service aliases can be added later if
+            #   dependency overlays or compatibility hostnames create a concrete need.
+            # - Podman-shaped fields are intentionally omitted: no network namespace
+            #   mode, host bindings, host IPs, DNS override table, host aliases,
+            #   NodePort, LoadBalancer, or Ingress flags.  Those concepts either do
+            #   not map cleanly to Kubernetes workload networking or are inferior to
+            #   Service + NetworkPolicy + Gateway API for Bertrand's target model.
+
+            class Route(BaseModel):
+                """Validate a future Gateway API route intent."""
 
                 model_config = ConfigDict(extra="forbid")
-                mode: Annotated[
+                host: Annotated[
+                    HostName,
+                    Field(
+                        examples=["app.local"],
+                        description=(
+                            "External hostname that a future Gateway API route should "
+                            "match for this workload."
+                        ),
+                    ),
+                ]
+                port: Annotated[
+                    ServicePortName,
+                    Field(
+                        examples=["http"],
+                        description=(
+                            "Named container port that the future Gateway API route "
+                            "should target through the workload's canonical Service."
+                        ),
+                    ),
+                ]
+                path: Annotated[
                     str,
-                    StringConstraints(
-                        strip_whitespace=True,
-                        min_length=1,
-                        pattern=(
-                            "^(none|host|private|slirp4netns|pasta|"
-                            f"{NS_PATH_RE.pattern})$"
-                        ),
-                    ),
+                    StringConstraints(strip_whitespace=True, pattern=r"^/.*$"),
                     Field(
-                        default="private",
-                        examples=[
-                            "none",
-                            "host",
-                            "private",
-                            "slirp4netns",
-                            "pasta",
-                            "ns:<path>",
-                        ],
+                        default="/",
+                        examples=["/"],
                         description=(
-                            "The networking driver to use within containers for this "
-                            "project.  Equivalent to `podman create --network`\n   "
-                            "`none`: disable networking within the container.\n   "
-                            "`host`: use the host's network stack directly (best "
-                            "performance, no isolation, potentially insecure).\n   "
-                            "`private`: (default) create a new, private network "
-                            "namespace for the container.\n   `slirp4netns`: use "
-                            "slirp4netns for rootless networking.  This is often the "
-                            "default for many rootless container runtimes, but may be "
-                            "slower than other options and has some limitations.  See "
-                            "the podman documentation for more details.\n   `pasta`: "
-                            "use pasta for rootless networking.  This is slightly "
-                            "faster than slirp4netns in some scenarios, but is still "
-                            "slower than rootful host networking.  See the podman "
-                            "documentation for more details.\n   `ns:<path>`: join an "
-                            "existing network namespace specified by the given <path>."
-                            "\nBertrand intentionally omits `bridge`, "
-                            "`<network name|ID>`, and `container:id` from its "
-                            "configuration layer in order to keep projects portable "
-                            "across hosts."
+                            "HTTP path prefix reserved for future Gateway API route "
+                            "rendering."
                         ),
                     ),
                 ]
-                options: Annotated[
-                    list[str],
-                    Field(
-                        default_factory=list,
-                        examples=[
-                            [
-                                "--ipv4-only",
-                                "-a",
-                                "10.0.2.0",
-                                "-n",
-                                "24",
-                                "-g",
-                                "10.0.2.2",
-                                "--dns-forward",
-                                "10.0.2.3",
-                                "-m",
-                                "1500",
-                                "--no-ndp",
-                                "--no-dhcpv6",
-                                "--no-dhcp",
-                            ]
-                        ],
-                        description=(
-                            "Additional `--network` mode options, encoded as "
-                            "`mode:opt1,opt2,...`.  These are forwarded to the "
-                            "selected network backend.  In Bertrand's global "
-                            "networking contract, options are only valid for "
-                            "`slirp4netns` and `pasta` modes.  See the podman "
-                            "documentation for more details."
-                        ),
-                    ),
-                ]
-                dns: Annotated[
-                    list[IPAddress | Literal["none"]],
-                    Field(
-                        default_factory=list,
-                        description=(
-                            "Set custom DNS servers.  Equivalent to "
-                            "`podman create --dns`.  The special value `none` disables "
-                            "creation of `/etc/resolv.conf` by Podman, so the image's "
-                            "`/etc/resolv.conf` is used unchanged."
-                        ),
-                    ),
-                ]
-                dns_search: Annotated[
-                    list[NonEmpty[NoWhiteSpace]],
-                    Field(
-                        default_factory=list,
-                        alias="dns-search",
-                        description=(
-                            "Set custom DNS search domains.  Equivalent to "
-                            "`podman create --dns-search`."
-                        ),
-                    ),
-                ]
-                dns_options: Annotated[
-                    list[NonEmpty[NoWhiteSpace]],
-                    Field(
-                        default_factory=list,
-                        alias="dns-options",
-                        description=(
-                            "Set custom DNS resolver options.  Equivalent to "
-                            "`podman create --dns-option`."
-                        ),
-                    ),
-                ]
-                add_host: Annotated[
-                    dict[HostName, HostIP],
-                    Field(
-                        default_factory=dict,
-                        alias="add-host",
-                        description=(
-                            "Mapping of additional host entries to add to container "
-                            "`/etc/hosts`.  Equivalent to `podman create --add-host`.  "
-                            "Keys are hostnames, and values are IPv4/IPv6 addresses or "
-                            "the special value `host-gateway`."
-                        ),
-                    ),
-                ]
-
-                @model_validator(mode="after")
-                def _validate_none_mode(self) -> Self:
-                    if self.mode == "none" and (
-                        self.options or self.dns or self.dns_search or self.dns_options
-                    ):
-                        msg = (
-                            "network mode 'none' requires empty options, dns, "
-                            "dns-search, and dns-options"
-                        )
-                        raise ValueError(msg)
-                    return self
-
-                @model_validator(mode="after")
-                def _validate_driver_options_mode(self) -> Self:
-                    if self.options and self.mode not in ("slirp4netns", "pasta"):
-                        msg = (
-                            "network options are only allowed for 'slirp4netns' and "
-                            "'pasta' modes"
-                        )
-                        raise ValueError(msg)
-                    return self
-
-                @model_validator(mode="after")
-                def _validate_dns_none(self) -> Self:
-                    if "none" in self.dns and len(self.dns) > 1:
-                        msg = (
-                            "dns entry 'none' cannot be combined with other DNS servers"
-                        )
-                        raise ValueError(msg)
-                    return self
-
-            class Run(Table):
-                """Validate the `[bertrand.network.run]` table."""
-
-                @model_validator(mode="after")
-                def _validate_run_table(self) -> Self:
-                    # TODO: run-specific networking restrictions should be added
-                    # here when runtime networking coverage expands.
-                    return self
 
             model_config = ConfigDict(extra="forbid")
-            run: Annotated[
-                Run,
+            policy: Annotated[
+                NetworkPolicy,
                 Field(
-                    default_factory=Run.model_construct,
+                    default="open",
+                    examples=["open", "isolated"],
                     description=(
-                        "Global networking policy to use during container creation and "
-                        "runtime execution."
+                        "Workload network isolation policy.  `open` renders no "
+                        "restrictive NetworkPolicy, while `isolated` is reserved for "
+                        "a future Kubernetes NetworkPolicy backend."
+                    ),
+                ),
+            ]
+            routes: Annotated[
+                list[Route],
+                Field(
+                    default_factory=list,
+                    examples=[[{"host": "app.local", "port": "http", "path": "/"}]],
+                    description=(
+                        "Future Gateway API route intents for publishing this "
+                        "workload outside the cluster.  Route support is config-only "
+                        "until the native Gateway backend is implemented."
+                    ),
+                ),
+            ]
+
+        class Secret(BaseModel):
+            """Validate one Kubernetes Secret capability request."""
+
+            model_config = ConfigDict(extra="forbid")
+            id: Annotated[
+                KubeName,
+                Field(
+                    examples=["pypi_token", "private_pkg_key"],
+                    description=(
+                        "Host-agnostic capability ID for a secret credential or "
+                        "payload.  The ID is resolved using a managed Kubernetes "
+                        "Secret capability in the Bertrand namespace."
+                    ),
+                ),
+            ]
+            required: Annotated[
+                bool,
+                Field(
+                    default=True,
+                    description=(
+                        "Whether this secret capability must be available before "
+                        "build or runtime execution.  If true and unresolved, "
+                        "execution fails before starting."
+                    ),
+                ),
+            ]
+
+        class SSH(BaseModel):
+            """Validate one Kubernetes SSH credential capability request."""
+
+            model_config = ConfigDict(extra="forbid")
+            id: Annotated[
+                KubeName,
+                Field(
+                    examples=["git_deploy_key", "github_readonly"],
+                    description=(
+                        "Host-agnostic capability ID for an SSH credential.  The ID "
+                        "is resolved using a managed Kubernetes Secret capability in "
+                        "the Bertrand namespace."
+                    ),
+                ),
+            ]
+            required: Annotated[
+                bool,
+                Field(
+                    default=True,
+                    description=(
+                        "Whether this SSH capability must be available before build "
+                        "or runtime execution.  If true and unresolved, execution "
+                        "fails before starting."
+                    ),
+                ),
+            ]
+
+        class Device(BaseModel):
+            """Validate one Kubernetes DRA device capability request."""
+
+            model_config = ConfigDict(extra="forbid")
+            id: Annotated[
+                KubeName,
+                Field(
+                    examples=["gpu", "cuda0"],
+                    description=(
+                        "Host-agnostic capability ID for a DRA device capability.  "
+                        "Kubernetes allocates the concrete device and Bertrand "
+                        "consumes the allocated CDI selector."
+                    ),
+                ),
+            ]
+            required: Annotated[
+                bool,
+                Field(
+                    default=True,
+                    description=(
+                        "Whether this device capability must be available before "
+                        "build or runtime execution.  If true and unresolved, "
+                        "execution fails before starting."
                     ),
                 ),
             ]
 
         class Image(BaseModel):
             """Validate entries in the `[tool.bertrand.image]` table."""
-
-            class Secret(BaseModel):
-                """Validate an entry in `[[tool.bertrand.image.secrets]]`."""
-
-                model_config = ConfigDict(extra="forbid")
-                id: Annotated[
-                    KubeName,
-                    Field(
-                        examples=["pypi_token", "private_pkg_key"],
-                        description=(
-                            "Host-agnostic capability ID for a build secret.  The ID "
-                            "is resolved using a Kubernetes Secret in the \"bertrand\" "
-                            "namespace, which provides the secret's payload."
-                        ),
-                    ),
-                ]
-                required: Annotated[
-                    bool,
-                    Field(
-                        default=True,
-                        description=(
-                            "Whether this capability must be available to start the "
-                            "build.  If true and unresolved, the build fails before "
-                            "execution."
-                        ),
-                    ),
-                ]
-
-            @staticmethod
-            def _check_unique_secrets(requests: list[Secret]) -> list[Secret]:
-                seen: set[KubeName] = set()
-                for req in requests:
-                    if req.id in seen:
-                        msg = f"duplicate secret id: '{req.id}'"
-                        raise ValueError(msg)
-                    seen.add(req.id)
-                return requests
-
-            class SSH(BaseModel):
-                """Validate an entry in `[[tool.bertrand.image.ssh]]`."""
-
-                model_config = ConfigDict(extra="forbid")
-                id: Annotated[
-                    KubeName,
-                    Field(
-                        examples=["git_deploy_key", "github_readonly"],
-                        description=(
-                            "Host-agnostic capability ID for a build-time SSH "
-                            "credential.  The ID is resolved using a Kubernetes Secret "
-                            "in the \"bertrand\" namespace, which provides the "
-                            "credential payload."
-                        ),
-                    ),
-                ]
-                required: Annotated[
-                    bool,
-                    Field(
-                        default=True,
-                        description=(
-                            "Whether this SSH capability must be available to start "
-                            "the build.  If true and unresolved, the build fails "
-                            "before execution."
-                        ),
-                    ),
-                ]
-
-            @staticmethod
-            def _check_unique_ssh(requests: list[SSH]) -> list[SSH]:
-                seen: set[KubeName] = set()
-                for req in requests:
-                    if req.id in seen:
-                        msg = f"duplicate ssh id: '{req.id}'"
-                        raise ValueError(msg)
-                    seen.add(req.id)
-                return requests
-
-            class Device(BaseModel):
-                """Validate an entry in `[[tool.bertrand.image.devices]]`."""
-
-                model_config = ConfigDict(extra="forbid")
-                id: Annotated[
-                    KubeName,
-                    Field(
-                        examples=["gpu", "cuda0"],
-                        description=(
-                            "Host-agnostic capability ID for a build-time DRA device "
-                            "capability. Kubernetes allocates the concrete device and "
-                            "Bertrand passes the allocated CDI selector to BuildKit."
-                        ),
-                    ),
-                ]
-                required: Annotated[
-                    bool,
-                    Field(
-                        default=True,
-                        description=(
-                            "Whether this device capability must be available to start "
-                            "the build.  If true and unresolved, the build fails "
-                            "before execution."
-                        ),
-                    ),
-                ]
-
-            @staticmethod
-            def _check_unique_devices(requests: list[Device]) -> list[Device]:
-                seen: set[KubeName] = set()
-                for req in requests:
-                    if req.id in seen:
-                        msg = f"duplicate device id: '{req.id}'"
-                        raise ValueError(msg)
-                    seen.add(req.id)
-                return requests
 
             model_config = ConfigDict(extra="forbid")
             containerfile: Annotated[
@@ -969,6 +790,19 @@ class Bertrand(Resource):
                         "Optional target stage in a multi-stage Containerfile.  If "
                         "omitted, the final stage will be used by default.  Cannot be "
                         "used unless `containerfile` is also provided."
+                    ),
+                ),
+            ]
+            pull: Annotated[
+                ImagePullPolicy,
+                Field(
+                    default="missing",
+                    examples=["missing", "always", "never"],
+                    description=(
+                        "BuildKit base-image resolution policy.  `missing` uses "
+                        "BuildKit's default resolver behavior, `always` forces remote "
+                        "resolution for base images, and `never` restricts resolution "
+                        "to images already present in the builder's local cache."
                     ),
                 ),
             ]
@@ -1036,22 +870,13 @@ class Bertrand(Resource):
                     ),
                 ),
             ]
-            network: Annotated[
-                ImageNetworkMode,
-                Field(
-                    default="default",
-                    examples=["default", "none", "host"],
-                    description=(
-                        "BuildKit network mode applied to build-time `RUN` "
-                        "instructions.  `default` uses the configured BuildKit builder "
-                        "network, `none` disables network access, and `host` requests "
-                        "host networking via BuildKit's `network.host` entitlement."
-                    ),
-                ),
-            ]
             secrets: Annotated[
-                list[Secret],
-                AfterValidator(_check_unique_secrets),
+                list[Bertrand.Model.Secret],
+                AfterValidator(
+                    lambda x: Bertrand.Model._check_unique_requests(
+                        x, where="image secret"
+                    )
+                ),
                 Field(
                     default_factory=list,
                     examples=[
@@ -1075,8 +900,12 @@ class Bertrand(Resource):
                 ),
             ]
             ssh: Annotated[
-                list[SSH],
-                AfterValidator(_check_unique_ssh),
+                list[Bertrand.Model.SSH],
+                AfterValidator(
+                    lambda x: Bertrand.Model._check_unique_requests(
+                        x, where="image ssh"
+                    )
+                ),
                 Field(
                     default_factory=list,
                     examples=[
@@ -1101,8 +930,12 @@ class Bertrand(Resource):
                 ),
             ]
             devices: Annotated[
-                list[Device],
-                AfterValidator(_check_unique_devices),
+                list[Bertrand.Model.Device],
+                AfterValidator(
+                    lambda x: Bertrand.Model._check_unique_requests(
+                        x, where="image device"
+                    )
+                ),
                 Field(
                     default_factory=list,
                     examples=[
@@ -1162,407 +995,187 @@ class Bertrand(Resource):
                     msg = f"custom Containerfile is not UTF-8 encoded: {path}"
                     raise OSError(msg) from err
 
-        class Workload(BaseModel):
-            """Validate entries in the `[tool.bertrand.workload]` table."""
+        class Port(BaseModel):
+            """Validate entries in the workload ports table."""
 
-            class Port(BaseModel):
-                """Validate entries in the workload ports table."""
+            model_config = ConfigDict(extra="forbid")
+            name: Annotated[
+                ServicePortName,
+                Field(
+                    examples=["http"],
+                    description=(
+                        "Stable Kubernetes Service port name.  Future Service and "
+                        "Gateway rendering uses this name as the durable target for "
+                        "the container listener."
+                    ),
+                ),
+            ]
+            port: Annotated[
+                int,
+                Field(
+                    ge=1,
+                    le=65535,
+                    examples=[8080],
+                    description="Container port number exposed by this process.",
+                ),
+            ]
+            protocol: Annotated[
+                NetworkProtocol,
+                Field(
+                    default="tcp",
+                    examples=["tcp", "udp", "sctp"],
+                    description="Transport protocol for this named container port.",
+                ),
+            ]
 
-                model_config = ConfigDict(extra="forbid")
-                container: Annotated[int, Field(ge=1, le=65535)]
-                host: Annotated[int, Field(ge=1, le=65535)]
-                host_ip: Annotated[IPAddress, Field(alias="host-ip")]
-                protocol: Literal["tcp", "udp"]
+        class ULimit(BaseModel):
+            """Validate entries in a workload container ulimit table."""
 
-            @staticmethod
-            def _check_ports(ports: list[Port]) -> list[Port]:
-                seen: set[tuple[str, int, str]] = set()
-                for port in ports:
-                    key = (port.host_ip, port.host, port.protocol)
-                    if key in seen:
-                        msg = (
-                            "duplicate published port binding for "
-                            f"{port.host_ip}:{port.host}/{port.protocol}"
-                        )
-                        raise ValueError(msg)
-                    seen.add(key)
-                return ports
+            model_config = ConfigDict(extra="forbid")
+            name: ULimitName
+            soft: Annotated[int | None, Field(default=None, ge=-1)]
+            hard: Annotated[int | None, Field(default=None, ge=-1)]
 
-            @staticmethod
-            def _check_network_aliases(
-                aliases: list[NetworkAlias],
-            ) -> list[NetworkAlias]:
-                seen: set[NetworkAlias] = set()
-                for alias in aliases:
-                    if alias in seen:
-                        msg = f"duplicate network alias: '{alias}'"
-                        raise ValueError(msg)
-                    seen.add(alias)
-                return aliases
-
-            class ULimit(BaseModel):
-                """Validate entries in `[tool.bertrand.workload.ulimit]`."""
-
-                model_config = ConfigDict(extra="forbid")
-                name: ULimitName
-                soft: Annotated[int | None, Field(default=None, ge=-1)]
-                hard: Annotated[int | None, Field(default=None, ge=-1)]
-
-                @model_validator(mode="after")
-                def _validate_limits(self) -> Self:
-                    if self.name == "host":
-                        if self.soft is not None or self.hard is not None:
-                            msg = (
-                                "ulimit name 'host' cannot define 'soft' or "
-                                "'hard' values"
-                            )
-                            raise ValueError(msg)
-                        return self
-                    if self.soft is None or self.hard is None:
-                        msg = (
-                            "non-'host' ulimit entries must define both 'soft' "
-                            "and 'hard'"
-                        )
-                        raise ValueError(msg)
-                    if self.hard >= 0 and self.soft > self.hard:
-                        msg = (
-                            f"ulimit soft value {self.soft} cannot be greater "
-                            f"than hard value {self.hard}"
-                        )
+            @model_validator(mode="after")
+            def _validate_limits(self) -> Self:
+                if self.name == "host":
+                    if self.soft is not None or self.hard is not None:
+                        msg = "ulimit name 'host' cannot define 'soft' or 'hard' values"
                         raise ValueError(msg)
                     return self
-
-            @staticmethod
-            def _check_ulimit(entries: list[ULimit]) -> list[ULimit]:
-                seen: set[str] = set()
-                for entry in entries:
-                    if entry.name in seen:
-                        msg = f"duplicate ulimit name: '{entry.name}'"
-                        raise ValueError(msg)
-                    seen.add(entry.name)
-                return entries
-
-            @staticmethod
-            def _check_unique(value: list[str], *, where: str) -> list[str]:
-                seen: set[str] = set()
-                for item in value:
-                    if item in seen:
-                        msg = f"duplicate {where}: '{item}'"
-                        raise ValueError(msg)
-                    seen.add(item)
-                return value
-
-            @staticmethod
-            def _check_unique_requests(
-                requests: list[Any],
-                *,
-                where: str,
-            ) -> list[Any]:
-                seen: set[KubeName] = set()
-                for req in requests:
-                    if req.id in seen:
-                        msg = f"duplicate {where} capability id: '{req.id}'"
-                        raise ValueError(msg)
-                    seen.add(req.id)
-                return requests
-
-            @staticmethod
-            def _check_containers(containers: list[Container]) -> list[Container]:
-                if not containers:
-                    msg = "workload configuration requires at least one container"
+                if self.soft is None or self.hard is None:
+                    msg = "non-'host' ulimit entries must define both 'soft' and 'hard'"
                     raise ValueError(msg)
-                seen: set[KubeName] = set()
-                for container in containers:
-                    if container.name in seen:
-                        msg = f"duplicate workload container name: '{container.name}'"
-                        raise ValueError(msg)
-                    seen.add(container.name)
-                return containers
+                if self.hard >= 0 and self.soft > self.hard:
+                    msg = (
+                        f"ulimit soft value {self.soft} cannot be greater "
+                        f"than hard value {self.hard}"
+                    )
+                    raise ValueError(msg)
+                return self
 
-            class InstrumentEntry(BaseModel):
-                """Validate entries in the image instrument table."""
+        class Stop(BaseModel):
+            """Validate the `[tool.bertrand.stop]` table."""
 
-                model_config = ConfigDict(extra="allow")
-                tool: InstrumentTool
+            model_config = ConfigDict(extra="forbid")
+            signal: Annotated[
+                str,
+                StringConstraints(
+                    strip_whitespace=True,
+                    min_length=1,
+                    pattern=r"^\S+$",
+                ),
+                Field(default="SIGTERM"),
+            ]
+            timeout: Annotated[NonNegativeInt, Field(default=10)]
 
-            # TODO: SSH capability design (config-layer contract):
-            # - `ssh` is a list of capability IDs only (SCREAMING_SNAKE_CASE),
-            #   never key data.
-            # - IDs resolve through managed Kubernetes Secret capabilities at
-            #   execution time.
-            # - Intended mapping target is `podman build --ssh` (build-time),
-            #   not runtime mounts.
-            # - Security invariants:
-            #     * no private key bytes in pyproject/config metadata
-            #     * no host key paths committed to VCS
-            #     * no secret material written to image layers or persisted state
-            # - Runtime wiring/argv synthesis is deferred to container.py refactor.
-            # - Final usage is always in the generated Containerfile, by appending
-            #   `RUN --mount=type=ssh,id=id ...`
+        class Restart(BaseModel):
+            """Validate the `[tool.bertrand.restart]` table."""
 
-            class Device(BaseModel):
-                """Validate one workload runtime device capability request."""
+            model_config = ConfigDict(extra="forbid")
+            policy: Annotated[
+                Literal["no", "on-failure", "always", "unless-stopped"],
+                Field(default="no"),
+            ]
+            max_retries: Annotated[
+                NonNegativeInt, Field(default=0, alias="max-retries")
+            ]
 
-                model_config = ConfigDict(extra="forbid")
-                id: KubeName
-                required: bool = True
-                container_path: Annotated[
-                    AbsolutePosixPath | None,
-                    Field(default=None, alias="container-path"),
-                ]
-                permissions: Annotated[DevicePermission, Field(default="rwm")]
+        class Healthcheck(BaseModel):
+            """Validate a workload container healthcheck table."""
 
-            class Secret(BaseModel):
-                """Validate one workload runtime secret capability request."""
-
-                model_config = ConfigDict(extra="forbid")
-                id: KubeName
-                required: bool = True
-
-            class Container(BaseModel):
-                """Validate one native workload container entry."""
-
-                model_config = ConfigDict(extra="forbid")
-                name: KubeName
-                cmd: Annotated[list[NonEmpty[Trimmed]], Field(min_length=1)]
-                args: Annotated[list[NonEmpty[Trimmed]], Field(default_factory=list)]
-                ports: Annotated[
-                    list[Bertrand.Model.Workload.Port],
-                    AfterValidator(lambda x: Bertrand.Model.Workload._check_ports(x)),
-                    Field(default_factory=list),
-                ]
-                secrets: Annotated[
-                    list[Bertrand.Model.Workload.Secret],
-                    AfterValidator(
-                        lambda x: Bertrand.Model.Workload._check_unique_requests(
-                            x, where="container secret"
-                        )
-                    ),
-                    Field(default_factory=list),
-                ]
-                devices: Annotated[
-                    list[Bertrand.Model.Workload.Device],
-                    AfterValidator(
-                        lambda x: Bertrand.Model.Workload._check_unique_requests(
-                            x, where="container device"
-                        )
-                    ),
-                    Field(default_factory=list),
-                ]
-                metadata: Annotated[
-                    dict[NonEmpty[SnakeCase], Scalar],
-                    Field(default_factory=dict),
-                ]
-
-            class Conan(BaseModel):
-                """Validate the `[tool.bertrand.workload.conan]` table."""
-
-                model_config = ConfigDict(extra="forbid")
-                build_type: Annotated[
-                    Literal["", "Release", "Debug"],
-                    Field(default="", alias="build-type"),
-                ]
-                conf: Annotated[ConanConf, Field(default_factory=dict)]
-                options: Annotated[ConanOptions, Field(default_factory=dict)]
-                requires: Annotated[
-                    list[ConanConfig.Model.Require],
-                    AfterValidator(ConanConfig.Model._check_requires),
-                    Field(default_factory=list),
-                ]
-
-            class Build(BaseModel):
-                """Validate the `[tool.bertrand.workload.build]` table."""
-
-                model_config = ConfigDict(extra="forbid")
-                context: Annotated[BuildContextPath, Field(default=PosixPath("."))]
-                target: Annotated[
-                    NoWhiteSpace,
-                    StringConstraints(pattern=r"^[a-zA-Z0-9_-]*$"),
-                    Field(default=""),
-                ]
-                pull: Annotated[
-                    Literal["missing", "always", "never", "newer"],
-                    Field(default="missing"),
-                ]
-
-            class Stop(BaseModel):
-                """Validate the `[tool.bertrand.workload.stop]` table."""
-
-                model_config = ConfigDict(extra="forbid")
-                signal: Annotated[
-                    str,
-                    StringConstraints(
-                        strip_whitespace=True,
-                        min_length=1,
-                        pattern=r"^\S+$",
-                    ),
-                    Field(default="SIGTERM"),
-                ]
-                timeout: Annotated[NonNegativeInt, Field(default=10)]
-
-            class Restart(BaseModel):
-                """Validate the `[tool.bertrand.workload.restart]` table."""
-
-                model_config = ConfigDict(extra="forbid")
-                policy: Annotated[
-                    Literal["no", "on-failure", "always", "unless-stopped"],
-                    Field(default="no"),
-                ]
-                max_retries: Annotated[
-                    NonNegativeInt, Field(default=0, alias="max-retries")
-                ]
-
-            class Healthcheck(BaseModel):
-                """Validate the `[tool.bertrand.workload.healthcheck]` table."""
-
-                class Startup(BaseModel):
-                    """Validate the image startup healthcheck table."""
-
-                    model_config = ConfigDict(extra="forbid")
-                    cmd: Annotated[list[str], Field(default_factory=list)]
-                    period: Annotated[Timeout, Field(default="0s")]
-                    success: Annotated[NonNegativeInt, Field(default=0)]
-                    interval: Annotated[Timeout, Field(default="30s")]
-                    timeout: Annotated[Timeout, Field(default="30s")]
-
-                class Log(BaseModel):
-                    """Validate the image healthcheck log table."""
-
-                    model_config = ConfigDict(extra="forbid")
-                    destination: Annotated[HealthLogDestination, Field(default="local")]
-                    max_count: Annotated[
-                        NonNegativeInt, Field(default=0, alias="max-count")
-                    ]
-                    max_size: Annotated[
-                        NonNegativeInt, Field(default=0, alias="max-size")
-                    ]
+            class Startup(BaseModel):
+                """Validate a workload container startup healthcheck table."""
 
                 model_config = ConfigDict(extra="forbid")
                 cmd: Annotated[list[str], Field(default_factory=list)]
-                on_failure: Annotated[
-                    Literal["none", "kill", "stop"],
-                    Field(default="kill", alias="on-failure"),
-                ]
-                retries: Annotated[NonNegativeInt, Field(default=3)]
+                period: Annotated[Timeout, Field(default="0s")]
+                success: Annotated[NonNegativeInt, Field(default=0)]
                 interval: Annotated[Timeout, Field(default="30s")]
                 timeout: Annotated[Timeout, Field(default="30s")]
-                startup: Annotated[
-                    Startup, Field(default_factory=Startup.model_construct)
+
+            class Log(BaseModel):
+                """Validate a workload container healthcheck log table."""
+
+                model_config = ConfigDict(extra="forbid")
+                destination: Annotated[HealthLogDestination, Field(default="local")]
+                max_count: Annotated[
+                    NonNegativeInt, Field(default=0, alias="max-count")
                 ]
-                log: Annotated[Log, Field(default_factory=Log.model_construct)]
+                max_size: Annotated[NonNegativeInt, Field(default=0, alias="max-size")]
 
             model_config = ConfigDict(extra="forbid")
-            primary: Annotated[KubeName, Field(default="main")]
-            containers: Annotated[
-                list[Container],
-                AfterValidator(_check_containers),
-                Field(default_factory=list),
+            cmd: Annotated[list[str], Field(default_factory=list)]
+            on_failure: Annotated[
+                Literal["none", "kill", "stop"],
+                Field(default="kill", alias="on-failure"),
             ]
-            containerfile: Annotated[
-                RelativePosixPath | None,
-                Field(
-                    default=None,
-                    examples=["path/to/Containerfile", None],
-                    description=(
-                        "Relative path to a Containerfile defining the build steps for "
-                        "this image.  This is intended to allow advanced users to "
-                        "define custom build steps for their projects outside of "
-                        "Bertrand's normal bootstrap procedure.  For the vast majority "
-                        "of users, this should be omitted, and relevant setup should "
-                        "be done through standard build tools and package managers "
-                        "defined elsewhere in project configuration.  If omitted, "
-                        "Bertrand will automatically generate a minimal Containerfile "
-                        "based on this information."
-                    ),
-                ),
-            ]
-            build_args: Annotated[
-                dict[NonEmpty[UpperSnakeCase], Scalar],
-                Field(
-                    default_factory=dict,
-                    alias="build-args",
-                    examples=[
-                        "\n".join(
-                            (
-                                "[tool.bertrand.workload.build-args]",
-                                "CPUS = 8",
-                                "DEBUG = true",
-                                "PYTHON_VERSION = \"3.12.4\"",
-                                "...",
-                            )
-                        )
-                    ],
-                    description=(
-                        "Mapping of build-time ARG variables to their values, which "
-                        "are passed to the listed Containerfile.  Keys must be "
-                        "SCREAMING_SNAKE_CASE, and not start with a number or end with "
-                        "an underscore."
-                    ),
-                ),
-            ]
+            retries: Annotated[NonNegativeInt, Field(default=3)]
+            interval: Annotated[Timeout, Field(default="30s")]
+            timeout: Annotated[Timeout, Field(default="30s")]
+            startup: Annotated[Startup, Field(default_factory=Startup.model_construct)]
+            log: Annotated[Log, Field(default_factory=Log.model_construct)]
+
+        class Container(BaseModel):
+            """Validate one native workload container entry."""
+
+            model_config = ConfigDict(extra="forbid")
+            name: KubeName
             cmd: Annotated[
-                list[NonEmpty[Trimmed]],
+                NonEmpty[list[NonEmpty[Trimmed]]],
                 Field(
-                    default_factory=list,
                     examples=[
                         ["echo", "Hello, world!"],
                         ["greet"],
                     ],
                     description=(
-                        "The default entry point for containers built from this image, "
-                        "defined as a list of strings representing the command and its "
-                        "arguments.  If no override is supplied to `bertrand run`, "
-                        "then this command will be used instead.  If it is also empty, "
-                        "then the run will fail."
+                        "The explicit command to execute for this container, "
+                        "defined as a list of strings representing the executable "
+                        "and its arguments.  Bertrand requires this command so it "
+                        "can wrap the container with repository bootstrap before "
+                        "execution."
                     ),
                 ),
-            ]
-            ports: Annotated[
-                list[Port], AfterValidator(_check_ports), Field(default_factory=list)
-            ]
-            network_aliases: Annotated[
-                list[NetworkAlias],
-                AfterValidator(_check_network_aliases),
-                Field(default_factory=list, alias="network-aliases"),
             ]
             cpus: Annotated[
                 NonNegativeFloat,
                 Field(
                     default=0.0,
                     description=(
-                        "The number of CPUs to allocate to containers built from this "
-                        "image.  0.0 (the default) removes the limit and allows the "
-                        "container to use all available resources.  Fractional values "
-                        "are allowed to specify partial CPU allocation (e.g. 0.5 for "
-                        "half a CPU)."
+                        "The number of CPUs to allocate to containers built from "
+                        "this image.  0.0 (the default) removes the limit and "
+                        "allows the container to use all available resources.  "
+                        "Fractional values are allowed to specify partial CPU "
+                        "allocation (e.g. 0.5 for half a CPU)."
                     ),
                 ),
             ]
-            # TODO: maybe the memory limit needs to be split between build and run
-            # time?
             memory: Annotated[
                 Memory,
                 Field(
                     default="0",
                     examples=["1024b", "128k", "512m", "2g"],
                     description=(
-                        "The amount of memory to allocate to containers built from "
-                        "this image.  0 (the default) removes the limit and allows the "
-                        "container to use all available resources.  If the machine "
-                        "supports swap memory, then the value may be larger than the "
-                        "physical memory.  Equivalent to `podman build|create -m`."
+                        "The amount of memory to allocate to containers built "
+                        "from this image.  0 (the default) removes the limit and "
+                        "allows the container to use all available resources.  If "
+                        "the machine supports swap memory, then the value may be "
+                        "larger than the physical memory.  Equivalent to `podman "
+                        "build|create -m`."
                     ),
                 ),
             ]
             pids_limit: Annotated[int, Field(default=0, ge=-1, alias="pids-limit")]
             shm_size: Annotated[Memory, Field(default="64m", alias="shm-size")]
             ulimit: Annotated[
-                list[ULimit], AfterValidator(_check_ulimit), Field(default_factory=list)
+                list[Bertrand.Model.ULimit],
+                AfterValidator(lambda x: Bertrand.Model._check_ulimit(x)),
+                Field(default_factory=list),
             ]
             cap_add: Annotated[
                 list[Capability],
                 AfterValidator(
-                    lambda x: Bertrand.Model.Workload._check_unique(
+                    lambda x: Bertrand.Model._check_unique(
                         x, where="cap-add capability"
                     )
                 ),
@@ -1571,7 +1184,7 @@ class Bertrand(Resource):
             cap_drop: Annotated[
                 list[Capability],
                 AfterValidator(
-                    lambda x: Bertrand.Model.Workload._check_unique(
+                    lambda x: Bertrand.Model._check_unique(
                         x, where="cap-drop capability"
                     )
                 ),
@@ -1580,77 +1193,52 @@ class Bertrand(Resource):
             security_opt: Annotated[
                 list[SecurityOpt],
                 AfterValidator(
-                    lambda x: Bertrand.Model.Workload._check_unique(
+                    lambda x: Bertrand.Model._check_unique(
                         x, where="security-opt entry"
                     )
                 ),
                 Field(default_factory=list, alias="security-opt"),
             ]
-            userns: Annotated[UserNS, Field(default="host")]
-            ipc: Annotated[IPCMode, Field(default="private")]
-            pid: Annotated[PIDMode, Field(default="private")]
-            uts: Annotated[UTSMode, Field(default="private")]
-            ssh: Annotated[list[KubeName], Field(default_factory=list)]
-            instruments: Annotated[list[InstrumentEntry], Field(default_factory=list)]
-            # TODO: Device capability design (config-layer contract):
-            # - `devices` are host-agnostic capability requests keyed by
-            #   SCREAMING_SNAKE_CASE IDs, never raw host paths.
-            # - Each request may override container-facing mapping details only:
-            #   `container-path`, `permissions`, `required`.
-            # - IDs resolve through Kubernetes DRA inventory at execution time,
-            #   allowing the scheduler to pick the concrete device and node.
-            # - Security invariants:
-            #     * no host device paths committed in project configuration
-            #     * no secret host topology persisted in project metadata
-            # - Runtime wiring/argv synthesis is deferred to container.py refactor.
+            ports: Annotated[
+                list[Bertrand.Model.Port],
+                AfterValidator(lambda x: Bertrand.Model._check_ports(x)),
+                Field(default_factory=list),
+            ]
+            ssh: Annotated[
+                list[Bertrand.Model.SSH],
+                AfterValidator(
+                    lambda x: Bertrand.Model._check_unique_requests(
+                        x, where="container ssh"
+                    )
+                ),
+                Field(default_factory=list),
+            ]
             devices: Annotated[
-                list[Device],
+                list[Bertrand.Model.Device],
                 AfterValidator(
-                    lambda x: Bertrand.Model.Workload._check_unique_requests(
-                        x, where="device"
+                    lambda x: Bertrand.Model._check_unique_requests(
+                        x, where="container device"
                     )
                 ),
                 Field(default_factory=list),
             ]
-            # TODO: Secrets capability design (config-layer contract):
-            # - `secrets` are capability requests keyed by SCREAMING_SNAKE_CASE
-            #   IDs, never secret values.
-            # - IDs resolve through managed Kubernetes Secret capabilities at
-            #   execution time.
-            # - Runtime resolution exposes secrets as files (e.g. under
-            #   `/run/secrets`), not env vars.
-            # - Security invariants:
-            #     * no secret bytes in project configuration or metadata
-            #     * no secret material persisted in logs or generated state
-            #     * unresolved `required=true` entries fail closed at runtime
-            # - Runtime wiring/argv synthesis is deferred to container.py refactor.
             secrets: Annotated[
-                list[Secret],
+                list[Bertrand.Model.Secret],
                 AfterValidator(
-                    lambda x: Bertrand.Model.Workload._check_unique_requests(
-                        x, where="secret"
+                    lambda x: Bertrand.Model._check_unique_requests(
+                        x, where="container secret"
                     )
                 ),
                 Field(default_factory=list),
             ]
-            conan: Annotated[Conan, Field(default_factory=Conan.model_construct)]
-            build: Annotated[Build, Field(default_factory=Build.model_construct)]
-            stop: Annotated[Stop, Field(default_factory=Stop.model_construct)]
-            restart: Annotated[Restart, Field(default_factory=Restart.model_construct)]
             healthcheck: Annotated[
-                Healthcheck, Field(default_factory=Healthcheck.model_construct)
+                Bertrand.Model.Healthcheck,
+                Field(default_factory=_default_workload_healthcheck),
             ]
-
-            @model_validator(mode="after")
-            def _validate_primary_container(self) -> Self:
-                container_names = {container.name for container in self.containers}
-                if self.primary not in container_names:
-                    msg = (
-                        f"primary workload container {self.primary!r} is not present "
-                        "in `containers`"
-                    )
-                    raise ValueError(msg)
-                return self
+            metadata: Annotated[
+                dict[NonEmpty[SnakeCase], Scalar],
+                Field(default_factory=dict),
+            ]
 
             @model_validator(mode="after")
             def _validate_capability_conflicts(self) -> Self:
@@ -1672,55 +1260,61 @@ class Bertrand(Resource):
                     raise ValueError(msg)
                 return self
 
-            def resolve_containerfile(self, root: Path) -> None:
-                """Validate the custom Containerfile path.
+        @staticmethod
+        def _check_ports(ports: list[Port]) -> list[Port]:
+            seen: set[ServicePortName] = set()
+            for port in ports:
+                if port.name in seen:
+                    msg = f"duplicate workload port name: '{port.name}'"
+                    raise ValueError(msg)
+                seen.add(port.name)
+            return ports
 
-                Raises
-                ------
-                OSError
-                    If the Containerfile path is missing, not a file, or not UTF-8.
-                """
-                if self.containerfile is None:
-                    return
-                path = root / self.containerfile
-                if not path.exists():
-                    msg = f"custom workload Containerfile path does not exist: {path}"
-                    raise OSError(msg)
-                if not path.is_file():
-                    msg = f"custom workload Containerfile path is not a file: {path}"
-                    raise OSError(msg)
-                try:
-                    path.read_text(encoding="utf-8")
-                except UnicodeDecodeError as err:
-                    msg = f"custom workload Containerfile is not UTF-8 encoded: {path}"
-                    raise OSError(msg) from err
+        @staticmethod
+        def _check_ulimit(entries: list[ULimit]) -> list[ULimit]:
+            seen: set[str] = set()
+            for entry in entries:
+                if entry.name in seen:
+                    msg = f"duplicate ulimit name: '{entry.name}'"
+                    raise ValueError(msg)
+                seen.add(entry.name)
+            return entries
+
+        @staticmethod
+        def _check_unique(value: list[str], *, where: str) -> list[str]:
+            seen: set[str] = set()
+            for item in value:
+                if item in seen:
+                    msg = f"duplicate {where}: '{item}'"
+                    raise ValueError(msg)
+                seen.add(item)
+            return value
+
+        @staticmethod
+        def _check_unique_requests(
+            requests: list[Any],
+            *,
+            where: str,
+        ) -> list[Any]:
+            seen: set[KubeName] = set()
+            for req in requests:
+                if req.id in seen:
+                    msg = f"duplicate {where} capability id: '{req.id}'"
+                    raise ValueError(msg)
+                seen.add(req.id)
+            return requests
+
+        @staticmethod
+        def _check_containers(containers: list[Container]) -> list[Container]:
+            seen: set[KubeName] = set()
+            for container in containers:
+                if container.name in seen:
+                    msg = f"duplicate workload container name: '{container.name}'"
+                    raise ValueError(msg)
+                seen.add(container.name)
+            return containers
 
         model_config = ConfigDict(extra="forbid")
-        shell: Annotated[
-            Shell,
-            Field(
-                default=DEFAULT_SHELL,
-                examples=list(SHELLS),
-                description=(
-                    "Default shell to use when entering a container via "
-                    "`bertrand enter`.  This is not a literal shell command, but "
-                    "rather an identifier that maps to a backend command to prevent "
-                    "remote code execution."
-                ),
-            ),
-        ]
-        editor: Annotated[
-            Editor,
-            Field(
-                default=DEFAULT_EDITOR,
-                examples=list(EDITORS),
-                description=(
-                    "Default text editor to use when invoking `bertrand code`.  This "
-                    "is not a literal shell command, but rather an identifier that "
-                    "maps to a backend command to prevent remote code execution."
-                ),
-            ),
-        ]
         ignore: Annotated[
             IgnoreList,
             Field(
@@ -1806,6 +1400,31 @@ class Bertrand(Resource):
                 ),
             ),
         ]
+        shell: Annotated[
+            Shell,
+            Field(
+                default=DEFAULT_SHELL,
+                examples=list(SHELLS),
+                description=(
+                    "Default shell to use when entering a container via "
+                    "`bertrand enter`.  This is not a literal shell command, but "
+                    "rather an identifier that maps to a backend command to prevent "
+                    "remote code execution."
+                ),
+            ),
+        ]
+        editor: Annotated[
+            Editor,
+            Field(
+                default=DEFAULT_EDITOR,
+                examples=list(EDITORS),
+                description=(
+                    "Default text editor to use when invoking `bertrand code`.  This "
+                    "is not a literal shell command, but rather an identifier that "
+                    "maps to a backend command to prevent remote code execution."
+                ),
+            ),
+        ]
         network: Annotated[
             Network,
             Field(
@@ -1817,29 +1436,42 @@ class Bertrand(Resource):
             Image,
             Field(default_factory=Image.model_construct),
         ]
-        workload: Annotated[
-            Workload | None,
-            Field(default=None),
+        containers: Annotated[
+            list[Container],
+            AfterValidator(_check_containers),
+            Field(default_factory=list),
         ]
+        userns: Annotated[UserNS, Field(default="host")]
+        ipc: Annotated[IPCMode, Field(default="private")]
+        pid: Annotated[PIDMode, Field(default="private")]
+        uts: Annotated[UTSMode, Field(default="private")]
+        stop: Annotated[
+            Stop,
+            Field(default_factory=Stop.model_construct),
+        ]
+        restart: Annotated[Restart, Field(default_factory=Restart.model_construct)]
 
-        # @model_validator(mode="after")
-        # def _validate_services(self) -> Self:
-        #     unknown_services: list[str] = []
-        #     for idx, service in enumerate(self.services):
-        #         if any(prev == service for prev in self.services[:idx]):
-        #             raise ValueError(
-        #                 "duplicate service name in 'tool.bertrand.services': "
-        #                 f"'{service}'"
-        #             )
-        #         if service not in self.image:
-        #             unknown_services.append(service)
-        #     if unknown_services:
-        #         raise ValueError(
-        #             "found service names in 'tool.bertrand.services' with no "
-        #             f"matching tag in 'tool.bertrand.image': "
-        #             f"{', '.join(unknown_services)}"
-        #         )
-        #     return self
+        @model_validator(mode="after")
+        def _validate_network_routes(self) -> Self:
+            ports: dict[ServicePortName, KubeName] = {}
+            for container in self.containers:
+                for port in container.ports:
+                    owner = ports.get(port.name)
+                    if owner is not None:
+                        msg = (
+                            f"duplicate workload port name {port.name!r} in "
+                            f"containers {owner!r} and {container.name!r}"
+                        )
+                        raise ValueError(msg)
+                    ports[port.name] = container.name
+            for route in self.network.routes:
+                if route.port not in ports:
+                    msg = (
+                        f"network route for host {route.host!r} references unknown "
+                        f"port {route.port!r}"
+                    )
+                    raise ValueError(msg)
+            return self
 
         # @model_validator(mode="after")
         # def _validate_namespace_refs(self) -> Self:
@@ -1927,7 +1559,6 @@ class Bertrand(Resource):
         -------
         Model | None
             Parsed Bertrand configuration.
-
         """
         result = self.Model.model_validate(fragment)
         pyproject = config.get(PyProject)
@@ -1935,8 +1566,6 @@ class Bertrand(Resource):
         if version is not None:
             project_image_tag(version)
         result.image.resolve_containerfile(config.root)
-        if result.workload is not None:
-            result.workload.resolve_containerfile(config.root)
         return result
 
     async def render(self, config: Config, *, image_build: bool) -> None:

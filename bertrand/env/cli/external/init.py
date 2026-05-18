@@ -56,6 +56,7 @@ from bertrand.env.kube.api.client import Kube
 from bertrand.env.kube.build.controller import ensure_buildkit_build_controller
 from bertrand.env.kube.build.daemon import BUILDKIT_POOL
 from bertrand.env.kube.build.repository import IMAGES
+from bertrand.env.kube.capability.device import ensure_dra_backend
 from bertrand.env.kube.ceph.bootstrap import (
     assert_microceph_installed,
     install_microceph,
@@ -70,7 +71,6 @@ from bertrand.env.kube.ceph.mount import (
 from bertrand.env.kube.ceph.storage import ensure_ceph_storage_controller
 from bertrand.env.kube.ceph.volume import DEFAULT_VOLUME_SIZE, RepoVolume
 from bertrand.env.kube.control import control_plane_image
-from bertrand.env.kube.dra import ensure_dra_backend
 from bertrand.env.kube.namespace import Namespace
 
 if TYPE_CHECKING:

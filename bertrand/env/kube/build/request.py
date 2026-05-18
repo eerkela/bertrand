@@ -57,7 +57,7 @@ BUILDKIT_BUILD_LABELS = {
 }
 PROJECT_IMAGE_CONFIG_ID = "BERTRAND_IMAGE_CONFIG_ID"
 
-type BuildNetworkMode = Literal["default", "none", "host"]
+type BuildPullPolicy = Literal["missing", "always", "never"]
 type BuildKitBuildPhase = Literal["Pending", "Running", "Succeeded", "Failed"]
 type _NonEmptyString = Annotated[str, Field(min_length=1)]
 
@@ -80,7 +80,7 @@ _BUILDKIT_BUILD_SPEC_SCHEMA = {
         "config_id",
         "image",
         "dockerfile",
-        "network",
+        "pull",
     ],
     "properties": {
         "repo_id": {"type": "string", "minLength": 1},
@@ -91,7 +91,7 @@ _BUILDKIT_BUILD_SPEC_SCHEMA = {
         "dockerfile": {"type": "string", "minLength": 1},
         "build_args": _STRING_MAP_SCHEMA,
         "target": {"type": "string", "nullable": True},
-        "network": {"type": "string", "enum": ["default", "none", "host"]},
+        "pull": {"type": "string", "enum": ["missing", "always", "never"]},
         "secrets": _BOOL_MAP_SCHEMA,
         "ssh": _BOOL_MAP_SCHEMA,
         "devices": _BOOL_MAP_SCHEMA,
@@ -165,8 +165,8 @@ class BuildKitBuildSpec(BaseModel):
         Dockerfile build arguments.
     target : str | None, optional
         Optional target stage in a multi-stage Containerfile.
-    network : {'default', 'none', 'host'}
-        BuildKit network mode applied to build-time `RUN` instructions.
+    pull : {'missing', 'always', 'never'}
+        BuildKit base-image resolution policy.
     secrets : dict[str, bool], optional
         Secret capability requests keyed by capability ID.
     ssh : dict[str, bool], optional
@@ -188,7 +188,7 @@ class BuildKitBuildSpec(BaseModel):
     dockerfile: _NonEmptyString
     build_args: dict[str, str] = Field(default_factory=dict)
     target: str | None = None
-    network: BuildNetworkMode
+    pull: BuildPullPolicy
     secrets: dict[_NonEmptyString, bool] = Field(default_factory=dict)
     ssh: dict[_NonEmptyString, bool] = Field(default_factory=dict)
     devices: dict[_NonEmptyString, bool] = Field(default_factory=dict)
@@ -285,7 +285,7 @@ class BuildKitBuildSpec(BaseModel):
         dockerfile: str,
         build_args: Mapping[str, str],
         target: str | None,
-        network: BuildNetworkMode,
+        pull: BuildPullPolicy,
         secrets: Mapping[str, bool],
         ssh: Mapping[str, bool],
         devices: Mapping[str, bool],
@@ -304,8 +304,8 @@ class BuildKitBuildSpec(BaseModel):
             Dockerfile build arguments.
         target : str | None
             Optional target stage in a multi-stage Containerfile.
-        network : {'default', 'none', 'host'}
-            BuildKit network mode applied to build-time `RUN` instructions.
+        pull : {'missing', 'always', 'never'}
+            BuildKit base-image resolution policy.
         secrets : Mapping[str, bool]
             Secret capability requests exposed to the build.
         ssh : Mapping[str, bool]
@@ -331,7 +331,7 @@ class BuildKitBuildSpec(BaseModel):
             dockerfile=dockerfile,
             build_args=dict(sorted(build_args.items())),
             target=target,
-            network=network,
+            pull=pull,
             secrets=dict(sorted(secrets.items())),
             ssh=dict(sorted(ssh.items())),
             devices=dict(sorted(devices.items())),

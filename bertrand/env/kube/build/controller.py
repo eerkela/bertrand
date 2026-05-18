@@ -44,12 +44,14 @@ from bertrand.env.kube.build.request import (
     list_buildkit_builds,
     patch_buildkit_build_status,
 )
+from bertrand.env.kube.capability.device import (
+    BERTRAND_DEVICE_GROUP,
+    BERTRAND_DEVICE_PLURAL,
+)
 from bertrand.env.kube.ceph.snapshot import cleanup_orphaned_build_sources
 from bertrand.env.kube.control import MaintenanceClock
 from bertrand.env.kube.deployment import Deployment
 from bertrand.env.kube.dra import (
-    BERTRAND_DEVICE_GROUP,
-    BERTRAND_DEVICE_PLURAL,
     DRA_GROUP,
     RESOURCE_CLAIM_PLURAL,
     RESOURCE_CLAIM_TEMPLATE_PLURAL,

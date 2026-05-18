@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Protocol
 from bertrand.env.config.core import _check_kube_name
 from bertrand.env.kube.api.spec import VolumeMountSpec, VolumeSpec
 from bertrand.env.kube.capability.base import Capability
-from bertrand.env.kube.dra import (
+from bertrand.env.kube.capability.device import (
     DRAResourceClaimIntent,
     resource_claim_intents,
     select_device_claims,
@@ -51,16 +51,10 @@ class WorkloadDeviceRequest(Protocol):
         Host-agnostic device capability ID.
     required : bool
         Whether resolution must fail if the capability is unavailable.
-    container_path : str | None
-        Optional future container-facing device path.
-    permissions : str
-        Requested future device permissions.
     """
 
     id: KubeName
     required: bool
-    container_path: str | None
-    permissions: str
 
 
 class WorkloadContainerCapabilityRequest(Protocol):
@@ -228,21 +222,11 @@ async def resolve_workload_capabilities(
             node_names=(node,) if node is not None else None,
             timeout=deadline - loop.time(),
         )
-        device_metadata = {
-            _check_kube_name(str(request.id)): (
-                str(request.container_path)
-                if request.container_path is not None
-                else None,
-                request.permissions,
-            )
-            for request in container.devices
-        }
         resource_claims.extend(
             resource_claim_intents(
                 owner=f"workload-{env_id}",
                 requests=device_requests,
                 container_name=container_name,
-                metadata=device_metadata,
             )
         )
 

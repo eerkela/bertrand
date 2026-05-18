@@ -27,28 +27,27 @@ if TYPE_CHECKING:
 
 
 class _WorkloadPort(Protocol):
-    container: int
+    name: str
+    port: int
     protocol: str
 
 
 class _WorkloadContainer(Protocol):
     name: str
     cmd: Sequence[str]
-    args: Sequence[str]
     ports: Sequence[_WorkloadPort]
     secrets: Sequence[WorkloadSecretRequest]
     devices: Sequence[WorkloadDeviceRequest]
 
 
 class _WorkloadConfig(Protocol):
-    primary: str
     containers: Sequence[_WorkloadContainer]
 
 
 async def workload_pod_from_config(
     kube: Kube,
     *,
-    workload: _WorkloadConfig | None,
+    config: _WorkloadConfig | None,
     repo_id: str,
     worktree: str | PurePosixPath,
     env_id: str,
@@ -62,9 +61,9 @@ async def workload_pod_from_config(
     ----------
     kube : Kube
         Active Kubernetes API context.
-    workload : _WorkloadConfig
-        Validated `[tool.bertrand.workload]` config object, or `None` for
-        image/library-only worktrees.
+    config : _WorkloadConfig
+        Validated `[tool.bertrand]` config object, or `None` for image/library-only
+        worktrees.
     repo_id : str
         Stable repository UUID used to mount the managed Ceph repository PVC.
     worktree : str | PurePosixPath
@@ -88,16 +87,15 @@ async def workload_pod_from_config(
     ValueError
         If `image` or any workload container command is empty.
     """
-    if workload is None:
+    if config is None:
         return None
     image = image.strip()
     if not image:
         msg = "workload image cannot be empty"
         raise ValueError(msg)
-    containers = tuple(workload.containers)
+    containers = tuple(config.containers)
     if not containers:
-        msg = "workload configuration requires at least one container"
-        raise ValueError(msg)
+        return None
 
     capabilities = await resolve_workload_capabilities(
         kube,
@@ -118,8 +116,7 @@ async def workload_pod_from_config(
                 name=container.name,
                 image=image,
                 command=_workload_command(container.cmd, container=container.name),
-                args=_workload_args(container.args, container=container.name),
-                ports=_container_ports(container.ports, container=container.name),
+                ports=_container_ports(container.ports),
                 volume_mounts=capabilities.mounts_by_container.get(
                     container.name,
                     (),
@@ -136,7 +133,7 @@ async def workload_pod_from_config(
                 claim.pod_claim() for claim in capabilities.resource_claims
             ),
         ),
-        primary_container=workload.primary,
+        primary_container=containers[0].name,
         repository=WorkloadRepository(repo_id=repo_id, worktree=worktree),
         resource_claim_templates=capabilities.resource_claims,
         runtime_env={ENV_ID_ENV: env_id},
@@ -159,29 +156,14 @@ def _workload_command(command: Sequence[str], *, container: str) -> tuple[str, .
     return tuple(out)
 
 
-def _workload_args(args: Sequence[str], *, container: str) -> tuple[str, ...]:
-    out: list[str] = []
-    for part in args:
-        value = part.strip()
-        if not value:
-            msg = f"workload args entries for container {container!r} cannot be empty"
-            raise ValueError(msg)
-        out.append(value)
-    return tuple(out)
-
-
 def _container_ports(
     ports: Sequence[_WorkloadPort],
-    *,
-    container: str,
 ) -> tuple[ContainerPortSpec, ...]:
-    rendered: list[ContainerPortSpec] = []
-    for index, port in enumerate(ports):
-        rendered.append(
-            ContainerPortSpec(
-                name=f"{container}-port-{index}",
-                container_port=port.container,
-                protocol=cast("PortProtocol", port.protocol.upper()),
-            )
+    return tuple(
+        ContainerPortSpec(
+            name=port.name,
+            container_port=port.port,
+            protocol=cast("PortProtocol", port.protocol.upper()),
         )
-    return tuple(rendered)
+        for port in ports
+    )
