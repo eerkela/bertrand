@@ -19,6 +19,7 @@ if TYPE_CHECKING:
 def _probe_manifest(probe: ProbeSpec) -> dict[str, object]:
     sources = sum(
         (
+            probe.exec_command is not None,
             probe.tcp_port is not None,
             probe.http_path is not None or probe.http_port is not None,
         )
@@ -27,7 +28,13 @@ def _probe_manifest(probe: ProbeSpec) -> dict[str, object]:
         msg = "probe must define exactly one source"
         raise ValueError(msg)
     payload: dict[str, object]
-    if probe.tcp_port is not None:
+    if probe.exec_command is not None:
+        command = [part for part in probe.exec_command if part.strip()]
+        if not command:
+            msg = "exec probe command cannot be empty"
+            raise ValueError(msg)
+        payload = {"exec": {"command": command}}
+    elif probe.tcp_port is not None:
         payload = {"tcpSocket": {"port": probe.tcp_port}}
     else:
         if probe.http_path is None or probe.http_port is None:
@@ -38,6 +45,10 @@ def _probe_manifest(probe: ProbeSpec) -> dict[str, object]:
         payload["initialDelaySeconds"] = probe.initial_delay_seconds
     if probe.period_seconds is not None:
         payload["periodSeconds"] = probe.period_seconds
+    if probe.timeout_seconds is not None:
+        payload["timeoutSeconds"] = probe.timeout_seconds
+    if probe.success_threshold is not None:
+        payload["successThreshold"] = probe.success_threshold
     if probe.failure_threshold is not None:
         payload["failureThreshold"] = probe.failure_threshold
     return payload
@@ -177,6 +188,8 @@ def _container_manifest(container: ContainerSpec) -> dict[str, object]:
                 item["valueFrom"] = {"configMapKeyRef": config_map_ref}
             env.append(item)
         payload["env"] = env
+    if container.startup_probe is not None:
+        payload["startupProbe"] = _probe_manifest(container.startup_probe)
     if container.readiness_probe is not None:
         payload["readinessProbe"] = _probe_manifest(container.readiness_probe)
     if container.liveness_probe is not None:
@@ -200,13 +213,20 @@ def _container_manifest(container: ContainerSpec) -> dict[str, object]:
         if security_context:
             payload["securityContext"] = security_context
     if container.resources is not None:
+        resources: dict[str, object] = {}
+        if container.resources.requests:
+            resources["requests"] = dict(container.resources.requests)
+        if container.resources.limits:
+            resources["limits"] = dict(container.resources.limits)
         claims = [
             {"name": name}
             for claim in container.resources.claims
             if (name := claim.strip())
         ]
         if claims:
-            payload["resources"] = {"claims": claims}
+            resources["claims"] = claims
+        if resources:
+            payload["resources"] = resources
     return payload
 
 

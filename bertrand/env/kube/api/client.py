@@ -39,6 +39,8 @@ class Kube:
         Custom object API surface for CRD interactions.
     batch : kubernetes.client.BatchV1Api
         Batch v1 API surface for Jobs and related execution resources.
+    networking : kubernetes.client.NetworkingV1Api
+        Networking v1 API surface for NetworkPolicy resources.
     apiextensions : kubernetes.client.ApiextensionsV1Api
         API extensions v1 surface for CRDs.
     rbac : kubernetes.client.RbacAuthorizationV1Api
@@ -57,6 +59,7 @@ class Kube:
     apps: kubernetes.client.AppsV1Api = field(init=False, repr=False)
     custom: kubernetes.client.CustomObjectsApi = field(init=False, repr=False)
     batch: kubernetes.client.BatchV1Api = field(init=False, repr=False)
+    networking: kubernetes.client.NetworkingV1Api = field(init=False, repr=False)
     apiextensions: kubernetes.client.ApiextensionsV1Api = field(init=False, repr=False)
     rbac: kubernetes.client.RbacAuthorizationV1Api = field(init=False, repr=False)
     storage: kubernetes.client.StorageV1Api = field(init=False, repr=False)
@@ -70,6 +73,7 @@ class Kube:
             self.apps = kubernetes.client.AppsV1Api(self.client)
             self.custom = kubernetes.client.CustomObjectsApi(self.client)
             self.batch = kubernetes.client.BatchV1Api(self.client)
+            self.networking = kubernetes.client.NetworkingV1Api(self.client)
             self.apiextensions = kubernetes.client.ApiextensionsV1Api(self.client)
             self.rbac = kubernetes.client.RbacAuthorizationV1Api(self.client)
             self.storage = kubernetes.client.StorageV1Api(self.client)

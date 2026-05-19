@@ -296,6 +296,49 @@ class ResourceClaimTemplate:
         )
         return cls._from_object(obj)
 
+    @classmethod
+    async def upsert(
+        cls,
+        kube: Kube,
+        *,
+        namespace: str,
+        name: str,
+        spec: Mapping[str, object],
+        labels: Mapping[str, str],
+        timeout: float,
+    ) -> Self:
+        """Create or patch one DRA `ResourceClaimTemplate`.
+
+        Parameters
+        ----------
+        kube : Kube
+            Active Kubernetes API context.
+        namespace : str
+            Namespace that owns the template.
+        name : str
+            ResourceClaimTemplate name.
+        spec : Mapping[str, object]
+            ResourceClaimTemplate spec payload.
+        labels : Mapping[str, str]
+            Kubernetes labels to apply.
+        timeout : float
+            Maximum request budget in seconds.
+
+        Returns
+        -------
+        Self
+            Wrapped created or patched ResourceClaimTemplate.
+        """
+        obj = await _RESOURCE_CLAIM_TEMPLATE_CLIENT.upsert(
+            kube,
+            namespace=namespace,
+            name=name,
+            spec=spec,
+            labels=labels,
+            timeout=timeout,
+        )
+        return cls._from_object(obj)
+
     async def delete(self, kube: Kube, *, timeout: float) -> None:
         """Delete this ResourceClaimTemplate.
 

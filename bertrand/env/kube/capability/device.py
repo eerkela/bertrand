@@ -670,6 +670,52 @@ async def create_resource_claim_templates(
     return tuple(created)
 
 
+async def upsert_resource_claim_templates(
+    kube: Kube,
+    *,
+    namespace: str,
+    intents: Collection[DRAResourceClaimIntent],
+    labels: Mapping[str, str],
+    timeout: float,
+) -> tuple[ResourceClaimTemplate, ...]:
+    """Create or patch ResourceClaimTemplates for a controller-backed workload.
+
+    Parameters
+    ----------
+    kube : Kube
+        Active Kubernetes API context.
+    namespace : str
+        Namespace that owns the templates.
+    intents : Collection[DRAResourceClaimIntent]
+        Claim templates to converge.
+    labels : Mapping[str, str]
+        Labels to apply to each template.
+    timeout : float
+        Maximum convergence budget in seconds.
+
+    Returns
+    -------
+    tuple[ResourceClaimTemplate, ...]
+        Converged templates.
+    """
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    rendered: list[ResourceClaimTemplate] = []
+    template_labels = dict(_DRA_LABELS)
+    template_labels.update(labels)
+    for intent in intents:
+        template = await ResourceClaimTemplate.upsert(
+            kube,
+            namespace=namespace,
+            name=intent.template_name,
+            spec={"spec": _resource_claim_spec(intent.capability_id)},
+            labels=template_labels,
+            timeout=deadline - loop.time(),
+        )
+        rendered.append(template)
+    return tuple(rendered)
+
+
 def allocated_selector_script(*, required_count: int) -> str:
     """Return shell that appends allocated DRA selectors to `buildctl` args.
 

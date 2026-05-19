@@ -9,7 +9,7 @@ import kubernetes
 
 from .api.metadata import NamespacedKubeMetadata
 from .api.resource import ResourceClient
-from .job import _job_spec_manifest
+from .job import JobCompletionMode, _job_spec_manifest
 
 if TYPE_CHECKING:
     import builtins
@@ -224,6 +224,10 @@ class CronJob(NamespacedKubeMetadata[kubernetes.client.V1CronJob]):
         successful_jobs_history_limit: int | None,
         failed_jobs_history_limit: int | None,
         time_zone: str | None,
+        active_deadline_seconds: int | None,
+        parallelism: int | None,
+        completions: int | None,
+        completion_mode: JobCompletionMode | None,
     ) -> dict[str, object]:
         spec: dict[str, object] = {
             "schedule": schedule,
@@ -238,6 +242,10 @@ class CronJob(NamespacedKubeMetadata[kubernetes.client.V1CronJob]):
                     pod_template=pod_template,
                     backoff_limit=backoff_limit,
                     ttl_seconds_after_finished=ttl_seconds_after_finished,
+                    active_deadline_seconds=active_deadline_seconds,
+                    parallelism=parallelism,
+                    completions=completions,
+                    completion_mode=completion_mode,
                 ),
             },
         }
@@ -284,6 +292,10 @@ class CronJob(NamespacedKubeMetadata[kubernetes.client.V1CronJob]):
         successful_jobs_history_limit: int | None = None,
         failed_jobs_history_limit: int | None = None,
         time_zone: str | None = None,
+        active_deadline_seconds: int | None = None,
+        parallelism: int | None = None,
+        completions: int | None = None,
+        completion_mode: JobCompletionMode | None = None,
     ) -> Self:
         """Create or patch one Kubernetes CronJob from intent-level fields.
 
@@ -321,6 +333,14 @@ class CronJob(NamespacedKubeMetadata[kubernetes.client.V1CronJob]):
             Optional number of failed Jobs to retain.
         time_zone : str | None, optional
             Optional IANA time zone name for schedule interpretation.
+        active_deadline_seconds : int | None, optional
+            Optional maximum runtime in seconds for Jobs created by this CronJob.
+        parallelism : int | None, optional
+            Optional maximum concurrent Pods for Jobs created by this CronJob.
+        completions : int | None, optional
+            Optional successful Pod completions required for each Job.
+        completion_mode : {"NonIndexed", "Indexed"} | None, optional
+            Optional Job completion tracking mode for created Jobs.
 
         Returns
         -------
@@ -357,6 +377,21 @@ class CronJob(NamespacedKubeMetadata[kubernetes.client.V1CronJob]):
             if value is not None and value < 0:
                 msg = f"CronJob {label} cannot be negative"
                 raise ValueError(msg)
+        if active_deadline_seconds is not None and active_deadline_seconds < 0:
+            msg = "CronJob Job active deadline cannot be negative"
+            raise ValueError(msg)
+        if parallelism is not None and parallelism <= 0:
+            msg = "CronJob Job parallelism must be positive"
+            raise ValueError(msg)
+        if completions is not None and completions <= 0:
+            msg = "CronJob Job completions must be positive"
+            raise ValueError(msg)
+        if completion_mode is not None and completion_mode not in (
+            "NonIndexed",
+            "Indexed",
+        ):
+            msg = f"invalid CronJob Job completion mode: {completion_mode!r}"
+            raise ValueError(msg)
 
         manifest = cls._manifest(
             namespace=namespace,
@@ -373,6 +408,10 @@ class CronJob(NamespacedKubeMetadata[kubernetes.client.V1CronJob]):
             successful_jobs_history_limit=successful_jobs_history_limit,
             failed_jobs_history_limit=failed_jobs_history_limit,
             time_zone=time_zone,
+            active_deadline_seconds=active_deadline_seconds,
+            parallelism=parallelism,
+            completions=completions,
+            completion_mode=completion_mode,
         )
         return await cls._client().upsert(
             kube,

@@ -227,6 +227,8 @@ class ProbeSpec:
 
     Parameters
     ----------
+    exec_command : Sequence[str] | None, optional
+        Command to execute inside the container.
     tcp_port : int | str | None, optional
         TCP socket port to probe.
     http_path : str | None, optional
@@ -237,16 +239,65 @@ class ProbeSpec:
         Delay before the first probe.
     period_seconds : int | None, optional
         Interval between probes.
+    timeout_seconds : int | None, optional
+        Probe timeout in seconds.
+    success_threshold : int | None, optional
+        Number of consecutive successes required after failure.
     failure_threshold : int | None, optional
         Number of failed probes before Kubernetes marks the container unhealthy.
     """
 
+    exec_command: Sequence[str] | None = None
     tcp_port: int | str | None = None
     http_path: str | None = None
     http_port: int | str | None = None
     initial_delay_seconds: int | None = None
     period_seconds: int | None = None
+    timeout_seconds: int | None = None
+    success_threshold: int | None = None
     failure_threshold: int | None = None
+
+    @classmethod
+    def exec(
+        cls,
+        *,
+        command: Sequence[str],
+        initial_delay_seconds: int | None = None,
+        period_seconds: int | None = None,
+        timeout_seconds: int | None = None,
+        success_threshold: int | None = None,
+        failure_threshold: int | None = None,
+    ) -> Self:
+        """Create an exec probe.
+
+        Parameters
+        ----------
+        command : Sequence[str]
+            Command to execute inside the container.
+        initial_delay_seconds : int | None, optional
+            Delay before the first probe.
+        period_seconds : int | None, optional
+            Interval between probes.
+        timeout_seconds : int | None, optional
+            Probe timeout in seconds.
+        success_threshold : int | None, optional
+            Number of consecutive successes required after failure.
+        failure_threshold : int | None, optional
+            Number of failed probes before Kubernetes marks the container unhealthy.
+
+        Returns
+        -------
+        Self
+            Probe specification.
+        """
+        return cls(
+            exec_command=command,
+            initial_delay_seconds=initial_delay_seconds,
+            period_seconds=period_seconds,
+            timeout_seconds=timeout_seconds,
+            success_threshold=success_threshold,
+            failure_threshold=failure_threshold,
+        )
 
     @classmethod
     def tcp(
@@ -255,6 +306,8 @@ class ProbeSpec:
         port: int | str,
         initial_delay_seconds: int | None = None,
         period_seconds: int | None = None,
+        timeout_seconds: int | None = None,
+        success_threshold: int | None = None,
         failure_threshold: int | None = None,
     ) -> Self:
         """Create a TCP socket probe.
@@ -267,6 +320,10 @@ class ProbeSpec:
             Delay before the first probe.
         period_seconds : int | None, optional
             Interval between probes.
+        timeout_seconds : int | None, optional
+            Probe timeout in seconds.
+        success_threshold : int | None, optional
+            Number of consecutive successes required after failure.
         failure_threshold : int | None, optional
             Number of failed probes before Kubernetes marks the container unhealthy.
 
@@ -279,6 +336,8 @@ class ProbeSpec:
             tcp_port=port,
             initial_delay_seconds=initial_delay_seconds,
             period_seconds=period_seconds,
+            timeout_seconds=timeout_seconds,
+            success_threshold=success_threshold,
             failure_threshold=failure_threshold,
         )
 
@@ -290,6 +349,8 @@ class ProbeSpec:
         port: int | str,
         initial_delay_seconds: int | None = None,
         period_seconds: int | None = None,
+        timeout_seconds: int | None = None,
+        success_threshold: int | None = None,
         failure_threshold: int | None = None,
     ) -> Self:
         """Create an HTTP GET probe.
@@ -304,6 +365,10 @@ class ProbeSpec:
             Delay before the first probe.
         period_seconds : int | None, optional
             Interval between probes.
+        timeout_seconds : int | None, optional
+            Probe timeout in seconds.
+        success_threshold : int | None, optional
+            Number of consecutive successes required after failure.
         failure_threshold : int | None, optional
             Number of failed probes before Kubernetes marks the container unhealthy.
 
@@ -317,6 +382,8 @@ class ProbeSpec:
             http_port=port,
             initial_delay_seconds=initial_delay_seconds,
             period_seconds=period_seconds,
+            timeout_seconds=timeout_seconds,
+            success_threshold=success_threshold,
             failure_threshold=failure_threshold,
         )
 
@@ -367,10 +434,16 @@ class ContainerResourcesSpec:
 
     Parameters
     ----------
+    requests : Mapping[str, str], optional
+        Kubernetes resource requests keyed by resource name, such as ``"cpu"``.
+    limits : Mapping[str, str], optional
+        Kubernetes resource limits keyed by resource name, such as ``"memory"``.
     claims : Collection[str], optional
         Pod-level resource claim names referenced by this container.
     """
 
+    requests: Mapping[str, str] = MappingProxyType({})
+    limits: Mapping[str, str] = MappingProxyType({})
     claims: Collection[str] = ()
 
 
@@ -495,6 +568,8 @@ class ContainerSpec:
         Container ports to expose.
     env : Collection[EnvVarSpec], optional
         Container environment variables.
+    startup_probe : ProbeSpec | None, optional
+        Startup probe intent.
     readiness_probe : ProbeSpec | None, optional
         Readiness probe intent.
     liveness_probe : ProbeSpec | None, optional
@@ -514,6 +589,7 @@ class ContainerSpec:
     args: Sequence[str] | None = None
     ports: Collection[ContainerPortSpec] = ()
     env: Collection[EnvVarSpec] = ()
+    startup_probe: ProbeSpec | None = None
     readiness_probe: ProbeSpec | None = None
     liveness_probe: ProbeSpec | None = None
     volume_mounts: Collection[VolumeMountSpec] = ()

@@ -130,6 +130,7 @@ async def resolve_workload_capabilities(
     *,
     containers: tuple[WorkloadContainerCapabilityRequest, ...],
     env_id: str,
+    claim_owner: str,
     node: str | None = None,
     timeout: float,
 ) -> WorkloadCapabilities:
@@ -143,6 +144,8 @@ async def resolve_workload_capabilities(
         Runtime capability requests grouped by container.
     env_id : str
         Environment UUID used for the first capability lookup tier.
+    claim_owner : str
+        Stable workload owner string used to derive DRA ResourceClaimTemplate names.
     node : str | None, optional
         Kubernetes node name used for the second capability lookup tier.
     timeout : float
@@ -224,7 +227,7 @@ async def resolve_workload_capabilities(
         )
         resource_claims.extend(
             resource_claim_intents(
-                owner=f"workload-{env_id}",
+                owner=claim_owner,
                 requests=device_requests,
                 container_name=container_name,
             )

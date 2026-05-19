@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import shlex
 from dataclasses import dataclass, replace
 from pathlib import PurePosixPath
@@ -29,6 +30,123 @@ if TYPE_CHECKING:
 WORKLOAD_REPOSITORY_VOLUME = "bertrand-repository"
 WORKLOAD_BOOTSTRAP_COMMAND = ("/bin/sh", "-c")
 WORKLOAD_BOOTSTRAP_ARG0 = "bertrand-workload-bootstrap"
+WORKLOAD_NAME_PREFIX = "bertrand-workload-"
+WORKLOAD_NAME_HASH_CHARS = 44
+WORKLOAD_LABEL = "bertrand.dev/workload"
+WORKLOAD_LABEL_VALUE = "v1"
+WORKLOAD_ID_LABEL = "bertrand.dev/workload-id"
+WORKLOAD_REPO_LABEL = "bertrand.dev/workload-repo"
+WORKLOAD_WORKTREE_LABEL = "bertrand.dev/workload-worktree"
+
+
+@dataclass(frozen=True)
+class WorkloadIdentity:
+    """Stable Kubernetes identity for one Bertrand workload.
+
+    Parameters
+    ----------
+    repo_id : str
+        Stable repository UUID containing the workload worktree.
+    worktree : str | PurePosixPath
+        Relative worktree path inside the repository volume. Use ``"."`` for the
+        repository root.
+    """
+
+    repo_id: str
+    worktree: str | PurePosixPath
+
+    def __post_init__(self) -> None:
+        """Validate and normalize workload identity fields.
+
+        Raises
+        ------
+        ValueError
+            If `repo_id` is not a UUID or `worktree` is absolute or escapes the
+            repository.
+        """
+        try:
+            repo_id = UUID(self.repo_id).hex
+        except (TypeError, ValueError) as err:
+            msg = f"invalid workload repository id: {self.repo_id!r}"
+            raise ValueError(msg) from err
+
+        object.__setattr__(self, "repo_id", repo_id)
+        object.__setattr__(self, "worktree", _worktree_path(self.worktree))
+
+    @property
+    def worktree_env(self) -> str:
+        """Return the normalized worktree identity.
+
+        Returns
+        -------
+        str
+            ``"."`` for root worktrees, otherwise the POSIX relative path.
+        """
+        worktree = cast("PurePosixPath", self.worktree)
+        if not worktree.parts:
+            return "."
+        return worktree.as_posix()
+
+    @property
+    def workload_id(self) -> str:
+        """Return the compact workload ID used in selector labels.
+
+        Returns
+        -------
+        str
+            Deterministic hash label value for this workload.
+        """
+        return _label_hash(f"{self.repo_id}\0{self.worktree_env}")
+
+    @property
+    def name(self) -> str:
+        """Return the canonical Kubernetes resource name.
+
+        Returns
+        -------
+        str
+            DNS-label-safe name shared by the workload Deployment and Service.
+        """
+        payload = f"{self.repo_id}\0{self.worktree_env}".encode()
+        digest = hashlib.sha256(payload).hexdigest()
+        return f"{WORKLOAD_NAME_PREFIX}{digest[:WORKLOAD_NAME_HASH_CHARS]}"
+
+    @property
+    def selector(self) -> Mapping[str, str]:
+        """Return immutable pod selector labels for this workload.
+
+        Returns
+        -------
+        Mapping[str, str]
+            Labels that select only this workload's pods.
+        """
+        return MappingProxyType(
+            {
+                BERTRAND_ENV: "1",
+                WORKLOAD_ID_LABEL: self.workload_id,
+            }
+        )
+
+    @property
+    def labels(self) -> Mapping[str, str]:
+        """Return stable Bertrand labels for workload-owned resources.
+
+        Returns
+        -------
+        Mapping[str, str]
+            Labels applied to workload Services, HTTPRoutes, pod templates, and
+            workload controllers.
+        """
+        labels = {
+            "app.kubernetes.io/name": self.name,
+            "app.kubernetes.io/part-of": "bertrand",
+            "app.kubernetes.io/component": "workload",
+            WORKLOAD_LABEL: WORKLOAD_LABEL_VALUE,
+            WORKLOAD_REPO_LABEL: _label_hash(self.repo_id),
+            WORKLOAD_WORKTREE_LABEL: _label_hash(self.worktree_env),
+        }
+        labels.update(self.selector)
+        return MappingProxyType(labels)
 
 
 @dataclass(frozen=True)
@@ -169,6 +287,56 @@ class WorkloadPod:
         )
         object.__setattr__(self, "runtime_env", _runtime_env(self.runtime_env))
 
+    @property
+    def identity(self) -> WorkloadIdentity:
+        """Return this workload's stable Kubernetes identity.
+
+        Returns
+        -------
+        WorkloadIdentity
+            Identity derived from the managed repository and selected worktree.
+        """
+        return WorkloadIdentity(
+            repo_id=self.repository.repo_id,
+            worktree=self.repository.worktree_env,
+        )
+
+    @property
+    def name(self) -> str:
+        """Return the canonical Kubernetes workload resource name.
+
+        Returns
+        -------
+        str
+            Stable name for this workload's Deployment, Service, NetworkPolicy, and
+            HTTPRoute backends.
+        """
+        return self.identity.name
+
+    @property
+    def labels(self) -> Mapping[str, str]:
+        """Return stable labels for workload-owned Kubernetes resources.
+
+        Returns
+        -------
+        Mapping[str, str]
+            Labels shared by the workload Service, NetworkPolicy, HTTPRoutes, and pod
+            template.
+        """
+        return self.identity.labels
+
+    @property
+    def selector(self) -> Mapping[str, str]:
+        """Return immutable pod selector labels for this workload.
+
+        Returns
+        -------
+        Mapping[str, str]
+            Labels used by Services, NetworkPolicies, and future controllers to select
+            workload pods.
+        """
+        return self.identity.selector
+
     def pod_template(
         self,
         *,
@@ -227,6 +395,7 @@ class WorkloadPod:
         return replace(
             self.template,
             containers=tuple(rendered_containers),
+            labels=_with_workload_labels(self.template.labels, self.labels),
             volumes=_repository_volumes(
                 tuple(self.template.volumes),
                 self.repository.claim_name,
@@ -416,6 +585,24 @@ def _same_mount(left: VolumeMountSpec, right: VolumeMountSpec) -> bool:
         and bool(left.read_only) == bool(right.read_only)
         and left.sub_path == right.sub_path
     )
+
+
+def _with_workload_labels(
+    existing: Mapping[str, str],
+    labels: Mapping[str, str],
+) -> dict[str, str]:
+    out = dict(existing)
+    for key, value in labels.items():
+        current = out.get(key)
+        if current is not None and current != value:
+            msg = f"workload label {key!r} is reserved by Bertrand"
+            raise ValueError(msg)
+        out[key] = value
+    return out
+
+
+def _label_hash(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()[:16]
 
 
 def _bootstrap_script(repository: WorkloadRepository) -> str:

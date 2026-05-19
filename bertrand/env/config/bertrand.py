@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import re
 import tomllib
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Any, Literal, Self
 
@@ -20,7 +21,6 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
-    NonNegativeFloat,
     NonNegativeInt,
     StringConstraints,
     model_validator,
@@ -107,6 +107,34 @@ LINUX_CAPABILITY_HEADERS: tuple[Path, ...] = (
     Path("/usr/include/uapi/linux/capability.h"),
     Path("/usr/src/linux/include/uapi/linux/capability.h"),
 )
+type WorkloadKind = Literal["none", "job", "cronjob", "deployment"]
+
+
+@dataclass(frozen=True)
+class WorkloadTopology:
+    """Inferred Kubernetes controller topology for one Bertrand workload.
+
+    Parameters
+    ----------
+    kind : {"none", "job", "cronjob", "deployment"}
+        Kubernetes workload controller family selected from semantic config.
+    signals : tuple[str, ...], optional
+        Config surfaces that caused this topology to be selected.
+    """
+
+    kind: WorkloadKind
+    signals: tuple[str, ...] = ()
+
+    @property
+    def is_workload(self) -> bool:
+        """Return whether this topology materializes a Kubernetes workload.
+
+        Returns
+        -------
+        bool
+            ``True`` for Job, CronJob, and Deployment topologies.
+        """
+        return self.kind != "none"
 
 
 def _load_linux_capabilities() -> frozenset[str] | None:
@@ -169,21 +197,23 @@ def _check_service_port_name(name: str) -> str:
 
 
 def _check_capability(capability: str) -> str:
-    if capability == "ALL":
-        return capability
-    if not CAPABILITY_TOKEN_RE.fullmatch(capability):
+    value = capability.removeprefix("CAP_")
+    token = f"CAP_{value}"
+    if value == "ALL":
+        return value
+    if not CAPABILITY_TOKEN_RE.fullmatch(token):
         msg = (
             f"invalid capability token '{capability}' "
-            "(expected exact CAP_* token or ALL)"
+            "(expected Kubernetes capability name, CAP_* token, or ALL)"
         )
         raise ValueError(msg)
-    if LINUX_CAPABILITIES is not None and capability not in LINUX_CAPABILITIES:
+    if LINUX_CAPABILITIES is not None and token not in LINUX_CAPABILITIES:
         msg = (
             f"unknown Linux capability '{capability}' "
             "according to local capability header"
         )
         raise ValueError(msg)
-    return capability
+    return value
 
 
 def _check_security_opt(option: str) -> str:
@@ -436,10 +466,6 @@ def _check_health_log_destination(value: str) -> str:
     return path.as_posix()
 
 
-def _default_workload_healthcheck() -> Any:
-    return Bertrand.Model.Healthcheck.model_construct()
-
-
 def project_image_tag(project_version: str) -> str:
     """Derive the OCI tag for the configured project image.
 
@@ -501,6 +527,28 @@ type ServicePortName = Annotated[
 type NetworkPolicy = Literal["open", "isolated"]
 type NetworkProtocol = Literal["tcp", "udp", "sctp"]
 type ImagePullPolicy = Literal["missing", "always", "never"]
+type ResourceQuantity = NonEmpty[NoWhiteSpace]
+type PositiveCount = Annotated[int, Field(ge=1)]
+type ProbePortNumber = Annotated[int, Field(ge=1, le=65535)]
+type ProbePort = ProbePortNumber | ServicePortName
+type ProbePath = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, min_length=1, pattern=r"^/.*$"),
+]
+type SeccompType = Literal["runtime-default", "unconfined", "localhost"]
+type ExecutionRestart = Literal["never", "on-failure"]
+type CompletionMode = Literal["all", "indexed"]
+type ScheduleConcurrency = Literal["allow", "forbid", "replace"]
+type RolloutStrategy = Literal["recreate", "rolling"]
+type PercentOrCount = (
+    Annotated[int, Field(ge=0)]
+    | Annotated[
+        str,
+        StringConstraints(strip_whitespace=True, pattern=r"^\d+%$"),
+    ]
+)
+type TolerationOperator = Literal["equal", "exists"]
+type TolerationEffect = Literal["no-schedule", "prefer-no-schedule", "no-execute"]
 type Memory = Annotated[
     str,
     StringConstraints(strip_whitespace=True, pattern=r"^\d+[bkmg]?$"),
@@ -577,34 +625,35 @@ class Bertrand(Resource):
         class Network(BaseModel):
             """Validate the `[bertrand.network]` table."""
 
-            # TODO: Native workload networking backend architecture:
+            # Native workload networking backend architecture:
             # - Kubernetes networking is pod-scoped.  Every container in a rendered
             #   workload Pod shares one network namespace, one Pod IP, and one
             #   localhost interface.  Container config should only declare the ports
             #   that each process listens on; Service discovery, isolation, and
             #   publication belong to this workload-level network model.
-            # - The backend should render a canonical internal ClusterIP Service
+            # - The backend renders a canonical internal ClusterIP Service
             #   automatically whenever any `[[tool.bertrand.containers]].ports` entry
-            #   exists.  There should be no `service = true|false|auto` config flag:
-            #   declared ports imply a Service, and no declared ports imply no
-            #   Service.  The Service should select the workload's Pods via stable
-            #   Bertrand labels and expose every unique named container port as a
-            #   Service port.  Duplicate port names are invalid because Gateway
-            #   routes and Service target ports need stable symbolic references.
-            # - `policy = "open"` should render no restrictive NetworkPolicy, which
-            #   keeps development ergonomics predictable.  `policy = "isolated"` is
-            #   reserved for a later NetworkPolicy pass that creates explicit
-            #   Kubernetes NetworkPolicy objects around the workload.  That policy
-            #   backend should remain best-effort/actionable when the CNI does not
-            #   enforce NetworkPolicy, because Kubernetes delegates enforcement to the
-            #   installed network plugin.
-            # - `routes` is the future external-publication surface and should target
-            #   Gateway API, not Ingress, NodePort, or LoadBalancer project config.
-            #   Route entries should become HTTPRoute/TCPRoute/etc. intents that bind
-            #   external host/path/listener rules to the canonical internal Service.
-            #   Gateway API support should be validated during workload convergence,
-            #   with actionable diagnostics if the cluster lacks the needed CRDs or
-            #   GatewayClass.
+            #   exists.  There is no `service = true|false|auto` config flag:
+            #   declared ports imply a Service, and no declared ports remove any stale
+            #   managed Service.  The Service selects the workload's Pods via stable
+            #   Bertrand labels and exposes every unique named container port as a
+            #   Service port.  Duplicate port names are invalid because Gateway routes
+            #   and Service target ports need stable symbolic references.
+            # - `policy = "open"` renders no restrictive NetworkPolicy, which keeps
+            #   development ergonomics predictable.  `policy = "isolated"` renders an
+            #   ingress-only Kubernetes NetworkPolicy around Deployment workloads,
+            #   denying inbound connections to selected Pods while leaving egress
+            #   open.  The backend remains best-effort/actionable when the CNI does
+            #   not enforce NetworkPolicy, because Kubernetes delegates enforcement to
+            #   the installed network plugin.
+            # - `routes` is the HTTP external-publication surface and renders
+            #   Gateway API HTTPRoutes through a Bertrand-managed Envoy Gateway
+            #   substrate, not Ingress, NodePort, or LoadBalancer project config.
+            #   Route entries bind external host/path rules to the canonical
+            #   internal Service.  Gateway support is validated during workload
+            #   convergence with actionable diagnostics if Envoy Gateway is missing
+            #   or if its LoadBalancer Service has no external address.  Bertrand
+            #   does not auto-guess MetalLB address pools.
             # - Aliases are intentionally omitted for now.  The one-worktree,
             #   one-workload model gives each workload one canonical Service DNS
             #   identity, and extra in-cluster Service aliases can be added later if
@@ -616,7 +665,7 @@ class Bertrand(Resource):
             #   Service + NetworkPolicy + Gateway API for Bertrand's target model.
 
             class Route(BaseModel):
-                """Validate a future Gateway API route intent."""
+                """Validate an HTTPRoute intent."""
 
                 model_config = ConfigDict(extra="forbid")
                 host: Annotated[
@@ -624,7 +673,7 @@ class Bertrand(Resource):
                     Field(
                         examples=["app.local"],
                         description=(
-                            "External hostname that a future Gateway API route should "
+                            "External hostname that the rendered HTTPRoute should "
                             "match for this workload."
                         ),
                     ),
@@ -634,8 +683,8 @@ class Bertrand(Resource):
                     Field(
                         examples=["http"],
                         description=(
-                            "Named container port that the future Gateway API route "
-                            "should target through the workload's canonical Service."
+                            "Named container port that the rendered HTTPRoute targets "
+                            "through the workload's canonical Service."
                         ),
                     ),
                 ]
@@ -646,8 +695,7 @@ class Bertrand(Resource):
                         default="/",
                         examples=["/"],
                         description=(
-                            "HTTP path prefix reserved for future Gateway API route "
-                            "rendering."
+                            "HTTP path prefix matched by the rendered HTTPRoute."
                         ),
                     ),
                 ]
@@ -660,8 +708,9 @@ class Bertrand(Resource):
                     examples=["open", "isolated"],
                     description=(
                         "Workload network isolation policy.  `open` renders no "
-                        "restrictive NetworkPolicy, while `isolated` is reserved for "
-                        "a future Kubernetes NetworkPolicy backend."
+                        "restrictive NetworkPolicy, while `isolated` renders an "
+                        "ingress-only Kubernetes NetworkPolicy for Deployment "
+                        "workloads and leaves egress open."
                     ),
                 ),
             ]
@@ -671,9 +720,8 @@ class Bertrand(Resource):
                     default_factory=list,
                     examples=[[{"host": "app.local", "port": "http", "path": "/"}]],
                     description=(
-                        "Future Gateway API route intents for publishing this "
-                        "workload outside the cluster.  Route support is config-only "
-                        "until the native Gateway backend is implemented."
+                        "HTTPRoute intents for publishing this workload outside the "
+                        "cluster through Bertrand's managed Envoy Gateway substrate."
                     ),
                 ),
             ]
@@ -873,9 +921,7 @@ class Bertrand(Resource):
             secrets: Annotated[
                 list[Bertrand.Model.Secret],
                 AfterValidator(
-                    lambda x: Bertrand.Model._check_unique_requests(
-                        x, where="image secret"
-                    )
+                    lambda x: Bertrand.Model._check_unique(x, where="image secret")
                 ),
                 Field(
                     default_factory=list,
@@ -902,9 +948,7 @@ class Bertrand(Resource):
             ssh: Annotated[
                 list[Bertrand.Model.SSH],
                 AfterValidator(
-                    lambda x: Bertrand.Model._check_unique_requests(
-                        x, where="image ssh"
-                    )
+                    lambda x: Bertrand.Model._check_unique(x, where="image ssh")
                 ),
                 Field(
                     default_factory=list,
@@ -932,9 +976,7 @@ class Bertrand(Resource):
             devices: Annotated[
                 list[Bertrand.Model.Device],
                 AfterValidator(
-                    lambda x: Bertrand.Model._check_unique_requests(
-                        x, where="image device"
-                    )
+                    lambda x: Bertrand.Model._check_unique(x, where="image device")
                 ),
                 Field(
                     default_factory=list,
@@ -1004,8 +1046,8 @@ class Bertrand(Resource):
                 Field(
                     examples=["http"],
                     description=(
-                        "Stable Kubernetes Service port name.  Future Service and "
-                        "Gateway rendering uses this name as the durable target for "
+                        "Stable Kubernetes Service port name.  Service and future "
+                        "HTTPRoute rendering use this name as the durable target for "
                         "the container listener."
                     ),
                 ),
@@ -1028,99 +1070,442 @@ class Bertrand(Resource):
                 ),
             ]
 
-        class ULimit(BaseModel):
-            """Validate entries in a workload container ulimit table."""
+        class Resources(BaseModel):
+            """Validate one container's Kubernetes resource requirements."""
 
             model_config = ConfigDict(extra="forbid")
-            name: ULimitName
-            soft: Annotated[int | None, Field(default=None, ge=-1)]
-            hard: Annotated[int | None, Field(default=None, ge=-1)]
+            cpu: Annotated[
+                ResourceQuantity | None,
+                Field(
+                    default=None,
+                    examples=["500m", "1"],
+                    description=(
+                        "Baseline CPU reserved for this container.  Bertrand renders "
+                        "this as the Kubernetes `resources.requests.cpu` scheduler "
+                        "request."
+                    ),
+                ),
+            ]
+            memory: Annotated[
+                ResourceQuantity | None,
+                Field(
+                    default=None,
+                    examples=["512Mi", "2Gi"],
+                    description=(
+                        "Baseline memory reserved for this container.  Bertrand "
+                        "renders this as the Kubernetes "
+                        "`resources.requests.memory` scheduler request."
+                    ),
+                ),
+            ]
+            max_cpu: Annotated[
+                ResourceQuantity | None,
+                Field(
+                    default=None,
+                    alias="max-cpu",
+                    examples=["2"],
+                    description=(
+                        "Maximum CPU this container may consume.  Bertrand renders "
+                        "this as the Kubernetes `resources.limits.cpu` runtime cap."
+                    ),
+                ),
+            ]
+            max_memory: Annotated[
+                ResourceQuantity | None,
+                Field(
+                    default=None,
+                    alias="max-memory",
+                    examples=["2Gi"],
+                    description=(
+                        "Maximum memory this container may consume before Kubernetes "
+                        "may terminate it.  Bertrand renders this as "
+                        "`resources.limits.memory`."
+                    ),
+                ),
+            ]
+
+            @property
+            def requests(self) -> dict[str, str]:
+                """Return Kubernetes resource requests for this container.
+
+                Returns
+                -------
+                dict[str, str]
+                    Non-empty resource requests keyed by Kubernetes resource name.
+                """
+                out: dict[str, str] = {}
+                if self.cpu is not None:
+                    out["cpu"] = self.cpu
+                if self.memory is not None:
+                    out["memory"] = self.memory
+                return out
+
+            @property
+            def limits(self) -> dict[str, str]:
+                """Return Kubernetes resource limits for this container.
+
+                Returns
+                -------
+                dict[str, str]
+                    Non-empty resource limits keyed by Kubernetes resource name.
+                """
+                out: dict[str, str] = {}
+                if self.max_cpu is not None:
+                    out["cpu"] = self.max_cpu
+                if self.max_memory is not None:
+                    out["memory"] = self.max_memory
+                return out
 
             @model_validator(mode="after")
-            def _validate_limits(self) -> Self:
-                if self.name == "host":
-                    if self.soft is not None or self.hard is not None:
-                        msg = "ulimit name 'host' cannot define 'soft' or 'hard' values"
-                        raise ValueError(msg)
-                    return self
-                if self.soft is None or self.hard is None:
-                    msg = "non-'host' ulimit entries must define both 'soft' and 'hard'"
-                    raise ValueError(msg)
-                if self.hard >= 0 and self.soft > self.hard:
+            def _validate_non_empty(self) -> Self:
+                if not self.requests and not self.limits:
                     msg = (
-                        f"ulimit soft value {self.soft} cannot be greater "
-                        f"than hard value {self.hard}"
+                        "container resources must define cpu, memory, max-cpu, "
+                        "or max-memory"
                     )
                     raise ValueError(msg)
                 return self
 
-        class Stop(BaseModel):
-            """Validate the `[tool.bertrand.stop]` table."""
+        class Probe(BaseModel):
+            """Validate a Kubernetes startup, readiness, or liveness probe."""
 
-            model_config = ConfigDict(extra="forbid")
-            signal: Annotated[
-                str,
-                StringConstraints(
-                    strip_whitespace=True,
-                    min_length=1,
-                    pattern=r"^\S+$",
-                ),
-                Field(default="SIGTERM"),
-            ]
-            timeout: Annotated[NonNegativeInt, Field(default=10)]
-
-        class Restart(BaseModel):
-            """Validate the `[tool.bertrand.restart]` table."""
-
-            model_config = ConfigDict(extra="forbid")
-            policy: Annotated[
-                Literal["no", "on-failure", "always", "unless-stopped"],
-                Field(default="no"),
-            ]
-            max_retries: Annotated[
-                NonNegativeInt, Field(default=0, alias="max-retries")
-            ]
-
-        class Healthcheck(BaseModel):
-            """Validate a workload container healthcheck table."""
-
-            class Startup(BaseModel):
-                """Validate a workload container startup healthcheck table."""
+            class HTTP(BaseModel):
+                """Validate an HTTP probe source."""
 
                 model_config = ConfigDict(extra="forbid")
-                cmd: Annotated[list[str], Field(default_factory=list)]
-                period: Annotated[Timeout, Field(default="0s")]
-                success: Annotated[NonNegativeInt, Field(default=0)]
-                interval: Annotated[Timeout, Field(default="30s")]
-                timeout: Annotated[Timeout, Field(default="30s")]
-
-            class Log(BaseModel):
-                """Validate a workload container healthcheck log table."""
-
-                model_config = ConfigDict(extra="forbid")
-                destination: Annotated[HealthLogDestination, Field(default="local")]
-                max_count: Annotated[
-                    NonNegativeInt, Field(default=0, alias="max-count")
+                path: Annotated[
+                    ProbePath,
+                    Field(
+                        default="/",
+                        examples=["/healthz", "/ready"],
+                        description=(
+                            "HTTP path to request when probing container health.  "
+                            "Bertrand renders this as a Kubernetes HTTP GET probe."
+                        ),
+                    ),
                 ]
-                max_size: Annotated[NonNegativeInt, Field(default=0, alias="max-size")]
+                port: Annotated[
+                    ProbePort,
+                    Field(
+                        examples=["http", 8080],
+                        description=(
+                            "Named container port or numeric port to probe with the "
+                            "HTTP request."
+                        ),
+                    ),
+                ]
 
             model_config = ConfigDict(extra="forbid")
-            cmd: Annotated[list[str], Field(default_factory=list)]
-            on_failure: Annotated[
-                Literal["none", "kill", "stop"],
-                Field(default="kill", alias="on-failure"),
+            cmd: Annotated[
+                list[NonEmpty[Trimmed]],
+                Field(
+                    default_factory=list,
+                    examples=[["python", "-m", "bertrand.health"]],
+                    description=(
+                        "Command to run inside the container for a health check.  "
+                        "Use exactly one of `cmd`, `http`, or `tcp`."
+                    ),
+                ),
             ]
-            retries: Annotated[NonNegativeInt, Field(default=3)]
-            interval: Annotated[Timeout, Field(default="30s")]
-            timeout: Annotated[Timeout, Field(default="30s")]
-            startup: Annotated[Startup, Field(default_factory=Startup.model_construct)]
-            log: Annotated[Log, Field(default_factory=Log.model_construct)]
+            http: Annotated[
+                Bertrand.Model.Probe.HTTP | None,
+                Field(
+                    default=None,
+                    examples=[{"path": "/healthz", "port": "http"}],
+                    description=(
+                        "HTTP probe source.  Use this when the container exposes a "
+                        "health endpoint on one of its declared ports."
+                    ),
+                ),
+            ]
+            tcp: Annotated[
+                ProbePort | None,
+                Field(
+                    default=None,
+                    examples=["http", 5432],
+                    description=(
+                        "TCP socket probe port.  Kubernetes treats a successful "
+                        "connection as a healthy check result."
+                    ),
+                ),
+            ]
+            delay: Annotated[
+                NonNegativeInt | None,
+                Field(
+                    default=None,
+                    examples=[10],
+                    description=(
+                        "Seconds to wait before the first probe.  Bertrand renders "
+                        "this as Kubernetes `initialDelaySeconds`."
+                    ),
+                ),
+            ]
+            period: Annotated[
+                PositiveCount | None,
+                Field(
+                    default=None,
+                    examples=[5],
+                    description=(
+                        "Seconds between probe attempts, rendered as Kubernetes "
+                        "`periodSeconds`."
+                    ),
+                ),
+            ]
+            timeout: Annotated[
+                PositiveCount | None,
+                Field(
+                    default=None,
+                    examples=[2],
+                    description=(
+                        "Seconds before one probe attempt times out, rendered as "
+                        "Kubernetes `timeoutSeconds`."
+                    ),
+                ),
+            ]
+            success: Annotated[
+                PositiveCount | None,
+                Field(
+                    default=None,
+                    examples=[1],
+                    description=(
+                        "Consecutive successes required after a failure, rendered as "
+                        "Kubernetes `successThreshold`."
+                    ),
+                ),
+            ]
+            failure: Annotated[
+                PositiveCount | None,
+                Field(
+                    default=None,
+                    examples=[3],
+                    description=(
+                        "Consecutive failures required before Kubernetes marks the "
+                        "probe failed."
+                    ),
+                ),
+            ]
+
+            @model_validator(mode="after")
+            def _validate_source(self) -> Self:
+                sources = sum(
+                    (bool(self.cmd), self.http is not None, self.tcp is not None)
+                )
+                if sources != 1:
+                    msg = "probe must define exactly one of cmd, http, or tcp"
+                    raise ValueError(msg)
+                return self
+
+        class Security(BaseModel):
+            """Validate one container's Kubernetes security context."""
+
+            class Capabilities(BaseModel):
+                """Validate Linux capabilities for a Kubernetes security context."""
+
+                model_config = ConfigDict(extra="forbid")
+                add: Annotated[
+                    list[Capability],
+                    AfterValidator(
+                        lambda x: Bertrand.Model._check_unique(
+                            x, where="capability add entry"
+                        )
+                    ),
+                    Field(
+                        default_factory=list,
+                        examples=[["NET_ADMIN"]],
+                        description=(
+                            "Linux capabilities to add to the container security "
+                            "context.  Values may be written with or without the "
+                            "`CAP_` prefix."
+                        ),
+                    ),
+                ]
+                drop: Annotated[
+                    list[Capability],
+                    AfterValidator(
+                        lambda x: Bertrand.Model._check_unique(
+                            x, where="capability drop entry"
+                        )
+                    ),
+                    Field(
+                        default_factory=list,
+                        examples=[["ALL"]],
+                        description=(
+                            "Linux capabilities to drop from the container security "
+                            "context.  Use `ALL` for a minimal capability baseline."
+                        ),
+                    ),
+                ]
+
+                @model_validator(mode="after")
+                def _validate_conflicts(self) -> Self:
+                    if "ALL" in self.add and len(self.add) > 1:
+                        msg = (
+                            "security.capabilities.add cannot combine ALL with entries"
+                        )
+                        raise ValueError(msg)
+                    if "ALL" in self.drop and len(self.drop) > 1:
+                        msg = (
+                            "security.capabilities.drop cannot combine ALL with entries"
+                        )
+                        raise ValueError(msg)
+                    overlap = {cap for cap in self.add if cap != "ALL"}.intersection(
+                        cap for cap in self.drop if cap != "ALL"
+                    )
+                    if overlap:
+                        msg = (
+                            "security.capabilities.add and drop cannot contain the "
+                            f"same capability: {', '.join(sorted(overlap))}"
+                        )
+                        raise ValueError(msg)
+                    return self
+
+            class Seccomp(BaseModel):
+                """Validate a Kubernetes seccomp profile selector."""
+
+                model_config = ConfigDict(extra="forbid")
+                type: Annotated[
+                    SeccompType,
+                    Field(
+                        default="runtime-default",
+                        examples=["runtime-default", "localhost"],
+                        description=(
+                            "Seccomp profile source.  Bertrand renders this as "
+                            "Kubernetes `RuntimeDefault`, `Unconfined`, or "
+                            "`Localhost`."
+                        ),
+                    ),
+                ]
+                profile: Annotated[
+                    NonEmpty[NoWhiteSpace] | None,
+                    Field(
+                        default=None,
+                        examples=["profiles/web.json"],
+                        description=(
+                            "Node-local seccomp profile path.  Required only when "
+                            "`type = \"localhost\"`."
+                        ),
+                    ),
+                ]
+
+                @model_validator(mode="after")
+                def _validate_profile(self) -> Self:
+                    if self.type == "localhost":
+                        if self.profile is None:
+                            msg = "localhost seccomp requires a profile"
+                            raise ValueError(msg)
+                    elif self.profile is not None:
+                        msg = "seccomp profile can only be set for type='localhost'"
+                        raise ValueError(msg)
+                    return self
+
+            model_config = ConfigDict(extra="forbid")
+            privileged: Annotated[
+                bool | None,
+                Field(
+                    default=None,
+                    examples=[False],
+                    description=(
+                        "Run the container in privileged mode.  This maps directly "
+                        "to the Kubernetes container security context."
+                    ),
+                ),
+            ]
+            allow_privilege_escalation: Annotated[
+                bool | None,
+                Field(
+                    default=None,
+                    alias="allow-privilege-escalation",
+                    examples=[False],
+                    description=(
+                        "Allow a process to gain more privileges than its parent.  "
+                        "Bertrand renders this as `allowPrivilegeEscalation`."
+                    ),
+                ),
+            ]
+            read_only_root_filesystem: Annotated[
+                bool | None,
+                Field(
+                    default=None,
+                    alias="read-only-root-filesystem",
+                    examples=[True],
+                    description=(
+                        "Mount the container root filesystem read-only when possible."
+                    ),
+                ),
+            ]
+            run_as_user: Annotated[
+                NonNegativeInt | None,
+                Field(
+                    default=None,
+                    alias="run-as-user",
+                    examples=[1000],
+                    description=(
+                        "Linux UID to run as inside the container, rendered as "
+                        "Kubernetes `runAsUser`."
+                    ),
+                ),
+            ]
+            run_as_group: Annotated[
+                NonNegativeInt | None,
+                Field(
+                    default=None,
+                    alias="run-as-group",
+                    examples=[1000],
+                    description=(
+                        "Linux primary GID to run as inside the container, rendered "
+                        "as Kubernetes `runAsGroup`."
+                    ),
+                ),
+            ]
+            run_as_non_root: Annotated[
+                bool | None,
+                Field(
+                    default=None,
+                    alias="run-as-non-root",
+                    examples=[True],
+                    description=(
+                        "Require the container to run as a non-root user.  "
+                        "Kubernetes rejects startup if the effective user is root."
+                    ),
+                ),
+            ]
+            capabilities: Annotated[
+                Bertrand.Model.Security.Capabilities,
+                Field(
+                    default_factory=lambda: (
+                        Bertrand.Model.Security.Capabilities.model_construct()
+                    ),
+                    description=(
+                        "Linux capability adjustments for the container security "
+                        "context."
+                    ),
+                ),
+            ]
+            seccomp: Annotated[
+                Bertrand.Model.Security.Seccomp | None,
+                Field(
+                    default=None,
+                    examples=[{"type": "runtime-default"}],
+                    description=(
+                        "Seccomp profile selection for the container security context."
+                    ),
+                ),
+            ]
 
         class Container(BaseModel):
             """Validate one native workload container entry."""
 
             model_config = ConfigDict(extra="forbid")
-            name: KubeName
+            name: Annotated[
+                KubeName,
+                Field(
+                    examples=["main", "worker"],
+                    description=(
+                        "Stable container name inside the workload pod.  Container "
+                        "names must be unique within `[tool.bertrand.containers]`."
+                    ),
+                ),
+            ]
             cmd: Annotated[
                 NonEmpty[list[NonEmpty[Trimmed]]],
                 Field(
@@ -1137,148 +1522,502 @@ class Bertrand(Resource):
                     ),
                 ),
             ]
-            cpus: Annotated[
-                NonNegativeFloat,
+            resources: Annotated[
+                Bertrand.Model.Resources | None,
                 Field(
-                    default=0.0,
+                    default=None,
+                    examples=[
+                        {
+                            "cpu": "500m",
+                            "memory": "512Mi",
+                            "max-cpu": "2",
+                            "max-memory": "2Gi",
+                        }
+                    ],
                     description=(
-                        "The number of CPUs to allocate to containers built from "
-                        "this image.  0.0 (the default) removes the limit and "
-                        "allows the container to use all available resources.  "
-                        "Fractional values are allowed to specify partial CPU "
-                        "allocation (e.g. 0.5 for half a CPU)."
+                        "CPU and memory intent for this container.  `cpu` and "
+                        "`memory` reserve baseline Kubernetes requests; `max-cpu` "
+                        "and `max-memory` set Kubernetes limits."
                     ),
                 ),
             ]
-            memory: Annotated[
-                Memory,
+            startup: Annotated[
+                Bertrand.Model.Probe | None,
                 Field(
-                    default="0",
-                    examples=["1024b", "128k", "512m", "2g"],
+                    default=None,
+                    examples=[{"http": {"path": "/healthz", "port": "http"}}],
                     description=(
-                        "The amount of memory to allocate to containers built "
-                        "from this image.  0 (the default) removes the limit and "
-                        "allows the container to use all available resources.  If "
-                        "the machine supports swap memory, then the value may be "
-                        "larger than the physical memory.  Equivalent to `podman "
-                        "build|create -m`."
+                        "Probe that gates slow-starting containers.  Kubernetes "
+                        "disables readiness and liveness checks until startup passes."
                     ),
                 ),
             ]
-            pids_limit: Annotated[int, Field(default=0, ge=-1, alias="pids-limit")]
-            shm_size: Annotated[Memory, Field(default="64m", alias="shm-size")]
-            ulimit: Annotated[
-                list[Bertrand.Model.ULimit],
-                AfterValidator(lambda x: Bertrand.Model._check_ulimit(x)),
-                Field(default_factory=list),
-            ]
-            cap_add: Annotated[
-                list[Capability],
-                AfterValidator(
-                    lambda x: Bertrand.Model._check_unique(
-                        x, where="cap-add capability"
-                    )
+            readiness: Annotated[
+                Bertrand.Model.Probe | None,
+                Field(
+                    default=None,
+                    examples=[{"http": {"path": "/ready", "port": "http"}}],
+                    description=(
+                        "Probe that controls whether the pod should receive Service "
+                        "traffic."
+                    ),
                 ),
-                Field(default_factory=list, alias="cap-add"),
             ]
-            cap_drop: Annotated[
-                list[Capability],
-                AfterValidator(
-                    lambda x: Bertrand.Model._check_unique(
-                        x, where="cap-drop capability"
-                    )
+            liveness: Annotated[
+                Bertrand.Model.Probe | None,
+                Field(
+                    default=None,
+                    examples=[{"tcp": "http", "failure": 3}],
+                    description=(
+                        "Probe that lets Kubernetes restart a container that appears "
+                        "stuck or unhealthy."
+                    ),
                 ),
-                Field(default_factory=list, alias="cap-drop"),
             ]
-            security_opt: Annotated[
-                list[SecurityOpt],
-                AfterValidator(
-                    lambda x: Bertrand.Model._check_unique(
-                        x, where="security-opt entry"
-                    )
+            security: Annotated[
+                Bertrand.Model.Security | None,
+                Field(
+                    default=None,
+                    examples=[
+                        {
+                            "run-as-non-root": True,
+                            "read-only-root-filesystem": True,
+                            "capabilities": {"drop": ["ALL"]},
+                        }
+                    ],
+                    description=(
+                        "Container-level security controls rendered as a Kubernetes "
+                        "security context."
+                    ),
                 ),
-                Field(default_factory=list, alias="security-opt"),
             ]
             ports: Annotated[
                 list[Bertrand.Model.Port],
                 AfterValidator(lambda x: Bertrand.Model._check_ports(x)),
-                Field(default_factory=list),
+                Field(
+                    default_factory=list,
+                    examples=[[{"name": "http", "port": 8080, "protocol": "tcp"}]],
+                    description=(
+                        "Named listeners exposed by this container.  Any declared "
+                        "port selects Deployment topology and participates in the "
+                        "canonical internal Service."
+                    ),
+                ),
             ]
             ssh: Annotated[
                 list[Bertrand.Model.SSH],
                 AfterValidator(
-                    lambda x: Bertrand.Model._check_unique_requests(
-                        x, where="container ssh"
-                    )
+                    lambda x: Bertrand.Model._check_unique(x, where="container ssh")
                 ),
-                Field(default_factory=list),
+                Field(
+                    default_factory=list,
+                    examples=[[{"id": "git_deploy_key", "required": True}]],
+                    description=(
+                        "Runtime SSH credential capabilities mounted into this "
+                        "container."
+                    ),
+                ),
             ]
             devices: Annotated[
                 list[Bertrand.Model.Device],
                 AfterValidator(
-                    lambda x: Bertrand.Model._check_unique_requests(
-                        x, where="container device"
-                    )
+                    lambda x: Bertrand.Model._check_unique(x, where="container device")
                 ),
-                Field(default_factory=list),
+                Field(
+                    default_factory=list,
+                    examples=[[{"id": "gpu", "required": False}]],
+                    description=(
+                        "Runtime DRA device capabilities requested for this container."
+                    ),
+                ),
             ]
             secrets: Annotated[
                 list[Bertrand.Model.Secret],
                 AfterValidator(
-                    lambda x: Bertrand.Model._check_unique_requests(
-                        x, where="container secret"
-                    )
+                    lambda x: Bertrand.Model._check_unique(x, where="container secret")
                 ),
-                Field(default_factory=list),
-            ]
-            healthcheck: Annotated[
-                Bertrand.Model.Healthcheck,
-                Field(default_factory=_default_workload_healthcheck),
+                Field(
+                    default_factory=list,
+                    examples=[[{"id": "pypi_token", "required": True}]],
+                    description=(
+                        "Runtime secret capabilities mounted into this container."
+                    ),
+                ),
             ]
             metadata: Annotated[
                 dict[NonEmpty[SnakeCase], Scalar],
-                Field(default_factory=dict),
+                Field(
+                    default_factory=dict,
+                    examples=[{"role": "api"}],
+                    description=(
+                        "Bertrand-local metadata for future workload integrations.  "
+                        "This is not rendered into Kubernetes labels yet."
+                    ),
+                ),
+            ]
+
+        class Execution(BaseModel):
+            """Validate Job and CronJob run-to-completion behavior."""
+
+            model_config = ConfigDict(extra="forbid")
+            restart: Annotated[
+                ExecutionRestart,
+                Field(
+                    default="never",
+                    examples=["never", "on-failure"],
+                    description=(
+                        "Pod restart behavior for Job and CronJob pods.  Bertrand "
+                        "renders this as Kubernetes `Never` or `OnFailure`."
+                    ),
+                ),
+            ]
+            retries: Annotated[
+                NonNegativeInt,
+                Field(
+                    default=0,
+                    examples=[3],
+                    description=(
+                        "Number of retry attempts before a Job is treated as failed, "
+                        "rendered as Kubernetes `backoffLimit`."
+                    ),
+                ),
+            ]
+            timeout: Annotated[
+                NonNegativeInt | None,
+                Field(
+                    default=None,
+                    examples=[3600],
+                    description=(
+                        "Maximum runtime in seconds before the Job is stopped, "
+                        "rendered as Kubernetes `activeDeadlineSeconds`."
+                    ),
+                ),
+            ]
+            ttl: Annotated[
+                NonNegativeInt | None,
+                Field(
+                    default=None,
+                    examples=[86400],
+                    description=(
+                        "Seconds to retain finished Job objects, rendered as "
+                        "Kubernetes `ttlSecondsAfterFinished`."
+                    ),
+                ),
+            ]
+            parallelism: Annotated[
+                int,
+                Field(
+                    default=1,
+                    ge=1,
+                    examples=[4],
+                    description=(
+                        "Maximum Job pods allowed to run at once, rendered as "
+                        "Kubernetes `parallelism`."
+                    ),
+                ),
+            ]
+            completions: Annotated[
+                int | None,
+                Field(
+                    default=None,
+                    ge=1,
+                    examples=[10],
+                    description=(
+                        "Successful pod completions required for the Job, rendered "
+                        "as Kubernetes `completions`."
+                    ),
+                ),
+            ]
+            completion: Annotated[
+                CompletionMode,
+                Field(
+                    default="all",
+                    examples=["all", "indexed"],
+                    description=(
+                        "Job completion tracking mode.  `all` renders Kubernetes "
+                        "`NonIndexed`; `indexed` renders `Indexed` and requires "
+                        "`completions`."
+                    ),
+                ),
             ]
 
             @model_validator(mode="after")
-            def _validate_capability_conflicts(self) -> Self:
-                if "ALL" in self.cap_add and len(self.cap_add) > 1:
-                    msg = "cap-add cannot combine 'ALL' with specific capabilities"
-                    raise ValueError(msg)
-                if "ALL" in self.cap_drop and len(self.cap_drop) > 1:
-                    msg = "cap-drop cannot combine 'ALL' with specific capabilities"
-                    raise ValueError(msg)
-                overlap = {cap for cap in self.cap_add if cap != "ALL"}
-                overlap = overlap.intersection(
-                    cap for cap in self.cap_drop if cap != "ALL"
-                )
-                if overlap:
-                    msg = (
-                        "cap-add and cap-drop cannot contain the same capability: "
-                        f"{', '.join(sorted(overlap))}"
-                    )
+            def _validate_indexed_completion(self) -> Self:
+                if self.completion == "indexed" and self.completions is None:
+                    msg = "indexed completion requires completions"
                     raise ValueError(msg)
                 return self
 
-        @staticmethod
-        def _check_ports(ports: list[Port]) -> list[Port]:
-            seen: set[ServicePortName] = set()
-            for port in ports:
-                if port.name in seen:
-                    msg = f"duplicate workload port name: '{port.name}'"
-                    raise ValueError(msg)
-                seen.add(port.name)
-            return ports
+        class Schedule(BaseModel):
+            """Validate CronJob scheduling behavior."""
 
-        @staticmethod
-        def _check_ulimit(entries: list[ULimit]) -> list[ULimit]:
-            seen: set[str] = set()
-            for entry in entries:
-                if entry.name in seen:
-                    msg = f"duplicate ulimit name: '{entry.name}'"
+            class History(BaseModel):
+                """Validate CronJob history retention limits."""
+
+                model_config = ConfigDict(extra="forbid")
+                success: Annotated[
+                    NonNegativeInt | None,
+                    Field(
+                        default=None,
+                        examples=[3],
+                        description=(
+                            "Successful CronJob runs to retain, rendered as "
+                            "Kubernetes `successfulJobsHistoryLimit`."
+                        ),
+                    ),
+                ]
+                failure: Annotated[
+                    NonNegativeInt | None,
+                    Field(
+                        default=None,
+                        examples=[1],
+                        description=(
+                            "Failed CronJob runs to retain, rendered as Kubernetes "
+                            "`failedJobsHistoryLimit`."
+                        ),
+                    ),
+                ]
+
+            model_config = ConfigDict(extra="forbid")
+            cron: Annotated[
+                NonEmpty[NoCRLF],
+                Field(
+                    examples=["0 9 * * 1-5"],
+                    description=(
+                        "Cron expression for recurring execution.  Presence of this "
+                        "table selects CronJob topology and renders Kubernetes "
+                        "`schedule`."
+                    ),
+                ),
+            ]
+            timezone: Annotated[
+                NonEmpty[NoWhiteSpace] | None,
+                Field(
+                    default=None,
+                    examples=["America/Los_Angeles"],
+                    description=(
+                        "IANA time zone for interpreting the cron expression, "
+                        "rendered as Kubernetes `timeZone`."
+                    ),
+                ),
+            ]
+            concurrency: Annotated[
+                ScheduleConcurrency,
+                Field(
+                    default="forbid",
+                    examples=["forbid", "allow", "replace"],
+                    description=(
+                        "How overlapping scheduled runs are handled, rendered as "
+                        "Kubernetes `concurrencyPolicy`."
+                    ),
+                ),
+            ]
+            start_deadline: Annotated[
+                NonNegativeInt | None,
+                Field(
+                    default=None,
+                    alias="start-deadline",
+                    examples=[300],
+                    description=(
+                        "Seconds Kubernetes may still start a missed schedule after "
+                        "its nominal time, rendered as `startingDeadlineSeconds`."
+                    ),
+                ),
+            ]
+            suspend: Annotated[
+                bool | None,
+                Field(
+                    default=None,
+                    examples=[False],
+                    description=(
+                        "Pause future scheduled runs without deleting the CronJob, "
+                        "rendered as Kubernetes `suspend`."
+                    ),
+                ),
+            ]
+            history: Annotated[
+                Bertrand.Model.Schedule.History,
+                Field(
+                    default_factory=lambda: (
+                        Bertrand.Model.Schedule.History.model_construct()
+                    ),
+                    description="CronJob run history retention limits.",
+                ),
+            ]
+
+        class Scale(BaseModel):
+            """Validate Deployment scale behavior."""
+
+            model_config = ConfigDict(extra="forbid")
+            replicas: Annotated[
+                NonNegativeInt,
+                Field(
+                    default=1,
+                    examples=[2],
+                    description=(
+                        "Desired number of long-lived pod replicas.  Presence of "
+                        "`[tool.bertrand.scale]` selects Deployment topology."
+                    ),
+                ),
+            ]
+
+        class Rollout(BaseModel):
+            """Validate Deployment rollout behavior."""
+
+            model_config = ConfigDict(extra="forbid")
+            strategy: Annotated[
+                RolloutStrategy,
+                Field(
+                    default="rolling",
+                    examples=["rolling", "recreate"],
+                    description=(
+                        "Deployment update strategy.  `rolling` maps to Kubernetes "
+                        "`RollingUpdate`; `recreate` maps to `Recreate`."
+                    ),
+                ),
+            ]
+            max_surge: Annotated[
+                PercentOrCount | None,
+                Field(
+                    default=None,
+                    alias="max-surge",
+                    examples=["25%", 1],
+                    description=(
+                        "Extra pods allowed during a rolling update, rendered as "
+                        "Kubernetes `maxSurge`."
+                    ),
+                ),
+            ]
+            max_unavailable: Annotated[
+                PercentOrCount | None,
+                Field(
+                    default=None,
+                    alias="max-unavailable",
+                    examples=["25%", 0],
+                    description=(
+                        "Pods allowed to be unavailable during a rolling update, "
+                        "rendered as Kubernetes `maxUnavailable`."
+                    ),
+                ),
+            ]
+            min_ready: Annotated[
+                NonNegativeInt | None,
+                Field(
+                    default=None,
+                    alias="min-ready",
+                    examples=[10],
+                    description=(
+                        "Seconds a pod must be ready before it counts as available, "
+                        "rendered as Kubernetes `minReadySeconds`."
+                    ),
+                ),
+            ]
+            timeout: Annotated[
+                NonNegativeInt | None,
+                Field(
+                    default=None,
+                    examples=[600],
+                    description=(
+                        "Seconds before a stalled rollout is reported as failed, "
+                        "rendered as Kubernetes `progressDeadlineSeconds`."
+                    ),
+                ),
+            ]
+            history: Annotated[
+                NonNegativeInt | None,
+                Field(
+                    default=None,
+                    examples=[10],
+                    description=(
+                        "Old ReplicaSet revisions to retain, rendered as Kubernetes "
+                        "`revisionHistoryLimit`."
+                    ),
+                ),
+            ]
+            paused: Annotated[
+                bool | None,
+                Field(
+                    default=None,
+                    examples=[False],
+                    description=(
+                        "Pause rollout progress without deleting the Deployment, "
+                        "rendered as Kubernetes `paused`."
+                    ),
+                ),
+            ]
+
+            @model_validator(mode="after")
+            def _validate_strategy(self) -> Self:
+                if self.strategy == "recreate" and (
+                    self.max_surge is not None or self.max_unavailable is not None
+                ):
+                    msg = "recreate rollout cannot set max-surge or max-unavailable"
                     raise ValueError(msg)
-                seen.add(entry.name)
-            return entries
+                return self
+
+        class Toleration(BaseModel):
+            """Validate one Kubernetes pod toleration."""
+
+            model_config = ConfigDict(extra="forbid")
+            key: Annotated[
+                NonEmpty[NoWhiteSpace] | None,
+                Field(
+                    default=None,
+                    examples=["workload"],
+                    description=(
+                        "Taint key this pod can tolerate.  Omit with "
+                        "`operator = \"exists\"` to tolerate any matching effect."
+                    ),
+                ),
+            ]
+            operator: Annotated[
+                TolerationOperator,
+                Field(
+                    default="equal",
+                    examples=["equal", "exists"],
+                    description=(
+                        "Toleration matching mode, rendered as Kubernetes `Equal` "
+                        "or `Exists`."
+                    ),
+                ),
+            ]
+            value: Annotated[
+                NonEmpty[NoWhiteSpace] | None,
+                Field(
+                    default=None,
+                    examples=["gpu"],
+                    description=("Taint value to match when `operator = \"equal\"`."),
+                ),
+            ]
+            effect: Annotated[
+                TolerationEffect | None,
+                Field(
+                    default=None,
+                    examples=["no-schedule"],
+                    description=(
+                        "Taint effect this toleration matches, rendered as "
+                        "Kubernetes `NoSchedule`, `PreferNoSchedule`, or `NoExecute`."
+                    ),
+                ),
+            ]
+            seconds: Annotated[
+                NonNegativeInt | None,
+                Field(
+                    default=None,
+                    examples=[3600],
+                    description=(
+                        "Seconds a pod may remain bound after a matching `NoExecute` "
+                        "taint is added."
+                    ),
+                ),
+            ]
+
+            @model_validator(mode="after")
+            def _validate_operator(self) -> Self:
+                if self.operator == "exists" and self.value is not None:
+                    msg = "toleration value cannot be set when operator='exists'"
+                    raise ValueError(msg)
+                return self
 
         @staticmethod
         def _check_unique(value: list[str], *, where: str) -> list[str]:
@@ -1291,18 +2030,14 @@ class Bertrand(Resource):
             return value
 
         @staticmethod
-        def _check_unique_requests(
-            requests: list[Any],
-            *,
-            where: str,
-        ) -> list[Any]:
-            seen: set[KubeName] = set()
-            for req in requests:
-                if req.id in seen:
-                    msg = f"duplicate {where} capability id: '{req.id}'"
+        def _check_ports(ports: list[Port]) -> list[Port]:
+            seen: set[ServicePortName] = set()
+            for port in ports:
+                if port.name in seen:
+                    msg = f"duplicate workload port name: '{port.name}'"
                     raise ValueError(msg)
-                seen.add(req.id)
-            return requests
+                seen.add(port.name)
+            return ports
 
         @staticmethod
         def _check_containers(containers: list[Container]) -> list[Container]:
@@ -1429,27 +2164,184 @@ class Bertrand(Resource):
             Network,
             Field(
                 default_factory=Network.model_construct,
-                description="Networking configuration to use within this project.",
+                description=(
+                    "Workload-level networking intent.  Declared container ports "
+                    "drive internal Service rendering, isolation policy, and "
+                    "Gateway API HTTPRoute publication."
+                ),
             ),
         ]
         image: Annotated[
             Image,
-            Field(default_factory=Image.model_construct),
+            Field(
+                default_factory=Image.model_construct,
+                description=(
+                    "Image build intent for this worktree's single workload image."
+                ),
+            ),
         ]
         containers: Annotated[
             list[Container],
             AfterValidator(_check_containers),
-            Field(default_factory=list),
+            Field(
+                default_factory=list,
+                examples=[
+                    [
+                        {
+                            "name": "main",
+                            "cmd": ["python", "-m", "app"],
+                            "ports": [{"name": "http", "port": 8080}],
+                        }
+                    ]
+                ],
+                description=(
+                    "Container processes in this workload pod.  No containers means "
+                    "no Kubernetes workload; otherwise topology is inferred from "
+                    "schedule, deployment signals, and run-to-completion settings."
+                ),
+            ),
         ]
-        userns: Annotated[UserNS, Field(default="host")]
-        ipc: Annotated[IPCMode, Field(default="private")]
-        pid: Annotated[PIDMode, Field(default="private")]
-        uts: Annotated[UTSMode, Field(default="private")]
-        stop: Annotated[
-            Stop,
-            Field(default_factory=Stop.model_construct),
+        execution: Annotated[
+            Execution | None,
+            Field(
+                default=None,
+                examples=[{"restart": "never", "retries": 3, "timeout": 3600}],
+                description=(
+                    "Run-to-completion behavior for Job and CronJob workloads.  This "
+                    "conflicts with Deployment topology."
+                ),
+            ),
         ]
-        restart: Annotated[Restart, Field(default_factory=Restart.model_construct)]
+        schedule: Annotated[
+            Schedule | None,
+            Field(
+                default=None,
+                examples=[{"cron": "0 9 * * 1-5", "timezone": "UTC"}],
+                description=(
+                    "Cron scheduling behavior.  Presence selects CronJob topology "
+                    "unless conflicting Deployment signals are also present."
+                ),
+            ),
+        ]
+        scale: Annotated[
+            Scale | None,
+            Field(
+                default=None,
+                examples=[{"replicas": 2}],
+                description=(
+                    "Long-lived replica behavior.  Presence selects Deployment "
+                    "topology."
+                ),
+            ),
+        ]
+        rollout: Annotated[
+            Rollout | None,
+            Field(
+                default=None,
+                examples=[{"strategy": "rolling", "max-surge": "25%"}],
+                description=(
+                    "Deployment rollout behavior for long-lived workloads.  Presence "
+                    "selects Deployment topology."
+                ),
+            ),
+        ]
+        termination_grace: Annotated[
+            NonNegativeInt | None,
+            Field(
+                default=None,
+                alias="termination-grace",
+                examples=[30],
+                description=(
+                    "Seconds Kubernetes gives the workload pod to shut down cleanly, "
+                    "rendered as `terminationGracePeriodSeconds`."
+                ),
+            ),
+        ]
+        service_account: Annotated[
+            KubeName | None,
+            Field(
+                default=None,
+                alias="service-account",
+                examples=["bertrand-runtime"],
+                description=(
+                    "Kubernetes ServiceAccount name used by the workload pod."
+                ),
+            ),
+        ]
+        node: Annotated[
+            KubeName | None,
+            Field(
+                default=None,
+                examples=["worker-a"],
+                description=(
+                    "Pin the workload pod to one Kubernetes node by `nodeName`.  "
+                    "Prefer selectors or DRA requests unless exact placement is "
+                    "required."
+                ),
+            ),
+        ]
+        node_selector: Annotated[
+            dict[NonEmpty[NoWhiteSpace], NonEmpty[NoWhiteSpace]],
+            Field(
+                default_factory=dict,
+                alias="node-selector",
+                examples=[{"kubernetes.io/os": "linux"}],
+                description=(
+                    "Node label constraints for scheduling the workload pod, "
+                    "rendered as Kubernetes `nodeSelector`."
+                ),
+            ),
+        ]
+        priority_class: Annotated[
+            KubeName | None,
+            Field(
+                default=None,
+                alias="priority-class",
+                examples=["batch-low"],
+                description=(
+                    "Kubernetes PriorityClass name used for workload pod scheduling "
+                    "and preemption behavior."
+                ),
+            ),
+        ]
+        tolerations: Annotated[
+            list[Toleration],
+            Field(
+                default_factory=list,
+                examples=[
+                    [
+                        {
+                            "key": "workload",
+                            "operator": "equal",
+                            "value": "gpu",
+                            "effect": "no-schedule",
+                        }
+                    ]
+                ],
+                description=(
+                    "Kubernetes pod tolerations used with node taints and placement "
+                    "policy."
+                ),
+            ),
+        ]
+
+        @property
+        def topology(self) -> WorkloadTopology:
+            """Return the inferred workload topology.
+
+            Returns
+            -------
+            WorkloadTopology
+                Controller family selected from this config's semantic topology.
+            """
+            if not self.containers:
+                return WorkloadTopology(kind="none")
+            if self.schedule is not None:
+                return WorkloadTopology(kind="cronjob", signals=("schedule",))
+            signals = _deployment_topology_signals(self)
+            if signals:
+                return WorkloadTopology(kind="deployment", signals=signals)
+            return WorkloadTopology(kind="job")
 
         @model_validator(mode="after")
         def _validate_network_routes(self) -> Self:
@@ -1464,6 +2356,7 @@ class Bertrand(Resource):
                         )
                         raise ValueError(msg)
                     ports[port.name] = container.name
+            seen_routes: set[tuple[HostName, str, ServicePortName]] = set()
             for route in self.network.routes:
                 if route.port not in ports:
                     msg = (
@@ -1471,75 +2364,43 @@ class Bertrand(Resource):
                         f"port {route.port!r}"
                     )
                     raise ValueError(msg)
+                key = (route.host, route.path, route.port)
+                if key in seen_routes:
+                    msg = (
+                        f"duplicate network route for host {route.host!r}, path "
+                        f"{route.path!r}, and port {route.port!r}"
+                    )
+                    raise ValueError(msg)
+                seen_routes.add(key)
             return self
 
-        # @model_validator(mode="after")
-        # def _validate_namespace_refs(self) -> Self:
-        #     for tag in self.image:
-        #         # if the current tag is a service, get its position in the list
-        #         curr_pos = next(
-        #             (
-        #                 pos for pos, name in enumerate(self.services)
-        #                 if name == tag.tag
-        #             ),
-        #             None
-        #         )
-
-        #         # for each namespace field that references an external tag, ensure
-        #         # that the tag it references is a valid service
-        #         for option, mode in (
-        #             ("userns", tag.userns),
-        #             ("ipc", tag.ipc),
-        #             ("pid", tag.pid),
-        #             ("uts", tag.uts),
-        #         ):
-        #             ref = _extract_container_ref(mode)
-        #             if ref is None:
-        #                 continue
-
-        #             # outlaw self-references
-        #             if ref == tag.tag:
-        #                 raise ValueError(
-        #                     f"{option} for tag '{tag.tag}' cannot reference "
-        #                     f"itself via 'container:{ref}'"
-        #                 )
-
-        #             # get referenced service position + tag
-        #             ref_pos = next(
-        #                 (
-        #                     pos for pos, name in enumerate(self.services)
-        #                     if name == ref
-        #                 ),
-        #                 None
-        #             )
-        #             if ref_pos is None:
-        #                 raise ValueError(
-        #                     f"{option} for tag '{tag.tag}' references '{ref}', "
-        #                     f"but '{ref}' is not listed in "
-        #                     "'tool.bertrand.services'"
-        #                 )
-        #             ref_tag = self.image.get(ref)
-        #             if ref_tag is None:
-        #                 raise ValueError(
-        #                     f"{option} for tag '{tag.tag}' references unknown "
-        #                     f"tag '{ref}'"
-        #                 )
-
-        #             # enforce correct startup ordering
-        #             if curr_pos is not None and ref_pos >= curr_pos:
-        #                 raise ValueError(
-        #                     f"{option} for service tag '{tag.tag}' references "
-        #                     f"'container:{ref}', but '{ref}' must appear earlier "
-        #                     f"than '{tag.tag}' in 'tool.bertrand.services'"
-        #                 )
-
-        #             # ipc requires the referenced tag uses ipc=shareable
-        #             if option == "ipc" and ref_tag.ipc != "shareable":
-        #                 raise ValueError(
-        #                     f"ipc for tag '{tag.tag}' uses 'container:{ref}', "
-        #                     f"but referenced tag '{ref}' must set ipc='shareable'"
-        #                 )
-        #     return self
+        @model_validator(mode="after")
+        def _validate_workload_topology(self) -> Self:
+            signals = _deployment_topology_signals(self)
+            topology_fields = (
+                self.execution is not None,
+                self.schedule is not None,
+                self.scale is not None,
+                self.rollout is not None,
+                bool(signals),
+            )
+            if not self.containers:
+                if any(topology_fields):
+                    msg = "workload topology fields require at least one container"
+                    raise ValueError(msg)
+                return self
+            if self.schedule is not None and signals:
+                msg = (
+                    f"schedule conflicts with Deployment topology: {', '.join(signals)}"
+                )
+                raise ValueError(msg)
+            if self.execution is not None and signals:
+                msg = (
+                    "execution config applies only to Job/CronJob workloads and "
+                    f"conflicts with Deployment topology: {', '.join(signals)}"
+                )
+                raise ValueError(msg)
+            return self
 
     async def init(self, config: Config, cli: Config.Init) -> dict[str, Any]:
         """Return the default Bertrand configuration fragment.
@@ -1550,7 +2411,10 @@ class Bertrand(Resource):
             Default configuration data serialized with TOML aliases.
         """
         del config, cli
-        return self.Model.model_construct().model_dump(by_alias=True)
+        return self.Model.model_construct().model_dump(
+            by_alias=True,
+            exclude_none=True,
+        )
 
     async def validate(self, config: Config, fragment: Any) -> Model | None:
         """Validate a Bertrand configuration fragment.
@@ -1633,3 +2497,35 @@ class Bertrand(Resource):
             JSON schema for validation-mode Bertrand configuration.
         """
         return self.Model.model_json_schema(by_alias=True, mode="validation")
+
+
+def workload_topology(config: Bertrand.Model | None) -> WorkloadTopology:
+    """Return the inferred Kubernetes workload topology for a config.
+
+    Parameters
+    ----------
+    config : Bertrand.Model | None
+        Parsed Bertrand configuration, or ``None`` when the worktree does not define
+        Bertrand workload configuration.
+
+    Returns
+    -------
+    WorkloadTopology
+        Inferred controller family.  Missing config selects ``"none"``.
+    """
+    if config is None:
+        return WorkloadTopology(kind="none")
+    return config.topology
+
+
+def _deployment_topology_signals(config: Bertrand.Model) -> tuple[str, ...]:
+    signals: list[str] = []
+    if config.scale is not None:
+        signals.append("scale")
+    if config.rollout is not None:
+        signals.append("rollout")
+    if any(container.ports for container in config.containers):
+        signals.append("ports")
+    if config.network.routes:
+        signals.append("network.routes")
+    return tuple(signals)

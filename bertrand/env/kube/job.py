@@ -31,6 +31,7 @@ if TYPE_CHECKING:
 
 JOB_WAIT_POLL_INTERVAL_SECONDS = 0.5
 type DeletionPropagationPolicy = Literal["Background", "Foreground", "Orphan"]
+type JobCompletionMode = Literal["NonIndexed", "Indexed"]
 
 
 def _job_spec_manifest(
@@ -39,6 +40,10 @@ def _job_spec_manifest(
     pod_template: PodTemplateSpec,
     backoff_limit: int,
     ttl_seconds_after_finished: int | None,
+    active_deadline_seconds: int | None = None,
+    parallelism: int | None = None,
+    completions: int | None = None,
+    completion_mode: JobCompletionMode | None = None,
 ) -> dict[str, object]:
     template_labels = dict(labels)
     template_labels.update(pod_template.labels)
@@ -52,6 +57,14 @@ def _job_spec_manifest(
     }
     if ttl_seconds_after_finished is not None:
         spec["ttlSecondsAfterFinished"] = ttl_seconds_after_finished
+    if active_deadline_seconds is not None:
+        spec["activeDeadlineSeconds"] = active_deadline_seconds
+    if parallelism is not None:
+        spec["parallelism"] = parallelism
+    if completions is not None:
+        spec["completions"] = completions
+    if completion_mode is not None:
+        spec["completionMode"] = completion_mode
     return spec
 
 
@@ -229,6 +242,10 @@ class Job(NamespacedKubeMetadata[kubernetes.client.V1Job]):
         backoff_limit: int,
         ttl_seconds_after_finished: int | None,
         annotations: Mapping[str, str] | None,
+        active_deadline_seconds: int | None,
+        parallelism: int | None,
+        completions: int | None,
+        completion_mode: JobCompletionMode | None,
     ) -> dict[str, object]:
         return {
             "apiVersion": "batch/v1",
@@ -244,6 +261,10 @@ class Job(NamespacedKubeMetadata[kubernetes.client.V1Job]):
                 pod_template=pod_template,
                 backoff_limit=backoff_limit,
                 ttl_seconds_after_finished=ttl_seconds_after_finished,
+                active_deadline_seconds=active_deadline_seconds,
+                parallelism=parallelism,
+                completions=completions,
+                completion_mode=completion_mode,
             ),
         }
 
@@ -260,6 +281,10 @@ class Job(NamespacedKubeMetadata[kubernetes.client.V1Job]):
         backoff_limit: int = 0,
         ttl_seconds_after_finished: int | None = 3600,
         annotations: Mapping[str, str] | None = None,
+        active_deadline_seconds: int | None = None,
+        parallelism: int | None = None,
+        completions: int | None = None,
+        completion_mode: JobCompletionMode | None = None,
     ) -> Self:
         """Create one Kubernetes Job from intent-level fields.
 
@@ -283,6 +308,14 @@ class Job(NamespacedKubeMetadata[kubernetes.client.V1Job]):
             Optional TTL controller retention period for finished Jobs.
         annotations : Mapping[str, str] | None, optional
             Annotations to apply to `metadata.annotations`.
+        active_deadline_seconds : int | None, optional
+            Optional maximum Job runtime in seconds.
+        parallelism : int | None, optional
+            Optional maximum number of Pods the Job may run at once.
+        completions : int | None, optional
+            Optional number of successful Pod completions required.
+        completion_mode : {"NonIndexed", "Indexed"} | None, optional
+            Optional Kubernetes Job completion tracking mode.
 
         Returns
         -------
@@ -307,6 +340,21 @@ class Job(NamespacedKubeMetadata[kubernetes.client.V1Job]):
         if ttl_seconds_after_finished is not None and ttl_seconds_after_finished < 0:
             msg = "Job TTL cannot be negative"
             raise ValueError(msg)
+        if active_deadline_seconds is not None and active_deadline_seconds < 0:
+            msg = "Job active deadline cannot be negative"
+            raise ValueError(msg)
+        if parallelism is not None and parallelism <= 0:
+            msg = "Job parallelism must be positive"
+            raise ValueError(msg)
+        if completions is not None and completions <= 0:
+            msg = "Job completions must be positive"
+            raise ValueError(msg)
+        if completion_mode is not None and completion_mode not in (
+            "NonIndexed",
+            "Indexed",
+        ):
+            msg = f"invalid Job completion mode: {completion_mode!r}"
+            raise ValueError(msg)
 
         manifest = cls._manifest(
             namespace=namespace,
@@ -316,6 +364,10 @@ class Job(NamespacedKubeMetadata[kubernetes.client.V1Job]):
             backoff_limit=backoff_limit,
             ttl_seconds_after_finished=ttl_seconds_after_finished,
             annotations=annotations,
+            active_deadline_seconds=active_deadline_seconds,
+            parallelism=parallelism,
+            completions=completions,
+            completion_mode=completion_mode,
         )
         created = await kube.run(
             lambda request_timeout: kube.batch.create_namespaced_job(

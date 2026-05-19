@@ -226,6 +226,10 @@ class Deployment(NamespacedKubeMetadata[kubernetes.client.V1Deployment]):
         replicas: int,
         annotations: Mapping[str, str] | None,
         strategy: DeploymentStrategySpec | None,
+        min_ready_seconds: int | None,
+        progress_deadline_seconds: int | None,
+        revision_history_limit: int | None,
+        paused: bool | None,
     ) -> dict[str, object]:
         template_labels = dict(labels)
         template_labels.update(pod_template.labels)
@@ -252,6 +256,15 @@ class Deployment(NamespacedKubeMetadata[kubernetes.client.V1Deployment]):
                     if rolling_update:
                         payload["rollingUpdate"] = rolling_update
                 spec["strategy"] = payload
+        optional: dict[str, object | None] = {
+            "minReadySeconds": min_ready_seconds,
+            "progressDeadlineSeconds": progress_deadline_seconds,
+            "revisionHistoryLimit": revision_history_limit,
+            "paused": paused,
+        }
+        spec.update(
+            {key: value for key, value in optional.items() if value is not None}
+        )
         return {
             "apiVersion": "apps/v1",
             "kind": "Deployment",
@@ -278,6 +291,10 @@ class Deployment(NamespacedKubeMetadata[kubernetes.client.V1Deployment]):
         replicas: int = 1,
         annotations: Mapping[str, str] | None = None,
         strategy: DeploymentStrategySpec | None = None,
+        min_ready_seconds: int | None = None,
+        progress_deadline_seconds: int | None = None,
+        revision_history_limit: int | None = None,
+        paused: bool | None = None,
     ) -> Self:
         """Create or patch one Kubernetes Deployment from intent-level fields.
 
@@ -303,6 +320,14 @@ class Deployment(NamespacedKubeMetadata[kubernetes.client.V1Deployment]):
             Annotations to apply to `metadata.annotations`.
         strategy : DeploymentStrategySpec | None, optional
             Optional Deployment rollout strategy.
+        min_ready_seconds : int | None, optional
+            Optional number of seconds a Pod must stay ready before availability.
+        progress_deadline_seconds : int | None, optional
+            Optional number of seconds before a rollout is considered stalled.
+        revision_history_limit : int | None, optional
+            Optional number of old ReplicaSets to retain.
+        paused : bool | None, optional
+            Optional flag controlling whether rollout progress is paused.
 
         Returns
         -------
@@ -311,6 +336,8 @@ class Deployment(NamespacedKubeMetadata[kubernetes.client.V1Deployment]):
 
         Raises
         ------
+        ValueError
+            If replica or rollout timing settings are invalid.
         OSError
             If Kubernetes returns malformed data or the API call fails.
         """
@@ -319,6 +346,17 @@ class Deployment(NamespacedKubeMetadata[kubernetes.client.V1Deployment]):
         if not namespace or not name:
             msg = "Deployment upsert requires non-empty namespace and name"
             raise OSError(msg)
+        if replicas < 0:
+            msg = "Deployment replicas cannot be negative"
+            raise ValueError(msg)
+        for label, value in (
+            ("min ready seconds", min_ready_seconds),
+            ("progress deadline seconds", progress_deadline_seconds),
+            ("revision history limit", revision_history_limit),
+        ):
+            if value is not None and value < 0:
+                msg = f"Deployment {label} cannot be negative"
+                raise ValueError(msg)
 
         manifest = cls._manifest(
             namespace=namespace,
@@ -329,6 +367,10 @@ class Deployment(NamespacedKubeMetadata[kubernetes.client.V1Deployment]):
             replicas=replicas,
             annotations=annotations,
             strategy=strategy,
+            min_ready_seconds=min_ready_seconds,
+            progress_deadline_seconds=progress_deadline_seconds,
+            revision_history_limit=revision_history_limit,
+            paused=paused,
         )
 
         return await cls._client().upsert(
