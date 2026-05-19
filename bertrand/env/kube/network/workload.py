@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol, cast
 
 from bertrand.env.git import BERTRAND_NAMESPACE
@@ -66,6 +67,52 @@ class _WorkloadNetworkConfig(Protocol):
 
     @property
     def network(self) -> _NetworkConfig: ...
+
+
+@dataclass(frozen=True)
+class WorkloadHTTPRouteIntent:
+    """Resolved HTTPRoute intent for one workload route.
+
+    Parameters
+    ----------
+    name : str
+        Stable Kubernetes HTTPRoute resource name.
+    route : _RouteConfig
+        Validated Bertrand route config.
+    service_port : int
+        Numeric Service backend port used by Gateway API.
+    """
+
+    name: str
+    route: _RouteConfig
+    service_port: int
+
+
+@dataclass(frozen=True)
+class WorkloadHTTPRoutePlan:
+    """Prepared HTTPRoute convergence plan for one workload.
+
+    Parameters
+    ----------
+    identity : WorkloadIdentity
+        Stable workload identity that owns the routes.
+    routes : tuple[WorkloadHTTPRouteIntent, ...]
+        Desired HTTPRoute resources with resolved names and backend Service ports.
+    """
+
+    identity: WorkloadIdentity
+    routes: tuple[WorkloadHTTPRouteIntent, ...]
+
+    @property
+    def desired_names(self) -> frozenset[str]:
+        """Return desired HTTPRoute resource names.
+
+        Returns
+        -------
+        frozenset[str]
+            Names that should remain after pruning stale managed routes.
+        """
+        return frozenset(route.name for route in self.routes)
 
 
 async def ensure_workload_service(
@@ -176,6 +223,7 @@ async def ensure_workload_network_policy(
     config: _WorkloadNetworkConfig,
     workload: WorkloadPod,
     timeout: float,
+    route_plan: WorkloadHTTPRoutePlan | None = None,
 ) -> NetworkPolicy | None:
     """Converge this workload's Kubernetes NetworkPolicy intent.
 
@@ -190,6 +238,9 @@ async def ensure_workload_network_policy(
         Workload pod intent whose stable selector identifies the protected Pods.
     timeout : float
         Maximum convergence budget in seconds. If infinite, wait indefinitely.
+    route_plan : WorkloadHTTPRoutePlan | None, optional
+        Prepared HTTPRoute plan whose backend ports are used for route-aware
+        isolated ingress.
 
     Returns
     -------
@@ -202,7 +253,8 @@ async def ensure_workload_network_policy(
     TimeoutError
         If convergence cannot start before `timeout` expires.
     ValueError
-        If the validated config contains an unsupported policy value.
+        If the validated config contains an unsupported policy value, or an
+        HTTPRoute targets a non-TCP Service port.
     """
     if timeout <= 0:
         msg = "workload NetworkPolicy convergence timeout must be positive"
@@ -237,7 +289,7 @@ async def ensure_workload_network_policy(
         pod_selector=identity.selector,
         labels=identity.labels,
         policy_types=("Ingress",),
-        ingress=(),
+        ingress=_isolated_ingress_rules(config, workload, route_plan=route_plan),
         timeout=deadline - loop.time(),
     )
 
@@ -287,6 +339,7 @@ async def ensure_workload_http_routes(
     config: _WorkloadNetworkConfig,
     workload: WorkloadPod,
     timeout: float,
+    route_plan: WorkloadHTTPRoutePlan | None = None,
 ) -> tuple[HTTPRoute, ...]:
     """Converge this workload's managed Gateway API HTTPRoutes.
 
@@ -301,6 +354,9 @@ async def ensure_workload_http_routes(
         Workload pod intent whose canonical Service receives route traffic.
     timeout : float
         Maximum convergence budget in seconds. If infinite, wait indefinitely.
+    route_plan : WorkloadHTTPRoutePlan | None, optional
+        Prepared route plan. If omitted, route validation and Gateway preflight are
+        performed inside this function.
 
     Returns
     -------
@@ -313,8 +369,6 @@ async def ensure_workload_http_routes(
         If convergence cannot start before `timeout` expires.
     OSError
         If Gateway API HTTPRoute resources are unavailable.
-    ValueError
-        If a route references an unknown named Service port.
     """
     if timeout <= 0:
         msg = "workload HTTPRoute convergence timeout must be positive"
@@ -322,60 +376,48 @@ async def ensure_workload_http_routes(
 
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout
-    identity = workload.identity
-    routes = tuple(config.network.routes)
-    if not routes:
-        await delete_workload_http_routes(
+    plan = route_plan or await prepare_workload_http_routes(
+        kube,
+        config=config,
+        workload=workload,
+        timeout=deadline - loop.time(),
+    )
+    if not plan.routes:
+        await prune_workload_http_routes(
             kube,
-            identity=identity,
+            route_plan=plan,
             timeout=deadline - loop.time(),
-            require_gateway_api=False,
         )
         return ()
-
-    ports = {port.name: port.port for port in workload_service_ports(workload)}
-    desired_names: set[str] = set()
-    desired: list[tuple[str, _RouteConfig, int]] = []
-    for route in routes:
-        service_port = ports.get(route.port)
-        if service_port is None:
-            msg = (
-                f"workload HTTPRoute for host {route.host!r} references unknown "
-                f"Service port {route.port!r}"
-            )
-            raise ValueError(msg)
-        name = workload_http_route_name(identity, route)
-        if name in desired_names:
-            msg = f"duplicate workload HTTPRoute resource name: {name!r}"
-            raise ValueError(msg)
-        desired_names.add(name)
-        desired.append((name, route, service_port))
-
-    await ensure_bertrand_gateway(kube, timeout=deadline - loop.time())
+    await prune_workload_http_routes(
+        kube,
+        route_plan=plan,
+        timeout=deadline - loop.time(),
+    )
     out: list[HTTPRoute] = []
-    for name, route, service_port in desired:
+    for desired in plan.routes:
         current = await HTTPRoute.get(
             kube,
             namespace=BERTRAND_NAMESPACE,
-            name=name,
+            name=desired.name,
             timeout=deadline - loop.time(),
         )
-        _assert_managed_http_route(current, identity=identity)
+        _assert_managed_http_route(current, identity=plan.identity)
         try:
             route_obj = await HTTPRoute.upsert(
                 kube,
                 namespace=BERTRAND_NAMESPACE,
-                name=name,
+                name=desired.name,
                 parent_refs=bertrand_gateway_parent_refs(),
-                hostnames=(route.host,),
+                hostnames=(desired.route.host,),
                 rules=(
                     _http_route_rule(
-                        route=route,
-                        identity=identity,
-                        port=service_port,
+                        route=desired.route,
+                        identity=plan.identity,
+                        port=desired.service_port,
                     ),
                 ),
-                labels=_http_route_labels(identity),
+                labels=_http_route_labels(plan.identity),
                 timeout=deadline - loop.time(),
             )
         except OSError as err:
@@ -390,16 +432,103 @@ async def ensure_workload_http_routes(
             raise
         out.append(route_obj)
 
+    return tuple(out)
+
+
+async def prepare_workload_http_routes(
+    kube: Kube,
+    *,
+    config: _WorkloadNetworkConfig,
+    workload: WorkloadPod,
+    timeout: float,
+) -> WorkloadHTTPRoutePlan:
+    """Validate HTTPRoute intent and preflight shared Gateway readiness.
+
+    Parameters
+    ----------
+    kube : Kube
+        Active Kubernetes API context.
+    config : _WorkloadNetworkConfig
+        Validated Bertrand workload config whose route intents select the
+        HTTPRoute shape.
+    workload : WorkloadPod
+        Workload pod intent whose canonical Service receives route traffic.
+    timeout : float
+        Maximum preparation budget in seconds. If infinite, wait indefinitely.
+
+    Returns
+    -------
+    WorkloadHTTPRoutePlan
+        Resolved route plan. Empty plans do not require Gateway API availability.
+
+    Raises
+    ------
+    TimeoutError
+        If preparation cannot start before `timeout` expires.
+    OSError
+        If configured routes require Gateway API resources that are unavailable.
+    """
+    if timeout <= 0:
+        msg = "workload HTTPRoute preparation timeout must be positive"
+        raise TimeoutError(msg)
+
+    plan = _workload_http_route_plan(config, workload)
+    if not plan.routes:
+        return plan
+    try:
+        await ensure_bertrand_gateway(kube, timeout=timeout)
+    except OSError as err:
+        if gateway_api_crd_missing(err):
+            msg = (
+                "Gateway API HTTPRoute CRD is missing while publishing Bertrand "
+                "routes. Run `bertrand init` to install Envoy Gateway and its "
+                "Gateway API CRDs, or install Envoy Gateway manually before "
+                "publishing workload routes."
+            )
+            raise OSError(msg) from err
+        raise
+    return plan
+
+
+async def prune_workload_http_routes(
+    kube: Kube,
+    *,
+    route_plan: WorkloadHTTPRoutePlan,
+    timeout: float,
+) -> None:
+    """Delete stale managed HTTPRoutes before desired route convergence.
+
+    Parameters
+    ----------
+    kube : Kube
+        Active Kubernetes API context.
+    route_plan : WorkloadHTTPRoutePlan
+        Prepared route plan whose desired names should remain.
+    timeout : float
+        Maximum pruning budget in seconds. If infinite, wait indefinitely.
+
+    Raises
+    ------
+    TimeoutError
+        If pruning cannot start before `timeout` expires.
+    """
+    if timeout <= 0:
+        msg = "workload HTTPRoute pruning timeout must be positive"
+        raise TimeoutError(msg)
+
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    require_gateway_api = bool(route_plan.routes)
     for stale in await _list_workload_http_routes(
         kube,
-        identity=identity,
+        identity=route_plan.identity,
         timeout=deadline - loop.time(),
-        require_gateway_api=True,
+        require_gateway_api=require_gateway_api,
     ):
-        if stale.name not in desired_names:
-            _assert_managed_http_route(stale, identity=identity)
-            await stale.delete(kube, timeout=deadline - loop.time())
-    return tuple(out)
+        if stale.name in route_plan.desired_names:
+            continue
+        _assert_managed_http_route(stale, identity=route_plan.identity)
+        await stale.delete(kube, timeout=deadline - loop.time())
 
 
 async def delete_workload_http_routes(
@@ -545,6 +674,71 @@ async def _list_workload_http_routes(
         if not require_gateway_api and gateway_api_crd_missing(err):
             return ()
         raise
+
+
+def _workload_http_route_plan(
+    config: _WorkloadNetworkConfig,
+    workload: WorkloadPod,
+) -> WorkloadHTTPRoutePlan:
+    identity = workload.identity
+    ports = {port.name: port for port in workload_service_ports(workload)}
+    desired_names: set[str] = set()
+    desired: list[WorkloadHTTPRouteIntent] = []
+    for route in config.network.routes:
+        service_port = _service_port_for_http_route(route, ports)
+        name = workload_http_route_name(identity, route)
+        if name in desired_names:
+            msg = f"duplicate workload HTTPRoute resource name: {name!r}"
+            raise ValueError(msg)
+        desired_names.add(name)
+        desired.append(
+            WorkloadHTTPRouteIntent(
+                name=name,
+                route=route,
+                service_port=service_port.port,
+            )
+        )
+    return WorkloadHTTPRoutePlan(identity=identity, routes=tuple(desired))
+
+
+def _isolated_ingress_rules(
+    config: _WorkloadNetworkConfig,
+    workload: WorkloadPod,
+    *,
+    route_plan: WorkloadHTTPRoutePlan | None,
+) -> tuple[dict[str, object], ...]:
+    plan = route_plan or _workload_http_route_plan(config, workload)
+    allowed_ports = {route.service_port for route in plan.routes}
+    if not allowed_ports:
+        return ()
+    return (
+        {
+            "ports": [
+                {"protocol": "TCP", "port": port} for port in sorted(allowed_ports)
+            ],
+        },
+    )
+
+
+def _service_port_for_http_route(
+    route: _RouteConfig,
+    ports: dict[str, ServicePortSpec],
+) -> ServicePortSpec:
+    service_port = ports.get(route.port)
+    if service_port is None:
+        msg = (
+            f"workload HTTPRoute for host {route.host!r} references unknown "
+            f"Service port {route.port!r}"
+        )
+        raise ValueError(msg)
+    protocol = str(service_port.protocol).strip().upper()
+    if protocol != "TCP":
+        msg = (
+            f"workload HTTPRoute for host {route.host!r} targets non-TCP Service "
+            f"port {route.port!r} ({protocol}); HTTPRoute backends require TCP"
+        )
+        raise ValueError(msg)
+    return service_port
 
 
 def _http_route_rule(

@@ -23,12 +23,16 @@ from bertrand.env.kube.network.profile import (
     NetworkProfile,
 )
 from bertrand.env.kube.network.workload import (
+    WorkloadHTTPRouteIntent,
+    WorkloadHTTPRoutePlan,
     delete_workload_http_routes,
     delete_workload_network_policy,
     delete_workload_service,
     ensure_workload_http_routes,
     ensure_workload_network_policy,
     ensure_workload_service,
+    prepare_workload_http_routes,
+    prune_workload_http_routes,
     workload_http_route_name,
     workload_service_ports,
 )
@@ -48,6 +52,8 @@ __all__ = [
     "NETWORK_PROFILE_LABEL_VALUE",
     "NETWORK_PROFILE_NAME",
     "NetworkProfile",
+    "WorkloadHTTPRouteIntent",
+    "WorkloadHTTPRoutePlan",
     "bertrand_gateway_parent_refs",
     "delete_workload_http_routes",
     "delete_workload_network_policy",
@@ -58,6 +64,8 @@ __all__ = [
     "ensure_workload_network_policy",
     "ensure_workload_service",
     "gateway_api_crd_missing",
+    "prepare_workload_http_routes",
+    "prune_workload_http_routes",
     "workload_http_route_name",
     "workload_service_ports",
 ]

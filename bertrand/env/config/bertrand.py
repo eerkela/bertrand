@@ -642,10 +642,11 @@ class Bertrand(Resource):
             # - `policy = "open"` renders no restrictive NetworkPolicy, which keeps
             #   development ergonomics predictable.  `policy = "isolated"` renders an
             #   ingress-only Kubernetes NetworkPolicy around Deployment workloads,
-            #   denying inbound connections to selected Pods while leaving egress
-            #   open.  The backend remains best-effort/actionable when the CNI does
-            #   not enforce NetworkPolicy, because Kubernetes delegates enforcement to
-            #   the installed network plugin.
+            #   denying inbound connections to selected Pods except for TCP Service
+            #   ports explicitly published by `routes`, while leaving egress open.
+            #   The backend remains best-effort/actionable when the CNI does not
+            #   enforce NetworkPolicy, because Kubernetes delegates enforcement to the
+            #   installed network plugin.
             # - `routes` is the HTTP external-publication surface and renders
             #   Gateway API HTTPRoutes through a Bertrand-managed Envoy Gateway
             #   substrate, not Ingress, NodePort, or LoadBalancer project config.
@@ -684,7 +685,8 @@ class Bertrand(Resource):
                         examples=["http"],
                         description=(
                             "Named container port that the rendered HTTPRoute targets "
-                            "through the workload's canonical Service."
+                            "through the workload's canonical Service.  The target "
+                            "port must use TCP."
                         ),
                     ),
                 ]
@@ -710,7 +712,8 @@ class Bertrand(Resource):
                         "Workload network isolation policy.  `open` renders no "
                         "restrictive NetworkPolicy, while `isolated` renders an "
                         "ingress-only Kubernetes NetworkPolicy for Deployment "
-                        "workloads and leaves egress open."
+                        "workloads, allowing only explicitly routed HTTP backend "
+                        "ports and leaving egress open."
                     ),
                 ),
             ]

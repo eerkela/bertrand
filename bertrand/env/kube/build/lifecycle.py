@@ -570,6 +570,105 @@ async def get_project_image(
     return ProjectImageRecord.from_payload(obj.payload)
 
 
+async def require_active_project_image(
+    kube: Kube,
+    *,
+    identity: ProjectImageIdentity,
+    timeout: float,
+) -> ProjectImageRecord:
+    """Return the active image record for one exact project image identity.
+
+    Parameters
+    ----------
+    kube : Kube
+        Active Kubernetes API context.
+    identity : ProjectImageIdentity
+        Current project image identity derived from repository, worktree, and
+        `[tool.bertrand.image]` configuration.
+    timeout : float
+        Maximum request budget in seconds.
+
+    Returns
+    -------
+    ProjectImageRecord
+        The single active lifecycle record matching the current image config.
+
+    Raises
+    ------
+    TimeoutError
+        If `timeout` is non-positive or CRD/list operations exceed the budget.
+    OSError
+        If no matching active image exists, active records are stale for the current
+        config, or lifecycle records violate uniqueness.
+    """
+    if timeout <= 0:
+        msg = "active project image lookup timeout must be non-negative"
+        raise TimeoutError(msg)
+
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    await ensure_project_image_crd(kube, timeout=deadline - loop.time())
+    records = await list_project_images(
+        kube,
+        labels=_ProjectImageSpec.identity_labels(
+            repo_id=identity.repo_id,
+            worktree=identity.worktree,
+        ),
+        timeout=deadline - loop.time(),
+    )
+    records = [
+        record
+        for record in records
+        if record.repo_id == identity.repo_id and record.worktree == identity.worktree
+    ]
+    active = [record for record in records if record.phase == "Active"]
+    matching = [record for record in active if record.config_id == identity.config_id]
+    if len(matching) > 1:
+        names = ", ".join(sorted(record.name for record in matching))
+        msg = (
+            "project image lifecycle invariant violated: multiple active "
+            f"{PROJECT_IMAGE_KIND} records match current config "
+            f"{identity.config_id!r}: {names}"
+        )
+        raise OSError(msg)
+    if matching:
+        record = matching[0]
+        if record.env_id != identity.env_id or record.image != identity.image:
+            msg = (
+                "project image lifecycle invariant violated: active "
+                f"{PROJECT_IMAGE_KIND} {record.name!r} matches config "
+                f"{identity.config_id!r} but does not match the current image identity"
+            )
+            raise OSError(msg)
+        expected_digest_ref = digest_ref(identity.image, record.digest)
+        if record.digest_ref != expected_digest_ref:
+            msg = (
+                "project image lifecycle invariant violated: active "
+                f"{PROJECT_IMAGE_KIND} {record.name!r} points at "
+                f"{record.digest_ref!r}, expected {expected_digest_ref!r}"
+            )
+            raise OSError(msg)
+        return record
+
+    workload_label = f"{identity.repo_id}:{identity.worktree}"
+    if active:
+        detail = ", ".join(
+            sorted(f"{record.name}(config={record.config_id})" for record in active)
+        )
+        msg = (
+            f"active project image for {workload_label} is stale for current image "
+            f"config {identity.config_id!r}; run `bertrand build` before "
+            f"materializing the workload. Active records: {detail}"
+        )
+        raise OSError(msg)
+
+    msg = (
+        f"no active project image has been published for {workload_label}; run "
+        "`bertrand build` before materializing the workload"
+    )
+    raise OSError(msg)
+
+
 async def retire_project_images(
     kube: Kube,
     *,

@@ -7,8 +7,12 @@ from typing import TYPE_CHECKING, Any, cast
 
 from bertrand.env.config.bertrand import Bertrand
 from bertrand.env.config.core import Config, _check_uuid
-from bertrand.env.kube.build.lifecycle import worktree_identity
+from bertrand.env.kube.build.lifecycle import (
+    require_active_project_image,
+    worktree_identity,
+)
 from bertrand.env.kube.build.project import project_image_build
+from bertrand.env.kube.build.refs import digest_from_ref, digest_ref
 from bertrand.env.kube.workload.base import WorkloadIdentity
 from bertrand.env.kube.workload.config import workload_pod_from_config
 from bertrand.env.kube.workload.controller import (
@@ -19,6 +23,7 @@ from bertrand.env.kube.workload.controller import (
 
 if TYPE_CHECKING:
     from bertrand.env.kube.api.client import Kube
+    from bertrand.env.kube.build.request import ProjectImageIdentity
     from bertrand.env.kube.job import Job
 
 
@@ -29,6 +34,7 @@ async def ensure_project_workload_controller(
     repo_id: str,
     node: str | None = None,
     timeout: float,
+    image_ref: str | None = None,
 ) -> StableWorkloadController | None:
     """Converge the stable Kubernetes workload selected by project config.
 
@@ -44,6 +50,10 @@ async def ensure_project_workload_controller(
         Optional Kubernetes node name used for node-scoped capability resolution.
     timeout : float
         Maximum convergence budget in seconds. If infinite, wait indefinitely.
+    image_ref : str | None, optional
+        Optional digest-pinned project image reference from a just-completed build.
+        If omitted, the current active `BertrandImage` lifecycle record supplies the
+        immutable runtime image.
 
     Returns
     -------
@@ -68,17 +78,30 @@ async def ensure_project_workload_controller(
             workload=identity,
             timeout=timeout,
         )
+    if bertrand.topology.kind == "job":
+        return await ensure_workload_controller(
+            kube,
+            config=cast("Any", bertrand),
+            workload=identity,
+            timeout=timeout,
+        )
 
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout
     image_identity = project_image_build(config, repo_id=repo_id).identity
+    image = await _project_workload_image_ref(
+        kube,
+        identity=image_identity,
+        image_ref=image_ref,
+        timeout=deadline - loop.time(),
+    )
     workload = await workload_pod_from_config(
         kube,
         config=cast("Any", bertrand),
         repo_id=image_identity.repo_id,
         worktree=image_identity.worktree,
         env_id=image_identity.env_id,
-        image=image_identity.image,
+        image=image,
         node=node,
         timeout=deadline - loop.time(),
     )
@@ -97,6 +120,7 @@ async def create_project_workload_job_run(
     repo_id: str,
     node: str | None = None,
     timeout: float,
+    image_ref: str | None = None,
 ) -> Job:
     """Create one explicit Kubernetes Job run selected by project config.
 
@@ -112,6 +136,10 @@ async def create_project_workload_job_run(
         Optional Kubernetes node name used for node-scoped capability resolution.
     timeout : float
         Maximum creation budget in seconds. If infinite, wait indefinitely.
+    image_ref : str | None, optional
+        Optional digest-pinned project image reference from a just-completed build.
+        If omitted, the current active `BertrandImage` lifecycle record supplies the
+        immutable runtime image.
 
     Returns
     -------
@@ -140,13 +168,19 @@ async def create_project_workload_job_run(
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout
     image_identity = project_image_build(config, repo_id=repo_id).identity
+    image = await _project_workload_image_ref(
+        kube,
+        identity=image_identity,
+        image_ref=image_ref,
+        timeout=deadline - loop.time(),
+    )
     workload = await workload_pod_from_config(
         kube,
         config=cast("Any", bertrand),
         repo_id=image_identity.repo_id,
         worktree=image_identity.worktree,
         env_id=image_identity.env_id,
-        image=image_identity.image,
+        image=image,
         node=node,
         timeout=deadline - loop.time(),
     )
@@ -167,6 +201,48 @@ def _project_workload_identity(config: Config, *, repo_id: str) -> WorkloadIdent
         repo_id=repo_id,
         worktree=worktree_identity(config.worktree),
     )
+
+
+async def _project_workload_image_ref(
+    kube: Kube,
+    *,
+    identity: ProjectImageIdentity,
+    image_ref: str | None,
+    timeout: float,
+) -> str:
+    if image_ref is not None:
+        return _validate_project_workload_image_ref(image_ref, identity=identity)
+    record = await require_active_project_image(
+        kube,
+        identity=identity,
+        timeout=timeout,
+    )
+    return record.digest_ref
+
+
+def _validate_project_workload_image_ref(
+    image_ref: str,
+    *,
+    identity: ProjectImageIdentity,
+) -> str:
+    try:
+        digest = digest_from_ref(image_ref, label="project workload image_ref")
+        expected = digest_ref(identity.image, digest)
+    except ValueError as err:
+        msg = (
+            "project workload image_ref must be a digest-pinned ref for the "
+            f"configured project image repository: {image_ref!r}"
+        )
+        raise ValueError(msg) from err
+    value = image_ref.strip()
+    if value != expected:
+        msg = (
+            "project workload image_ref must be a digest-pinned ref for the "
+            "configured project image repository: "
+            f"expected {expected!r}, got {image_ref!r}"
+        )
+        raise ValueError(msg)
+    return value
 
 
 def _require_active_config(config: Config) -> None:

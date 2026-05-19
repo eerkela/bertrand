@@ -19,6 +19,8 @@ from bertrand.env.kube.network.workload import (
     ensure_workload_http_routes,
     ensure_workload_network_policy,
     ensure_workload_service,
+    prepare_workload_http_routes,
+    prune_workload_http_routes,
 )
 from bertrand.env.kube.workload.base import (
     WORKLOAD_ID_LABEL,
@@ -161,12 +163,45 @@ async def ensure_workload_controller(
     if kind == "deployment":
         pod = _require_workload_pod(workload, kind=kind)
         rollout = _rollout(config)
+        route_plan = await prepare_workload_http_routes(
+            kube,
+            config=cast("Any", config),
+            workload=pod,
+            timeout=deadline - loop.time(),
+        )
         await _ensure_claim_templates(
             kube,
             workload=pod,
             timeout=deadline - loop.time(),
         )
-        deployment = await Deployment.upsert(
+        await _delete_cronjob(
+            kube, identity=pod.identity, timeout=deadline - loop.time()
+        )
+        await prune_workload_http_routes(
+            kube,
+            route_plan=route_plan,
+            timeout=deadline - loop.time(),
+        )
+        await ensure_workload_network_policy(
+            kube,
+            config=cast("Any", config),
+            workload=pod,
+            timeout=deadline - loop.time(),
+            route_plan=route_plan,
+        )
+        await ensure_workload_service(
+            kube,
+            workload=pod,
+            timeout=deadline - loop.time(),
+        )
+        await ensure_workload_http_routes(
+            kube,
+            config=cast("Any", config),
+            workload=pod,
+            timeout=deadline - loop.time(),
+            route_plan=route_plan,
+        )
+        return await Deployment.upsert(
             kube,
             namespace=BERTRAND_NAMESPACE,
             name=pod.name,
@@ -181,27 +216,6 @@ async def ensure_workload_controller(
             paused=rollout.paused if rollout is not None else None,
             timeout=deadline - loop.time(),
         )
-        await _delete_cronjob(
-            kube, identity=pod.identity, timeout=deadline - loop.time()
-        )
-        await ensure_workload_service(
-            kube,
-            workload=pod,
-            timeout=deadline - loop.time(),
-        )
-        await ensure_workload_network_policy(
-            kube,
-            config=cast("Any", config),
-            workload=pod,
-            timeout=deadline - loop.time(),
-        )
-        await ensure_workload_http_routes(
-            kube,
-            config=cast("Any", config),
-            workload=pod,
-            timeout=deadline - loop.time(),
-        )
-        return deployment
 
     if kind == "cronjob":
         pod = _require_workload_pod(workload, kind=kind)
@@ -211,7 +225,27 @@ async def ensure_workload_controller(
             workload=pod,
             timeout=deadline - loop.time(),
         )
-        cronjob = await CronJob.upsert(
+        await delete_workload_http_routes(
+            kube,
+            identity=pod.identity,
+            timeout=deadline - loop.time(),
+        )
+        await delete_workload_service(
+            kube,
+            identity=pod.identity,
+            timeout=deadline - loop.time(),
+        )
+        await delete_workload_network_policy(
+            kube,
+            identity=pod.identity,
+            timeout=deadline - loop.time(),
+        )
+        await _delete_deployment(
+            kube,
+            identity=pod.identity,
+            timeout=deadline - loop.time(),
+        )
+        return await CronJob.upsert(
             kube,
             namespace=BERTRAND_NAMESPACE,
             name=pod.name,
@@ -232,27 +266,6 @@ async def ensure_workload_controller(
             time_zone=schedule.timezone,
             timeout=deadline - loop.time(),
         )
-        await _delete_deployment(
-            kube,
-            identity=pod.identity,
-            timeout=deadline - loop.time(),
-        )
-        await delete_workload_service(
-            kube,
-            identity=pod.identity,
-            timeout=deadline - loop.time(),
-        )
-        await delete_workload_network_policy(
-            kube,
-            identity=pod.identity,
-            timeout=deadline - loop.time(),
-        )
-        await delete_workload_http_routes(
-            kube,
-            identity=pod.identity,
-            timeout=deadline - loop.time(),
-        )
-        return cronjob
 
     if kind == "job":
         if identity is not None:
@@ -364,8 +377,11 @@ async def _delete_stable_resources(
 ) -> None:
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout
-    await _delete_deployment(kube, identity=identity, timeout=deadline - loop.time())
-    await _delete_cronjob(kube, identity=identity, timeout=deadline - loop.time())
+    await delete_workload_http_routes(
+        kube,
+        identity=identity,
+        timeout=deadline - loop.time(),
+    )
     await delete_workload_service(
         kube,
         identity=identity,
@@ -376,11 +392,8 @@ async def _delete_stable_resources(
         identity=identity,
         timeout=deadline - loop.time(),
     )
-    await delete_workload_http_routes(
-        kube,
-        identity=identity,
-        timeout=deadline - loop.time(),
-    )
+    await _delete_deployment(kube, identity=identity, timeout=deadline - loop.time())
+    await _delete_cronjob(kube, identity=identity, timeout=deadline - loop.time())
 
 
 async def _delete_deployment(
