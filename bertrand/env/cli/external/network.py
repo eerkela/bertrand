@@ -11,7 +11,7 @@ from bertrand.env.kube.api.client import Kube
 from bertrand.env.kube.build.daemon import BUILDKIT_POOL
 from bertrand.env.kube.build.repository import IMAGES
 from bertrand.env.kube.namespace import Namespace
-from bertrand.env.kube.network import NETWORK_PROFILE_NAME, NetworkProfile
+from bertrand.env.kube.network.profile import NETWORK_PROFILE_NAME, NetworkProfile
 
 if TYPE_CHECKING:
     import argparse

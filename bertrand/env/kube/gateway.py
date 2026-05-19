@@ -1,12 +1,10 @@
-"""Wrappers for Gateway API resources managed by Bertrand workloads."""
+"""Narrow wrappers for Gateway API resources."""
 
 from __future__ import annotations
 
-import asyncio
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Self, cast
 
-from bertrand.env.git import BERTRAND_ENV, BERTRAND_NAMESPACE
 from bertrand.env.kube.custom_object import (
     CustomObject,
     CustomObjectClient,
@@ -15,28 +13,12 @@ from bertrand.env.kube.custom_object import (
 
 if TYPE_CHECKING:
     import builtins
-    from collections.abc import Mapping
+    from collections.abc import Mapping, Sequence
 
     from bertrand.env.kube.api.client import Kube
 
 GATEWAY_API_GROUP = "gateway.networking.k8s.io"
 GATEWAY_API_VERSION = "v1"
-ENVOY_GATEWAY_CONTROLLER = "gateway.envoyproxy.io/gatewayclass-controller"
-BERTRAND_GATEWAY_CLASS = "bertrand-envoy"
-BERTRAND_GATEWAY = "bertrand-gateway"
-BERTRAND_GATEWAY_LISTENER = "http"
-BERTRAND_GATEWAY_PORT = 80
-GATEWAY_LABEL = "bertrand.dev/gateway"
-GATEWAY_LABEL_VALUE = "v1"
-HTTP_ROUTE_LABEL = "bertrand.dev/http-route"
-HTTP_ROUTE_LABEL_VALUE = "v1"
-GATEWAY_LABELS = {
-    "app.kubernetes.io/name": BERTRAND_GATEWAY,
-    "app.kubernetes.io/part-of": "bertrand",
-    "app.kubernetes.io/component": "gateway",
-    BERTRAND_ENV: "1",
-    GATEWAY_LABEL: GATEWAY_LABEL_VALUE,
-}
 
 _GATEWAY_CLASS_CLIENT = CustomObjectClient(
     CustomObjectSpec(
@@ -45,7 +27,6 @@ _GATEWAY_CLASS_CLIENT = CustomObjectClient(
         kind="GatewayClass",
         plural="gatewayclasses",
         scope="cluster",
-        labels=GATEWAY_LABELS,
     )
 )
 _GATEWAY_CLIENT = CustomObjectClient(
@@ -54,7 +35,6 @@ _GATEWAY_CLIENT = CustomObjectClient(
         version=GATEWAY_API_VERSION,
         kind="Gateway",
         plural="gateways",
-        labels=GATEWAY_LABELS,
     )
 )
 _HTTP_ROUTE_CLIENT = CustomObjectClient(
@@ -63,12 +43,6 @@ _HTTP_ROUTE_CLIENT = CustomObjectClient(
         version=GATEWAY_API_VERSION,
         kind="HTTPRoute",
         plural="httproutes",
-        labels={
-            "app.kubernetes.io/part-of": "bertrand",
-            "app.kubernetes.io/component": "workload-route",
-            BERTRAND_ENV: "1",
-            HTTP_ROUTE_LABEL: HTTP_ROUTE_LABEL_VALUE,
-        },
     )
 )
 
@@ -139,7 +113,7 @@ class GatewayClass:
         timeout : float
             Maximum request budget in seconds. If infinite, wait indefinitely.
         labels : Mapping[str, str] | None, optional
-            Labels to merge over Bertrand's Gateway labels.
+            Labels to apply to the GatewayClass.
 
         Returns
         -------
@@ -199,6 +173,22 @@ class GatewayClass:
         """
         return _condition_message(self._obj.status, "Accepted")
 
+    async def delete(self, kube: Kube, *, timeout: float) -> None:
+        """Delete this GatewayClass from the cluster.
+
+        Parameters
+        ----------
+        kube : Kube
+            Active Kubernetes API context.
+        timeout : float
+            Maximum request budget in seconds. If infinite, wait indefinitely.
+        """
+        await _GATEWAY_CLASS_CLIENT.delete_by_name(
+            kube,
+            name=self.name,
+            timeout=timeout,
+        )
+
 
 @dataclass(frozen=True)
 class Gateway:
@@ -255,10 +245,11 @@ class Gateway:
         namespace: str,
         name: str,
         gateway_class: str,
+        listeners: Sequence[Mapping[str, object]],
         timeout: float,
         labels: Mapping[str, str] | None = None,
     ) -> Self:
-        """Create or patch one Bertrand-managed Gateway.
+        """Create or patch one Gateway.
 
         Parameters
         ----------
@@ -270,10 +261,12 @@ class Gateway:
             Gateway name to create or patch.
         gateway_class : str
             GatewayClass name used by the Gateway.
+        listeners : Sequence[Mapping[str, object]]
+            Gateway listener specs to render under `spec.listeners`.
         timeout : float
             Maximum request budget in seconds. If infinite, wait indefinitely.
         labels : Mapping[str, str] | None, optional
-            Labels to merge over Bertrand's Gateway labels.
+            Labels to apply to the Gateway.
 
         Returns
         -------
@@ -286,14 +279,7 @@ class Gateway:
             name=name,
             spec={
                 "gatewayClassName": gateway_class,
-                "listeners": [
-                    {
-                        "name": BERTRAND_GATEWAY_LISTENER,
-                        "protocol": "HTTP",
-                        "port": BERTRAND_GATEWAY_PORT,
-                        "allowedRoutes": {"namespaces": {"from": "Same"}},
-                    }
-                ],
+                "listeners": [dict(listener) for listener in listeners],
             },
             labels=labels,
             timeout=timeout,
@@ -353,6 +339,23 @@ class Gateway:
             if value:
                 out.append(value)
         return tuple(out)
+
+    async def delete(self, kube: Kube, *, timeout: float) -> None:
+        """Delete this Gateway from the cluster.
+
+        Parameters
+        ----------
+        kube : Kube
+            Active Kubernetes API context.
+        timeout : float
+            Maximum request budget in seconds. If infinite, wait indefinitely.
+        """
+        await _GATEWAY_CLIENT.delete_by_name(
+            kube,
+            namespace=self.namespace,
+            name=self.name,
+            timeout=timeout,
+        )
 
 
 @dataclass(frozen=True)
@@ -444,14 +447,13 @@ class HTTPRoute:
         *,
         namespace: str,
         name: str,
-        host: str,
-        path: str,
-        service: str,
-        service_port: int,
+        parent_refs: Sequence[Mapping[str, object]],
+        hostnames: Sequence[str],
+        rules: Sequence[Mapping[str, object]],
         timeout: float,
         labels: Mapping[str, str] | None = None,
     ) -> Self:
-        """Create or patch one Bertrand-managed HTTPRoute.
+        """Create or patch one HTTPRoute.
 
         Parameters
         ----------
@@ -461,18 +463,16 @@ class HTTPRoute:
             Namespace that owns the HTTPRoute.
         name : str
             HTTPRoute name to create or patch.
-        host : str
-            External hostname matched by the route.
-        path : str
-            HTTP path prefix matched by the route.
-        service : str
-            Backend Kubernetes Service name.
-        service_port : int
-            Backend Service port number.
+        parent_refs : Sequence[Mapping[str, object]]
+            Gateway parent references to render under `spec.parentRefs`.
+        hostnames : Sequence[str]
+            Hostnames matched by the route.
+        rules : Sequence[Mapping[str, object]]
+            HTTPRoute rules to render under `spec.rules`.
         timeout : float
             Maximum request budget in seconds. If infinite, wait indefinitely.
         labels : Mapping[str, str] | None, optional
-            Labels to merge over Bertrand's HTTPRoute labels.
+            Labels to apply to the HTTPRoute.
 
         Returns
         -------
@@ -484,33 +484,9 @@ class HTTPRoute:
             namespace=namespace,
             name=name,
             spec={
-                "parentRefs": [
-                    {
-                        "name": BERTRAND_GATEWAY,
-                        "namespace": BERTRAND_NAMESPACE,
-                        "sectionName": BERTRAND_GATEWAY_LISTENER,
-                    }
-                ],
-                "hostnames": [host],
-                "rules": [
-                    {
-                        "matches": [
-                            {
-                                "path": {
-                                    "type": "PathPrefix",
-                                    "value": path,
-                                }
-                            }
-                        ],
-                        "backendRefs": [
-                            {
-                                "kind": "Service",
-                                "name": service,
-                                "port": service_port,
-                            }
-                        ],
-                    }
-                ],
+                "parentRefs": [dict(ref) for ref in parent_refs],
+                "hostnames": list(hostnames),
+                "rules": [dict(rule) for rule in rules],
             },
             labels=labels,
             timeout=timeout,
@@ -566,181 +542,6 @@ class HTTPRoute:
             name=self.name,
             timeout=timeout,
         )
-
-
-async def ensure_bertrand_gateway(kube: Kube, *, timeout: float) -> Gateway:
-    """Converge Bertrand's shared Gateway API substrate.
-
-    Parameters
-    ----------
-    kube : Kube
-        Active Kubernetes API context.
-    timeout : float
-        Maximum convergence budget in seconds. If infinite, wait indefinitely.
-
-    Returns
-    -------
-    Gateway
-        Accepted Bertrand Gateway with at least one external address.
-
-    Raises
-    ------
-    TimeoutError
-        If Gateway convergence exceeds `timeout`.
-    OSError
-        If Gateway API CRDs, Envoy Gateway acceptance, or external address
-        assignment are unavailable.
-    """
-    if timeout <= 0:
-        msg = "Bertrand Gateway convergence timeout must be positive"
-        raise TimeoutError(msg)
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
-    try:
-        current_class = await GatewayClass.get(
-            kube,
-            name=BERTRAND_GATEWAY_CLASS,
-            timeout=deadline - loop.time(),
-        )
-        _assert_managed_gateway_resource(current_class, kind="GatewayClass")
-        await GatewayClass.upsert(
-            kube,
-            name=BERTRAND_GATEWAY_CLASS,
-            controller_name=ENVOY_GATEWAY_CONTROLLER,
-            timeout=deadline - loop.time(),
-        )
-    except OSError as err:
-        message = _gateway_api_error_message("upsert GatewayClass", err)
-        if message is not None:
-            raise OSError(message) from err
-        raise
-    await _wait_gateway_class_accepted(
-        kube,
-        timeout=deadline - loop.time(),
-    )
-    try:
-        current_gateway = await Gateway.get(
-            kube,
-            namespace=BERTRAND_NAMESPACE,
-            name=BERTRAND_GATEWAY,
-            timeout=deadline - loop.time(),
-        )
-        _assert_managed_gateway_resource(current_gateway, kind="Gateway")
-        await Gateway.upsert(
-            kube,
-            namespace=BERTRAND_NAMESPACE,
-            name=BERTRAND_GATEWAY,
-            gateway_class=BERTRAND_GATEWAY_CLASS,
-            timeout=deadline - loop.time(),
-        )
-    except OSError as err:
-        message = _gateway_api_error_message("upsert Gateway", err)
-        if message is not None:
-            raise OSError(message) from err
-        raise
-    return await _wait_gateway_address(kube, timeout=deadline - loop.time())
-
-
-def gateway_api_crd_missing(err: OSError) -> bool:
-    """Return whether an error looks like missing Gateway API CRDs.
-
-    Parameters
-    ----------
-    err : OSError
-        Kubernetes API error raised while accessing Gateway API resources.
-
-    Returns
-    -------
-    bool
-        ``True`` when the error suggests the Gateway API resource type is not
-        installed in the cluster.
-    """
-    detail = str(err).lower()
-    return (
-        "gateway api crds are missing" in detail
-        or "status 404" in detail
-        or "the server could not find the requested resource" in detail
-        or "not found" in detail
-    )
-
-
-async def _wait_gateway_class_accepted(kube: Kube, *, timeout: float) -> GatewayClass:
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
-    last: GatewayClass | None = None
-    while True:
-        remaining = deadline - loop.time()
-        if remaining <= 0:
-            detail = f": {last.acceptance_message}" if last is not None else ""
-            msg = (
-                f"GatewayClass {BERTRAND_GATEWAY_CLASS!r} was not accepted by "
-                f"Envoy Gateway controller {ENVOY_GATEWAY_CONTROLLER!r}{detail}. "
-                "Install/start Envoy Gateway and ensure it watches this controller."
-            )
-            raise OSError(msg)
-        current = await GatewayClass.get(
-            kube,
-            name=BERTRAND_GATEWAY_CLASS,
-            timeout=remaining,
-        )
-        if current is not None:
-            last = current
-            if current.accepted:
-                return current
-        await asyncio.sleep(min(0.5, max(0.0, deadline - loop.time())))
-
-
-async def _wait_gateway_address(kube: Kube, *, timeout: float) -> Gateway:
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
-    while True:
-        remaining = deadline - loop.time()
-        if remaining <= 0:
-            msg = (
-                f"Gateway {BERTRAND_NAMESPACE}/{BERTRAND_GATEWAY} has no external "
-                "address. Configure a LoadBalancer provider such as MetalLB; "
-                "Bertrand does not auto-configure address pools."
-            )
-            raise OSError(msg)
-        current = await Gateway.get(
-            kube,
-            namespace=BERTRAND_NAMESPACE,
-            name=BERTRAND_GATEWAY,
-            timeout=remaining,
-        )
-        if current is not None and current.addresses:
-            return current
-        await asyncio.sleep(min(0.5, max(0.0, deadline - loop.time())))
-
-
-def _gateway_api_error_message(action: str, err: OSError) -> str | None:
-    if gateway_api_crd_missing(err):
-        return (
-            f"Gateway API CRDs are missing while trying to {action}. Install Envoy "
-            "Gateway and its Gateway API CRDs before publishing Bertrand routes."
-        )
-    return None
-
-
-def _assert_managed_gateway_resource(
-    resource: GatewayClass | Gateway | None,
-    *,
-    kind: str,
-) -> None:
-    if resource is None:
-        return
-    labels = resource.labels
-    expected = {
-        BERTRAND_ENV: "1",
-        GATEWAY_LABEL: GATEWAY_LABEL_VALUE,
-    }
-    if all(labels.get(key) == value for key, value in expected.items()):
-        return
-    location = resource.name
-    if isinstance(resource, Gateway):
-        location = f"{resource.namespace}/{resource.name}"
-    msg = f"{kind} {location} exists but is not managed by Bertrand"
-    raise OSError(msg)
 
 
 def _condition_status(status: Mapping[str, Any], kind: str) -> str:

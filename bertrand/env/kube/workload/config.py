@@ -31,6 +31,7 @@ if TYPE_CHECKING:
     from bertrand.env.kube.workload.capability import (
         WorkloadDeviceRequest,
         WorkloadSecretRequest,
+        WorkloadSSHRequest,
     )
 
 
@@ -95,6 +96,7 @@ class _WorkloadContainer(Protocol):
     security: _WorkloadSecurity | None
     ports: Sequence[_WorkloadPort]
     secrets: Sequence[WorkloadSecretRequest]
+    ssh: Sequence[WorkloadSSHRequest]
     devices: Sequence[WorkloadDeviceRequest]
 
 

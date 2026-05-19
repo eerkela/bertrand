@@ -8,10 +8,12 @@ from typing import TYPE_CHECKING, Protocol, cast
 
 from bertrand.env.git import BERTRAND_NAMESPACE
 from bertrand.env.kube.api.spec import ServicePortSpec
-from bertrand.env.kube.gateway import (
+from bertrand.env.kube.gateway import HTTPRoute
+from bertrand.env.kube.network.gateway import (
     HTTP_ROUTE_LABEL,
     HTTP_ROUTE_LABEL_VALUE,
-    HTTPRoute,
+    HTTP_ROUTE_LABELS,
+    bertrand_gateway_parent_refs,
     ensure_bertrand_gateway,
     gateway_api_crd_missing,
 )
@@ -364,10 +366,15 @@ async def ensure_workload_http_routes(
                 kube,
                 namespace=BERTRAND_NAMESPACE,
                 name=name,
-                host=route.host,
-                path=route.path,
-                service=identity.name,
-                service_port=service_port,
+                parent_refs=bertrand_gateway_parent_refs(),
+                hostnames=(route.host,),
+                rules=(
+                    _http_route_rule(
+                        route=route,
+                        identity=identity,
+                        port=service_port,
+                    ),
+                ),
                 labels=_http_route_labels(identity),
                 timeout=deadline - loop.time(),
             )
@@ -375,7 +382,8 @@ async def ensure_workload_http_routes(
             if gateway_api_crd_missing(err):
                 msg = (
                     "Gateway API HTTPRoute CRD is missing while publishing Bertrand "
-                    "routes. Install Envoy Gateway and its Gateway API CRDs before "
+                    "routes. Run `bertrand init` to install Envoy Gateway and its "
+                    "Gateway API CRDs, or install Envoy Gateway manually before "
                     "publishing workload routes."
                 )
                 raise OSError(msg) from err
@@ -539,8 +547,34 @@ async def _list_workload_http_routes(
         raise
 
 
+def _http_route_rule(
+    *,
+    route: _RouteConfig,
+    identity: WorkloadIdentity,
+    port: int,
+) -> dict[str, object]:
+    return {
+        "matches": [
+            {
+                "path": {
+                    "type": "PathPrefix",
+                    "value": route.path,
+                }
+            }
+        ],
+        "backendRefs": [
+            {
+                "kind": "Service",
+                "name": identity.name,
+                "port": port,
+            }
+        ],
+    }
+
+
 def _http_route_labels(identity: WorkloadIdentity) -> dict[str, str]:
-    labels = dict(identity.labels)
+    labels = dict(HTTP_ROUTE_LABELS)
+    labels.update(identity.labels)
     labels[HTTP_ROUTE_LABEL] = HTTP_ROUTE_LABEL_VALUE
     return labels
 

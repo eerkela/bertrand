@@ -12,20 +12,20 @@ from bertrand.env.kube.capability.device import upsert_resource_claim_templates
 from bertrand.env.kube.cronjob import CronJob, CronJobConcurrencyPolicy
 from bertrand.env.kube.deployment import Deployment
 from bertrand.env.kube.job import Job, JobCompletionMode
-from bertrand.env.kube.workload.base import (
-    WORKLOAD_ID_LABEL,
-    WORKLOAD_LABEL,
-    WORKLOAD_LABEL_VALUE,
-    WorkloadIdentity,
-    WorkloadPod,
-)
-from bertrand.env.kube.workload.network import (
+from bertrand.env.kube.network.workload import (
     delete_workload_http_routes,
     delete_workload_network_policy,
     delete_workload_service,
     ensure_workload_http_routes,
     ensure_workload_network_policy,
     ensure_workload_service,
+)
+from bertrand.env.kube.workload.base import (
+    WORKLOAD_ID_LABEL,
+    WORKLOAD_LABEL,
+    WORKLOAD_LABEL_VALUE,
+    WorkloadIdentity,
+    WorkloadPod,
 )
 
 if TYPE_CHECKING:

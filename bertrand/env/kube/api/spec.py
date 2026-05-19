@@ -222,6 +222,25 @@ class VolumeMountSpec:
 
 
 @dataclass(frozen=True)
+class SecretVolumeItemSpec:
+    """Intent-level Kubernetes Secret volume item projection.
+
+    Parameters
+    ----------
+    key : str
+        Secret data key to project into the volume.
+    path : str
+        Relative file path to create inside the mounted volume.
+    mode : int | None, optional
+        Optional POSIX mode for this projected file.
+    """
+
+    key: str
+    path: str
+    mode: int | None = None
+
+
+@dataclass(frozen=True)
 class ProbeSpec:
     """Intent-level Kubernetes container health probe.
 
@@ -682,6 +701,8 @@ class VolumeSpec:
         Whether the Secret reference is optional.
     secret_default_mode : int | None, optional
         Default POSIX mode for Secret-backed volume files.
+    secret_items : Collection[SecretVolumeItemSpec], optional
+        Optional Secret key-to-path projections.
     persistent_volume_claim : str | None, optional
         PersistentVolumeClaim name for PVC-backed volumes.
     host_path_path : str | None, optional
@@ -699,6 +720,7 @@ class VolumeSpec:
     secret_name: str | None = None
     secret_optional: bool | None = None
     secret_default_mode: int | None = None
+    secret_items: Collection[SecretVolumeItemSpec] = ()
     persistent_volume_claim: str | None = None
     host_path_path: str | None = None
     host_path_type: str | None = None
@@ -772,6 +794,7 @@ class VolumeSpec:
         secret_name: str,
         optional: bool | None = None,
         default_mode: int | None = None,
+        items: Collection[SecretVolumeItemSpec] = (),
     ) -> Self:
         """Create a Secret-backed volume specification.
 
@@ -785,6 +808,9 @@ class VolumeSpec:
             Whether the Secret reference is optional.
         default_mode : int | None, optional
             Default POSIX mode for Secret-backed volume files.
+        items : Collection[SecretVolumeItemSpec], optional
+            Optional Secret key-to-path projections. If omitted, Kubernetes projects
+            every Secret data key.
 
         Returns
         -------
@@ -796,6 +822,7 @@ class VolumeSpec:
             secret_name=secret_name,
             secret_optional=optional,
             secret_default_mode=default_mode,
+            secret_items=tuple(items),
         )
 
     @classmethod

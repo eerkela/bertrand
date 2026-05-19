@@ -48,7 +48,7 @@ from bertrand.env.kube.ceph.volume import CEPHFS_STORAGE_CLASS_PREFERENCES
 from bertrand.env.kube.configmap import ConfigMap
 from bertrand.env.kube.deployment import Deployment
 from bertrand.env.kube.job import Job
-from bertrand.env.kube.network import NetworkProfile
+from bertrand.env.kube.network.profile import NetworkProfile
 from bertrand.env.kube.node import Node
 from bertrand.env.kube.service import Service
 from bertrand.env.kube.volume import PersistentVolumeClaim, StorageClass

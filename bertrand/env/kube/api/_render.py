@@ -297,6 +297,22 @@ def _volume_manifest(volume: VolumeSpec) -> dict[str, object]:
             secret["optional"] = volume.secret_optional
         if volume.secret_default_mode is not None:
             secret["defaultMode"] = volume.secret_default_mode
+        if volume.secret_items:
+            items: list[dict[str, object]] = []
+            for item in volume.secret_items:
+                key = item.key.strip()
+                path = item.path.strip()
+                if not key or not path:
+                    msg = "Secret volume item key and path cannot be empty"
+                    raise ValueError(msg)
+                item_payload: dict[str, object] = {"key": key, "path": path}
+                if item.mode is not None:
+                    if item.mode < 0:
+                        msg = "Secret volume item mode cannot be negative"
+                        raise ValueError(msg)
+                    item_payload["mode"] = item.mode
+                items.append(item_payload)
+            secret["items"] = items
         payload["secret"] = secret
     elif volume.persistent_volume_claim is not None:
         payload["persistentVolumeClaim"] = {"claimName": volume.persistent_volume_claim}

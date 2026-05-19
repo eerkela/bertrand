@@ -9,7 +9,11 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING, Protocol
 
 from bertrand.env.config.core import _check_kube_name
-from bertrand.env.kube.api.spec import VolumeMountSpec, VolumeSpec
+from bertrand.env.kube.api.spec import (
+    SecretVolumeItemSpec,
+    VolumeMountSpec,
+    VolumeSpec,
+)
 from bertrand.env.kube.capability.base import Capability
 from bertrand.env.kube.capability.device import (
     DRAResourceClaimIntent,
@@ -24,7 +28,9 @@ if TYPE_CHECKING:
     from bertrand.env.kube.api.client import Kube
 
 WORKLOAD_SECRET_MOUNT = "/run/secrets"
+WORKLOAD_SSH_MOUNT = "/run/bertrand/ssh"
 CAPABILITY_VALUE_KEY = "value"
+SSH_PRIVATE_KEY_FILE = "ssh-privatekey"
 
 
 class WorkloadSecretRequest(Protocol):
@@ -34,6 +40,21 @@ class WorkloadSecretRequest(Protocol):
     ----------
     id : KubeName
         Host-agnostic Secret capability ID.
+    required : bool
+        Whether resolution must fail if the capability is unavailable.
+    """
+
+    id: KubeName
+    required: bool
+
+
+class WorkloadSSHRequest(Protocol):
+    """Structural runtime SSH credential capability request.
+
+    Attributes
+    ----------
+    id : KubeName
+        Host-agnostic SSH credential capability ID.
     required : bool
         Whether resolution must fail if the capability is unavailable.
     """
@@ -66,12 +87,15 @@ class WorkloadContainerCapabilityRequest(Protocol):
         Container name that owns these runtime capability requests.
     secrets : Sequence[WorkloadSecretRequest]
         Secret capability requests mounted into this container.
+    ssh : Sequence[WorkloadSSHRequest]
+        SSH credential capability requests mounted into this container.
     devices : Sequence[WorkloadDeviceRequest]
         Device capability requests resolved for this container.
     """
 
     name: str
     secrets: Sequence[WorkloadSecretRequest]
+    ssh: Sequence[WorkloadSSHRequest]
     devices: Sequence[WorkloadDeviceRequest]
 
 
@@ -104,6 +128,34 @@ class ResolvedWorkloadSecret:
 
 
 @dataclass(frozen=True)
+class ResolvedWorkloadSSH:
+    """Resolved runtime SSH credential capability mounted into a workload.
+
+    Parameters
+    ----------
+    capability_id : str
+        Host-agnostic capability ID from project configuration.
+    container_name : str
+        Container that receives the SSH credential mount.
+    secret_name : str
+        Kubernetes Secret name backing the resolved capability.
+    volume_name : str
+        Deterministic pod volume name used for the Secret.
+    mount_path : str
+        Container directory where the SSH credential Secret is mounted.
+    private_key_path : str
+        Path to the projected private key file inside the mounted Secret.
+    """
+
+    capability_id: str
+    container_name: str
+    secret_name: str
+    volume_name: str
+    mount_path: str
+    private_key_path: str
+
+
+@dataclass(frozen=True)
 class WorkloadCapabilities:
     """Resolved capability additions for a native workload pod.
 
@@ -115,6 +167,8 @@ class WorkloadCapabilities:
         Secret mounts keyed by container name.
     secrets : tuple[ResolvedWorkloadSecret, ...]
         Resolved Secret capability records.
+    ssh : tuple[ResolvedWorkloadSSH, ...]
+        Resolved SSH credential capability records.
     resource_claims : tuple[DRAResourceClaimIntent, ...]
         DRA resource claim templates requested by workload containers.
     """
@@ -122,6 +176,7 @@ class WorkloadCapabilities:
     volumes: tuple[VolumeSpec, ...]
     mounts_by_container: Mapping[str, tuple[VolumeMountSpec, ...]]
     secrets: tuple[ResolvedWorkloadSecret, ...]
+    ssh: tuple[ResolvedWorkloadSSH, ...]
     resource_claims: tuple[DRAResourceClaimIntent, ...]
 
 
@@ -134,7 +189,7 @@ async def resolve_workload_capabilities(
     node: str | None = None,
     timeout: float,
 ) -> WorkloadCapabilities:
-    """Resolve runtime Secret and device capabilities for one workload.
+    """Resolve runtime Secret, SSH, and device capabilities for one workload.
 
     Parameters
     ----------
@@ -171,6 +226,7 @@ async def resolve_workload_capabilities(
         _check_kube_name(container.name): [] for container in containers
     }
     resolved_secrets: list[ResolvedWorkloadSecret] = []
+    resolved_ssh: list[ResolvedWorkloadSSH] = []
     resource_claims: list[DRAResourceClaimIntent] = []
 
     for container in containers:
@@ -216,6 +272,53 @@ async def resolve_workload_capabilities(
                 )
             )
 
+        for request in container.ssh:
+            capability_id = _check_kube_name(str(request.id))
+            capability = await Capability.resolve(
+                kube,
+                kind="ssh",
+                capability_id=capability_id,
+                env_id=env_id,
+                node=node,
+                required=request.required,
+                timeout=deadline - loop.time(),
+            )
+            if capability is None:
+                continue
+            volume_name = _capability_volume_name("ssh", capability_id)
+            mount_path = f"{WORKLOAD_SSH_MOUNT}/{capability_id}"
+            volumes.setdefault(
+                volume_name,
+                VolumeSpec.secret(
+                    volume_name,
+                    secret_name=capability.ref.name,
+                    default_mode=0o400,
+                    items=(
+                        SecretVolumeItemSpec(
+                            key=CAPABILITY_VALUE_KEY,
+                            path=SSH_PRIVATE_KEY_FILE,
+                        ),
+                    ),
+                ),
+            )
+            mounts_by_container[container_name].append(
+                VolumeMountSpec(
+                    name=volume_name,
+                    mount_path=mount_path,
+                    read_only=True,
+                )
+            )
+            resolved_ssh.append(
+                ResolvedWorkloadSSH(
+                    capability_id=capability_id,
+                    container_name=container_name,
+                    secret_name=capability.ref.name,
+                    volume_name=volume_name,
+                    mount_path=mount_path,
+                    private_key_path=f"{mount_path}/{SSH_PRIVATE_KEY_FILE}",
+                )
+            )
+
         device_requests = await select_device_claims(
             kube,
             requests={
@@ -243,6 +346,7 @@ async def resolve_workload_capabilities(
         volumes=tuple(volumes[name] for name in sorted(volumes)),
         mounts_by_container=mounts,
         secrets=tuple(resolved_secrets),
+        ssh=tuple(resolved_ssh),
         resource_claims=tuple(resource_claims),
     )
 
