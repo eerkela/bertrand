@@ -71,6 +71,7 @@ BUILDKIT_CONTROL_PLANE_TOLERATIONS = (
         effect="NoSchedule",
     ),
 )
+BUILDKIT_ROLLOUT_DIAGNOSTIC_TIMEOUT_SECONDS = 10.0
 
 
 def buildkit_worker_gc_toml() -> str:
@@ -163,6 +164,9 @@ class BuildKitPoolStatus:
         Whether the DaemonSet rollout, config hash, and platform coverage are ready.
     failures : tuple[str, ...]
         Human-readable readiness failures, empty when the pool is ready.
+    pod_diagnostics : tuple[str, ...]
+        Diagnostics from non-ready BuildKit pods, including image pull and container
+        waiting reasons when Kubernetes reports them.
     """
 
     namespace: str
@@ -174,6 +178,7 @@ class BuildKitPoolStatus:
     missing_platforms: tuple[str, ...]
     ready: bool
     failures: tuple[str, ...]
+    pod_diagnostics: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -184,6 +189,7 @@ class _BuildKitPoolSnapshot:
     expected_platforms: tuple[str, ...]
     ready_platforms: tuple[str, ...]
     missing_platforms: tuple[str, ...]
+    pod_diagnostics: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -385,7 +391,27 @@ class BuildKitPool:
             ),
             timeout=deadline - loop.time(),
         )
-        await daemonset.wait_rollout(kube, timeout=deadline - loop.time())
+        try:
+            await daemonset.wait_rollout(kube, timeout=deadline - loop.time())
+        except (OSError, TimeoutError) as err:
+            msg = (
+                f"BuildKit DaemonSet {self.namespace}/{self.name} did not become ready"
+            )
+            try:
+                status = await self.status(
+                    kube,
+                    timeout=BUILDKIT_ROLLOUT_DIAGNOSTIC_TIMEOUT_SECONDS,
+                    config_hash=config_hash,
+                )
+            except (OSError, TimeoutError) as diagnostic_err:
+                msg = f"{msg}; failed to collect pod diagnostics: {diagnostic_err}"
+            else:
+                failures = status.failures or ("rollout did not become ready",)
+                detail = "\n".join(f"- {failure}" for failure in failures)
+                msg = f"{msg}:\n{detail}"
+            if isinstance(err, TimeoutError):
+                raise TimeoutError(msg) from err
+            raise OSError(msg) from err
 
     async def status(
         self,
@@ -454,6 +480,8 @@ class BuildKitPool:
                 failures.append(
                     f"BuildKit has no ready builder for platform(s): {platforms}"
                 )
+            if failures and snapshot.pod_diagnostics:
+                failures.extend(snapshot.pod_diagnostics)
             return BuildKitPoolStatus(
                 namespace=self.namespace,
                 name=self.name,
@@ -464,6 +492,7 @@ class BuildKitPool:
                 missing_platforms=snapshot.missing_platforms,
                 ready=not failures,
                 failures=tuple(failures),
+                pod_diagnostics=snapshot.pod_diagnostics,
             )
         except OSError as err:
             msg = f"failed to inspect BuildKit pool {self.namespace}/{self.name}: {err}"
@@ -519,6 +548,7 @@ class BuildKitPool:
             expected_platforms=expected_platforms,
             ready_platforms=ready_platforms,
             missing_platforms=missing_platforms,
+            pod_diagnostics=_pod_diagnostics(pods),
         )
 
     async def _eligible_nodes(self, kube: Kube, *, timeout: float) -> tuple[Node, ...]:
@@ -623,6 +653,19 @@ class BuildKitPool:
 
 def _builder_sort_key(builder: _BuildKitBuilder) -> tuple[str, str]:
     return (builder.platform, builder.node)
+
+
+def _pod_diagnostics(pods: Iterable[Pod]) -> tuple[str, ...]:
+    out: list[str] = []
+    for pod in sorted(pods, key=lambda pod: (pod.namespace, pod.name)):
+        if pod.is_ready:
+            continue
+        diagnostics = pod.status_diagnostics
+        if diagnostics:
+            out.extend(diagnostics)
+        else:
+            out.append(f"Pod {pod.namespace}/{pod.name} is not ready")
+    return tuple(out)
 
 
 BUILDKIT_POOL = BuildKitPool(

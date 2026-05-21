@@ -118,7 +118,6 @@ BERTRAND_GROUP = "bertrand"
 STATE_DIR = Path("/var/lib/bertrand")
 HOST_ID_FILE = STATE_DIR / "host_id"
 REPO_DIR = STATE_DIR / "repositories"
-REPO_ALIASES_EXT = Path("aliases.json")
 REPO_LOCK_EXT = Path("lock")
 REPO_MOUNT_EXT = Path("mount")
 BIN_DIR = STATE_DIR / "bin"

@@ -68,7 +68,9 @@ from bertrand.env.kube.ceph.snapshot import (
     next_repository_snapshot_time,
 )
 from bertrand.env.kube.ceph.volume import (
+    REPOSITORY_MOUNT_PLURAL,
     REPOSITORY_VOLUME_PLURAL,
+    ensure_repository_mount_crd,
     ensure_repository_volume_crd,
     gc_repository_volumes,
     next_repository_volume_gc_time,
@@ -124,6 +126,7 @@ async def _ensure_rbac(kube: Kube, *, deadline: float) -> None:
                     STORAGE_POLICY_PLURAL,
                     STORAGE_ACTION_PLURAL,
                     STORAGE_NODE_PLURAL,
+                    REPOSITORY_MOUNT_PLURAL,
                     REPOSITORY_VOLUME_PLURAL,
                 ],
                 verbs=["get", "list", "watch", "create", "update", "patch"],
@@ -139,7 +142,7 @@ async def _ensure_rbac(kube: Kube, *, deadline: float) -> None:
             ),
             PolicyRuleSpec(
                 api_groups=[CEPH_CAPACITY_GROUP],
-                resources=[REPOSITORY_VOLUME_PLURAL],
+                resources=[REPOSITORY_MOUNT_PLURAL, REPOSITORY_VOLUME_PLURAL],
                 verbs=["delete"],
             ),
             PolicyRuleSpec(
@@ -285,6 +288,10 @@ async def ensure_ceph_storage_controller(
         timeout=deadline - asyncio.get_running_loop().time(),
     )
     await ensure_repository_volume_crd(
+        kube,
+        timeout=deadline - asyncio.get_running_loop().time(),
+    )
+    await ensure_repository_mount_crd(
         kube,
         timeout=deadline - asyncio.get_running_loop().time(),
     )

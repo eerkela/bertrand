@@ -84,8 +84,6 @@ INIT_STATE_FILE = STATE_DIR / "init.state.json"
 INIT_STATE_VERSION: int = 1
 INIT_PREREQS = {
     "apt": {
-        "tar": "tar",
-        "curl": "curl",
         "getfacl": "acl",
         "setfacl": "acl",
         "groupadd": "passwd",
@@ -93,49 +91,42 @@ INIT_PREREQS = {
         "install": "coreutils",
     },
     "dnf": {
-        "tar": "tar",
-        "curl": "curl",
-        "acl": "acl",
+        "getfacl": "acl",
+        "setfacl": "acl",
         "groupadd": "shadow-utils",
         "usermod": "shadow-utils",
         "install": "coreutils",
     },
     "yum": {
-        "tar": "tar",
-        "curl": "curl",
-        "acl": "acl",
+        "getfacl": "acl",
+        "setfacl": "acl",
         "groupadd": "shadow-utils",
         "usermod": "shadow-utils",
         "install": "coreutils",
     },
     "zypper": {
-        "tar": "tar",
-        "curl": "curl",
-        "acl": "acl",
+        "getfacl": "acl",
+        "setfacl": "acl",
         "groupadd": "shadow",
         "usermod": "shadow",
         "install": "coreutils",
     },
     "pacman": {
-        "tar": "tar",
-        "curl": "curl",
-        "acl": "acl",
+        "getfacl": "acl",
+        "setfacl": "acl",
         "groupadd": "shadow",
         "usermod": "shadow",
         "install": "coreutils",
     },
     "apk": {
-        "tar": "tar",
-        "curl": "curl",
-        "acl": "acl",
+        "getfacl": "acl",
+        "setfacl": "acl",
         "groupadd": "shadow",
         "usermod": "shadow",
         "install": "coreutils",
     },
 }
 INIT_CHECK_PREREQS = (
-    ("tar", ("tar",)),
-    ("curl/wget", ("curl", "wget")),
     ("getfacl", ("getfacl",)),
     ("setfacl", ("setfacl",)),
     ("groupadd", ("groupadd",)),
@@ -303,10 +294,7 @@ async def _install_prereqs(state: _InitState, context: _InitContext) -> None:
     for tool, package in packages.items():
         if package in missing:
             continue
-        if tool == "curl/wget":
-            if shutil.which("curl") or shutil.which("wget"):
-                continue
-        elif shutil.which(tool):
+        if shutil.which(tool):
             continue
         missing.add(package)
     if not missing:
@@ -883,6 +871,7 @@ async def _finalize(
 
     loop = asyncio.get_running_loop()
     state.mount_alias = await finalize_repository_mount(
+        state.kube,
         repo_id=state.repo_id,
         target=target,
         alias=mount_alias,

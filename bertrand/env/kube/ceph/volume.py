@@ -42,6 +42,13 @@ REPOSITORY_VOLUME_PLURAL = "cephrepositoryvolumes"
 REPOSITORY_VOLUME_LABEL = "bertrand.dev/ceph-repository-volume"
 REPOSITORY_VOLUME_LABEL_VALUE = "v1"
 REPOSITORY_VOLUME_PHASE_LABEL = "bertrand.dev/ceph-repository-volume-phase"
+REPOSITORY_MOUNT_KIND = "CephRepositoryMount"
+REPOSITORY_MOUNT_PLURAL = "cephrepositorymounts"
+REPOSITORY_MOUNT_LABEL = "bertrand.dev/ceph-repository-mount"
+REPOSITORY_MOUNT_LABEL_VALUE = "v1"
+REPOSITORY_MOUNT_PHASE_LABEL = "bertrand.dev/ceph-repository-mount-phase"
+REPOSITORY_MOUNT_PATH_HASH_LABEL = "bertrand.dev/ceph-repository-mount-path"
+REPOSITORY_MOUNT_HOST_HASH_LABEL = "bertrand.dev/ceph-repository-mount-host"
 REPOSITORY_VOLUME_GC_GRACE_SECONDS = 604_800
 REPOSITORY_VOLUME_GC_LIMIT = 4
 _REPOSITORY_VOLUME_LABELS = {
@@ -49,9 +56,109 @@ _REPOSITORY_VOLUME_LABELS = {
     REPO_VOLUME_ENV: "1",
     REPOSITORY_VOLUME_LABEL: REPOSITORY_VOLUME_LABEL_VALUE,
 }
+_REPOSITORY_MOUNT_LABELS = {
+    BERTRAND_ENV: "1",
+    REPO_VOLUME_ENV: "1",
+    REPOSITORY_MOUNT_LABEL: REPOSITORY_MOUNT_LABEL_VALUE,
+}
 
 type _RepositoryVolumePhase = Literal["Active", "Retired"]
+type _RepositoryMountPhase = Literal["Active", "Retired"]
 type _NonEmptyString = Annotated[str, Field(min_length=1)]
+
+
+def repository_mount_alias_path(alias_path: str) -> str:
+    """Validate a repository mount alias path for CRD storage.
+
+    Parameters
+    ----------
+    alias_path : str
+        Absolute host path used as a repository mount alias.
+
+    Returns
+    -------
+    str
+        Normalized alias path string suitable for durable mount metadata.
+
+    Raises
+    ------
+    ValueError
+        If the alias path is empty or not absolute.
+    """
+    alias_path = alias_path.strip()
+    if not alias_path:
+        msg = "repository mount alias path cannot be empty"
+        raise ValueError(msg)
+    if not alias_path.startswith("/"):
+        msg = f"repository mount alias path must be absolute: {alias_path!r}"
+        raise ValueError(msg)
+    return alias_path
+
+
+def repository_mount_path_hash(alias_path: str) -> str:
+    """Return the Kubernetes-label-safe hash for a mount alias path.
+
+    Parameters
+    ----------
+    alias_path : str
+        Absolute host path used as a repository mount alias.
+
+    Returns
+    -------
+    str
+        Short SHA-256 hex digest used in mount record labels.
+    """
+    alias_path = repository_mount_alias_path(alias_path)
+    return _hash_label(alias_path)
+
+
+def repository_mount_host_hash(host_id: str) -> str:
+    """Return the Kubernetes-label-safe hash for a host identity.
+
+    Parameters
+    ----------
+    host_id : str
+        Durable Bertrand host UUID.
+
+    Returns
+    -------
+    str
+        Short SHA-256 hex digest used in mount record labels.
+    """
+    host_id = _check_uuid(host_id)
+    return _hash_label(host_id)
+
+
+def repository_mount_name(repo_id: str, host_id: str, alias_path: str) -> str:
+    """Return the deterministic name for a repository mount record.
+
+    Parameters
+    ----------
+    repo_id : str
+        Stable repository UUID.
+    host_id : str
+        Durable Bertrand host UUID.
+    alias_path : str
+        Absolute host path used as a repository mount alias.
+
+    Returns
+    -------
+    str
+        Kubernetes custom object name for the mount record.
+    """
+    repo_id = _check_uuid(repo_id)
+    host_id = _check_uuid(host_id)
+    alias_path = repository_mount_alias_path(alias_path)
+    h = hashlib.sha256()
+    for value in (repo_id, host_id, alias_path):
+        encoded = value.encode("utf-8")
+        h.update(len(encoded).to_bytes(8, "big"))
+        h.update(encoded)
+    return f"bertrand-repo-mount-{h.hexdigest()[:43]}"
+
+
+def _hash_label(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()[:40]
 
 
 @dataclass(frozen=True)
@@ -697,6 +804,352 @@ class CephRepositoryVolumeRecord(BaseModel):
         )
 
 
+class _RepositoryMountSpec(BaseModel):
+    """Lifecycle spec for one host-local repository mount alias."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    repo_id: _NonEmptyString
+    claim_name: _NonEmptyString
+    alias_path: _NonEmptyString
+    alias_path_hash: _NonEmptyString
+    host_id: _NonEmptyString
+    node_name: str = ""
+    phase: _RepositoryMountPhase = "Active"
+    created_at: datetime
+    last_seen_at: datetime
+    retired_at: datetime | None = None
+    last_error: str = ""
+
+    @field_validator("created_at", "last_seen_at", "retired_at")
+    @classmethod
+    def _normalize_datetime(cls, value: datetime | None) -> datetime | None:
+        if value is None:
+            return None
+        if value.tzinfo is None:
+            return value.replace(tzinfo=UTC)
+        return value.astimezone(UTC)
+
+    @classmethod
+    def active(
+        cls,
+        *,
+        repo_id: str,
+        alias_path: str,
+        host_id: str,
+        node_name: str,
+        created_at: datetime,
+        last_seen_at: datetime,
+    ) -> _RepositoryMountSpec:
+        repo_id = _check_uuid(repo_id)
+        host_id = _check_uuid(host_id)
+        alias_path = repository_mount_alias_path(alias_path)
+        return cls(
+            repo_id=repo_id,
+            claim_name=RepoVolume.claim_name(repo_id),
+            alias_path=alias_path,
+            alias_path_hash=repository_mount_path_hash(alias_path),
+            host_id=host_id,
+            node_name=node_name.strip(),
+            phase="Active",
+            created_at=created_at,
+            last_seen_at=last_seen_at,
+            retired_at=None,
+            last_error="",
+        )
+
+    @property
+    def labels(self) -> dict[str, str]:
+        return {
+            **_REPOSITORY_MOUNT_LABELS,
+            REPO_ID_ENV: self.repo_id,
+            REPOSITORY_MOUNT_PATH_HASH_LABEL: self.alias_path_hash,
+            REPOSITORY_MOUNT_HOST_HASH_LABEL: repository_mount_host_hash(self.host_id),
+            REPOSITORY_MOUNT_PHASE_LABEL: self.phase.lower(),
+        }
+
+    def payload(self) -> dict[str, object]:
+        return {
+            "repo_id": self.repo_id,
+            "claim_name": self.claim_name,
+            "alias_path": self.alias_path,
+            "alias_path_hash": self.alias_path_hash,
+            "host_id": self.host_id,
+            "node_name": self.node_name,
+            "phase": self.phase,
+            "created_at": _datetime_payload(self.created_at),
+            "last_seen_at": _datetime_payload(self.last_seen_at),
+            "retired_at": _datetime_payload(self.retired_at),
+            "last_error": self.last_error,
+        }
+
+
+class CephRepositoryMountRecord(BaseModel):
+    """Read-only model for one `CephRepositoryMount` custom object.
+
+    Parameters
+    ----------
+    api_version : str
+        Kubernetes API version reported by the custom object.
+    kind : {"CephRepositoryMount"}
+        Kubernetes custom object kind.
+    metadata : CustomObjectMetadata
+        Kubernetes object metadata.
+    spec : _RepositoryMountSpec
+        Repository mount lifecycle spec.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True, populate_by_name=True)
+    api_version: str = Field(alias="apiVersion")
+    kind: Literal["CephRepositoryMount"]
+    metadata: CustomObjectMetadata
+    spec: _RepositoryMountSpec
+
+    @classmethod
+    def from_payload(cls, payload: object) -> CephRepositoryMountRecord:
+        """Validate a Kubernetes custom object payload.
+
+        Parameters
+        ----------
+        payload : object
+            Raw Kubernetes custom object payload.
+
+        Returns
+        -------
+        CephRepositoryMountRecord
+            Validated repository mount lifecycle record.
+
+        Raises
+        ------
+        OSError
+            If the payload is malformed or ownership metadata is inconsistent.
+        """
+        try:
+            record = cls.model_validate(payload)
+        except ValidationError as err:
+            msg = f"malformed {REPOSITORY_MOUNT_KIND} custom object: {err}"
+            raise OSError(msg) from err
+
+        repo_id = _check_uuid(record.spec.repo_id)
+        host_id = _check_uuid(record.spec.host_id)
+        alias_path = repository_mount_alias_path(record.spec.alias_path)
+        expected_name = repository_mount_name(repo_id, host_id, alias_path)
+        if record.name != expected_name:
+            msg = (
+                f"malformed {REPOSITORY_MOUNT_KIND} {record.name!r}: expected "
+                f"deterministic name {expected_name!r}"
+            )
+            raise OSError(msg)
+        expected_claim = RepoVolume.claim_name(repo_id)
+        if record.spec.claim_name != expected_claim:
+            msg = (
+                f"malformed {REPOSITORY_MOUNT_KIND} {record.name!r}: claim_name "
+                f"{record.spec.claim_name!r} does not match expected claim "
+                f"{expected_claim!r}"
+            )
+            raise OSError(msg)
+        expected_path_hash = repository_mount_path_hash(alias_path)
+        if record.spec.alias_path_hash != expected_path_hash:
+            msg = (
+                f"malformed {REPOSITORY_MOUNT_KIND} {record.name!r}: alias_path_hash "
+                f"{record.spec.alias_path_hash!r} does not match expected hash "
+                f"{expected_path_hash!r}"
+            )
+            raise OSError(msg)
+        labels = record.metadata.labels
+        if labels.get(REPO_ID_ENV) != repo_id:
+            msg = (
+                f"malformed {REPOSITORY_MOUNT_KIND} {record.name!r}: repo label "
+                f"{REPO_ID_ENV!r} does not match spec repo_id {repo_id!r}"
+            )
+            raise OSError(msg)
+        if labels.get(REPOSITORY_MOUNT_PATH_HASH_LABEL) != expected_path_hash:
+            msg = (
+                f"malformed {REPOSITORY_MOUNT_KIND} {record.name!r}: path hash label "
+                "does not match spec alias_path"
+            )
+            raise OSError(msg)
+        expected_host_hash = repository_mount_host_hash(host_id)
+        if labels.get(REPOSITORY_MOUNT_HOST_HASH_LABEL) != expected_host_hash:
+            msg = (
+                f"malformed {REPOSITORY_MOUNT_KIND} {record.name!r}: host hash label "
+                "does not match spec host_id"
+            )
+            raise OSError(msg)
+        label_phase = labels.get(REPOSITORY_MOUNT_PHASE_LABEL, "").strip()
+        if label_phase != record.spec.phase.lower():
+            msg = (
+                f"malformed {REPOSITORY_MOUNT_KIND} {record.name!r}: phase label "
+                f"{label_phase!r} does not match spec phase {record.spec.phase!r}"
+            )
+            raise OSError(msg)
+        return record
+
+    @property
+    def name(self) -> str:
+        """Return the Kubernetes custom object name.
+
+        Returns
+        -------
+        str
+            Kubernetes custom object name.
+        """
+        return self.metadata.name
+
+    @property
+    def namespace(self) -> str:
+        """Return the namespace that owns this record.
+
+        Returns
+        -------
+        str
+            Kubernetes namespace that owns this record.
+        """
+        return self.metadata.namespace
+
+    @property
+    def repo_id(self) -> str:
+        """Return the managed repository identity.
+
+        Returns
+        -------
+        str
+            Repository UUID associated with this mount alias.
+        """
+        return self.spec.repo_id
+
+    @property
+    def claim_name(self) -> str:
+        """Return the deterministic PVC claim name.
+
+        Returns
+        -------
+        str
+            Kubernetes PVC name for this repository volume.
+        """
+        return self.spec.claim_name
+
+    @property
+    def alias_path(self) -> str:
+        """Return the host alias path.
+
+        Returns
+        -------
+        str
+            Absolute host path for this repository mount alias.
+        """
+        return self.spec.alias_path
+
+    @property
+    def alias_path_hash(self) -> str:
+        """Return the alias path hash.
+
+        Returns
+        -------
+        str
+            Short SHA-256 hex digest for the alias path.
+        """
+        return self.spec.alias_path_hash
+
+    @property
+    def host_id(self) -> str:
+        """Return the Bertrand host identity.
+
+        Returns
+        -------
+        str
+            Durable host UUID associated with this mount alias.
+        """
+        return self.spec.host_id
+
+    @property
+    def node_name(self) -> str:
+        """Return the reporting node name.
+
+        Returns
+        -------
+        str
+            Best-effort local node name recorded during mount convergence.
+        """
+        return self.spec.node_name
+
+    @property
+    def phase(self) -> _RepositoryMountPhase:
+        """Return the lifecycle phase.
+
+        Returns
+        -------
+        {"Active", "Retired"}
+            Repository mount lifecycle phase.
+        """
+        return self.spec.phase
+
+    @property
+    def created_at(self) -> datetime:
+        """Return the lifecycle creation timestamp.
+
+        Returns
+        -------
+        datetime
+            Time this lifecycle record was first created.
+        """
+        return self.spec.created_at
+
+    @property
+    def last_seen_at(self) -> datetime:
+        """Return the last successful convergence timestamp.
+
+        Returns
+        -------
+        datetime
+            Time this repository mount was last observed by host convergence.
+        """
+        return self.spec.last_seen_at
+
+    @property
+    def retired_at(self) -> datetime | None:
+        """Return the retirement timestamp.
+
+        Returns
+        -------
+        datetime | None
+            Time this repository mount alias was retired, if retired.
+        """
+        return self.spec.retired_at
+
+    @property
+    def last_error(self) -> str:
+        """Return the last repository-mount lifecycle error.
+
+        Returns
+        -------
+        str
+            Last non-fatal lifecycle error recorded for this mount alias.
+        """
+        return self.spec.last_error
+
+    def _lifecycle_spec(
+        self,
+        *,
+        phase: _RepositoryMountPhase,
+        last_seen_at: datetime,
+        retired_at: datetime | None,
+        last_error: str,
+    ) -> _RepositoryMountSpec:
+        return _RepositoryMountSpec(
+            repo_id=self.repo_id,
+            claim_name=self.claim_name,
+            alias_path=self.alias_path,
+            alias_path_hash=self.alias_path_hash,
+            host_id=self.host_id,
+            node_name=self.node_name,
+            phase=phase,
+            created_at=self.created_at,
+            last_seen_at=last_seen_at,
+            retired_at=retired_at,
+            last_error=last_error,
+        )
+
+
 _REPOSITORY_VOLUME_SPEC_SCHEMA = {
     "type": "object",
     "required": [
@@ -718,6 +1171,34 @@ _REPOSITORY_VOLUME_SPEC_SCHEMA = {
         "last_error": {"type": "string"},
     },
 }
+_REPOSITORY_MOUNT_SPEC_SCHEMA = {
+    "type": "object",
+    "required": [
+        "repo_id",
+        "claim_name",
+        "alias_path",
+        "alias_path_hash",
+        "host_id",
+        "node_name",
+        "phase",
+        "created_at",
+        "last_seen_at",
+        "last_error",
+    ],
+    "properties": {
+        "repo_id": {"type": "string", "minLength": 1},
+        "claim_name": {"type": "string", "minLength": 1},
+        "alias_path": {"type": "string", "minLength": 1},
+        "alias_path_hash": {"type": "string", "minLength": 1},
+        "host_id": {"type": "string", "minLength": 1},
+        "node_name": {"type": "string"},
+        "phase": {"type": "string", "enum": ["Active", "Retired"]},
+        "created_at": {"type": "string", "format": "date-time"},
+        "last_seen_at": {"type": "string", "format": "date-time"},
+        "retired_at": {"type": "string", "format": "date-time", "nullable": True},
+        "last_error": {"type": "string"},
+    },
+}
 _REPOSITORY_VOLUME_SPEC = CustomObjectSpec(
     group=REPOSITORY_VOLUME_GROUP,
     version=REPOSITORY_VOLUME_VERSION,
@@ -726,6 +1207,14 @@ _REPOSITORY_VOLUME_SPEC = CustomObjectSpec(
     labels=_REPOSITORY_VOLUME_LABELS,
 )
 _REPOSITORY_VOLUME_CLIENT = CustomObjectClient(_REPOSITORY_VOLUME_SPEC)
+_REPOSITORY_MOUNT_SPEC = CustomObjectSpec(
+    group=REPOSITORY_VOLUME_GROUP,
+    version=REPOSITORY_VOLUME_VERSION,
+    kind=REPOSITORY_MOUNT_KIND,
+    plural=REPOSITORY_MOUNT_PLURAL,
+    labels=_REPOSITORY_MOUNT_LABELS,
+)
+_REPOSITORY_MOUNT_CLIENT = CustomObjectClient(_REPOSITORY_MOUNT_SPEC)
 
 
 async def ensure_repository_volume_crd(kube: Kube, *, timeout: float) -> None:
@@ -758,6 +1247,41 @@ async def ensure_repository_volume_crd(kube: Kube, *, timeout: float) -> None:
         short_names=("crv",),
         spec_schema=_REPOSITORY_VOLUME_SPEC_SCHEMA,
         labels=_REPOSITORY_VOLUME_LABELS,
+        timeout=deadline - loop.time(),
+    )
+    await crd.wait_established(kube, timeout=deadline - loop.time())
+
+
+async def ensure_repository_mount_crd(kube: Kube, *, timeout: float) -> None:
+    """Converge the repository-mount lifecycle CRD.
+
+    Parameters
+    ----------
+    kube : Kube
+        Active Kubernetes API context.
+    timeout : float
+        Maximum convergence budget in seconds.
+
+    Raises
+    ------
+    TimeoutError
+        If `timeout` is non-positive or CRD establishment exceeds the budget.
+    """
+    if timeout <= 0:
+        msg = "repository mount CRD timeout must be non-negative"
+        raise TimeoutError(msg)
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    crd = await CustomResourceDefinition.upsert(
+        kube,
+        group=REPOSITORY_VOLUME_GROUP,
+        version=REPOSITORY_VOLUME_VERSION,
+        plural=REPOSITORY_MOUNT_PLURAL,
+        singular="cephrepositorymount",
+        kind=REPOSITORY_MOUNT_KIND,
+        short_names=("crm",),
+        spec_schema=_REPOSITORY_MOUNT_SPEC_SCHEMA,
+        labels=_REPOSITORY_MOUNT_LABELS,
         timeout=deadline - loop.time(),
     )
     await crd.wait_established(kube, timeout=deadline - loop.time())
@@ -797,6 +1321,46 @@ async def get_repository_volume_record(
     return CephRepositoryVolumeRecord.from_payload(obj.payload)
 
 
+async def get_repository_mount_record(
+    kube: Kube,
+    *,
+    repo_id: str,
+    host_id: str,
+    alias_path: str,
+    timeout: float,
+) -> CephRepositoryMountRecord | None:
+    """Read one repository-mount lifecycle record.
+
+    Parameters
+    ----------
+    kube : Kube
+        Active Kubernetes API context.
+    repo_id : str
+        Stable repository UUID.
+    host_id : str
+        Durable Bertrand host UUID.
+    alias_path : str
+        Absolute host path used as the repository mount alias.
+    timeout : float
+        Maximum request budget in seconds.
+
+    Returns
+    -------
+    CephRepositoryMountRecord | None
+        Repository-mount lifecycle record, or None if it does not exist.
+    """
+    name = repository_mount_name(repo_id, host_id, alias_path)
+    obj = await _REPOSITORY_MOUNT_CLIENT.get(
+        kube,
+        namespace=BERTRAND_NAMESPACE,
+        name=name,
+        timeout=timeout,
+    )
+    if obj is None:
+        return None
+    return CephRepositoryMountRecord.from_payload(obj.payload)
+
+
 async def list_repository_volume_records(
     kube: Kube,
     *,
@@ -826,6 +1390,39 @@ async def list_repository_volume_records(
         timeout=timeout,
     )
     return [CephRepositoryVolumeRecord.from_payload(obj.payload) for obj in objects]
+
+
+async def list_repository_mount_records(
+    kube: Kube,
+    *,
+    timeout: float,
+    labels: Mapping[str, str] | None = None,
+) -> list[CephRepositoryMountRecord]:
+    """List repository-mount lifecycle records.
+
+    Parameters
+    ----------
+    kube : Kube
+        Active Kubernetes API context.
+    timeout : float
+        Maximum request budget in seconds.
+    labels : Mapping[str, str] | None, optional
+        Optional exact-match label selector.
+
+    Returns
+    -------
+    list[CephRepositoryMountRecord]
+        Validated repository-mount lifecycle records.
+    """
+    objects = await _REPOSITORY_MOUNT_CLIENT.list(
+        kube,
+        namespace=BERTRAND_NAMESPACE,
+        labels=labels,
+        timeout=timeout,
+    )
+    records = [CephRepositoryMountRecord.from_payload(obj.payload) for obj in objects]
+    records.sort(key=lambda record: (record.alias_path, record.repo_id, record.host_id))
+    return records
 
 
 async def ensure_repository_volume_record(
@@ -885,6 +1482,79 @@ async def ensure_repository_volume_record(
     return CephRepositoryVolumeRecord.from_payload(obj.payload)
 
 
+async def ensure_repository_mount_record(
+    kube: Kube,
+    *,
+    repo_id: str,
+    host_id: str,
+    alias_path: str,
+    node_name: str,
+    timeout: float,
+) -> CephRepositoryMountRecord:
+    """Mark a host repository mount alias as active and recently observed.
+
+    Parameters
+    ----------
+    kube : Kube
+        Active Kubernetes API context.
+    repo_id : str
+        Stable repository UUID.
+    host_id : str
+        Durable Bertrand host UUID.
+    alias_path : str
+        Absolute host path used as the repository mount alias.
+    node_name : str
+        Best-effort local node name to store for diagnostics.
+    timeout : float
+        Maximum convergence budget in seconds.
+
+    Returns
+    -------
+    CephRepositoryMountRecord
+        Active lifecycle record for the host alias.
+
+    Raises
+    ------
+    TimeoutError
+        If `timeout` is non-positive or convergence exceeds the budget.
+    """
+    if timeout <= 0:
+        msg = "repository mount lifecycle convergence timeout must be non-negative"
+        raise TimeoutError(msg)
+    repo_id = _check_uuid(repo_id)
+    host_id = _check_uuid(host_id)
+    alias_path = repository_mount_alias_path(alias_path)
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    await ensure_repository_mount_crd(kube, timeout=deadline - loop.time())
+    existing = await get_repository_mount_record(
+        kube,
+        repo_id=repo_id,
+        host_id=host_id,
+        alias_path=alias_path,
+        timeout=deadline - loop.time(),
+    )
+    now = datetime.now(UTC)
+    created_at = existing.created_at if existing is not None else now
+    spec = _RepositoryMountSpec.active(
+        repo_id=repo_id,
+        alias_path=alias_path,
+        host_id=host_id,
+        node_name=node_name,
+        created_at=created_at,
+        last_seen_at=now,
+    )
+    obj = await _REPOSITORY_MOUNT_CLIENT.upsert(
+        kube,
+        namespace=BERTRAND_NAMESPACE,
+        name=repository_mount_name(repo_id, host_id, alias_path),
+        spec=spec.payload(),
+        labels=spec.labels,
+        timeout=deadline - loop.time(),
+    )
+    return CephRepositoryMountRecord.from_payload(obj.payload)
+
+
 async def retire_repository_volume(
     kube: Kube,
     *,
@@ -938,6 +1608,103 @@ async def retire_repository_volume(
         retired_at=retired_at,
         last_gc_at=record.last_gc_at,
         last_error="",
+        timeout=deadline - loop.time(),
+    )
+
+
+async def retire_repository_mount_record(
+    kube: Kube,
+    *,
+    record: CephRepositoryMountRecord,
+    timeout: float,
+) -> CephRepositoryMountRecord:
+    """Retire one repository mount lifecycle record without deleting storage.
+
+    Parameters
+    ----------
+    kube : Kube
+        Active Kubernetes API context.
+    record : CephRepositoryMountRecord
+        Mount lifecycle record to retire.
+    timeout : float
+        Maximum request budget in seconds.
+
+    Returns
+    -------
+    CephRepositoryMountRecord
+        Retired lifecycle record.
+
+    Raises
+    ------
+    TimeoutError
+        If `timeout` is non-positive or retirement exceeds the budget.
+    """
+    if timeout <= 0:
+        msg = "repository mount retirement timeout must be non-negative"
+        raise TimeoutError(msg)
+    retired_at = record.retired_at or datetime.now(UTC)
+    return await _transition_repository_mount(
+        kube,
+        record=record,
+        phase="Retired",
+        last_seen_at=record.last_seen_at,
+        retired_at=retired_at,
+        last_error="",
+        timeout=timeout,
+    )
+
+
+async def retire_repository_mount(
+    kube: Kube,
+    *,
+    repo_id: str,
+    host_id: str,
+    alias_path: str,
+    timeout: float,
+) -> CephRepositoryMountRecord | None:
+    """Retire one repository mount lifecycle record by identity.
+
+    Parameters
+    ----------
+    kube : Kube
+        Active Kubernetes API context.
+    repo_id : str
+        Stable repository UUID.
+    host_id : str
+        Durable Bertrand host UUID.
+    alias_path : str
+        Absolute host path used as the repository mount alias.
+    timeout : float
+        Maximum request budget in seconds.
+
+    Returns
+    -------
+    CephRepositoryMountRecord | None
+        Retired lifecycle record, or None if the record does not exist.
+
+    Raises
+    ------
+    TimeoutError
+        If `timeout` is non-positive or retirement exceeds the budget.
+    """
+    if timeout <= 0:
+        msg = "repository mount retirement timeout must be non-negative"
+        raise TimeoutError(msg)
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    await ensure_repository_mount_crd(kube, timeout=deadline - loop.time())
+    record = await get_repository_mount_record(
+        kube,
+        repo_id=repo_id,
+        host_id=host_id,
+        alias_path=alias_path,
+        timeout=deadline - loop.time(),
+    )
+    if record is None:
+        return None
+    return await retire_repository_mount_record(
+        kube,
+        record=record,
         timeout=deadline - loop.time(),
     )
 
@@ -1150,6 +1917,38 @@ async def _transition_repository_volume(
         timeout=deadline - loop.time(),
     )
     return CephRepositoryVolumeRecord.from_payload(obj.payload)
+
+
+async def _transition_repository_mount(
+    kube: Kube,
+    *,
+    record: CephRepositoryMountRecord,
+    phase: _RepositoryMountPhase,
+    last_seen_at: datetime,
+    retired_at: datetime | None,
+    last_error: str,
+    timeout: float,
+) -> CephRepositoryMountRecord:
+    if timeout <= 0:
+        msg = "repository mount lifecycle transition timeout must be non-negative"
+        raise TimeoutError(msg)
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    spec = record._lifecycle_spec(
+        phase=phase,
+        last_seen_at=last_seen_at,
+        retired_at=retired_at,
+        last_error=last_error,
+    )
+    obj = await _REPOSITORY_MOUNT_CLIENT.upsert(
+        kube,
+        namespace=BERTRAND_NAMESPACE,
+        name=record.name,
+        spec=spec.payload(),
+        labels=spec.labels,
+        timeout=deadline - loop.time(),
+    )
+    return CephRepositoryMountRecord.from_payload(obj.payload)
 
 
 def _repository_volume_gc_eligible(

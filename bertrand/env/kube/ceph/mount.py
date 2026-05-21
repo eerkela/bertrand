@@ -3,25 +3,13 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
-import json
 import os
 import platform
 import shutil
 import sys
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta
 from pathlib import Path, PosixPath
-from typing import TYPE_CHECKING, Annotated, Self
-
-from pydantic import (
-    AfterValidator,
-    AwareDatetime,
-    BaseModel,
-    ConfigDict,
-    PositiveInt,
-    ValidationError,
-)
+from typing import TYPE_CHECKING, Self
 
 from bertrand.env.config.core import UUIDHex, _check_uuid
 from bertrand.env.git import (
@@ -37,7 +25,7 @@ from bertrand.env.git import (
     sudo,
     symlink_points_to,
 )
-from bertrand.env.host import REPO_ALIASES_EXT, REPO_DIR, REPO_LOCK_EXT, REPO_MOUNT_EXT
+from bertrand.env.host import HOST_ID_FILE, REPO_DIR, REPO_LOCK_EXT, REPO_MOUNT_EXT
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -59,41 +47,16 @@ if any("," in opt for opt in DEFAULT_REPO_MOUNT_OPTIONS):
     msg = "internal default repository mount options cannot contain comma separators"
     raise ValueError(msg)
 
-ALIASES_SCHEMA_VERSION = 1
-REPO_ORPHAN_GC_BATCH_SIZE = 8
-REPO_ORPHAN_GC_GRACE = timedelta(minutes=1)
-REPO_ORPHAN_GC_SLOT_PERIOD = timedelta(minutes=1)
-REPO_ORPHAN_GC_BUDGET = 2.0
 
-
-def _check_alias_version(value: int) -> int:
-    if value != ALIASES_SCHEMA_VERSION:
+def _current_host_id() -> str:
+    try:
+        return _check_uuid(HOST_ID_FILE.read_text(encoding="utf-8").strip())
+    except OSError as err:
         msg = (
-            f"repository alias index file has unsupported schema version {value}; "
-            f"expected {ALIASES_SCHEMA_VERSION}"
+            f"failed to read Bertrand host identity at {HOST_ID_FILE}; run "
+            "`bertrand init` to repair host state"
         )
-        raise ValueError(msg)
-    return value
-
-
-def _check_alias_path(value: Path) -> Path:
-    if value != abspath(value):
-        msg = (
-            "repository alias index file contains invalid alias path: expected "
-            f"canonical absolute path, got {value}"
-        )
-        raise ValueError(msg)
-    return value
-
-
-def _to_utc(value: datetime) -> datetime:
-    if value.tzinfo is None or value.utcoffset() is None:
-        msg = (
-            "repository alias index file has invalid format: 'last_accessed' must "
-            "include timezone information"
-        )
-        raise ValueError(msg)
-    return value.astimezone(UTC)
+        raise OSError(msg) from err
 
 
 @dataclass(frozen=True)
@@ -503,125 +466,16 @@ class MountInfo:
 
     @dataclass
     class Aliases:
-        """Async context manager for lock-scoped alias state mutation.
+        """Async context manager for lock-scoped alias symlink mutation.
 
         Attributes
         ----------
         aliases : set[Path]
-            In-memory managed alias set loaded for the repository when entered.
+            Alias paths touched by this context.
         """
-
-        class JSON(BaseModel):
-            """Persistent alias index payload for a single repository mount.
-
-            Parameters
-            ----------
-            version : int
-                Alias metadata schema version.
-            aliases : list[Path]
-                Declared absolute alias paths.
-            last_accessed : datetime
-                Last alias-state write timestamp.
-            """
-
-            model_config = ConfigDict(extra="forbid")
-            version: Annotated[PositiveInt, AfterValidator(_check_alias_version)]
-            aliases: list[Annotated[Path, AfterValidator(_check_alias_path)]]
-            last_accessed: Annotated[AwareDatetime, AfterValidator(_to_utc)]
-
-            @classmethod
-            def load(cls, path: Path) -> Self:
-                """Load alias metadata from disk with strict schema validation.
-
-                Parameters
-                ----------
-                path : Path
-                    Path to load alias metadata from.
-
-                Returns
-                -------
-                MountInfo.Aliases.JSON
-                    Parsed alias metadata.
-
-                Raises
-                ------
-                FileNotFoundError
-                    If the alias index path exists but is not a regular file.
-                OSError
-                    If the alias index cannot be read.
-                ValueError
-                    If the alias index content fails schema validation.
-                """
-                if not path.exists():
-                    return cls(
-                        version=ALIASES_SCHEMA_VERSION,
-                        aliases=[],
-                        last_accessed=datetime.now(UTC),
-                    )
-                if not path.is_file():
-                    msg = f"repository alias index path is not a file: {path}"
-                    raise FileNotFoundError(msg)
-                try:
-                    text = path.read_text(encoding="utf-8")
-                except OSError as err:
-                    msg = f"failed to read repository alias index file: {err}"
-                    raise OSError(msg) from err
-                try:
-                    return cls.model_validate_json(text)
-                except ValidationError as err:
-                    msg = f"repository alias index file has invalid format: {err}"
-                    raise ValueError(msg) from err
-
-            def dump(self, path: Path) -> None:
-                """Persist alias metadata to disk in canonical JSON format.
-
-                Parameters
-                ----------
-                path : Path
-                    Path to persist alias metadata to.
-
-                Raises
-                ------
-                OSError
-                    If the alias index cannot be written.
-                """
-                try:
-                    atomic_write_text(
-                        path,
-                        json.dumps(
-                            self.model_dump(mode="json"),
-                            sort_keys=True,
-                            separators=(",", ":"),
-                            ensure_ascii=False,
-                            allow_nan=False,
-                        ),
-                        encoding="utf-8",
-                    )
-                except OSError as err:
-                    msg = f"failed to write repository alias index file: {err}"
-                    raise OSError(msg) from err
-
-            def filter(self, mount: Path) -> set[Path]:
-                """Return declared aliases that still point to the mount path.
-
-                Parameters
-                ----------
-                mount : Path
-                    Mounted path to check alias symlinks against.
-
-                Returns
-                -------
-                set[Path]
-                    Living alias paths that point to the given mount.
-                """
-                mount = mount.expanduser().resolve()
-                return {
-                    alias for alias in self.aliases if symlink_points_to(alias, mount)
-                }
 
         mount: MountInfo
         timeout: float
-        gc: bool = field(default=True)
         aliases: set[Path] = field(default_factory=set)
         _root: Path = field(init=False)
         _mount_path: Path = field(init=False)
@@ -652,7 +506,7 @@ class MountInfo:
             self._mount_path = self._root / REPO_MOUNT_EXT
 
         async def __aenter__(self) -> Self:
-            """Read and lock the alias registry for this mount.
+            """Lock host-local alias mutation for this mount.
 
             Returns
             -------
@@ -663,8 +517,8 @@ class MountInfo:
                 self._depth += 1
                 return self  # re-entrant
 
-            # hold the repo-local lock for the entire mutation window so alias state is
-            # read/modify/write atomic across concurrent init/clean callers
+            # hold the repo-local lock for the entire mutation window so alias
+            # symlinks cannot drift across concurrent init/clean callers
             loop = asyncio.get_running_loop()
             self._deadline = loop.time() + self.timeout
             self._root.mkdir(parents=True, exist_ok=True)
@@ -674,20 +528,8 @@ class MountInfo:
             )
             await self._lock.lock()  # block until acquire or deadline
 
-            # load the alias state for this mount from its registry and filter any
-            # stale entries that no longer refer to this mount
-            try:
-                aliases = self.JSON.load(self._root / REPO_ALIASES_EXT)
-                self.aliases = aliases.filter(self._mount_path)
-                self._depth = 1
-            except Exception:
-                with contextlib.suppress(Exception):
-                    await self._lock.unlock(ignore_errors=True)
-                self._lock = None
-                self._depth = 0
-                raise
-            else:
-                return self
+            self._depth = 1
+            return self
 
         def link(self, path: Path) -> bool:
             """Create/update a managed alias symlink to this mount's registry.
@@ -758,109 +600,16 @@ class MountInfo:
                 )
                 raise RuntimeError(msg)
             path = abspath(path)
-            if path not in self.aliases:
-                return False
 
             # only unlink if the symlink still points to this mount
             if symlink_points_to(path, self._mount_path):
                 path.unlink()
-            self.aliases.discard(path)
-            return True
-
-        async def _gc_orphan_mounts(self, *, timeout: float) -> None:
-            if timeout <= 0:
-                return
-            loop = asyncio.get_running_loop()
-            deadline = loop.time() + min(timeout, REPO_ORPHAN_GC_BUDGET)
-
-            # collect all repository mount directories in canonical order
-            try:
-                roots = sorted(
-                    (
-                        entry
-                        for entry in REPO_DIR.iterdir()
-                        if entry.is_dir() and not entry.is_symlink()
-                    ),
-                    key=lambda item: item.as_posix(),
-                )
-                if not roots:
-                    return
-            except FileNotFoundError:
-                return
-            except OSError as err:
-                print(
-                    "bertrand: warning: failed to scan repository roots for orphan "
-                    f"mount GC: {err}",
-                    file=sys.stderr,
-                )
-                return
-
-            # rotate over the roots based on current timestamp to ensure GC covers the
-            # whole set of mounts over time, without any extra state
-            now = datetime.now(UTC)
-            start = int(
-                now.timestamp() // REPO_ORPHAN_GC_SLOT_PERIOD.total_seconds()
-            ) % len(roots)
-            mounts = MountInfo.local()
-            for offset in range(min(REPO_ORPHAN_GC_BATCH_SIZE, len(roots))):
-                root = roots[(start + offset) % len(roots)]
-                mount = mounts.get(root / REPO_MOUNT_EXT)
-                if mount is None:
-                    continue  # not a recognized mount
-
-                # use non-blocking lock acquisition so GC always stays bounded
-                remaining = deadline - loop.time()
-                if remaining <= 0:
-                    break
-                lock = HostLock(root / REPO_LOCK_EXT, timeout=0)
-                locked = False
-                try:
-                    locked = await lock.try_lock()
-                    if not locked:
-                        continue  # opportunistic lock
-
-                    # load and filter stale aliases to check for ownership
-                    now = datetime.now(UTC)
-                    data = self.JSON.load(root / REPO_ALIASES_EXT)
-                    if now - data.last_accessed < REPO_ORPHAN_GC_GRACE:
-                        continue  # still in grace period
-                    aliases = data.filter(root / REPO_MOUNT_EXT)
-                    if aliases:
-                        continue  # has living aliases
-
-                    # unmount elderly orphans
-                    remaining = deadline - loop.time()
-                    if remaining <= 0:
-                        break
-                    try:
-                        await mount.unmount(timeout=remaining, force=False)
-                    except asyncio.CancelledError:
-                        raise
-                    except Exception as err:  # noqa: BLE001
-                        print(
-                            "bertrand: warning: failed to garbage-collect orphan "
-                            f"repository mount {mount.mount_point}: {err}",
-                            file=sys.stderr,
-                        )
-                except asyncio.CancelledError:
-                    raise
-                except Exception as err:  # noqa: BLE001
-                    print(
-                        "bertrand: warning: failed to process orphan mount GC "
-                        "candidate "
-                        f"{root}: {err}",
-                        file=sys.stderr,
-                    )
-                finally:
-                    if locked:  # release opportunistic lock if we acquired it
-                        try:
-                            await lock.unlock()
-                        except Exception as err:  # noqa: BLE001
-                            print(
-                                "bertrand: warning: failed to release orphan mount GC "
-                                f"lock for {root}: {err}",
-                                file=sys.stderr,
-                            )
+                self.aliases.discard(path)
+                return True
+            if path in self.aliases:
+                self.aliases.discard(path)
+                return True
+            return False
 
         async def __aexit__(
             self,
@@ -868,88 +617,38 @@ class MountInfo:
             exc_value: BaseException | None,
             traceback: TracebackType | None,
         ) -> None:
-            """Flush alias state and release the repository lock.
-
-            Raises
-            ------
-            asyncio.CancelledError
-                If cancellation interrupts alias cleanup.
-            """
+            """Release the repository alias mutation lock."""
             self._depth -= 1
             if self._depth > 0:
                 return  # re-entrant
 
-            # always write canonical alias state on exit so stale entries are pruned
-            # and last_accessed is touched for GC grace calculations
-            internal_error: Exception | None = None
-            try:
-                state = self.JSON(
-                    version=ALIASES_SCHEMA_VERSION,
-                    aliases=sorted(self.aliases, key=lambda item: item.as_posix()),
-                    last_accessed=datetime.now(UTC),
-                )
-                state.dump(self._root / REPO_ALIASES_EXT)
-            except Exception as err:  # noqa: BLE001
-                internal_error = err
-
-            # release this mount's lock to not deadlock during GC
             if self._lock is not None:
                 try:
-                    await self._lock.unlock(
-                        ignore_errors=(
-                            internal_error is not None or exc_value is not None
-                        )
+                    await self._lock.unlock(ignore_errors=exc_value is not None)
+                except Exception as err:
+                    if exc_value is None:
+                        raise
+                    print(
+                        "bertrand: warning: failed to release repository alias lock "
+                        f"during error unwinding: {err}",
+                        file=sys.stderr,
                     )
-                except Exception as err:  # noqa: BLE001
-                    if internal_error is None:
-                        internal_error = err
                 finally:
                     self._lock = None
             self._depth = 0
 
-            # if GC is enabled, do a bounded scan over a rotating subset of repository
-            # mounts and detach any that are orphaned (i.e. have no living aliases) and
-            # have exceeded the grace period since their last alias state mutation
-            if self.gc:
-                try:
-                    loop = asyncio.get_running_loop()
-                    await self._gc_orphan_mounts(timeout=self._deadline - loop.time())
-                except asyncio.CancelledError:
-                    raise
-                except Exception as err:  # noqa: BLE001
-                    print(
-                        f"bertrand: warning: orphan repository mount GC failed: {err}",
-                        file=sys.stderr,
-                    )
-
-            # only raise internal errors if we're not already handling an active
-            # exception, otherwise report them as warnings to preserve the original
-            # error
-            if internal_error is not None:
-                if exc_value is None:
-                    raise internal_error
-                print(
-                    "bertrand: warning: failed to flush repository alias state during "
-                    f"error unwinding: {internal_error}",
-                    file=sys.stderr,
-                )
-
-    def aliases(self, *, timeout: float, gc: bool) -> Aliases:
-        """Return an async context manager for this repo mount's symlink aliases.
+    def aliases(self, *, timeout: float) -> Aliases:
+        """Return an async context manager for locked alias symlink mutation.
 
         Parameters
         ----------
         timeout : float
             Maximum timeout for lock acquisition and alias convergence.
-        gc : bool
-            Whether to run orphan-mount garbage collection when the context exits.
-            Usually True, but False can be useful in `clean`-like scenarios, where it
-            can help avoid redundant work.
 
         Returns
         -------
         MountAliases
-            Async context manager for in-memory alias state mutation.
+            Async context manager for locked host-local alias mutation.
 
         Raises
         ------
@@ -962,7 +661,7 @@ class MountInfo:
                 "repository identity"
             )
             raise OSError(msg)
-        return self.Aliases(self, timeout=timeout, gc=gc)
+        return self.Aliases(self, timeout=timeout)
 
 
 @dataclass(frozen=True)
@@ -1034,6 +733,7 @@ async def ensure_repository_mount(
     from bertrand.env.kube.ceph.auth import RepoCredentials
     from bertrand.env.kube.ceph.volume import (
         RepoVolume,
+        ensure_repository_mount_record,
         ensure_repository_volume_record,
     )
 
@@ -1112,13 +812,21 @@ async def ensure_repository_mount(
             ceph_user=credentials.user,
             ceph_secretfile=ceph_secretfile,
         )
-    async with mount.aliases(timeout=deadline - loop.time(), gc=True) as aliases:
+    async with mount.aliases(timeout=deadline - loop.time()) as aliases:
         aliases.link(alias)
 
     atomic_write_text(
         hidden_mount / METADATA_REPO_ID,
         repo_id,
         encoding="utf-8",
+    )
+    await ensure_repository_mount_record(
+        kube,
+        repo_id=repo_id,
+        host_id=_current_host_id(),
+        alias_path=alias.as_posix(),
+        node_name=platform.node(),
+        timeout=deadline - loop.time(),
     )
     return RepositoryMount(
         repo_id=repo_id,
@@ -1131,6 +839,7 @@ async def ensure_repository_mount(
 
 
 async def finalize_repository_mount(
+    kube: Kube,
     *,
     repo_id: UUIDHex,
     target: Path,
@@ -1142,6 +851,8 @@ async def finalize_repository_mount(
 
     Parameters
     ----------
+    kube : Kube
+        Active Kubernetes API context.
     repo_id : UUIDHex
         Stable repository identity.
     target : Path
@@ -1167,6 +878,11 @@ async def finalize_repository_mount(
     TimeoutError
         If `timeout` is non-positive.
     """
+    from bertrand.env.kube.ceph.volume import (
+        ensure_repository_mount_record,
+        retire_repository_mount,
+    )
+
     repo_id = _check_uuid(repo_id)
     target = abspath(target)
     alias = abspath(alias)
@@ -1179,6 +895,7 @@ async def finalize_repository_mount(
     hidden_mount = REPO_DIR / repo_id / REPO_MOUNT_EXT
     staged_alias = target.parent / f".{target.name}.bertrand.mount.{repo_id}"
     swap_path = target.parent / f".{target.name}.bertrand.swap.{repo_id}"
+    host_id = _current_host_id()
 
     if alias == target:
         if not symlink_points_to(target, hidden_mount):
@@ -1279,64 +996,46 @@ async def finalize_repository_mount(
             and symlink_points_to(stale_alias, hidden_mount)
         ):
             mount = MountInfo(mount_point=hidden_mount)
-            async with mount.aliases(
-                timeout=deadline - loop.time(),
-                gc=True,
-            ) as aliases:
+            async with mount.aliases(timeout=deadline - loop.time()) as aliases:
                 aliases.unlink(stale_alias)
+        if stale_alias != target:
+            await retire_repository_mount(
+                kube,
+                repo_id=repo_id,
+                host_id=host_id,
+                alias_path=stale_alias.as_posix(),
+                timeout=deadline - loop.time(),
+            )
+
+    await ensure_repository_mount_record(
+        kube,
+        repo_id=repo_id,
+        host_id=host_id,
+        alias_path=target.as_posix(),
+        node_name=platform.node(),
+        timeout=deadline - loop.time(),
+    )
 
     return target
 
 
-async def resurrect_repository_mount(
+async def _mount_repository_volume(
     kube: Kube,
-    path: Path,
     *,
+    repo_id: str,
     timeout: float,
-) -> tuple[UUIDHex, MountInfo] | None:
-    """Restore a managed repository mount discovered through alias ancestry.
-
-    Parameters
-    ----------
-    kube : Kube
-        Active Kubernetes API context.
-    path : Path
-        Host path to inspect for managed alias ancestry.
-    timeout : float
-        Maximum resurrection budget in seconds.
-
-    Returns
-    -------
-    tuple[UUIDHex, MountInfo] | None
-        `(repo_id, mount)` when a managed alias ancestor is found and mounted, or
-        None when no managed alias ancestry is present.
-
-    Raises
-    ------
-    OSError
-        If managed alias ancestry exists but cannot be mapped to exactly one
-        repository volume or remounted safely.
-    TimeoutError
-        If `timeout` is non-positive.
-    """
+) -> MountInfo:
     from bertrand.env.kube.ceph.auth import RepoCredentials
-    from bertrand.env.kube.ceph.volume import RepoVolume
+    from bertrand.env.kube.ceph.volume import (
+        RepoVolume,
+        ensure_repository_volume_record,
+    )
 
     if timeout <= 0:
-        msg = "timed out before repository mount resurrection started"
+        msg = "timed out before repository volume remount started"
         raise TimeoutError(msg)
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout
-
-    # Search for managed Bertrand symlink alias pointing to a mounted volume.
-    repo_id, mount = MountInfo.resolve(path)
-    if repo_id is None:
-        return None
-    if mount is not None:
-        return repo_id, mount
-
-    # Managed alias ancestry is authoritative: if the mount is missing, recover it
-    # from cluster state or fail closed to avoid silently drifting ownership.
     volumes = await RepoVolume.list(
         kube,
         repo_id,
@@ -1344,19 +1043,18 @@ async def resurrect_repository_mount(
     )
     if not volumes:
         msg = (
-            "repository alias ancestry was detected for repository "
-            f"{repo_id}, but no matching cluster claim exists"
+            f"repository {repo_id} has mount recovery metadata, but no matching "
+            "cluster claim exists"
         )
         raise OSError(msg)
     if len(volumes) != 1:
         names = ", ".join(sorted(volume.pvc.name for volume in volumes))
         msg = (
-            "repository alias ancestry maps to multiple cluster claims and cannot be "
+            "repository identity maps to multiple cluster claims and cannot be "
             f"disambiguated safely for {repo_id!r}: {names}"
         )
         raise OSError(msg)
 
-    # Resolve Ceph path + credentials for the claim, then regenerate the local mount.
     volume = volumes[0]
     ceph_path = await volume.resolve_ceph_path(kube, timeout=deadline - loop.time())
     credentials: RepoCredentials = await RepoCredentials.ensure(
@@ -1373,4 +1071,149 @@ async def resurrect_repository_mount(
             ceph_user=credentials.user,
             ceph_secretfile=ceph_secretfile,
         )
+    await ensure_repository_volume_record(
+        kube,
+        repo_id=repo_id,
+        timeout=deadline - loop.time(),
+    )
+    atomic_write_text(
+        REPO_DIR / repo_id / REPO_MOUNT_EXT / METADATA_REPO_ID,
+        repo_id,
+        encoding="utf-8",
+    )
+    return mount
+
+
+async def _resurrect_repository_mount_record(
+    kube: Kube,
+    path: Path,
+    *,
+    timeout: float,
+) -> tuple[UUIDHex, MountInfo] | None:
+    from bertrand.env.kube.ceph.volume import (
+        REPOSITORY_MOUNT_PATH_HASH_LABEL,
+        ensure_repository_mount_crd,
+        ensure_repository_mount_record,
+        list_repository_mount_records,
+        repository_mount_path_hash,
+    )
+
+    if timeout <= 0:
+        msg = "timed out before repository mount record recovery started"
+        raise TimeoutError(msg)
+    inspected = abspath(path)
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    await ensure_repository_mount_crd(kube, timeout=deadline - loop.time())
+
+    for candidate in (inspected, *inspected.parents):
+        alias_path = candidate.as_posix()
+        records = [
+            record
+            for record in await list_repository_mount_records(
+                kube,
+                labels={
+                    REPOSITORY_MOUNT_PATH_HASH_LABEL: repository_mount_path_hash(
+                        alias_path
+                    )
+                },
+                timeout=deadline - loop.time(),
+            )
+            if record.alias_path == alias_path
+        ]
+        if not records:
+            continue
+
+        repo_ids = {record.repo_id for record in records}
+        if len(repo_ids) != 1:
+            ids = ", ".join(sorted(repo_ids))
+            msg = (
+                f"repository mount recovery for {alias_path} is ambiguous: "
+                f"multiple repository identities match ({ids})"
+            )
+            raise OSError(msg)
+        repo_id = next(iter(repo_ids))
+        hidden_mount = REPO_DIR / repo_id / REPO_MOUNT_EXT
+        if (candidate.exists() or candidate.is_symlink()) and not symlink_points_to(
+            candidate,
+            hidden_mount,
+        ):
+            msg = (
+                f"cannot recover repository mount at {candidate}: path is occupied "
+                f"and is not a managed symlink to {hidden_mount}"
+            )
+            raise OSError(msg)
+
+        mount = await _mount_repository_volume(
+            kube,
+            repo_id=repo_id,
+            timeout=deadline - loop.time(),
+        )
+        async with mount.aliases(timeout=deadline - loop.time()) as aliases:
+            aliases.link(candidate)
+        await ensure_repository_mount_record(
+            kube,
+            repo_id=repo_id,
+            host_id=_current_host_id(),
+            alias_path=alias_path,
+            node_name=platform.node(),
+            timeout=deadline - loop.time(),
+        )
+        return repo_id, mount
+
+    return None
+
+
+async def resurrect_repository_mount(
+    kube: Kube,
+    path: Path,
+    *,
+    timeout: float,
+) -> tuple[UUIDHex, MountInfo] | None:
+    """Restore a managed repository mount from symlinks or CRD records.
+
+    Parameters
+    ----------
+    kube : Kube
+        Active Kubernetes API context.
+    path : Path
+        Host path to inspect for managed alias ancestry or recorded mount aliases.
+    timeout : float
+        Maximum resurrection budget in seconds.
+
+    Returns
+    -------
+    tuple[UUIDHex, MountInfo] | None
+        `(repo_id, mount)` when a managed alias or mount record is found and mounted,
+        or None when no managed recovery metadata is present.
+
+    Raises
+    ------
+    TimeoutError
+        If `timeout` is non-positive.
+    """
+    if timeout <= 0:
+        msg = "timed out before repository mount resurrection started"
+        raise TimeoutError(msg)
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+
+    # Search for managed Bertrand symlink alias pointing to a mounted volume.
+    repo_id, mount = MountInfo.resolve(path)
+    if repo_id is None:
+        return await _resurrect_repository_mount_record(
+            kube,
+            path,
+            timeout=deadline - loop.time(),
+        )
+    if mount is not None:
+        return repo_id, mount
+
+    # Managed alias ancestry is authoritative: if the mount is missing, recover it
+    # from cluster state or fail closed to avoid silently drifting ownership.
+    mount = await _mount_repository_volume(
+        kube,
+        repo_id=repo_id,
+        timeout=deadline - loop.time(),
+    )
     return repo_id, mount

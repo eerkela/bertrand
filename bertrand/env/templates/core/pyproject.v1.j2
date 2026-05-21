@@ -165,8 +165,9 @@ max-replicas = 1        # maximum number of pods to deploy when `services` is no
 # NOTE: `tag = "default"` denotes the default tag for an environment.  The version
 # presented here is intentionally exhaustive and self-documenting, with each option
 # set to its default value for future reference.  Non-default tags should typically
-# override only what they need.  See the `podman build` and `podman run` documentation
-# for more details on what each option does.
+# override only what they need.  Bertrand now routes image construction through its
+# in-cluster BuildKit runtime and materializes workloads through Kubernetes-native
+# controllers.
 
 [[tool.bertrand.tags]]
 tag = "default"         # tag name (required)
@@ -205,20 +206,20 @@ ipc = "private"         # -> --ipc (""|none|host|private|shareable|container:<ta
 pid = "private"         # -> --pid (host|private|container:<tag>|ns:<path>)
 uts = "private"         # -> --uts (host|private|container:<tag>|ns:<path>)
 ssh = []                # SSH capability IDs (SCREAMING_SNAKE_CASE, e.g. ["GIT_SSH_KEY"]).
-                        # Build-time only: resolves to `podman build --ssh` entries via
-                        # host-local channels (env override, then host profile).  No key
-                        # material or host paths are stored in project configuration,
-                        # and users can access keys during builds by adjusting their
-                        # Containerfiles (e.g. `RUN --mount=type=ssh,id=id ...`).
+                        # Build-time only: resolves to BuildKit SSH mounts through
+                        # managed Kubernetes Secret capabilities.  No key material or
+                        # host paths are stored in project configuration, and users can
+                        # access keys during builds by adjusting their Containerfiles
+                        # (e.g. `RUN --mount=type=ssh,id=id ...`).
 instruments = []        # An array of tables representing runtime instrumentation tools
                         # (e.g. sanitizers, profilers, etc.) to apply to this tag.  See
                         # the `:debug` tag for example usage.
 
 [tool.bertrand.tags.devices]
-build = [               # Device capability requests for `podman build --device`.
+build = [               # Device capability requests for BuildKit build pods.
     # e.g. { id = "GPU", required = true, container-path = "/dev/dri/renderD128", permissions = "rwm" },
 ]
-run = [                 # Device capability requests for `podman run --device`.
+run = [                 # Device capability requests for Kubernetes workload pods.
     # e.g. { id = "GPU", required = true, container-path = "/dev/dri/renderD128", permissions = "rwm" },
 ]
 # NOTE: Device IDs are host-agnostic capabilities.  Host resolver chooses CDI selector
@@ -226,10 +227,10 @@ run = [                 # Device capability requests for `podman run --device`.
 # and `permissions` are container-side overrides only.
 
 [tool.bertrand.tags.secrets]
-build = [               # Secret capability requests for `podman build --secret`.
+build = [               # Secret capability requests for BuildKit secret mounts.
     # e.g. [{ id = "PYPI_TOKEN", required = true }]
 ]
-run = [                 # Secret capability requests for `podman run --secret` file mounts.
+run = [                 # Secret capability requests for Kubernetes Secret mounts.
     # e.g. [{ id = "DB_PASSWORD", required = true }]
 ]
 # NOTE: Secret IDs resolve through host-local channels; no secret values are stored in

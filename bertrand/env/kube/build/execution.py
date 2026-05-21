@@ -72,6 +72,44 @@ async def job_logs(
         return f"<failed to read {failure_label}: {err}>"
 
 
+async def job_pod_diagnostics(
+    kube: Kube,
+    job: Job,
+    *,
+    timeout: float,
+    failure_label: str,
+) -> str:
+    """Collect status diagnostics from pods owned by one Job.
+
+    Parameters
+    ----------
+    kube : Kube
+        Active Kubernetes API context.
+    job : Job
+        Job whose pods should be inspected.
+    timeout : float
+        Maximum diagnostic budget in seconds.
+    failure_label : str
+        Human-readable label for diagnostic failures.
+
+    Returns
+    -------
+    str
+        Newline-separated pod status diagnostics, or a diagnostic placeholder if
+        pod status cannot be read.
+    """
+    if timeout <= 0:
+        return ""
+    try:
+        pods = await job.pods(kube, timeout=timeout)
+        lines: list[str] = []
+        for pod in pods:
+            lines.extend(pod.status_diagnostics)
+        return "\n".join(lines)
+    except (OSError, TimeoutError, ValueError) as err:
+        return f"<failed to read {failure_label}: {err}>"
+
+
 async def delete_job(
     kube: Kube,
     job: Job,
@@ -161,16 +199,27 @@ async def wait_job_complete(
     try:
         return await job.wait_complete(kube, timeout=timeout)
     except (OSError, TimeoutError) as err:
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + diagnostic_timeout
         logs = await job_logs(
             kube,
             job,
-            timeout=diagnostic_timeout,
+            timeout=deadline - loop.time(),
             tail_lines=tail_lines,
             failure_label=log_failure_label,
             include_headers=include_log_headers,
         )
+        diagnostics = await job_pod_diagnostics(
+            kube,
+            job,
+            timeout=deadline - loop.time(),
+            failure_label="Job pod status diagnostics",
+        )
         await delete_job(kube, job, timeout=cleanup_timeout)
         msg = f"{failure_context}: {err}"
+        diagnostics = diagnostics.strip()
+        if diagnostics:
+            msg = f"{msg}\n\nPod status:\n{diagnostics}"
         logs = logs.strip()
         if logs:
             msg = f"{msg}\n\n{log_heading}:\n{logs}"

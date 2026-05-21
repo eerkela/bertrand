@@ -33,6 +33,59 @@ POD_TERMINAL_PHASES = frozenset({"Succeeded", "Failed"})
 POD_WAIT_POLL_INTERVAL_SECONDS = 0.5
 
 
+def _join_status_detail(reason: str, message: str) -> str:
+    reason = reason.strip()
+    message = message.strip()
+    if reason and message:
+        return f"{reason}: {message}"
+    return reason or message
+
+
+def _container_status_diagnostics(
+    label: str,
+    group: str,
+    statuses: Collection[kubernetes.client.V1ContainerStatus],
+) -> tuple[str, ...]:
+    out: list[str] = []
+    for status in statuses:
+        name = (status.name or "").strip() or "<unknown>"
+        image = (status.image or "").strip()
+        prefix = f"{label} {group} {name}"
+        if image:
+            prefix = f"{prefix} image={image!r}"
+        state = status.state
+        if state is None:
+            if not status.ready:
+                out.append(f"{prefix} is not ready")
+            continue
+        waiting = state.waiting
+        if waiting is not None:
+            detail = _join_status_detail(
+                waiting.reason or "",
+                waiting.message or "",
+            )
+            if detail:
+                out.append(f"{prefix} waiting: {detail}")
+            else:
+                out.append(f"{prefix} waiting")
+            continue
+        terminated = state.terminated
+        if terminated is not None and (terminated.exit_code or 0) != 0:
+            detail = _join_status_detail(
+                terminated.reason or "",
+                terminated.message or "",
+            )
+            exit_code = terminated.exit_code
+            if detail:
+                out.append(f"{prefix} terminated exit={exit_code}: {detail}")
+            else:
+                out.append(f"{prefix} terminated exit={exit_code}")
+            continue
+        if not status.ready:
+            out.append(f"{prefix} is not ready")
+    return tuple(out)
+
+
 @dataclass(frozen=True)
 class Pod(NamespacedKubeMetadata[kubernetes.client.V1Pod]):
     """General-purpose wrapper around one Kubernetes Pod object.
@@ -415,6 +468,45 @@ class Pod(NamespacedKubeMetadata[kubernetes.client.V1Pod]):
                     continue
                 seen.add(image)
                 out.append(image)
+        return tuple(out)
+
+    @property
+    def status_diagnostics(self) -> tuple[str, ...]:
+        """Return concise status diagnostics for this Pod.
+
+        Returns
+        -------
+        tuple[str, ...]
+            Human-readable status lines derived from pod conditions and container
+            waiting or failed termination states.
+        """
+        status = self._obj.status
+        if status is None:
+            return ()
+
+        label = self._object_label()
+        out: builtins.list[str] = []
+        phase = self.phase
+        if phase:
+            out.append(f"{label} phase={phase}")
+        for condition in status.conditions or []:
+            state = (condition.status or "").strip()
+            if state.lower() == "true":
+                continue
+            kind = (condition.type or "").strip() or "Unknown"
+            reason = (condition.reason or "").strip()
+            message = (condition.message or "").strip()
+            detail = _join_status_detail(reason, message)
+            if detail:
+                out.append(f"{label} condition {kind}={state or 'False'}: {detail}")
+            else:
+                out.append(f"{label} condition {kind}={state or 'False'}")
+        for group, statuses in (
+            ("init", status.init_container_statuses),
+            ("container", status.container_statuses),
+            ("ephemeral", status.ephemeral_container_statuses),
+        ):
+            out.extend(_container_status_diagnostics(label, group, statuses or ()))
         return tuple(out)
 
     async def logs(

@@ -68,14 +68,6 @@ jobs:
           set -euo pipefail
           bertrand init --yes
 
-      - name: Log in to GHCR
-        shell: bash
-        env:
-          GHCR_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          echo "${GHCR_TOKEN}" | podman login ghcr.io --username "${GITHUB_ACTOR}" --password-stdin
-
       - name: Build release output
         shell: bash
         env:
@@ -129,14 +121,6 @@ jobs:
         run: |
           set -euo pipefail
           bertrand init --yes
-
-      - name: Log in to GHCR
-        shell: bash
-        env:
-          GHCR_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          echo "${GHCR_TOKEN}" | podman login ghcr.io --username "${GITHUB_ACTOR}" --password-stdin
 
       - name: Download architecture artifacts
         uses: actions/download-artifact@v4
