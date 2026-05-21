@@ -561,6 +561,7 @@ class Job(NamespacedKubeMetadata[kubernetes.client.V1Job]):
         *,
         timeout: float,
         propagation_policy: DeletionPropagationPolicy = "Background",
+        grace_period_seconds: int | None = None,
     ) -> None:
         """Delete this Job from the cluster.
 
@@ -572,21 +573,28 @@ class Job(NamespacedKubeMetadata[kubernetes.client.V1Job]):
             Maximum request budget in seconds. If infinite, wait indefinitely.
         propagation_policy : {"Background", "Foreground", "Orphan"}, optional
             Kubernetes deletion propagation policy.
+        grace_period_seconds : int | None, optional
+            Optional Kubernetes deletion grace period.
 
         Raises
         ------
         ValueError
-            If `propagation_policy` is invalid.
+            If `propagation_policy` is invalid or `grace_period_seconds` is
+            negative.
         """
         namespace, name = self._require_namespace_name("delete Job")
         if propagation_policy not in ("Background", "Foreground", "Orphan"):
             msg = f"invalid Job deletion propagation policy: {propagation_policy!r}"
+            raise ValueError(msg)
+        if grace_period_seconds is not None and grace_period_seconds < 0:
+            msg = "Job deletion grace period cannot be negative"
             raise ValueError(msg)
         payload = await kube.run(
             lambda request_timeout: kube.batch.delete_namespaced_job(
                 name=name,
                 namespace=namespace,
                 body=kubernetes.client.V1DeleteOptions(
+                    grace_period_seconds=grace_period_seconds,
                     propagation_policy=propagation_policy,
                 ),
                 _request_timeout=request_timeout,

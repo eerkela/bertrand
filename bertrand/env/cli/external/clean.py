@@ -1,9 +1,10 @@
 """Teardown Bertrand-managed local runtime state in a shared cluster.
 
 Bertrand v1 treats the default MicroK8s and MicroCeph snaps as shared host
-runtimes.  Cleanup therefore removes only host-local Bertrand state and this
-host's mount aliases; it never uninstalls snaps or deletes durable repository
-PVCs, volume records, credentials, snapshots, or Ceph data.
+runtimes.  Cleanup therefore removes only reconstructible Bertrand cluster
+state, host-local Bertrand state, and this host's mount aliases; it never
+uninstalls snaps or deletes durable repository PVCs, volume records,
+credentials, snapshots, or Ceph data.
 """
 
 from __future__ import annotations
@@ -39,6 +40,7 @@ from bertrand.env.kube.ceph.volume import (
     repository_mount_host_hash,
     retire_repository_mount_record,
 )
+from bertrand.env.kube.dashboard import delete_dashboard_backend
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -167,6 +169,13 @@ async def _disable_unmount_run_tmpfs(state: CleanState) -> None:
         await run_mount.unmount(timeout=state.deadline - loop.time(), force=True)
 
 
+async def _clean_dashboard_backend(state: CleanState) -> None:
+    if state.kube is None:
+        return
+    loop = asyncio.get_running_loop()
+    await delete_dashboard_backend(state.kube, timeout=state.deadline - loop.time())
+
+
 def _runtime_residue(state: CleanState) -> tuple[list[str], list[str]]:
     residual_mounts = sorted(str(mount) for mount in MountInfo.under(REPO_DIR))
     if MountInfo.search(RUN_DIR) is not None:
@@ -218,6 +227,7 @@ async def _finalize_cleanup(state: CleanState) -> None:
 
 
 CLEAN_STAGES: tuple[tuple[str, Callable[[CleanState], Awaitable[None]]], ...] = (
+    ("clean_dashboard_backend", _clean_dashboard_backend),
     ("clean_repo_mounts_aliases", _clean_repo_mounts_aliases),
     ("disable_unmount_run_tmpfs", _disable_unmount_run_tmpfs),
     ("finalize_cleanup", _finalize_cleanup),
@@ -281,8 +291,9 @@ async def bertrand_clean(*, timeout: float, assume_yes: bool, force: bool) -> No
         raise PermissionError(msg)
     if not confirm(
         "This operates on a shared MicroK8s/MicroCeph runtime. It will retire "
-        "this host's Bertrand repository mount records, remove local repository "
-        f"aliases and hidden mounts, and delete local Bertrand state in {STATE_DIR}. "
+        "this host's Bertrand repository mount records, delete reconstructible "
+        "Bertrand dashboard resources, remove local repository aliases and hidden "
+        f"mounts, and delete local Bertrand state in {STATE_DIR}. "
         "It preserves repository PVCs, volume records, credentials, snapshots, and "
         "Ceph data, and does not uninstall MicroK8s or MicroCeph. Do you want to "
         "proceed?\n[y/N] ",

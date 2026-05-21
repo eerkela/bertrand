@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, Protocol, cast
 
 from bertrand.env.git import BERTRAND_NAMESPACE
@@ -22,6 +23,7 @@ from bertrand.env.kube.network.workload import (
     prepare_workload_http_routes,
     prune_workload_http_routes,
 )
+from bertrand.env.kube.pod import Pod
 from bertrand.env.kube.workload.base import (
     WORKLOAD_ID_LABEL,
     WORKLOAD_LABEL,
@@ -42,6 +44,8 @@ type WorkloadInput = WorkloadPod | WorkloadIdentity | None
 
 _JOB_RUN_SUFFIX_CHARS = 8
 _MAX_KUBE_NAME_CHARS = 63
+_KILL_POD_POLL_SECONDS = 0.5
+_KILL_POD_PROOF_SECONDS = 5.0
 _SCHEDULE_CONCURRENCY: dict[str, CronJobConcurrencyPolicy] = {
     "allow": cast("CronJobConcurrencyPolicy", "Allow"),
     "forbid": cast("CronJobConcurrencyPolicy", "Forbid"),
@@ -51,6 +55,48 @@ _COMPLETION_MODE: dict[str, JobCompletionMode] = {
     "all": cast("JobCompletionMode", "NonIndexed"),
     "indexed": cast("JobCompletionMode", "Indexed"),
 }
+
+
+@dataclass(frozen=True)
+class WorkloadKillResult:
+    """Summary of a native workload kill operation.
+
+    Parameters
+    ----------
+    workload : str
+        Stable Kubernetes workload resource name.
+    deployment_scaled : bool, optional
+        Whether a managed Deployment was scaled to zero.
+    cronjob_suspended : bool, optional
+        Whether a managed CronJob was suspended.
+    jobs_deleted : tuple[str, ...], optional
+        Active managed Job names whose deletion was requested.
+    pods_deleted : tuple[str, ...], optional
+        Active managed Pod names whose deletion was requested directly.
+    """
+
+    workload: str
+    deployment_scaled: bool = False
+    cronjob_suspended: bool = False
+    jobs_deleted: tuple[str, ...] = ()
+    pods_deleted: tuple[str, ...] = ()
+
+    @property
+    def changed(self) -> bool:
+        """Return whether any running workload state was changed.
+
+        Returns
+        -------
+        bool
+            `True` when a controller was disabled or running resources were
+            deleted.
+        """
+        return (
+            self.deployment_scaled
+            or self.cronjob_suspended
+            or bool(self.jobs_deleted)
+            or bool(self.pods_deleted)
+        )
 
 
 class _ExecutionConfig(Protocol):
@@ -269,7 +315,7 @@ async def ensure_workload_controller(
             completions=_completions(config),
             completion_mode=_completion_mode(config),
             concurrency_policy=_concurrency_policy(schedule),
-            suspend=schedule.suspend,
+            suspend=False if schedule.suspend is None else schedule.suspend,
             starting_deadline_seconds=schedule.start_deadline,
             successful_jobs_history_limit=schedule.history.success,
             failed_jobs_history_limit=schedule.history.failure,
@@ -372,6 +418,100 @@ async def create_workload_job_run(
     )
 
 
+async def kill_workload(
+    kube: Kube,
+    *,
+    identity: WorkloadIdentity,
+    grace_period_seconds: int,
+    timeout: float,
+) -> WorkloadKillResult:
+    """Stop active Kubernetes workload processes for one Bertrand identity.
+
+    Parameters
+    ----------
+    kube : Kube
+        Active Kubernetes API context.
+    identity : WorkloadIdentity
+        Stable workload identity to stop.
+    grace_period_seconds : int
+        Kubernetes pod termination grace period.
+    timeout : float
+        Maximum API-operation budget in seconds. If infinite, wait indefinitely.
+
+    Returns
+    -------
+    WorkloadKillResult
+        Summary of controller and runtime resources affected by the operation.
+
+    Raises
+    ------
+    TimeoutError
+        If Kubernetes API work cannot start before `timeout` expires or active
+        pods remain after the grace/proof window.
+    ValueError
+        If `grace_period_seconds` is negative.
+    """
+    if timeout <= 0:
+        msg = "workload kill timeout must be positive"
+        raise TimeoutError(msg)
+    if grace_period_seconds < 0:
+        msg = "workload kill grace period cannot be negative"
+        raise ValueError(msg)
+
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    deployment_scaled = await _scale_deployment_to_zero(
+        kube,
+        identity=identity,
+        timeout=deadline - loop.time(),
+    )
+    cronjob_suspended = await _suspend_cronjob(
+        kube,
+        identity=identity,
+        timeout=deadline - loop.time(),
+    )
+    jobs = await _active_workload_jobs(
+        kube,
+        identity=identity,
+        timeout=deadline - loop.time(),
+    )
+    for job in jobs:
+        await job.delete(
+            kube,
+            timeout=deadline - loop.time(),
+            propagation_policy="Foreground",
+            grace_period_seconds=grace_period_seconds,
+        )
+
+    pods = await _active_workload_pods(
+        kube,
+        identity=identity,
+        timeout=deadline - loop.time(),
+    )
+    for pod in pods:
+        await pod.delete(
+            kube,
+            timeout=deadline - loop.time(),
+            grace_period_seconds=grace_period_seconds,
+        )
+
+    await _wait_workload_pods_stopped(
+        kube,
+        identity=identity,
+        timeout=min(
+            deadline - loop.time(),
+            grace_period_seconds + _KILL_POD_PROOF_SECONDS,
+        ),
+    )
+    return WorkloadKillResult(
+        workload=identity.name,
+        deployment_scaled=deployment_scaled,
+        cronjob_suspended=cronjob_suspended,
+        jobs_deleted=tuple(job.name for job in jobs),
+        pods_deleted=tuple(pod.name for pod in pods),
+    )
+
+
 async def _ensure_claim_templates(
     kube: Kube,
     *,
@@ -416,6 +556,127 @@ async def _delete_stable_resources(
     await _delete_cronjob(kube, identity=identity, timeout=deadline - loop.time())
 
 
+async def _scale_deployment_to_zero(
+    kube: Kube,
+    *,
+    identity: WorkloadIdentity,
+    timeout: float,
+) -> bool:
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    deployment = await Deployment.get(
+        kube,
+        namespace=BERTRAND_NAMESPACE,
+        name=identity.name,
+        timeout=deadline - loop.time(),
+    )
+    _assert_managed(deployment, identity=identity, kind="Deployment")
+    if deployment is None or deployment.replicas == 0:
+        return False
+    await deployment.scale(kube, replicas=0, timeout=deadline - loop.time())
+    return True
+
+
+async def _suspend_cronjob(
+    kube: Kube,
+    *,
+    identity: WorkloadIdentity,
+    timeout: float,
+) -> bool:
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    cronjob = await CronJob.get(
+        kube,
+        namespace=BERTRAND_NAMESPACE,
+        name=identity.name,
+        timeout=deadline - loop.time(),
+    )
+    _assert_managed(cronjob, identity=identity, kind="CronJob")
+    if cronjob is None:
+        return False
+    if cronjob.suspended:
+        return False
+    await cronjob.suspend(kube, suspend=True, timeout=deadline - loop.time())
+    return True
+
+
+async def _active_workload_jobs(
+    kube: Kube,
+    *,
+    identity: WorkloadIdentity,
+    timeout: float,
+) -> tuple[Job, ...]:
+    jobs = await Job.list(
+        kube,
+        namespaces=(BERTRAND_NAMESPACE,),
+        labels=_runtime_labels(identity),
+        timeout=timeout,
+    )
+    active = tuple(job for job in jobs if not job.is_complete and not job.is_failed)
+    for job in active:
+        _assert_managed(job, identity=identity, kind="Job")
+    return active
+
+
+async def _active_workload_pods(
+    kube: Kube,
+    *,
+    identity: WorkloadIdentity,
+    timeout: float,
+) -> tuple[Pod, ...]:
+    pods = await Pod.list(
+        kube,
+        namespaces=(BERTRAND_NAMESPACE,),
+        labels=_runtime_labels(identity),
+        timeout=timeout,
+    )
+    active = tuple(pod for pod in pods if not pod.is_terminal)
+    for pod in active:
+        _assert_managed(pod, identity=identity, kind="Pod")
+    return active
+
+
+async def _wait_workload_pods_stopped(
+    kube: Kube,
+    *,
+    identity: WorkloadIdentity,
+    timeout: float,
+) -> None:
+    if timeout <= 0:
+        msg = f"timed out waiting for workload {identity.name} pods to stop"
+        raise TimeoutError(msg)
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while True:
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            pods = await _active_workload_pods(
+                kube,
+                identity=identity,
+                timeout=_KILL_POD_POLL_SECONDS,
+            )
+            diagnostics = "\n".join(
+                line for pod in pods for line in pod.status_diagnostics
+            )
+            detail = f"\n\nPod status:\n{diagnostics}" if diagnostics else ""
+            msg = f"timed out waiting for workload {identity.name} pods to stop{detail}"
+            raise TimeoutError(msg)
+        pods = await _active_workload_pods(
+            kube,
+            identity=identity,
+            timeout=remaining,
+        )
+        if not pods:
+            return
+        await asyncio.sleep(min(_KILL_POD_POLL_SECONDS, remaining))
+
+
+def _runtime_labels(identity: WorkloadIdentity) -> dict[str, str]:
+    labels = {WORKLOAD_LABEL: WORKLOAD_LABEL_VALUE}
+    labels.update(identity.selector)
+    return labels
+
+
 async def _delete_deployment(
     kube: Kube,
     *,
@@ -455,7 +716,7 @@ async def _delete_cronjob(
 
 
 def _assert_managed(
-    resource: StableWorkloadController | None,
+    resource: StableWorkloadController | Job | Pod | None,
     *,
     identity: WorkloadIdentity,
     kind: str,

@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any, Self
 import kubernetes
 from kubernetes.stream import stream as kubernetes_stream
 
+from .api._helpers import _validate_delete_status
 from .api.metadata import NamespacedKubeMetadata
 from .api.resource import ResourceClient
 
@@ -787,7 +788,13 @@ class Pod(NamespacedKubeMetadata[kubernetes.client.V1Pod]):
             context=f"failed to evict pod {namespace}/{name}",
         )
 
-    async def delete(self, kube: Kube, *, timeout: float) -> None:
+    async def delete(
+        self,
+        kube: Kube,
+        *,
+        timeout: float,
+        grace_period_seconds: int | None = None,
+    ) -> None:
         """Delete this pod from the cluster.
 
         Parameters
@@ -796,16 +803,34 @@ class Pod(NamespacedKubeMetadata[kubernetes.client.V1Pod]):
             Active Kubernetes API context.
         timeout : float
             Maximum runtime budget in seconds.  If infinite, wait indefinitely.
+        grace_period_seconds : int | None, optional
+            Optional Kubernetes termination grace period.  When provided,
+            kubelet sends normal termination signals and forcefully kills the
+            container after this many seconds if it is still running.
+
+        Raises
+        ------
+        ValueError
+            If `grace_period_seconds` is negative.
         """
         namespace, name = self._require_namespace_name("delete pod")
+        if grace_period_seconds is not None and grace_period_seconds < 0:
+            msg = "Pod deletion grace period cannot be negative"
+            raise ValueError(msg)
 
-        await (
-            type(self)
-            ._client()
-            .delete_by_name(
-                kube,
-                namespace=namespace,
+        payload = await kube.run(
+            lambda request_timeout: kube.core.delete_namespaced_pod(
                 name=name,
-                timeout=timeout,
-            )
+                namespace=namespace,
+                body=kubernetes.client.V1DeleteOptions(
+                    grace_period_seconds=grace_period_seconds,
+                ),
+                _request_timeout=request_timeout,
+            ),
+            timeout=timeout,
+            context=f"failed to delete Pod {namespace}/{name}",
+        )
+        _validate_delete_status(
+            payload,
+            label=self._object_label(name=name, namespace=namespace),
         )

@@ -17,8 +17,10 @@ from bertrand.env.kube.workload.base import WorkloadIdentity
 from bertrand.env.kube.workload.config import workload_pod_from_config
 from bertrand.env.kube.workload.controller import (
     StableWorkloadController,
+    WorkloadKillResult,
     create_workload_job_run,
     ensure_workload_controller,
+    kill_workload,
 )
 
 if TYPE_CHECKING:
@@ -214,6 +216,51 @@ async def create_project_workload_job_run(
         timeout=deadline - loop.time(),
         primary_args=primary_args,
         interactive=interactive,
+    )
+
+
+async def kill_project_workload(
+    kube: Kube,
+    *,
+    config: Config,
+    repo_id: str,
+    grace_period_seconds: int,
+    timeout: float,
+) -> WorkloadKillResult:
+    """Stop active native workload processes for one project worktree.
+
+    Parameters
+    ----------
+    kube : Kube
+        Active Kubernetes API context.
+    config : Config
+        Active project configuration context.
+    repo_id : str
+        Stable repository UUID used for workload identity.
+    grace_period_seconds : int
+        Kubernetes pod termination grace period.
+    timeout : float
+        Maximum API-operation budget in seconds. If infinite, wait indefinitely.
+
+    Returns
+    -------
+    WorkloadKillResult
+        Summary of controller and runtime resources affected by the operation.
+
+    Raises
+    ------
+    TimeoutError
+        If kill convergence cannot start before `timeout` expires.
+    """
+    if timeout <= 0:
+        msg = "project workload kill timeout must be positive"
+        raise TimeoutError(msg)
+    _require_active_config(config)
+    return await kill_workload(
+        kube,
+        identity=_project_workload_identity(config, repo_id=repo_id),
+        grace_period_seconds=grace_period_seconds,
+        timeout=timeout,
     )
 
 

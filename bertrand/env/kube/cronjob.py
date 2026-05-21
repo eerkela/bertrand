@@ -434,6 +434,18 @@ class CronJob(NamespacedKubeMetadata[kubernetes.client.V1CronJob]):
         return len(status.active or []) if status is not None else 0
 
     @property
+    def suspended(self) -> bool:
+        """Return whether future CronJob schedules are suspended.
+
+        Returns
+        -------
+        bool
+            `True` when Kubernetes `spec.suspend` is truthy.
+        """
+        spec = self._obj.spec
+        return bool(spec.suspend) if spec is not None else False
+
+    @property
     def last_schedule_time(self) -> datetime | None:
         """Return the last schedule timestamp.
 
@@ -479,6 +491,45 @@ class CronJob(NamespacedKubeMetadata[kubernetes.client.V1CronJob]):
             name=name,
             timeout=timeout,
         )
+
+    async def suspend(self, kube: Kube, *, suspend: bool, timeout: float) -> Self:
+        """Patch this CronJob's suspend state.
+
+        Parameters
+        ----------
+        kube : Kube
+            Active Kubernetes API context.
+        suspend : bool
+            Desired value for Kubernetes `spec.suspend`.
+        timeout : float
+            Maximum request budget in seconds. If infinite, wait indefinitely.
+
+        Returns
+        -------
+        CronJob
+            Fresh wrapper after Kubernetes accepts the suspend patch.
+
+        Raises
+        ------
+        OSError
+            If Kubernetes returns malformed data or the CronJob disappears after
+            patching.
+        """
+        namespace, name = self._require_namespace_name("suspend CronJob")
+        payload = await kube.run(
+            lambda request_timeout: kube.batch.patch_namespaced_cron_job(
+                name=name,
+                namespace=namespace,
+                body={"spec": {"suspend": suspend}},
+                _request_timeout=request_timeout,
+            ),
+            timeout=timeout,
+            context=f"failed to patch CronJob {namespace}/{name} suspend state",
+        )
+        if not isinstance(payload, kubernetes.client.V1CronJob):
+            msg = f"malformed Kubernetes CronJob payload while patching {name!r}"
+            raise OSError(msg)
+        return type(self)(_obj=payload)
 
     async def delete(self, kube: Kube, *, timeout: float) -> None:
         """Delete this CronJob from the cluster.
