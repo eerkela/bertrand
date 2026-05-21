@@ -4,12 +4,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Self
+from typing import TYPE_CHECKING, Literal, Self
 
 import kubernetes
 
 from bertrand.env.git import until
 
+from .api._helpers import _validate_delete_status
 from .api._render import (
     _pod_template_manifest,
 )
@@ -17,6 +18,7 @@ from .api.metadata import NamespacedKubeMetadata
 from .api.resource import ResourceClient
 
 DEPLOYMENT_WAIT_POLL_INTERVAL_SECONDS = 0.5
+type DeletionPropagationPolicy = Literal["Background", "Foreground", "Orphan"]
 
 if TYPE_CHECKING:
     import builtins
@@ -607,7 +609,14 @@ class Deployment(NamespacedKubeMetadata[kubernetes.client.V1Deployment]):
             name=name,
         )
 
-    async def delete(self, kube: Kube, *, timeout: float) -> None:
+    async def delete(
+        self,
+        kube: Kube,
+        *,
+        timeout: float,
+        propagation_policy: DeletionPropagationPolicy = "Background",
+        grace_period_seconds: int | None = None,
+    ) -> None:
         """Delete this Deployment from the cluster.
 
         Parameters
@@ -616,17 +625,43 @@ class Deployment(NamespacedKubeMetadata[kubernetes.client.V1Deployment]):
             Active Kubernetes API context.
         timeout : float
             Maximum request budget in seconds. If infinite, wait indefinitely.
+        propagation_policy : {"Background", "Foreground", "Orphan"}, optional
+            Kubernetes deletion propagation policy.
+        grace_period_seconds : int | None, optional
+            Optional Kubernetes deletion grace period.
+
+        Raises
+        ------
+        ValueError
+            If `propagation_policy` is invalid or `grace_period_seconds` is
+            negative.
         """
         namespace, name = self._require_namespace_name("delete Deployment")
-        await (
-            type(self)
-            ._client()
-            .delete_by_name(
-                kube,
-                namespace=namespace,
-                name=name,
-                timeout=timeout,
+        if propagation_policy not in ("Background", "Foreground", "Orphan"):
+            msg = (
+                "invalid Deployment deletion propagation policy: "
+                f"{propagation_policy!r}"
             )
+            raise ValueError(msg)
+        if grace_period_seconds is not None and grace_period_seconds < 0:
+            msg = "Deployment deletion grace period cannot be negative"
+            raise ValueError(msg)
+        payload = await kube.run(
+            lambda request_timeout: kube.apps.delete_namespaced_deployment(
+                name=name,
+                namespace=namespace,
+                body=kubernetes.client.V1DeleteOptions(
+                    grace_period_seconds=grace_period_seconds,
+                    propagation_policy=propagation_policy,
+                ),
+                _request_timeout=request_timeout,
+            ),
+            timeout=timeout,
+            context=f"failed to delete Deployment {namespace}/{name}",
+        )
+        _validate_delete_status(
+            payload,
+            label=self._object_label(name=name, namespace=namespace),
         )
 
     async def wait_deleted(self, kube: Kube, *, timeout: float) -> None:

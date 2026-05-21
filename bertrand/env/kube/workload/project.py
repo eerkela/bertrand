@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any, cast
 
 from bertrand.env.config.bertrand import Bertrand
 from bertrand.env.config.core import Config, _check_uuid
 from bertrand.env.kube.build.lifecycle import (
     require_active_project_image,
+    retire_project_images,
     worktree_identity,
 )
 from bertrand.env.kube.build.project import project_image_build
@@ -17,10 +19,12 @@ from bertrand.env.kube.workload.base import WorkloadIdentity
 from bertrand.env.kube.workload.config import workload_pod_from_config
 from bertrand.env.kube.workload.controller import (
     StableWorkloadController,
-    WorkloadKillResult,
+    WorkloadRemoveResult,
+    WorkloadScaleResult,
     create_workload_job_run,
     ensure_workload_controller,
-    kill_workload,
+    remove_workload,
+    scale_workload,
 )
 
 if TYPE_CHECKING:
@@ -219,15 +223,16 @@ async def create_project_workload_job_run(
     )
 
 
-async def kill_project_workload(
+async def scale_project_workload(
     kube: Kube,
     *,
     config: Config,
     repo_id: str,
+    replicas: int,
     grace_period_seconds: int,
     timeout: float,
-) -> WorkloadKillResult:
-    """Stop active native workload processes for one project worktree.
+) -> WorkloadScaleResult:
+    """Scale native workload execution for one project worktree.
 
     Parameters
     ----------
@@ -237,6 +242,8 @@ async def kill_project_workload(
         Active project configuration context.
     repo_id : str
         Stable repository UUID used for workload identity.
+    replicas : int
+        Requested logical workload replica count.
     grace_period_seconds : int
         Kubernetes pod termination grace period.
     timeout : float
@@ -244,24 +251,81 @@ async def kill_project_workload(
 
     Returns
     -------
-    WorkloadKillResult
+    WorkloadScaleResult
         Summary of controller and runtime resources affected by the operation.
 
     Raises
     ------
     TimeoutError
-        If kill convergence cannot start before `timeout` expires.
+        If scale convergence cannot start before `timeout` expires.
     """
     if timeout <= 0:
-        msg = "project workload kill timeout must be positive"
+        msg = "project workload scale timeout must be positive"
         raise TimeoutError(msg)
     _require_active_config(config)
-    return await kill_workload(
+    return await scale_workload(
         kube,
+        config=cast("Any", config.get(Bertrand)),
         identity=_project_workload_identity(config, repo_id=repo_id),
+        replicas=replicas,
         grace_period_seconds=grace_period_seconds,
         timeout=timeout,
     )
+
+
+async def remove_project_workload(
+    kube: Kube,
+    *,
+    config: Config,
+    repo_id: str,
+    grace_period_seconds: int,
+    timeout: float,
+) -> WorkloadRemoveResult:
+    """Remove native workload topology and retire worktree image records.
+
+    Parameters
+    ----------
+    kube : Kube
+        Active Kubernetes API context.
+    config : Config
+        Active project configuration context.
+    repo_id : str
+        Stable repository UUID used for workload and image identity.
+    grace_period_seconds : int
+        Kubernetes pod termination grace period.
+    timeout : float
+        Maximum API-operation budget in seconds. If infinite, wait indefinitely.
+
+    Returns
+    -------
+    WorkloadRemoveResult
+        Summary of workload resources removed and image records retired.
+
+    Raises
+    ------
+    TimeoutError
+        If removal cannot start before `timeout` expires.
+    """
+    if timeout <= 0:
+        msg = "project workload removal timeout must be positive"
+        raise TimeoutError(msg)
+    _require_active_config(config)
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    identity = _project_workload_identity(config, repo_id=repo_id)
+    result = await remove_workload(
+        kube,
+        identity=identity,
+        grace_period_seconds=grace_period_seconds,
+        timeout=deadline - loop.time(),
+    )
+    retired = await retire_project_images(
+        kube,
+        repo_id=identity.repo_id,
+        worktree=identity.worktree_env,
+        timeout=deadline - loop.time(),
+    )
+    return replace(result, images_retired=tuple(record.name for record in retired))
 
 
 def _project_workload_identity(config: Config, *, repo_id: str) -> WorkloadIdentity:

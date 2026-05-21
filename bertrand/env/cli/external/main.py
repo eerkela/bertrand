@@ -14,21 +14,6 @@ from bertrand.env.git import INFINITY, TimeoutExpired
 from bertrand.env.version import __version__
 
 
-def _parse_target(path: str) -> tuple[Path, str | None, str | None]:
-    target, _, tag = path.partition(":")
-    worktree, _, workload = target.partition("@")
-    return Path(worktree).expanduser().resolve(), workload or None, tag or None
-
-
-def _recover_spec(worktree: Path, workload: str | None, tag: str | None) -> str:
-    spec = str(worktree)
-    if workload:
-        spec += f"@{workload}"
-    if tag:
-        spec += f":{tag}"
-    return spec
-
-
 class External:
     """External CLI for Bertrand."""
 
@@ -63,11 +48,9 @@ class External:
             self.dashboard()
             self.enter()
             self.code()
-            self.kill()
+            self.scale()
             self.rm()
             self.clean()
-
-        # TODO: path arguments should be updated to new workload/tag syntax  # noqa: FIX002
 
         def version(self) -> None:
             """Add the 'version' query to the parser."""
@@ -346,11 +329,11 @@ class External:
             )
             command.set_defaults(handler=External.code)
 
-        def kill(self) -> None:
-            """Add the 'kill' command to the parser."""
+        def scale(self) -> None:
+            """Add the 'scale' command to the parser."""
             command = self.commands.add_parser(
-                "kill",
-                help="Terminate active Kubernetes workload processes for a "
+                "scale",
+                help="Scale active Kubernetes workload execution for a "
                 "repository/worktree target.",
             )
             command.add_argument(
@@ -360,58 +343,60 @@ class External:
                 "the worktree attached to HEAD.",
             )
             command.add_argument(
-                "-t",
-                "--timeout",
+                "-r",
+                "--replicas",
+                type=int,
+                required=True,
+                help="Requested logical workload replica count. Deployments scale to "
+                "this value, CronJobs accept 0/1 as suspend/resume, and Job "
+                "topology accepts only 0.",
+            )
+            command.add_argument(
+                "-g",
+                "--grace",
                 type=int,
                 default=10,
-                help="Kubernetes pod termination grace period in seconds. Kubelet "
-                "forcefully kills containers that remain after this window.",
+                help="Kubernetes pod termination grace period in seconds when "
+                "scaling active execution down.",
             )
-            command.set_defaults(handler=External.kill)
+            command.add_argument(
+                "-t",
+                "--timeout",
+                type=float,
+                default=INFINITY,
+                help="Maximum time in seconds for Kubernetes API convergence. Use "
+                "inf to wait indefinitely.",
+            )
+            command.set_defaults(handler=External.scale)
 
         def rm(self) -> None:
             """Add the 'rm' command to the parser."""
             command = self.commands.add_parser(
                 "rm",
-                help="Delete Bertrand images and/or containers at the specified path, "
-                "scoping to specific images or containers if desired.  Note that "
-                "the environment directory is unaffected, but any data stored in "
-                "a container's writable layer will be permanently lost.",
+                help="Remove managed Kubernetes workload topology for a "
+                "repository/worktree target and retire its internal image records.",
             )
             command.add_argument(
                 "path",
-                nargs="?",
-                metavar="ENV[:IMAGE[:CONTAINER]]",
-                help="A path to the specified environment directory.  This may be an "
-                "absolute or relative path, and must point to an environment "
-                "directory produced by 'bertrand init'.  The path may include "
-                "optional image and container tags (e.g. "
-                "'/path/to/env:image:container'), which can be used to scope the "
-                "command to specific images or containers within the environment.  "
-                "If an image or environment scope is given, then all images and/or "
-                "containers matching that scope will be deleted.  If no path is "
-                "given, then all Bertrand images and containers on the host system "
-                "will be deleted, after prompting the user to confirm.",
+                metavar="REPO[/WORKTREE]",
+                help="Project repository or worktree path. Repository roots target "
+                "the worktree attached to HEAD.",
+            )
+            command.add_argument(
+                "-g",
+                "--grace",
+                type=int,
+                default=10,
+                help="Kubernetes pod termination grace period in seconds for active "
+                "execution objects removed with the topology.",
             )
             command.add_argument(
                 "-t",
                 "--timeout",
-                type=int,
+                type=float,
                 default=INFINITY,
-                help="Maximum duration (in seconds) to wait for this command.  May be "
-                "rounded up to the nearest second depending on the underlying "
-                "implementation.",
-            )
-            command.add_argument(
-                "-f",
-                "--force",
-                action="store_true",
-                help="Force deletion of containers, even if they are currently "
-                "running.  This will stop the container if necessary before "
-                "deleting it, which may lead to data loss or corruption if it is "
-                "in the middle of writing to a file or network connection.  If "
-                "omitted, Bertrand will prevent deletion and exit with an error "
-                "instead.  Use with extreme caution.",
+                help="Maximum time in seconds for Kubernetes API convergence. Use "
+                "inf to wait indefinitely.",
             )
             command.set_defaults(handler=External.rm)
 
@@ -775,8 +760,8 @@ class External:
                 ) from err
 
     @staticmethod
-    def kill(args: argparse.Namespace) -> None:
-        """Execute the `bertrand kill` CLI command.
+    def scale(args: argparse.Namespace) -> None:
+        """Execute the `bertrand scale` CLI command.
 
         Parameters
         ----------
@@ -788,27 +773,43 @@ class External:
         TimeoutExpired
             If the command does not complete within the specified timeout.
         OSError
-            If the grace period is invalid.
+            If the replica count, grace period, or timeout is invalid.
         """
-        from bertrand.env.cli.external.kill import bertrand_kill
+        from bertrand.env.cli.external.scale import bertrand_scale
 
         now = time.time()
-        if args.timeout < 0:
-            msg = "kill timeout must be non-negative"
+        if args.replicas < 0:
+            msg = "scale replicas cannot be negative"
+            raise OSError(msg)
+        if args.grace < 0:
+            msg = "scale grace period must be non-negative"
+            raise OSError(msg)
+        if math.isnan(args.timeout) or args.timeout <= 0:
+            msg = f"invalid scale timeout: {args.timeout} (must be > 0 seconds or inf)"
             raise OSError(msg)
         with asyncio.Runner() as runner:
             target = Path(args.path).expanduser().resolve()
             try:
                 runner.run(
-                    bertrand_kill(
+                    bertrand_scale(
                         target,
-                        grace_period_seconds=args.timeout,
+                        replicas=args.replicas,
+                        grace_period_seconds=args.grace,
+                        timeout=args.timeout,
                     )
                 )
             except (TimeoutError, TimeoutExpired) as err:
                 start = datetime.fromtimestamp(now, UTC)
-                cmd = ["bertrand", "kill", str(Path(args.path).expanduser())]
-                if args.timeout != 10:
+                cmd = [
+                    "bertrand",
+                    "scale",
+                    str(Path(args.path).expanduser()),
+                    "--replicas",
+                    str(args.replicas),
+                ]
+                if args.grace != 10:
+                    cmd.extend(["--grace", str(args.grace)])
+                if not math.isinf(args.timeout):
                     cmd.extend(["--timeout", str(args.timeout)])
                 raise TimeoutExpired(
                     cmd=cmd,
@@ -830,34 +831,40 @@ class External:
         ------
         TimeoutExpired
             If the command does not complete within the specified timeout.
+        OSError
+            If the grace period or timeout is invalid.
         """
         from bertrand.env.cli.external.rm import bertrand_rm
 
         now = time.time()
-        deadline = now + args.timeout
+        if args.grace < 0:
+            msg = "rm grace period must be non-negative"
+            raise OSError(msg)
+        if math.isnan(args.timeout) or args.timeout <= 0:
+            msg = f"invalid rm timeout: {args.timeout} (must be > 0 seconds or inf)"
+            raise OSError(msg)
         with asyncio.Runner() as runner:
-            worktree, workload, tag = _parse_target(args.path)
+            target = Path(args.path).expanduser().resolve()
             try:
                 runner.run(
                     bertrand_rm(
-                        worktree,
-                        workload,
-                        tag,
-                        deadline=deadline,
-                        force=args.force,
+                        target,
+                        grace_period_seconds=args.grace,
+                        timeout=args.timeout,
                     )
                 )
             except (TimeoutError, TimeoutExpired) as err:
                 start = datetime.fromtimestamp(now, UTC)
-                stop = datetime.fromtimestamp(deadline, UTC)
-                cmd = ["bertrand", "rm", _recover_spec(worktree, workload, tag)]
-                if args.force:
-                    cmd.append("--force")
+                cmd = ["bertrand", "rm", str(Path(args.path).expanduser())]
+                if args.grace != 10:
+                    cmd.extend(["--grace", str(args.grace)])
+                if not math.isinf(args.timeout):
+                    cmd.extend(["--timeout", str(args.timeout)])
                 raise TimeoutExpired(
                     cmd=cmd,
                     timeout=args.timeout,
                     output=None,
-                    stderr=f"started: {start}\nstopped: {stop}\n",
+                    stderr=f"started: {start}\nstopped: {datetime.now(UTC)}\n",
                 ) from err
 
     @staticmethod

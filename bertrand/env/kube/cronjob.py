@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Literal, Self
 
 import kubernetes
 
+from .api._helpers import _validate_delete_status
 from .api.metadata import NamespacedKubeMetadata
 from .api.resource import ResourceClient
 from .job import JobCompletionMode, _job_spec_manifest
@@ -21,6 +22,7 @@ if TYPE_CHECKING:
     from .api.watch import WatchEvent
 
 type CronJobConcurrencyPolicy = Literal["Allow", "Forbid", "Replace"]
+type DeletionPropagationPolicy = Literal["Background", "Foreground", "Orphan"]
 
 
 @dataclass(frozen=True)
@@ -531,7 +533,14 @@ class CronJob(NamespacedKubeMetadata[kubernetes.client.V1CronJob]):
             raise OSError(msg)
         return type(self)(_obj=payload)
 
-    async def delete(self, kube: Kube, *, timeout: float) -> None:
+    async def delete(
+        self,
+        kube: Kube,
+        *,
+        timeout: float,
+        propagation_policy: DeletionPropagationPolicy = "Background",
+        grace_period_seconds: int | None = None,
+    ) -> None:
         """Delete this CronJob from the cluster.
 
         Parameters
@@ -540,17 +549,40 @@ class CronJob(NamespacedKubeMetadata[kubernetes.client.V1CronJob]):
             Active Kubernetes API context.
         timeout : float
             Maximum request budget in seconds. If infinite, wait indefinitely.
+        propagation_policy : {"Background", "Foreground", "Orphan"}, optional
+            Kubernetes deletion propagation policy.
+        grace_period_seconds : int | None, optional
+            Optional Kubernetes deletion grace period.
+
+        Raises
+        ------
+        ValueError
+            If `propagation_policy` is invalid or `grace_period_seconds` is
+            negative.
         """
         namespace, name = self._require_namespace_name("delete CronJob")
-        await (
-            type(self)
-            ._client()
-            .delete_by_name(
-                kube,
-                namespace=namespace,
+        if propagation_policy not in ("Background", "Foreground", "Orphan"):
+            msg = f"invalid CronJob deletion propagation policy: {propagation_policy!r}"
+            raise ValueError(msg)
+        if grace_period_seconds is not None and grace_period_seconds < 0:
+            msg = "CronJob deletion grace period cannot be negative"
+            raise ValueError(msg)
+        payload = await kube.run(
+            lambda request_timeout: kube.batch.delete_namespaced_cron_job(
                 name=name,
-                timeout=timeout,
-            )
+                namespace=namespace,
+                body=kubernetes.client.V1DeleteOptions(
+                    grace_period_seconds=grace_period_seconds,
+                    propagation_policy=propagation_policy,
+                ),
+                _request_timeout=request_timeout,
+            ),
+            timeout=timeout,
+            context=f"failed to delete CronJob {namespace}/{name}",
+        )
+        _validate_delete_status(
+            payload,
+            label=self._object_label(name=name, namespace=namespace),
         )
 
     async def wait_deleted(self, kube: Kube, *, timeout: float) -> None:
