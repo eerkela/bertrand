@@ -342,6 +342,8 @@ class WorkloadPod:
         *,
         primary_command: Sequence[str] | None = None,
         primary_args: Sequence[str] | None = None,
+        interactive: bool = False,
+        stdin_once: bool = False,
     ) -> PodTemplateSpec:
         """Render this workload as a Kubernetes pod template.
 
@@ -350,7 +352,13 @@ class WorkloadPod:
         primary_command : Sequence[str] | None, optional
             Optional command override for the primary container.
         primary_args : Sequence[str] | None, optional
-            Optional argument override for the primary container.
+            Optional runtime arguments to append to the primary container command.
+        interactive : bool, optional
+            Whether to configure the primary container for Kubernetes stdin/TTY
+            attachment.
+        stdin_once : bool, optional
+            Whether Kubernetes should close primary-container stdin after the first
+            attach session disconnects. This is useful for generated Job runs.
 
         Returns
         -------
@@ -363,11 +371,7 @@ class WorkloadPod:
             if primary_command is not None
             else None
         )
-        args = (
-            _command(primary_args, label="primary args", allow_empty=True)
-            if primary_args is not None
-            else None
-        )
+        runtime_args = _runtime_args(primary_args) if primary_args is not None else None
         rendered_containers: list[ContainerSpec] = []
         repository_mount = VolumeMountSpec(
             name=WORKLOAD_REPOSITORY_VOLUME,
@@ -378,10 +382,18 @@ class WorkloadPod:
         bootstrap = _bootstrap_script(self.repository)
         for container in self.template.containers:
             if container.name.strip() == self.primary_container:
+                container_args = tuple(container.args or ())
                 container = replace(
                     container,
                     command=command if command is not None else container.command,
-                    args=args if args is not None else container.args,
+                    args=(
+                        (*container_args, *runtime_args)
+                        if runtime_args is not None
+                        else container.args
+                    ),
+                    stdin=True if interactive else container.stdin,
+                    stdin_once=stdin_once if interactive else container.stdin_once,
+                    tty=True if interactive else container.tty,
                 )
             rendered_containers.append(
                 _bootstrap_container(
@@ -437,6 +449,10 @@ def _command(
         msg = f"{label} cannot be empty"
         raise ValueError(msg)
     return tuple(out)
+
+
+def _runtime_args(args: Sequence[str]) -> tuple[str, ...]:
+    return tuple(args)
 
 
 def _worktree_path(worktree: str | PurePosixPath) -> PurePosixPath:

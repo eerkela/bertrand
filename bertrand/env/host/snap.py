@@ -1,4 +1,9 @@
-"""Host snap runtime helpers for Bertrand bootstrap code."""
+"""Host snap runtime helpers for Bertrand bootstrap code.
+
+Bertrand v1 uses the supported default snap instances as a shared host runtime.
+These helpers intentionally do not create parallel snap instances or assume that
+Bertrand owns an installed snap package.
+"""
 
 from __future__ import annotations
 

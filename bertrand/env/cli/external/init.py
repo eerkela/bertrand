@@ -1,6 +1,9 @@
-"""Bootstrap Bertrand's host runtime.
+"""Bootstrap Bertrand's shared host runtime.
 
-This module also generates or configures a project repository when requested.
+Bertrand v1 uses the supported default MicroK8s and MicroCeph snaps as shared
+host runtimes.  This module may install or start them when missing, but it never
+assumes exclusive snap ownership.  It also generates or configures a project
+repository when requested.
 """
 
 from __future__ import annotations
@@ -994,7 +997,7 @@ async def bertrand_init(
         msg = "timed out before checking host bootstrap"
         raise TimeoutError(msg)
 
-    # bootstrap host runtime control plane (persistent, system-wide)
+    # bootstrap shared host runtime control plane (persistent, system-wide)
     async with HostLock(
         INIT_LOCK,
         timeout=timeout,
@@ -1044,7 +1047,7 @@ async def bertrand_init(
                 )
                 raise OSError(msg)
 
-        # Start both clusters and link them via Rook-Ceph.
+        # Start both shared clusters and link them via Rook-Ceph.
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
         await start_microceph(timeout=deadline - loop.time())

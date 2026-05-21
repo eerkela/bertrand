@@ -132,6 +132,12 @@ def _container_manifest(container: ContainerSpec) -> dict[str, object]:
         payload["command"] = list(container.command)
     if container.args is not None:
         payload["args"] = list(container.args)
+    if container.stdin is not None:
+        payload["stdin"] = container.stdin
+    if container.stdin_once is not None:
+        payload["stdinOnce"] = container.stdin_once
+    if container.tty is not None:
+        payload["tty"] = container.tty
     if container.ports:
         payload["ports"] = [
             {

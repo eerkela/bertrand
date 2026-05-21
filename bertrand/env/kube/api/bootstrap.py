@@ -1,4 +1,9 @@
-"""MicroK8s bootstrap helpers for Bertrand's Kubernetes API substrate."""
+"""MicroK8s bootstrap helpers for Bertrand's shared Kubernetes API substrate.
+
+Bertrand v1 targets the supported default MicroK8s snap.  Existing clusters are
+allowed and treated as shared; Bertrand scopes its state with namespaces, labels,
+CRDs, and deterministic resource names rather than snap ownership.
+"""
 
 from __future__ import annotations
 
@@ -269,7 +274,7 @@ async def install_microk8s(
     distro_id: str,
     assume_yes: bool,
 ) -> None:
-    """Install or refresh MicroK8s runtime access.
+    """Install or refresh access to the default shared MicroK8s runtime.
 
     Parameters
     ----------
@@ -298,9 +303,10 @@ async def install_microk8s(
     await ensure_snapd(package_manager, assume_yes=assume_yes, component="MicroK8s")
     if not await _microk8s_ready():
         if not confirm(
-            "Bertrand requires MicroK8s as its kubernetes control plane. Would "
-            f"you like to install/refresh MicroK8s now at channel {MICROK8S_CHANNEL!r} "
-            "(requires sudo)?\n[y/N] ",
+            "Bertrand uses the default shared MicroK8s snap as its local "
+            "kubernetes control plane. Would you like to install/refresh "
+            f"MicroK8s now at channel {MICROK8S_CHANNEL!r} (requires sudo)?\n"
+            "[y/N] ",
             assume_yes=assume_yes,
         ):
             msg = "MicroK8s installation declined by user."
@@ -314,9 +320,9 @@ async def install_microk8s(
         )
         if not await _microk8s_ready():
             msg = (
-                "MicroK8s installation completed, but the runtime is still not "
-                "available. Check `snap list microk8s` and `microk8s --help` for "
-                "diagnostics."
+                "MicroK8s installation completed, but the shared runtime is still "
+                "not available. Check `snap list microk8s` and `microk8s --help` "
+                "for diagnostics."
             )
             raise OSError(msg)
 
@@ -401,7 +407,7 @@ async def _add_bertrand_kube_namespace(*, timeout: float) -> None:
 
 
 async def start_microk8s(*, timeout: float) -> None:
-    """Ensure that MicroK8s is running and Bertrand's namespace exists.
+    """Ensure that shared MicroK8s is running and Bertrand's namespace exists.
 
     Parameters
     ----------
@@ -421,7 +427,7 @@ async def start_microk8s(*, timeout: float) -> None:
     if not shutil.which("microk8s"):
         msg = (
             "MicroK8s CLI was not found in PATH. Run `bertrand init` to install "
-            "the managed runtime."
+            "or configure the shared runtime."
         )
         raise OSError(msg)
     loop = asyncio.get_running_loop()
@@ -476,7 +482,7 @@ async def start_microk8s(*, timeout: float) -> None:
 
 
 async def ensure_microk8s_kubeconfig(*, timeout: float) -> Path:
-    """Converge Bertrand-managed kubeconfig from the local MicroK8s runtime.
+    """Converge Bertrand-managed kubeconfig from the shared MicroK8s runtime.
 
     Parameters
     ----------

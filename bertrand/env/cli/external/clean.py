@@ -1,7 +1,9 @@
-"""Teardown Bertrand-managed local runtime state.
+"""Teardown Bertrand-managed local runtime state in a shared cluster.
 
-This cleanup intentionally removes Bertrand-owned runtime artifacts only.  It does
-not uninstall MicroK8s, MicroCeph, system packages, or host user groups.
+Bertrand v1 treats the default MicroK8s and MicroCeph snaps as shared host
+runtimes.  Cleanup therefore removes only host-local Bertrand state and this
+host's mount aliases; it never uninstalls snaps or deletes durable repository
+PVCs, volume records, credentials, snapshots, or Ceph data.
 """
 
 from __future__ import annotations
@@ -81,6 +83,9 @@ def _host_id() -> str | None:
 async def _clean_repo_mounts_aliases(state: CleanState) -> None:
     loop = asyncio.get_running_loop()
     if state.kube is not None and state.host_id is not None:
+        # This is the only durable cluster mutation in `bertrand clean`: retire
+        # this host's mount aliases while preserving repository volumes for
+        # recovery or future explicit destructive cleanup.
         await ensure_repository_mount_crd(
             state.kube,
             timeout=state.deadline - loop.time(),
@@ -275,10 +280,12 @@ async def bertrand_clean(*, timeout: float, assume_yes: bool, force: bool) -> No
         )
         raise PermissionError(msg)
     if not confirm(
-        "This will retire this host's Bertrand repository mount records, remove "
-        "local repository aliases and hidden mounts, and delete local Bertrand state "
-        f"in {STATE_DIR}.  It preserves repository PVCs and does not uninstall "
-        "MicroK8s or MicroCeph.  Do you want to proceed?\n[y/N] ",
+        "This operates on a shared MicroK8s/MicroCeph runtime. It will retire "
+        "this host's Bertrand repository mount records, remove local repository "
+        f"aliases and hidden mounts, and delete local Bertrand state in {STATE_DIR}. "
+        "It preserves repository PVCs, volume records, credentials, snapshots, and "
+        "Ceph data, and does not uninstall MicroK8s or MicroCeph. Do you want to "
+        "proceed?\n[y/N] ",
         assume_yes=assume_yes,
     ):
         msg = "Cleanup declined by user."
@@ -292,13 +299,15 @@ async def bertrand_clean(*, timeout: float, assume_yes: bool, force: bool) -> No
     except Exception as err:
         if not force:
             msg = (
-                "failed to connect to the local Bertrand Kubernetes runtime for "
-                f"mount-record retirement: {err}"
+                "failed to connect to the shared Bertrand Kubernetes runtime for "
+                "mount-record retirement. Normal cleanup needs cluster access so "
+                f"it can retire this host's records without guessing: {err}"
             )
             raise OSError(msg) from err
         print(
             "bertrand: warning: continuing local cleanup without Kubernetes mount "
-            f"record retirement due to --force: {err}",
+            "record retirement due to --force. Repository PVCs and active mount "
+            f"records may remain recoverable in the shared cluster: {err}",
             file=sys.stderr,
         )
 

@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Self
+from typing import TYPE_CHECKING, Any, Self
 
 import kubernetes
+from kubernetes.stream import stream as kubernetes_stream
 
 from .api.metadata import NamespacedKubeMetadata
 from .api.resource import ResourceClient
@@ -349,6 +350,32 @@ class Pod(NamespacedKubeMetadata[kubernetes.client.V1Pod]):
         """
         return self.phase in POD_TERMINAL_PHASES
 
+    def container_running(self, name: str) -> bool:
+        """Return whether a regular container is currently running.
+
+        Parameters
+        ----------
+        name : str
+            Container name to inspect.
+
+        Returns
+        -------
+        bool
+            `True` when the named regular container reports a running state.
+        """
+        target = name.strip()
+        if not target:
+            return False
+        status = self._obj.status
+        for container in (
+            (status.container_statuses or ()) if status is not None else ()
+        ):
+            if (container.name or "").strip() != target:
+                continue
+            state = container.state
+            return state is not None and state.running is not None
+        return False
+
     @property
     def is_mirror(self) -> bool:
         """Return whether the Pod is a static mirror pod.
@@ -570,6 +597,71 @@ class Pod(NamespacedKubeMetadata[kubernetes.client.V1Pod]):
             msg = f"malformed Kubernetes log payload for pod {namespace}/{name}"
             raise OSError(msg)
         return payload
+
+    async def attach(
+        self,
+        kube: Kube,
+        *,
+        timeout: float,
+        container: str,
+        stdin: bool = True,
+        stdout: bool = True,
+        stderr: bool = True,
+        tty: bool = True,
+    ) -> Any:
+        """Open a Kubernetes attach stream for this Pod.
+
+        Parameters
+        ----------
+        kube : Kube
+            Active Kubernetes API context.
+        timeout : float
+            Maximum request budget for opening the stream in seconds. If infinite,
+            wait indefinitely.
+        container : str
+            Container name to attach to.
+        stdin : bool, optional
+            Whether to request the Kubernetes stdin channel.
+        stdout : bool, optional
+            Whether to request the Kubernetes stdout channel.
+        stderr : bool, optional
+            Whether to request the Kubernetes stderr channel.
+        tty : bool, optional
+            Whether to request TTY mode.
+
+        Returns
+        -------
+        Any
+            Kubernetes websocket client returned by the Python stream helper.
+
+        Raises
+        ------
+        OSError
+            If the pod metadata is incomplete or the Kubernetes API refuses the
+            attach request.
+        """
+        namespace, name = self._require_namespace_name("attach to pod")
+        container = container.strip()
+        if not container:
+            msg = "pod attach requires a non-empty container name"
+            raise OSError(msg)
+        return await kube.run(
+            lambda request_timeout: kubernetes_stream(
+                kube.core.connect_get_namespaced_pod_attach,
+                name=name,
+                namespace=namespace,
+                container=container,
+                stdin=stdin,
+                stdout=stdout,
+                stderr=stderr,
+                tty=tty,
+                binary=True,
+                _preload_content=False,
+                _request_timeout=request_timeout,
+            ),
+            timeout=timeout,
+            context=f"failed to attach to pod {namespace}/{name} container {container}",
+        )
 
     async def refresh(self, kube: Kube, *, timeout: float) -> Self | None:
         """Re-read this pod by its metadata namespace and name.

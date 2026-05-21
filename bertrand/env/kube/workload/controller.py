@@ -125,6 +125,8 @@ async def ensure_workload_controller(
     config: _WorkloadConfig | None,
     workload: WorkloadInput,
     timeout: float,
+    primary_args: Sequence[str] | None = None,
+    interactive: bool = False,
 ) -> StableWorkloadController | None:
     """Converge the stable Kubernetes controller for one workload topology.
 
@@ -140,6 +142,10 @@ async def ensure_workload_controller(
         a no-op because there is no resource name to target.
     timeout : float
         Maximum convergence budget in seconds. If infinite, wait indefinitely.
+    primary_args : Sequence[str] | None, optional
+        Runtime arguments to append to the primary container command.
+    interactive : bool, optional
+        Whether the primary container should be rendered for stdin/TTY attachment.
 
     Returns
     -------
@@ -207,7 +213,11 @@ async def ensure_workload_controller(
             name=pod.name,
             labels=pod.labels,
             selector=pod.selector,
-            pod_template=pod.pod_template(),
+            pod_template=pod.pod_template(
+                primary_args=primary_args,
+                interactive=interactive,
+                stdin_once=False,
+            ),
             replicas=_replicas(config),
             strategy=_rollout_strategy(config),
             min_ready_seconds=rollout.min_ready if rollout is not None else None,
@@ -250,7 +260,7 @@ async def ensure_workload_controller(
             namespace=BERTRAND_NAMESPACE,
             name=pod.name,
             labels=pod.labels,
-            pod_template=pod.pod_template(),
+            pod_template=pod.pod_template(primary_args=primary_args),
             schedule=schedule.cron,
             backoff_limit=_backoff_limit(config),
             ttl_seconds_after_finished=_ttl_seconds_after_finished(config),
@@ -291,6 +301,8 @@ async def create_workload_job_run(
     config: _WorkloadConfig,
     workload: WorkloadPod,
     timeout: float,
+    primary_args: Sequence[str] | None = None,
+    interactive: bool = False,
 ) -> Job:
     """Create one generated Kubernetes Job run for a Job-topology workload.
 
@@ -304,6 +316,10 @@ async def create_workload_job_run(
         Workload pod intent to render into the generated Job.
     timeout : float
         Maximum creation budget in seconds. If infinite, wait indefinitely.
+    primary_args : Sequence[str] | None, optional
+        Runtime arguments to append to the primary container command.
+    interactive : bool, optional
+        Whether the primary container should be rendered for stdin/TTY attachment.
 
     Returns
     -------
@@ -341,7 +357,11 @@ async def create_workload_job_run(
         namespace=BERTRAND_NAMESPACE,
         name=_job_run_name(workload.identity),
         labels=workload.labels,
-        pod_template=workload.pod_template(),
+        pod_template=workload.pod_template(
+            primary_args=primary_args,
+            interactive=interactive,
+            stdin_once=interactive,
+        ),
         backoff_limit=_backoff_limit(config),
         ttl_seconds_after_finished=_ttl_seconds_after_finished(config),
         active_deadline_seconds=_active_deadline_seconds(config),

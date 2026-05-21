@@ -6,11 +6,11 @@ import asyncio
 import contextlib
 import re
 import sys
-from pathlib import Path
 from typing import TYPE_CHECKING
 
+from bertrand.env.cli.external._helper import resolve_project_worktree
 from bertrand.env.config.core import Config, _check_kube_name
-from bertrand.env.git import BERTRAND_NAMESPACE, INFINITY, GitRepository
+from bertrand.env.git import BERTRAND_NAMESPACE, INFINITY
 from bertrand.env.kube.api.client import Kube
 from bertrand.env.kube.build.controller import BUILDKIT_BUILD_CONTROLLER
 from bertrand.env.kube.build.daemon import BUILDKIT_POOL
@@ -22,6 +22,9 @@ from bertrand.env.kube.deployment import Deployment
 from bertrand.env.kube.job import Job
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
+    from bertrand.env.git import GitRepository
     from bertrand.env.kube.build.lifecycle import ProjectImagePublication
     from bertrand.env.kube.build.request import BuildKitBuildRecord
 
@@ -86,7 +89,7 @@ async def bertrand_build(
             raise ValueError(msg)
         auth = _check_kube_name(auth)
 
-    repo, worktree = await _resolve_build_target(target)
+    repo, worktree = await resolve_project_worktree(target)
     result: ProjectImagePublication | None = None
     request_name: str | None = None
     with await Kube.host(timeout=INFINITY) as kube:
@@ -110,7 +113,7 @@ async def bertrand_build(
                 )
                 request_name = request.name
             else:
-                follower = None if quiet else _BuildLogFollower(kube)
+                follower = None if quiet else BuildLogFollower(kube)
                 try:
                     on_update = None if follower is None else follower.update
                     result = await build.publish(
@@ -135,24 +138,6 @@ async def bertrand_build(
                 msg = "image build completed without a publication result"
                 raise RuntimeError(msg)
             _print_result(result)
-
-
-async def _resolve_build_target(target: Path) -> tuple[GitRepository, Path]:
-    repo, worktree = await GitRepository.resolve(target.expanduser().resolve())
-    if not repo:
-        msg = f"no initialized Git repository found for build target: {target}"
-        raise OSError(msg)
-    if worktree != Path():
-        return repo, repo.root / worktree
-    head = await repo.head_worktree()
-    if head is None:
-        msg = (
-            f"repository HEAD for {repo.root} must be attached to a local worktree; "
-            "provide an explicit worktree path or attach HEAD to a branch before "
-            "running `bertrand build`."
-        )
-        raise OSError(msg)
-    return repo, head.path
 
 
 async def _publish_repository(repo: GitRepository, publish: str | None) -> str | None:
@@ -300,7 +285,7 @@ async def _assert_build_runtime(kube: Kube, *, timeout: float) -> None:
         raise OSError(msg)
 
 
-class _BuildLogFollower:
+class BuildLogFollower:
     """Best-effort active BuildKit Job log follower for synchronous CLI builds.
 
     Parameters

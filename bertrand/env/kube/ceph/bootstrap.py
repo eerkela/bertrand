@@ -1,4 +1,9 @@
-"""MicroCeph host bootstrap helpers for Bertrand's Ceph runtime."""
+"""MicroCeph bootstrap helpers for Bertrand's shared Ceph runtime.
+
+Bertrand v1 targets the supported default MicroCeph snap.  Existing clusters are
+allowed and treated as shared; Bertrand creates only its managed Ceph/Kubernetes
+state and leaves destructive repository cleanup to future explicit commands.
+"""
 
 from __future__ import annotations
 
@@ -41,7 +46,7 @@ async def install_microceph(
     distro_id: str,
     assume_yes: bool,
 ) -> None:
-    """Install or refresh MicroCeph runtime access.
+    """Install or refresh access to the default shared MicroCeph runtime.
 
     Parameters
     ----------
@@ -70,9 +75,9 @@ async def install_microceph(
     await ensure_snapd(package_manager, assume_yes=assume_yes, component="MicroCeph")
     if not await _microceph_ready():
         if not confirm(
-            "Bertrand requires MicroCeph as its kubernetes storage backend. Would "
-            f"you like to install/refresh MicroCeph now at channel "
-            f"{MICROCEPH_CHANNEL!r} (requires sudo)?\n[y/N] ",
+            "Bertrand uses the default shared MicroCeph snap as its kubernetes "
+            "storage backend. Would you like to install/refresh MicroCeph now at "
+            f"channel {MICROCEPH_CHANNEL!r} (requires sudo)?\n[y/N] ",
             assume_yes=assume_yes,
         ):
             msg = "MicroCeph installation declined by user."
@@ -85,9 +90,9 @@ async def install_microceph(
         )
         if not await _microceph_ready():
             msg = (
-                "MicroCeph installation completed, but the runtime is still not "
-                "available. Check `snap list microceph` and `microceph --help` for "
-                "diagnostics."
+                "MicroCeph installation completed, but the shared runtime is still "
+                "not available. Check `snap list microceph` and `microceph --help` "
+                "for diagnostics."
             )
             raise OSError(msg)
 
@@ -156,7 +161,7 @@ async def microceph_cluster_ready(*, timeout: float) -> bool:
 
 
 async def start_microceph(*, timeout: float) -> None:
-    """Ensure that a local MicroCeph cluster is bootstrapped and ready.
+    """Ensure that the shared MicroCeph cluster is bootstrapped and ready.
 
     Parameters
     ----------
@@ -176,7 +181,7 @@ async def start_microceph(*, timeout: float) -> None:
     if not shutil.which("microceph"):
         msg = (
             "MicroCeph CLI was not found in PATH. Run `bertrand init` to install "
-            "the managed runtime."
+            "or configure the shared runtime."
         )
         raise OSError(msg)
     loop = asyncio.get_running_loop()
@@ -286,7 +291,7 @@ async def _ceph_csi_storage_classes(*, timeout: float) -> list[str]:
 
 
 async def link_kube_ceph(*, timeout: float) -> None:
-    """Converge MicroK8s rook-ceph integration with the local MicroCeph cluster.
+    """Converge shared MicroK8s rook-ceph integration with shared MicroCeph.
 
     Parameters
     ----------

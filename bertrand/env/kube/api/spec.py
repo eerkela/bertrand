@@ -599,6 +599,13 @@ class ContainerSpec:
         Container security context intent.
     resources : ContainerResourcesSpec | None, optional
         Container resource requirements.
+    stdin : bool | None, optional
+        Whether Kubernetes should allocate an open stdin stream for this container.
+    stdin_once : bool | None, optional
+        Whether Kubernetes should close stdin after the first attach session
+        disconnects.
+    tty : bool | None, optional
+        Whether Kubernetes should allocate a TTY for the container process.
     """
 
     name: str
@@ -614,6 +621,9 @@ class ContainerSpec:
     volume_mounts: Collection[VolumeMountSpec] = ()
     security_context: SecurityContextSpec | None = None
     resources: ContainerResourcesSpec | None = None
+    stdin: bool | None = None
+    stdin_once: bool | None = None
+    tty: bool | None = None
 
 
 @dataclass(frozen=True)

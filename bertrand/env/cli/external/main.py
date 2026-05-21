@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import math
+import sys
 import time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -58,7 +59,7 @@ class External:
             self.init()
             self.build()
             self.network()
-            self.start()
+            self.run()
             self.enter()
             self.code()
             self.stop()
@@ -270,39 +271,39 @@ class External:
             )
             dns_clear.set_defaults(handler=External.network)
 
-        def start(self) -> None:
-            """Add the 'start' command to the parser."""
+        def run(self) -> None:
+            """Add the 'run' command to the parser."""
             command = self.commands.add_parser(
-                "start",
-                help="Start Bertrand containers at the specified path, scoping to "
-                "specific images or containers if desired.",
+                "run",
+                help="Build and schedule the configured Kubernetes workload for a "
+                "repository/worktree target.",
             )
             command.add_argument(
                 "path",
-                nargs="?",
-                metavar="ENV[:IMAGE[:CONTAINER]]",
-                help="A path to the specified environment directory.  This may be an "
-                "absolute or relative path, and must point to an environment "
-                "directory produced by 'bertrand init'.  The path may include "
-                "optional image and container tags (e.g. "
-                "'/path/to/env:image:container'), which can be used to scope the "
-                "command to specific images or containers within the environment.  "
-                "If an image or environment scope is given, then all declared "
-                "containers matching that scope will be started.  If no path is "
-                "given, then all Bertrand containers on the host system will be "
-                "started, after prompting the user to confirm.",
+                metavar="REPO[/WORKTREE]",
+                help="Project repository or worktree path. Repository roots target "
+                "the worktree attached to HEAD.",
             )
             command.add_argument(
-                "cmd",
-                nargs=argparse.REMAINDER,
-                help="The command to run inside the container context after it "
-                "starts.  If omitted, the default command declared in the "
-                "project's build matrix will be used instead.  The resulting "
-                "container will run this command at PID 1, and will exit when "
-                "the command finishes.",
-                metavar="CMD...",
+                "--detach",
+                action="store_true",
+                help="Build and submit/converge the workload without foreground log "
+                "streaming.",
             )
-            command.set_defaults(handler=External.start)
+            command.add_argument(
+                "--tty",
+                dest="tty",
+                action="store_true",
+                default=None,
+                help="Force interactive TTY attachment in foreground mode.",
+            )
+            command.add_argument(
+                "--no-tty",
+                dest="tty",
+                action="store_false",
+                help="Disable interactive TTY attachment and use log streaming.",
+            )
+            command.set_defaults(command="run", handler=External.run)
 
         def enter(self) -> None:
             """Add the 'enter' command to the parser."""
@@ -728,10 +729,9 @@ class External:
             """Add the 'clean' command to the parser."""
             command = self.commands.add_parser(
                 "clean",
-                help="Remove Bertrand-managed runtime artifacts from the host system, "
-                "including managed containers, images, volumes, and local state "
-                "files, while leaving environment directories and host container "
-                "engine installation intact.",
+                help="Remove host-local Bertrand runtime state in the shared "
+                "MicroK8s/MicroCeph model while preserving repository PVCs and "
+                "snap installations.",
             )
             command.add_argument(
                 "-y",
@@ -766,7 +766,23 @@ class External:
             argparse.Namespace
                 The parsed command-line arguments.
             """
+            argv = sys.argv[1:]
+            if argv[:1] == ["run"]:
+                return self._parse_run(argv[1:])
             return self.root.parse_args()
+
+        def _parse_run(self, argv: list[str]) -> argparse.Namespace:
+            separator = argv.index("--") if "--" in argv else -1
+            if separator >= 0:
+                command_argv = argv[:separator]
+                workload_args = argv[separator + 1 :]
+            else:
+                command_argv = argv
+                workload_args = []
+            parser = self.commands.choices["run"]
+            args = parser.parse_args(command_argv)
+            args.args = workload_args
+            return args
 
     @staticmethod
     def version(_args: argparse.Namespace) -> None:
@@ -901,8 +917,8 @@ class External:
                 ) from err
 
     @staticmethod
-    def start(args: argparse.Namespace) -> None:
-        """Execute the `bertrand start` CLI command.
+    def run(args: argparse.Namespace) -> None:
+        """Execute the `bertrand run` CLI command.
 
         Parameters
         ----------
@@ -912,28 +928,35 @@ class External:
         Raises
         ------
         TimeoutExpired
-            If a nested command times out while starting the container.  This should
-            never occur under normal circumstances, and the 'start' command
-            intentionally does not accept a timeout argument, so this can only be
-            surfaced from an internal error.
+            If a nested command times out while building or running the workload.
         """
-        from bertrand.env.cli.external.run import bertrand_start
+        from bertrand.env.cli.external.run import bertrand_run
 
         now = time.time()
         with asyncio.Runner() as runner:
-            worktree, workload, tag = _parse_target(args.path)
             try:
                 runner.run(
-                    bertrand_start(
-                        worktree,
-                        workload,
-                        tag,
-                        cmd=args.cmd,
+                    bertrand_run(
+                        Path(args.path).expanduser().resolve(),
+                        detach=args.detach,
+                        tty=args.tty,
+                        args=args.args,
                     )
                 )
+            except KeyboardInterrupt:
+                return
             except (TimeoutError, TimeoutExpired) as err:
                 start = datetime.fromtimestamp(now, UTC)
-                cmd = ["bertrand", "start", _recover_spec(worktree, workload, tag)]
+                cmd = ["bertrand", "run", str(Path(args.path).expanduser())]
+                if args.detach:
+                    cmd.append("--detach")
+                if args.tty is True:
+                    cmd.append("--tty")
+                elif args.tty is False:
+                    cmd.append("--no-tty")
+                if args.args:
+                    cmd.append("--")
+                    cmd.extend(args.args)
                 raise TimeoutExpired(
                     cmd=cmd,
                     timeout=0.0,  # indefinite

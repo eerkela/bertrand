@@ -22,6 +22,8 @@ from bertrand.env.kube.workload.controller import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from bertrand.env.kube.api.client import Kube
     from bertrand.env.kube.build.request import ProjectImageIdentity
     from bertrand.env.kube.job import Job
@@ -35,6 +37,8 @@ async def ensure_project_workload_controller(
     node: str | None = None,
     timeout: float,
     image_ref: str | None = None,
+    primary_args: Sequence[str] | None = None,
+    interactive: bool = False,
 ) -> StableWorkloadController | None:
     """Converge the stable Kubernetes workload selected by project config.
 
@@ -54,6 +58,10 @@ async def ensure_project_workload_controller(
         Optional digest-pinned project image reference from a just-completed build.
         If omitted, the current active `BertrandImage` lifecycle record supplies the
         immutable runtime image.
+    primary_args : Sequence[str] | None, optional
+        Runtime arguments to append to the primary container command.
+    interactive : bool, optional
+        Whether the primary container should be rendered for stdin/TTY attachment.
 
     Returns
     -------
@@ -77,6 +85,8 @@ async def ensure_project_workload_controller(
             config=cast("Any", bertrand),
             workload=identity,
             timeout=timeout,
+            primary_args=primary_args,
+            interactive=interactive,
         )
     if bertrand.topology.kind == "job":
         return await ensure_workload_controller(
@@ -84,6 +94,8 @@ async def ensure_project_workload_controller(
             config=cast("Any", bertrand),
             workload=identity,
             timeout=timeout,
+            primary_args=primary_args,
+            interactive=interactive,
         )
 
     loop = asyncio.get_running_loop()
@@ -110,6 +122,8 @@ async def ensure_project_workload_controller(
         config=cast("Any", bertrand),
         workload=workload or identity,
         timeout=deadline - loop.time(),
+        primary_args=primary_args,
+        interactive=interactive,
     )
 
 
@@ -121,6 +135,8 @@ async def create_project_workload_job_run(
     node: str | None = None,
     timeout: float,
     image_ref: str | None = None,
+    primary_args: Sequence[str] | None = None,
+    interactive: bool = False,
 ) -> Job:
     """Create one explicit Kubernetes Job run selected by project config.
 
@@ -140,6 +156,10 @@ async def create_project_workload_job_run(
         Optional digest-pinned project image reference from a just-completed build.
         If omitted, the current active `BertrandImage` lifecycle record supplies the
         immutable runtime image.
+    primary_args : Sequence[str] | None, optional
+        Runtime arguments to append to the primary container command.
+    interactive : bool, optional
+        Whether the primary container should be rendered for stdin/TTY attachment.
 
     Returns
     -------
@@ -192,6 +212,8 @@ async def create_project_workload_job_run(
         config=cast("Any", bertrand),
         workload=workload,
         timeout=deadline - loop.time(),
+        primary_args=primary_args,
+        interactive=interactive,
     )
 
 
