@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Mapping as MappingABC
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Self
 
@@ -10,6 +11,7 @@ import kubernetes
 from kubernetes.stream import stream as kubernetes_stream
 
 from .api._helpers import _validate_delete_status
+from .api._render import _pod_template_manifest
 from .api.metadata import NamespacedKubeMetadata
 from .api.resource import ResourceClient
 
@@ -18,6 +20,7 @@ if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Collection, Mapping
 
     from .api.client import Kube
+    from .api.spec import PodTemplateSpec
     from .api.watch import WatchEvent
 
 POD_MIRROR_ANNOTATION = "kubernetes.io/config.mirror"
@@ -141,6 +144,114 @@ class Pod(NamespacedKubeMetadata[kubernetes.client.V1Pod]):
             watch_all=lambda kube: kube.core.list_pod_for_all_namespaces,
             watch_namespace=lambda kube: kube.core.list_namespaced_pod,
         )
+
+    @staticmethod
+    def _manifest(
+        *,
+        namespace: str,
+        name: str,
+        labels: Mapping[str, str],
+        pod_template: PodTemplateSpec,
+        annotations: Mapping[str, str] | None,
+    ) -> dict[str, object]:
+        template = _pod_template_manifest(pod_template)
+        pod_labels = dict(labels)
+        pod_annotations = dict(annotations or {})
+        metadata: dict[str, object] = {
+            "name": name,
+            "namespace": namespace,
+            "labels": pod_labels,
+            "annotations": pod_annotations,
+        }
+        template_metadata = template.get("metadata")
+        if isinstance(template_metadata, MappingABC):
+            template_metadata = dict(template_metadata)
+            template_labels = template_metadata.get("labels")
+            if isinstance(template_labels, MappingABC):
+                pod_labels.update(
+                    {str(key): str(value) for key, value in template_labels.items()}
+                )
+            template_annotations = template_metadata.get("annotations")
+            if isinstance(template_annotations, MappingABC):
+                pod_annotations.update(
+                    {
+                        str(key): str(value)
+                        for key, value in template_annotations.items()
+                    }
+                )
+        return {
+            "apiVersion": "v1",
+            "kind": "Pod",
+            "metadata": metadata,
+            "spec": template["spec"],
+        }
+
+    @classmethod
+    async def create(
+        cls,
+        kube: Kube,
+        *,
+        namespace: str,
+        name: str,
+        labels: Mapping[str, str],
+        pod_template: PodTemplateSpec,
+        timeout: float,
+        annotations: Mapping[str, str] | None = None,
+    ) -> Self:
+        """Create one Kubernetes Pod from intent-level fields.
+
+        Parameters
+        ----------
+        kube : Kube
+            Active Kubernetes API context.
+        namespace : str
+            Namespace that owns the Pod.
+        name : str
+            Pod name to create.
+        labels : Mapping[str, str]
+            Labels to apply to the Pod metadata.
+        pod_template : PodTemplateSpec
+            Pod template to render into the Pod.
+        timeout : float
+            Maximum request budget in seconds. If infinite, wait indefinitely.
+        annotations : Mapping[str, str] | None, optional
+            Annotations to apply to the Pod metadata.
+
+        Returns
+        -------
+        Pod
+            Wrapped created Pod.
+
+        Raises
+        ------
+        OSError
+            If Kubernetes returns malformed data or the API call fails.
+        """
+        namespace = namespace.strip()
+        name = name.strip()
+        if not namespace or not name:
+            msg = "Pod create requires non-empty namespace and name"
+            raise OSError(msg)
+        manifest = cls._manifest(
+            namespace=namespace,
+            name=name,
+            labels=labels,
+            pod_template=pod_template,
+            annotations=annotations,
+        )
+        created = await kube.run(
+            lambda request_timeout: kube.core.create_namespaced_pod(
+                namespace=namespace,
+                body=manifest,
+                _request_timeout=request_timeout,
+            ),
+            timeout=timeout,
+            context=f"failed to create Pod {namespace}/{name}",
+        )
+        if not isinstance(created, kubernetes.client.V1Pod):
+            msg = f"malformed Kubernetes Pod payload while creating {name!r}"
+            raise OSError(msg)
+        return cls(_obj=created)
 
     @classmethod
     async def get(

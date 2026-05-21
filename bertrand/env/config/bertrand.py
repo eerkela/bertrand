@@ -60,9 +60,9 @@ if DEFAULT_SHELL not in SHELLS:
     raise RuntimeError(msg)
 EDITORS: dict[str, list[str]] = {
     # NOTE: values are ordered lists of host commands/paths where the editor may be
-    # found when servicing RPC requests.  The first entry that passes a `which` check
-    # will be invoked together with the proper arguments to attach to the requested
-    # container and mount its internal tools.
+    # found when servicing dev-session requests.  The first entry that passes a
+    # `which` check will be invoked together with the proper arguments to attach to
+    # the requested container and mount its internal tools.
     "vscode": [
         # PATH-resolved command names
         "code",

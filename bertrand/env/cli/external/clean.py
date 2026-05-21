@@ -41,6 +41,7 @@ from bertrand.env.kube.ceph.volume import (
     retire_repository_mount_record,
 )
 from bertrand.env.kube.dashboard import delete_dashboard_backend
+from bertrand.env.kube.dev import delete_dev_backend_state
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -176,6 +177,17 @@ async def _clean_dashboard_backend(state: CleanState) -> None:
     await delete_dashboard_backend(state.kube, timeout=state.deadline - loop.time())
 
 
+async def _clean_dev_backend(state: CleanState) -> None:
+    if state.kube is None:
+        return
+    loop = asyncio.get_running_loop()
+    await delete_dev_backend_state(
+        state.kube,
+        host_id=state.host_id,
+        timeout=state.deadline - loop.time(),
+    )
+
+
 def _runtime_residue(state: CleanState) -> tuple[list[str], list[str]]:
     residual_mounts = sorted(str(mount) for mount in MountInfo.under(REPO_DIR))
     if MountInfo.search(RUN_DIR) is not None:
@@ -227,6 +239,7 @@ async def _finalize_cleanup(state: CleanState) -> None:
 
 
 CLEAN_STAGES: tuple[tuple[str, Callable[[CleanState], Awaitable[None]]], ...] = (
+    ("clean_dev_backend", _clean_dev_backend),
     ("clean_dashboard_backend", _clean_dashboard_backend),
     ("clean_repo_mounts_aliases", _clean_repo_mounts_aliases),
     ("disable_unmount_run_tmpfs", _disable_unmount_run_tmpfs),
@@ -291,8 +304,8 @@ async def bertrand_clean(*, timeout: float, assume_yes: bool, force: bool) -> No
         raise PermissionError(msg)
     if not confirm(
         "This operates on a shared MicroK8s/MicroCeph runtime. It will retire "
-        "this host's Bertrand repository mount records, delete reconstructible "
-        "Bertrand dashboard resources, remove local repository aliases and hidden "
+        "this host's Bertrand repository mount records, delete volatile dev-session "
+        "and dashboard resources, remove local repository aliases and hidden "
         f"mounts, and delete local Bertrand state in {STATE_DIR}. "
         "It preserves repository PVCs, volume records, credentials, snapshots, and "
         "Ceph data, and does not uninstall MicroK8s or MicroCeph. Do you want to "

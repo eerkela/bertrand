@@ -303,23 +303,15 @@ class External:
             """Add the 'enter' command to the parser."""
             command = self.commands.add_parser(
                 "enter",
-                help="Launch an interactive shell session within a Bertrand virtual "
-                "environment at the specified path.  If the container is not "
-                "already running, it will be started automatically.  If the host "
-                "code RPC service is unavailable, Bertrand will warn on entrance "
-                "and disable the `bertrand code` command within the shell "
-                "context.  "
-                "Use 'exit' (without a 'bertrand' prefix) to leave the shell and "
+                help="Launch an interactive shell inside a Kubernetes dev-session "
+                "Pod for a project worktree. Use 'exit' to leave the shell and "
                 "return to the host system.",
             )
             command.add_argument(
                 "path",
-                metavar="ENV[:IMAGE[:CONTAINER]]",
-                help="A path to the specified environment directory.  If no image or "
-                "container tag is given, then the default container for the parent "
-                "environment or image will be used.  Otherwise, the container tag "
-                "must be declared in the project metadata according to the "
-                "'--lang' options chosen during 'bertrand init'.",
+                metavar="REPO[/WORKTREE]",
+                help="Project repository or worktree path. Repository roots target "
+                "the worktree attached to HEAD.",
             )
             command.add_argument(
                 "--shell",
@@ -335,31 +327,22 @@ class External:
             """Add the 'code' command to the parser."""
             command = self.commands.add_parser(
                 "code",
-                help="Launch a text editor rooted at a Bertrand environment directory "
-                "and mount its local toolchain using remote development "
-                "extensions.  The editor runs on the host system and is selected "
-                "from project configuration unless overridden.",
+                help="Launch a host editor against a generated Kubernetes "
+                "dev-session Pod for a project worktree.",
             )
             command.add_argument(
                 "path",
-                metavar="ENV[:IMAGE[:CONTAINER]]",
-                help="A path to the specified environment directory.  This may be an "
-                "absolute or relative path, and must point to an environment "
-                "directory produced by 'bertrand init'.  The path may include "
-                "optional image and container tags (e.g. "
-                "'/path/to/env:image:container'), which determine the exact "
-                "container whose toolchain will be mounted.  If no image or "
-                "container tag is given, then the default container for the parent "
-                "environment or image will be used.  Otherwise, the container tag "
-                "must be declared in the project metadata according to the "
-                "'--lang' options chosen during 'bertrand init'.",
+                metavar="REPO[/WORKTREE]",
+                help="Project repository or worktree path. Repository roots target "
+                "the worktree attached to HEAD.",
             )
             command.add_argument(
                 "--editor",
                 default=None,
                 metavar="EDITOR",
                 help="Override the configured host editor alias for this command.  "
-                "Validation is performed at runtime by RPC/config resolution.",
+                "Validation is performed at runtime by dev-session config "
+                "resolution.",
             )
             command.set_defaults(handler=External.code)
 
@@ -730,19 +713,17 @@ class External:
 
         now = time.time()
         with asyncio.Runner() as runner:
-            worktree, workload, tag = _parse_target(args.path)
+            target = Path(args.path).expanduser().resolve()
             try:
                 runner.run(
                     bertrand_enter(
-                        worktree,
-                        workload,
-                        tag,
+                        target,
                         shell=args.shell or None,
                     )
                 )
             except (TimeoutError, TimeoutExpired) as err:
                 start = datetime.fromtimestamp(now, UTC)
-                cmd = ["bertrand", "enter", _recover_spec(worktree, workload, tag)]
+                cmd = ["bertrand", "enter", str(Path(args.path).expanduser())]
                 if args.shell:
                     cmd.extend(["--shell", args.shell])
                 raise TimeoutExpired(
@@ -773,19 +754,17 @@ class External:
 
         now = time.time()
         with asyncio.Runner() as runner:
-            worktree, workload, tag = _parse_target(args.path)
+            target = Path(args.path).expanduser().resolve()
             try:
                 runner.run(
                     bertrand_code(
-                        worktree,
-                        workload,
-                        tag,
+                        target,
                         editor=args.editor or None,
                     )
                 )
             except (TimeoutError, TimeoutExpired) as err:
                 start = datetime.fromtimestamp(now, UTC)
-                cmd = ["bertrand", "code", _recover_spec(worktree, workload, tag)]
+                cmd = ["bertrand", "code", str(Path(args.path).expanduser())]
                 if args.editor:
                     cmd.extend(["--editor", args.editor])
                 raise TimeoutExpired(

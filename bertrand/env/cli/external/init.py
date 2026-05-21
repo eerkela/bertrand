@@ -74,6 +74,7 @@ from bertrand.env.kube.ceph.mount import (
 from bertrand.env.kube.ceph.storage import ensure_ceph_storage_controller
 from bertrand.env.kube.ceph.volume import DEFAULT_VOLUME_SIZE, RepoVolume
 from bertrand.env.kube.control import control_plane_image
+from bertrand.env.kube.dev import ensure_dev_backend
 from bertrand.env.kube.namespace import Namespace
 from bertrand.env.kube.network.bootstrap import ensure_network_backend
 
@@ -934,6 +935,7 @@ async def _converge_cluster_runtime(kube: Kube, *, timeout: float) -> None:
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout
     await _converge_build_runtime(kube, timeout=deadline - loop.time())
+    await ensure_dev_backend(kube, timeout=deadline - loop.time())
     await ensure_network_backend(kube, timeout=deadline - loop.time())
     await ensure_ceph_storage_controller(
         kube,

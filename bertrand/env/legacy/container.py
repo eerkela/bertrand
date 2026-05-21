@@ -61,11 +61,12 @@ from bertrand.env.git import (
     atomic_write_text,
     inside_image,
 )
-from bertrand.env.rpc.listener import RPC_TIMEOUT
 
 from .nerdctl import nerdctl
 from .network import format_cpus, format_network
 from .volume import format_volumes
+
+LEGACY_SIDECAR_TIMEOUT: float = 30.0
 
 
 def _to_utc(value: datetime) -> datetime:
@@ -613,7 +614,7 @@ async def stop_rpc_sidecar(sidecar: asyncio.subprocess.Process | None) -> None:
         return
     sidecar.terminate()
     try:
-        await asyncio.wait_for(sidecar.wait(), timeout=RPC_TIMEOUT)
+        await asyncio.wait_for(sidecar.wait(), timeout=LEGACY_SIDECAR_TIMEOUT)
     except Exception:
         sidecar.kill()
         try:

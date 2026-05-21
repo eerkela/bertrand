@@ -17,9 +17,10 @@ from bertrand.env.git import (
     INFINITY,
     WORKTREE_MOUNT,
     inside_container,
+    inside_image,
 )
 from bertrand.env.kube.api.client import Kube
-from bertrand.env.rpc import CodeOpen, rpc
+from bertrand.env.kube.dev import CodeOpen
 from bertrand.env.version import __version__
 
 
@@ -67,15 +68,16 @@ class Internal:
             command = self.commands.add_parser(
                 "code",
                 help="Launch a text editor rooted at this container's environment "
-                "directory and mount its internal toolchain using remote "
-                "development extensions over the host RPC sidecar.",
+                "directory and mount its internal toolchain using a Kubernetes "
+                "mailbox request serviced by the host `bertrand enter` bridge.",
             )
             command.add_argument(
                 "--editor",
                 default=None,
                 metavar="EDITOR",
                 help="Override the configured host editor alias for this request.  "
-                "Validation is performed at runtime by RPC/config resolution.",
+                "Validation is performed at runtime by dev-session config "
+                "resolution.",
             )
             command.add_argument(
                 "--block",
@@ -167,20 +169,18 @@ class Internal:
         RuntimeError
             If not invoked from within a containerized environment.
         """
-        if not inside_container():
+        if not inside_image():
             msg = (
-                "`bertrand code` requires a live container context.  Run "
+                "`bertrand code` requires a live Bertrand dev Pod context. Run "
                 "`bertrand enter` first."
             )
             raise RuntimeError(msg)
         with asyncio.Runner() as runner:
             runner.run(
-                rpc(
-                    CodeOpen(
-                        editor=args.editor or None,
-                        block=args.block,
-                    )
-                )
+                CodeOpen(
+                    editor=args.editor or None,
+                    block=args.block,
+                ).send()
             )
 
     @staticmethod

@@ -1,129 +1,101 @@
-"""External CLI endpoint for entering Bertrand containers."""
+"""External CLI endpoint for entering Kubernetes dev-session Pods."""
 
 from __future__ import annotations
 
 import sys
-import time
 from typing import TYPE_CHECKING
 
-from bertrand.env.config.bertrand import DEFAULT_TAG, SHELLS, Bertrand
-from bertrand.env.git import CommandError
-from bertrand.env.legacy.container import start_rpc_sidecar, stop_rpc_sidecar
-from bertrand.env.legacy.environment import Environment
-from bertrand.env.legacy.nerdctl import NERDCTL_BIN, TIMEOUT, nerdctl
-
-from ._helper import _recover_spec
+from bertrand.env.cli.external._helper import resolve_project_worktree
+from bertrand.env.cli.external.build import BuildLogFollower, _assert_build_runtime
+from bertrand.env.cli.external.run import _attach_pod
+from bertrand.env.config.bertrand import SHELLS, Bertrand
+from bertrand.env.config.core import Config
+from bertrand.env.git import INFINITY
+from bertrand.env.kube.api.client import Kube
+from bertrand.env.kube.build.project import project_image_build
+from bertrand.env.kube.dev import (
+    CodeOpenBridge,
+    create_project_dev_session,
+    current_host_id,
+    new_session_id,
+)
 
 if TYPE_CHECKING:
     from pathlib import Path
 
 
 async def bertrand_enter(
-    worktree: Path,
-    workload: str | None,
-    tag: str | None,
+    target: Path,
     *,
     shell: str | None,
 ) -> None:
-    """Replace the current process with an interactive container shell.
-
-    The target container is started or rebuilt as necessary.
+    """Open an interactive shell inside a Kubernetes dev-session Pod.
 
     Parameters
     ----------
-    worktree : Path
-        A valid environment worktree path.
-    workload : str | None
-        The kubernetes workload to target, if applicable.
-    tag : str | None
-        Optional tag to target; defaults to the configured default tag.
+    target : Path
+        Project repository or worktree path. Repository roots target the worktree
+        attached to HEAD.
     shell : str | None
-        Optional shell override. Must be recognized by `bertrand init`.
+        Optional shell alias override. Must be recognized by Bertrand config.
 
     Raises
     ------
-    CommandError
-        If stdin/stdout are not attached to a TTY.
-    ValueError
-        If the shell override is invalid.
     OSError
-        If image/container/RPC sidecar orchestration fails.
+        If stdin/stdout are not TTYs or dev-session orchestration fails.
+    ValueError
+        If the shell alias is unsupported.
     """
-    if workload is not None:
-        msg = "kubernetes workloads are not yet supported"
-        raise NotImplementedError(msg)
-
     if not sys.stdin.isatty() or not sys.stdout.isatty():
-        cmd = ["bertrand", "enter", _recover_spec(worktree, workload, tag)]
-        if shell is not None:
-            cmd.append(shell)
-        raise CommandError(
-            returncode=1,
-            cmd=cmd,
-            output="",
-            stderr="'bertrand enter' requires both stdin and stdout to be a TTY.",
-        )
+        msg = "`bertrand enter` requires both stdin and stdout to be a TTY."
+        raise OSError(msg)
 
-    async with await Environment.load(worktree, timeout=TIMEOUT) as env:
-        bertrand = env.config.get(Bertrand)
-        if not bertrand:
-            msg = (
-                f"Bertrand configuration is missing from the worktree config at "
-                f"{worktree}.  This should never occur; if you see this message, "
-                "try re-running `bertrand init` to regenerate your project "
-                "configuration, or report an issue if the problem persists."
-            )
-            raise OSError(msg)
-
-        shell_cmd = SHELLS.get(bertrand.shell)
-        if shell_cmd is None:
-            msg = f"unrecognized shell: {bertrand.shell}"
-            raise ValueError(msg)
-        if shell is not None:
-            shell_cmd = SHELLS.get(shell)
+    repo, worktree = await resolve_project_worktree(target)
+    session_id = new_session_id()
+    host_id = current_host_id()
+    with await Kube.host(timeout=INFINITY) as kube:
+        config = await Config.load(worktree, kube=kube, repo=repo, timeout=INFINITY)
+        async with config:
+            bertrand = config.get(Bertrand)
+            if bertrand is None:
+                msg = f"missing Bertrand configuration for worktree: {worktree}"
+                raise OSError(msg)
+            shell_name = shell or bertrand.shell
+            shell_cmd = SHELLS.get(shell_name)
             if shell_cmd is None:
-                msg = f"unrecognized shell override: {shell}"
+                msg = f"unsupported shell override: {shell_name!r}"
                 raise ValueError(msg)
 
-        image = await env.build(tag or DEFAULT_TAG, quiet=False)
-        container = await image.create(
-            env.config,
-            env.id,
-            shell_cmd,
-            quiet=False,
-        )
-        deadline = time.time() + min(env.lock.timeout, TIMEOUT)
+            await _assert_build_runtime(kube, timeout=INFINITY)
+            build = project_image_build(config, repo_id=config.repo.repo_id)
+            follower = BuildLogFollower(kube)
+            try:
+                publication = await build.publish(
+                    kube,
+                    timeout=INFINITY,
+                    on_update=follower.update,
+                )
+            finally:
+                await follower.close()
 
-        sidecar = await start_rpc_sidecar(
-            container=container,
-            container_bin=NERDCTL_BIN,
-            deadline=deadline,
-            strict=False,
-            warn_context=(
-                "bertrand: failed to start RPC sidecar; continuing without access to "
-                "host RPC features"
-            ),
-        )
-
-        try:
-            await container.start(
-                quiet=False,
-                timeout=deadline - time.time(),
-                attach=True,
+            session = await create_project_dev_session(
+                kube,
+                config=config,
+                repo_id=config.repo.repo_id,
+                image_ref=publication.record.digest_ref,
+                session_id=session_id,
+                host_id=host_id,
+                command=shell_cmd,
                 interactive=True,
+                timeout=INFINITY,
             )
-        finally:
-            await stop_rpc_sidecar(sidecar)
-            await nerdctl(
-                [
-                    "container",
-                    "rm",
-                    "-f",
-                    "-i",
-                    "-v",
-                    "--depend",
-                    container.Id,
-                ],
-                check=False,
-                capture_output=True,
-            )
+            async with CodeOpenBridge(kube, session_id=session_id, host_id=host_id):
+                try:
+                    pod = await session.wait_running(kube, timeout=INFINITY)
+                    await _attach_pod(
+                        kube,
+                        pod,
+                        primary_container=session.primary_container,
+                    )
+                finally:
+                    await session.delete(kube, timeout=INFINITY)

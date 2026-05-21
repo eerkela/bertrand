@@ -1,113 +1,102 @@
-"""External CLI endpoint for opening Bertrand worktrees in an editor."""
+"""External CLI endpoint for editor-bounded Kubernetes dev sessions."""
 
 from __future__ import annotations
 
-import time
 from typing import TYPE_CHECKING
 
-from bertrand.env.config.bertrand import DEFAULT_TAG
-from bertrand.env.legacy.container import start_rpc_sidecar, stop_rpc_sidecar
-from bertrand.env.legacy.environment import Environment
-from bertrand.env.legacy.nerdctl import NERDCTL_BIN, TIMEOUT, nerdctl
+from bertrand.env.cli.external._helper import resolve_project_worktree
+from bertrand.env.cli.external.build import BuildLogFollower, _assert_build_runtime
+from bertrand.env.config.core import Config
+from bertrand.env.git import INFINITY
+from bertrand.env.kube.api.client import Kube
+from bertrand.env.kube.build.project import project_image_build
+from bertrand.env.kube.dev import (
+    CodeOpenBridge,
+    create_project_dev_session,
+    current_host_id,
+    new_session_id,
+)
 
 if TYPE_CHECKING:
-    import asyncio
     from pathlib import Path
 
 
 async def bertrand_code(
-    worktree: Path,
-    workload: str | None,
-    tag: str | None,
+    target: Path,
     *,
     editor: str | None,
 ) -> None:
-    """Launch a host-side editor.
-
-    Runs a blocking in-container `bertrand code` command in an ephemeral container,
-    with a socket-coupled RPC sidecar.
+    """Open a host editor against a generated Kubernetes dev-session Pod.
 
     Parameters
     ----------
-    worktree : Path
-        A valid environment worktree path.
-    workload : str | None
-        The kubernetes workload to target, if applicable.
-    tag : str | None
-        Optional tag to target; defaults to the configured default tag.
+    target : Path
+        Project repository or worktree path. Repository roots target the worktree
+        attached to HEAD.
     editor : str | None
-        Optional editor override alias forwarded to the in-container `bertrand code`
-        command.
+        Optional editor alias override forwarded to internal ``bertrand code``.
 
     Raises
     ------
-    ValueError
-        If editor input is invalid.
     OSError
-        If image/container/RPC sidecar orchestration fails.
+        If image build, dev-session creation, or mailbox bridging fails.
+    ValueError
+        If the editor override is empty.
     """
-    if workload is not None:
-        msg = "kubernetes workloads are not yet supported"
-        raise NotImplementedError(msg)
-    if tag is None:
-        tag = DEFAULT_TAG
-    if editor is not None:
-        editor = editor.strip()
-        if not editor:
-            msg = "editor override must not be empty"
-            raise ValueError(msg)
-
-    async with await Environment.load(worktree, timeout=TIMEOUT) as env:
-        image = await env.build(tag, quiet=False)
-        cmd = ["bertrand", "code", "--block"]
-        if editor is not None:
-            cmd.extend(["--editor", editor])
-        container = await image.create(
-            env.config,
-            env.id,
-            cmd,
-            quiet=False,
-        )
-        deadline = time.time() + min(env.lock.timeout, TIMEOUT)
-
-        sidecar: asyncio.subprocess.Process | None = None
-        try:
-            sidecar = await start_rpc_sidecar(
-                container=container,
-                container_bin=NERDCTL_BIN,
-                deadline=deadline,
-                strict=True,
-            )
-            await container.start(
-                quiet=False,
-                timeout=deadline - time.time(),
-                attach=False,
-                interactive=False,
-            )
-            wait = await nerdctl(
-                ["container", "wait", container.Id],
-                capture_output=True,
-                timeout=env.lock.timeout,
-            )
-            exit_code = wait.stdout.strip()
-            if exit_code and exit_code != "0":
-                msg = (
-                    f"container exited with non-zero status while running "
-                    f"'bertrand code': {exit_code}"
+    repo, worktree = await resolve_project_worktree(target)
+    session_id = new_session_id()
+    host_id = current_host_id()
+    with await Kube.host(timeout=INFINITY) as kube:
+        config = await Config.load(worktree, kube=kube, repo=repo, timeout=INFINITY)
+        async with config:
+            await _assert_build_runtime(kube, timeout=INFINITY)
+            build = project_image_build(config, repo_id=config.repo.repo_id)
+            follower = BuildLogFollower(kube)
+            try:
+                publication = await build.publish(
+                    kube,
+                    timeout=INFINITY,
+                    on_update=follower.update,
                 )
-                raise OSError(msg)
-        finally:
-            await stop_rpc_sidecar(sidecar)
-            await nerdctl(
-                [
-                    "container",
-                    "rm",
-                    "-f",
-                    "-i",
-                    "-v",
-                    "--depend",
-                    container.Id,
-                ],
-                check=False,
-                capture_output=True,
+            finally:
+                await follower.close()
+
+            command = ["bertrand", "code", "--block"]
+            if editor is not None:
+                editor = editor.strip()
+                if not editor:
+                    msg = "editor override must not be empty"
+                    raise ValueError(msg)
+                command.extend(["--editor", editor])
+
+            session = await create_project_dev_session(
+                kube,
+                config=config,
+                repo_id=config.repo.repo_id,
+                image_ref=publication.record.digest_ref,
+                session_id=session_id,
+                host_id=host_id,
+                command=command,
+                interactive=False,
+                timeout=INFINITY,
             )
+            async with CodeOpenBridge(kube, session_id=session_id, host_id=host_id):
+                try:
+                    terminal = await session.pod.wait_terminal(kube, timeout=INFINITY)
+                    if terminal.phase != "Succeeded":
+                        log = await terminal.logs(
+                            kube,
+                            timeout=30,
+                            container=session.primary_container,
+                            tail_lines=200,
+                        )
+                        detail = log.strip()
+                        msg = (
+                            "`bertrand code` dev session exited with phase "
+                            f"{terminal.phase}"
+                        )
+                        if detail:
+                            msg = f"{msg}\n{detail}"
+                        raise OSError(msg)
+                finally:
+                    await session.delete(kube, timeout=INFINITY)
