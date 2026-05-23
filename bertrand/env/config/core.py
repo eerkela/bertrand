@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import importlib.resources as importlib_resources
 import re
 import string
 import uuid
@@ -235,37 +234,6 @@ type URLLabel = Annotated[NonEmpty[Trimmed], AfterValidator(_check_url_label)]
 type OCIImageRef = Annotated[
     NonEmpty[NoWhiteSpace], AfterValidator(_check_oci_image_ref)
 ]
-
-
-def locate_template(namespace: str, name: str) -> Path:
-    """Get a template reference for the given namespace and name.
-
-    Parameters
-    ----------
-    namespace : str
-        The parent directory of the template within `bertrand.env.templates`.
-    name : str
-        The file name for the template within the namespace directory, minus the
-        `.j2` extension.
-
-    Returns
-    -------
-    Path
-        The path to the template file.
-
-    Raises
-    ------
-    FileNotFoundError
-        If the template file does not exist or is not a file.
-    """
-    env = importlib_resources.files("bertrand.env")
-    with importlib_resources.as_file(
-        env.joinpath("templates", namespace, f"{name}.j2")
-    ) as source:
-        if not source.exists() or not source.is_file():
-            msg = f"missing Bertrand template {namespace}/{name}: {source}"
-            raise FileNotFoundError(msg)
-        return source
 
 
 def dump_yaml(payload: dict[str, Any], *, resource_name: str) -> str:

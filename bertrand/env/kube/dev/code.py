@@ -10,7 +10,11 @@ from dataclasses import dataclass, field
 
 from bertrand.env.config.bertrand import Bertrand, Editor
 from bertrand.env.config.core import Config
-from bertrand.env.config.vscode import VSCODE_WORKSPACE_FILE, VSCodeWorkspace
+from bertrand.env.config.vscode import (
+    VSCODE_MCP_FILE,
+    VSCODE_WORKSPACE_FILE,
+    VSCodeWorkspace,
+)
 from bertrand.env.git import (
     PROJECT_MOUNT,
     REPO_ID_ENV,
@@ -161,10 +165,16 @@ def _request_prereqs(editor: Editor) -> None:
     if editor != "vscode":
         msg = f"unsupported editor for code.open mailbox request: {editor}"
         raise ValueError(msg)
-    if not VSCODE_WORKSPACE_FILE.exists() or not VSCODE_WORKSPACE_FILE.is_file():
+    missing = [
+        path
+        for path in (VSCODE_WORKSPACE_FILE, VSCODE_MCP_FILE)
+        if not path.exists() or not path.is_file()
+    ]
+    if missing:
+        rendered = ", ".join(path.as_posix() for path in missing)
         msg = (
-            "VSCode workspace artifact not found at expected container path: "
-            f"{VSCODE_WORKSPACE_FILE}. Try re-running `bertrand code` after "
+            "VS Code editor artifact(s) not found at expected container path(s): "
+            f"{rendered}. Try re-running `bertrand code` after "
             "refreshing internal config artifacts."
         )
         raise RuntimeError(msg)

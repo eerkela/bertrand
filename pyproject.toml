@@ -54,7 +54,6 @@ keywords = [
 ]
 dependencies = [
     "conan",
-    "jinja2",
     "kubernetes>=35.0.0,<36.0.0",
     "mcp==1.9.4",
     "numpy",
@@ -114,7 +113,6 @@ include = ["bertrand*"]
 [tool.setuptools.package-data]
 bertrand = [
     "py.typed",
-    "env/templates/**/*.j2",
 ]
 
 [tool.setuptools.data-files]

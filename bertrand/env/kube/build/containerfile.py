@@ -4,13 +4,12 @@ from __future__ import annotations
 
 import os
 import re
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol
 
-import jinja2
 import packaging.version
 
 from bertrand.env.build_args import normalize_image_build_args
-from bertrand.env.config.core import locate_template
 from bertrand.env.git import WORKTREE_MOUNT
 from bertrand.env.version import VERSION
 
@@ -24,6 +23,12 @@ if TYPE_CHECKING:
 class _CapabilityRequest(Protocol):
     id: str
     required: bool
+
+
+@dataclass(frozen=True)
+class _DependencyCopy:
+    image: str
+    target: str
 
 
 def project_containerfile(
@@ -71,46 +76,64 @@ def _render_containerfile(model: Bertrand.Model) -> str:
         msg = "cannot render generated Containerfile when a custom one is configured"
         raise ValueError(msg)
 
-    jinja = jinja2.Environment(
-        autoescape=False,
-        undefined=jinja2.StrictUndefined,
-        keep_trailing_newline=True,
-        trim_blocks=False,
-        lstrip_blocks=False,
-    )
-    template = jinja.from_string(
-        locate_template("core", "containerfile.v1").read_text(encoding="utf-8")
-    )
     bertrand_version = packaging.version.parse(VERSION.bertrand)
-    python_version = packaging.version.parse(VERSION.python)
     try:
         page_size_kib = os.sysconf("SC_PAGE_SIZE") // 1024
     except (AttributeError, ValueError, OSError):
         page_size_kib = 4
-    return template.render(
-        python_major=python_version.major,
-        python_minor=python_version.minor,
-        python_patch=python_version.micro,
-        bertrand_major=bertrand_version.major,
-        bertrand_minor=bertrand_version.minor,
-        bertrand_patch=bertrand_version.micro,
-        cpus=0,
-        page_size_kib=page_size_kib,
-        env_mount=str(WORKTREE_MOUNT),
-        build_args=_build_arg_specs(image_config.args),
-        run_mounts=[
-            *_capability_mount_specs("secret", image_config.secrets),
-            *_capability_mount_specs("ssh", image_config.ssh),
-        ],
-        dependency_copies=_dependency_copy_specs(image_config.from_),
-    )
 
-
-def _build_arg_specs(args: Mapping[str, object]) -> list[dict[str, str]]:
-    return [
-        {"key": key, "value": value}
-        for key, value in normalize_image_build_args(args).items()
+    build_args = _build_arg_keys(image_config.args)
+    run_mounts = [
+        *_capability_mount_specs("secret", image_config.secrets),
+        *_capability_mount_specs("ssh", image_config.ssh),
     ]
+    dependency_copies = _dependency_copy_specs(image_config.from_)
+
+    lines = [
+        (
+            "ARG BERTRAND="
+            f"{bertrand_version.major}.{bertrand_version.minor}."
+            f"{bertrand_version.micro}"
+        ),
+        "ARG DEBUG=true",
+        "ARG DEV=true",
+        "ARG CPUS=0",
+        (f"FROM bertrand:${{BERTRAND}}.${{DEBUG}}.${{DEV}}.${{CPUS}}.{page_size_kib}"),
+    ]
+    lines.extend(f"ARG {key}" for key in build_args)
+    lines.extend(
+        (
+            "ENV PIP_DISABLE_PIP_VERSION_CHECK=1",
+            f"WORKDIR {WORKTREE_MOUNT}",
+            f"COPY . {WORKTREE_MOUNT}",
+            "",
+        )
+    )
+    lines.extend(
+        f"COPY --from={copy.image} / {copy.target}" for copy in dependency_copies
+    )
+    if dependency_copies:
+        lines.append("")
+    lines.extend(_run_lines(run_mounts=run_mounts, build_args=build_args))
+    return "\n".join(lines) + "\n"
+
+
+def _build_arg_keys(args: Mapping[str, object]) -> list[str]:
+    return list(normalize_image_build_args(args))
+
+
+def _run_lines(*, run_mounts: list[str], build_args: list[str]) -> list[str]:
+    prefix = "RUN"
+    if run_mounts:
+        prefix += "".join(f" --mount={mount}" for mount in run_mounts)
+    prefix += " bertrand build"
+    if not build_args:
+        return [prefix]
+    lines = [f"{prefix} \\"]
+    for index, key in enumerate(build_args):
+        suffix = " \\" if index < len(build_args) - 1 else ""
+        lines.append(f"    --build-arg {key}=\"${{{key}}}\"{suffix}")
+    return lines
 
 
 def _capability_mount_specs(
@@ -124,13 +147,13 @@ def _capability_mount_specs(
     return out
 
 
-def _dependency_copy_specs(from_images: Sequence[str]) -> list[dict[str, str]]:
-    out: list[dict[str, str]] = []
+def _dependency_copy_specs(from_images: Sequence[str]) -> list[_DependencyCopy]:
+    out: list[_DependencyCopy] = []
     for index, image_ref in enumerate(from_images, start=1):
         token = re.sub(r"[^a-z0-9]+", "-", image_ref.lower()).strip("-")
         if not token:
             token = "dependency"
         token = token[:64].rstrip("-")
         target = f"/opt/bertrand/deps/{index:02d}-{token}"
-        out.append({"image": image_ref, "target": target})
+        out.append(_DependencyCopy(image=image_ref, target=target))
     return out

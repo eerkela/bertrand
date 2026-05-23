@@ -1,2 +1,9 @@
 """Bertrand's editor-owned MCP server toolkit."""
-from .transport import sync_vscode_mcp_config
+
+from .transport import Parser, build_server, main
+
+__all__ = [
+    "Parser",
+    "build_server",
+    "main",
+]
