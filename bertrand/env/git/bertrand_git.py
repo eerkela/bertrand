@@ -89,7 +89,6 @@ METADATA_TMP: PosixPath = METADATA_DIR / "tmp"
 WORKTREE_MOUNT: PosixPath = PosixPath("/bertrand")
 PROJECT_MOUNT: PosixPath = PosixPath("/.bertrand")
 CONTAINER_RUNTIME_MOUNT: PosixPath = PosixPath("/run/bertrand")
-CONTAINER_SOCKET: PosixPath = CONTAINER_RUNTIME_MOUNT / "rpc.sock"
 CONTAINER_TMP_MOUNT: PosixPath = PosixPath("/tmp/bertrand")
 
 
@@ -101,9 +100,6 @@ REPO_ID_ENV: str = "BERTRAND_REPO_ID"  # unique repository UUID
 ENV_ID_ENV: str = "BERTRAND_ENV_ID"  # unique Bertrand environment UUID
 IMAGE_ID_ENV: str = "BERTRAND_IMAGE_ID"  # unique OCI image ID
 CONTAINER_ID_ENV: str = "BERTRAND_CONTAINER_ID"  # unique OCI container ID
-IMAGE_TAG_ENV: str = "BERTRAND_IMAGE_TAG"  # original tag in build matrix
-# absolute path to container-side RPC socket
-RPC_SOCKET_ENV: str = "BERTRAND_RPC_SOCKET"
 PROJECT_ENV: str = "BERTRAND_PROJECT"  # host path to mounted project root
 WORKTREE_ENV: str = "BERTRAND_WORKTREE"  # relative path to mounted worktree
 # relative path to worktree's artifact directory

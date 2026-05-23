@@ -14,8 +14,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Any, Literal, Self
 
-import jinja2
-import packaging.version
 from pydantic import (
     AfterValidator,
     BaseModel,
@@ -27,10 +25,8 @@ from pydantic import (
 )
 
 from bertrand.env.git import METADATA_DIR, Scalar, atomic_write_text
-from bertrand.env.version import VERSION
 
 from .core import (
-    SANITIZE_RE,
     Config,
     Glob,
     KubeName,
@@ -38,13 +34,11 @@ from .core import (
     NonEmpty,
     NoWhiteSpace,
     OCIImageRef,
-    PosixPath,
     RelativePosixPath,
     Resource,
     SnakeCase,
     TOMLKey,
     Trimmed,
-    locate_template,
     resource,
 )
 from .python import PyProject
@@ -94,13 +88,9 @@ if DEFAULT_EDITOR not in EDITORS:
     raise RuntimeError(msg)
 
 
-NS_PATH_RE = re.compile(r"^ns:\S+$")
 SERVICE_PORT_NAME_RE = re.compile(r"^[a-z0-9]([-a-z0-9]{0,13}[a-z0-9])?$")
-USERNS_CONTAINER_REF_RE = re.compile(r"^[A-Za-z0-9._-]+$")
-USERNS_MAPPING_RE = re.compile(r"^(?P<container>\d+):(?P<host>@?\d+):(?P<length>\d+)$")
 CAPABILITY_TOKEN_RE = re.compile(r"^CAP_[A-Z0-9_]+$")
 CAPABILITY_DEFINE_RE = re.compile(r"^\s*#define\s+(CAP_[A-Z0-9_]+)\s+([0-9]+)\b")
-SECURITY_OPT_KEY_RE = re.compile(r"^[a-z0-9][a-z0-9_.-]*$")
 IMAGE_TAG_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$")
 LINUX_CAPABILITY_HEADERS: tuple[Path, ...] = (
     Path("/usr/include/linux/capability.h"),
@@ -216,256 +206,6 @@ def _check_capability(capability: str) -> str:
     return value
 
 
-def _check_security_opt(option: str) -> str:
-    if option == "no-new-privileges":
-        return option
-    if "=" not in option:
-        msg = (
-            f"invalid security-opt '{option}' "
-            "(expected 'no-new-privileges' or 'key=value')"
-        )
-        raise ValueError(msg)
-    key, value = option.split("=", maxsplit=1)
-    if not key or not value:
-        msg = f"invalid security-opt '{option}' (missing key or value)"
-        raise ValueError(msg)
-    if not SECURITY_OPT_KEY_RE.fullmatch(key):
-        msg = f"invalid security-opt key '{key}' in '{option}'"
-        raise ValueError(msg)
-    return option
-
-
-def _extract_container_ref(mode: str) -> str | None:
-    if not mode.startswith("container:"):
-        return None
-    _, _, ref = mode.partition(":")
-    return ref or None
-
-
-def _check_userns_uint(
-    *,
-    userns: str,
-    key: str,
-    value: str,
-    allow_zero: bool,
-) -> None:
-    if not value.isdigit():
-        msg = f"invalid userns '{userns}': {key} must be a non-negative integer"
-        raise ValueError(msg)
-    number = int(value)
-    if not allow_zero and number <= 0:
-        msg = f"invalid userns '{userns}': {key} must be greater than zero"
-        raise ValueError(msg)
-
-
-def _check_userns_options(
-    *,
-    userns: str,
-    mode: Literal["keep-id", "auto"],
-    options: str,
-) -> None:
-    if not options:
-        msg = f"invalid userns '{userns}': '{mode}' options cannot be empty"
-        raise ValueError(msg)
-
-    seen: set[str] = set()
-    tokens = options.split(",")
-    for token in tokens:
-        if not token or "=" not in token:
-            msg = (
-                f"invalid userns '{userns}': expected comma-separated key=value options"
-            )
-            raise ValueError(msg)
-        key, value = token.split("=", maxsplit=1)
-        if not key or not value:
-            msg = f"invalid userns '{userns}': expected non-empty key=value options"
-            raise ValueError(msg)
-        if key in seen:
-            msg = f"invalid userns '{userns}': duplicate option key '{key}'"
-            raise ValueError(msg)
-        seen.add(key)
-
-        if mode == "keep-id":
-            if key in ("uid", "gid"):
-                _check_userns_uint(userns=userns, key=key, value=value, allow_zero=True)
-                continue
-            if key == "size":
-                _check_userns_uint(
-                    userns=userns,
-                    key=key,
-                    value=value,
-                    allow_zero=False,
-                )
-                continue
-            msg = (
-                f"invalid userns '{userns}': unsupported keep-id option '{key}' "
-                "(allowed: uid, gid, size)"
-            )
-            raise ValueError(msg)
-
-        if key == "size":
-            _check_userns_uint(userns=userns, key=key, value=value, allow_zero=False)
-            continue
-        if key in ("uidmapping", "gidmapping"):
-            match = USERNS_MAPPING_RE.fullmatch(value)
-            if match is None:
-                msg = (
-                    f"invalid userns '{userns}': {key} must be "
-                    "'<container-id>:<host-id>:<size>' or "
-                    "'<container-id>:@<host-id>:<size>'"
-                )
-                raise ValueError(msg)
-            length = int(match.group("length"))
-            if length <= 0:
-                msg = (
-                    f"invalid userns '{userns}': {key} mapping size must be "
-                    "greater than zero"
-                )
-                raise ValueError(msg)
-            continue
-        msg = (
-            f"invalid userns '{userns}': unsupported auto option '{key}' "
-            "(allowed: size, uidmapping, gidmapping)"
-        )
-        raise ValueError(msg)
-
-
-def _check_userns(userns: str) -> str:
-    if userns in ("host", "keep-id", "auto", "nomap"):
-        return userns
-    if userns.startswith("ns:"):
-        if NS_PATH_RE.fullmatch(userns):
-            return userns
-        msg = f"invalid userns '{userns}' (expected 'ns:<path>' with no spaces)"
-        raise ValueError(msg)
-    if userns.startswith("container:"):
-        ref = _extract_container_ref(userns)
-        if ref is None:
-            msg = (
-                f"invalid userns '{userns}' "
-                "(expected 'container:<tag>' with non-empty tag)"
-            )
-            raise ValueError(msg)
-        if not USERNS_CONTAINER_REF_RE.fullmatch(ref):
-            msg = f"invalid userns '{userns}' (container tag must use [A-Za-z0-9._-]+)"
-            raise ValueError(msg)
-        sanitized = SANITIZE_RE.sub("-", ref).strip("-")
-        if ref != sanitized:
-            msg = (
-                f"invalid userns '{userns}' (container tag sanitizes to '{sanitized}')"
-            )
-            raise ValueError(msg)
-        return userns
-    if ":" in userns:
-        mode, _, options = userns.partition(":")
-        if mode == "keep-id":
-            _check_userns_options(userns=userns, mode="keep-id", options=options)
-            return userns
-        if mode == "auto":
-            _check_userns_options(userns=userns, mode="auto", options=options)
-            return userns
-        if mode == "nomap":
-            msg = f"invalid userns '{userns}' ('nomap' does not accept options)"
-            raise ValueError(msg)
-    msg = (
-        f"invalid userns '{userns}' (expected one of: host|keep-id[:<opts>]|"
-        "auto[:<opts>]|nomap|container:<tag>|ns:<path>)"
-    )
-    raise ValueError(msg)
-
-
-def _check_namespace_mode(
-    mode: str,
-    *,
-    option: str,
-    literals: tuple[str, ...],
-    allow_empty: bool = False,
-) -> str:
-    if mode == "" and allow_empty:
-        return mode
-    if not mode:
-        msg = f"{option} entry cannot be empty"
-        raise ValueError(msg)
-    if mode in literals:
-        return mode
-    if mode.startswith("ns:"):
-        if NS_PATH_RE.fullmatch(mode):
-            return mode
-        msg = f"invalid {option} '{mode}' (expected 'ns:<path>' with no spaces)"
-        raise ValueError(msg)
-    ref = _extract_container_ref(mode)
-    if ref is not None:
-        if not USERNS_CONTAINER_REF_RE.fullmatch(ref):
-            msg = f"invalid {option} '{mode}' (container tag must use [A-Za-z0-9._-]+)"
-            raise ValueError(msg)
-        sanitized = SANITIZE_RE.sub("-", ref).strip("-")
-        if ref != sanitized:
-            msg = (
-                f"invalid {option} '{mode}' (container tag sanitizes to '{sanitized}')"
-            )
-            raise ValueError(msg)
-        return mode
-    expected = "|".join(literals)
-    empty = '""|' if allow_empty else ""
-    msg = (
-        f"invalid {option} '{mode}' (expected one of: {empty}{expected}|"
-        "container:<tag>|ns:<path>)"
-    )
-    raise ValueError(msg)
-
-
-def _check_ipc(ipc: str) -> str:
-    return _check_namespace_mode(
-        ipc,
-        option="ipc",
-        literals=("none", "host", "private", "shareable"),
-        allow_empty=True,
-    )
-
-
-def _check_pid(pid: str) -> str:
-    return _check_namespace_mode(
-        pid,
-        option="pid",
-        literals=("host", "private"),
-        allow_empty=False,
-    )
-
-
-def _check_uts(uts: str) -> str:
-    return _check_namespace_mode(
-        uts,
-        option="uts",
-        literals=("host", "private"),
-        allow_empty=False,
-    )
-
-
-def _check_health_log_destination(value: str) -> str:
-    if value in ("local", "events_logger"):
-        return value
-    if "\\" in value:
-        msg = (
-            f"invalid healthcheck.log.destination '{value}' "
-            "(expected POSIX-style path separators)"
-        )
-        raise ValueError(msg)
-    if any(part in (".", "..") for part in value.split("/")):
-        msg = (
-            f"invalid healthcheck.log.destination '{value}' "
-            "(path cannot contain '.' or '..' segments)"
-        )
-        raise ValueError(msg)
-    path = PosixPath(value)
-    if path.is_absolute():
-        msg = (
-            f"invalid healthcheck.log.destination '{value}' "
-            "(path must be project-root-relative)"
-        )
-        raise ValueError(msg)
-    return path.as_posix()
-
-
 def project_image_tag(project_version: str) -> str:
     """Derive the OCI tag for the configured project image.
 
@@ -549,30 +289,7 @@ type PercentOrCount = (
 )
 type TolerationOperator = Literal["equal", "exists"]
 type TolerationEffect = Literal["no-schedule", "prefer-no-schedule", "no-execute"]
-type Memory = Annotated[
-    str,
-    StringConstraints(strip_whitespace=True, pattern=r"^\d+[bkmg]?$"),
-]
-type ULimitName = Annotated[
-    str,
-    StringConstraints(
-        strip_whitespace=True,
-        min_length=1,
-        pattern=r"^[a-z][a-z0-9_]*$",
-    ),
-]
 type Capability = Annotated[NonEmpty[NoWhiteSpace], AfterValidator(_check_capability)]
-type SecurityOpt = Annotated[
-    NonEmpty[NoWhiteSpace],
-    AfterValidator(_check_security_opt),
-]
-type UserNS = Annotated[
-    NonEmpty[NoWhiteSpace],
-    AfterValidator(_check_userns),
-]
-type IPCMode = Annotated[NonEmpty[NoWhiteSpace], AfterValidator(_check_ipc)]
-type PIDMode = Annotated[NonEmpty[NoWhiteSpace], AfterValidator(_check_pid)]
-type UTSMode = Annotated[NonEmpty[NoWhiteSpace], AfterValidator(_check_uts)]
 type Timeout = Annotated[
     str,
     StringConstraints(
@@ -580,10 +297,6 @@ type Timeout = Annotated[
         min_length=1,
         pattern=r"^\d+(\.\d+)?[smhd]?$",
     ),
-]
-type HealthLogDestination = Annotated[
-    NonEmpty[NoCRLF],
-    AfterValidator(_check_health_log_destination),
 ]
 
 
@@ -599,6 +312,18 @@ def _dump_ignore_list(patterns: list[str]) -> str:
         seen.add(pattern)
         lines.append(pattern)
     return "\n".join(lines) + "\n"
+
+
+def _remove_legacy_publish_workflow(root: Path) -> None:
+    workflow = root / ".github" / "workflows" / "publish.yml"
+    try:
+        text = workflow.read_text(encoding="utf-8")
+    except OSError:
+        return
+    legacy_build = " ".join(("bertrand", "publish", "--repo"))
+    legacy_manifest = " ".join(("bertrand", "publish", "--manifest"))
+    if legacy_build in text and legacy_manifest in text:
+        workflow.unlink()
 
 
 @resource("bertrand")
@@ -2441,15 +2166,6 @@ class Bertrand(Resource):
         bertrand = config.get(Bertrand)
         if bertrand is None:
             return
-        jinja = jinja2.Environment(
-            autoescape=False,
-            undefined=jinja2.StrictUndefined,
-            keep_trailing_newline=True,
-            trim_blocks=False,
-            lstrip_blocks=False,
-        )
-        bertrand_version = packaging.version.parse(VERSION.bertrand)
-        python_version = packaging.version.parse(VERSION.python)
 
         # render worktree directories
         (config.root / "src").mkdir(parents=True, exist_ok=True)
@@ -2472,24 +2188,7 @@ class Bertrand(Resource):
         atomic_write_text(
             config.root / ".gitignore", _dump_ignore_list(gitignore), encoding="utf-8"
         )
-
-        # initialize CI publish action
-        publish_template = jinja.from_string(
-            locate_template("core", "publish.v1").read_text(encoding="utf-8")
-        )
-        publish_target = config.root / ".github" / "workflows" / "publish.yml"
-        publish_target.parent.mkdir(parents=True, exist_ok=True)
-        publish_target.write_text(
-            publish_template.render(
-                python_major=python_version.major,
-                python_minor=python_version.minor,
-                python_patch=python_version.micro,
-                bertrand_major=bertrand_version.major,
-                bertrand_minor=bertrand_version.minor,
-                bertrand_patch=bertrand_version.micro,
-            ),
-            encoding="utf-8",
-        )
+        _remove_legacy_publish_workflow(config.root)
 
     async def schema(self) -> dict[str, Any]:
         """Return the JSON schema for Bertrand configuration.
