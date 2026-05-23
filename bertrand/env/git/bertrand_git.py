@@ -90,6 +90,7 @@ WORKTREE_MOUNT: PosixPath = PosixPath("/bertrand")
 PROJECT_MOUNT: PosixPath = PosixPath("/.bertrand")
 CONTAINER_RUNTIME_MOUNT: PosixPath = PosixPath("/run/bertrand")
 CONTAINER_TMP_MOUNT: PosixPath = PosixPath("/tmp/bertrand")
+CONTAINER_ARTIFACT_MOUNT: PosixPath = CONTAINER_TMP_MOUNT / "artifacts"
 
 
 # In-container environment variables for relevant configuration, which are set either

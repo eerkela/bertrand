@@ -8,8 +8,8 @@
     "C_Cpp.intelliSenseEngine": "disabled",
     "clangd.path": "clangd",
     "clangd.arguments": [
-      "--compile-commands-dir=/tmp/bertrand/artifacts",
-      "--config-file=/tmp/bertrand/artifacts/.clangd"
+      "--compile-commands-dir={{ artifact_path }}",
+      "--config-file={{ artifact_path }}/.clangd"
     ],
     "[python]": {
       "editor.defaultFormatter": "charliermarsh.ruff",

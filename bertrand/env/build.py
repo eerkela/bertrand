@@ -16,9 +16,9 @@ from .build_args import (
     IMAGE_BUILD_ARGS_CONFIG_SETTING,
     decode_image_build_args,
 )
-from .git import run
+from .git import CONTAINER_ARTIFACT_MOUNT, run
 
-ARTIFACT_ROOT = Path("/tmp/bertrand/artifacts")
+ARTIFACT_ROOT = Path(CONTAINER_ARTIFACT_MOUNT)
 CONANFILE = ARTIFACT_ROOT / "conanfile.py"
 CONAN_LOCK = ARTIFACT_ROOT / "conan.lock"
 CONAN_OUTPUT = ARTIFACT_ROOT / "conan"

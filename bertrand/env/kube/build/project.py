@@ -78,6 +78,7 @@ class ProjectImageBuild:
         external_image: str | None = None,
         auth_id: KubeName | None = None,
         on_update: Callable[[BuildKitBuildRecord], Awaitable[None]] | None = None,
+        ensure_crds: bool = True,
     ) -> ProjectImagePublication:
         """Publish this project image manifest and update its lifecycle record.
 
@@ -94,6 +95,10 @@ class ProjectImageBuild:
             registry.
         on_update : Callable[[BuildKitBuildRecord], Awaitable[None]] | None, optional
             Async callback invoked when the durable request status changes.
+        ensure_crds : bool, optional
+            Whether to converge the BuildKit/image lifecycle CRDs before submission.
+            Disable only from in-cluster dev commands whose service account should
+            not own CRD-definition writes.
 
         Returns
         -------
@@ -118,6 +123,7 @@ class ProjectImageBuild:
             timeout=deadline - loop.time(),
             external_image=external_image,
             auth_id=auth_id,
+            ensure_crds=ensure_crds,
         )
         request = await wait_buildkit_build(
             kube,
@@ -158,6 +164,7 @@ class ProjectImageBuild:
         timeout: float = INFINITY,
         external_image: str | None = None,
         auth_id: KubeName | None = None,
+        ensure_crds: bool = True,
     ) -> BuildKitBuildRecord:
         """Submit this project image as a durable BuildKit request.
 
@@ -172,6 +179,8 @@ class ProjectImageBuild:
         auth_id : KubeName | None, optional
             Secret capability ID containing Docker auth JSON for the external
             registry.
+        ensure_crds : bool, optional
+            Whether to converge the BuildKit/image lifecycle CRDs before submission.
 
         Returns
         -------
@@ -188,8 +197,9 @@ class ProjectImageBuild:
             raise TimeoutError(msg)
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
-        await ensure_buildkit_build_crd(kube, timeout=deadline - loop.time())
-        await ensure_project_image_crd(kube, timeout=deadline - loop.time())
+        if ensure_crds:
+            await ensure_buildkit_build_crd(kube, timeout=deadline - loop.time())
+            await ensure_project_image_crd(kube, timeout=deadline - loop.time())
         spec = self.spec.with_external_publication(
             external_image=external_image,
             auth_id=auth_id,

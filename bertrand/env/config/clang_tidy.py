@@ -19,7 +19,7 @@ from pydantic import (
     model_validator,
 )
 
-from bertrand.env.git import CONTAINER_TMP_MOUNT, Scalar, atomic_write_text
+from bertrand.env.git import CONTAINER_ARTIFACT_MOUNT, Scalar, atomic_write_text
 
 from .core import (
     Config,
@@ -273,7 +273,7 @@ class ClangTidy(Resource):
             content["CheckOptions"] = check_options
 
         atomic_write_text(
-            CONTAINER_TMP_MOUNT / ".clang-tidy",
+            CONTAINER_ARTIFACT_MOUNT / ".clang-tidy",
             dump_yaml(content, resource_name=self.name),
             encoding="utf-8",
         )

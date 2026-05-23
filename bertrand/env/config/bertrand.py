@@ -2162,7 +2162,8 @@ class Bertrand(Resource):
 
     async def render(self, config: Config, *, image_build: bool) -> None:
         """Render Bertrand-managed project files."""
-        del image_build
+        if image_build:
+            return
         bertrand = config.get(Bertrand)
         if bertrand is None:
             return

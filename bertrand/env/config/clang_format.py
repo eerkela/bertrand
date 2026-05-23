@@ -20,7 +20,7 @@ from pydantic import (
     model_validator,
 )
 
-from bertrand.env.git import CONTAINER_TMP_MOUNT, atomic_write_text
+from bertrand.env.git import CONTAINER_ARTIFACT_MOUNT, atomic_write_text
 
 from .core import (
     Config,
@@ -4965,7 +4965,7 @@ class ClangFormat(Resource):
             "WrapNamespaceBodyWithEmptyLines": model.WrapNamespaceBodyWithEmptyLines,
         }
         atomic_write_text(
-            CONTAINER_TMP_MOUNT / ".clang-format",
+            CONTAINER_ARTIFACT_MOUNT / ".clang-format",
             dump_yaml(content, resource_name=self.name),
             encoding="utf-8",
         )

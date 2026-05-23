@@ -20,7 +20,7 @@ from conan.errors import ConanException
 from conan.internal.model.conf import ConfDefinition
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, StringConstraints
 
-from bertrand.env.git import CONTAINER_TMP_MOUNT, Scalar, atomic_write_text, run
+from bertrand.env.git import CONTAINER_ARTIFACT_MOUNT, Scalar, atomic_write_text, run
 from bertrand.env.version import VERSION
 
 from .core import (
@@ -33,9 +33,9 @@ from .core import (
     resource,
 )
 
-CONAN_CACHE: PosixPath = PosixPath("/root/.conan2")
-CONAN_HOME: PosixPath = PosixPath("/root/.conan2")
-CCACHE_CACHE: PosixPath = PosixPath("/root/.cache/ccache")
+CONAN_CACHE: PosixPath = PosixPath("/opt/conan")
+CONAN_HOME: PosixPath = PosixPath("/opt/conan")
+CCACHE_CACHE: PosixPath = PosixPath("/tmp/.cache/ccache")
 CONAN_REF_TOKEN_RE = re.compile(r"^[a-z0-9_][a-z0-9_+.-]{1,100}\Z")
 
 
@@ -514,7 +514,9 @@ class ConanConfig(Resource):
         lines.append("")
 
         atomic_write_text(
-            CONTAINER_TMP_MOUNT / "conanfile.py", "\n".join(lines), encoding="utf-8"
+            CONTAINER_ARTIFACT_MOUNT / "conanfile.py",
+            "\n".join(lines),
+            encoding="utf-8",
         )
 
     @staticmethod

@@ -12,7 +12,7 @@ from typing import Annotated, Any, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, NonNegativeInt, model_validator
 
-from bertrand.env.git import CONTAINER_TMP_MOUNT, atomic_write_text
+from bertrand.env.git import CONTAINER_ARTIFACT_MOUNT, atomic_write_text
 
 from .core import Config, NoCRLF, NonEmpty, RegexPattern, Resource, dump_yaml, resource
 
@@ -712,7 +712,11 @@ class Clangd(Resource):
                 }
             content += "---\n" + dump_yaml(fragment, resource_name=self.name)
 
-        atomic_write_text(CONTAINER_TMP_MOUNT / ".clangd", content, encoding="utf-8")
+        atomic_write_text(
+            CONTAINER_ARTIFACT_MOUNT / ".clangd",
+            content,
+            encoding="utf-8",
+        )
 
     async def schema(self) -> dict[str, Any]:
         """Return the clangd configuration schema.

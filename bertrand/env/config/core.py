@@ -6,7 +6,8 @@ import importlib.resources as importlib_resources
 import re
 import string
 import uuid
-from collections.abc import Callable, Sequence
+from collections.abc import AsyncIterator, Callable, Sequence
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path, PosixPath
 from typing import (
@@ -521,8 +522,9 @@ class Resource:
             The active configuration context, which provides access to the valid
             outputs from the `validate()` phase.
         image_build : bool
-            Whether this hook is being invoked from an image-build context.  Hooks
-            that write container-local artifacts should only do so when this is true.
+            Whether this hook is being invoked from an image-build or dev-container
+            context. Hooks must use this to choose either source-tree artifacts
+            (``False``) or container-local artifacts (``True``), never both.
 
         Notes
         -----
@@ -673,7 +675,7 @@ class Config:
 
     repo: GitRepository
     worktree: RelativePath
-    kube: Kube = field(repr=False)
+    kube: Kube | None = field(repr=False)
     timeout: float
     resources: dict[ResourceName, BaseModel | None] = field(
         default_factory=lambda: {"bertrand": None}
@@ -755,9 +757,10 @@ class Config:
             )
             raise ValueError(msg)
 
-        async with ClusterLock(
+        async with _optional_metadata_lock(
             kube,
-            _metadata_lock_key(repo, worktree),
+            repo=repo,
+            worktree=worktree,
             timeout=timeout,
         ):
             self = cls(
@@ -774,6 +777,62 @@ class Config:
                 }
             )
             return self
+
+    @classmethod
+    async def load_snapshot(
+        cls,
+        root: Path,
+        *,
+        timeout: float = INFINITY,
+    ) -> Self:
+        """Load config data from a standalone worktree snapshot.
+
+        This loader is for image-build contexts where the source tree has been copied
+        into the image build without Git metadata or Kubernetes credentials. Snapshot
+        configs can parse and render container-local artifacts, but cannot address
+        cluster resources or repository-scoped identities.
+
+        Parameters
+        ----------
+        root : Path
+            Root directory of the copied worktree snapshot.
+        timeout : float, optional
+            Stored operation budget for render hooks. No cluster lock is acquired.
+
+        Returns
+        -------
+        Self
+            A config context ready to parse via ``async with``.
+
+        Raises
+        ------
+        FileNotFoundError
+            If ``root`` does not exist.
+        NotADirectoryError
+            If ``root`` is not a directory.
+        """
+        root = root.expanduser().resolve()
+        if not root.exists():
+            msg = f"config snapshot root does not exist: {root}"
+            raise FileNotFoundError(msg)
+        if not root.is_dir():
+            msg = f"config snapshot root is not a directory: {root}"
+            raise NotADirectoryError(msg)
+
+        self = cls(
+            repo=GitRepository(root / ".git"),
+            worktree=Path(),
+            kube=None,
+            timeout=timeout,
+        )
+        self.resources.update(
+            {
+                r.name: None
+                for r in RESOURCES
+                if r.paths and all((root / p).exists() for p in r.paths)
+            }
+        )
+        return self
 
     def _merge_fragment(
         self,
@@ -844,9 +903,10 @@ class Config:
 
         old_resources = self.resources.copy()
         try:
-            async with ClusterLock(
+            async with _optional_metadata_lock(
                 self.kube,
-                _metadata_lock_key(self.repo, self.root),
+                repo=self.repo,
+                worktree=self.root,
                 timeout=self.timeout,
             ):
                 # invoke `init()` hooks for all resources to get baseline snapshot
@@ -1046,8 +1106,8 @@ class Config:
         ----------
         image_build : bool, optional
             Whether this render pass is preparing an image-build context.  Normal
-            sync calls render only worktree artifacts; image-build sync calls may
-            also render container-local artifacts.
+            sync calls render only worktree artifacts; image-build sync calls render
+            only container-local artifacts and must not mutate source files.
 
         Raises
         ------
@@ -1061,9 +1121,10 @@ class Config:
             raise RuntimeError(msg)
 
         # invoke render hooks for all resources in deterministic order
-        async with ClusterLock(
+        async with _optional_metadata_lock(
             self.kube,
-            _metadata_lock_key(self.repo, self.root),
+            repo=self.repo,
+            worktree=self.root,
             timeout=self.timeout,
         ):
             for name in sorted(self.resources):
@@ -1073,3 +1134,22 @@ class Config:
                 except Exception as err:
                     msg = f"failed to render resource '{r.name}': {err}"
                     raise OSError(msg) from err
+
+
+@asynccontextmanager
+async def _optional_metadata_lock(
+    kube: Kube | None,
+    *,
+    repo: GitRepository,
+    worktree: Path,
+    timeout: float,
+) -> AsyncIterator[None]:
+    if kube is None:
+        yield
+        return
+    async with ClusterLock(
+        kube,
+        _metadata_lock_key(repo, worktree),
+        timeout=timeout,
+    ):
+        yield

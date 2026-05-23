@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING
 
 from bertrand.env.build_args import (
@@ -12,23 +13,21 @@ from bertrand.env.build_args import (
     encode_image_build_args,
     normalize_image_build_args,
 )
+from bertrand.env.cli.internal.context import image_build_context, live_project_context
 from bertrand.env.config.bertrand import Bertrand
 from bertrand.env.config.core import Config, _metadata_lock_key
 from bertrand.env.config.python import PyProject
 from bertrand.env.git import (
-    INFINITY,
-    WORKTREE_MOUNT,
     atomic_write_text,
     inside_container,
     inside_image,
     run,
 )
-from bertrand.env.kube.api.client import Kube
 from bertrand.env.kube.lock.cluster import ClusterLock
 
 if TYPE_CHECKING:
     import argparse
-    from collections.abc import Sequence
+    from collections.abc import AsyncIterator, Sequence
 
 
 def bertrand_build(args: argparse.Namespace) -> None:
@@ -44,8 +43,11 @@ def bertrand_build(args: argparse.Namespace) -> None:
     async def build() -> None:
         cli_args = _parse_build_args(args.build_arg)
         resolved_args = _resolve_image_build_args(cli_args)
-        with await Kube.host(timeout=INFINITY) as kube:
-            async with await Config.load(WORKTREE_MOUNT, kube=kube) as config:
+        if inside_container():
+            async with live_project_context("build") as context:
+                await _build(context.config, build_args=resolved_args)
+        else:
+            async with image_build_context("build") as config:
                 await _build(config, build_args=resolved_args)
 
     asyncio.run(build())
@@ -141,11 +143,7 @@ async def _build(config: Config, *, build_args: dict[str, str]) -> None:
     if not inside_container():
         sync_cmd.append("--no-editable")
 
-    async with ClusterLock(
-        config.kube,
-        _metadata_lock_key(config.repo, config.root),
-        timeout=config.timeout,
-    ):
+    async with _build_lock(config):
         await config.sync(image_build=True)
         await run(
             [
@@ -163,3 +161,16 @@ def _uv_build_arg_settings(build_args: dict[str, str]) -> list[str]:
         "--config-setting",
         f"{IMAGE_BUILD_ARGS_CONFIG_SETTING}={encode_image_build_args(build_args)}",
     ]
+
+
+@asynccontextmanager
+async def _build_lock(config: Config) -> AsyncIterator[None]:
+    if config.kube is None:
+        yield
+        return
+    async with ClusterLock(
+        config.kube,
+        _metadata_lock_key(config.repo, config.root),
+        timeout=config.timeout,
+    ):
+        yield

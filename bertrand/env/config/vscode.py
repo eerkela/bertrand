@@ -1,17 +1,19 @@
 """Render VSCode workspace configuration.
 
-This resource generates `vscode.code-workspace` artifact from a standardized
-`[tool.vscode]` schema stored in project configuration.  The available options are
-exhaustively listed in a self-documenting fashion, and may be customized accordingly.
+This resource generates an ephemeral VSCode workspace artifact for development
+containers.  The artifact is rendered inside the container context and is not written
+to the project worktree.
 """
 
 from __future__ import annotations
 
-from pathlib import PosixPath
-
 import jinja2
 
-from bertrand.env.git import WORKTREE_MOUNT
+from bertrand.env.git import (
+    CONTAINER_ARTIFACT_MOUNT,
+    WORKTREE_MOUNT,
+    atomic_write_text,
+)
 
 from .core import (
     Config,
@@ -24,20 +26,23 @@ from .core import (
 # settings.
 
 
-VSCODE_WORKSPACE_FILE: PosixPath = PosixPath(".vscode/vscode.code-workspace")
+VSCODE_WORKSPACE_FILE = CONTAINER_ARTIFACT_MOUNT / "vscode.code-workspace"
 
 
-@resource("vscode", paths={VSCODE_WORKSPACE_FILE})
+@resource("vscode")
 class VSCodeWorkspace(Resource):
-    """Render a VSCode managed workspace JSON file.
+    """Render a VSCode managed workspace artifact.
 
     The workspace lets VSCode attach to a running container context through the
-    remote-containers extension and mount its internal toolchain.
+    remote-containers extension and mount its internal toolchain without writing
+    editor state into the source worktree.
     """
 
     async def render(self, config: Config, *, image_build: bool) -> None:
-        """Render the workspace file."""
-        del image_build
+        """Render the workspace artifact inside image/dev contexts."""
+        if not image_build:
+            return
+        del config
         jinja = jinja2.Environment(
             autoescape=False,
             undefined=jinja2.StrictUndefined,
@@ -48,10 +53,10 @@ class VSCodeWorkspace(Resource):
         template = jinja.from_string(
             locate_template("core", "vscode-workspace.v1").read_text(encoding="utf-8")
         )
-        target = config.root / VSCODE_WORKSPACE_FILE
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(
+        atomic_write_text(
+            VSCODE_WORKSPACE_FILE,
             template.render(
+                artifact_path=CONTAINER_ARTIFACT_MOUNT.as_posix(),
                 mount_path=WORKTREE_MOUNT.as_posix(),
             ),
             encoding="utf-8",

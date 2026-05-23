@@ -15,7 +15,7 @@ from bertrand.env.version import VERSION
 
 from .core import Config, Resource, Trimmed, resource
 
-UV_CACHE: PosixPath = PosixPath("/root/.cache/uv")
+UV_CACHE: PosixPath = PosixPath("/tmp/.cache/uv")
 
 
 @resource("uv")

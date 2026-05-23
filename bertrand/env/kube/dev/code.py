@@ -10,14 +10,14 @@ from dataclasses import dataclass, field
 
 from bertrand.env.config.bertrand import Bertrand, Editor
 from bertrand.env.config.core import Config
-from bertrand.env.config.vscode import VSCODE_WORKSPACE_FILE
+from bertrand.env.config.vscode import VSCODE_WORKSPACE_FILE, VSCodeWorkspace
 from bertrand.env.git import (
     PROJECT_MOUNT,
     REPO_ID_ENV,
     WORKTREE_ENV,
     WORKTREE_MOUNT,
     GitRepository,
-    inside_image,
+    inside_container,
 )
 from bertrand.env.kube.api.client import Kube
 from bertrand.env.kube.dev.mailbox import (
@@ -112,7 +112,7 @@ class CodeOpen:
         RuntimeError
             If required dev-session environment variables or config are missing.
         """
-        if not inside_image():
+        if not inside_container():
             msg = (
                 "`bertrand code` requires a live Bertrand dev Pod context. Run "
                 "`bertrand enter` first."
@@ -131,6 +131,7 @@ class CodeOpen:
                 kube=kube,
                 repo=GitRepository(git_dir=PROJECT_MOUNT / ".git"),
             ) as config:
+                config.resources[VSCodeWorkspace.name] = None
                 await config.sync(image_build=True)
                 bertrand = config.get(Bertrand)
                 if bertrand is None:
@@ -148,7 +149,7 @@ class CodeOpen:
             worktree=worktree,
             pod_name=pod_name,
             container_name=primary_container,
-            workspace_path=WORKTREE_MOUNT.as_posix(),
+            workspace_path=VSCODE_WORKSPACE_FILE.as_posix(),
             editor=editor,
             block=self.block,
             deadline=self.deadline,
@@ -162,9 +163,9 @@ def _request_prereqs(editor: Editor) -> None:
         raise ValueError(msg)
     if not VSCODE_WORKSPACE_FILE.exists() or not VSCODE_WORKSPACE_FILE.is_file():
         msg = (
-            "VSCode workspace file not found at expected container path: "
+            "VSCode workspace artifact not found at expected container path: "
             f"{VSCODE_WORKSPACE_FILE}. Try re-running `bertrand code` after "
-            "regenerating the project configuration."
+            "refreshing internal config artifacts."
         )
         raise RuntimeError(msg)
     for tool, hint in (

@@ -10,9 +10,7 @@ import jinja2
 import packaging.version
 
 from bertrand.env.build_args import normalize_image_build_args
-from bertrand.env.config.conan import CCACHE_CACHE, CONAN_HOME
 from bertrand.env.config.core import locate_template
-from bertrand.env.config.uv import UV_CACHE
 from bertrand.env.git import WORKTREE_MOUNT
 from bertrand.env.version import VERSION
 
@@ -99,9 +97,6 @@ def _render_containerfile(model: Bertrand.Model) -> str:
         cpus=0,
         page_size_kib=page_size_kib,
         env_mount=str(WORKTREE_MOUNT),
-        uv_cache=str(UV_CACHE),
-        conan_home=str(CONAN_HOME),
-        ccache_dir=str(CCACHE_CACHE),
         build_args=_build_arg_specs(image_config.args),
         run_mounts=[
             *_capability_mount_specs("secret", image_config.secrets),

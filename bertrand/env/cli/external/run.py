@@ -84,84 +84,148 @@ async def bertrand_run(
         )
         raise ValueError(msg)
     repo, worktree = await resolve_project_worktree(target)
-    runtime_args = tuple(args)
     with await Kube.host(timeout=INFINITY) as kube:
         config = await Config.load(worktree, kube=kube, repo=repo, timeout=INFINITY)
         async with config:
-            bertrand = config.get(Bertrand)
-            topology = "none" if bertrand is None else bertrand.topology.kind
-            attach_mode = _resolve_attach_mode(
-                bertrand,
-                detach=detach,
-                tty=tty,
-            )
-            primary_container = _primary_container_name(bertrand)
-
-            await _assert_build_runtime(kube, timeout=INFINITY)
-            build = project_image_build(config, repo_id=config.repo.repo_id)
-            build_follower = None if detach else BuildLogFollower(kube)
-            try:
-                publication = await build.publish(
-                    kube,
-                    timeout=INFINITY,
-                    on_update=(
-                        None if build_follower is None else build_follower.update
-                    ),
-                )
-            finally:
-                if build_follower is not None:
-                    await build_follower.close()
-
-            image_ref = publication.record.digest_ref
-            interactive = attach_mode == "tty"
-
-            if topology == "job":
-                job = await create_project_workload_job_run(
-                    kube,
-                    config=config,
-                    repo_id=config.repo.repo_id,
-                    timeout=INFINITY,
-                    image_ref=image_ref,
-                    primary_args=runtime_args,
-                    interactive=interactive,
-                )
-                if detach:
-                    print(f"job: {job.name}")
-                    return
-                await _run_job_foreground(
-                    kube,
-                    job,
-                    primary_container=primary_container,
-                    attach_tty=interactive,
-                    explicit_tty=tty is True,
-                )
-                return
-
-            controller = await ensure_project_workload_controller(
+            await run_configured_project(
                 kube,
                 config=config,
                 repo_id=config.repo.repo_id,
-                timeout=INFINITY,
-                image_ref=image_ref,
-                primary_args=runtime_args,
-                interactive=interactive,
+                detach=detach,
+                tty=tty,
+                args=args,
+                ensure_build_crds=True,
             )
-            if isinstance(controller, Deployment):
-                if detach:
-                    print(f"deployment: {controller.name}")
-                    return
-                await _run_deployment_foreground(
-                    kube,
-                    controller,
-                    primary_container=primary_container,
-                    attach_tty=interactive,
-                    explicit_tty=tty is True,
-                )
-                return
-            if isinstance(controller, CronJob):
-                print(f"cronjob: {controller.name}")
-                return
-            print("workload: none")
+
+
+async def run_configured_project(
+    kube: Kube,
+    *,
+    config: Config,
+    repo_id: str,
+    detach: bool,
+    tty: bool | None,
+    args: Sequence[str],
+    ensure_build_crds: bool,
+) -> None:
+    """Build and schedule the active project config on a Kubernetes cluster.
+
+    Parameters
+    ----------
+    kube : Kube
+        Active Kubernetes API context.
+    config : Config
+        Active project configuration context.
+    repo_id : str
+        Stable repository UUID for image and workload identity.
+    detach : bool
+        Whether to return after workload submission/convergence.
+    tty : bool | None
+        Foreground attachment mode. ``True`` forces TTY attachment, ``False`` forces
+        log streaming, and ``None`` selects automatically.
+    args : Sequence[str]
+        Runtime arguments appended to the configured primary container command.
+    ensure_build_crds : bool
+        Whether to converge BuildKit/image lifecycle CRDs before submitting the
+        build request. Host-side commands should enable this; in-cluster dev commands
+        should rely on ``bertrand init`` and avoid CRD-definition write privileges.
+
+    Raises
+    ------
+    RuntimeError
+        If ``config`` is inactive.
+    ValueError
+        If detached TTY mode is requested or the project has no runnable workload.
+    """
+    if not config:
+        msg = "`bertrand run` requires an active project config context"
+        raise RuntimeError(msg)
+    if detach and tty is True:
+        msg = (
+            "`bertrand run --detach --tty` is invalid because detached runs do not "
+            "attach"
+        )
+        raise ValueError(msg)
+
+    bertrand = config.get(Bertrand)
+    if bertrand is None or not bertrand.containers:
+        msg = (
+            "`bertrand run` requires at least one `[[tool.bertrand.containers]]` entry"
+        )
+        raise ValueError(msg)
+
+    runtime_args = tuple(args)
+    topology = bertrand.topology.kind
+    attach_mode = _resolve_attach_mode(
+        bertrand,
+        detach=detach,
+        tty=tty,
+    )
+    primary_container = _primary_container_name(bertrand)
+
+    await _assert_build_runtime(kube, timeout=INFINITY)
+    build = project_image_build(config, repo_id=repo_id)
+    build_follower = None if detach else BuildLogFollower(kube)
+    try:
+        publication = await build.publish(
+            kube,
+            timeout=INFINITY,
+            on_update=None if build_follower is None else build_follower.update,
+            ensure_crds=ensure_build_crds,
+        )
+    finally:
+        if build_follower is not None:
+            await build_follower.close()
+
+    image_ref = publication.record.digest_ref
+    interactive = attach_mode == "tty"
+
+    if topology == "job":
+        job = await create_project_workload_job_run(
+            kube,
+            config=config,
+            repo_id=repo_id,
+            timeout=INFINITY,
+            image_ref=image_ref,
+            primary_args=runtime_args,
+            interactive=interactive,
+        )
+        if detach:
+            print(f"job: {job.name}")
+            return
+        await _run_job_foreground(
+            kube,
+            job,
+            primary_container=primary_container,
+            attach_tty=interactive,
+            explicit_tty=tty is True,
+        )
+        return
+
+    controller = await ensure_project_workload_controller(
+        kube,
+        config=config,
+        repo_id=repo_id,
+        timeout=INFINITY,
+        image_ref=image_ref,
+        primary_args=runtime_args,
+        interactive=interactive,
+    )
+    if isinstance(controller, Deployment):
+        if detach:
+            print(f"deployment: {controller.name}")
+            return
+        await _run_deployment_foreground(
+            kube,
+            controller,
+            primary_container=primary_container,
+            attach_tty=interactive,
+            explicit_tty=tty is True,
+        )
+        return
+    if isinstance(controller, CronJob):
+        print(f"cronjob: {controller.name}")
+        return
 
 
 def _resolve_attach_mode(

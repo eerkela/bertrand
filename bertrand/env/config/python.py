@@ -477,7 +477,8 @@ class PyProject(Resource):
         OSError
             If the pyproject file cannot be read, parsed, or updated safely.
         """
-        del image_build
+        if image_build:
+            return
         python = config.get(PyProject)
         if python is None:
             return
