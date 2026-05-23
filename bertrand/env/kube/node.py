@@ -359,6 +359,28 @@ class Node(KubeMetadata[kubernetes.client.V1Node]):
         return tuple(out)
 
     @property
+    def pod_cidrs(self) -> tuple[str, ...]:
+        """Return Pod CIDRs assigned to this Node.
+
+        Returns
+        -------
+        tuple[str, ...]
+            Non-empty CIDRs from `spec.podCIDRs` and `spec.podCIDR`.
+        """
+        spec = self._obj.spec
+        if spec is None:
+            return ()
+        values = list(spec.pod_cid_rs or ())
+        if spec.pod_cidr:
+            values.append(spec.pod_cidr)
+        out: list[str] = []
+        for value in values:
+            cidr = (value or "").strip()
+            if cidr and cidr not in out:
+                out.append(cidr)
+        return tuple(out)
+
+    @property
     def roles(self) -> frozenset[str]:
         """Return Kubernetes role labels.
 

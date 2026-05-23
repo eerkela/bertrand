@@ -243,6 +243,117 @@ async def start_microceph(*, timeout: float) -> None:
         raise OSError(msg) from err
 
 
+async def microceph_join_token(name: str, *, timeout: float) -> str:
+    """Generate one MicroCeph join token from this cluster.
+
+    Parameters
+    ----------
+    name : str
+        Intended MicroCeph member name for the joining host.
+    timeout : float
+        Maximum command runtime in seconds.
+
+    Returns
+    -------
+    str
+        Sensitive MicroCeph join token.
+
+    Raises
+    ------
+    OSError
+        If MicroCeph is not ready or the token cannot be generated.
+    TimeoutError
+        If `timeout` is non-positive.
+    ValueError
+        If `name` is empty.
+    """
+    if timeout <= 0:
+        msg = "MicroCeph cluster add timeout must be non-negative"
+        raise TimeoutError(msg)
+    name = name.strip()
+    if not name:
+        msg = "MicroCeph join token requires a non-empty node name"
+        raise ValueError(msg)
+    if not await microceph_cluster_ready(timeout=timeout):
+        msg = "MicroCeph must be running before generating a join token"
+        raise OSError(msg)
+    result = await run(
+        ["microceph", "cluster", "add", name],
+        capture_output=True,
+        timeout=timeout,
+    )
+    token = result.stdout.strip()
+    if not token:
+        msg = "MicroCeph cluster add returned an empty join token"
+        raise OSError(msg)
+    return token
+
+
+async def join_microceph_cluster(
+    token: str,
+    *,
+    microceph_ip: str | None = None,
+    timeout: float,
+) -> None:
+    """Join the local shared MicroCeph runtime to an existing cluster.
+
+    Parameters
+    ----------
+    token : str
+        Sensitive MicroCeph join token produced by ``microceph cluster add``.
+    microceph_ip : str | None, optional
+        Optional bind address passed to ``--microceph-ip``.
+    timeout : float
+        Maximum join/readiness budget in seconds.
+
+    Raises
+    ------
+    OSError
+        If this host already appears to belong to a MicroCeph cluster or join fails.
+    TimeoutError
+        If `timeout` is non-positive.
+    ValueError
+        If `token` is empty.
+    """
+    if timeout <= 0:
+        msg = "MicroCeph join timeout must be non-negative."
+        raise TimeoutError(msg)
+    token = token.strip()
+    if not token:
+        msg = "MicroCeph join token cannot be empty"
+        raise ValueError(msg)
+    if await microceph_cluster_ready(timeout=timeout):
+        msg = (
+            "local MicroCeph already reports a ready cluster; refusing to join it to "
+            "another cluster.  Remove or reset the existing MicroCeph membership "
+            "outside Bertrand if this host should join a different cluster."
+        )
+        raise OSError(msg)
+
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    argv = ["microceph", "cluster", "join", token]
+    if microceph_ip is not None:
+        microceph_ip = microceph_ip.strip()
+        if microceph_ip:
+            argv.extend(["--microceph-ip", microceph_ip])
+    async with HostLock(CEPH_LOCK_FILE, timeout=deadline - loop.time()):
+        await run(argv, capture_output=True, timeout=deadline - loop.time())
+
+        async def ready(remaining: float) -> None:
+            if await microceph_cluster_ready(timeout=remaining):
+                return
+            msg = "MicroCeph has not joined the cluster yet"
+            raise TimeoutError(msg)
+
+        await until(
+            ready,
+            timeout=deadline - loop.time(),
+            interval=0.5,
+            action="waiting for MicroCeph cluster join",
+        )
+
+
 async def _ceph_csi_storage_classes(*, timeout: float) -> list[str]:
     try:
         result = await kubectl(

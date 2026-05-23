@@ -526,6 +526,24 @@ class HTTPRoute:
         """
         return self._obj.labels
 
+    @property
+    def hostnames(self) -> tuple[str, ...]:
+        """Return HTTPRoute hostnames.
+
+        Returns
+        -------
+        tuple[str, ...]
+            Hostnames listed under `spec.hostnames`.
+        """
+        hostnames = self._obj.spec.get("hostnames", ())
+        if not isinstance(hostnames, list):
+            return ()
+        return tuple(
+            value
+            for value in (str(hostname or "").strip() for hostname in hostnames)
+            if value
+        )
+
     async def delete(self, kube: Kube, *, timeout: float) -> None:
         """Delete this HTTPRoute from the cluster.
 

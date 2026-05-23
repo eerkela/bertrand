@@ -23,6 +23,7 @@ from bertrand.env.git import BERTRAND_ENV, BERTRAND_NAMESPACE
 from bertrand.env.kube.ceph.api import (
     LOOP_OSD_SIZE_PATTERN,
     LOOP_OSD_SPEC_PATTERN,
+    BlockOSDSpec,
     CephCapacitySnapshot,
     CephOSD,
     LoopOSDSpec,
@@ -62,8 +63,11 @@ STORAGE_NODE_REPORT_MAX_AGE_SECONDS = 120
 type _Watermark = Annotated[float, Field(gt=0.0, lt=1.0)]
 type _LoopSize = Annotated[str, Field(pattern=LOOP_OSD_SIZE_PATTERN)]
 type _LoopSpec = Annotated[str, Field(pattern=LOOP_OSD_SPEC_PATTERN)]
-type StorageActionOperation = Literal["grow", "shrink"]
+type _DevicePath = Annotated[str, Field(min_length=1, pattern=r"^/.*")]
+type StorageActionOperation = Literal["grow", "shrink", "add-block"]
 type StorageActionPhase = Literal["Pending", "Running", "Succeeded", "Failed"]
+type StorageOSDOrigin = Literal["autoscaled-loop", "manual-block"]
+type StorageOSDQuality = Literal["elastic", "durable"]
 
 
 class _CephStoragePolicySpec(BaseModel):
@@ -110,6 +114,11 @@ class _CephStoragePolicyStatus(BaseModel):
     succeeded_actions: int = 0
     failed_actions: int = 0
     managed_osds: int = 0
+    loop_osds: int = 0
+    block_osds: int = 0
+    elastic_bytes: int = 0
+    durable_bytes: int = 0
+    block_preferred: bool = False
     shrink_candidates: int = 0
     last_shrink_at: datetime | None = None
     last_reconciled_at: datetime | None = None
@@ -161,6 +170,11 @@ class _CephStorageActionSpec(BaseModel):
     node_name: Annotated[str, Field(min_length=1)]
     loop_spec: _LoopSpec | None = None
     osd_id: Annotated[int, Field(ge=0)] | None = None
+    device: _DevicePath | None = None
+    wal_device: _DevicePath | None = None
+    db_device: _DevicePath | None = None
+    encrypt: bool = False
+    wipe: bool = False
     reason: Annotated[str, Field(min_length=1)]
 
     @field_validator("loop_spec")
@@ -173,13 +187,47 @@ class _CephStorageActionSpec(BaseModel):
     @model_validator(mode="after")
     def _validate_operation_contract(self) -> _CephStorageActionSpec:
         if self.operation == "grow":
-            if self.loop_spec is None or self.osd_id is not None:
-                msg = "grow actions require loop_spec and cannot set osd_id"
+            if (
+                self.loop_spec is None
+                or self.osd_id is not None
+                or self.device is not None
+                or self.wal_device is not None
+                or self.db_device is not None
+                or self.encrypt
+                or self.wipe
+            ):
+                msg = (
+                    "grow actions require loop_spec and cannot set osd_id or block "
+                    "device fields"
+                )
                 raise ValueError(msg)
             return self
-        if self.osd_id is None or self.loop_spec is not None:
-            msg = "shrink actions require osd_id and cannot set loop_spec"
+        if self.operation == "shrink":
+            if (
+                self.osd_id is None
+                or self.loop_spec is not None
+                or self.device is not None
+                or self.wal_device is not None
+                or self.db_device is not None
+                or self.encrypt
+                or self.wipe
+            ):
+                msg = (
+                    "shrink actions require osd_id and cannot set loop_spec or block "
+                    "device fields"
+                )
+                raise ValueError(msg)
+            return self
+        if self.device is None or self.loop_spec is not None or self.osd_id is not None:
+            msg = "add-block actions require device and cannot set loop_spec or osd_id"
             raise ValueError(msg)
+        BlockOSDSpec(
+            device=self.device,
+            wal_device=self.wal_device,
+            db_device=self.db_device,
+            encrypt=self.encrypt,
+            wipe=self.wipe,
+        )
         return self
 
 
@@ -195,6 +243,10 @@ class _CephStorageActionStatus(BaseModel):
     worker_node: str = ""
     created_osd_ids: tuple[int, ...] = ()
     removed_osd_ids: tuple[int, ...] = ()
+    osd_origin: StorageOSDOrigin | None = None
+    osd_quality: StorageOSDQuality | None = None
+    source_devices: tuple[str, ...] = ()
+    source_device_bytes: Annotated[int, Field(ge=0)] | None = None
 
 
 class CephStorageActionRecord(BaseModel):
@@ -295,6 +347,11 @@ class PlannedStorageAction:
     reason: str
     loop_spec: str | None = None
     osd_id: int | None = None
+    device: str | None = None
+    wal_device: str | None = None
+    db_device: str | None = None
+    encrypt: bool = False
+    wipe: bool = False
 
 
 @dataclass(frozen=True)
@@ -313,8 +370,34 @@ class StoragePlan:
 
     actions: list[PlannedStorageAction]
     managed_osd_count: int
+    loop_osd_count: int
+    block_osd_count: int
+    elastic_bytes: int
+    durable_bytes: int
     shrink_candidate_count: int
     last_shrink_at: datetime | None
+
+
+@dataclass(frozen=True)
+class StorageOSDInventory:
+    """Quality-oriented OSD inventory inferred from storage actions.
+
+    Attributes
+    ----------
+    loop_osd_ids : frozenset[int]
+        Autoscaler-created loop OSD IDs still present in managed history.
+    block_osd_ids : frozenset[int]
+        Manual block OSD IDs created by successful tracked block actions.
+    elastic_bytes : int
+        Approximate autoscaled loop-backed raw bytes tracked by Bertrand.
+    durable_bytes : int
+        Approximate manual block-backed raw bytes tracked by Bertrand.
+    """
+
+    loop_osd_ids: frozenset[int]
+    block_osd_ids: frozenset[int]
+    elastic_bytes: int
+    durable_bytes: int
 
 
 @dataclass
@@ -431,6 +514,98 @@ class CephStoragePlanner:
                     consumed.add(action.spec.osd_id)
                 consumed.update(action.status.removed_osd_ids)
         return created - consumed
+
+    @staticmethod
+    def manual_block_osd_ids(actions: Collection[CephStorageActionRecord]) -> set[int]:
+        """Return manual block OSD IDs created by tracked actions.
+
+        Parameters
+        ----------
+        actions : Collection[CephStorageActionRecord]
+            Storage actions to inspect.
+
+        Returns
+        -------
+        set[int]
+            Manual block OSD IDs known to Bertrand.
+        """
+        created: set[int] = set()
+        for action in actions:
+            if (
+                action.spec.operation == "add-block"
+                and action.status.phase == "Succeeded"
+            ):
+                created.update(action.status.created_osd_ids)
+        return created
+
+    def osd_inventory(
+        self,
+        actions: Collection[CephStorageActionRecord],
+    ) -> StorageOSDInventory:
+        """Return loop/block OSD inventory inferred from action history.
+
+        Parameters
+        ----------
+        actions : Collection[CephStorageActionRecord]
+            Storage actions to inspect.
+
+        Returns
+        -------
+        StorageOSDInventory
+            Quality-oriented OSD inventory.
+        """
+        loop_ids = self.managed_osd_ids(actions)
+        elastic_bytes = 0
+        for action in actions:
+            if (
+                action.spec.operation != "grow"
+                or action.status.phase != "Succeeded"
+                or action.spec.loop_spec is None
+            ):
+                continue
+            spec = parse_loop_osd_spec(action.spec.loop_spec)
+            size_bytes = parse_size_bytes(spec.size)
+            elastic_bytes += sum(
+                size_bytes
+                for osd_id in action.status.created_osd_ids
+                if osd_id in loop_ids
+            )
+
+        block_ids = self.manual_block_osd_ids(actions)
+        durable_bytes = sum(
+            action.status.source_device_bytes or 0
+            for action in actions
+            if action.spec.operation == "add-block"
+            and action.status.phase == "Succeeded"
+        )
+        return StorageOSDInventory(
+            loop_osd_ids=frozenset(loop_ids),
+            block_osd_ids=frozenset(block_ids),
+            elastic_bytes=elastic_bytes,
+            durable_bytes=durable_bytes,
+        )
+
+    @staticmethod
+    def block_actions_in_flight(
+        actions: Collection[CephStorageActionRecord],
+    ) -> bool:
+        """Return whether manual block capacity is currently being added.
+
+        Parameters
+        ----------
+        actions : Collection[CephStorageActionRecord]
+            Storage actions to inspect.
+
+        Returns
+        -------
+        bool
+            True when a block OSD action is pending or running.
+        """
+        return any(
+            action.spec.operation == "add-block"
+            and action.status.phase in ("Pending", "Running")
+            for action in actions
+        )
 
     def managed_osds(
         self,
@@ -558,6 +733,7 @@ class CephStoragePlanner:
             not spec.enabled
             or not eligible_nodes
             or capacity.used_ratio < spec.high_watermark
+            or self.block_actions_in_flight(actions)
         ):
             return []
         target_used = spec.target_watermark * capacity.total_bytes
@@ -728,6 +904,11 @@ _STORAGE_POLICY_STATUS_SCHEMA = {
         "succeeded_actions": {"type": "integer"},
         "failed_actions": {"type": "integer"},
         "managed_osds": {"type": "integer"},
+        "loop_osds": {"type": "integer"},
+        "block_osds": {"type": "integer"},
+        "elastic_bytes": {"type": "integer"},
+        "durable_bytes": {"type": "integer"},
+        "block_preferred": {"type": "boolean"},
         "shrink_candidates": {"type": "integer"},
         "last_shrink_at": {
             "type": "string",
@@ -743,7 +924,7 @@ _STORAGE_ACTION_SPEC_SCHEMA = {
     "required": ["policy_generation", "operation", "node_name", "reason"],
     "properties": {
         "policy_generation": {"type": "integer", "minimum": 0},
-        "operation": {"type": "string", "enum": ["grow", "shrink"]},
+        "operation": {"type": "string", "enum": ["grow", "shrink", "add-block"]},
         "node_name": {"type": "string", "minLength": 1},
         "loop_spec": {
             "type": "string",
@@ -751,6 +932,11 @@ _STORAGE_ACTION_SPEC_SCHEMA = {
             "nullable": True,
         },
         "osd_id": {"type": "integer", "minimum": 0, "nullable": True},
+        "device": {"type": "string", "pattern": "^/.*", "nullable": True},
+        "wal_device": {"type": "string", "pattern": "^/.*", "nullable": True},
+        "db_device": {"type": "string", "pattern": "^/.*", "nullable": True},
+        "encrypt": {"type": "boolean", "default": False},
+        "wipe": {"type": "boolean", "default": False},
         "reason": {"type": "string", "minLength": 1},
     },
 }
@@ -770,6 +956,25 @@ _STORAGE_ACTION_STATUS_SCHEMA = {
         "removed_osd_ids": {
             "type": "array",
             "items": {"type": "integer", "minimum": 0},
+        },
+        "osd_origin": {
+            "type": "string",
+            "enum": ["autoscaled-loop", "manual-block"],
+            "nullable": True,
+        },
+        "osd_quality": {
+            "type": "string",
+            "enum": ["elastic", "durable"],
+            "nullable": True,
+        },
+        "source_devices": {
+            "type": "array",
+            "items": {"type": "string"},
+        },
+        "source_device_bytes": {
+            "type": "integer",
+            "minimum": 0,
+            "nullable": True,
         },
     },
 }
@@ -1048,6 +1253,16 @@ async def create_storage_actions(
             spec["loop_spec"] = action.loop_spec
         if action.osd_id is not None:
             spec["osd_id"] = action.osd_id
+        if action.device is not None:
+            spec["device"] = action.device
+        if action.wal_device is not None:
+            spec["wal_device"] = action.wal_device
+        if action.db_device is not None:
+            spec["db_device"] = action.db_device
+        if action.encrypt:
+            spec["encrypt"] = action.encrypt
+        if action.wipe:
+            spec["wipe"] = action.wipe
         await _STORAGE_ACTION_CLIENT.create(
             kube,
             namespace=BERTRAND_NAMESPACE,
@@ -1055,6 +1270,113 @@ async def create_storage_actions(
             spec=spec,
             timeout=timeout,
         )
+
+
+def _block_action_devices(action: CephStorageActionRecord) -> frozenset[str]:
+    return frozenset(
+        path
+        for path in (action.spec.device, action.spec.wal_device, action.spec.db_device)
+        if path is not None
+    )
+
+
+async def create_manual_block_osd_action(
+    kube: Kube,
+    *,
+    node_name: str,
+    device: str,
+    wal_device: str | None = None,
+    db_device: str | None = None,
+    encrypt: bool = False,
+    wipe: bool = False,
+    timeout: float,
+) -> str:
+    """Create a manual block-backed OSD action for one node.
+
+    Parameters
+    ----------
+    kube : Kube
+        Active Kubernetes API context.
+    node_name : str
+        Kubernetes node name whose storage agent should execute the action.
+    device : str
+        Absolute host block device path to add as the data device.
+    wal_device : str | None, optional
+        Optional absolute WAL device path.
+    db_device : str | None, optional
+        Optional absolute DB device path.
+    encrypt : bool, default False
+        Whether MicroCeph should encrypt the data device.
+    wipe : bool, default False
+        Whether MicroCeph should wipe the data device.
+    timeout : float
+        Maximum creation budget in seconds.
+
+    Returns
+    -------
+    str
+        Created action resource name.
+
+    Raises
+    ------
+    ValueError
+        If another active tracked block OSD action already references one of the
+        requested devices.
+    """
+    block_spec = BlockOSDSpec(
+        device=device,
+        wal_device=wal_device,
+        db_device=db_device,
+        encrypt=encrypt,
+        wipe=wipe,
+    )
+    requested = frozenset(
+        path
+        for path in (block_spec.device, block_spec.wal_device, block_spec.db_device)
+        if path is not None
+    )
+    for action in await list_storage_actions(kube, timeout=timeout):
+        if action.spec.operation != "add-block":
+            continue
+        if action.status.phase not in ("Pending", "Running", "Succeeded"):
+            continue
+        overlap = requested & _block_action_devices(action)
+        if overlap:
+            paths = ", ".join(sorted(overlap))
+            msg = (
+                f"block OSD device already appears in tracked action "
+                f"{action.metadata.name!r}: {paths}"
+            )
+            raise ValueError(msg)
+    name = f"{STORAGE_POLICY_NAME}-block-{uuid.uuid4().hex[:12]}"
+    spec: dict[str, object] = {
+        "policy_generation": 0,
+        "operation": "add-block",
+        "node_name": node_name,
+        "device": block_spec.device,
+        "encrypt": encrypt,
+        "wipe": wipe,
+        "reason": "manual block OSD request",
+    }
+    if block_spec.wal_device is not None:
+        spec["wal_device"] = block_spec.wal_device
+    if block_spec.db_device is not None:
+        spec["db_device"] = block_spec.db_device
+    spec = cast(
+        "dict[str, object]",
+        _CephStorageActionSpec.model_validate(spec).model_dump(
+            mode="json",
+            exclude_none=True,
+        ),
+    )
+    await _STORAGE_ACTION_CLIENT.create(
+        kube,
+        namespace=BERTRAND_NAMESPACE,
+        name=name,
+        spec=spec,
+        timeout=timeout,
+    )
+    return name
 
 
 async def patch_storage_policy_status(

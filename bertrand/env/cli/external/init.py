@@ -428,6 +428,75 @@ INIT_STAGES: tuple[tuple[_InitStage, _InitStep], ...] = (
 )
 
 
+async def ensure_shared_runtime_installed(*, timeout: float, yes: bool) -> None:
+    """Install shared host prerequisites without bootstrapping local clusters.
+
+    Parameters
+    ----------
+    timeout : float
+        Maximum host bootstrap budget in seconds.
+    yes : bool
+        Whether to auto-accept installation prompts.
+
+    Raises
+    ------
+    OSError
+        If required host runtime prerequisites cannot be converged.
+    TimeoutError
+        If convergence cannot start before `timeout` expires.
+    """
+    if timeout <= 0:
+        msg = "timed out before checking host bootstrap"
+        raise TimeoutError(msg)
+    async with HostLock(
+        INIT_LOCK,
+        timeout=timeout,
+        privileges=INIT_LOCK_MODE,
+    ):
+        context = _InitContext(assume_yes=yes)
+        state = _InitState.load()
+        index = next(
+            (i for i, (stage, _) in enumerate(INIT_STAGES) if stage == state.stage),
+            0,
+        )
+        if index == len(INIT_STAGES) - 1:
+            try:
+                await _assert_installed(state, context)
+            except OSError:
+                index = 0
+                state = _InitState(version=INIT_STATE_VERSION)
+                if _InitState.backend_trustworthy():
+                    state.dump()
+        for stage, step in INIT_STAGES[index:]:
+            await _run_init_step(step, state, context)
+            state.stage = stage
+            if _InitState.backend_trustworthy():
+                state.dump()
+
+        if state.user is None:
+            msg = "init state user is missing; rerun `bertrand init`."
+            raise OSError(msg)
+        for group, purpose in (
+            (BERTRAND_GROUP, "shared Bertrand host-state access"),
+            ("microceph", "MicroCeph CLI/storage access"),
+            ("microk8s", "MicroK8s runtime access"),
+        ):
+            status = GroupStatus.get(state.user, group)
+            if not status.configured:
+                msg = (
+                    f"user {state.user!r} is not in {group!r}.  Rerun `bertrand init` "
+                    f"to configure {purpose}."
+                )
+                raise OSError(msg)
+            if not status.active:
+                msg = (
+                    f"user {state.user!r} is in {group!r}, but the current session is "
+                    f"not active in that group.  Run `newgrp {group}` or log out and "
+                    "back in, then rerun `bertrand init`."
+                )
+                raise OSError(msg)
+
+
 @dataclass(frozen=True)
 class _GitHook:
     source: Path

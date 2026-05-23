@@ -8,6 +8,7 @@ CRDs, and deterministic resource names rather than snap ownership.
 from __future__ import annotations
 
 import asyncio
+import re
 import shutil
 from collections.abc import Mapping
 from typing import TYPE_CHECKING
@@ -43,6 +44,7 @@ MICROK8S_KUBECONFIG_CONTEXT = "microk8s"
 MICROK8S_CHANNEL = "1.33/stable"
 MICROK8S_GROUP = "microk8s"
 KUBE_LOCK_FILE = RUN_DIR / "microk8s.lock"
+MICROK8S_JOIN_PATTERN = re.compile(r"\bmicrok8s\s+join\s+([^\s]+)(?:\s+(--worker))?")
 
 
 def kubeconfig_identity(payload: str, *, source: str) -> tuple[str, str]:
@@ -479,6 +481,112 @@ async def start_microk8s(*, timeout: float) -> None:
             f"ensure proper setup and group membership.\n{err}"
         )
         raise OSError(msg) from err
+
+
+async def microk8s_join_token(*, worker: bool, timeout: float) -> str:
+    """Generate one MicroK8s join token from this control-plane node.
+
+    Parameters
+    ----------
+    worker : bool
+        Whether to prefer a worker-node join command.
+    timeout : float
+        Maximum command runtime in seconds.
+
+    Returns
+    -------
+    str
+        Join target in ``host:port/token`` form.  The caller decides whether to
+        append ``--worker`` when consuming the token.
+
+    Raises
+    ------
+    OSError
+        If MicroK8s is unavailable or no join command can be parsed.
+    TimeoutError
+        If `timeout` is non-positive.
+    """
+    if timeout <= 0:
+        msg = "MicroK8s add-node timeout must be non-negative"
+        raise TimeoutError(msg)
+    if not await microk8s_cluster_ready(timeout=timeout):
+        msg = "MicroK8s must be running before generating a join token"
+        raise OSError(msg)
+    result = await run(
+        ["microk8s", "add-node"],
+        capture_output=True,
+        timeout=timeout,
+    )
+    output = f"{result.stdout}\n{result.stderr}"
+    matches = MICROK8S_JOIN_PATTERN.findall(output)
+    if not matches:
+        msg = f"failed to parse MicroK8s add-node output:\n{output}"
+        raise OSError(msg)
+    preferred = [
+        target for target, worker_flag in matches if bool(worker_flag) == worker
+    ]
+    return (preferred or [matches[0][0]])[0]
+
+
+async def join_microk8s_cluster(
+    token: str,
+    *,
+    worker: bool,
+    timeout: float,
+) -> None:
+    """Join the local shared MicroK8s runtime to an existing cluster.
+
+    Parameters
+    ----------
+    token : str
+        MicroK8s join target in ``host:port/token`` form, or a full
+        ``microk8s join`` command.
+    worker : bool
+        Whether to join this node as a worker.
+    timeout : float
+        Maximum join/readiness budget in seconds.
+
+    Raises
+    ------
+    OSError
+        If this host already appears to belong to a MicroK8s cluster or join fails.
+    TimeoutError
+        If `timeout` is non-positive.
+    """
+    if timeout <= 0:
+        msg = "MicroK8s join timeout must be non-negative"
+        raise TimeoutError(msg)
+    if await microk8s_cluster_ready(timeout=timeout):
+        msg = (
+            "local MicroK8s already reports a ready cluster; refusing to join it to "
+            "another cluster.  Remove or reset the existing MicroK8s membership "
+            "outside Bertrand if this host should join a different cluster."
+        )
+        raise OSError(msg)
+    target = token.strip()
+    match = MICROK8S_JOIN_PATTERN.search(target)
+    if match is not None:
+        target = match.group(1)
+    argv = ["microk8s", "join", target]
+    if worker:
+        argv.append("--worker")
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    async with HostLock(KUBE_LOCK_FILE, timeout=deadline - loop.time()):
+        await run(argv, capture_output=True, timeout=deadline - loop.time())
+
+        async def ready(remaining: float) -> None:
+            if await microk8s_cluster_ready(timeout=remaining):
+                return
+            msg = "MicroK8s has not joined the cluster yet"
+            raise TimeoutError(msg)
+
+        await until(
+            ready,
+            timeout=deadline - loop.time(),
+            interval=0.5,
+            action="waiting for MicroK8s cluster join",
+        )
 
 
 async def ensure_microk8s_kubeconfig(*, timeout: float) -> Path:

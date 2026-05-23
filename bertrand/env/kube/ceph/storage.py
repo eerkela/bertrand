@@ -27,7 +27,9 @@ from bertrand.env.kube.api.spec import (
 )
 from bertrand.env.kube.build.request import BUILDKIT_BUILD_GROUP, BUILDKIT_BUILD_PLURAL
 from bertrand.env.kube.ceph.api import (
+    BlockOSDSpec,
     CephCapacitySnapshot,
+    add_block_osd,
     add_loop_osd,
     ceph_df,
     ceph_health,
@@ -35,6 +37,7 @@ from bertrand.env.kube.ceph.api import (
     host_free_bytes,
     parse_size_bytes,
     remove_osd,
+    validate_block_osd_devices,
 )
 from bertrand.env.kube.ceph.capacity import (
     CEPH_CAPACITY_GROUP,
@@ -398,7 +401,8 @@ class CephStorageController:
             eligible_nodes=eligible_nodes,
             loop_bytes=loop_bytes,
         )
-        managed_osd_count = len(self._planner.managed_osd_ids(actions))
+        inventory = self._planner.osd_inventory(actions)
+        managed_osd_count = len(inventory.loop_osd_ids)
         shrink_candidates = []
         last_shrink_at = self._planner.last_shrink_at(actions)
         if (
@@ -422,6 +426,10 @@ class CephStorageController:
         return StoragePlan(
             actions=planned,
             managed_osd_count=managed_osd_count,
+            loop_osd_count=len(inventory.loop_osd_ids),
+            block_osd_count=len(inventory.block_osd_ids),
+            elastic_bytes=inventory.elastic_bytes,
+            durable_bytes=inventory.durable_bytes,
             shrink_candidate_count=len(shrink_candidates),
             last_shrink_at=last_shrink_at,
         )
@@ -443,6 +451,11 @@ class CephStorageController:
             "succeeded_actions": counts.get("Succeeded", 0),
             "failed_actions": counts.get("Failed", 0),
             "managed_osds": plan.managed_osd_count,
+            "loop_osds": plan.loop_osd_count,
+            "block_osds": plan.block_osd_count,
+            "elastic_bytes": plan.elastic_bytes,
+            "durable_bytes": plan.durable_bytes,
+            "block_preferred": plan.block_osd_count > 0,
             "shrink_candidates": plan.shrink_candidate_count,
             "last_shrink_at": (
                 plan.last_shrink_at.isoformat()
@@ -464,6 +477,11 @@ class CephStorageController:
             "succeeded_actions": 0,
             "failed_actions": 0,
             "managed_osds": 0,
+            "loop_osds": 0,
+            "block_osds": 0,
+            "elastic_bytes": 0,
+            "durable_bytes": 0,
+            "block_preferred": False,
             "shrink_candidates": 0,
             "last_shrink_at": None,
             "last_reconciled_at": datetime.now(UTC).isoformat(),
@@ -509,9 +527,14 @@ class CephStorageController:
                 timeout=deadline - loop.time(),
             )
             actions = await list_storage_actions(kube, timeout=deadline - loop.time())
+            inventory = self._planner.osd_inventory(actions)
             plan = StoragePlan(
                 actions=plan.actions,
-                managed_osd_count=len(self._planner.managed_osd_ids(actions)),
+                managed_osd_count=len(inventory.loop_osd_ids),
+                loop_osd_count=len(inventory.loop_osd_ids),
+                block_osd_count=len(inventory.block_osd_ids),
+                elastic_bytes=inventory.elastic_bytes,
+                durable_bytes=inventory.durable_bytes,
                 shrink_candidate_count=(
                     0
                     if any(action.operation == "shrink" for action in plan.actions)
@@ -871,6 +894,19 @@ class CephStorageAgent:
             raise ValueError(msg)
         return action.spec.osd_id
 
+    @staticmethod
+    def _block_osd_spec(action: CephStorageActionRecord) -> BlockOSDSpec:
+        if action.spec.device is None:
+            msg = "add-block action is missing device"
+            raise ValueError(msg)
+        return BlockOSDSpec(
+            device=action.spec.device,
+            wal_device=action.spec.wal_device,
+            db_device=action.spec.db_device,
+            encrypt=action.spec.encrypt,
+            wipe=action.spec.wipe,
+        )
+
     async def _execute_action(
         self, kube: Kube, *, action: CephStorageActionRecord, deadline: float
     ) -> None:
@@ -916,6 +952,37 @@ class CephStorageAgent:
                         "message": "microceph disk add completed",
                         "worker_node": self.node_name,
                         "created_osd_ids": list(osd_ids),
+                        "osd_origin": "autoscaled-loop",
+                        "osd_quality": "elastic",
+                        "finished_at": datetime.now(UTC).isoformat(),
+                    },
+                    timeout=deadline - loop.time(),
+                )
+                return
+            if action.spec.operation == "add-block":
+                spec = self._block_osd_spec(action)
+                inspections = await validate_block_osd_devices(
+                    spec,
+                    timeout=deadline - loop.time(),
+                )
+                osd_ids = await add_block_osd(
+                    spec,
+                    timeout=deadline - loop.time(),
+                )
+                source_devices = [report.path for report in inspections]
+                source_device_bytes = inspections[0].size_bytes if inspections else 0
+                await self._patch_action(
+                    kube,
+                    action=action,
+                    status={
+                        "phase": "Succeeded",
+                        "message": "microceph block disk add completed",
+                        "worker_node": self.node_name,
+                        "created_osd_ids": list(osd_ids),
+                        "osd_origin": "manual-block",
+                        "osd_quality": "durable",
+                        "source_devices": source_devices,
+                        "source_device_bytes": source_device_bytes,
                         "finished_at": datetime.now(UTC).isoformat(),
                     },
                     timeout=deadline - loop.time(),

@@ -7,9 +7,10 @@ import json
 import math
 import re
 import shutil
+import stat
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from bertrand.env.git import (
     INFINITY,
@@ -170,6 +171,137 @@ class LoopOSDSpec:
         return f"loop,{self.size},{self.count}"
 
 
+@dataclass(frozen=True)
+class BlockOSDSpec:
+    """MicroCeph block-backed OSD allocation request.
+
+    Parameters
+    ----------
+    device : str
+        Absolute host block device path to add as the OSD data device.
+    wal_device : str | None, optional
+        Optional absolute block device path for the WAL device.
+    db_device : str | None, optional
+        Optional absolute block device path for the DB device.
+    encrypt : bool, default False
+        Whether MicroCeph should encrypt the data device before use.
+    wipe : bool, default False
+        Whether MicroCeph should wipe the data device before use.
+    """
+
+    device: str
+    wal_device: str | None = None
+    db_device: str | None = None
+    encrypt: bool = False
+    wipe: bool = False
+
+    def __post_init__(self) -> None:
+        """Validate device paths.
+
+        Raises
+        ------
+        ValueError
+            If any device path is invalid or reused for multiple roles.
+        """
+        object.__setattr__(self, "device", _normalize_device_path(self.device))
+        if self.wal_device is not None:
+            object.__setattr__(
+                self,
+                "wal_device",
+                _normalize_device_path(self.wal_device),
+            )
+        if self.db_device is not None:
+            object.__setattr__(
+                self,
+                "db_device",
+                _normalize_device_path(self.db_device),
+            )
+        paths = [
+            path
+            for path in (self.device, self.wal_device, self.db_device)
+            if path is not None
+        ]
+        if len(paths) != len(set(paths)):
+            msg = "MicroCeph block OSD data, WAL, and DB devices must be distinct"
+            raise ValueError(msg)
+
+    def argv(self) -> list[str]:
+        """Render MicroCeph ``disk add`` arguments for this OSD.
+
+        Returns
+        -------
+        list[str]
+            Arguments after ``microceph disk add``.
+        """
+        argv = [self.device]
+        if self.wal_device is not None:
+            argv.extend(["--wal-device", self.wal_device])
+        if self.db_device is not None:
+            argv.extend(["--db-device", self.db_device])
+        if self.encrypt:
+            argv.append("--encrypt")
+        if self.wipe:
+            argv.append("--wipe")
+        return argv
+
+
+@dataclass(frozen=True)
+class BlockDeviceInspection:
+    """Host-local safety inspection for one requested block OSD device.
+
+    Attributes
+    ----------
+    path : str
+        Requested host device path.
+    size_bytes : int
+        Device size reported by the host, or zero if unavailable.
+    device_number : int
+        Host device number used to detect aliases to the same block device.
+    mounted : bool
+        Whether the device or one of its children is mounted.
+    has_signatures : bool
+        Whether the device or one of its children has existing filesystem,
+        partition, UUID, or label signatures.
+    ceph_claimed : bool
+        Whether host metadata indicates an existing Ceph BlueStore claim.
+    signatures : tuple[str, ...]
+        Concise signature labels discovered during inspection.
+    """
+
+    path: str
+    size_bytes: int
+    device_number: int
+    mounted: bool
+    has_signatures: bool
+    ceph_claimed: bool
+    signatures: tuple[str, ...] = ()
+
+    def unavailable_reason(self, *, wipe: bool) -> str:
+        """Return a diagnostic if the device should not be accepted.
+
+        Parameters
+        ----------
+        wipe : bool
+            Whether the caller requested destructive signature removal.
+
+        Returns
+        -------
+        str
+            Empty when the device is available, otherwise an actionable diagnostic.
+        """
+        if self.mounted:
+            return f"{self.path} is mounted; unmount it before adding it as an OSD"
+        if self.ceph_claimed:
+            return f"{self.path} already appears to be claimed by Ceph"
+        if self.has_signatures and not wipe:
+            details = ", ".join(self.signatures) if self.signatures else "signatures"
+            return (
+                f"{self.path} contains existing storage metadata ({details}); pass "
+                "--wipe after confirming the device can be destroyed"
+            )
+        return ""
+
+
 def _container_path(path: Path) -> Path:
     if MICROCEPH_HOST_ROOT.is_dir():
         return MICROCEPH_HOST_ROOT / path.relative_to("/")
@@ -233,6 +365,14 @@ def _normalize_size(size: str) -> str:
     normalized = size.strip().upper()
     if not re.fullmatch(LOOP_OSD_SIZE_PATTERN, normalized):
         msg = f"invalid MicroCeph loop OSD size: {size!r}"
+        raise ValueError(msg)
+    return normalized
+
+
+def _normalize_device_path(path: str) -> str:
+    normalized = path.strip()
+    if not normalized or not normalized.startswith("/"):
+        msg = f"MicroCeph block OSD device path must be absolute: {path!r}"
         raise ValueError(msg)
     return normalized
 
@@ -527,6 +667,191 @@ def host_free_bytes(path: Path = MICROCEPH_LOOP_STORAGE_PATH) -> NodeCapacitySna
     return NodeCapacitySnapshot(free_bytes=int(usage.free), path=path)
 
 
+def _flatten_lsblk_devices(devices: object) -> list[Mapping[str, Any]]:
+    rows: list[Mapping[str, Any]] = []
+    if not isinstance(devices, list):
+        return rows
+    for item in devices:
+        if not isinstance(item, dict):
+            continue
+        row = cast("Mapping[str, Any]", item)
+        rows.append(row)
+        rows.extend(_flatten_lsblk_devices(row.get("children")))
+    return rows
+
+
+def _signature_labels(rows: list[Mapping[str, Any]]) -> tuple[str, ...]:
+    labels: list[str] = []
+    for row in rows:
+        for key in ("fstype", "pttype", "uuid", "partuuid", "label"):
+            value = row.get(key)
+            if value is None:
+                continue
+            text = str(value).strip()
+            if text:
+                labels.append(f"{key}={text}")
+    return tuple(dict.fromkeys(labels))
+
+
+async def inspect_block_device(path: str, *, timeout: float) -> BlockDeviceInspection:
+    """Inspect one host block device before adding it to MicroCeph.
+
+    Parameters
+    ----------
+    path : str
+        Absolute host block device path to inspect.
+    timeout : float
+        Maximum inspection budget in seconds.
+
+    Returns
+    -------
+    BlockDeviceInspection
+        Parsed host safety report for the requested device.
+
+    Raises
+    ------
+    FileNotFoundError
+        If `path` does not exist.
+    OSError
+        If `path` is not a block device or host metadata cannot be inspected.
+    TimeoutError
+        If `timeout` is non-positive.
+    """
+    normalized = _normalize_device_path(path)
+    target = _container_path(Path(normalized))
+    if timeout <= 0:
+        msg = "block device inspection timeout must be non-negative"
+        raise TimeoutError(msg)
+    try:
+        info = target.stat()
+    except FileNotFoundError as err:
+        msg = f"block OSD device does not exist: {normalized}"
+        raise FileNotFoundError(msg) from err
+    mode = info.st_mode
+    if not stat.S_ISBLK(mode):
+        msg = f"block OSD path is not a block device: {normalized}"
+        raise OSError(msg)
+
+    result = await host_command(
+        [
+            "lsblk",
+            "--json",
+            "--bytes",
+            "--output",
+            "PATH,TYPE,SIZE,MOUNTPOINT,FSTYPE,PTTYPE,UUID,PARTUUID,LABEL",
+            normalized,
+        ],
+        timeout=timeout,
+    )
+    if result.returncode != 0:
+        msg = f"failed to inspect block OSD device {normalized}:\n{result}"
+        raise OSError(msg)
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError as err:
+        msg = f"lsblk returned malformed JSON for {normalized}: {err}"
+        raise OSError(msg) from err
+    if not isinstance(payload, dict):
+        msg = f"lsblk returned malformed JSON for {normalized}: expected object"
+        raise OSError(msg)
+    rows = _flatten_lsblk_devices(payload.get("blockdevices"))
+    if not rows:
+        msg = f"lsblk did not report block OSD device {normalized}"
+        raise OSError(msg)
+    root = rows[0]
+    try:
+        size_bytes = int(root.get("size") or 0)
+    except (TypeError, ValueError):
+        size_bytes = 0
+    mounted = any(str(row.get("mountpoint") or "").strip() for row in rows)
+    signatures = _signature_labels(rows)
+    ceph_claimed = any("ceph" in label.lower() for label in signatures)
+    return BlockDeviceInspection(
+        path=normalized,
+        size_bytes=max(size_bytes, 0),
+        device_number=info.st_rdev,
+        mounted=mounted,
+        has_signatures=bool(signatures),
+        ceph_claimed=ceph_claimed,
+        signatures=signatures,
+    )
+
+
+async def inspect_block_osd_spec(
+    spec: BlockOSDSpec,
+    *,
+    timeout: float,
+) -> tuple[BlockDeviceInspection, ...]:
+    """Inspect every device referenced by a block-backed OSD request.
+
+    Parameters
+    ----------
+    spec : BlockOSDSpec
+        Block-backed OSD allocation request.
+    timeout : float
+        Maximum inspection budget in seconds.
+
+    Returns
+    -------
+    tuple[BlockDeviceInspection, ...]
+        Inspection reports for data, WAL, and DB devices in request order.
+    """
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    paths = [
+        path
+        for path in (spec.device, spec.wal_device, spec.db_device)
+        if path is not None
+    ]
+    return tuple(
+        await asyncio.gather(
+            *(
+                inspect_block_device(path, timeout=deadline - loop.time())
+                for path in paths
+            )
+        )
+    )
+
+
+async def validate_block_osd_devices(
+    spec: BlockOSDSpec,
+    *,
+    timeout: float,
+) -> tuple[BlockDeviceInspection, ...]:
+    """Fail closed unless all devices in a block OSD request are available.
+
+    Parameters
+    ----------
+    spec : BlockOSDSpec
+        Block-backed OSD allocation request.
+    timeout : float
+        Maximum inspection budget in seconds.
+
+    Returns
+    -------
+    tuple[BlockDeviceInspection, ...]
+        Inspection reports for accepted devices.
+
+    Raises
+    ------
+    OSError
+        If any requested device is mounted, Ceph-owned, or needs `--wipe`.
+    """
+    inspections = await inspect_block_osd_spec(spec, timeout=timeout)
+    device_numbers = [report.device_number for report in inspections]
+    if len(device_numbers) != len(set(device_numbers)):
+        msg = "block OSD data, WAL, and DB paths must refer to distinct devices"
+        raise OSError(msg)
+    errors = [
+        reason
+        for report in inspections
+        if (reason := report.unavailable_reason(wipe=spec.wipe))
+    ]
+    if errors:
+        raise OSError("\n".join(errors))
+    return inspections
+
+
 async def add_loop_osd(
     loop_spec: LoopOSDSpec | str,
     *,
@@ -566,6 +891,49 @@ async def add_loop_osd(
     )
     if result.returncode != 0:
         msg = f"microceph disk add failed for {rendered}:\n{result}"
+        raise OSError(msg)
+    after = {osd.osd_id for osd in await ceph_osds(timeout=deadline - loop.time())}
+    return tuple(sorted(after - before))
+
+
+async def add_block_osd(
+    block_spec: BlockOSDSpec,
+    *,
+    timeout: float,
+) -> tuple[int, ...]:
+    """Add one block-backed OSD through MicroCeph.
+
+    Parameters
+    ----------
+    block_spec : BlockOSDSpec
+        Block-backed OSD allocation request.
+    timeout : float
+        Maximum command runtime in seconds.
+
+    Returns
+    -------
+    tuple[int, ...]
+        Numeric OSD IDs created by the add operation, when they can be inferred.
+
+    Raises
+    ------
+    OSError
+        If MicroCeph rejects the block OSD allocation.
+    TimeoutError
+        If `timeout` is non-positive.
+    """
+    if timeout <= 0:
+        msg = "MicroCeph block OSD timeout must be non-negative"
+        raise TimeoutError(msg)
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    before = {osd.osd_id for osd in await ceph_osds(timeout=deadline - loop.time())}
+    result = await host_command(
+        ["microceph", "disk", "add", *block_spec.argv()],
+        timeout=deadline - loop.time(),
+    )
+    if result.returncode != 0:
+        msg = f"microceph disk add failed for {block_spec.device}:\n{result}"
         raise OSError(msg)
     after = {osd.osd_id for osd in await ceph_osds(timeout=deadline - loop.time())}
     return tuple(sorted(after - before))

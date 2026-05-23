@@ -197,8 +197,9 @@ async def _wait_gateway_address(kube: Kube, *, timeout: float) -> Gateway:
         if remaining <= 0:
             msg = (
                 f"Gateway {BERTRAND_NAMESPACE}/{BERTRAND_GATEWAY} has no external "
-                "address. Configure a LoadBalancer provider such as MetalLB; "
-                "Bertrand does not auto-configure address pools."
+                "address. Configure a LoadBalancer provider such as MetalLB with "
+                "`bertrand cluster network lb install` and an explicit address "
+                "pool; Bertrand does not guess address pools."
             )
             raise OSError(msg)
         current = await Gateway.get(

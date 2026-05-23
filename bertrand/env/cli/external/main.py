@@ -43,7 +43,8 @@ class External:
             self.version()
             self.init()
             self.build()
-            self.network()
+            self.cluster()
+            self.node()
             self.run()
             self.dashboard()
             self.enter()
@@ -164,33 +165,348 @@ class External:
             )
             command.set_defaults(handler=External.build)
 
-        def network(self) -> None:
-            """Add the 'network' command namespace to the parser."""
+        def cluster(self) -> None:
+            """Add the 'cluster' command namespace to the parser."""
             command = self.commands.add_parser(
-                "network",
-                help="Inspect and configure cluster-level Bertrand networking.",
+                "cluster",
+                help="Inspect and manage Bertrand's shared/distributed runtime.",
             )
             subcommands = command.add_subparsers(
-                dest="network_command",
-                title="network commands",
+                dest="cluster_command",
+                title="cluster commands",
                 metavar="(command)",
                 required=True,
             )
 
             status = subcommands.add_parser(
                 "status",
-                help="Show the cluster networking profile and BuildKit config state.",
+                help="Show global Bertrand cluster runtime readiness.",
             )
             status.add_argument(
                 "--json",
                 action="store_true",
                 help="Emit machine-readable JSON instead of human-readable text.",
             )
-            status.set_defaults(handler=External.network)
+            status.set_defaults(handler=External.cluster)
 
-            dns = subcommands.add_parser(
+            invite = subcommands.add_parser(
+                "invite",
+                help="Generate a sensitive join bundle for another Bertrand host.",
+            )
+            invite.add_argument(
+                "--name",
+                default=None,
+                metavar="NODE",
+                help="Desired MicroCeph member name for the joining host.",
+            )
+            invite.add_argument(
+                "--worker",
+                action="store_true",
+                help="Generate/mark the bundle for a MicroK8s worker join.",
+            )
+            invite.add_argument(
+                "-t",
+                "--timeout",
+                type=float,
+                default=INFINITY,
+                help="Maximum time in seconds for join-token generation.",
+            )
+            invite.set_defaults(handler=External.cluster)
+
+            join = subcommands.add_parser(
+                "join",
+                help="Join this host to a Bertrand cluster using an invite token.",
+            )
+            join.add_argument(
+                "token",
+                metavar="TOKEN",
+                help="Sensitive token produced by `bertrand cluster invite`.",
+            )
+            join.add_argument(
+                "--worker",
+                action="store_true",
+                help="Force the MicroK8s join to use worker-node semantics.",
+            )
+            join.add_argument(
+                "--microceph-ip",
+                default=None,
+                metavar="IP",
+                help="Optional address passed to MicroCeph --microceph-ip.",
+            )
+            join.add_argument(
+                "-t",
+                "--timeout",
+                type=float,
+                default=INFINITY,
+                help="Maximum time in seconds for cluster join and backend "
+                "convergence.",
+            )
+            join.set_defaults(handler=External.cluster)
+
+            network = subcommands.add_parser(
+                "network",
+                help="Inspect and configure cluster-level Bertrand networking.",
+            )
+            network_subcommands = network.add_subparsers(
+                dest="network_command",
+                title="network commands",
+                metavar="(command)",
+                required=True,
+            )
+
+            network_status = network_subcommands.add_parser(
+                "status",
+                help="Show cluster CNI, Gateway, LoadBalancer, route, and DNS state.",
+            )
+            network_status.add_argument(
+                "--json",
+                action="store_true",
+                help="Emit machine-readable JSON instead of human-readable text.",
+            )
+            network_status.set_defaults(handler=External.cluster)
+
+            network_doctor = network_subcommands.add_parser(
+                "doctor",
+                help="Print actionable cluster networking diagnostics.",
+            )
+            network_doctor.add_argument(
+                "--json",
+                action="store_true",
+                help="Emit machine-readable JSON instead of human-readable text.",
+            )
+            network_doctor.set_defaults(handler=External.cluster)
+
+            lb = network_subcommands.add_parser(
+                "lb",
+                help="Inspect and configure Bertrand-managed MetalLB resources.",
+            )
+            lb_commands = lb.add_subparsers(
+                dest="lb_command",
+                title="load-balancer commands",
+                metavar="(command)",
+                required=True,
+            )
+            lb_status = lb_commands.add_parser(
+                "status",
+                help="Show MetalLB installation and advertisement state.",
+            )
+            lb_status.add_argument(
+                "--json",
+                action="store_true",
+                help="Emit machine-readable JSON instead of human-readable text.",
+            )
+            lb_status.set_defaults(handler=External.cluster)
+
+            lb_install = lb_commands.add_parser(
+                "install",
+                help="Install Bertrand-managed MetalLB with FRR/BGP support.",
+            )
+            lb_install.add_argument(
+                "-t",
+                "--timeout",
+                type=float,
+                default=INFINITY,
+                help="Maximum time in seconds for MetalLB convergence.",
+            )
+            lb_install.set_defaults(handler=External.cluster)
+
+            lb_pool = lb_commands.add_parser(
+                "pool",
+                help="Manage MetalLB address pools.",
+            )
+            lb_pool_commands = lb_pool.add_subparsers(
+                dest="lb_pool_command",
+                title="pool commands",
+                metavar="(command)",
+                required=True,
+            )
+            lb_pool_upsert = lb_pool_commands.add_parser(
+                "upsert",
+                help="Create or patch a Bertrand-managed MetalLB IPAddressPool.",
+            )
+            lb_pool_upsert.add_argument("name", metavar="NAME")
+            lb_pool_upsert.add_argument(
+                "--address",
+                action="append",
+                nargs="+",
+                required=True,
+                metavar="RANGE",
+                help="CIDR or start-end address range. Repeat or pass multiple.",
+            )
+            auto_assign = lb_pool_upsert.add_mutually_exclusive_group()
+            auto_assign.add_argument(
+                "--auto-assign",
+                dest="auto_assign",
+                action="store_true",
+                default=True,
+                help=(
+                    "Allow MetalLB to allocate addresses from this pool automatically."
+                ),
+            )
+            auto_assign.add_argument(
+                "--no-auto-assign",
+                dest="auto_assign",
+                action="store_false",
+                help="Require Services to request this pool explicitly.",
+            )
+            lb_pool_upsert.add_argument(
+                "-t",
+                "--timeout",
+                type=float,
+                default=INFINITY,
+                help="Maximum time in seconds for IPAddressPool convergence.",
+            )
+            lb_pool_upsert.set_defaults(handler=External.cluster)
+
+            lb_l2 = lb_commands.add_parser(
+                "l2",
+                help="Manage MetalLB Layer 2 advertisements.",
+            )
+            lb_l2_commands = lb_l2.add_subparsers(
+                dest="lb_l2_command",
+                title="l2 commands",
+                metavar="(command)",
+                required=True,
+            )
+            lb_l2_upsert = lb_l2_commands.add_parser(
+                "upsert",
+                help="Create or patch a Bertrand-managed L2Advertisement.",
+            )
+            lb_l2_upsert.add_argument("name", metavar="NAME")
+            lb_l2_upsert.add_argument("--pool", required=True, metavar="POOL")
+            lb_l2_upsert.add_argument(
+                "--interface",
+                action="append",
+                default=[],
+                metavar="IFACE",
+                help="Optional interface to advertise from. Repeat for several.",
+            )
+            lb_l2_upsert.add_argument(
+                "-t",
+                "--timeout",
+                type=float,
+                default=INFINITY,
+                help="Maximum time in seconds for L2Advertisement convergence.",
+            )
+            lb_l2_upsert.set_defaults(handler=External.cluster)
+
+            lb_bgp = lb_commands.add_parser(
+                "bgp",
+                help="Manage MetalLB BGP peers and advertisements.",
+            )
+            lb_bgp_commands = lb_bgp.add_subparsers(
+                dest="lb_bgp_command",
+                title="bgp commands",
+                metavar="(command)",
+                required=True,
+            )
+            lb_bgp_peer = lb_bgp_commands.add_parser(
+                "peer",
+                help="Manage MetalLB BGPPeer resources.",
+            )
+            lb_bgp_peer_commands = lb_bgp_peer.add_subparsers(
+                dest="lb_bgp_peer_command",
+                title="bgp peer commands",
+                metavar="(command)",
+                required=True,
+            )
+            lb_bgp_peer_upsert = lb_bgp_peer_commands.add_parser(
+                "upsert",
+                help="Create or patch a Bertrand-managed BGPPeer.",
+            )
+            lb_bgp_peer_upsert.add_argument("name", metavar="NAME")
+            lb_bgp_peer_upsert.add_argument(
+                "--peer-address",
+                required=True,
+                metavar="IP",
+            )
+            lb_bgp_peer_upsert.add_argument(
+                "--peer-asn",
+                required=True,
+                type=int,
+                metavar="ASN",
+            )
+            lb_bgp_peer_upsert.add_argument(
+                "--local-asn",
+                required=True,
+                type=int,
+                metavar="ASN",
+            )
+            lb_bgp_peer_upsert.add_argument("--peer-port", type=int, default=None)
+            lb_bgp_peer_upsert.add_argument(
+                "--source-address",
+                default=None,
+                metavar="IP",
+            )
+            lb_bgp_peer_upsert.add_argument(
+                "--password-secret",
+                default=None,
+                metavar="SECRET",
+            )
+            lb_bgp_peer_upsert.add_argument(
+                "-t",
+                "--timeout",
+                type=float,
+                default=INFINITY,
+                help="Maximum time in seconds for BGPPeer convergence.",
+            )
+            lb_bgp_peer_upsert.set_defaults(handler=External.cluster)
+
+            lb_bgp_advertise = lb_bgp_commands.add_parser(
+                "advertise",
+                help="Manage MetalLB BGPAdvertisement resources.",
+            )
+            lb_bgp_advertise_commands = lb_bgp_advertise.add_subparsers(
+                dest="lb_bgp_advertise_command",
+                title="bgp advertise commands",
+                metavar="(command)",
+                required=True,
+            )
+            lb_bgp_advertise_upsert = lb_bgp_advertise_commands.add_parser(
+                "upsert",
+                help="Create or patch a Bertrand-managed BGPAdvertisement.",
+            )
+            lb_bgp_advertise_upsert.add_argument("name", metavar="NAME")
+            lb_bgp_advertise_upsert.add_argument(
+                "--pool",
+                required=True,
+                metavar="POOL",
+            )
+            lb_bgp_advertise_upsert.add_argument(
+                "--peer",
+                action="append",
+                default=[],
+                metavar="PEER",
+                help="Optional BGPPeer name to target. Repeat for several.",
+            )
+            lb_bgp_advertise_upsert.add_argument(
+                "--local-pref",
+                type=int,
+                default=None,
+                metavar="N",
+            )
+            lb_bgp_advertise_upsert.add_argument(
+                "--community",
+                action="append",
+                default=[],
+                metavar="VALUE",
+                help="Optional BGP community. Repeat for several.",
+            )
+            lb_bgp_advertise_upsert.add_argument(
+                "-t",
+                "--timeout",
+                type=float,
+                default=INFINITY,
+                help="Maximum time in seconds for BGPAdvertisement convergence.",
+            )
+            lb_bgp_advertise_upsert.set_defaults(handler=External.cluster)
+
+            dns = network_subcommands.add_parser(
                 "dns",
-                help="Configure cluster DNS facts consumed by Bertrand infrastructure.",
+                help=(
+                    "Configure BuildKit/container DNS facts for Bertrand "
+                    "infrastructure."
+                ),
             )
             dns_commands = dns.add_subparsers(
                 dest="dns_command",
@@ -200,7 +516,7 @@ class External:
             )
             dns_set = dns_commands.add_parser(
                 "set",
-                help="Replace the cluster DNS profile and roll BuildKit builders.",
+                help="Replace BuildKit/container DNS overrides and roll builders.",
             )
             dns_set.add_argument(
                 "--server",
@@ -233,11 +549,11 @@ class External:
                 default=INFINITY,
                 help="Maximum time in seconds for DNS profile convergence.",
             )
-            dns_set.set_defaults(handler=External.network)
+            dns_set.set_defaults(handler=External.cluster)
 
             dns_clear = dns_commands.add_parser(
                 "clear",
-                help="Clear cluster DNS overrides and roll BuildKit builders.",
+                help="Clear BuildKit/container DNS overrides and roll builders.",
             )
             dns_clear.add_argument(
                 "-t",
@@ -246,7 +562,118 @@ class External:
                 default=INFINITY,
                 help="Maximum time in seconds for DNS profile convergence.",
             )
-            dns_clear.set_defaults(handler=External.network)
+            dns_clear.set_defaults(handler=External.cluster)
+
+        def node(self) -> None:
+            """Add the 'node' command namespace to the parser."""
+            command = self.commands.add_parser(
+                "node",
+                help="Inspect and mutate this host's Bertrand node state.",
+            )
+            subcommands = command.add_subparsers(
+                dest="node_command",
+                title="node commands",
+                metavar="(command)",
+                required=True,
+            )
+
+            status = subcommands.add_parser(
+                "status",
+                help="Show local node identity, runtime, storage, and device status.",
+            )
+            status.add_argument(
+                "--json",
+                action="store_true",
+                help="Emit machine-readable JSON instead of human-readable text.",
+            )
+            status.set_defaults(handler=External.node)
+
+            storage = subcommands.add_parser(
+                "storage",
+                help="Inspect or request local Ceph storage actions.",
+            )
+            storage_subcommands = storage.add_subparsers(
+                dest="storage_command",
+                title="storage commands",
+                metavar="(command)",
+                required=True,
+            )
+            storage_status = storage_subcommands.add_parser(
+                "status",
+                help="Show Ceph autoscaler policy/status and node reports.",
+            )
+            storage_status.add_argument(
+                "--json",
+                action="store_true",
+                help="Emit machine-readable JSON instead of human-readable text.",
+            )
+            storage_status.set_defaults(handler=External.node)
+            actions = storage_subcommands.add_parser(
+                "actions",
+                help="List tracked Ceph storage actions.",
+            )
+            actions.add_argument(
+                "--json",
+                action="store_true",
+                help="Emit machine-readable JSON instead of human-readable text.",
+            )
+            actions.set_defaults(handler=External.node)
+
+            osd = storage_subcommands.add_parser(
+                "osd",
+                help="Request local OSD operations through the storage agent.",
+            )
+            osd_subcommands = osd.add_subparsers(
+                dest="osd_command",
+                title="osd commands",
+                metavar="(command)",
+                required=True,
+            )
+            add_block = osd_subcommands.add_parser(
+                "add-block",
+                help="Add an explicit local block device as a durable MicroCeph OSD.",
+            )
+            add_block.add_argument(
+                "device",
+                metavar="DEVICE",
+                help="Absolute host block device path for the OSD data device.",
+            )
+            add_block.add_argument(
+                "--wal",
+                default=None,
+                metavar="DEVICE",
+                help="Optional absolute host block device path for WAL.",
+            )
+            add_block.add_argument(
+                "--db",
+                default=None,
+                metavar="DEVICE",
+                help="Optional absolute host block device path for DB.",
+            )
+            add_block.add_argument(
+                "--encrypt",
+                action="store_true",
+                help="Ask MicroCeph to encrypt the data device before use.",
+            )
+            add_block.add_argument(
+                "--wipe",
+                action="store_true",
+                help="Allow MicroCeph to wipe existing storage metadata before use.",
+            )
+            add_block.add_argument(
+                "-y",
+                "--yes",
+                action="store_true",
+                help="Auto-accept the --wipe confirmation.",
+            )
+            add_block.add_argument(
+                "-t",
+                "--timeout",
+                type=float,
+                default=INFINITY,
+                help="Maximum time in seconds for action creation.",
+            )
+            add_block.set_defaults(handler=External.node)
 
         def run(self) -> None:
             """Add the 'run' command to the parser."""
@@ -592,8 +1019,8 @@ class External:
                 ) from err
 
     @staticmethod
-    def network(args: argparse.Namespace) -> None:
-        """Execute a `bertrand network` CLI subcommand.
+    def cluster(args: argparse.Namespace) -> None:
+        """Execute a `bertrand cluster` CLI subcommand.
 
         Parameters
         ----------
@@ -605,23 +1032,67 @@ class External:
         OSError
             If timeout is invalid.
         TimeoutExpired
-            If the network command does not complete within its timeout.
+            If the cluster command does not complete within its timeout.
         """
-        from bertrand.env.cli.external.network import bertrand_network
+        from bertrand.env.cli.external.cluster import bertrand_cluster
 
         now = time.time()
         timeout = getattr(args, "timeout", INFINITY)
         if math.isnan(timeout) or timeout <= 0:
-            msg = f"invalid network timeout: {timeout} (must be > 0 seconds or inf)"
+            msg = f"invalid cluster timeout: {timeout} (must be > 0 seconds or inf)"
             raise OSError(msg)
         with asyncio.Runner() as runner:
             try:
-                runner.run(bertrand_network(args))
+                runner.run(bertrand_cluster(args))
             except (TimeoutError, TimeoutExpired) as err:
                 start = datetime.fromtimestamp(now, UTC)
-                cmd = ["bertrand", "network", args.network_command]
-                if args.network_command == "dns":
-                    cmd.append(args.dns_command)
+                cmd = ["bertrand", "cluster", args.cluster_command]
+                if args.cluster_command == "network":
+                    cmd.append(args.network_command)
+                    if args.network_command == "lb":
+                        cmd.append(args.lb_command)
+                    if args.network_command == "dns":
+                        cmd.append(args.dns_command)
+                raise TimeoutExpired(
+                    cmd=cmd,
+                    timeout=timeout,
+                    output=None,
+                    stderr=f"started: {start}\nstopped: {datetime.now(UTC)}\n",
+                ) from err
+
+    @staticmethod
+    def node(args: argparse.Namespace) -> None:
+        """Execute a `bertrand node` CLI subcommand.
+
+        Parameters
+        ----------
+        args : argparse.Namespace
+            The parsed command-line arguments.
+
+        Raises
+        ------
+        OSError
+            If timeout is invalid.
+        TimeoutExpired
+            If the node command does not complete within its timeout.
+        """
+        from bertrand.env.cli.external.node import bertrand_node
+
+        now = time.time()
+        timeout = getattr(args, "timeout", INFINITY)
+        if math.isnan(timeout) or timeout <= 0:
+            msg = f"invalid node timeout: {timeout} (must be > 0 seconds or inf)"
+            raise OSError(msg)
+        with asyncio.Runner() as runner:
+            try:
+                runner.run(bertrand_node(args))
+            except (TimeoutError, TimeoutExpired) as err:
+                start = datetime.fromtimestamp(now, UTC)
+                cmd = ["bertrand", "node", args.node_command]
+                if args.node_command == "storage":
+                    cmd.append(args.storage_command)
+                    if args.storage_command == "osd":
+                        cmd.append(args.osd_command)
                 raise TimeoutExpired(
                     cmd=cmd,
                     timeout=timeout,

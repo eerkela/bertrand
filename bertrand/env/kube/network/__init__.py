@@ -1,6 +1,7 @@
 """Networking feature APIs for Bertrand's Kubernetes control plane."""
 
 from bertrand.env.kube.network.bootstrap import ensure_network_backend
+from bertrand.env.kube.network.cni import CNIReport, inspect_cni
 from bertrand.env.kube.network.gateway import (
     BERTRAND_GATEWAY,
     BERTRAND_GATEWAY_CLASS,
@@ -13,6 +14,20 @@ from bertrand.env.kube.network.gateway import (
     bertrand_gateway_parent_refs,
     ensure_bertrand_gateway,
     gateway_api_crd_missing,
+)
+from bertrand.env.kube.network.load_balancer import (
+    METALLB_INSTALL_URL,
+    METALLB_LABEL,
+    METALLB_LABEL_VALUE,
+    METALLB_LABELS,
+    METALLB_NAMESPACE,
+    METALLB_VERSION,
+    BGPAdvertisement,
+    BGPPeer,
+    IPAddressPool,
+    L2Advertisement,
+    ensure_metallb,
+    metallb_status,
 )
 from bertrand.env.kube.network.profile import (
     NETWORK_PROFILE_KEY,
@@ -46,11 +61,22 @@ __all__ = [
     "HTTP_ROUTE_LABEL",
     "HTTP_ROUTE_LABELS",
     "HTTP_ROUTE_LABEL_VALUE",
+    "METALLB_INSTALL_URL",
+    "METALLB_LABEL",
+    "METALLB_LABELS",
+    "METALLB_LABEL_VALUE",
+    "METALLB_NAMESPACE",
+    "METALLB_VERSION",
     "NETWORK_PROFILE_KEY",
     "NETWORK_PROFILE_LABEL",
     "NETWORK_PROFILE_LABELS",
     "NETWORK_PROFILE_LABEL_VALUE",
     "NETWORK_PROFILE_NAME",
+    "BGPAdvertisement",
+    "BGPPeer",
+    "CNIReport",
+    "IPAddressPool",
+    "L2Advertisement",
     "NetworkProfile",
     "WorkloadHTTPRouteIntent",
     "WorkloadHTTPRoutePlan",
@@ -59,11 +85,14 @@ __all__ = [
     "delete_workload_network_policy",
     "delete_workload_service",
     "ensure_bertrand_gateway",
+    "ensure_metallb",
     "ensure_network_backend",
     "ensure_workload_http_routes",
     "ensure_workload_network_policy",
     "ensure_workload_service",
     "gateway_api_crd_missing",
+    "inspect_cni",
+    "metallb_status",
     "prepare_workload_http_routes",
     "prune_workload_http_routes",
     "workload_http_route_name",
