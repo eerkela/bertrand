@@ -184,9 +184,11 @@ async def resolve_workload_capabilities(
     kube: Kube,
     *,
     containers: tuple[WorkloadContainerCapabilityRequest, ...],
-    env_id: str,
+    worktree_id: str,
+    repo_id: str,
     claim_owner: str,
-    node: str | None = None,
+    host_id: str | None = None,
+    node_name: str | None = None,
     timeout: float,
 ) -> WorkloadCapabilities:
     """Resolve runtime Secret, SSH, and device capabilities for one workload.
@@ -197,12 +199,16 @@ async def resolve_workload_capabilities(
         Active Kubernetes API context.
     containers : tuple[WorkloadContainerCapabilityRequest, ...]
         Runtime capability requests grouped by container.
-    env_id : str
-        Environment UUID used for the first capability lookup tier.
+    worktree_id : str
+        Persistent worktree UUID used for the first capability lookup tier.
+    repo_id : str
+        Stable repository UUID used for the second capability lookup tier.
     claim_owner : str
         Stable workload owner string used to derive DRA ResourceClaimTemplate names.
-    node : str | None, optional
-        Kubernetes node name used for the second capability lookup tier.
+    host_id : str | None, optional
+        Bertrand host UUID used for node-scoped Secret and SSH lookup.
+    node_name : str | None, optional
+        Kubernetes node name used to constrain DRA inventory.
     timeout : float
         Maximum resolution budget in seconds.
 
@@ -237,8 +243,9 @@ async def resolve_workload_capabilities(
                 kube,
                 kind="secret",
                 capability_id=capability_id,
-                env_id=env_id,
-                node=node,
+                worktree_id=worktree_id,
+                repo_id=repo_id,
+                host_id=host_id,
                 required=request.required,
                 timeout=deadline - loop.time(),
             )
@@ -278,8 +285,9 @@ async def resolve_workload_capabilities(
                 kube,
                 kind="ssh",
                 capability_id=capability_id,
-                env_id=env_id,
-                node=node,
+                worktree_id=worktree_id,
+                repo_id=repo_id,
+                host_id=host_id,
                 required=request.required,
                 timeout=deadline - loop.time(),
             )
@@ -325,7 +333,8 @@ async def resolve_workload_capabilities(
                 _check_kube_name(str(request.id)): request.required
                 for request in container.devices
             },
-            node_names=(node,) if node is not None else None,
+            host_ids=(host_id,) if host_id is not None else None,
+            node_names=(node_name,) if node_name is not None else None,
             timeout=deadline - loop.time(),
         )
         resource_claims.extend(

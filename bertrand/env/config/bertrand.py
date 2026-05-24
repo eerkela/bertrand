@@ -24,7 +24,7 @@ from pydantic import (
     model_validator,
 )
 
-from bertrand.env.git import METADATA_DIR, Scalar, atomic_write_text
+from bertrand.env.git import METADATA_DIR, Scalar, atomic_write_text, ensure_worktree_id
 
 from .core import (
     Config,
@@ -1782,8 +1782,6 @@ class Bertrand(Resource):
             IgnoreList,
             Field(
                 default_factory=lambda: [
-                    ".bertrand/*",
-                    "**/.bertrand/",
                     "__pycache__/",
                     "*.py[cod]",
                     "*.egg-info/",
@@ -1803,8 +1801,6 @@ class Bertrand(Resource):
                 ],
                 examples=[
                     [
-                        ".bertrand/*",
-                        "**/.bertrand/",
                         "__pycache__/",
                         "*.py[cod]",
                         "*.egg-info/",
@@ -1826,7 +1822,9 @@ class Bertrand(Resource):
                 description=(
                     "List of patterns to ignore within this project, which are shared "
                     "between both `.gitignore` and `.containerignore`.  Patterns are "
-                    "interpreted using the same rules as those files."
+                    "interpreted using the same rules as those files.  Bertrand "
+                    "always adds `.bertrand/` before these patterns to protect "
+                    "local metadata."
                 ),
             ),
         ]
@@ -2172,10 +2170,22 @@ class Bertrand(Resource):
         (config.root / "src").mkdir(parents=True, exist_ok=True)
         (config.root / "tests").mkdir(parents=True, exist_ok=True)
         (config.root / "docs").mkdir(parents=True, exist_ok=True)
+        worktree_id = ensure_worktree_id(config.root)
+        if config.kube is not None:
+            from bertrand.env.kube.build.lifecycle import worktree_identity
+            from bertrand.env.kube.ceph.volume import ensure_repository_worktree_record
+
+            await ensure_repository_worktree_record(
+                config.kube,
+                repo_id=config.repo.repo_id,
+                worktree_id=worktree_id,
+                worktree=worktree_identity(config.worktree),
+                timeout=config.timeout,
+            )
 
         # render ignore files
         # Always ignore Bertrand's metadata directory.
-        ignore = [str(METADATA_DIR / "*")]
+        ignore = [f"{METADATA_DIR.as_posix()}/"]
         ignore.extend(bertrand.ignore)
         containerignore = ignore.copy()
         containerignore.extend(bertrand.container_ignore)

@@ -8,7 +8,10 @@ import re
 import sys
 from typing import TYPE_CHECKING
 
-from bertrand.env.cli.external._helper import resolve_project_worktree
+from bertrand.env.cli.external._helper import (
+    prune_repository_mounts_quietly,
+    resolve_project_worktree,
+)
 from bertrand.env.config.core import Config, _check_kube_name
 from bertrand.env.git import BERTRAND_NAMESPACE, INFINITY
 from bertrand.env.kube.api.client import Kube
@@ -89,10 +92,14 @@ async def bertrand_build(
             raise ValueError(msg)
         auth = _check_kube_name(auth)
 
-    repo, worktree = await resolve_project_worktree(target)
     result: ProjectImagePublication | None = None
     request_name: str | None = None
     with await Kube.host(timeout=INFINITY) as kube:
+        repo, worktree = await resolve_project_worktree(
+            kube,
+            target,
+            timeout=INFINITY,
+        )
         config = await Config.load(worktree, kube=kube, repo=repo, timeout=INFINITY)
         async with config:
             await _assert_build_runtime(kube, timeout=INFINITY)
@@ -126,6 +133,7 @@ async def bertrand_build(
                 finally:
                     if follower is not None:
                         await follower.close()
+        await prune_repository_mounts_quietly(kube, timeout=INFINITY)
 
     if not quiet:
         if detach:

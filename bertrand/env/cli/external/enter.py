@@ -5,7 +5,10 @@ from __future__ import annotations
 import sys
 from typing import TYPE_CHECKING
 
-from bertrand.env.cli.external._helper import resolve_project_worktree
+from bertrand.env.cli.external._helper import (
+    prune_repository_mounts_quietly,
+    resolve_project_worktree,
+)
 from bertrand.env.cli.external.build import BuildLogFollower, _assert_build_runtime
 from bertrand.env.cli.external.run import _attach_pod
 from bertrand.env.config.bertrand import SHELLS, Bertrand
@@ -50,10 +53,14 @@ async def bertrand_enter(
         msg = "`bertrand enter` requires both stdin and stdout to be a TTY."
         raise OSError(msg)
 
-    repo, worktree = await resolve_project_worktree(target)
     session_id = new_session_id()
     host_id = current_host_id()
     with await Kube.host(timeout=INFINITY) as kube:
+        repo, worktree = await resolve_project_worktree(
+            kube,
+            target,
+            timeout=INFINITY,
+        )
         config = await Config.load(worktree, kube=kube, repo=repo, timeout=INFINITY)
         async with config:
             bertrand = config.get(Bertrand)
@@ -99,3 +106,4 @@ async def bertrand_enter(
                     )
                 finally:
                     await session.delete(kube, timeout=INFINITY)
+        await prune_repository_mounts_quietly(kube, timeout=INFINITY)

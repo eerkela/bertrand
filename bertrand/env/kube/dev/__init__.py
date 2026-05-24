@@ -10,11 +10,11 @@ from bertrand.env.kube.dev.mailbox import (
 from bertrand.env.kube.dev.session import (
     DevSession,
     create_project_dev_session,
-    current_host_id,
     delete_dev_backend_state,
     ensure_dev_backend,
     new_session_id,
 )
+from bertrand.env.kube.node_identity import current_host_id
 
 __all__ = [
     "CodeOpen",

@@ -5,8 +5,6 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-import re
-import uuid
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol
 
@@ -14,7 +12,7 @@ from bertrand.env.build_args import normalize_image_build_args
 from bertrand.env.config.bertrand import Bertrand, project_image_tag
 from bertrand.env.config.conan import ConanConfig
 from bertrand.env.config.python import PyProject
-from bertrand.env.git import INFINITY
+from bertrand.env.git import INFINITY, ensure_worktree_id
 from bertrand.env.kube.build.containerfile import project_containerfile
 from bertrand.env.kube.build.lifecycle import (
     ProjectImagePublication,
@@ -32,11 +30,9 @@ from bertrand.env.kube.build.request import (
     wait_buildkit_build,
 )
 
-PROJECT_IMAGE_ENV_NAMESPACE = uuid.UUID("36eb88bb-c284-4cb2-ab0a-57f5e850868a")
-_PROJECT_IMAGE_COMPONENT_RE = re.compile(r"[^a-z0-9._-]+")
-
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Mapping, Sequence
+    from pathlib import Path
 
     from bertrand.env.config.core import Config, KubeName
     from bertrand.env.kube.api.client import Kube
@@ -228,8 +224,8 @@ def project_image_build(
     Returns
     -------
     ProjectImageBuild
-        Build request containing deterministic identity, target image, and BuildKit
-        execution contract.
+        Build request containing stable identity, target image, and BuildKit execution
+        contract.
 
     Raises
     ------
@@ -262,14 +258,14 @@ def project_image_build(
     image_config = bertrand.image
 
     worktree = worktree_identity(config.worktree)
-    env_id = _env_id(repo_id=repo_id, worktree=worktree)
+    worktree_id = project_worktree_id(config.root)
     oci_tag = project_image_tag(pyproject.project.version)
     image = IMAGES.ref(
         "/".join(
             (
                 "projects",
                 repo_id,
-                _image_component(worktree, fallback="root"),
+                worktree_id,
             )
         ),
         oci_tag,
@@ -281,7 +277,7 @@ def project_image_build(
     )
     config_id = _config_id(
         repo_id=repo_id,
-        worktree=worktree,
+        worktree_id=worktree_id,
         image_config=image_config,
         conan_config=config.get(ConanConfig),
         dockerfile=dockerfile,
@@ -289,7 +285,7 @@ def project_image_build(
     identity = ProjectImageIdentity(
         repo_id=repo_id,
         worktree=worktree,
-        env_id=env_id,
+        worktree_id=worktree_id,
         config_id=config_id,
         image=image,
     )
@@ -307,17 +303,20 @@ def project_image_build(
     )
 
 
-def _env_id(*, repo_id: str, worktree: str) -> str:
-    return uuid.uuid5(PROJECT_IMAGE_ENV_NAMESPACE, f"{repo_id}:{worktree}").hex
+def project_worktree_id(worktree_root: Path) -> str:
+    """Return the persistent worktree ID for one project worktree.
 
+    Parameters
+    ----------
+    worktree_root : Path
+        Absolute or relative checked-out worktree root.
 
-def _image_component(value: str, *, fallback: str) -> str:
-    text = value.strip().lower()
-    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
-    text = _PROJECT_IMAGE_COMPONENT_RE.sub("-", text).strip("._-")
-    if not text:
-        text = fallback
-    return f"{text[:48].rstrip('._-')}-{digest}"
+    Returns
+    -------
+    str
+        Stable UUID hex string stored at ``.bertrand/worktree_id``.
+    """
+    return ensure_worktree_id(worktree_root)
 
 
 def _build_args(args: Mapping[str, object]) -> dict[str, str]:
@@ -333,14 +332,14 @@ def _capability_requests(
 def _config_id(
     *,
     repo_id: str,
-    worktree: str,
+    worktree_id: str,
     image_config: Bertrand.Model.Image,
     conan_config: ConanConfig.Model | None,
     dockerfile: str,
 ) -> str:
     payload = {
         "repo_id": repo_id,
-        "worktree": worktree,
+        "worktree_id": worktree_id,
         "image": image_config.model_dump(by_alias=True, mode="json"),
         "conan": (
             None

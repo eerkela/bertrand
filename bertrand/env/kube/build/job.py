@@ -255,7 +255,7 @@ class _ProjectBuildExecutor:
             msg = "BuildKit platform image build timeout must be non-negative"
             raise TimeoutError(msg)
         spec = self.spec
-        env_id = spec.env_id
+        worktree_id = spec.worktree_id
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
 
@@ -271,7 +271,7 @@ class _ProjectBuildExecutor:
                 ssh_paths,
             ) = await self._capability_mounts(
                 kube,
-                env_id=env_id,
+                worktree_id=worktree_id,
                 timeout=deadline - loop.time(),
             )
             targets = await self._schedule(
@@ -500,7 +500,7 @@ class _ProjectBuildExecutor:
         self,
         kube: Kube,
         *,
-        env_id: str,
+        worktree_id: str,
         timeout: float,
     ) -> tuple[
         list[VolumeSpec],
@@ -528,7 +528,8 @@ class _ProjectBuildExecutor:
                     kube,
                     kind=kind,
                     capability_id=capability_id,
-                    env_id=env_id,
+                    worktree_id=worktree_id,
+                    repo_id=self.spec.repo_id,
                     required=required,
                     timeout=deadline - loop.time(),
                 )

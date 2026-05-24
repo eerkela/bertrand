@@ -6,7 +6,7 @@ import asyncio
 from typing import TYPE_CHECKING
 
 from bertrand.env.cli.external.run import run_configured_project
-from bertrand.env.cli.internal.context import live_project_context
+from bertrand.env.cli.internal._helper import live_project_context
 
 if TYPE_CHECKING:
     import argparse

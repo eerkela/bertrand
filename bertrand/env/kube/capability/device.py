@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Annotated, Self
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
-from bertrand.env.config.core import _check_kube_name
+from bertrand.env.config.core import _check_kube_name, _check_uuid
 from bertrand.env.git import BERTRAND_ENV, BERTRAND_NAMESPACE, INFINITY
 from bertrand.env.kube.api.spec import (
     ContainerSpec,
@@ -65,6 +65,7 @@ BERTRAND_DEVICE_PLURAL = "bertranddevices"
 BERTRAND_DEVICE_LABEL = "bertrand.dev/dra-device"
 BERTRAND_DEVICE_LABEL_VALUE = "v1"
 BERTRAND_DEVICE_CAPABILITY_LABEL = "bertrand.dev/dra-device-capability"
+BERTRAND_DEVICE_HOST_LABEL = "bertrand.dev/dra-device-host"
 BERTRAND_DEVICE_NODE_LABEL = "bertrand.dev/dra-device-node"
 
 _DRA_LABELS = {
@@ -88,9 +89,16 @@ _BERTRAND_DEVICE_CLIENT = CustomObjectClient(
 _NON_EMPTY = {"type": "string", "minLength": 1}
 _BERTRAND_DEVICE_SPEC_SCHEMA = {
     "type": "object",
-    "required": ["capability_id", "node_name", "device_name", "cdi_selector"],
+    "required": [
+        "capability_id",
+        "host_id",
+        "node_name",
+        "device_name",
+        "cdi_selector",
+    ],
     "properties": {
         "capability_id": _NON_EMPTY,
+        "host_id": _NON_EMPTY,
         "node_name": _NON_EMPTY,
         "device_name": _NON_EMPTY,
         "cdi_selector": _NON_EMPTY,
@@ -104,6 +112,7 @@ type _NonEmptyString = Annotated[str, Field(min_length=1)]
 class _BertrandDeviceSpecPayload(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     capability_id: _NonEmptyString
+    host_id: _NonEmptyString
     node_name: _NonEmptyString
     device_name: _NonEmptyString
     cdi_selector: _NonEmptyString
@@ -113,6 +122,11 @@ class _BertrandDeviceSpecPayload(BaseModel):
     @classmethod
     def _validate_name(cls, value: str) -> str:
         return _check_kube_name(value.strip())
+
+    @field_validator("host_id")
+    @classmethod
+    def _validate_host_id(cls, value: str) -> str:
+        return _check_uuid(value.strip())
 
     @field_validator("node_name")
     @classmethod
@@ -213,6 +227,17 @@ class BertrandDeviceRecord:
             Capability ID requested by project config.
         """
         return self.spec.capability_id
+
+    @property
+    def host_id(self) -> str:
+        """Return the Bertrand host UUID that owns this device.
+
+        Returns
+        -------
+        str
+            Durable Bertrand host UUID.
+        """
+        return self.spec.host_id
 
     @property
     def node_name(self) -> str:
@@ -424,6 +449,7 @@ async def list_device_inventory(
     kube: Kube,
     *,
     capability_id: str | None = None,
+    host_ids: Collection[str] | None = None,
     node_names: Collection[str] | None = None,
     timeout: float,
 ) -> list[BertrandDeviceRecord]:
@@ -435,6 +461,8 @@ async def list_device_inventory(
         Active Kubernetes API context.
     capability_id : str | None, optional
         Optional capability ID filter.
+    host_ids : Collection[str] | None, optional
+        Optional Bertrand host UUID filter applied client-side.
     node_names : Collection[str] | None, optional
         Optional node-name filter applied client-side.
     timeout : float
@@ -450,6 +478,9 @@ async def list_device_inventory(
         labels[BERTRAND_DEVICE_CAPABILITY_LABEL] = _label_value(
             _check_kube_name(capability_id)
         )
+    allowed_hosts = {_check_uuid(host_id) for host_id in host_ids or ()}
+    if len(allowed_hosts) == 1:
+        labels[BERTRAND_DEVICE_HOST_LABEL] = _label_value(next(iter(allowed_hosts)))
     objects = await _BERTRAND_DEVICE_CLIENT.list(
         kube,
         labels=labels,
@@ -457,15 +488,21 @@ async def list_device_inventory(
     )
     allowed_nodes = {name.strip() for name in node_names or () if name.strip()}
     records = [BertrandDeviceRecord.from_payload(obj.payload) for obj in objects]
+    if allowed_hosts:
+        records = [record for record in records if record.host_id in allowed_hosts]
     if allowed_nodes:
         records = [record for record in records if record.node_name in allowed_nodes]
-    return sorted(records, key=lambda item: (item.capability_id, item.node_name))
+    return sorted(
+        records,
+        key=lambda item: (item.capability_id, item.host_id, item.node_name),
+    )
 
 
 async def upsert_device_inventory(
     kube: Kube,
     *,
     capability_id: str,
+    host_id: str,
     node_name: str,
     device_name: str,
     cdi_selector: str,
@@ -480,6 +517,8 @@ async def upsert_device_inventory(
         Active Kubernetes API context.
     capability_id : str
         Host-agnostic device capability ID.
+    host_id : str
+        Durable Bertrand host UUID that owns the concrete device.
     node_name : str
         Kubernetes node that owns the concrete device.
     device_name : str
@@ -498,6 +537,7 @@ async def upsert_device_inventory(
     """
     spec = _BertrandDeviceSpecPayload(
         capability_id=capability_id,
+        host_id=host_id,
         node_name=node_name,
         device_name=device_name,
         cdi_selector=cdi_selector,
@@ -509,6 +549,7 @@ async def upsert_device_inventory(
         spec=spec.model_dump(mode="json"),
         labels={
             BERTRAND_DEVICE_CAPABILITY_LABEL: _label_value(spec.capability_id),
+            BERTRAND_DEVICE_HOST_LABEL: _label_value(spec.host_id),
             BERTRAND_DEVICE_NODE_LABEL: _label_value(spec.node_name),
         },
         timeout=timeout,
@@ -516,10 +557,126 @@ async def upsert_device_inventory(
     return BertrandDeviceRecord.from_payload(obj.payload)
 
 
+async def delete_device_inventory(
+    kube: Kube,
+    *,
+    capability_id: str,
+    host_id: str,
+    node_name: str,
+    device_name: str,
+    timeout: float,
+) -> bool:
+    """Delete one managed DRA device inventory record.
+
+    Parameters
+    ----------
+    kube : Kube
+        Active Kubernetes API context.
+    capability_id : str
+        Host-agnostic device capability ID.
+    host_id : str
+        Durable Bertrand host UUID that owns the concrete device.
+    node_name : str
+        Kubernetes node that owns the concrete device.
+    device_name : str
+        Node-local DRA device name.
+    timeout : float
+        Maximum request budget in seconds.
+
+    Returns
+    -------
+    bool
+        Whether a matching inventory record was deleted.
+    """
+    spec = _BertrandDeviceSpecPayload(
+        capability_id=capability_id,
+        host_id=host_id,
+        node_name=node_name,
+        device_name=device_name,
+        cdi_selector="placeholder.invalid/device=0",
+    )
+    name = _device_inventory_name(spec)
+    records = await list_device_inventory(
+        kube,
+        capability_id=spec.capability_id,
+        host_ids=(spec.host_id,),
+        node_names=(spec.node_name,),
+        timeout=timeout,
+    )
+    if not any(
+        record.name == name and record.spec.device_name == spec.device_name
+        for record in records
+    ):
+        return False
+    await _BERTRAND_DEVICE_CLIENT.delete_by_name(
+        kube,
+        name=name,
+        timeout=timeout,
+    )
+    return True
+
+
+async def delete_device_inventory_for_host(
+    kube: Kube,
+    *,
+    host_id: str,
+    timeout: float,
+) -> tuple[BertrandDeviceRecord, ...]:
+    """Delete managed DRA inventory records owned by one Bertrand host UUID.
+
+    Parameters
+    ----------
+    kube : Kube
+        Active Kubernetes API context.
+    host_id : str
+        Durable Bertrand host UUID whose local inventory should be removed.
+    timeout : float
+        Maximum deletion budget.
+
+    Returns
+    -------
+    tuple[BertrandDeviceRecord, ...]
+        Inventory records deleted from the cluster.
+    """
+    records = await list_device_inventory(
+        kube,
+        host_ids=(_check_uuid(host_id),),
+        timeout=timeout,
+    )
+    for record in records:
+        await _BERTRAND_DEVICE_CLIENT.delete_by_name(
+            kube,
+            name=record.name,
+            timeout=timeout,
+        )
+    return tuple(records)
+
+
+async def refresh_node_resource_slice(
+    kube: Kube,
+    *,
+    node_name: str,
+    timeout: float,
+) -> None:
+    """Refresh the managed ResourceSlice for one Kubernetes node.
+
+    Parameters
+    ----------
+    kube : Kube
+        Active Kubernetes API context.
+    node_name : str
+        Kubernetes node name whose local inventory should be published.
+    timeout : float
+        Maximum request budget in seconds.
+    """
+    await _publish_node_slice(kube, node_name=node_name, timeout=timeout)
+
+
 async def select_device_claims(
     kube: Kube,
     *,
     requests: Mapping[str, bool],
+    host_ids: Collection[str] | None = None,
     node_names: Collection[str] | None = None,
     timeout: float,
 ) -> tuple[DRADeviceRequest, ...]:
@@ -531,6 +688,8 @@ async def select_device_claims(
         Active Kubernetes API context.
     requests : Mapping[str, bool]
         Capability IDs mapped to `required` flags.
+    host_ids : Collection[str] | None, optional
+        Optional Bertrand host UUID filter for preflight validation.
     node_names : Collection[str] | None, optional
         Optional candidate node filter for preflight validation.
     timeout : float
@@ -559,16 +718,18 @@ async def select_device_claims(
         inventory = await list_device_inventory(
             kube,
             capability_id=capability_id,
+            host_ids=host_ids,
             node_names=node_names,
             timeout=deadline - loop.time(),
         )
         if not inventory:
             if required:
-                where = (
-                    ""
-                    if node_names is None
-                    else f" on candidate node(s) {', '.join(sorted(node_names))}"
-                )
+                locations: list[str] = []
+                if host_ids is not None:
+                    locations.append(f"host(s) {', '.join(sorted(host_ids))}")
+                if node_names is not None:
+                    locations.append(f"node(s) {', '.join(sorted(node_names))}")
+                where = f" on candidate {' / '.join(locations)}" if locations else ""
                 msg = (
                     f"required DRA device capability {capability_id!r} has no "
                     f"managed inventory{where}"
@@ -927,6 +1088,7 @@ def _resource_slice_attributes(
 ) -> dict[str, dict[str, str]]:
     attributes = {
         "bertrand.dev/capability": {"string": record.capability_id},
+        "bertrand.dev/hostID": {"string": record.host_id},
         "bertrand.dev/cdiSelector": {"string": record.cdi_selector},
     }
     for key, value in record.spec.attributes.items():
@@ -947,7 +1109,7 @@ def _resource_slice_name(node_name: str) -> str:
 
 
 def _device_inventory_name(spec: _BertrandDeviceSpecPayload) -> str:
-    digest = _name_digest(spec.node_name, spec.capability_id, spec.device_name)[:24]
+    digest = _name_digest(spec.host_id, spec.capability_id, spec.device_name)[:24]
     return f"bertrand-device-{digest}"
 
 

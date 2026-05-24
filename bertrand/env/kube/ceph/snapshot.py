@@ -18,7 +18,6 @@ from bertrand.env.kube.volume import PersistentVolumeClaim, StorageClass
 from .volume import (
     CEPHFS_STORAGE_CLASS_PREFERENCES,
     REPO_VOLUME_ENV,
-    REPOSITORY_VOLUME_PHASE_LABEL,
     CephRepositoryVolumeRecord,
     RepoVolume,
     list_repository_volume_records,
@@ -661,11 +660,14 @@ async def _snapshot_inventory(
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout
     retained = await _retained_snapshots(kube, timeout=deadline - loop.time())
-    active_records = await list_repository_volume_records(
-        kube,
-        labels={REPOSITORY_VOLUME_PHASE_LABEL: "active"},
-        timeout=deadline - loop.time(),
-    )
+    active_records = [
+        record
+        for record in await list_repository_volume_records(
+            kube,
+            timeout=deadline - loop.time(),
+        )
+        if record.phase == "Ready"
+    ]
     by_repo: dict[str, list[VolumeSnapshot]] = {}
     for snapshot in retained:
         repo_id = snapshot.labels.get(REPO_ID_ENV, "")

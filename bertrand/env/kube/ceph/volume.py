@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Annotated, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
@@ -49,6 +50,12 @@ REPOSITORY_MOUNT_LABEL_VALUE = "v1"
 REPOSITORY_MOUNT_PHASE_LABEL = "bertrand.dev/ceph-repository-mount-phase"
 REPOSITORY_MOUNT_PATH_HASH_LABEL = "bertrand.dev/ceph-repository-mount-path"
 REPOSITORY_MOUNT_HOST_HASH_LABEL = "bertrand.dev/ceph-repository-mount-host"
+REPOSITORY_WORKTREE_KIND = "CephRepositoryWorktree"
+REPOSITORY_WORKTREE_PLURAL = "cephrepositoryworktrees"
+REPOSITORY_WORKTREE_LABEL = "bertrand.dev/ceph-repository-worktree"
+REPOSITORY_WORKTREE_LABEL_VALUE = "v1"
+REPOSITORY_WORKTREE_PHASE_LABEL = "bertrand.dev/ceph-repository-worktree-phase"
+REPOSITORY_WORKTREE_ID_HASH_LABEL = "bertrand.dev/ceph-repository-worktree-id"
 REPOSITORY_VOLUME_GC_GRACE_SECONDS = 604_800
 REPOSITORY_VOLUME_GC_LIMIT = 4
 _REPOSITORY_VOLUME_LABELS = {
@@ -61,9 +68,21 @@ _REPOSITORY_MOUNT_LABELS = {
     REPO_VOLUME_ENV: "1",
     REPOSITORY_MOUNT_LABEL: REPOSITORY_MOUNT_LABEL_VALUE,
 }
+_REPOSITORY_WORKTREE_LABELS = {
+    BERTRAND_ENV: "1",
+    REPO_VOLUME_ENV: "1",
+    REPOSITORY_WORKTREE_LABEL: REPOSITORY_WORKTREE_LABEL_VALUE,
+}
 
-type _RepositoryVolumePhase = Literal["Active", "Retired"]
+type _RepositoryVolumePhase = Literal[
+    "Active",
+    "Initializing",
+    "Ready",
+    "Failed",
+    "Retired",
+]
 type _RepositoryMountPhase = Literal["Active", "Retired"]
+type _RepositoryWorktreePhase = Literal["Active", "Retired"]
 type _NonEmptyString = Annotated[str, Field(min_length=1)]
 
 
@@ -155,6 +174,73 @@ def repository_mount_name(repo_id: str, host_id: str, alias_path: str) -> str:
         h.update(len(encoded).to_bytes(8, "big"))
         h.update(encoded)
     return f"bertrand-repo-mount-{h.hexdigest()[:43]}"
+
+
+def repository_worktree_path(worktree: str | PurePosixPath) -> str:
+    """Validate and normalize a repository-relative worktree path.
+
+    Parameters
+    ----------
+    worktree : str | PurePosixPath
+        Repository-relative worktree path. Empty and ``.`` normalize to ``.``.
+
+    Returns
+    -------
+    str
+        Normalized POSIX worktree path.
+
+    Raises
+    ------
+    ValueError
+        If the worktree path is absolute or escapes the repository root.
+    """
+    value = (
+        worktree.as_posix() if isinstance(worktree, PurePosixPath) else str(worktree)
+    )
+    value = value.strip()
+    if not value or value == ".":
+        return "."
+    path = PurePosixPath(value)
+    if path.is_absolute() or any(part in ("", ".", "..") for part in path.parts):
+        msg = f"repository worktree path must be relative: {worktree!r}"
+        raise ValueError(msg)
+    return path.as_posix()
+
+
+def repository_worktree_id_hash(worktree_id: str) -> str:
+    """Return the Kubernetes-label-safe hash for a worktree UUID.
+
+    Returns
+    -------
+    str
+        Short SHA-256 hex digest for the worktree UUID.
+    """
+    return _hash_label(_check_uuid(worktree_id))
+
+
+def repository_worktree_name(repo_id: str, worktree_id: str) -> str:
+    """Return the deterministic name for a repository worktree record.
+
+    Parameters
+    ----------
+    repo_id : str
+        Stable repository UUID.
+    worktree_id : str
+        Persistent worktree UUID.
+
+    Returns
+    -------
+    str
+        Kubernetes custom-object name for the worktree lifecycle record.
+    """
+    repo_id = _check_uuid(repo_id)
+    worktree_id = _check_uuid(worktree_id)
+    h = hashlib.sha256()
+    for value in (repo_id, worktree_id):
+        encoded = value.encode("utf-8")
+        h.update(len(encoded).to_bytes(8, "big"))
+        h.update(encoded)
+    return f"bertrand-repo-worktree-{h.hexdigest()[:40]}"
 
 
 def _hash_label(value: str) -> str:
@@ -523,7 +609,7 @@ class _RepositoryVolumeSpec(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     repo_id: _NonEmptyString
     claim_name: _NonEmptyString
-    phase: _RepositoryVolumePhase = "Active"
+    phase: _RepositoryVolumePhase = "Initializing"
     created_at: datetime
     last_seen_at: datetime
     retired_at: datetime | None = None
@@ -540,23 +626,35 @@ class _RepositoryVolumeSpec(BaseModel):
         return value.astimezone(UTC)
 
     @classmethod
-    def active(
+    @field_validator("phase")
+    @classmethod
+    def _normalize_phase(cls, value: _RepositoryVolumePhase) -> _RepositoryVolumePhase:
+        if value == "Active":
+            return "Ready"
+        return value
+
+    @classmethod
+    def lifecycle(
         cls,
         *,
         repo_id: str,
+        phase: _RepositoryVolumePhase,
         created_at: datetime,
         last_seen_at: datetime,
+        retired_at: datetime | None = None,
+        last_gc_at: datetime | None = None,
+        last_error: str = "",
     ) -> _RepositoryVolumeSpec:
         repo_id = _check_uuid(repo_id)
         return cls(
             repo_id=repo_id,
             claim_name=RepoVolume.claim_name(repo_id),
-            phase="Active",
+            phase=phase,
             created_at=created_at,
             last_seen_at=last_seen_at,
-            retired_at=None,
-            last_gc_at=None,
-            last_error="",
+            retired_at=retired_at,
+            last_gc_at=last_gc_at,
+            last_error=last_error,
         )
 
     @property
@@ -643,7 +741,10 @@ class CephRepositoryVolumeRecord(BaseModel):
             )
             raise OSError(msg)
         label_phase = labels.get(REPOSITORY_VOLUME_PHASE_LABEL, "").strip()
-        if label_phase != record.spec.phase.lower():
+        expected_phase = record.spec.phase.lower()
+        if expected_phase == "ready" and label_phase == "active":
+            label_phase = "ready"
+        if label_phase != expected_phase:
             msg = (
                 f"malformed {REPOSITORY_VOLUME_KIND} {record.name!r}: phase label "
                 f"{label_phase!r} does not match spec phase {record.spec.phase!r}"
@@ -723,7 +824,7 @@ class CephRepositoryVolumeRecord(BaseModel):
 
         Returns
         -------
-        {"Active", "Retired"}
+        {"Initializing", "Ready", "Failed", "Retired"}
             Repository volume lifecycle phase.
         """
         return self.spec.phase
@@ -1150,6 +1251,231 @@ class CephRepositoryMountRecord(BaseModel):
         )
 
 
+class _RepositoryWorktreeSpec(BaseModel):
+    """Lifecycle spec for one repository worktree checkout."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    repo_id: _NonEmptyString
+    worktree_id: _NonEmptyString
+    worktree: str = "."
+    phase: _RepositoryWorktreePhase = "Active"
+    created_at: datetime
+    last_seen_at: datetime
+    retired_at: datetime | None = None
+    last_error: str = ""
+
+    @field_validator("repo_id", "worktree_id")
+    @classmethod
+    def _normalize_uuid(cls, value: str) -> str:
+        return _check_uuid(value.strip())
+
+    @field_validator("worktree")
+    @classmethod
+    def _normalize_worktree(cls, value: str) -> str:
+        return repository_worktree_path(value)
+
+    @field_validator("created_at", "last_seen_at", "retired_at")
+    @classmethod
+    def _normalize_datetime(cls, value: datetime | None) -> datetime | None:
+        if value is None:
+            return None
+        if value.tzinfo is None:
+            return value.replace(tzinfo=UTC)
+        return value.astimezone(UTC)
+
+    @classmethod
+    def active(
+        cls,
+        *,
+        repo_id: str,
+        worktree_id: str,
+        worktree: str,
+        created_at: datetime,
+        last_seen_at: datetime,
+    ) -> _RepositoryWorktreeSpec:
+        return cls(
+            repo_id=repo_id,
+            worktree_id=worktree_id,
+            worktree=worktree,
+            phase="Active",
+            created_at=created_at,
+            last_seen_at=last_seen_at,
+            retired_at=None,
+            last_error="",
+        )
+
+    @property
+    def labels(self) -> dict[str, str]:
+        return {
+            **_REPOSITORY_WORKTREE_LABELS,
+            REPO_ID_ENV: self.repo_id,
+            REPOSITORY_WORKTREE_ID_HASH_LABEL: repository_worktree_id_hash(
+                self.worktree_id
+            ),
+            REPOSITORY_WORKTREE_PHASE_LABEL: self.phase.lower(),
+        }
+
+    def payload(self) -> dict[str, object]:
+        return {
+            "repo_id": self.repo_id,
+            "worktree_id": self.worktree_id,
+            "worktree": self.worktree,
+            "phase": self.phase,
+            "created_at": _datetime_payload(self.created_at),
+            "last_seen_at": _datetime_payload(self.last_seen_at),
+            "retired_at": _datetime_payload(self.retired_at),
+            "last_error": self.last_error,
+        }
+
+
+class CephRepositoryWorktreeRecord(BaseModel):
+    """Read-only model for one `CephRepositoryWorktree` custom object.
+
+    Parameters
+    ----------
+    api_version : str
+        Kubernetes API version reported by the custom object.
+    kind : {"CephRepositoryWorktree"}
+        Kubernetes custom object kind.
+    metadata : CustomObjectMetadata
+        Kubernetes object metadata.
+    spec : _RepositoryWorktreeSpec
+        Repository worktree lifecycle spec.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True, populate_by_name=True)
+    api_version: str = Field(alias="apiVersion")
+    kind: Literal["CephRepositoryWorktree"]
+    metadata: CustomObjectMetadata
+    spec: _RepositoryWorktreeSpec
+
+    @classmethod
+    def from_payload(cls, payload: object) -> CephRepositoryWorktreeRecord:
+        """Validate a Kubernetes custom object payload.
+
+        Parameters
+        ----------
+        payload : object
+            Raw Kubernetes custom object payload.
+
+        Returns
+        -------
+        CephRepositoryWorktreeRecord
+            Validated repository worktree lifecycle record.
+
+        Raises
+        ------
+        OSError
+            If the payload is malformed or ownership metadata is inconsistent.
+        """
+        try:
+            record = cls.model_validate(payload)
+        except ValidationError as err:
+            msg = f"malformed {REPOSITORY_WORKTREE_KIND} custom object: {err}"
+            raise OSError(msg) from err
+
+        repo_id = _check_uuid(record.spec.repo_id)
+        worktree_id = _check_uuid(record.spec.worktree_id)
+        expected_name = repository_worktree_name(repo_id, worktree_id)
+        if record.name != expected_name:
+            msg = (
+                f"malformed {REPOSITORY_WORKTREE_KIND} {record.name!r}: expected "
+                f"deterministic name {expected_name!r}"
+            )
+            raise OSError(msg)
+        labels = record.metadata.labels
+        if labels.get(REPO_ID_ENV) != repo_id:
+            msg = (
+                f"malformed {REPOSITORY_WORKTREE_KIND} {record.name!r}: repo label "
+                f"{REPO_ID_ENV!r} does not match spec repo_id {repo_id!r}"
+            )
+            raise OSError(msg)
+        expected_hash = repository_worktree_id_hash(worktree_id)
+        if labels.get(REPOSITORY_WORKTREE_ID_HASH_LABEL) != expected_hash:
+            msg = (
+                f"malformed {REPOSITORY_WORKTREE_KIND} {record.name!r}: worktree "
+                "ID hash label does not match spec worktree_id"
+            )
+            raise OSError(msg)
+        label_phase = labels.get(REPOSITORY_WORKTREE_PHASE_LABEL, "").strip()
+        if label_phase != record.spec.phase.lower():
+            msg = (
+                f"malformed {REPOSITORY_WORKTREE_KIND} {record.name!r}: phase label "
+                f"{label_phase!r} does not match spec phase {record.spec.phase!r}"
+            )
+            raise OSError(msg)
+        return record
+
+    @property
+    def name(self) -> str:
+        """Return the Kubernetes custom object name."""
+        return self.metadata.name
+
+    @property
+    def namespace(self) -> str:
+        """Return the namespace that owns this record."""
+        return self.metadata.namespace
+
+    @property
+    def repo_id(self) -> str:
+        """Return the parent repository UUID."""
+        return self.spec.repo_id
+
+    @property
+    def worktree_id(self) -> str:
+        """Return the persistent worktree UUID."""
+        return self.spec.worktree_id
+
+    @property
+    def worktree(self) -> str:
+        """Return the repository-relative worktree path."""
+        return self.spec.worktree
+
+    @property
+    def phase(self) -> _RepositoryWorktreePhase:
+        """Return the lifecycle phase."""
+        return self.spec.phase
+
+    @property
+    def created_at(self) -> datetime:
+        """Return the lifecycle creation timestamp."""
+        return self.spec.created_at
+
+    @property
+    def last_seen_at(self) -> datetime:
+        """Return the last successful convergence timestamp."""
+        return self.spec.last_seen_at
+
+    @property
+    def retired_at(self) -> datetime | None:
+        """Return the retirement timestamp."""
+        return self.spec.retired_at
+
+    @property
+    def last_error(self) -> str:
+        """Return the last lifecycle diagnostic."""
+        return self.spec.last_error
+
+    def _lifecycle_spec(
+        self,
+        *,
+        phase: _RepositoryWorktreePhase,
+        last_seen_at: datetime,
+        retired_at: datetime | None,
+        last_error: str,
+    ) -> _RepositoryWorktreeSpec:
+        return _RepositoryWorktreeSpec(
+            repo_id=self.repo_id,
+            worktree_id=self.worktree_id,
+            worktree=self.worktree,
+            phase=phase,
+            created_at=self.created_at,
+            last_seen_at=last_seen_at,
+            retired_at=retired_at,
+            last_error=last_error,
+        )
+
+
 _REPOSITORY_VOLUME_SPEC_SCHEMA = {
     "type": "object",
     "required": [
@@ -1163,7 +1489,10 @@ _REPOSITORY_VOLUME_SPEC_SCHEMA = {
     "properties": {
         "repo_id": {"type": "string", "minLength": 1},
         "claim_name": {"type": "string", "minLength": 1},
-        "phase": {"type": "string", "enum": ["Active", "Retired"]},
+        "phase": {
+            "type": "string",
+            "enum": ["Active", "Initializing", "Ready", "Failed", "Retired"],
+        },
         "created_at": {"type": "string", "format": "date-time"},
         "last_seen_at": {"type": "string", "format": "date-time"},
         "retired_at": {"type": "string", "format": "date-time", "nullable": True},
@@ -1199,6 +1528,28 @@ _REPOSITORY_MOUNT_SPEC_SCHEMA = {
         "last_error": {"type": "string"},
     },
 }
+_REPOSITORY_WORKTREE_SPEC_SCHEMA = {
+    "type": "object",
+    "required": [
+        "repo_id",
+        "worktree_id",
+        "worktree",
+        "phase",
+        "created_at",
+        "last_seen_at",
+        "last_error",
+    ],
+    "properties": {
+        "repo_id": {"type": "string", "minLength": 1},
+        "worktree_id": {"type": "string", "minLength": 1},
+        "worktree": {"type": "string"},
+        "phase": {"type": "string", "enum": ["Active", "Retired"]},
+        "created_at": {"type": "string", "format": "date-time"},
+        "last_seen_at": {"type": "string", "format": "date-time"},
+        "retired_at": {"type": "string", "format": "date-time", "nullable": True},
+        "last_error": {"type": "string"},
+    },
+}
 _REPOSITORY_VOLUME_SPEC = CustomObjectSpec(
     group=REPOSITORY_VOLUME_GROUP,
     version=REPOSITORY_VOLUME_VERSION,
@@ -1215,6 +1566,14 @@ _REPOSITORY_MOUNT_SPEC = CustomObjectSpec(
     labels=_REPOSITORY_MOUNT_LABELS,
 )
 _REPOSITORY_MOUNT_CLIENT = CustomObjectClient(_REPOSITORY_MOUNT_SPEC)
+_REPOSITORY_WORKTREE_SPEC = CustomObjectSpec(
+    group=REPOSITORY_VOLUME_GROUP,
+    version=REPOSITORY_VOLUME_VERSION,
+    kind=REPOSITORY_WORKTREE_KIND,
+    plural=REPOSITORY_WORKTREE_PLURAL,
+    labels=_REPOSITORY_WORKTREE_LABELS,
+)
+_REPOSITORY_WORKTREE_CLIENT = CustomObjectClient(_REPOSITORY_WORKTREE_SPEC)
 
 
 async def ensure_repository_volume_crd(kube: Kube, *, timeout: float) -> None:
@@ -1282,6 +1641,41 @@ async def ensure_repository_mount_crd(kube: Kube, *, timeout: float) -> None:
         short_names=("crm",),
         spec_schema=_REPOSITORY_MOUNT_SPEC_SCHEMA,
         labels=_REPOSITORY_MOUNT_LABELS,
+        timeout=deadline - loop.time(),
+    )
+    await crd.wait_established(kube, timeout=deadline - loop.time())
+
+
+async def ensure_repository_worktree_crd(kube: Kube, *, timeout: float) -> None:
+    """Converge the repository-worktree lifecycle CRD.
+
+    Parameters
+    ----------
+    kube : Kube
+        Active Kubernetes API context.
+    timeout : float
+        Maximum convergence budget in seconds.
+
+    Raises
+    ------
+    TimeoutError
+        If `timeout` is non-positive or CRD establishment exceeds the budget.
+    """
+    if timeout <= 0:
+        msg = "repository worktree CRD timeout must be non-negative"
+        raise TimeoutError(msg)
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    crd = await CustomResourceDefinition.upsert(
+        kube,
+        group=REPOSITORY_VOLUME_GROUP,
+        version=REPOSITORY_VOLUME_VERSION,
+        plural=REPOSITORY_WORKTREE_PLURAL,
+        singular="cephrepositoryworktree",
+        kind=REPOSITORY_WORKTREE_KIND,
+        short_names=("crw",),
+        spec_schema=_REPOSITORY_WORKTREE_SPEC_SCHEMA,
+        labels=_REPOSITORY_WORKTREE_LABELS,
         timeout=deadline - loop.time(),
     )
     await crd.wait_established(kube, timeout=deadline - loop.time())
@@ -1361,6 +1755,43 @@ async def get_repository_mount_record(
     return CephRepositoryMountRecord.from_payload(obj.payload)
 
 
+async def get_repository_worktree_record(
+    kube: Kube,
+    *,
+    repo_id: str,
+    worktree_id: str,
+    timeout: float,
+) -> CephRepositoryWorktreeRecord | None:
+    """Read one repository-worktree lifecycle record.
+
+    Parameters
+    ----------
+    kube : Kube
+        Active Kubernetes API context.
+    repo_id : str
+        Stable repository UUID.
+    worktree_id : str
+        Persistent worktree UUID.
+    timeout : float
+        Maximum request budget in seconds.
+
+    Returns
+    -------
+    CephRepositoryWorktreeRecord | None
+        Repository-worktree lifecycle record, or None if it does not exist.
+    """
+    name = repository_worktree_name(repo_id, worktree_id)
+    obj = await _REPOSITORY_WORKTREE_CLIENT.get(
+        kube,
+        namespace=BERTRAND_NAMESPACE,
+        name=name,
+        timeout=timeout,
+    )
+    if obj is None:
+        return None
+    return CephRepositoryWorktreeRecord.from_payload(obj.payload)
+
+
 async def list_repository_volume_records(
     kube: Kube,
     *,
@@ -1425,13 +1856,69 @@ async def list_repository_mount_records(
     return records
 
 
+async def list_repository_worktree_records(
+    kube: Kube,
+    *,
+    timeout: float,
+    labels: Mapping[str, str] | None = None,
+    repo_id: str | None = None,
+    worktree_id: str | None = None,
+) -> list[CephRepositoryWorktreeRecord]:
+    """List repository-worktree lifecycle records.
+
+    Parameters
+    ----------
+    kube : Kube
+        Active Kubernetes API context.
+    timeout : float
+        Maximum request budget in seconds.
+    labels : Mapping[str, str] | None, optional
+        Optional exact-match label selector.
+    repo_id : str | None, optional
+        Optional repository UUID filter.
+    worktree_id : str | None, optional
+        Optional worktree UUID filter.
+
+    Returns
+    -------
+    list[CephRepositoryWorktreeRecord]
+        Validated repository-worktree lifecycle records.
+    """
+    selector = dict(labels or {})
+    expected_repo = _check_uuid(repo_id) if repo_id is not None else None
+    expected_worktree = _check_uuid(worktree_id) if worktree_id is not None else None
+    if expected_repo is not None:
+        selector[REPO_ID_ENV] = expected_repo
+    if expected_worktree is not None:
+        selector[REPOSITORY_WORKTREE_ID_HASH_LABEL] = repository_worktree_id_hash(
+            expected_worktree
+        )
+    objects = await _REPOSITORY_WORKTREE_CLIENT.list(
+        kube,
+        namespace=BERTRAND_NAMESPACE,
+        labels=selector,
+        timeout=timeout,
+    )
+    records = [
+        CephRepositoryWorktreeRecord.from_payload(obj.payload) for obj in objects
+    ]
+    if expected_worktree is not None:
+        records = [
+            record for record in records if record.worktree_id == expected_worktree
+        ]
+    records.sort(
+        key=lambda record: (record.repo_id, record.worktree, record.worktree_id)
+    )
+    return records
+
+
 async def ensure_repository_volume_record(
     kube: Kube,
     *,
     repo_id: str,
     timeout: float,
 ) -> CephRepositoryVolumeRecord:
-    """Mark a managed repository volume as active and recently observed.
+    """Mark a managed repository volume as initializing or recently observed.
 
     Parameters
     ----------
@@ -1445,7 +1932,7 @@ async def ensure_repository_volume_record(
     Returns
     -------
     CephRepositoryVolumeRecord
-        Active lifecycle record for the repository volume.
+        Lifecycle record for the repository volume.
 
     Raises
     ------
@@ -1466,10 +1953,16 @@ async def ensure_repository_volume_record(
     )
     now = datetime.now(UTC)
     created_at = existing.created_at if existing is not None else now
-    spec = _RepositoryVolumeSpec.active(
+    phase: _RepositoryVolumePhase = "Initializing"
+    if existing is not None and existing.phase == "Ready":
+        phase = "Ready"
+    spec = _RepositoryVolumeSpec.lifecycle(
         repo_id=repo_id,
+        phase=phase,
         created_at=created_at,
         last_seen_at=now,
+        last_gc_at=None,
+        last_error="",
     )
     obj = await _REPOSITORY_VOLUME_CLIENT.upsert(
         kube,
@@ -1480,6 +1973,91 @@ async def ensure_repository_volume_record(
         timeout=deadline - loop.time(),
     )
     return CephRepositoryVolumeRecord.from_payload(obj.payload)
+
+
+async def mark_repository_volume_ready(
+    kube: Kube,
+    *,
+    repo_id: str,
+    timeout: float,
+) -> CephRepositoryVolumeRecord:
+    """Mark a repository volume as finalized and safe for normal recovery.
+
+    Parameters
+    ----------
+    kube : Kube
+        Active Kubernetes API context.
+    repo_id : str
+        Stable repository UUID.
+    timeout : float
+        Maximum convergence budget in seconds.
+
+    Returns
+    -------
+    CephRepositoryVolumeRecord
+        Ready lifecycle record for the repository volume.
+    """
+    return await _mark_repository_volume_phase(
+        kube,
+        repo_id=repo_id,
+        phase="Ready",
+        last_error="",
+        timeout=timeout,
+    )
+
+
+async def mark_repository_volume_failed(
+    kube: Kube,
+    *,
+    repo_id: str,
+    last_error: str,
+    timeout: float,
+) -> CephRepositoryVolumeRecord | None:
+    """Mark an incomplete repository volume as failed.
+
+    Ready or retired records are left unchanged so a later failed config render does
+    not poison a usable repository volume.
+
+    Parameters
+    ----------
+    kube : Kube
+        Active Kubernetes API context.
+    repo_id : str
+        Stable repository UUID.
+    last_error : str
+        Diagnostic describing the failed initialization stage.
+    timeout : float
+        Maximum convergence budget in seconds.
+
+    Returns
+    -------
+    CephRepositoryVolumeRecord | None
+        Updated failed record, existing ready/retired record, or None if the volume
+        has not yet been recorded.
+    """
+    if timeout <= 0:
+        return None
+    repo_id = _check_uuid(repo_id)
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    await ensure_repository_volume_crd(kube, timeout=deadline - loop.time())
+    record = await get_repository_volume_record(
+        kube,
+        repo_id=repo_id,
+        timeout=deadline - loop.time(),
+    )
+    if record is None or record.phase in ("Ready", "Retired"):
+        return record
+    return await _transition_repository_volume(
+        kube,
+        record=record,
+        phase="Failed",
+        last_seen_at=datetime.now(UTC),
+        retired_at=record.retired_at,
+        last_gc_at=record.last_gc_at,
+        last_error=last_error,
+        timeout=deadline - loop.time(),
+    )
 
 
 async def ensure_repository_mount_record(
@@ -1553,6 +2131,75 @@ async def ensure_repository_mount_record(
         timeout=deadline - loop.time(),
     )
     return CephRepositoryMountRecord.from_payload(obj.payload)
+
+
+async def ensure_repository_worktree_record(
+    kube: Kube,
+    *,
+    repo_id: str,
+    worktree_id: str,
+    worktree: str,
+    timeout: float,
+) -> CephRepositoryWorktreeRecord:
+    """Mark a repository worktree as active and recently observed.
+
+    Parameters
+    ----------
+    kube : Kube
+        Active Kubernetes API context.
+    repo_id : str
+        Stable repository UUID.
+    worktree_id : str
+        Persistent worktree UUID stored in the worktree metadata directory.
+    worktree : str
+        Repository-relative worktree path.
+    timeout : float
+        Maximum convergence budget in seconds.
+
+    Returns
+    -------
+    CephRepositoryWorktreeRecord
+        Active lifecycle record for the worktree.
+
+    Raises
+    ------
+    TimeoutError
+        If `timeout` is non-positive or convergence exceeds the budget.
+    """
+    if timeout <= 0:
+        msg = "repository worktree lifecycle convergence timeout must be non-negative"
+        raise TimeoutError(msg)
+    repo_id = _check_uuid(repo_id)
+    worktree_id = _check_uuid(worktree_id)
+    worktree = repository_worktree_path(worktree)
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    await ensure_repository_mount_crd(kube, timeout=deadline - loop.time())
+    await ensure_repository_worktree_crd(kube, timeout=deadline - loop.time())
+    existing = await get_repository_worktree_record(
+        kube,
+        repo_id=repo_id,
+        worktree_id=worktree_id,
+        timeout=deadline - loop.time(),
+    )
+    now = datetime.now(UTC)
+    created_at = existing.created_at if existing is not None else now
+    spec = _RepositoryWorktreeSpec.active(
+        repo_id=repo_id,
+        worktree_id=worktree_id,
+        worktree=worktree,
+        created_at=created_at,
+        last_seen_at=now,
+    )
+    obj = await _REPOSITORY_WORKTREE_CLIENT.upsert(
+        kube,
+        namespace=BERTRAND_NAMESPACE,
+        name=repository_worktree_name(repo_id, worktree_id),
+        spec=spec.payload(),
+        labels=spec.labels,
+        timeout=deadline - loop.time(),
+    )
+    return CephRepositoryWorktreeRecord.from_payload(obj.payload)
 
 
 async def retire_repository_volume(
@@ -1709,6 +2356,98 @@ async def retire_repository_mount(
     )
 
 
+async def retire_repository_worktree_record(
+    kube: Kube,
+    *,
+    record: CephRepositoryWorktreeRecord,
+    timeout: float,
+) -> CephRepositoryWorktreeRecord:
+    """Retire one repository worktree lifecycle record.
+
+    Parameters
+    ----------
+    kube : Kube
+        Active Kubernetes API context.
+    record : CephRepositoryWorktreeRecord
+        Worktree lifecycle record to retire.
+    timeout : float
+        Maximum request budget in seconds.
+
+    Returns
+    -------
+    CephRepositoryWorktreeRecord
+        Retired lifecycle record.
+
+    Raises
+    ------
+    TimeoutError
+        If `timeout` is non-positive or retirement exceeds the budget.
+    """
+    if timeout <= 0:
+        msg = "repository worktree retirement timeout must be non-negative"
+        raise TimeoutError(msg)
+    from bertrand.env.kube.build.lifecycle import retire_project_images
+
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    await retire_project_images(
+        kube,
+        repo_id=record.repo_id,
+        worktree_id=record.worktree_id,
+        timeout=deadline - loop.time(),
+    )
+    retired_at = record.retired_at or datetime.now(UTC)
+    return await _transition_repository_worktree(
+        kube,
+        record=record,
+        phase="Retired",
+        last_seen_at=record.last_seen_at,
+        retired_at=retired_at,
+        last_error="",
+        timeout=deadline - loop.time(),
+    )
+
+
+async def retire_repository_worktree(
+    kube: Kube,
+    *,
+    repo_id: str,
+    worktree_id: str,
+    timeout: float,
+) -> CephRepositoryWorktreeRecord | None:
+    """Retire one repository worktree lifecycle record by identity.
+
+    Returns
+    -------
+    CephRepositoryWorktreeRecord | None
+        Retired record, or None if no record exists.
+
+    Raises
+    ------
+    TimeoutError
+        If `timeout` is non-positive or retirement exceeds the budget.
+    """
+    if timeout <= 0:
+        msg = "repository worktree retirement timeout must be non-negative"
+        raise TimeoutError(msg)
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    await ensure_repository_worktree_crd(kube, timeout=deadline - loop.time())
+    record = await get_repository_worktree_record(
+        kube,
+        repo_id=repo_id,
+        worktree_id=worktree_id,
+        timeout=deadline - loop.time(),
+    )
+    if record is None:
+        return None
+    return await retire_repository_worktree_record(
+        kube,
+        record=record,
+        timeout=deadline - loop.time(),
+    )
+
+
 async def gc_repository_volumes(
     kube: Kube,
     *,
@@ -1778,6 +2517,33 @@ async def gc_repository_volumes(
                 repo_id=record.repo_id,
                 timeout=deadline - loop.time(),
             ):
+                await _transition_repository_volume(
+                    kube,
+                    record=record,
+                    phase="Retired",
+                    last_seen_at=record.last_seen_at,
+                    retired_at=record.retired_at,
+                    last_gc_at=now,
+                    last_error="active BuildKit builds still reference repository",
+                    timeout=deadline - loop.time(),
+                )
+                continue
+            blocker = await _repository_volume_gc_blocker(
+                kube,
+                record=record,
+                timeout=deadline - loop.time(),
+            )
+            if blocker is not None:
+                await _transition_repository_volume(
+                    kube,
+                    record=record,
+                    phase="Retired",
+                    last_seen_at=record.last_seen_at,
+                    retired_at=record.retired_at,
+                    last_gc_at=now,
+                    last_error=blocker,
+                    timeout=deadline - loop.time(),
+                )
                 continue
             await delete_repository_snapshot_artifacts(
                 kube,
@@ -1807,6 +2573,11 @@ async def gc_repository_volumes(
             )
             if credentials is not None:
                 await credentials.delete(timeout=deadline - loop.time())
+            await _delete_repository_parented_records(
+                kube,
+                record=record,
+                timeout=deadline - loop.time(),
+            )
             await _REPOSITORY_VOLUME_CLIENT.delete_by_name(
                 kube,
                 namespace=BERTRAND_NAMESPACE,
@@ -1919,6 +2690,56 @@ async def _transition_repository_volume(
     return CephRepositoryVolumeRecord.from_payload(obj.payload)
 
 
+async def _mark_repository_volume_phase(
+    kube: Kube,
+    *,
+    repo_id: str,
+    phase: _RepositoryVolumePhase,
+    last_error: str,
+    timeout: float,
+) -> CephRepositoryVolumeRecord:
+    if timeout <= 0:
+        msg = "repository volume phase update timeout must be non-negative"
+        raise TimeoutError(msg)
+    repo_id = _check_uuid(repo_id)
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    await ensure_repository_volume_crd(kube, timeout=deadline - loop.time())
+    existing = await get_repository_volume_record(
+        kube,
+        repo_id=repo_id,
+        timeout=deadline - loop.time(),
+    )
+    now = datetime.now(UTC)
+    if existing is None:
+        spec = _RepositoryVolumeSpec.lifecycle(
+            repo_id=repo_id,
+            phase=phase,
+            created_at=now,
+            last_seen_at=now,
+            last_error=last_error,
+        )
+        obj = await _REPOSITORY_VOLUME_CLIENT.upsert(
+            kube,
+            namespace=BERTRAND_NAMESPACE,
+            name=RepoVolume.claim_name(repo_id),
+            spec=spec.payload(),
+            labels=spec.labels,
+            timeout=deadline - loop.time(),
+        )
+        return CephRepositoryVolumeRecord.from_payload(obj.payload)
+    return await _transition_repository_volume(
+        kube,
+        record=existing,
+        phase=phase,
+        last_seen_at=now,
+        retired_at=existing.retired_at,
+        last_gc_at=existing.last_gc_at,
+        last_error=last_error,
+        timeout=deadline - loop.time(),
+    )
+
+
 async def _transition_repository_mount(
     kube: Kube,
     *,
@@ -1949,6 +2770,269 @@ async def _transition_repository_mount(
         timeout=deadline - loop.time(),
     )
     return CephRepositoryMountRecord.from_payload(obj.payload)
+
+
+async def _transition_repository_worktree(
+    kube: Kube,
+    *,
+    record: CephRepositoryWorktreeRecord,
+    phase: _RepositoryWorktreePhase,
+    last_seen_at: datetime,
+    retired_at: datetime | None,
+    last_error: str,
+    timeout: float,
+) -> CephRepositoryWorktreeRecord:
+    if timeout <= 0:
+        msg = "repository worktree lifecycle transition timeout must be non-negative"
+        raise TimeoutError(msg)
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    spec = record._lifecycle_spec(
+        phase=phase,
+        last_seen_at=last_seen_at,
+        retired_at=retired_at,
+        last_error=last_error,
+    )
+    obj = await _REPOSITORY_WORKTREE_CLIENT.upsert(
+        kube,
+        namespace=BERTRAND_NAMESPACE,
+        name=record.name,
+        spec=spec.payload(),
+        labels=spec.labels,
+        timeout=deadline - loop.time(),
+    )
+    return CephRepositoryWorktreeRecord.from_payload(obj.payload)
+
+
+async def _repository_volume_gc_blocker(
+    kube: Kube,
+    *,
+    record: CephRepositoryVolumeRecord,
+    timeout: float,
+) -> str | None:
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    await ensure_repository_worktree_crd(kube, timeout=deadline - loop.time())
+    mounts = await list_repository_mount_records(
+        kube,
+        labels={
+            REPO_ID_ENV: record.repo_id,
+            REPOSITORY_MOUNT_PHASE_LABEL: "active",
+        },
+        timeout=deadline - loop.time(),
+    )
+    active_mounts = [item for item in mounts if item.phase == "Active"]
+    if active_mounts:
+        names = ", ".join(item.name for item in active_mounts[:3])
+        return f"active repository mount records still exist: {names}"
+
+    worktrees = await list_repository_worktree_records(
+        kube,
+        labels={REPOSITORY_WORKTREE_PHASE_LABEL: "active"},
+        repo_id=record.repo_id,
+        timeout=deadline - loop.time(),
+    )
+    active_worktrees = [item for item in worktrees if item.phase == "Active"]
+    if active_worktrees:
+        names = ", ".join(item.worktree for item in active_worktrees[:3])
+        return f"active repository worktree records still exist: {names}"
+
+    workload_blocker = await _repository_workload_resource_blocker(
+        kube,
+        repo_id=record.repo_id,
+        timeout=deadline - loop.time(),
+    )
+    if workload_blocker is not None:
+        return workload_blocker
+
+    image_blocker = await _repository_image_record_blocker(
+        kube,
+        repo_id=record.repo_id,
+        timeout=deadline - loop.time(),
+    )
+    if image_blocker is not None:
+        return image_blocker
+
+    pods = await Pod.list(
+        kube,
+        namespaces=(BERTRAND_NAMESPACE,),
+        timeout=deadline - loop.time(),
+    )
+    active_pods = [
+        pod
+        for pod in pods
+        if (
+            not pod.is_terminal
+            and record.claim_name in pod.persistent_volume_claim_names
+        )
+    ]
+    if active_pods:
+        names = ", ".join(pod.name for pod in active_pods[:3])
+        return (
+            f"active Pods still reference repository PVC {record.claim_name}: {names}"
+        )
+
+    if await _has_retained_repository_snapshots(
+        kube,
+        repo_id=record.repo_id,
+        timeout=deadline - loop.time(),
+    ):
+        return "retained repository snapshots still exist"
+    return None
+
+
+async def _repository_workload_resource_blocker(
+    kube: Kube,
+    *,
+    repo_id: str,
+    timeout: float,
+) -> str | None:
+    from bertrand.env.kube.cronjob import CronJob
+    from bertrand.env.kube.deployment import Deployment
+    from bertrand.env.kube.job import Job
+    from bertrand.env.kube.workload.base import (
+        WORKLOAD_LABEL,
+        WORKLOAD_LABEL_VALUE,
+        WORKLOAD_REPO_LABEL,
+    )
+
+    repo_id = _check_uuid(repo_id)
+    labels = {
+        WORKLOAD_LABEL: WORKLOAD_LABEL_VALUE,
+        WORKLOAD_REPO_LABEL: hashlib.sha256(repo_id.encode()).hexdigest()[:16],
+    }
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    deployments = await Deployment.list(
+        kube,
+        namespaces=(BERTRAND_NAMESPACE,),
+        labels=labels,
+        timeout=deadline - loop.time(),
+    )
+    if deployments:
+        names = ", ".join(item.name for item in deployments[:3])
+        return f"managed Deployments still reference repository {repo_id}: {names}"
+    cronjobs = await CronJob.list(
+        kube,
+        namespaces=(BERTRAND_NAMESPACE,),
+        labels=labels,
+        timeout=deadline - loop.time(),
+    )
+    if cronjobs:
+        names = ", ".join(item.name for item in cronjobs[:3])
+        return f"managed CronJobs still reference repository {repo_id}: {names}"
+    jobs = await Job.list(
+        kube,
+        namespaces=(BERTRAND_NAMESPACE,),
+        labels=labels,
+        timeout=deadline - loop.time(),
+    )
+    active_jobs = [job for job in jobs if not job.is_complete and not job.is_failed]
+    if active_jobs:
+        names = ", ".join(item.name for item in active_jobs[:3])
+        return f"active Jobs still reference repository {repo_id}: {names}"
+    return None
+
+
+async def _repository_image_record_blocker(
+    kube: Kube,
+    *,
+    repo_id: str,
+    timeout: float,
+) -> str | None:
+    from bertrand.env.kube.build.lifecycle import (
+        PROJECT_IMAGE_PHASE_LABEL,
+        PROJECT_IMAGE_REPO_LABEL,
+        list_project_images,
+    )
+
+    repo_id = _check_uuid(repo_id)
+    images = await list_project_images(
+        kube,
+        labels={
+            PROJECT_IMAGE_REPO_LABEL: hashlib.sha256(repo_id.encode()).hexdigest()[:16],
+            PROJECT_IMAGE_PHASE_LABEL: "active",
+        },
+        timeout=timeout,
+    )
+    active = [image for image in images if image.phase == "Active"]
+    if active:
+        names = ", ".join(image.name for image in active[:3])
+        return (
+            "active project image records still reference repository "
+            f"{repo_id}: {names}"
+        )
+    return None
+
+
+async def _delete_repository_parented_records(
+    kube: Kube,
+    *,
+    record: CephRepositoryVolumeRecord,
+    timeout: float,
+) -> None:
+    from bertrand.env.kube.capability.base import delete_capabilities_for_scope
+
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    worktrees = await list_repository_worktree_records(
+        kube,
+        repo_id=record.repo_id,
+        timeout=deadline - loop.time(),
+    )
+    for worktree in worktrees:
+        if worktree.phase == "Active":
+            msg = (
+                f"cannot delete repository volume {record.repo_id}: active "
+                f"worktree record {worktree.name!r} still exists"
+            )
+            raise OSError(msg)
+        await delete_capabilities_for_scope(
+            kube,
+            scope="worktree",
+            scope_value=worktree.worktree_id,
+            timeout=deadline - loop.time(),
+        )
+        await _REPOSITORY_WORKTREE_CLIENT.delete_by_name(
+            kube,
+            namespace=BERTRAND_NAMESPACE,
+            name=worktree.name,
+            timeout=deadline - loop.time(),
+        )
+    await delete_capabilities_for_scope(
+        kube,
+        scope="repository",
+        scope_value=record.repo_id,
+        timeout=deadline - loop.time(),
+    )
+
+
+async def _has_retained_repository_snapshots(
+    kube: Kube,
+    *,
+    repo_id: str,
+    timeout: float,
+) -> bool:
+    from bertrand.env.kube.ceph.snapshot import (
+        REPOSITORY_SNAPSHOT_LABEL,
+        REPOSITORY_SNAPSHOT_LABEL_VALUE,
+        REPOSITORY_SNAPSHOT_PURPOSE_LABEL,
+        REPOSITORY_SNAPSHOT_PURPOSE_RETAINED,
+    )
+    from bertrand.env.kube.snapshot import VolumeSnapshot
+
+    snapshots = await VolumeSnapshot.list(
+        kube,
+        namespace=BERTRAND_NAMESPACE,
+        labels={
+            BERTRAND_ENV: "1",
+            REPO_ID_ENV: _check_uuid(repo_id),
+            REPOSITORY_SNAPSHOT_LABEL: REPOSITORY_SNAPSHOT_LABEL_VALUE,
+            REPOSITORY_SNAPSHOT_PURPOSE_LABEL: REPOSITORY_SNAPSHOT_PURPOSE_RETAINED,
+        },
+        timeout=timeout,
+    )
+    return bool(snapshots)
 
 
 def _repository_volume_gc_eligible(

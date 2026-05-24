@@ -53,7 +53,6 @@ async def _publish_project_image_manifest(
     timeout: float,
     external_image: str | None = None,
     auth_id: KubeName | None = None,
-    env_id: str | None = None,
     repository: ImageRepository = IMAGES,
     job_observer: Callable[[Job], Awaitable[None]] | None = None,
 ) -> ProjectImagePublication:
@@ -74,8 +73,6 @@ async def _publish_project_image_manifest(
         Optional external mutable image reference to copy the manifest to.
     auth_id : KubeName | None, optional
         Secret capability ID containing Docker auth JSON for the external registry.
-    env_id : str | None, optional
-        Environment UUID used to resolve `auth_id`.
     repository : ImageRepository, optional
         Internal image repository that owns `image` and platform digest refs.
     job_observer : Callable[[Job], Awaitable[None]] | None, optional
@@ -106,13 +103,10 @@ async def _publish_project_image_manifest(
         if external_image is not None
         else None
     )
-    if auth_id is not None and env_id is None:
-        msg = "external registry auth capability requires an environment identity"
-        raise ValueError(msg)
     if auth_id is not None:
         auth_id = _check_kube_name(auth_id)
-    if env_id is not None:
-        env_id = _check_uuid(env_id)
+    worktree_id = _check_uuid(identity.worktree_id)
+    repo_id = _check_uuid(identity.repo_id)
 
     platform_refs = _validate_platform_refs(platform_refs, repository)
     loop = asyncio.get_running_loop()
@@ -120,7 +114,8 @@ async def _publish_project_image_manifest(
     auth_secret = await _resolve_auth_secret(
         kube,
         auth_id=auth_id,
-        env_id=env_id,
+        worktree_id=worktree_id,
+        repo_id=repo_id,
         timeout=deadline - loop.time(),
     )
     script = _manifest_script(
@@ -218,7 +213,8 @@ async def _resolve_auth_secret(
     kube: Kube,
     *,
     auth_id: str | None,
-    env_id: str | None,
+    worktree_id: str,
+    repo_id: str,
     timeout: float,
 ) -> str | None:
     if auth_id is None:
@@ -227,7 +223,8 @@ async def _resolve_auth_secret(
         kube,
         kind="secret",
         capability_id=auth_id,
-        env_id=env_id,
+        worktree_id=worktree_id,
+        repo_id=repo_id,
         required=True,
         timeout=timeout,
     )

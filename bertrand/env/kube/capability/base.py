@@ -2,7 +2,7 @@
 
 Capabilities are host-agnostic tokens that resolve to payloads supplied by a
 cluster. They are stored as managed Kubernetes Secrets in the Bertrand
-namespace, with a simple lookup order of environment scope, then node scope,
+namespace, with a lookup order of worktree scope, repository scope, node scope,
 then shared cluster scope.
 """
 
@@ -24,7 +24,7 @@ if TYPE_CHECKING:
     from bertrand.env.kube.api.client import Kube
 
 type CapabilityKind = Literal["secret", "ssh"]
-type CapabilityScope = Literal["env", "node", "shared"]
+type CapabilityScope = Literal["worktree", "repository", "node", "shared"]
 
 CAPABILITY_MANAGED_V1 = "bertrand.dev/capability-managed.v1"
 CAPABILITY_KIND_V1 = "bertrand.dev/capability-kind.v1"
@@ -32,7 +32,7 @@ CAPABILITY_SCOPE_V1 = "bertrand.dev/capability-scope.v1"
 CAPABILITY_SCOPE_VALUE_V1 = "bertrand.dev/capability-scope-value.v1"
 CAPABILITY_ID_V1 = "bertrand.dev/capability-id.v1"
 _CAPABILITY_KINDS = frozenset({"secret", "ssh"})
-_CAPABILITY_SCOPES = frozenset({"env", "node", "shared"})
+_CAPABILITY_SCOPES = frozenset({"worktree", "repository", "node", "shared"})
 
 
 @dataclass(frozen=True)
@@ -49,8 +49,8 @@ class CapabilityRef:
     scope : CapabilityScope
         Resolution scope for the capability.
     value : str | None, default=None
-        Scope value for `env` and `node` capabilities. Shared capabilities must
-        leave this unset.
+        Scope value for worktree, repository, and node capabilities. Shared
+        capabilities must leave this unset.
     """
 
     kind: CapabilityKind
@@ -84,13 +84,20 @@ class CapabilityRef:
             msg = f"{scope!r} capability references require a scope value"
             raise ValueError(msg)
         value = (
-            _check_uuid(self.value) if scope == "env" else _check_kube_name(self.value)
+            _check_uuid(self.value)
+            if scope in {"worktree", "repository", "node"}
+            else _check_kube_name(self.value)
         )
         object.__setattr__(self, "value", value)
 
     @classmethod
-    def env(cls, kind: CapabilityKind, capability_id: KubeName, env_id: str) -> Self:
-        """Create an environment-scoped capability reference.
+    def worktree(
+        cls,
+        kind: CapabilityKind,
+        capability_id: KubeName,
+        worktree_id: str,
+    ) -> Self:
+        """Create a worktree-scoped capability reference.
 
         Parameters
         ----------
@@ -98,19 +105,49 @@ class CapabilityRef:
             Capability category.
         capability_id : KubeName
             Host-agnostic capability ID.
-        env_id : str
-            Environment UUID used as the scope value.
+        worktree_id : str
+            Persistent worktree UUID used as the scope value.
 
         Returns
         -------
         CapabilityRef
-            Validated environment-scoped reference.
+            Validated worktree-scoped reference.
         """
         return cls(
             kind=kind,
             capability_id=capability_id,
-            scope="env",
-            value=env_id,
+            scope="worktree",
+            value=worktree_id,
+        )
+
+    @classmethod
+    def repository(
+        cls,
+        kind: CapabilityKind,
+        capability_id: KubeName,
+        repo_id: str,
+    ) -> Self:
+        """Create a repository-scoped capability reference.
+
+        Parameters
+        ----------
+        kind : CapabilityKind
+            Capability category.
+        capability_id : KubeName
+            Host-agnostic capability ID.
+        repo_id : str
+            Stable repository UUID used as the scope value.
+
+        Returns
+        -------
+        CapabilityRef
+            Validated repository-scoped reference.
+        """
+        return cls(
+            kind=kind,
+            capability_id=capability_id,
+            scope="repository",
+            value=repo_id,
         )
 
     @classmethod
@@ -118,7 +155,7 @@ class CapabilityRef:
         cls,
         kind: CapabilityKind,
         capability_id: KubeName,
-        node: KubeName,
+        host_id: str,
     ) -> Self:
         """Create a node-scoped capability reference.
 
@@ -128,8 +165,8 @@ class CapabilityRef:
             Capability category.
         capability_id : KubeName
             Host-agnostic capability ID.
-        node : KubeName
-            Kubernetes node name that owns the host-local capability value.
+        host_id : str
+            Durable Bertrand host UUID that owns the host-local capability value.
 
         Returns
         -------
@@ -140,7 +177,7 @@ class CapabilityRef:
             kind=kind,
             capability_id=capability_id,
             scope="node",
-            value=node,
+            value=host_id,
         )
 
     @classmethod
@@ -328,6 +365,7 @@ class Capability:
         kind: CapabilityKind | None = None,
         scope: CapabilityScope | None = None,
         capability_id: KubeName | None = None,
+        scope_value: str | None = None,
         timeout: float,
     ) -> builtins.list[Self]:
         """List managed capabilities with optional identity filtering.
@@ -342,6 +380,8 @@ class Capability:
             Optional capability scope filter.
         capability_id : KubeName | None, optional
             Optional host-agnostic capability ID filter.
+        scope_value : str | None, optional
+            Optional scope value filter for worktree, repository, or node scopes.
         timeout : float
             Maximum request budget in seconds. If infinite, wait indefinitely.
 
@@ -349,12 +389,31 @@ class Capability:
         -------
         builtins.list[Capability]
             Managed capabilities matching the requested filters.
+
+        Raises
+        ------
+        ValueError
+            If a scope-value filter is supplied without a compatible scope.
         """
         labels = {CAPABILITY_MANAGED_V1: "true"}
         if kind is not None:
             labels[CAPABILITY_KIND_V1] = _check_kind(kind)
         if scope is not None:
             labels[CAPABILITY_SCOPE_V1] = _check_scope(scope)
+        expected_scope_value: str | None = None
+        if scope_value is not None:
+            if scope is None:
+                msg = "capability scope_value filtering requires a scope"
+                raise ValueError(msg)
+            if scope == "shared":
+                msg = "shared capability scope cannot define a scope value"
+                raise ValueError(msg)
+            expected_scope_value = (
+                _check_uuid(scope_value)
+                if scope in {"worktree", "repository", "node"}
+                else _check_kube_name(scope_value)
+            )
+            labels[CAPABILITY_SCOPE_VALUE_V1] = expected_scope_value
         expected_id = (
             _check_kube_name(capability_id) if capability_id is not None else None
         )
@@ -369,6 +428,11 @@ class Capability:
         for secret in secrets:
             capability = cls._from_secret(secret=secret)
             if expected_id is not None and capability.ref.capability_id != expected_id:
+                continue
+            if (
+                expected_scope_value is not None
+                and capability.ref.value != expected_scope_value
+            ):
                 continue
             out.append(capability)
         return out
@@ -418,12 +482,13 @@ class Capability:
         *,
         kind: CapabilityKind,
         capability_id: KubeName,
-        env_id: str | None = None,
-        node: KubeName | None = None,
+        worktree_id: str | None = None,
+        repo_id: str | None = None,
+        host_id: str | None = None,
         required: bool = True,
         timeout: float,
     ) -> Self | None:
-        """Resolve a capability using env, node, then shared scope precedence.
+        """Resolve a capability using Bertrand's four-tier scope precedence.
 
         Parameters
         ----------
@@ -433,10 +498,12 @@ class Capability:
             Capability category to resolve.
         capability_id : KubeName
             Host-agnostic capability ID.
-        env_id : str | None, optional
-            Optional environment UUID for the first lookup tier.
-        node : KubeName | None, optional
-            Optional Kubernetes node name for the second lookup tier.
+        worktree_id : str | None, optional
+            Optional persistent worktree UUID for the first lookup tier.
+        repo_id : str | None, optional
+            Optional stable repository UUID for the second lookup tier.
+        host_id : str | None, optional
+            Optional Bertrand host UUID for the third lookup tier.
         required : bool, default=True
             If true, raise when no capability is found. If false, return `None`.
         timeout : float
@@ -453,20 +520,28 @@ class Capability:
             If a required capability is missing.
         """
         refs: list[CapabilityRef] = []
-        if env_id is not None:
+        if worktree_id is not None:
             refs.append(
-                CapabilityRef.env(
+                CapabilityRef.worktree(
                     kind=kind,
                     capability_id=capability_id,
-                    env_id=env_id,
+                    worktree_id=worktree_id,
                 )
             )
-        if node is not None:
+        if repo_id is not None:
+            refs.append(
+                CapabilityRef.repository(
+                    kind=kind,
+                    capability_id=capability_id,
+                    repo_id=repo_id,
+                )
+            )
+        if host_id is not None:
             refs.append(
                 CapabilityRef.node(
                     kind=kind,
                     capability_id=capability_id,
-                    node=node,
+                    host_id=host_id,
                 )
             )
         refs.append(CapabilityRef.shared(kind=kind, capability_id=capability_id))
@@ -544,6 +619,55 @@ class Capability:
             Maximum request budget in seconds. If infinite, wait indefinitely.
         """
         await self.secret.delete(kube, timeout=timeout)
+
+
+async def delete_capabilities_for_scope(
+    kube: Kube,
+    *,
+    scope: CapabilityScope,
+    scope_value: str | None,
+    timeout: float,
+) -> list[Capability]:
+    """Delete managed capabilities for one exact parent scope.
+
+    Parameters
+    ----------
+    kube : Kube
+        Active Kubernetes API context.
+    scope : CapabilityScope
+        Capability scope to delete.
+    scope_value : str | None
+        Required scope value for worktree, repository, and node scopes. Must be
+        omitted for shared scope.
+    timeout : float
+        Maximum deletion budget.
+
+    Returns
+    -------
+    list[Capability]
+        Capabilities deleted from the cluster.
+
+    Raises
+    ------
+    ValueError
+        If the scope/scope-value combination is invalid.
+    """
+    if scope == "shared":
+        if scope_value is not None:
+            msg = "shared capability cleanup cannot include a scope value"
+            raise ValueError(msg)
+    elif scope_value is None:
+        msg = f"{scope!r} capability cleanup requires a scope value"
+        raise ValueError(msg)
+    capabilities = await Capability.list(
+        kube,
+        scope=scope,
+        scope_value=scope_value,
+        timeout=timeout,
+    )
+    for capability in capabilities:
+        await capability.delete(kube, timeout=timeout)
+    return capabilities
 
 
 def _check_kind(kind: str) -> CapabilityKind:

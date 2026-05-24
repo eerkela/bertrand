@@ -1,4 +1,4 @@
-"""Shared context helpers for Bertrand's internal CLI."""
+"""Shared helpers for internal CLI command implementations."""
 
 from __future__ import annotations
 

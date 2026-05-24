@@ -4,14 +4,25 @@ from __future__ import annotations
 
 import asyncio
 import json
-import platform
 from typing import TYPE_CHECKING, cast
 
+from bertrand.env.cli.external.secret import (
+    add_capability,
+    list_capabilities,
+    local_node_capability_ref,
+    local_node_scope_targets,
+    remove_capability,
+)
 from bertrand.env.git import INFINITY, confirm
-from bertrand.env.host import HOST_ID_FILE
 from bertrand.env.kube.api.bootstrap import microk8s_cluster_ready
 from bertrand.env.kube.api.client import Kube
-from bertrand.env.kube.capability.device import list_device_inventory
+from bertrand.env.kube.capability.device import (
+    BertrandDeviceRecord,
+    delete_device_inventory,
+    list_device_inventory,
+    refresh_node_resource_slice,
+    upsert_device_inventory,
+)
 from bertrand.env.kube.ceph.api import BlockOSDSpec, validate_block_osd_devices
 from bertrand.env.kube.ceph.bootstrap import microceph_cluster_ready
 from bertrand.env.kube.ceph.capacity import (
@@ -22,6 +33,11 @@ from bertrand.env.kube.ceph.capacity import (
     read_storage_policy,
 )
 from bertrand.env.kube.node import Node
+from bertrand.env.kube.node_identity import (
+    BertrandNodeRecord,
+    current_host_id,
+    ensure_local_bertrand_node,
+)
 
 if TYPE_CHECKING:
     import argparse
@@ -48,6 +64,15 @@ async def bertrand_node(args: argparse.Namespace) -> None:
     if command == "storage":
         await _bertrand_node_storage(args)
         return
+    if command == "name":
+        await _bertrand_node_name(args)
+        return
+    if command == "secret":
+        await _bertrand_node_secret(args)
+        return
+    if command == "device":
+        await _bertrand_node_device(args)
+        return
     msg = f"unsupported node command: {command!r}"
     raise ValueError(msg)
 
@@ -66,7 +91,8 @@ async def bertrand_node_status(*, json_output: bool) -> None:
         return
     print("node:")
     print(f"  host id: {payload['host_id'] or 'unconfigured'}")
-    print(f"  host name: {payload['host_name']}")
+    print(f"  display name: {payload['display_name'] or '(none)'}")
+    print(f"  phase: {payload['phase'] or 'unknown'}")
     kubernetes = payload["kubernetes"]
     if isinstance(kubernetes, dict):
         node_status = cast("dict[str, object]", kubernetes)
@@ -95,6 +121,206 @@ async def _bertrand_node_storage(args: argparse.Namespace) -> None:
         return
     msg = f"unsupported node storage command: {command!r}"
     raise ValueError(msg)
+
+
+async def _bertrand_node_name(args: argparse.Namespace) -> None:
+    command = args.node_name_command
+    if command == "set":
+        await bertrand_node_name_set(display_name=args.name, timeout=args.timeout)
+        return
+    if command == "clear":
+        await bertrand_node_name_set(display_name="", timeout=args.timeout)
+        return
+    msg = f"unsupported node name command: {command!r}"
+    raise ValueError(msg)
+
+
+async def bertrand_node_name_set(*, display_name: str, timeout: float) -> None:
+    """Set or clear the local Bertrand node display name.
+
+    Parameters
+    ----------
+    display_name : str
+        Human-readable display name. An empty string clears the name.
+    timeout : float
+        Maximum Kubernetes convergence budget in seconds.
+    """
+    with await Kube.host(timeout=timeout) as kube:
+        record = await ensure_local_bertrand_node(
+            kube,
+            display_name=display_name,
+            timeout=timeout,
+        )
+    shown = record.display_name or "(none)"
+    print(f"node display name: {shown}")
+
+
+async def _bertrand_node_secret(args: argparse.Namespace) -> None:
+    command = args.node_secret_command
+    if command == "add":
+        ref = await local_node_capability_ref(
+            kind=args.kind,
+            capability_id=args.id,
+            timeout=args.timeout,
+        )
+        await add_capability(ref, source=args.source, timeout=args.timeout)
+        return
+    if command == "rm":
+        ref = await local_node_capability_ref(
+            kind=args.kind,
+            capability_id=args.id,
+            timeout=args.timeout,
+        )
+        await remove_capability(ref, timeout=args.timeout)
+        return
+    if command == "list":
+        await list_capabilities(
+            await local_node_scope_targets(timeout=args.timeout),
+            kind=args.kind,
+            json_output=args.json,
+            timeout=args.timeout,
+        )
+        return
+    msg = f"unsupported node secret command: {command!r}"
+    raise ValueError(msg)
+
+
+async def _bertrand_node_device(args: argparse.Namespace) -> None:
+    command = args.node_device_command
+    if command == "list":
+        await bertrand_node_device_list(json_output=args.json, timeout=args.timeout)
+        return
+    if command == "add":
+        await bertrand_node_device_add(
+            capability_id=args.capability,
+            device_name=args.name,
+            cdi_selector=args.cdi,
+            attributes=_parse_attrs(args.attr),
+            timeout=args.timeout,
+        )
+        return
+    if command == "rm":
+        await bertrand_node_device_rm(
+            capability_id=args.capability,
+            device_name=args.name,
+            timeout=args.timeout,
+        )
+        return
+    msg = f"unsupported node device command: {command!r}"
+    raise ValueError(msg)
+
+
+async def bertrand_node_device_list(*, json_output: bool, timeout: float) -> None:
+    """Print managed DRA inventory for the local Kubernetes node.
+
+    Parameters
+    ----------
+    json_output : bool
+        Whether to emit machine-readable JSON.
+    timeout : float
+        Maximum Kubernetes request budget in seconds.
+    """
+    with await Kube.host(timeout=timeout) as kube:
+        node = await ensure_local_bertrand_node(kube, timeout=timeout)
+        records = await list_device_inventory(
+            kube,
+            host_ids=(node.host_id,),
+            timeout=timeout,
+        )
+    payload = [_device_payload(record) for record in records]
+    if json_output:
+        print(json.dumps(payload, indent=2, sort_keys=True))
+        return
+    if not records:
+        print("no DRA devices")
+        return
+    for record in records:
+        print(
+            f"{record.capability_id} {record.spec.device_name} "
+            f"[{record.node_name}] -> {record.cdi_selector}"
+        )
+
+
+async def bertrand_node_device_add(
+    *,
+    capability_id: str,
+    device_name: str,
+    cdi_selector: str,
+    attributes: dict[str, str],
+    timeout: float,
+) -> None:
+    """Create or update one local managed DRA inventory record.
+
+    Parameters
+    ----------
+    capability_id : str
+        Host-agnostic device capability ID.
+    device_name : str
+        Node-local device inventory name.
+    cdi_selector : str
+        CDI selector exposed when Kubernetes allocates the device.
+    attributes : dict[str, str]
+        Additional string attributes published on the ResourceSlice.
+    timeout : float
+        Maximum Kubernetes request budget in seconds.
+    """
+    with await Kube.host(timeout=timeout) as kube:
+        node = await ensure_local_bertrand_node(kube, timeout=timeout)
+        record = await upsert_device_inventory(
+            kube,
+            capability_id=capability_id,
+            host_id=node.host_id,
+            node_name=node.node_name,
+            device_name=device_name,
+            cdi_selector=cdi_selector,
+            attributes=attributes,
+            timeout=timeout,
+        )
+        await refresh_node_resource_slice(
+            kube,
+            node_name=node.node_name,
+            timeout=timeout,
+        )
+    print(
+        f"{record.capability_id} {record.spec.device_name} "
+        f"[{record.node_name}] -> {record.cdi_selector}"
+    )
+
+
+async def bertrand_node_device_rm(
+    *,
+    capability_id: str,
+    device_name: str,
+    timeout: float,
+) -> None:
+    """Delete one local managed DRA inventory record.
+
+    Parameters
+    ----------
+    capability_id : str
+        Host-agnostic device capability ID.
+    device_name : str
+        Node-local device inventory name.
+    timeout : float
+        Maximum Kubernetes request budget in seconds.
+    """
+    with await Kube.host(timeout=timeout) as kube:
+        node = await ensure_local_bertrand_node(kube, timeout=timeout)
+        deleted = await delete_device_inventory(
+            kube,
+            capability_id=capability_id,
+            host_id=node.host_id,
+            node_name=node.node_name,
+            device_name=device_name,
+            timeout=timeout,
+        )
+        await refresh_node_resource_slice(
+            kube,
+            node_name=node.node_name,
+            timeout=timeout,
+        )
+    state = "deleted" if deleted else "not found"
+    print(f"{capability_id} {device_name}: {state}")
 
 
 async def bertrand_node_storage_status(*, json_output: bool) -> None:
@@ -268,13 +494,42 @@ async def bertrand_node_storage_osd_add_block(
     )
 
 
+def _parse_attrs(values: list[str]) -> dict[str, str]:
+    attributes: dict[str, str] = {}
+    for raw in values:
+        if "=" not in raw:
+            msg = f"device attribute must use KEY=VALUE syntax: {raw!r}"
+            raise ValueError(msg)
+        key, value = raw.split("=", 1)
+        key = key.strip()
+        if not key:
+            msg = f"device attribute key cannot be empty: {raw!r}"
+            raise ValueError(msg)
+        attributes[key] = value
+    return dict(sorted(attributes.items()))
+
+
+def _device_payload(record: BertrandDeviceRecord) -> dict[str, object]:
+    return {
+        "name": record.name,
+        "capability_id": record.capability_id,
+        "host_id": record.host_id,
+        "node_name": record.node_name,
+        "device_name": record.spec.device_name,
+        "cdi_selector": record.cdi_selector,
+        "attributes": dict(record.spec.attributes),
+    }
+
+
 async def _node_status_payload() -> dict[str, object]:
-    host_id = ""
-    if HOST_ID_FILE.is_file():
-        host_id = HOST_ID_FILE.read_text(encoding="utf-8").strip()
+    try:
+        host_id = current_host_id()
+    except OSError:
+        host_id = ""
     payload: dict[str, object] = {
         "host_id": host_id,
-        "host_name": platform.node(),
+        "display_name": "",
+        "phase": "",
         "microk8s_ready": await _safe_ready(microk8s_cluster_ready),
         "microceph_ready": await _safe_ready(microceph_cluster_ready),
         "kubernetes": {},
@@ -283,7 +538,25 @@ async def _node_status_payload() -> dict[str, object]:
     }
     try:
         with await Kube.host(timeout=INFINITY) as kube:
-            node = await Node.local(kube, timeout=INFINITY)
+            bertrand_node: BertrandNodeRecord | None = None
+            if host_id:
+                bertrand_node = await ensure_local_bertrand_node(
+                    kube,
+                    host_id=host_id,
+                    timeout=INFINITY,
+                )
+                node = await Node.get(
+                    kube,
+                    name=bertrand_node.node_name,
+                    timeout=INFINITY,
+                )
+                if node is None:
+                    node = await Node.local(kube, timeout=INFINITY)
+            else:
+                node = await Node.local(kube, timeout=INFINITY)
+            if bertrand_node is not None:
+                payload["display_name"] = bertrand_node.display_name
+                payload["phase"] = bertrand_node.phase
             payload["kubernetes"] = {
                 "name": node.name,
                 "ready": node.is_ready,
@@ -303,6 +576,7 @@ async def _node_status_payload() -> dict[str, object]:
                 payload["storage_report"] = report.status.model_dump(mode="json")
             devices = await list_device_inventory(
                 kube,
+                host_ids=(host_id,) if host_id else None,
                 node_names=(node.name,),
                 timeout=INFINITY,
             )
@@ -310,6 +584,7 @@ async def _node_status_payload() -> dict[str, object]:
                 {
                     "name": device.name,
                     "capability_id": device.capability_id,
+                    "host_id": device.host_id,
                     "node_name": device.node_name,
                     "device_name": device.spec.device_name,
                     "cdi_selector": device.cdi_selector,

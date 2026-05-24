@@ -9,8 +9,8 @@ import subprocess
 from pathlib import Path
 from typing import cast
 
+from bertrand.env.cli.internal._helper import live_project_context
 from bertrand.env.cli.internal.build import bertrand_build
-from bertrand.env.cli.internal.context import live_project_context
 from bertrand.env.cli.internal.run import bertrand_run
 from bertrand.env.git import (
     CONTAINER_ARTIFACT_MOUNT,

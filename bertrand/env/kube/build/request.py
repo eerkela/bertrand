@@ -25,9 +25,9 @@ from bertrand.env.config.core import _check_kube_name, _check_uuid
 from bertrand.env.git import (
     BERTRAND_ENV,
     BERTRAND_NAMESPACE,
-    ENV_ID_ENV,
     REPO_ID_ENV,
     WORKTREE_ENV,
+    WORKTREE_ID_ENV,
 )
 from bertrand.env.kube.crd import CustomResourceDefinition
 from bertrand.env.kube.custom_object import (
@@ -76,7 +76,7 @@ _BUILDKIT_BUILD_SPEC_SCHEMA = {
     "required": [
         "repo_id",
         "worktree",
-        "env_id",
+        "worktree_id",
         "config_id",
         "image",
         "dockerfile",
@@ -85,7 +85,7 @@ _BUILDKIT_BUILD_SPEC_SCHEMA = {
     "properties": {
         "repo_id": {"type": "string", "minLength": 1},
         "worktree": {"type": "string", "minLength": 1},
-        "env_id": {"type": "string", "minLength": 1},
+        "worktree_id": {"type": "string", "minLength": 1},
         "config_id": {"type": "string", "minLength": 1},
         "image": {"type": "string", "minLength": 1},
         "dockerfile": {"type": "string", "minLength": 1},
@@ -129,8 +129,8 @@ class ProjectImageIdentity:
         Stable repository UUID containing the project source.
     worktree : str
         Repository-volume subpath for this worktree.
-    env_id : str
-        Deterministic environment UUID for this project image.
+    worktree_id : str
+        Persistent UUID for this concrete checkout instance.
     config_id : str
         Deterministic project image configuration fingerprint.
     image : str
@@ -139,7 +139,7 @@ class ProjectImageIdentity:
 
     repo_id: str
     worktree: str
-    env_id: str
+    worktree_id: str
     config_id: str
     image: str
 
@@ -153,8 +153,8 @@ class BuildKitBuildSpec(BaseModel):
         Stable repository UUID containing the project source PVC.
     worktree : str, optional
         Repository-volume subpath for the project worktree.
-    env_id : str
-        Deterministic capability environment UUID.
+    worktree_id : str
+        Persistent UUID shared by image identity and worktree capabilities.
     config_id : str
         Deterministic hash of project image configuration inputs.
     image : str
@@ -182,7 +182,7 @@ class BuildKitBuildSpec(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     repo_id: _NonEmptyString
     worktree: _NonEmptyString = "."
-    env_id: _NonEmptyString
+    worktree_id: _NonEmptyString
     config_id: _NonEmptyString
     image: _NonEmptyString
     dockerfile: _NonEmptyString
@@ -195,7 +195,7 @@ class BuildKitBuildSpec(BaseModel):
     external_image: str | None = None
     auth_id: str | None = None
 
-    @field_validator("repo_id", "env_id")
+    @field_validator("repo_id", "worktree_id")
     @classmethod
     def _validate_uuid(cls, value: str) -> str:
         return _check_uuid(value.strip())
@@ -325,7 +325,7 @@ class BuildKitBuildSpec(BaseModel):
         return cls(
             repo_id=identity.repo_id,
             worktree=identity.worktree,
-            env_id=identity.env_id,
+            worktree_id=identity.worktree_id,
             config_id=identity.config_id,
             image=identity.image,
             dockerfile=dockerfile,
@@ -381,7 +381,7 @@ class BuildKitBuildSpec(BaseModel):
         return ProjectImageIdentity(
             repo_id=self.repo_id,
             worktree=self.worktree,
-            env_id=self.env_id,
+            worktree_id=self.worktree_id,
             config_id=self.config_id,
             image=self.image,
         )
@@ -400,7 +400,7 @@ class BuildKitBuildSpec(BaseModel):
         labels.update(
             {
                 BUILDKIT_BUILD_REPO_LABEL: _label_hash(identity.repo_id),
-                BUILDKIT_BUILD_WORKTREE_LABEL: _label_hash(identity.worktree),
+                BUILDKIT_BUILD_WORKTREE_LABEL: _label_hash(identity.worktree_id),
                 BUILDKIT_BUILD_CONFIG_LABEL: _label_hash(identity.config_id),
             }
         )
@@ -420,7 +420,7 @@ class BuildKitBuildSpec(BaseModel):
             BERTRAND_ENV: "1",
             REPO_ID_ENV: identity.repo_id,
             WORKTREE_ENV: identity.worktree,
-            ENV_ID_ENV: identity.env_id,
+            WORKTREE_ID_ENV: identity.worktree_id,
             PROJECT_IMAGE_CONFIG_ID: identity.config_id,
         }
 
@@ -957,7 +957,7 @@ def _buildkit_build_name(spec: BuildKitBuildSpec) -> str:
 
 
 def _normalize_worktree(worktree: str) -> str:
-    value = worktree.strip().strip("/")
+    value = worktree.strip()
     if not value or value == ".":
         return "."
     path = Path(value)

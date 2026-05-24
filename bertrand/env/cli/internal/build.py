@@ -13,7 +13,7 @@ from bertrand.env.build_args import (
     encode_image_build_args,
     normalize_image_build_args,
 )
-from bertrand.env.cli.internal.context import image_build_context, live_project_context
+from bertrand.env.cli.internal._helper import image_build_context, live_project_context
 from bertrand.env.config.bertrand import Bertrand
 from bertrand.env.config.core import Config, _metadata_lock_key
 from bertrand.env.config.python import PyProject

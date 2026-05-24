@@ -41,7 +41,7 @@ PROJECT_IMAGE_LABEL = "bertrand.dev/project-image"
 PROJECT_IMAGE_LABEL_VALUE = "v1"
 PROJECT_IMAGE_REPO_LABEL = "bertrand.dev/project-image-repo"
 PROJECT_IMAGE_WORKTREE_LABEL = "bertrand.dev/project-image-worktree"
-PROJECT_IMAGE_ENV_LABEL = "bertrand.dev/project-image-env"
+PROJECT_IMAGE_WORKTREE_ID_LABEL = "bertrand.dev/project-image-worktree-id"
 PROJECT_IMAGE_CONFIG_LABEL = "bertrand.dev/project-image-config"
 PROJECT_IMAGE_PHASE_LABEL = "bertrand.dev/project-image-phase"
 PROJECT_IMAGE_GC_GRACE_SECONDS = 86_400
@@ -57,7 +57,7 @@ class _ProjectImageSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
     repo_id: _NonEmptyString
     worktree: _NonEmptyString
-    env_id: _NonEmptyString
+    worktree_id: _NonEmptyString
     image: _NonEmptyString
     digest_ref: _NonEmptyString
     platform_images: dict[_NonEmptyString, _NonEmptyString]
@@ -80,7 +80,7 @@ class _ProjectImageSpec(BaseModel):
         return cls(
             repo_id=identity.repo_id,
             worktree=identity.worktree,
-            env_id=identity.env_id,
+            worktree_id=identity.worktree_id,
             image=identity.image,
             digest_ref=digest_ref,
             platform_images=dict(sorted(platform_images.items())),
@@ -96,11 +96,11 @@ class _ProjectImageSpec(BaseModel):
     def identity_labels(
         *,
         repo_id: str,
-        worktree: str,
+        worktree_id: str,
     ) -> dict[str, str]:
         return {
             PROJECT_IMAGE_REPO_LABEL: _label_hash(repo_id),
-            PROJECT_IMAGE_WORKTREE_LABEL: _label_hash(worktree),
+            PROJECT_IMAGE_WORKTREE_ID_LABEL: _label_hash(worktree_id),
         }
 
     @property
@@ -109,9 +109,9 @@ class _ProjectImageSpec(BaseModel):
             **_PROJECT_IMAGE_LABELS,
             **self.identity_labels(
                 repo_id=self.repo_id,
-                worktree=self.worktree,
+                worktree_id=self.worktree_id,
             ),
-            PROJECT_IMAGE_ENV_LABEL: _label_hash(self.env_id),
+            PROJECT_IMAGE_WORKTREE_LABEL: _label_hash(self.worktree),
             PROJECT_IMAGE_CONFIG_LABEL: _label_hash(self.config_id),
             PROJECT_IMAGE_PHASE_LABEL: self.phase.lower(),
         }
@@ -120,7 +120,7 @@ class _ProjectImageSpec(BaseModel):
         return {
             "repo_id": self.repo_id,
             "worktree": self.worktree,
-            "env_id": self.env_id,
+            "worktree_id": self.worktree_id,
             "image": self.image,
             "digest_ref": self.digest_ref,
             "platform_images": dict(sorted(self.platform_images.items())),
@@ -138,7 +138,7 @@ _PROJECT_IMAGE_SPEC_SCHEMA = {
     "required": [
         "repo_id",
         "worktree",
-        "env_id",
+        "worktree_id",
         "image",
         "digest_ref",
         "platform_images",
@@ -149,7 +149,7 @@ _PROJECT_IMAGE_SPEC_SCHEMA = {
     "properties": {
         "repo_id": {"type": "string", "minLength": 1},
         "worktree": {"type": "string", "minLength": 1},
-        "env_id": {"type": "string", "minLength": 1},
+        "worktree_id": {"type": "string", "minLength": 1},
         "image": {"type": "string", "minLength": 1},
         "digest_ref": {
             "type": "string",
@@ -300,15 +300,15 @@ class ProjectImageRecord(BaseModel):
         return self.spec.worktree
 
     @property
-    def env_id(self) -> str:
-        """Return the deterministic capability environment identity.
+    def worktree_id(self) -> str:
+        """Return the persistent worktree identity UUID.
 
         Returns
         -------
         str
-            Deterministic capability environment UUID.
+            Persistent checkout-instance worktree UUID.
         """
-        return self.spec.env_id
+        return self.spec.worktree_id
 
     @property
     def image(self) -> str:
@@ -442,7 +442,7 @@ class ProjectImageRecord(BaseModel):
         return _ProjectImageSpec(
             repo_id=self.repo_id,
             worktree=self.worktree,
-            env_id=self.env_id,
+            worktree_id=self.worktree_id,
             image=self.image,
             digest_ref=self.digest_ref,
             platform_images=dict(self.platform_images),
@@ -612,14 +612,15 @@ async def require_active_project_image(
         kube,
         labels=_ProjectImageSpec.identity_labels(
             repo_id=identity.repo_id,
-            worktree=identity.worktree,
+            worktree_id=identity.worktree_id,
         ),
         timeout=deadline - loop.time(),
     )
     records = [
         record
         for record in records
-        if record.repo_id == identity.repo_id and record.worktree == identity.worktree
+        if record.repo_id == identity.repo_id
+        and record.worktree_id == identity.worktree_id
     ]
     active = [record for record in records if record.phase == "Active"]
     matching = [record for record in active if record.config_id == identity.config_id]
@@ -633,7 +634,7 @@ async def require_active_project_image(
         raise OSError(msg)
     if matching:
         record = matching[0]
-        if record.env_id != identity.env_id or record.image != identity.image:
+        if record.worktree_id != identity.worktree_id or record.image != identity.image:
             msg = (
                 "project image lifecycle invariant violated: active "
                 f"{PROJECT_IMAGE_KIND} {record.name!r} matches config "
@@ -650,7 +651,7 @@ async def require_active_project_image(
             raise OSError(msg)
         return record
 
-    workload_label = f"{identity.repo_id}:{identity.worktree}"
+    workload_label = f"{identity.repo_id}:{identity.worktree_id}"
     if active:
         detail = ", ".join(
             sorted(f"{record.name}(config={record.config_id})" for record in active)
@@ -673,7 +674,7 @@ async def retire_project_images(
     kube: Kube,
     *,
     repo_id: str,
-    worktree: str,
+    worktree_id: str,
     timeout: float,
 ) -> list[ProjectImageRecord]:
     """Retire active project image records without deleting registry manifests.
@@ -684,8 +685,8 @@ async def retire_project_images(
         Active Kubernetes API context.
     repo_id : str
         Stable repository UUID.
-    worktree : str
-        Repository-relative worktree identity, or ``"."`` for the repository root.
+    worktree_id : str
+        Stable checkout-instance worktree UUID.
     timeout : float
         Maximum request budget in seconds.
 
@@ -705,7 +706,7 @@ async def retire_project_images(
         msg = "project image retirement timeout must be non-negative"
         raise TimeoutError(msg)
     repo_id = _check_uuid(repo_id)
-    worktree = worktree_identity(worktree)
+    worktree_id = _check_uuid(worktree_id)
 
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout
@@ -714,7 +715,7 @@ async def retire_project_images(
         kube,
         labels=_ProjectImageSpec.identity_labels(
             repo_id=repo_id,
-            worktree=worktree,
+            worktree_id=worktree_id,
         ),
         timeout=deadline - loop.time(),
     )
@@ -970,7 +971,7 @@ async def record_project_image(
         kube,
         labels=_ProjectImageSpec.identity_labels(
             repo_id=identity.repo_id,
-            worktree=identity.worktree,
+            worktree_id=identity.worktree_id,
         ),
         timeout=deadline - loop.time(),
     )
@@ -1000,9 +1001,20 @@ def worktree_identity(worktree: Path | str) -> str:
     -------
     str
         Normalized worktree identity, using ``"."`` for the repository root.
+
+    Raises
+    ------
+    ValueError
+        If the worktree identity is absolute or escapes the repository root.
     """
     value = worktree.as_posix() if isinstance(worktree, Path) else str(worktree).strip()
-    return value if value and value != "." else "."
+    if not value or value == ".":
+        return "."
+    path = Path(value)
+    if path.is_absolute() or any(part in ("", ".", "..") for part in path.parts):
+        msg = f"repository worktree identity must be a relative subpath: {worktree!r}"
+        raise ValueError(msg)
+    return path.as_posix()
 
 
 async def _upsert_project_image_record(
@@ -1017,7 +1029,7 @@ async def _upsert_project_image_record(
 ) -> ProjectImageRecord:
     name = _record_name(
         repo_id=identity.repo_id,
-        worktree=identity.worktree,
+        worktree_id=identity.worktree_id,
         digest=digest,
     )
     spec = _ProjectImageSpec.published(
@@ -1126,8 +1138,8 @@ def _gc_sort_key(record: ProjectImageRecord) -> tuple[datetime, str]:
     )
 
 
-def _record_name(*, repo_id: str, worktree: str, digest: str) -> str:
-    payload = f"{repo_id}\0{worktree}\0{digest}".encode()
+def _record_name(*, repo_id: str, worktree_id: str, digest: str) -> str:
+    payload = f"{repo_id}\0{worktree_id}\0{digest}".encode()
     return f"bertrand-image-{hashlib.sha256(payload).hexdigest()[:48]}"
 
 

@@ -16,6 +16,7 @@ from bertrand.env.git.bertrand_git import (
     PROJECT_MOUNT,
     REPO_ID_ENV,
     WORKTREE_ENV,
+    WORKTREE_ID_ENV,
     WORKTREE_MOUNT,
 )
 from bertrand.env.kube.api.spec import EnvVarSpec, VolumeMountSpec, VolumeSpec
@@ -37,6 +38,7 @@ WORKLOAD_LABEL_VALUE = "v1"
 WORKLOAD_ID_LABEL = "bertrand.dev/workload-id"
 WORKLOAD_REPO_LABEL = "bertrand.dev/workload-repo"
 WORKLOAD_WORKTREE_LABEL = "bertrand.dev/workload-worktree"
+WORKLOAD_WORKTREE_ID_LABEL = "bertrand.dev/workload-worktree-id"
 
 
 @dataclass(frozen=True)
@@ -47,12 +49,15 @@ class WorkloadIdentity:
     ----------
     repo_id : str
         Stable repository UUID containing the workload worktree.
+    worktree_id : str
+        Stable UUID for this concrete checkout instance.
     worktree : str | PurePosixPath
         Relative worktree path inside the repository volume. Use ``"."`` for the
         repository root.
     """
 
     repo_id: str
+    worktree_id: str
     worktree: str | PurePosixPath
 
     def __post_init__(self) -> None:
@@ -69,8 +74,14 @@ class WorkloadIdentity:
         except (TypeError, ValueError) as err:
             msg = f"invalid workload repository id: {self.repo_id!r}"
             raise ValueError(msg) from err
+        try:
+            worktree_id = UUID(self.worktree_id).hex
+        except (TypeError, ValueError) as err:
+            msg = f"invalid workload worktree id: {self.worktree_id!r}"
+            raise ValueError(msg) from err
 
         object.__setattr__(self, "repo_id", repo_id)
+        object.__setattr__(self, "worktree_id", worktree_id)
         object.__setattr__(self, "worktree", _worktree_path(self.worktree))
 
     @property
@@ -96,7 +107,7 @@ class WorkloadIdentity:
         str
             Deterministic hash label value for this workload.
         """
-        return _label_hash(f"{self.repo_id}\0{self.worktree_env}")
+        return _label_hash(f"{self.repo_id}\0{self.worktree_id}")
 
     @property
     def name(self) -> str:
@@ -107,7 +118,7 @@ class WorkloadIdentity:
         str
             DNS-label-safe name shared by the workload Deployment and Service.
         """
-        payload = f"{self.repo_id}\0{self.worktree_env}".encode()
+        payload = f"{self.repo_id}\0{self.worktree_id}".encode()
         digest = hashlib.sha256(payload).hexdigest()
         return f"{WORKLOAD_NAME_PREFIX}{digest[:WORKLOAD_NAME_HASH_CHARS]}"
 
@@ -144,6 +155,7 @@ class WorkloadIdentity:
             WORKLOAD_LABEL: WORKLOAD_LABEL_VALUE,
             WORKLOAD_REPO_LABEL: _label_hash(self.repo_id),
             WORKLOAD_WORKTREE_LABEL: _label_hash(self.worktree_env),
+            WORKLOAD_WORKTREE_ID_LABEL: _label_hash(self.worktree_id),
         }
         labels.update(self.selector)
         return MappingProxyType(labels)
@@ -157,6 +169,8 @@ class WorkloadRepository:
     ----------
     repo_id : str
         Stable repository UUID used to derive the managed Ceph PVC claim name.
+    worktree_id : str
+        Stable UUID for this concrete checkout instance.
     worktree : str | PurePosixPath
         Relative worktree path inside the repository volume. Use ``"."`` for the
         repository root.
@@ -165,6 +179,7 @@ class WorkloadRepository:
     """
 
     repo_id: str
+    worktree_id: str
     worktree: str | PurePosixPath
     read_only: bool = False
 
@@ -182,8 +197,14 @@ class WorkloadRepository:
         except (TypeError, ValueError) as err:
             msg = f"invalid workload repository id: {self.repo_id!r}"
             raise ValueError(msg) from err
+        try:
+            worktree_id = UUID(self.worktree_id).hex
+        except (TypeError, ValueError) as err:
+            msg = f"invalid workload worktree id: {self.worktree_id!r}"
+            raise ValueError(msg) from err
 
         object.__setattr__(self, "repo_id", repo_id)
+        object.__setattr__(self, "worktree_id", worktree_id)
         object.__setattr__(self, "worktree", _worktree_path(self.worktree))
 
     @property
@@ -298,6 +319,7 @@ class WorkloadPod:
         """
         return WorkloadIdentity(
             repo_id=self.repository.repo_id,
+            worktree_id=self.repository.worktree_id,
             worktree=self.repository.worktree_env,
         )
 
@@ -482,6 +504,7 @@ def _repository_env(
     env = {
         BERTRAND_ENV: "1",
         REPO_ID_ENV: repository.repo_id,
+        WORKTREE_ID_ENV: repository.worktree_id,
         PROJECT_ENV: PROJECT_MOUNT.as_posix(),
         WORKTREE_ENV: repository.worktree_env,
     }

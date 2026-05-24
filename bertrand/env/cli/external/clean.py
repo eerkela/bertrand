@@ -42,6 +42,7 @@ from bertrand.env.kube.ceph.volume import (
 )
 from bertrand.env.kube.dashboard import delete_dashboard_backend
 from bertrand.env.kube.dev import delete_dev_backend_state
+from bertrand.env.kube.node_identity import retire_bertrand_node
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -188,6 +189,17 @@ async def _clean_dev_backend(state: CleanState) -> None:
     )
 
 
+async def _retire_local_node_record(state: CleanState) -> None:
+    if state.kube is None or state.host_id is None:
+        return
+    loop = asyncio.get_running_loop()
+    await retire_bertrand_node(
+        state.kube,
+        host_id=state.host_id,
+        timeout=state.deadline - loop.time(),
+    )
+
+
 def _runtime_residue(state: CleanState) -> tuple[list[str], list[str]]:
     residual_mounts = sorted(str(mount) for mount in MountInfo.under(REPO_DIR))
     if MountInfo.search(RUN_DIR) is not None:
@@ -242,6 +254,7 @@ CLEAN_STAGES: tuple[tuple[str, Callable[[CleanState], Awaitable[None]]], ...] = 
     ("clean_dev_backend", _clean_dev_backend),
     ("clean_dashboard_backend", _clean_dashboard_backend),
     ("clean_repo_mounts_aliases", _clean_repo_mounts_aliases),
+    ("retire_local_node_record", _retire_local_node_record),
     ("disable_unmount_run_tmpfs", _disable_unmount_run_tmpfs),
     ("finalize_cleanup", _finalize_cleanup),
 )
@@ -304,9 +317,9 @@ async def bertrand_clean(*, timeout: float, assume_yes: bool, force: bool) -> No
         raise PermissionError(msg)
     if not confirm(
         "This operates on a shared MicroK8s/MicroCeph runtime. It will retire "
-        "this host's Bertrand repository mount records, delete volatile dev-session "
-        "and dashboard resources, remove local repository aliases and hidden "
-        f"mounts, and delete local Bertrand state in {STATE_DIR}. "
+        "this host's Bertrand repository mount and node records, delete volatile "
+        "dev-session and dashboard resources, remove local repository aliases and "
+        f"hidden mounts, and delete local Bertrand state in {STATE_DIR}. "
         "It preserves repository PVCs, volume records, credentials, snapshots, and "
         "Ceph data, and does not uninstall MicroK8s or MicroCeph. Do you want to "
         "proceed?\n[y/N] ",

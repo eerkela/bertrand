@@ -286,7 +286,6 @@ class _BuildKitBuildController:
             platform_refs=platform_refs,
             external_image=spec.external_image,
             auth_id=spec.auth_id,
-            env_id=identity.env_id,
             job_observer=observe_job,
             timeout=deadline - loop.time(),
         )

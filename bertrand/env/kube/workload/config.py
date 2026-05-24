@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Protocol, cast
 
-from bertrand.env.git.bertrand_git import ENV_ID_ENV
+from bertrand.env.git.bertrand_git import WORKTREE_ID_ENV
 from bertrand.env.kube.api.spec import (
     ContainerPortSpec,
     ContainerResourcesSpec,
@@ -130,9 +130,9 @@ async def workload_pod_from_config(
     config: _WorkloadConfig | None,
     repo_id: str,
     worktree: str | PurePosixPath,
-    env_id: str,
+    worktree_id: str,
     image: str,
-    node: str | None = None,
+    host_id: str | None = None,
     timeout: float,
 ) -> WorkloadPod | None:
     """Render validated Bertrand workload config into a native pod intent.
@@ -148,12 +148,12 @@ async def workload_pod_from_config(
         Stable repository UUID used to mount the managed Ceph repository PVC.
     worktree : str | PurePosixPath
         Relative worktree path inside the repository volume.
-    env_id : str
-        Environment UUID used for capability resolution.
+    worktree_id : str
+        Persistent worktree UUID used for capability resolution.
     image : str
         Container image reference to run.
-    node : str | None, optional
-        Kubernetes node name used for node-scoped capability resolution.
+    host_id : str | None, optional
+        Bertrand host UUID used for node-scoped capability resolution.
     timeout : float
         Maximum capability resolution budget in seconds.
 
@@ -177,13 +177,19 @@ async def workload_pod_from_config(
     if not containers:
         return None
 
-    identity = WorkloadIdentity(repo_id=repo_id, worktree=worktree)
+    identity = WorkloadIdentity(
+        repo_id=repo_id,
+        worktree_id=worktree_id,
+        worktree=worktree,
+    )
     capabilities = await resolve_workload_capabilities(
         kube,
         containers=containers,
-        env_id=env_id,
+        worktree_id=worktree_id,
+        repo_id=repo_id,
         claim_owner=identity.name,
-        node=node,
+        host_id=host_id,
+        node_name=config.node,
         timeout=timeout,
     )
     rendered: list[ContainerSpec] = []
@@ -227,9 +233,13 @@ async def workload_pod_from_config(
             termination_grace_period_seconds=config.termination_grace,
         ),
         primary_container=containers[0].name,
-        repository=WorkloadRepository(repo_id=repo_id, worktree=worktree),
+        repository=WorkloadRepository(
+            repo_id=repo_id,
+            worktree_id=worktree_id,
+            worktree=worktree,
+        ),
         resource_claim_templates=capabilities.resource_claims,
-        runtime_env={ENV_ID_ENV: env_id},
+        runtime_env={WORKTREE_ID_ENV: worktree_id},
     )
 
 

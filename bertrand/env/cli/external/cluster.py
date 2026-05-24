@@ -10,6 +10,13 @@ from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, cast
 
+from bertrand.env.cli.external.secret import (
+    add_capability,
+    list_capabilities,
+    remove_capability,
+    shared_capability_ref,
+    shared_scope_targets,
+)
 from bertrand.env.git import BERTRAND_NAMESPACE, INFINITY, run
 from bertrand.env.kube.api.bootstrap import (
     ensure_microk8s_kubeconfig,
@@ -20,6 +27,10 @@ from bertrand.env.kube.api.bootstrap import (
 from bertrand.env.kube.api.client import Kube
 from bertrand.env.kube.build.daemon import BUILDKIT_POOL
 from bertrand.env.kube.build.repository import IMAGES
+from bertrand.env.kube.capability.device import (
+    BertrandDeviceRecord,
+    list_device_inventory,
+)
 from bertrand.env.kube.ceph.bootstrap import (
     join_microceph_cluster,
     link_kube_ceph,
@@ -50,6 +61,7 @@ from bertrand.env.kube.network.load_balancer import (
     metallb_status,
 )
 from bertrand.env.kube.network.profile import NETWORK_PROFILE_NAME, NetworkProfile
+from bertrand.env.kube.node_identity import BertrandNodeRecord, list_bertrand_nodes
 
 if TYPE_CHECKING:
     import argparse
@@ -95,6 +107,12 @@ async def bertrand_cluster(args: argparse.Namespace) -> None:
             microceph_ip=args.microceph_ip,
             timeout=args.timeout,
         )
+        return
+    if command == "secret":
+        await _bertrand_cluster_secret(args)
+        return
+    if command == "device":
+        await _bertrand_cluster_device(args)
         return
     if command == "network":
         await _bertrand_cluster_network(args)
@@ -241,6 +259,96 @@ async def bertrand_cluster_join(
     with await Kube.host(timeout=deadline - loop.time()) as kube:
         await _converge_cluster_runtime(kube, timeout=deadline - loop.time())
     print("Bertrand cluster join complete.")
+
+
+async def _bertrand_cluster_secret(args: argparse.Namespace) -> None:
+    command = args.cluster_secret_command
+    if command == "add":
+        ref = shared_capability_ref(kind=args.kind, capability_id=args.id)
+        await add_capability(ref, source=args.source, timeout=args.timeout)
+        return
+    if command == "rm":
+        ref = shared_capability_ref(kind=args.kind, capability_id=args.id)
+        await remove_capability(ref, timeout=args.timeout)
+        return
+    if command == "list":
+        await list_capabilities(
+            shared_scope_targets(),
+            kind=args.kind,
+            json_output=args.json,
+            timeout=args.timeout,
+        )
+        return
+    msg = f"unsupported cluster secret command: {command!r}"
+    raise ValueError(msg)
+
+
+async def _bertrand_cluster_device(args: argparse.Namespace) -> None:
+    command = args.cluster_device_command
+    if command == "list":
+        await bertrand_cluster_device_list(
+            node=args.node,
+            capability_id=args.capability,
+            json_output=args.json,
+            timeout=args.timeout,
+        )
+        return
+    msg = f"unsupported cluster device command: {command!r}"
+    raise ValueError(msg)
+
+
+async def bertrand_cluster_device_list(
+    *,
+    node: str | None,
+    capability_id: str | None,
+    json_output: bool,
+    timeout: float,
+) -> None:
+    """Print managed DRA inventory across the cluster.
+
+    Parameters
+    ----------
+    node : str | None
+        Optional Bertrand host UUID filter.
+    capability_id : str | None
+        Optional device capability ID filter.
+    json_output : bool
+        Whether to emit machine-readable JSON.
+    timeout : float
+        Maximum Kubernetes request budget in seconds.
+    """
+    with await Kube.host(timeout=timeout) as kube:
+        records = await list_device_inventory(
+            kube,
+            capability_id=capability_id,
+            host_ids=None if node is None else (node,),
+            timeout=timeout,
+        )
+        nodes = {
+            item.host_id: item
+            for item in await list_bertrand_nodes(kube, timeout=timeout)
+        }
+    payload = [
+        _device_record_payload(record, node=nodes.get(record.host_id))
+        for record in records
+    ]
+    if json_output:
+        print(json.dumps(payload, indent=2, sort_keys=True))
+        return
+    if not records:
+        print("no DRA devices")
+        return
+    for record in records:
+        display = nodes.get(record.host_id)
+        owner = (
+            f"{record.host_id}"
+            if display is None or not display.display_name
+            else f"{display.display_name} ({record.host_id})"
+        )
+        print(
+            f"{record.capability_id} {record.spec.device_name} "
+            f"[{owner}; kube={record.node_name}] -> {record.cdi_selector}"
+        )
 
 
 async def _bertrand_cluster_network(args: argparse.Namespace) -> None:
@@ -704,6 +812,23 @@ def _network_issues(report: Mapping[str, object]) -> list[str]:
 
 def _ready(*, value: bool) -> str:
     return "ready" if value else "not ready"
+
+
+def _device_record_payload(
+    record: BertrandDeviceRecord,
+    *,
+    node: BertrandNodeRecord | None = None,
+) -> dict[str, object]:
+    return {
+        "name": record.name,
+        "capability_id": record.capability_id,
+        "host_id": record.host_id,
+        "display_name": "" if node is None else node.display_name,
+        "node_name": record.node_name,
+        "device_name": record.spec.device_name,
+        "cdi_selector": record.cdi_selector,
+        "attributes": dict(record.spec.attributes),
+    }
 
 
 async def _bertrand_cluster_network_dns(args: argparse.Namespace) -> None:

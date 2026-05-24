@@ -46,6 +46,7 @@ DEFAULT_REPO_MOUNT_OPTIONS: tuple[str, ...] = ()
 if any("," in opt for opt in DEFAULT_REPO_MOUNT_OPTIONS):
     msg = "internal default repository mount options cannot contain comma separators"
     raise ValueError(msg)
+REPOSITORY_MOUNT_PRUNE_LIMIT = 8
 
 
 def _current_host_id() -> str:
@@ -57,6 +58,42 @@ def _current_host_id() -> str:
             "`bertrand init` to repair host state"
         )
         raise OSError(msg) from err
+
+
+def _managed_alias_ancestor(
+    path: Path,
+) -> tuple[Path, UUIDHex, MountInfo | None] | None:
+    inspected = abspath(path)
+    for candidate in (inspected, *inspected.parents):
+        if not candidate.is_symlink():
+            continue
+        try:
+            target = candidate.readlink()
+        except OSError as err:
+            msg = f"failed to inspect managed alias candidate {candidate}: {err}"
+            raise OSError(msg) from err
+        if not target.is_absolute():
+            continue
+        try:
+            relative = target.relative_to(REPO_DIR)
+        except ValueError:
+            continue
+        if len(relative.parts) != 2 or relative.parts[1] != REPO_MOUNT_EXT.as_posix():
+            msg = (
+                f"repository alias path {candidate} points to malformed managed "
+                f"target {target}; expected {REPO_DIR}/<repo_id>/{REPO_MOUNT_EXT}"
+            )
+            raise OSError(msg)
+        try:
+            repo_id = _check_uuid(relative.parts[0])
+        except ValueError as err:
+            msg = (
+                f"repository alias path {candidate} points to invalid repository "
+                f"target {target}: {err}"
+            )
+            raise OSError(msg) from err
+        return candidate, repo_id, MountInfo.search(REPO_DIR / repo_id / REPO_MOUNT_EXT)
+    return None
 
 
 @dataclass(frozen=True)
@@ -880,6 +917,7 @@ async def finalize_repository_mount(
     """
     from bertrand.env.kube.ceph.volume import (
         ensure_repository_mount_record,
+        mark_repository_volume_ready,
         retire_repository_mount,
     )
 
@@ -1015,6 +1053,11 @@ async def finalize_repository_mount(
         node_name=platform.node(),
         timeout=deadline - loop.time(),
     )
+    await mark_repository_volume_ready(
+        kube,
+        repo_id=repo_id,
+        timeout=deadline - loop.time(),
+    )
 
     return target
 
@@ -1028,7 +1071,7 @@ async def _mount_repository_volume(
     from bertrand.env.kube.ceph.auth import RepoCredentials
     from bertrand.env.kube.ceph.volume import (
         RepoVolume,
-        ensure_repository_volume_record,
+        mark_repository_volume_ready,
     )
 
     if timeout <= 0:
@@ -1071,7 +1114,7 @@ async def _mount_repository_volume(
             ceph_user=credentials.user,
             ceph_secretfile=ceph_secretfile,
         )
-    await ensure_repository_volume_record(
+    await mark_repository_volume_ready(
         kube,
         repo_id=repo_id,
         timeout=deadline - loop.time(),
@@ -1217,3 +1260,212 @@ async def resurrect_repository_mount(
         timeout=deadline - loop.time(),
     )
     return repo_id, mount
+
+
+async def refresh_repository_alias_for_path(
+    kube: Kube,
+    path: Path,
+    *,
+    timeout: float,
+) -> UUIDHex | None:
+    """Refresh mount metadata for a managed alias used by a host path.
+
+    Parameters
+    ----------
+    kube : Kube
+        Active Kubernetes API context.
+    path : Path
+        Host path to inspect before resolving symlinks.
+    timeout : float
+        Maximum refresh budget in seconds.
+
+    Returns
+    -------
+    UUIDHex | None
+        Repository UUID when a managed alias was refreshed or resurrected, otherwise
+        None.
+
+    Raises
+    ------
+    TimeoutError
+        If `timeout` is non-positive.
+    """
+    from bertrand.env.kube.ceph.volume import ensure_repository_mount_record
+
+    if timeout <= 0:
+        msg = "timed out before repository alias refresh started"
+        raise TimeoutError(msg)
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+
+    managed = _managed_alias_ancestor(path)
+    if managed is not None:
+        alias, repo_id, mount = managed
+        if mount is None:
+            mount = await _mount_repository_volume(
+                kube,
+                repo_id=repo_id,
+                timeout=deadline - loop.time(),
+            )
+        await ensure_repository_mount_record(
+            kube,
+            repo_id=repo_id,
+            host_id=_current_host_id(),
+            alias_path=alias.as_posix(),
+            node_name=platform.node(),
+            timeout=deadline - loop.time(),
+        )
+        return repo_id
+
+    resurrected = await _resurrect_repository_mount_record(
+        kube,
+        path,
+        timeout=deadline - loop.time(),
+    )
+    if resurrected is None:
+        return None
+    repo_id, _ = resurrected
+    return repo_id
+
+
+async def prune_repository_mount_aliases(
+    kube: Kube,
+    *,
+    repo_id: str,
+    timeout: float,
+) -> bool:
+    """Retire stale local alias records for one repository.
+
+    Parameters
+    ----------
+    kube : Kube
+        Active Kubernetes API context.
+    repo_id : str
+        Repository UUID whose local aliases should be reconciled.
+    timeout : float
+        Maximum prune budget in seconds.
+
+    Returns
+    -------
+    bool
+        True if at least one live local alias still points to the hidden mount.
+
+    Raises
+    ------
+    OSError
+        If a recorded alias path is occupied by unmanaged content.
+    TimeoutError
+        If `timeout` is non-positive.
+    """
+    from bertrand.env.git import REPO_ID_ENV
+    from bertrand.env.kube.ceph.volume import (
+        REPOSITORY_MOUNT_HOST_HASH_LABEL,
+        REPOSITORY_MOUNT_PHASE_LABEL,
+        list_repository_mount_records,
+        repository_mount_host_hash,
+        retire_repository_mount_record,
+    )
+
+    if timeout <= 0:
+        msg = "timed out before repository alias pruning started"
+        raise TimeoutError(msg)
+    repo_id = _check_uuid(repo_id)
+    host_id = _current_host_id()
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    records = await list_repository_mount_records(
+        kube,
+        labels={
+            REPO_ID_ENV: repo_id,
+            REPOSITORY_MOUNT_HOST_HASH_LABEL: repository_mount_host_hash(host_id),
+            REPOSITORY_MOUNT_PHASE_LABEL: "active",
+        },
+        timeout=deadline - loop.time(),
+    )
+    hidden_mount = REPO_DIR / repo_id / REPO_MOUNT_EXT
+    live = False
+    for record in records:
+        if record.repo_id != repo_id or record.host_id != host_id:
+            continue
+        alias = Path(record.alias_path)
+        if symlink_points_to(alias, hidden_mount):
+            live = True
+            continue
+        if alias.exists() or alias.is_symlink():
+            msg = (
+                f"recorded repository alias path {alias} is occupied but is not a "
+                f"managed symlink to {hidden_mount}"
+            )
+            raise OSError(msg)
+        await retire_repository_mount_record(
+            kube,
+            record=record,
+            timeout=deadline - loop.time(),
+        )
+    return live
+
+
+async def prune_repository_mounts(
+    kube: Kube,
+    *,
+    timeout: float,
+    limit: int = REPOSITORY_MOUNT_PRUNE_LIMIT,
+) -> tuple[UUIDHex, ...]:
+    """Prune bounded hidden repository mounts with no live local aliases.
+
+    Parameters
+    ----------
+    kube : Kube
+        Active Kubernetes API context.
+    timeout : float
+        Maximum prune budget in seconds.
+    limit : int, optional
+        Maximum number of hidden mounted repositories to inspect.
+
+    Returns
+    -------
+    tuple[UUIDHex, ...]
+        Repository UUIDs whose hidden mounts were detached.
+
+    Raises
+    ------
+    TimeoutError
+        If `timeout` is non-positive.
+    ValueError
+        If `limit` is negative.
+    """
+    if timeout <= 0:
+        msg = "timed out before repository mount pruning started"
+        raise TimeoutError(msg)
+    if limit < 0:
+        msg = "repository mount prune limit cannot be negative"
+        raise ValueError(msg)
+    if limit == 0:
+        return ()
+
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    mounted = [
+        mount
+        for mount in MountInfo.under(REPO_DIR).values()
+        if mount.repo_id is not None
+    ]
+    mounted.sort(key=lambda item: item.mount_point.as_posix())
+    pruned: list[UUIDHex] = []
+    for mount in mounted[:limit]:
+        repo_id = mount.repo_id
+        if repo_id is None:
+            continue
+        live = await prune_repository_mount_aliases(
+            kube,
+            repo_id=repo_id,
+            timeout=deadline - loop.time(),
+        )
+        if live:
+            continue
+        current = MountInfo.search(mount.mount_point)
+        if current is None:
+            continue
+        await current.unmount(timeout=deadline - loop.time(), force=False)
+        pruned.append(repo_id)
+    return tuple(pruned)

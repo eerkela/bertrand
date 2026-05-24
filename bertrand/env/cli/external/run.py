@@ -14,7 +14,10 @@ import termios
 import tty as tty_module
 from typing import TYPE_CHECKING, Any, Literal
 
-from bertrand.env.cli.external._helper import resolve_project_worktree
+from bertrand.env.cli.external._helper import (
+    prune_repository_mounts_quietly,
+    resolve_project_worktree,
+)
 from bertrand.env.cli.external.build import BuildLogFollower, _assert_build_runtime
 from bertrand.env.config.bertrand import Bertrand
 from bertrand.env.config.core import Config
@@ -83,8 +86,12 @@ async def bertrand_run(
             "attach"
         )
         raise ValueError(msg)
-    repo, worktree = await resolve_project_worktree(target)
     with await Kube.host(timeout=INFINITY) as kube:
+        repo, worktree = await resolve_project_worktree(
+            kube,
+            target,
+            timeout=INFINITY,
+        )
         config = await Config.load(worktree, kube=kube, repo=repo, timeout=INFINITY)
         async with config:
             await run_configured_project(
@@ -96,6 +103,7 @@ async def bertrand_run(
                 args=args,
                 ensure_build_crds=True,
             )
+        await prune_repository_mounts_quietly(kube, timeout=INFINITY)
 
 
 async def run_configured_project(

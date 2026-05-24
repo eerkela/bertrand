@@ -14,7 +14,6 @@ from bertrand.env.git import (
     CONTAINER_ID_ENV,
     IMAGE_ID_ENV,
 )
-from bertrand.env.host import HOST_ID_FILE
 from bertrand.env.kube.api.spec import EnvVarSpec, PolicyRuleSpec
 from bertrand.env.kube.build.project import project_image_build
 from bertrand.env.kube.build.refs import digest_from_ref, digest_ref
@@ -25,6 +24,7 @@ from bertrand.env.kube.dev.mailbox import (
     ensure_code_open_request_crd,
     list_code_open_requests,
 )
+from bertrand.env.kube.node_identity import resolve_host_id_for_node
 from bertrand.env.kube.pod import Pod
 from bertrand.env.kube.rbac import ClusterRole, ClusterRoleBinding, Role, RoleBinding
 from bertrand.env.kube.service_account import ServiceAccount
@@ -284,14 +284,21 @@ async def create_project_dev_session(
     if bertrand is None or not bertrand.containers:
         msg = "`bertrand enter` and `bertrand code` require configured containers"
         raise ValueError(msg)
+    host_scope = (
+        await resolve_host_id_for_node(
+            kube, node_name=node, timeout=deadline - loop.time()
+        )
+        if node is not None
+        else None
+    )
     workload = await workload_pod_from_config(
         kube,
         config=cast("Any", bertrand),
         repo_id=build.identity.repo_id,
         worktree=build.identity.worktree,
-        env_id=build.identity.env_id,
+        worktree_id=build.identity.worktree_id,
         image=image,
-        node=node,
+        host_id=host_scope,
         timeout=deadline - loop.time(),
     )
     if workload is None:
@@ -403,29 +410,6 @@ def new_session_id() -> str:
         Random UUID hex string.
     """
     return uuid.uuid4().hex
-
-
-def current_host_id() -> str:
-    """Return the durable Bertrand host identity.
-
-    Returns
-    -------
-    str
-        Host UUID hex string.
-
-    Raises
-    ------
-    OSError
-        If host identity is missing or malformed.
-    """
-    try:
-        return uuid.UUID(HOST_ID_FILE.read_text(encoding="utf-8").strip()).hex
-    except (OSError, ValueError) as err:
-        msg = (
-            f"failed to read Bertrand host identity at {HOST_ID_FILE}; run "
-            "`bertrand init`"
-        )
-        raise OSError(msg) from err
 
 
 def dev_session_name(session_id: str) -> str:
@@ -604,7 +588,7 @@ def _dev_namespace_rules() -> tuple[PolicyRuleSpec, ...]:
         ),
         PolicyRuleSpec(
             api_groups=("ceph.bertrand.dev",),
-            resources=("cephrepositoryvolumes",),
+            resources=("cephrepositoryvolumes", "cephrepositoryworktrees"),
             verbs=read,
         ),
     )
@@ -626,6 +610,11 @@ def _dev_cluster_rules() -> tuple[PolicyRuleSpec, ...]:
         PolicyRuleSpec(
             api_groups=("resource.k8s.io",),
             resources=("deviceclasses", "resourceslices"),
+            verbs=read,
+        ),
+        PolicyRuleSpec(
+            api_groups=("node.bertrand.dev",),
+            resources=("bertrandnodes",),
             verbs=read,
         ),
     )

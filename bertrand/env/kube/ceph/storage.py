@@ -25,6 +25,7 @@ from bertrand.env.kube.api.spec import (
     VolumeMountSpec,
     VolumeSpec,
 )
+from bertrand.env.kube.build.lifecycle import PROJECT_IMAGE_GROUP, PROJECT_IMAGE_PLURAL
 from bertrand.env.kube.build.request import BUILDKIT_BUILD_GROUP, BUILDKIT_BUILD_PLURAL
 from bertrand.env.kube.ceph.api import (
     BlockOSDSpec,
@@ -73,8 +74,10 @@ from bertrand.env.kube.ceph.snapshot import (
 from bertrand.env.kube.ceph.volume import (
     REPOSITORY_MOUNT_PLURAL,
     REPOSITORY_VOLUME_PLURAL,
+    REPOSITORY_WORKTREE_PLURAL,
     ensure_repository_mount_crd,
     ensure_repository_volume_crd,
+    ensure_repository_worktree_crd,
     gc_repository_volumes,
     next_repository_volume_gc_time,
 )
@@ -131,6 +134,7 @@ async def _ensure_rbac(kube: Kube, *, deadline: float) -> None:
                     STORAGE_NODE_PLURAL,
                     REPOSITORY_MOUNT_PLURAL,
                     REPOSITORY_VOLUME_PLURAL,
+                    REPOSITORY_WORKTREE_PLURAL,
                 ],
                 verbs=["get", "list", "watch", "create", "update", "patch"],
             ),
@@ -145,12 +149,26 @@ async def _ensure_rbac(kube: Kube, *, deadline: float) -> None:
             ),
             PolicyRuleSpec(
                 api_groups=[CEPH_CAPACITY_GROUP],
-                resources=[REPOSITORY_MOUNT_PLURAL, REPOSITORY_VOLUME_PLURAL],
+                resources=[
+                    REPOSITORY_MOUNT_PLURAL,
+                    REPOSITORY_VOLUME_PLURAL,
+                    REPOSITORY_WORKTREE_PLURAL,
+                ],
                 verbs=["delete"],
+            ),
+            PolicyRuleSpec(
+                api_groups=[""],
+                resources=["secrets"],
+                verbs=["get", "list", "watch", "delete"],
             ),
             PolicyRuleSpec(
                 api_groups=[BUILDKIT_BUILD_GROUP],
                 resources=[BUILDKIT_BUILD_PLURAL],
+                verbs=["get", "list", "watch"],
+            ),
+            PolicyRuleSpec(
+                api_groups=[PROJECT_IMAGE_GROUP],
+                resources=[PROJECT_IMAGE_PLURAL],
                 verbs=["get", "list", "watch"],
             ),
             PolicyRuleSpec(
@@ -161,6 +179,16 @@ async def _ensure_rbac(kube: Kube, *, deadline: float) -> None:
             PolicyRuleSpec(
                 api_groups=[""],
                 resources=["pods"],
+                verbs=["get", "list", "watch"],
+            ),
+            PolicyRuleSpec(
+                api_groups=["apps"],
+                resources=["deployments"],
+                verbs=["get", "list", "watch"],
+            ),
+            PolicyRuleSpec(
+                api_groups=["batch"],
+                resources=["jobs", "cronjobs"],
                 verbs=["get", "list", "watch"],
             ),
             PolicyRuleSpec(
@@ -295,6 +323,10 @@ async def ensure_ceph_storage_controller(
         timeout=deadline - asyncio.get_running_loop().time(),
     )
     await ensure_repository_mount_crd(
+        kube,
+        timeout=deadline - asyncio.get_running_loop().time(),
+    )
+    await ensure_repository_worktree_crd(
         kube,
         timeout=deadline - asyncio.get_running_loop().time(),
     )

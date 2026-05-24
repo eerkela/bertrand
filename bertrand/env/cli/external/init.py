@@ -69,14 +69,21 @@ from bertrand.env.kube.ceph.bootstrap import (
 from bertrand.env.kube.ceph.mount import (
     ensure_repository_mount,
     finalize_repository_mount,
+    prune_repository_mount_aliases,
+    refresh_repository_alias_for_path,
     resurrect_repository_mount,
 )
 from bertrand.env.kube.ceph.storage import ensure_ceph_storage_controller
-from bertrand.env.kube.ceph.volume import DEFAULT_VOLUME_SIZE, RepoVolume
+from bertrand.env.kube.ceph.volume import (
+    DEFAULT_VOLUME_SIZE,
+    RepoVolume,
+    mark_repository_volume_failed,
+)
 from bertrand.env.kube.control import control_plane_image
 from bertrand.env.kube.dev import ensure_dev_backend
 from bertrand.env.kube.namespace import Namespace
 from bertrand.env.kube.network.bootstrap import ensure_network_backend
+from bertrand.env.kube.node_identity import ensure_local_bertrand_node
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -951,6 +958,16 @@ async def _finalize(
         replace_existing=replace_existing,
         timeout=state.deadline - loop.time(),
     )
+    await refresh_repository_alias_for_path(
+        state.kube,
+        state.mount_alias,
+        timeout=state.deadline - loop.time(),
+    )
+    await prune_repository_mount_aliases(
+        state.kube,
+        repo_id=state.repo_id,
+        timeout=state.deadline - loop.time(),
+    )
 
 
 REPO_STAGES: tuple[_RepoStep, ...] = (
@@ -1003,6 +1020,7 @@ async def _converge_cluster_runtime(kube: Kube, *, timeout: float) -> None:
         raise TimeoutError(msg)
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout
+    await ensure_local_bertrand_node(kube, timeout=deadline - loop.time())
     await _converge_build_runtime(kube, timeout=deadline - loop.time())
     await ensure_dev_backend(kube, timeout=deadline - loop.time())
     await ensure_network_backend(kube, timeout=deadline - loop.time())
@@ -1217,5 +1235,17 @@ async def bertrand_init(
 
             # execute all idempotent convergence stages in sequence, allowing recovery
             # from previous runs
-            for stage in REPO_STAGES:
-                await stage(state, repo_context)
+            try:
+                for stage in REPO_STAGES:
+                    await stage(state, repo_context)
+            except Exception as err:
+                remaining = deadline - asyncio.get_running_loop().time()
+                if remaining > 0:
+                    with contextlib.suppress(Exception):
+                        await mark_repository_volume_failed(
+                            kube,
+                            repo_id=state.repo_id,
+                            last_error=str(err),
+                            timeout=remaining,
+                        )
+                raise

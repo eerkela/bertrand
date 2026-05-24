@@ -43,6 +43,7 @@ class External:
             self.version()
             self.init()
             self.build()
+            self.secret()
             self.cluster()
             self.node()
             self.run()
@@ -165,6 +166,93 @@ class External:
             )
             command.set_defaults(handler=External.build)
 
+        def secret(self) -> None:
+            """Add the top-level path-scoped 'secret' command namespace."""
+            command = self.commands.add_parser(
+                "secret",
+                help="Manage repository/worktree-scoped secret capabilities.",
+            )
+            subcommands = command.add_subparsers(
+                dest="secret_command",
+                title="secret commands",
+                metavar="(command)",
+                required=True,
+            )
+            add = subcommands.add_parser(
+                "add",
+                help="Create or update a repository/worktree-scoped capability.",
+            )
+            add.add_argument("path", metavar="REPO[/WORKTREE]")
+            add.add_argument("id", metavar="ID")
+            add.add_argument(
+                "source",
+                nargs="?",
+                metavar="SOURCE",
+                help=(
+                    "Payload file path, '-' for stdin, or omitted to read piped stdin."
+                ),
+            )
+            add.add_argument(
+                "--kind",
+                choices=("secret", "ssh"),
+                default="secret",
+                help="Capability kind to store.",
+            )
+            add.add_argument(
+                "-t",
+                "--timeout",
+                type=float,
+                default=INFINITY,
+                help="Maximum time in seconds for Kubernetes API convergence.",
+            )
+            add.set_defaults(handler=External.secret)
+
+            rm = subcommands.add_parser(
+                "rm",
+                help="Delete a repository/worktree-scoped capability.",
+            )
+            rm.add_argument("path", metavar="REPO[/WORKTREE]")
+            rm.add_argument("id", metavar="ID")
+            rm.add_argument(
+                "--kind",
+                choices=("secret", "ssh"),
+                default="secret",
+                help="Capability kind to remove.",
+            )
+            rm.add_argument(
+                "-t",
+                "--timeout",
+                type=float,
+                default=INFINITY,
+                help="Maximum time in seconds for Kubernetes API convergence.",
+            )
+            rm.set_defaults(handler=External.secret)
+
+            listing = subcommands.add_parser(
+                "list",
+                help="List path-relevant capabilities without printing payloads.",
+            )
+            listing.add_argument("path", metavar="REPO[/WORKTREE]")
+            listing.add_argument(
+                "--kind",
+                choices=("secret", "ssh"),
+                default=None,
+                help="Optional capability kind filter.",
+            )
+            listing.add_argument(
+                "--json",
+                action="store_true",
+                help="Emit machine-readable JSON instead of human-readable text.",
+            )
+            listing.add_argument(
+                "-t",
+                "--timeout",
+                type=float,
+                default=INFINITY,
+                help="Maximum time in seconds for Kubernetes API convergence.",
+            )
+            listing.set_defaults(handler=External.secret)
+
         def cluster(self) -> None:
             """Add the 'cluster' command namespace to the parser."""
             command = self.commands.add_parser(
@@ -242,6 +330,128 @@ class External:
                 "convergence.",
             )
             join.set_defaults(handler=External.cluster)
+
+            secret = subcommands.add_parser(
+                "secret",
+                help="Manage shared cluster secret capabilities.",
+            )
+            secret_subcommands = secret.add_subparsers(
+                dest="cluster_secret_command",
+                title="secret commands",
+                metavar="(command)",
+                required=True,
+            )
+            cluster_secret_add = secret_subcommands.add_parser(
+                "add",
+                help="Create or update a shared cluster capability.",
+            )
+            cluster_secret_add.add_argument("id", metavar="ID")
+            cluster_secret_add.add_argument(
+                "source",
+                nargs="?",
+                metavar="SOURCE",
+                help=(
+                    "Payload file path, '-' for stdin, or omitted to read piped stdin."
+                ),
+            )
+            cluster_secret_add.add_argument(
+                "--kind",
+                choices=("secret", "ssh"),
+                default="secret",
+                help="Capability kind to store.",
+            )
+            cluster_secret_add.add_argument(
+                "-t",
+                "--timeout",
+                type=float,
+                default=INFINITY,
+                help="Maximum time in seconds for Kubernetes API convergence.",
+            )
+            cluster_secret_add.set_defaults(handler=External.cluster)
+
+            cluster_secret_rm = secret_subcommands.add_parser(
+                "rm",
+                help="Delete a shared cluster capability.",
+            )
+            cluster_secret_rm.add_argument("id", metavar="ID")
+            cluster_secret_rm.add_argument(
+                "--kind",
+                choices=("secret", "ssh"),
+                default="secret",
+                help="Capability kind to remove.",
+            )
+            cluster_secret_rm.add_argument(
+                "-t",
+                "--timeout",
+                type=float,
+                default=INFINITY,
+                help="Maximum time in seconds for Kubernetes API convergence.",
+            )
+            cluster_secret_rm.set_defaults(handler=External.cluster)
+
+            cluster_secret_list = secret_subcommands.add_parser(
+                "list",
+                help="List shared cluster capabilities without printing payloads.",
+            )
+            cluster_secret_list.add_argument(
+                "--kind",
+                choices=("secret", "ssh"),
+                default=None,
+                help="Optional capability kind filter.",
+            )
+            cluster_secret_list.add_argument(
+                "--json",
+                action="store_true",
+                help="Emit machine-readable JSON instead of human-readable text.",
+            )
+            cluster_secret_list.add_argument(
+                "-t",
+                "--timeout",
+                type=float,
+                default=INFINITY,
+                help="Maximum time in seconds for Kubernetes API convergence.",
+            )
+            cluster_secret_list.set_defaults(handler=External.cluster)
+
+            device = subcommands.add_parser(
+                "device",
+                help="List managed DRA device capability inventory across the cluster.",
+            )
+            device_subcommands = device.add_subparsers(
+                dest="cluster_device_command",
+                title="device commands",
+                metavar="(command)",
+                required=True,
+            )
+            cluster_device_list = device_subcommands.add_parser(
+                "list",
+                help="List cluster-wide managed DRA inventory.",
+            )
+            cluster_device_list.add_argument(
+                "--node",
+                default=None,
+                metavar="HOST_ID",
+                help="Optional Bertrand host UUID filter.",
+            )
+            cluster_device_list.add_argument(
+                "--capability",
+                default=None,
+                metavar="ID",
+                help="Optional device capability ID filter.",
+            )
+            cluster_device_list.add_argument(
+                "--json",
+                action="store_true",
+                help="Emit machine-readable JSON instead of human-readable text.",
+            )
+            cluster_device_list.add_argument(
+                "-t",
+                "--timeout",
+                type=float,
+                default=INFINITY,
+                help="Maximum time in seconds for Kubernetes API convergence.",
+            )
+            cluster_device_list.set_defaults(handler=External.cluster)
 
             network = subcommands.add_parser(
                 "network",
@@ -588,6 +798,43 @@ class External:
             )
             status.set_defaults(handler=External.node)
 
+            name = subcommands.add_parser(
+                "name",
+                help="Set or clear this host's optional Bertrand display name.",
+            )
+            name_subcommands = name.add_subparsers(
+                dest="node_name_command",
+                title="name commands",
+                metavar="(command)",
+                required=True,
+            )
+            name_set = name_subcommands.add_parser(
+                "set",
+                help="Set the local Bertrand node display name.",
+            )
+            name_set.add_argument("name", metavar="NAME")
+            name_set.add_argument(
+                "-t",
+                "--timeout",
+                type=float,
+                default=INFINITY,
+                help="Maximum time in seconds for Kubernetes API convergence.",
+            )
+            name_set.set_defaults(handler=External.node)
+
+            name_clear = name_subcommands.add_parser(
+                "clear",
+                help="Clear the local Bertrand node display name.",
+            )
+            name_clear.add_argument(
+                "-t",
+                "--timeout",
+                type=float,
+                default=INFINITY,
+                help="Maximum time in seconds for Kubernetes API convergence.",
+            )
+            name_clear.set_defaults(handler=External.node)
+
             storage = subcommands.add_parser(
                 "storage",
                 help="Inspect or request local Ceph storage actions.",
@@ -674,6 +921,154 @@ class External:
                 help="Maximum time in seconds for action creation.",
             )
             add_block.set_defaults(handler=External.node)
+
+            secret = subcommands.add_parser(
+                "secret",
+                help="Manage local-node secret capabilities.",
+            )
+            secret_subcommands = secret.add_subparsers(
+                dest="node_secret_command",
+                title="secret commands",
+                metavar="(command)",
+                required=True,
+            )
+            node_secret_add = secret_subcommands.add_parser(
+                "add",
+                help="Create or update a local-node capability.",
+            )
+            node_secret_add.add_argument("id", metavar="ID")
+            node_secret_add.add_argument(
+                "source",
+                nargs="?",
+                metavar="SOURCE",
+                help=(
+                    "Payload file path, '-' for stdin, or omitted to read piped stdin."
+                ),
+            )
+            node_secret_add.add_argument(
+                "--kind",
+                choices=("secret", "ssh"),
+                default="secret",
+                help="Capability kind to store.",
+            )
+            node_secret_add.add_argument(
+                "-t",
+                "--timeout",
+                type=float,
+                default=INFINITY,
+                help="Maximum time in seconds for Kubernetes API convergence.",
+            )
+            node_secret_add.set_defaults(handler=External.node)
+
+            node_secret_rm = secret_subcommands.add_parser(
+                "rm",
+                help="Delete a local-node capability.",
+            )
+            node_secret_rm.add_argument("id", metavar="ID")
+            node_secret_rm.add_argument(
+                "--kind",
+                choices=("secret", "ssh"),
+                default="secret",
+                help="Capability kind to remove.",
+            )
+            node_secret_rm.add_argument(
+                "-t",
+                "--timeout",
+                type=float,
+                default=INFINITY,
+                help="Maximum time in seconds for Kubernetes API convergence.",
+            )
+            node_secret_rm.set_defaults(handler=External.node)
+
+            node_secret_list = secret_subcommands.add_parser(
+                "list",
+                help="List local-node capabilities and shared fallbacks.",
+            )
+            node_secret_list.add_argument(
+                "--kind",
+                choices=("secret", "ssh"),
+                default=None,
+                help="Optional capability kind filter.",
+            )
+            node_secret_list.add_argument(
+                "--json",
+                action="store_true",
+                help="Emit machine-readable JSON instead of human-readable text.",
+            )
+            node_secret_list.add_argument(
+                "-t",
+                "--timeout",
+                type=float,
+                default=INFINITY,
+                help="Maximum time in seconds for Kubernetes API convergence.",
+            )
+            node_secret_list.set_defaults(handler=External.node)
+
+            device = subcommands.add_parser(
+                "device",
+                help="Manage local node DRA device inventory.",
+            )
+            device_subcommands = device.add_subparsers(
+                dest="node_device_command",
+                title="device commands",
+                metavar="(command)",
+                required=True,
+            )
+            node_device_list = device_subcommands.add_parser(
+                "list",
+                help="List managed DRA device inventory on this node.",
+            )
+            node_device_list.add_argument(
+                "--json",
+                action="store_true",
+                help="Emit machine-readable JSON instead of human-readable text.",
+            )
+            node_device_list.add_argument(
+                "-t",
+                "--timeout",
+                type=float,
+                default=INFINITY,
+                help="Maximum time in seconds for Kubernetes API convergence.",
+            )
+            node_device_list.set_defaults(handler=External.node)
+
+            node_device_add = device_subcommands.add_parser(
+                "add",
+                help="Add or update one local managed DRA device capability.",
+            )
+            node_device_add.add_argument("capability", metavar="CAPABILITY")
+            node_device_add.add_argument("--name", required=True, metavar="NAME")
+            node_device_add.add_argument("--cdi", required=True, metavar="SELECTOR")
+            node_device_add.add_argument(
+                "--attr",
+                action="append",
+                default=[],
+                metavar="KEY=VALUE",
+                help="Optional DRA device attribute. Repeat for several.",
+            )
+            node_device_add.add_argument(
+                "-t",
+                "--timeout",
+                type=float,
+                default=INFINITY,
+                help="Maximum time in seconds for Kubernetes API convergence.",
+            )
+            node_device_add.set_defaults(handler=External.node)
+
+            node_device_rm = device_subcommands.add_parser(
+                "rm",
+                help="Remove one local managed DRA device capability.",
+            )
+            node_device_rm.add_argument("capability", metavar="CAPABILITY")
+            node_device_rm.add_argument("--name", required=True, metavar="NAME")
+            node_device_rm.add_argument(
+                "-t",
+                "--timeout",
+                type=float,
+                default=INFINITY,
+                help="Maximum time in seconds for Kubernetes API convergence.",
+            )
+            node_device_rm.set_defaults(handler=External.node)
 
         def run(self) -> None:
             """Add the 'run' command to the parser."""
@@ -1019,6 +1414,44 @@ class External:
                 ) from err
 
     @staticmethod
+    def secret(args: argparse.Namespace) -> None:
+        """Execute a top-level ``bertrand secret`` CLI subcommand.
+
+        Parameters
+        ----------
+        args : argparse.Namespace
+            The parsed command-line arguments.
+
+        Raises
+        ------
+        OSError
+            If timeout is invalid.
+        TimeoutExpired
+            If the secret command does not complete within its timeout.
+        """
+        from bertrand.env.cli.external.secret import bertrand_secret
+
+        now = time.time()
+        timeout = getattr(args, "timeout", INFINITY)
+        if math.isnan(timeout) or timeout <= 0:
+            msg = f"invalid secret timeout: {timeout} (must be > 0 seconds or inf)"
+            raise OSError(msg)
+        with asyncio.Runner() as runner:
+            try:
+                runner.run(bertrand_secret(args))
+            except (TimeoutError, TimeoutExpired) as err:
+                start = datetime.fromtimestamp(now, UTC)
+                cmd = ["bertrand", "secret", args.secret_command]
+                if hasattr(args, "path"):
+                    cmd.append(str(Path(args.path).expanduser()))
+                raise TimeoutExpired(
+                    cmd=cmd,
+                    timeout=timeout,
+                    output=None,
+                    stderr=f"started: {start}\nstopped: {datetime.now(UTC)}\n",
+                ) from err
+
+    @staticmethod
     def cluster(args: argparse.Namespace) -> None:
         """Execute a `bertrand cluster` CLI subcommand.
 
@@ -1047,6 +1480,10 @@ class External:
             except (TimeoutError, TimeoutExpired) as err:
                 start = datetime.fromtimestamp(now, UTC)
                 cmd = ["bertrand", "cluster", args.cluster_command]
+                if args.cluster_command == "secret":
+                    cmd.append(args.cluster_secret_command)
+                if args.cluster_command == "device":
+                    cmd.append(args.cluster_device_command)
                 if args.cluster_command == "network":
                     cmd.append(args.network_command)
                     if args.network_command == "lb":
@@ -1089,6 +1526,12 @@ class External:
             except (TimeoutError, TimeoutExpired) as err:
                 start = datetime.fromtimestamp(now, UTC)
                 cmd = ["bertrand", "node", args.node_command]
+                if args.node_command == "name":
+                    cmd.append(args.node_name_command)
+                if args.node_command == "secret":
+                    cmd.append(args.node_secret_command)
+                if args.node_command == "device":
+                    cmd.append(args.node_device_command)
                 if args.node_command == "storage":
                     cmd.append(args.storage_command)
                     if args.storage_command == "osd":

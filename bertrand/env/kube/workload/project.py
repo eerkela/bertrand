@@ -13,8 +13,9 @@ from bertrand.env.kube.build.lifecycle import (
     retire_project_images,
     worktree_identity,
 )
-from bertrand.env.kube.build.project import project_image_build
+from bertrand.env.kube.build.project import project_image_build, project_worktree_id
 from bertrand.env.kube.build.refs import digest_from_ref, digest_ref
+from bertrand.env.kube.node_identity import resolve_host_id_for_node
 from bertrand.env.kube.workload.base import WorkloadIdentity
 from bertrand.env.kube.workload.config import workload_pod_from_config
 from bertrand.env.kube.workload.controller import (
@@ -107,6 +108,12 @@ async def ensure_project_workload_controller(
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout
     image_identity = project_image_build(config, repo_id=repo_id).identity
+    host_id = await _project_workload_host_id(
+        kube,
+        config=cast("Any", bertrand),
+        node=node,
+        timeout=deadline - loop.time(),
+    )
     image = await _project_workload_image_ref(
         kube,
         identity=image_identity,
@@ -118,9 +125,9 @@ async def ensure_project_workload_controller(
         config=cast("Any", bertrand),
         repo_id=image_identity.repo_id,
         worktree=image_identity.worktree,
-        env_id=image_identity.env_id,
+        worktree_id=image_identity.worktree_id,
         image=image,
-        node=node,
+        host_id=host_id,
         timeout=deadline - loop.time(),
     )
     return await ensure_workload_controller(
@@ -194,6 +201,12 @@ async def create_project_workload_job_run(
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout
     image_identity = project_image_build(config, repo_id=repo_id).identity
+    host_id = await _project_workload_host_id(
+        kube,
+        config=cast("Any", bertrand),
+        node=node,
+        timeout=deadline - loop.time(),
+    )
     image = await _project_workload_image_ref(
         kube,
         identity=image_identity,
@@ -205,9 +218,9 @@ async def create_project_workload_job_run(
         config=cast("Any", bertrand),
         repo_id=image_identity.repo_id,
         worktree=image_identity.worktree,
-        env_id=image_identity.env_id,
+        worktree_id=image_identity.worktree_id,
         image=image,
-        node=node,
+        host_id=host_id,
         timeout=deadline - loop.time(),
     )
     if workload is None:
@@ -322,7 +335,7 @@ async def remove_project_workload(
     retired = await retire_project_images(
         kube,
         repo_id=identity.repo_id,
-        worktree=identity.worktree_env,
+        worktree_id=identity.worktree_id,
         timeout=deadline - loop.time(),
     )
     return replace(result, images_retired=tuple(record.name for record in retired))
@@ -332,8 +345,22 @@ def _project_workload_identity(config: Config, *, repo_id: str) -> WorkloadIdent
     repo_id = _check_uuid(repo_id)
     return WorkloadIdentity(
         repo_id=repo_id,
+        worktree_id=project_worktree_id(config.root),
         worktree=worktree_identity(config.worktree),
     )
+
+
+async def _project_workload_host_id(
+    kube: Kube,
+    *,
+    config: Any,
+    node: str | None,
+    timeout: float,
+) -> str | None:
+    node_name = (node or getattr(config, "node", None) or "").strip()
+    if not node_name:
+        return None
+    return await resolve_host_id_for_node(kube, node_name=node_name, timeout=timeout)
 
 
 async def _project_workload_image_ref(

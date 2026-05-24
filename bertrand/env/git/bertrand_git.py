@@ -85,6 +85,7 @@ METADATA_DIR: PosixPath = PosixPath(".bertrand")
 METADATA_FILE: PosixPath = METADATA_DIR / "env.json"
 METADATA_LOCK: PosixPath = METADATA_DIR / ".lock"
 METADATA_REPO_ID: PosixPath = METADATA_DIR / "repo_id"
+METADATA_WORKTREE_ID: PosixPath = METADATA_DIR / "worktree_id"
 METADATA_TMP: PosixPath = METADATA_DIR / "tmp"
 WORKTREE_MOUNT: PosixPath = PosixPath("/bertrand")
 PROJECT_MOUNT: PosixPath = PosixPath("/.bertrand")
@@ -98,7 +99,7 @@ CONTAINER_ARTIFACT_MOUNT: PosixPath = CONTAINER_TMP_MOUNT / "artifacts"
 # behavior of the bertrand CLI both inside and outside the container.
 BERTRAND_ENV: str = "BERTRAND"  # "1" to mark as a Bertrand context
 REPO_ID_ENV: str = "BERTRAND_REPO_ID"  # unique repository UUID
-ENV_ID_ENV: str = "BERTRAND_ENV_ID"  # unique Bertrand environment UUID
+WORKTREE_ID_ENV: str = "BERTRAND_WORKTREE_ID"  # unique worktree UUID
 IMAGE_ID_ENV: str = "BERTRAND_IMAGE_ID"  # unique OCI image ID
 CONTAINER_ID_ENV: str = "BERTRAND_CONTAINER_ID"  # unique OCI container ID
 PROJECT_ENV: str = "BERTRAND_PROJECT"  # host path to mounted project root
@@ -158,7 +159,7 @@ def inside_container() -> bool:
         True if we're running inside a container process, False otherwise.
     """
     return all(
-        key in os.environ for key in (CONTAINER_ID_ENV, IMAGE_ID_ENV, ENV_ID_ENV)
+        key in os.environ for key in (CONTAINER_ID_ENV, IMAGE_ID_ENV, WORKTREE_ID_ENV)
     )
 
 
@@ -329,6 +330,75 @@ def atomic_write_text(
     if private:
         tmp.chmod(0o600)
     tmp.replace(path)
+
+
+def read_worktree_id(worktree: Path) -> str:
+    """Read the stable Bertrand worktree identity for a checked-out worktree.
+
+    Parameters
+    ----------
+    worktree : Path
+        Worktree root containing Bertrand metadata.
+
+    Returns
+    -------
+    str
+        UUID hex string stored at ``.bertrand/worktree_id``.
+
+    Raises
+    ------
+    OSError
+        If the worktree ID is missing or malformed.
+    """
+    _check_worktree_metadata_root(worktree)
+    path = worktree / METADATA_WORKTREE_ID
+    try:
+        return uuid.UUID(path.read_text(encoding="utf-8").strip()).hex
+    except FileNotFoundError as err:
+        msg = f"Bertrand worktree identity is missing at {path}"
+        raise OSError(msg) from err
+    except (OSError, ValueError) as err:
+        msg = f"Bertrand worktree identity is malformed at {path}"
+        raise OSError(msg) from err
+
+
+def ensure_worktree_id(worktree: Path) -> str:
+    """Ensure a checked-out worktree has a stable Bertrand UUID.
+
+    Parameters
+    ----------
+    worktree : Path
+        Worktree root that should contain Bertrand metadata.
+
+    Returns
+    -------
+    str
+        Existing or newly generated UUID hex string.
+
+    Raises
+    ------
+    OSError
+        If existing metadata is malformed or cannot be written safely.
+    """
+    _check_worktree_metadata_root(worktree)
+    path = worktree / METADATA_WORKTREE_ID
+    if path.exists():
+        if not path.is_file():
+            msg = f"Bertrand worktree identity path is not a file: {path}"
+            raise OSError(msg)
+        return read_worktree_id(worktree)
+    worktree_id = uuid.uuid4().hex
+    atomic_write_text(path, f"{worktree_id}\n", encoding="utf-8")
+    return worktree_id
+
+
+def _check_worktree_metadata_root(worktree: Path) -> None:
+    if not worktree.exists():
+        msg = f"worktree path does not exist: {worktree}"
+        raise FileNotFoundError(msg)
+    if not worktree.is_dir():
+        msg = f"worktree path is not a directory: {worktree}"
+        raise NotADirectoryError(msg)
 
 
 def file_digest(path: Path) -> str:
@@ -2417,6 +2487,7 @@ class GitRepository:
         else:
             cmd.extend([str(target), branch])
         await self.run(cmd, capture_output=quiet)
+        ensure_worktree_id(target)
 
     async def move_worktree(
         self,
