@@ -15,14 +15,19 @@ from bertrand.env.git import (
     atomic_write_text,
 )
 from bertrand.env.mcp.constants import (
+    LSP_DAEMON_COMMAND,
+    LSP_SOCKET_ENV,
+    LSP_SOCKET_PATH,
     MCP_ARGS,
     MCP_ARTIFACTS_ENV,
+    MCP_CACHE_ENV,
     MCP_COMMAND,
     MCP_SERVER_KEY,
     MCP_WORKSPACE_ENV,
 )
 
 from .core import (
+    CACHE_MOUNT,
     Config,
     Resource,
     resource,
@@ -31,6 +36,8 @@ from .core import (
 VSCODE_ARTIFACT_DIR = CONTAINER_ARTIFACT_MOUNT / ".vscode"
 VSCODE_WORKSPACE_FILE = VSCODE_ARTIFACT_DIR / "workspace.code-workspace"
 VSCODE_MCP_FILE = VSCODE_ARTIFACT_DIR / "mcp.json"
+DEV_BIN_DIR = CONTAINER_ARTIFACT_MOUNT / "bin"
+DEV_SHELL_ENTRYPOINT = DEV_BIN_DIR / "bertrand-dev-shell"
 
 
 def _workspace_config() -> dict[str, object]:
@@ -63,7 +70,6 @@ def _workspace_config() -> dict[str, object]:
                 },
             },
             "ty.serverMode": "languageServer",
-            "ty.disableLanguageServices": True,
             "python.testing.pytestEnabled": True,
             "python.testing.unittestEnabled": False,
             "python.testing.pytestPath": "pytest",
@@ -93,10 +99,54 @@ def _mcp_config() -> dict[str, object]:
                 "env": {
                     MCP_WORKSPACE_ENV: WORKTREE_MOUNT.as_posix(),
                     MCP_ARTIFACTS_ENV: CONTAINER_ARTIFACT_MOUNT.as_posix(),
+                    MCP_CACHE_ENV: CACHE_MOUNT.as_posix(),
                 },
             },
         },
     }
+
+
+def _dev_shell_script() -> str:
+    socket = LSP_SOCKET_PATH.as_posix()
+    cache = CACHE_MOUNT.as_posix()
+    return f"""#!/usr/bin/env sh
+set -u
+
+socket="${{{LSP_SOCKET_ENV}:-{socket}}}"
+export {LSP_SOCKET_ENV}="$socket"
+export XDG_CACHE_HOME="${{XDG_CACHE_HOME:-{cache}}}"
+
+mkdir -p "$(dirname "$socket")" "$XDG_CACHE_HOME"
+
+if command -v {LSP_DAEMON_COMMAND} >/dev/null 2>&1; then
+  {LSP_DAEMON_COMMAND} --socket "$socket" >&2 &
+  daemon_pid="$!"
+  i=0
+  while [ "$i" -lt 50 ]; do
+    if [ -S "$socket" ]; then
+      break
+    fi
+    if ! kill -0 "$daemon_pid" 2>/dev/null; then
+      break
+    fi
+    sleep 0.1
+    i=$((i + 1))
+  done
+  if [ ! -S "$socket" ]; then
+    echo "bertrand: warning: shell LSP daemon did not publish $socket;" \\
+      "semantic shell helpers may be unavailable" >&2
+  fi
+else
+  echo "bertrand: warning: {LSP_DAEMON_COMMAND} not found;" \\
+    "semantic shell helpers are unavailable" >&2
+fi
+
+if [ "$#" -eq 0 ]; then
+  set -- sh
+fi
+
+exec "$@"
+"""
 
 
 @resource("vscode")
@@ -123,3 +173,9 @@ class VSCodeWorkspace(Resource):
             json.dumps(_mcp_config(), indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
         )
+        atomic_write_text(
+            DEV_SHELL_ENTRYPOINT,
+            _dev_shell_script(),
+            encoding="utf-8",
+        )
+        DEV_SHELL_ENTRYPOINT.chmod(0o755)

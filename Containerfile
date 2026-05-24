@@ -372,6 +372,7 @@ ENV CONAN_HOME=/opt/conan
 ENV CONAN_USER_HOME=/opt/conan
 ENV BERTRAND=1
 ENV UV_PYTHON=/opt/python/bin/python
+ENV XDG_CACHE_HOME=/tmp/.cache
 ENV UV_CACHE_DIR=/tmp/.cache/uv
 ENV BERTRAND_CACHE=/tmp/.cache/bertrand
 ENV CCACHE_DIR=/tmp/.cache/ccache

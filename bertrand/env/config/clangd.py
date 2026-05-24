@@ -3,7 +3,8 @@
 This resource generates a `.clangd` artifact from a standardized `[clangd]` schema
 stored in project configuration.  The default settings are designed to be conservative
 and non-blocking, but can be customized as needed, and are exhaustively listed in a
-self-documenting fashion.
+self-documenting fashion.  clangd indexing policy is intentionally fixed by Bertrand
+so editor and MCP navigation stay consistently available.
 """
 
 from __future__ import annotations
@@ -61,36 +62,6 @@ class Clangd(Resource):
                         "this also includes clang-tidy rules that will be excluded "
                         "from syntax highlighting.  '*' can be used to turn off all "
                         "diagnostics."
-                    ),
-                ),
-            ]
-
-        class _Index(BaseModel):
-            """Validate the `[tool.clangd.index]` table."""
-
-            model_config = ConfigDict(extra="forbid")
-            Background: Annotated[
-                Literal["Build", "Skip"],
-                Field(
-                    default="Build",
-                    examples=["Build", "Skip"],
-                    description=(
-                        "Control whether clangd should build a symbolic index in the "
-                        "background.  This is required for features like cross-file "
-                        "rename and efficient code navigation (including by AI "
-                        "agents), but can be disabled to reduce resource usage on "
-                        "large codebases with heavy churn."
-                    ),
-                ),
-            ]
-            StandardLibrary: Annotated[
-                bool,
-                Field(
-                    default=True,
-                    description=(
-                        "Control whether clangd should eagerly index the standard "
-                        "library, which enables features like code completions in "
-                        "new/empty files, without needing to build an index first."
                     ),
                 ),
             ]
@@ -305,26 +276,6 @@ class Clangd(Resource):
                     ),
                 ]
 
-            class _Index(BaseModel):
-                """Validate the `[tool.clangd.index]` table."""
-
-                model_config = ConfigDict(extra="forbid")
-                Background: Annotated[
-                    Literal["Build", "Skip"] | None,
-                    Field(
-                        default=None,
-                        examples=["Build", "Skip"],
-                        description="See global 'Index.Background' option.",
-                    ),
-                ]
-                StandardLibrary: Annotated[
-                    bool | None,
-                    Field(
-                        default=None,
-                        description="See global 'Index.StandardLibrary' option.",
-                    ),
-                ]
-
             class _Completion(BaseModel):
                 """Validate the `[tool.clangd.completion]` table."""
 
@@ -488,13 +439,6 @@ class Clangd(Resource):
                     ),
                 ),
             ]
-            Index: Annotated[
-                _Index | None,
-                Field(
-                    default=None,
-                    description="clangd index options for this conditional block.",
-                ),
-            ]
             Completion: Annotated[
                 _Completion | None,
                 Field(
@@ -534,7 +478,6 @@ class Clangd(Resource):
             def _validate_nonempty(self) -> Self:
                 if (
                     self.Diagnostics is None
-                    and self.Index is None
                     and self.Completion is None
                     and self.InlayHints is None
                     and self.Hover is None
@@ -542,8 +485,8 @@ class Clangd(Resource):
                 ):
                     msg = (
                         "each [[tool.clangd.if]] entry must define at least one "
-                        "of 'Diagnostics', 'Index', 'Completion', 'InlayHints', "
-                        "'Hover', or 'Documentation'"
+                        "of 'Diagnostics', 'Completion', 'InlayHints', 'Hover', or "
+                        "'Documentation'"
                     )
                     raise ValueError(msg)
                 return self
@@ -554,13 +497,6 @@ class Clangd(Resource):
             Field(
                 default_factory=_Diagnostics.model_construct,
                 description="clangd diagnostics options.",
-            ),
-        ]
-        Index: Annotated[
-            _Index,
-            Field(
-                default_factory=_Index.model_construct,
-                description="clangd symbolic indexing options.",
             ),
         ]
         Completion: Annotated[
@@ -637,8 +573,8 @@ class Clangd(Resource):
                 "Suppress": model.Diagnostics.Suppress,
             },
             "Index": {
-                "Background": model.Index.Background,
-                "StandardLibrary": model.Index.StandardLibrary,
+                "Background": "Build",
+                "StandardLibrary": True,
             },
             "Completion": {
                 "AllScopes": model.Completion.AllScopes,
@@ -678,11 +614,6 @@ class Clangd(Resource):
                     "UnusedIncludes": section.Diagnostics.UnusedIncludes,
                     "MissingIncludes": section.Diagnostics.MissingIncludes,
                     "Suppress": section.Diagnostics.Suppress,
-                }
-            if section.Index is not None:
-                fragment["Index"] = {
-                    "Background": section.Index.Background,
-                    "StandardLibrary": section.Index.StandardLibrary,
                 }
             if section.Completion is not None:
                 fragment["Completion"] = {

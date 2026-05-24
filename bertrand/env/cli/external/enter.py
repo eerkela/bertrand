@@ -13,6 +13,7 @@ from bertrand.env.cli.external.build import BuildLogFollower, _assert_build_runt
 from bertrand.env.cli.external.run import _attach_pod
 from bertrand.env.config.bertrand import SHELLS, Bertrand
 from bertrand.env.config.core import Config
+from bertrand.env.config.vscode import DEV_SHELL_ENTRYPOINT
 from bertrand.env.git import INFINITY
 from bertrand.env.kube.api.client import Kube
 from bertrand.env.kube.build.project import project_image_build
@@ -72,6 +73,7 @@ async def bertrand_enter(
             if shell_cmd is None:
                 msg = f"unsupported shell override: {shell_name!r}"
                 raise ValueError(msg)
+            dev_shell_cmd = [DEV_SHELL_ENTRYPOINT.as_posix(), *shell_cmd]
 
             await _assert_build_runtime(kube, timeout=INFINITY)
             build = project_image_build(config, repo_id=config.repo.repo_id)
@@ -92,7 +94,7 @@ async def bertrand_enter(
                 image_ref=publication.record.digest_ref,
                 session_id=session_id,
                 host_id=host_id,
-                command=shell_cmd,
+                command=dev_shell_cmd,
                 interactive=True,
                 timeout=INFINITY,
             )

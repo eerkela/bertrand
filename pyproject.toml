@@ -77,6 +77,7 @@ requires-python = ">=3.12"
 [project.scripts]
 bertrand = "bertrand.__main__:main"
 bertrand-code-rpc = "bertrand.env.code:main"
+bertrand-lsp-daemon = "bertrand.env.mcp.lsp:daemon_main"
 bertrand-mcp = "bertrand.env.mcp:main"
 
 [project.optional-dependencies]

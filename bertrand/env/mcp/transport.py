@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import argparse
-from typing import Literal, cast
+import atexit
+from typing import Any, Literal, cast
 
 from mcp.server.fastmcp import FastMCP
 
 from .constants import MCP_SERVER_KEY
+from .lsp import LSPManager
 
 MCP_TRANSPORTS = ("stdio",)
 MCPTransport = Literal["stdio"]
@@ -19,10 +21,92 @@ def build_server() -> FastMCP:
     Returns
     -------
     FastMCP
-        Empty Bertrand MCP server.  Tool endpoints are registered in later feature
-        passes after the server lifecycle is stable.
+        Bertrand MCP server with curated tool endpoints registered.
     """
-    return FastMCP(MCP_SERVER_KEY)
+    server = FastMCP(MCP_SERVER_KEY)
+    lsp = LSPManager.from_environment()
+    atexit.register(lsp.close_sync)
+
+    @server.tool(
+        description="Return status for managed Bertrand language-server sessions."
+    )
+    def lsp_status(language: str | None = None) -> dict[str, Any]:
+        return lsp.status(language)
+
+    @server.tool(
+        description="Return hover information for a workspace source position."
+    )
+    async def lsp_hover(
+        language: str,
+        path: str,
+        line: int,
+        column: int,
+    ) -> dict[str, Any] | None:
+        return await lsp.hover(language, path, line, column)
+
+    @server.tool(
+        description="Return definition locations for a workspace source position."
+    )
+    async def lsp_definition(
+        language: str,
+        path: str,
+        line: int,
+        column: int,
+    ) -> list[dict[str, Any]]:
+        return await lsp.definition(language, path, line, column)
+
+    @server.tool(
+        description="Return reference locations for a workspace source position."
+    )
+    async def lsp_references(
+        language: str,
+        path: str,
+        line: int,
+        column: int,
+        *,
+        include_declaration: bool = True,
+    ) -> list[dict[str, Any]]:
+        return await lsp.references(
+            language,
+            path,
+            line,
+            column,
+            include_declaration=include_declaration,
+        )
+
+    @server.tool(description="Return semantic symbols for one workspace source file.")
+    async def lsp_document_symbols(
+        language: str,
+        path: str,
+    ) -> list[dict[str, Any]]:
+        return await lsp.document_symbols(language, path)
+
+    @server.tool(description="Return workspace symbols matching a query string.")
+    async def lsp_workspace_symbols(
+        language: str,
+        query: str,
+    ) -> list[dict[str, Any]]:
+        return await lsp.workspace_symbols(language, query)
+
+    @server.tool(description="Return diagnostics for one workspace source file.")
+    async def lsp_diagnostics(
+        language: str,
+        path: str,
+    ) -> list[dict[str, Any]]:
+        return await lsp.diagnostics(language, path)
+
+    @server.tool(
+        description="Return completion candidates for a workspace source position."
+    )
+    async def lsp_completion(
+        language: str,
+        path: str,
+        line: int,
+        column: int,
+    ) -> list[dict[str, Any]]:
+        return await lsp.completion(language, path, line, column)
+
+    return server
 
 
 class Parser:
