@@ -209,6 +209,7 @@ def _container_manifest(container: ContainerSpec) -> dict[str, object]:
                     "mountPath": mount.mount_path,
                     "readOnly": mount.read_only,
                     "subPath": mount.sub_path,
+                    "mountPropagation": mount.mount_propagation,
                 }.items()
                 if value is not None
             }

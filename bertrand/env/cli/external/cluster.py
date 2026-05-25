@@ -17,7 +17,7 @@ from bertrand.env.cli.external.secret import (
     shared_capability_ref,
     shared_scope_targets,
 )
-from bertrand.env.git import BERTRAND_NAMESPACE, INFINITY, run
+from bertrand.env.git import BERTRAND_NAMESPACE, INFINITY
 from bertrand.env.kube.api.bootstrap import (
     ensure_microk8s_kubeconfig,
     join_microk8s_cluster,
@@ -31,13 +31,12 @@ from bertrand.env.kube.capability.device import (
     BertrandDeviceRecord,
     list_device_inventory,
 )
-from bertrand.env.kube.ceph.bootstrap import (
-    join_microceph_cluster,
-    link_kube_ceph,
-    microceph_cluster_ready,
-    microceph_join_token,
-)
+from bertrand.env.kube.ceph.bootstrap import rook_ceph_ready
+from bertrand.env.kube.ceph.csi import CSI_DRIVER_NAME
+from bertrand.env.kube.ceph.storage import CSI_CONTROLLER_NAME, CSI_NODE_NAME
 from bertrand.env.kube.crd import CustomResourceDefinition
+from bertrand.env.kube.daemonset import DaemonSet
+from bertrand.env.kube.deployment import Deployment
 from bertrand.env.kube.dev.mailbox import CODE_OPEN_PLURAL, DEV_GROUP
 from bertrand.env.kube.gateway import Gateway, GatewayClass, HTTPRoute
 from bertrand.env.kube.namespace import Namespace
@@ -62,6 +61,7 @@ from bertrand.env.kube.network.load_balancer import (
 )
 from bertrand.env.kube.network.profile import NETWORK_PROFILE_NAME, NetworkProfile
 from bertrand.env.kube.node_identity import BertrandNodeRecord, list_bertrand_nodes
+from bertrand.env.kube.volume import StorageClass
 
 if TYPE_CHECKING:
     import argparse
@@ -104,7 +104,6 @@ async def bertrand_cluster(args: argparse.Namespace) -> None:
         await bertrand_cluster_join(
             token=args.token,
             worker=args.worker,
-            microceph_ip=args.microceph_ip,
             timeout=args.timeout,
         )
         return
@@ -113,6 +112,9 @@ async def bertrand_cluster(args: argparse.Namespace) -> None:
         return
     if command == "device":
         await _bertrand_cluster_device(args)
+        return
+    if command == "storage":
+        await _bertrand_cluster_storage(args)
         return
     if command == "network":
         await _bertrand_cluster_network(args)
@@ -131,13 +133,11 @@ async def bertrand_cluster_status(*, json_output: bool) -> None:
     """
     status: dict[str, object] = {
         "microk8s": await _probe_bool(lambda: microk8s_cluster_ready(timeout=INFINITY)),
-        "microceph": await _probe_bool(
-            lambda: microceph_cluster_ready(timeout=INFINITY)
-        ),
+        "rook_ceph": await _probe_kube(_rook_ceph_status),
         "namespace": await _probe_kube(_namespace_status),
         "buildkit": await _probe_kube(_buildkit_status),
         "gateway": await _probe_kube(_gateway_status),
-        "ceph_csi": await _probe_host(_ceph_csi_status),
+        "ceph_csi": await _probe_kube(_ceph_csi_status),
         "storage": await _probe_kube(_storage_status),
         "dev": await _probe_kube(_dev_status),
     }
@@ -179,24 +179,19 @@ async def bertrand_cluster_invite(
         raise TimeoutError(msg)
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout
-    node_name = (
-        name or f"bertrand-node-{datetime.now(UTC).strftime('%Y%m%d%H%M%S')}"
-    ).strip()
     microk8s = await microk8s_join_token(
         worker=worker,
         timeout=deadline - loop.time(),
     )
-    microceph = await microceph_join_token(
-        node_name,
-        timeout=deadline - loop.time(),
-    )
+    node_name = (
+        name or f"bertrand-node-{datetime.now(UTC).strftime('%Y%m%d%H%M%S')}"
+    ).strip()
     payload = {
         "version": JOIN_BUNDLE_VERSION,
         "created_at": datetime.now(UTC).isoformat(),
         "node_name": node_name,
         "worker": worker,
         "microk8s": microk8s,
-        "microceph": microceph,
     }
     token = _encode_bundle(payload)
     print("Sensitive Bertrand cluster join token:")
@@ -211,7 +206,6 @@ async def bertrand_cluster_join(
     *,
     token: str,
     worker: bool,
-    microceph_ip: str | None,
     timeout: float,
 ) -> None:
     """Join this host to an existing Bertrand shared runtime cluster.
@@ -222,8 +216,6 @@ async def bertrand_cluster_join(
         Sensitive join bundle produced by ``bertrand cluster invite``.
     worker : bool
         Whether to force MicroK8s worker join semantics.
-    microceph_ip : str | None
-        Optional MicroCeph bind address for this host.
     timeout : float
         Maximum join and convergence budget in seconds.
 
@@ -244,18 +236,12 @@ async def bertrand_cluster_join(
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout
     await ensure_shared_runtime_installed(timeout=deadline - loop.time(), yes=False)
-    await join_microceph_cluster(
-        str(bundle["microceph"]),
-        microceph_ip=microceph_ip,
-        timeout=deadline - loop.time(),
-    )
     await join_microk8s_cluster(
         str(bundle["microk8s"]),
         worker=worker or bool(bundle.get("worker")),
         timeout=deadline - loop.time(),
     )
     await ensure_microk8s_kubeconfig(timeout=deadline - loop.time())
-    await link_kube_ceph(timeout=deadline - loop.time())
     with await Kube.host(timeout=deadline - loop.time()) as kube:
         await _converge_cluster_runtime(kube, timeout=deadline - loop.time())
     print("Bertrand cluster join complete.")
@@ -294,6 +280,18 @@ async def _bertrand_cluster_device(args: argparse.Namespace) -> None:
         )
         return
     msg = f"unsupported cluster device command: {command!r}"
+    raise ValueError(msg)
+
+
+async def _bertrand_cluster_storage(args: argparse.Namespace) -> None:
+    command = args.cluster_storage_command
+    if command == "status":
+        await bertrand_cluster_storage_status(json_output=args.json, doctor=False)
+        return
+    if command == "doctor":
+        await bertrand_cluster_storage_status(json_output=args.json, doctor=True)
+        return
+    msg = f"unsupported cluster storage command: {command!r}"
     raise ValueError(msg)
 
 
@@ -349,6 +347,246 @@ async def bertrand_cluster_device_list(
             f"{record.capability_id} {record.spec.device_name} "
             f"[{owner}; kube={record.node_name}] -> {record.cdi_selector}"
         )
+
+
+async def _osd_csi_status(kube: Kube) -> dict[str, object]:
+    driver = await kube.run(
+        lambda request_timeout: kube.storage.read_csi_driver(
+            name=CSI_DRIVER_NAME,
+            _request_timeout=request_timeout,
+        ),
+        timeout=INFINITY,
+        context=f"failed to inspect CSIDriver {CSI_DRIVER_NAME!r}",
+    )
+    controller = await Deployment.get(
+        kube,
+        namespace=BERTRAND_NAMESPACE,
+        name=CSI_CONTROLLER_NAME,
+        timeout=INFINITY,
+    )
+    node = await DaemonSet.get(
+        kube,
+        namespace=BERTRAND_NAMESPACE,
+        name=CSI_NODE_NAME,
+        timeout=INFINITY,
+    )
+    return {
+        "driver": driver is not None,
+        "controller_ready": controller is not None and controller.ready_replicas >= 1,
+        "node_ready": (
+            node is not None
+            and node.desired_number_scheduled > 0
+            and node.number_available >= node.desired_number_scheduled
+        ),
+        "node_available": node.number_available if node is not None else 0,
+        "node_desired": node.desired_number_scheduled if node is not None else 0,
+    }
+
+
+async def bertrand_cluster_storage_status(
+    *,
+    json_output: bool,
+    doctor: bool,
+) -> None:
+    """Print cluster-wide Rook/Ceph storage status and diagnostics.
+
+    Parameters
+    ----------
+    json_output : bool
+        Whether to emit machine-readable JSON.
+    doctor : bool
+        Whether to print diagnostic guidance in addition to status.
+    """
+    from bertrand.env.kube.ceph.capacity import (
+        STORAGE_NODE_REPORT_MAX_AGE_SECONDS,
+        CephStoragePlanner,
+        list_storage_actions,
+        list_storage_node_reports,
+        list_storage_osds,
+        list_storage_reservations,
+        read_storage_policy,
+    )
+
+    with await Kube.host(timeout=INFINITY) as kube:
+        policy = await read_storage_policy(kube, timeout=INFINITY)
+        actions = await list_storage_actions(kube, timeout=INFINITY)
+        reservations = await list_storage_reservations(kube, timeout=INFINITY)
+        reports = await list_storage_node_reports(kube, timeout=INFINITY)
+        osds = await list_storage_osds(kube, timeout=INFINITY)
+        csi_status = await _osd_csi_status(kube)
+    planner = CephStoragePlanner()
+    payload = {
+        "policy": policy.spec.model_dump(mode="json"),
+        "status": policy.status.model_dump(mode="json") if policy.status else None,
+        "action_counts": planner.action_counts(actions),
+        "reservations": [
+            reservation.model_dump(mode="json") for reservation in reservations
+        ],
+        "reports": [report.model_dump(mode="json") for report in reports],
+        "osds": [osd.model_dump(mode="json") for osd in osds],
+        "csi": csi_status,
+    }
+    if json_output:
+        print(json.dumps(payload, indent=2, sort_keys=True))
+        return
+
+    print("storage:")
+    status = payload["status"]
+    if isinstance(status, dict):
+        print(f"  used: {status.get('used_ratio')}")
+        print(f"  loop fallback OSDs: {status.get('loop_osds')}")
+        print(f"  LVM-backed OSDs: {status.get('lvm_osds')}")
+        print(f"  elastic bytes: {status.get('elastic_bytes')}")
+        print(f"  durable bytes: {status.get('durable_bytes')}")
+        print(f"  free bytes: {status.get('free_bytes')}")
+        print(f"  target headroom bytes: {status.get('headroom_target_bytes')}")
+        print(f"  reserved bytes: {status.get('reserved_bytes')}")
+        print(
+            "  write rate EWMA bytes/s: "
+            f"{status.get('write_rate_ewma_bytes_per_second')}"
+        )
+        print(
+            "  projected seconds to headroom floor: "
+            f"{status.get('projected_seconds_to_headroom_floor')}"
+        )
+        print(
+            "  growth recommendation bytes: "
+            f"{status.get('growth_recommendation_bytes')}"
+        )
+        print(f"  missing LVM OSD PVs: {status.get('missing_lvm_osd_pvs')}")
+        print(f"  LVM reclaimable bytes: {status.get('lvm_reclaimable_bytes')}")
+        print(f"  LVM shrink candidate: {status.get('lvm_shrink_candidate') or 'none'}")
+        print(f"  LVM shrink target bytes: {status.get('lvm_shrink_target_bytes')}")
+        print(f"  last error: {status.get('last_error') or 'none'}")
+    print(f"  node reports: {len(reports)}")
+    print(f"  managed OSD records: {len(osds)}")
+    csi = payload["csi"]
+    if isinstance(csi, dict):
+        print(
+            "  CSI: "
+            f"driver={'ready' if csi.get('driver') else 'missing'}, "
+            f"controller={'ready' if csi.get('controller_ready') else 'not ready'}, "
+            f"nodes={csi.get('node_available')}/{csi.get('node_desired')}"
+        )
+    for osd in osds:
+        print(
+            f"    {osd.metadata.name}: {osd.spec.origin} "
+            f"{osd.status.phase} node={osd.spec.node_name} "
+            f"ceph=osd.{osd.status.ceph_osd_id}"
+            if osd.status.ceph_osd_id is not None
+            else (
+                f"    {osd.metadata.name}: {osd.spec.origin} "
+                f"{osd.status.phase} node={osd.spec.node_name}"
+            )
+        )
+    print("  actions:")
+    for phase, count in payload["action_counts"].items():
+        print(f"    {phase}: {count}")
+    active_reservations = [
+        reservation
+        for reservation in reservations
+        if reservation.status.phase in {"Pending", "Ready"}
+    ]
+    print(f"  active reservations: {len(active_reservations)}")
+    if doctor:
+        print("doctor:")
+        if not reports:
+            print("  no storage-agent node reports are available")
+        now = datetime.now(UTC)
+        stale_reports = [
+            report
+            for report in reports
+            if report.status is None
+            or report.status.heartbeat_at is None
+            or (
+                now
+                - (
+                    report.status.heartbeat_at.replace(tzinfo=UTC)
+                    if report.status.heartbeat_at.tzinfo is None
+                    else report.status.heartbeat_at.astimezone(UTC)
+                )
+            ).total_seconds()
+            > STORAGE_NODE_REPORT_MAX_AGE_SECONDS
+        ]
+        for report in stale_reports[:5]:
+            print(
+                f"  storage report {report.metadata.name} is stale "
+                f"(host={report.spec.host_id}, kube={report.spec.node_name})"
+            )
+        if not any((report.status and report.status.lvm_pvs) for report in reports):
+            print("  no node reports a 'bertrand' LVM volume group with free PVs")
+            print(
+                "  create a host LVM volume group named 'bertrand' for preferred OSDs"
+            )
+        else:
+            total_lvm_free = sum(
+                report.status.lvm_free_bytes
+                for report in reports
+                if report.status is not None
+            )
+            print(f"  reported free LVM bytes in 'bertrand' VG: {total_lvm_free}")
+        if isinstance(csi, dict) and not all(
+            (csi.get("driver"), csi.get("controller_ready"), csi.get("node_ready"))
+        ):
+            print(
+                "  Bertrand OSD CSI is not fully ready; PVC-backed OSD growth may "
+                "be blocked"
+            )
+        stuck = [
+            osd
+            for osd in osds
+            if osd.status.phase in {"HostPrepared", "Binding", "Expanding", "Shrinking"}
+        ]
+        for osd in stuck[:5]:
+            changed_at = (
+                osd.status.phase_changed_at.isoformat()
+                if osd.status.phase_changed_at is not None
+                else "unknown"
+            )
+            print(
+                f"  OSD {osd.metadata.name} is {osd.status.phase}; "
+                "Rook/CSI may still be reconciling the PVC-backed OSD "
+                f"since {changed_at}"
+            )
+        active_loop = any(
+            osd.spec.origin == "loop-fallback"
+            and osd.status.phase not in {"Retired", "Failed"}
+            for osd in osds
+        )
+        lvm_available = any(
+            report.status is not None and report.status.lvm_free_bytes > 0
+            for report in reports
+        )
+        if active_loop and lvm_available:
+            print(
+                "  loop fallback is active while LVM space is available; "
+                "Bertrand will grow LVM capacity and retire the loop OSD once "
+                "Ceph reports it is safe"
+            )
+        if isinstance(status, dict):
+            if (status.get("missing_lvm_osd_pvs") or 0) > 0:
+                print(
+                    "  one or more usable LVM PVs do not yet have managed OSD "
+                    "coverage; Bertrand will create minimum-size OSDs first"
+                )
+            if status.get("lvm_shrink_candidate"):
+                print(
+                    "  LVM shrink candidate selected: "
+                    f"{status.get('lvm_shrink_candidate')} -> "
+                    f"{status.get('lvm_shrink_target_bytes')} bytes"
+                )
+        for reservation in active_reservations[:5]:
+            if reservation.status.phase == "Pending":
+                print(
+                    f"  reservation {reservation.metadata.name} is pending: "
+                    f"{reservation.status.last_error or 'waiting for headroom'}"
+                )
+        for osd in osds:
+            if osd.status.last_error:
+                print(f"  OSD {osd.metadata.name} error: {osd.status.last_error}")
+        failed = [action for action in actions if action.status.phase == "Failed"]
+        for action in failed[:5]:
+            print(f"  failed {action.metadata.name}: {action.status.message}")
 
 
 async def _bertrand_cluster_network(args: argparse.Namespace) -> None:
@@ -891,7 +1129,7 @@ def _decode_bundle(token: str) -> dict[str, object]:
     if not isinstance(payload, dict) or payload.get("version") != JOIN_BUNDLE_VERSION:
         msg = "unsupported Bertrand cluster join token"
         raise ValueError(msg)
-    for key in ("microk8s", "microceph"):
+    for key in ("microk8s",):
         if not isinstance(payload.get(key), str) or not payload[key]:
             msg = f"Bertrand cluster join token is missing {key!r}"
             raise ValueError(msg)
@@ -901,15 +1139,6 @@ def _decode_bundle(token: str) -> dict[str, object]:
 async def _probe_bool(fn: Callable[[], Awaitable[bool]]) -> dict[str, object]:
     try:
         return {"ready": await fn(), "message": ""}
-    except (OSError, TimeoutError, RuntimeError, ValueError) as err:
-        return {"ready": False, "message": str(err)}
-
-
-async def _probe_host(
-    fn: Callable[[], Awaitable[dict[str, object]]],
-) -> dict[str, object]:
-    try:
-        return await fn()
     except (OSError, TimeoutError, RuntimeError, ValueError) as err:
         return {"ready": False, "message": str(err)}
 
@@ -967,26 +1196,17 @@ async def _gateway_status(kube: Kube) -> dict[str, object]:
     }
 
 
-async def _ceph_csi_status() -> dict[str, object]:
-    result = await run(
-        ["microk8s", "kubectl", "get", "storageclass", "-o", "json"],
-        check=False,
-        capture_output=True,
-        timeout=INFINITY,
-    )
-    if result.returncode != 0:
-        return {"ready": False, "message": str(result)}
-    payload = json.loads(result.stdout)
-    items = payload.get("items", []) if isinstance(payload, dict) else []
-    names: list[str] = []
-    for item in items if isinstance(items, list) else []:
-        if not isinstance(item, dict):
-            continue
-        provisioner = str(item.get("provisioner") or "").lower()
-        metadata = item.get("metadata")
-        name = metadata.get("name") if isinstance(metadata, dict) else None
-        if "csi.ceph.com" in provisioner and isinstance(name, str):
-            names.append(name)
+async def _rook_ceph_status(kube: Kube) -> dict[str, object]:
+    ready = await rook_ceph_ready(kube, timeout=INFINITY)
+    return {
+        "ready": ready,
+        "message": "" if ready else "Rook Ceph substrate is not ready",
+    }
+
+
+async def _ceph_csi_status(kube: Kube) -> dict[str, object]:
+    classes = await StorageClass.list(kube, timeout=INFINITY)
+    names = [storage.name for storage in classes if storage.is_cephfs]
     return {
         "ready": bool(names),
         "storage_classes": sorted(names),

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 from typing import TYPE_CHECKING, cast
 
@@ -13,7 +12,7 @@ from bertrand.env.cli.external.secret import (
     local_node_scope_targets,
     remove_capability,
 )
-from bertrand.env.git import INFINITY, confirm
+from bertrand.env.git import BERTRAND_NAMESPACE, INFINITY
 from bertrand.env.kube.api.bootstrap import microk8s_cluster_ready
 from bertrand.env.kube.api.client import Kube
 from bertrand.env.kube.capability.device import (
@@ -23,15 +22,19 @@ from bertrand.env.kube.capability.device import (
     refresh_node_resource_slice,
     upsert_device_inventory,
 )
-from bertrand.env.kube.ceph.api import BlockOSDSpec, validate_block_osd_devices
-from bertrand.env.kube.ceph.bootstrap import microceph_cluster_ready
+from bertrand.env.kube.ceph.bootstrap import rook_ceph_ready
 from bertrand.env.kube.ceph.capacity import (
     CephStoragePlanner,
-    create_manual_block_osd_action,
     list_storage_actions,
     list_storage_node_reports,
+    list_storage_osds,
+    list_storage_reservations,
     read_storage_policy,
 )
+from bertrand.env.kube.ceph.csi import CSI_DRIVER_NAME
+from bertrand.env.kube.ceph.storage import CSI_CONTROLLER_NAME, CSI_NODE_NAME
+from bertrand.env.kube.daemonset import DaemonSet
+from bertrand.env.kube.deployment import Deployment
 from bertrand.env.kube.node import Node
 from bertrand.env.kube.node_identity import (
     BertrandNodeRecord,
@@ -101,7 +104,7 @@ async def bertrand_node_status(*, json_output: bool) -> None:
         print(f"  build eligible: {node_status.get('build_eligible')}")
         print(f"  platform: {node_status.get('platform') or 'unknown'}")
     print(f"  microk8s: {'ready' if payload['microk8s_ready'] else 'not ready'}")
-    print(f"  microceph: {'ready' if payload['microceph_ready'] else 'not ready'}")
+    print(f"  rook ceph: {'ready' if payload['rook_ceph_ready'] else 'not ready'}")
     print(f"  storage report: {payload['storage_report'] or 'unavailable'}")
     devices = payload["devices"]
     if isinstance(devices, list):
@@ -113,11 +116,8 @@ async def _bertrand_node_storage(args: argparse.Namespace) -> None:
     if command == "status":
         await bertrand_node_storage_status(json_output=args.json)
         return
-    if command == "actions":
-        await bertrand_node_storage_actions(json_output=args.json)
-        return
-    if command == "osd":
-        await _bertrand_node_storage_osd(args)
+    if command == "doctor":
+        await bertrand_node_storage_doctor(json_output=args.json)
         return
     msg = f"unsupported node storage command: {command!r}"
     raise ValueError(msg)
@@ -241,6 +241,40 @@ async def bertrand_node_device_list(*, json_output: bool, timeout: float) -> Non
         )
 
 
+async def _osd_csi_status(kube: Kube) -> dict[str, object]:
+    driver = await kube.run(
+        lambda request_timeout: kube.storage.read_csi_driver(
+            name=CSI_DRIVER_NAME,
+            _request_timeout=request_timeout,
+        ),
+        timeout=INFINITY,
+        context=f"failed to inspect CSIDriver {CSI_DRIVER_NAME!r}",
+    )
+    controller = await Deployment.get(
+        kube,
+        namespace=BERTRAND_NAMESPACE,
+        name=CSI_CONTROLLER_NAME,
+        timeout=INFINITY,
+    )
+    node = await DaemonSet.get(
+        kube,
+        namespace=BERTRAND_NAMESPACE,
+        name=CSI_NODE_NAME,
+        timeout=INFINITY,
+    )
+    return {
+        "driver": driver is not None,
+        "controller_ready": controller is not None and controller.ready_replicas >= 1,
+        "node_ready": (
+            node is not None
+            and node.desired_number_scheduled > 0
+            and node.number_available >= node.desired_number_scheduled
+        ),
+        "node_available": node.number_available if node is not None else 0,
+        "node_desired": node.desired_number_scheduled if node is not None else 0,
+    }
+
+
 async def bertrand_node_device_add(
     *,
     capability_id: str,
@@ -332,15 +366,36 @@ async def bertrand_node_storage_status(*, json_output: bool) -> None:
         Whether to emit machine-readable JSON.
     """
     with await Kube.host(timeout=INFINITY) as kube:
+        node = await ensure_local_bertrand_node(kube, timeout=INFINITY)
         policy = await read_storage_policy(kube, timeout=INFINITY)
-        actions = await list_storage_actions(kube, timeout=INFINITY)
-        reports = await list_storage_node_reports(kube, timeout=INFINITY)
+        actions = [
+            action
+            for action in await list_storage_actions(kube, timeout=INFINITY)
+            if action.spec.host_id == node.host_id
+        ]
+        reservations = await list_storage_reservations(kube, timeout=INFINITY)
+        reports = [
+            report
+            for report in await list_storage_node_reports(kube, timeout=INFINITY)
+            if report.spec.host_id == node.host_id
+        ]
+        osds = [
+            osd
+            for osd in await list_storage_osds(kube, timeout=INFINITY)
+            if osd.spec.host_id == node.host_id
+        ]
+        csi_status = await _osd_csi_status(kube)
     planner = CephStoragePlanner()
     payload = {
         "policy": policy.spec.model_dump(mode="json"),
         "status": policy.status.model_dump(mode="json") if policy.status else None,
         "action_counts": planner.action_counts(actions),
+        "reservations": [
+            reservation.model_dump(mode="json") for reservation in reservations
+        ],
         "reports": [report.model_dump(mode="json") for report in reports],
+        "osds": [osd.model_dump(mode="json") for osd in osds],
+        "csi": csi_status,
     }
     if json_output:
         print(json.dumps(payload, indent=2, sort_keys=True))
@@ -349,11 +404,30 @@ async def bertrand_node_storage_status(*, json_output: bool) -> None:
     status = payload["status"]
     if isinstance(status, dict):
         print(f"  used: {status.get('used_ratio')}")
-        print(f"  elastic loop OSDs: {status.get('loop_osds')}")
-        print(f"  manual block OSDs: {status.get('block_osds')}")
+        print(f"  loop fallback OSDs: {status.get('loop_osds')}")
+        print(f"  LVM-backed OSDs: {status.get('lvm_osds')}")
         print(f"  elastic bytes: {status.get('elastic_bytes')}")
         print(f"  durable bytes: {status.get('durable_bytes')}")
-        print(f"  block preferred: {status.get('block_preferred')}")
+        print(f"  free bytes: {status.get('free_bytes')}")
+        print(f"  target headroom bytes: {status.get('headroom_target_bytes')}")
+        print(f"  reserved bytes: {status.get('reserved_bytes')}")
+        print(
+            "  write rate EWMA bytes/s: "
+            f"{status.get('write_rate_ewma_bytes_per_second')}"
+        )
+        print(
+            "  projected seconds to headroom floor: "
+            f"{status.get('projected_seconds_to_headroom_floor')}"
+        )
+        print(
+            "  growth recommendation bytes: "
+            f"{status.get('growth_recommendation_bytes')}"
+        )
+        print(f"  missing LVM OSD PVs: {status.get('missing_lvm_osd_pvs')}")
+        print(f"  LVM reclaimable bytes: {status.get('lvm_reclaimable_bytes')}")
+        print(f"  LVM shrink candidate: {status.get('lvm_shrink_candidate') or 'none'}")
+        print(f"  LVM shrink target bytes: {status.get('lvm_shrink_target_bytes')}")
+        print(f"  LVM preferred: {status.get('lvm_preferred')}")
         print(f"  managed OSDs: {status.get('managed_osds')}")
         print(f"  shrink candidates: {status.get('shrink_candidates')}")
         if status.get("last_error"):
@@ -361,11 +435,32 @@ async def bertrand_node_storage_status(*, json_output: bool) -> None:
     print("  actions:")
     for phase, count in payload["action_counts"].items():
         print(f"    {phase}: {count}")
-    print(f"  node reports: {len(reports)}")
+    active_reservations = sum(
+        1
+        for reservation in reservations
+        if reservation.status.phase in {"Pending", "Ready"}
+    )
+    print(f"  active reservations: {active_reservations}")
+    print(f"  node reports for this host: {len(reports)}")
+    print(f"  managed OSD records: {len(osds)}")
+    csi = payload["csi"]
+    if isinstance(csi, dict):
+        print(
+            "  CSI: "
+            f"driver={'ready' if csi.get('driver') else 'missing'}, "
+            f"controller={'ready' if csi.get('controller_ready') else 'not ready'}, "
+            f"nodes={csi.get('node_available')}/{csi.get('node_desired')}"
+        )
+    for osd in osds:
+        if osd.spec.node_name:
+            print(
+                f"    {osd.metadata.name}: {osd.spec.origin} "
+                f"{osd.status.phase} node={osd.spec.node_name}"
+            )
 
 
-async def bertrand_node_storage_actions(*, json_output: bool) -> None:
-    """Print Ceph storage action records.
+async def bertrand_node_storage_doctor(*, json_output: bool) -> None:
+    """Print local Ceph storage diagnostics and action records.
 
     Parameters
     ----------
@@ -373,14 +468,107 @@ async def bertrand_node_storage_actions(*, json_output: bool) -> None:
         Whether to emit machine-readable JSON.
     """
     with await Kube.host(timeout=INFINITY) as kube:
-        actions = await list_storage_actions(kube, timeout=INFINITY)
+        node = await ensure_local_bertrand_node(kube, timeout=INFINITY)
+        actions = [
+            action
+            for action in await list_storage_actions(kube, timeout=INFINITY)
+            if action.spec.host_id == node.host_id
+        ]
+        reservations = await list_storage_reservations(kube, timeout=INFINITY)
+        reports = [
+            report
+            for report in await list_storage_node_reports(kube, timeout=INFINITY)
+            if report.spec.host_id == node.host_id
+        ]
+        osds = [
+            osd
+            for osd in await list_storage_osds(kube, timeout=INFINITY)
+            if osd.spec.host_id == node.host_id
+        ]
+        csi_status = await _osd_csi_status(kube)
     payload = [action.model_dump(mode="json") for action in actions]
     if json_output:
-        print(json.dumps(payload, indent=2, sort_keys=True))
+        print(
+            json.dumps(
+                {
+                    "actions": payload,
+                    "csi": csi_status,
+                    "reservations": [
+                        reservation.model_dump(mode="json")
+                        for reservation in reservations
+                    ],
+                    "reports": [report.model_dump(mode="json") for report in reports],
+                    "osds": [osd.model_dump(mode="json") for osd in osds],
+                },
+                indent=2,
+                sort_keys=True,
+            )
+        )
         return
+    csi_ready = all(
+        (
+            csi_status.get("driver"),
+            csi_status.get("controller_ready"),
+            csi_status.get("node_ready"),
+        )
+    )
+    print("storage doctor:")
     if not actions:
-        print("no storage actions")
-        return
+        print("  no tracked storage actions for this host")
+    if not csi_ready:
+        print("  Bertrand OSD CSI is not fully ready")
+    local_reports = [report for report in reports if report.status is not None]
+    if not any(report.status and report.status.lvm_pvs for report in local_reports):
+        print("  no reported local 'bertrand' LVM PVs; loop fallback may be used")
+    for osd in osds:
+        if osd.status.phase in {"HostPrepared", "Binding", "Expanding", "Shrinking"}:
+            changed_at = (
+                osd.status.phase_changed_at.isoformat()
+                if osd.status.phase_changed_at is not None
+                else "unknown"
+            )
+            print(
+                f"  OSD {osd.metadata.name} is {osd.status.phase}; "
+                f"waiting for Rook/CSI reconciliation since {changed_at}"
+            )
+        if osd.status.last_error:
+            print(f"  OSD {osd.metadata.name} error: {osd.status.last_error}")
+    active_loop = any(
+        osd.spec.origin == "loop-fallback"
+        and osd.status.phase not in {"Retired", "Failed"}
+        for osd in osds
+    )
+    lvm_available = any(
+        report.status is not None and report.status.lvm_free_bytes > 0
+        for report in reports
+    )
+    if active_loop and lvm_available:
+        print(
+            "  loop fallback is active and LVM space is available; migration will "
+            "proceed once Ceph is healthy"
+        )
+    # The policy status is cluster-wide, but these diagnostics are still useful
+    # from the local node command because shrink actions are node-executed.
+    with await Kube.host(timeout=INFINITY) as kube:
+        policy = await read_storage_policy(kube, timeout=INFINITY)
+    if policy.status is not None:
+        if policy.status.missing_lvm_osd_pvs > 0:
+            print(
+                "  usable LVM PVs are missing managed OSD coverage; Bertrand "
+                "will create minimum-size PV-pinned OSDs before shrinking"
+            )
+        if policy.status.lvm_shrink_candidate:
+            print(
+                "  LVM shrink candidate selected: "
+                f"{policy.status.lvm_shrink_candidate} -> "
+                f"{policy.status.lvm_shrink_target_bytes} bytes"
+            )
+    for reservation in reservations:
+        if reservation.status.phase == "Pending":
+            print(
+                f"  reservation {reservation.metadata.name} is pending: "
+                f"{reservation.status.last_error or 'waiting for headroom'}"
+            )
     for action in actions:
         print(f"{action.metadata.name}: {action.spec.operation} {action.status.phase}")
         if action.status.osd_origin or action.status.osd_quality:
@@ -391,106 +579,17 @@ async def bertrand_node_storage_actions(*, json_output: bool) -> None:
             )
         if action.status.created_osd_ids:
             print(f"  created OSDs: {list(action.status.created_osd_ids)}")
-        if action.status.source_devices:
-            print(f"  source devices: {', '.join(action.status.source_devices)}")
+        if action.status.source_pv:
+            print(f"  source PV: {action.status.source_pv}")
+        if action.status.source_lv:
+            print(f"  source LV: {action.status.source_lv}")
+        if action.status.provisioned_bytes is not None:
+            print(f"  provisioned bytes: {action.status.provisioned_bytes}")
         if action.status.message:
             print(f"  {action.status.message}")
-
-
-async def _bertrand_node_storage_osd(args: argparse.Namespace) -> None:
-    command = args.osd_command
-    if command == "add-block":
-        await bertrand_node_storage_osd_add_block(
-            device=args.device,
-            wal_device=args.wal,
-            db_device=args.db,
-            encrypt=args.encrypt,
-            wipe=args.wipe,
-            assume_yes=args.yes,
-            timeout=args.timeout,
-        )
-        return
-    msg = f"unsupported node storage osd command: {command!r}"
-    raise ValueError(msg)
-
-
-async def bertrand_node_storage_osd_add_block(
-    *,
-    device: str,
-    wal_device: str | None,
-    db_device: str | None,
-    encrypt: bool,
-    wipe: bool,
-    assume_yes: bool,
-    timeout: float,
-) -> None:
-    """Create a manual block-backed OSD action for the local node.
-
-    Parameters
-    ----------
-    device : str
-        Absolute host block device path to add as the data device.
-    wal_device : str | None
-        Optional absolute WAL device path.
-    db_device : str | None
-        Optional absolute DB device path.
-    encrypt : bool
-        Whether MicroCeph should encrypt the data device.
-    wipe : bool
-        Whether MicroCeph should wipe the data device.
-    assume_yes : bool
-        Whether to bypass the destructive wipe confirmation.
-    timeout : float
-        Maximum action creation budget in seconds.
-
-    Raises
-    ------
-    PermissionError
-        If `wipe` is requested and the user declines confirmation.
-    TimeoutError
-        If `timeout` is non-positive.
-    """
-    if timeout <= 0:
-        msg = "node storage OSD timeout must be non-negative"
-        raise TimeoutError(msg)
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
-    spec = BlockOSDSpec(
-        device=device,
-        wal_device=wal_device,
-        db_device=db_device,
-        encrypt=encrypt,
-        wipe=wipe,
-    )
-    inspections = await validate_block_osd_devices(
-        spec,
-        timeout=deadline - loop.time(),
-    )
-    if wipe and not confirm(
-        f"MicroCeph will wipe {spec.device!r} before adding it as an OSD. "
-        "Continue? [y/N] ",
-        assume_yes=assume_yes,
-    ):
-        msg = "block OSD wipe declined by user"
-        raise PermissionError(msg)
-    with await Kube.host(timeout=deadline - loop.time()) as kube:
-        node = await Node.local(kube, timeout=deadline - loop.time())
-        action_name = await create_manual_block_osd_action(
-            kube,
-            node_name=node.name,
-            device=spec.device,
-            wal_device=spec.wal_device,
-            db_device=spec.db_device,
-            encrypt=encrypt,
-            wipe=wipe,
-            timeout=deadline - loop.time(),
-        )
-    print(f"created storage action: {action_name}")
     print(
-        "validated block devices: "
-        + ", ".join(
-            f"{report.path} ({report.size_bytes} bytes)" for report in inspections
-        )
+        "  tip: create a host LVM volume group named 'bertrand' and add PVs "
+        "to give Bertrand preferred storage capacity."
     )
 
 
@@ -531,13 +630,14 @@ async def _node_status_payload() -> dict[str, object]:
         "display_name": "",
         "phase": "",
         "microk8s_ready": await _safe_ready(microk8s_cluster_ready),
-        "microceph_ready": await _safe_ready(microceph_cluster_ready),
+        "rook_ceph_ready": False,
         "kubernetes": {},
         "storage_report": "",
         "devices": [],
     }
     try:
         with await Kube.host(timeout=INFINITY) as kube:
+            payload["rook_ceph_ready"] = await rook_ceph_ready(kube, timeout=INFINITY)
             bertrand_node: BertrandNodeRecord | None = None
             if host_id:
                 bertrand_node = await ensure_local_bertrand_node(
@@ -569,8 +669,7 @@ async def _node_status_payload() -> dict[str, object]:
             }
             reports = await list_storage_node_reports(kube, timeout=INFINITY)
             report = next(
-                (item for item in reports if item.spec.node_name == node.name),
-                None,
+                (item for item in reports if item.spec.host_id == host_id), None
             )
             if report is not None and report.status is not None:
                 payload["storage_report"] = report.status.model_dump(mode="json")

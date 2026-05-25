@@ -1,47 +1,36 @@
-"""MicroCeph host command facade for Bertrand's Ceph runtime."""
+"""Rook-backed Ceph command and host-capacity helpers."""
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import math
+import os
 import re
 import shutil
-import stat
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import Any, Literal, overload
 
-from bertrand.env.git import (
-    INFINITY,
-    CompletedProcess,
-    run,
-)
+from bertrand.env.git import INFINITY, CompletedProcess, HostLock, run, until
+from bertrand.env.host import HOST_ID_FILE
 
-if TYPE_CHECKING:
-    import subprocess
-    from collections.abc import Mapping
-
-MICROCEPH_HOST_ROOT = Path("/host")
-MICROCEPH_LOOP_STORAGE_PATH = Path("/var/snap/microceph/common")
-MICROCEPH_DISK_REMOVE_TIMEOUT_SECONDS = 300
-LOOP_OSD_SIZE_PATTERN = r"^[1-9][0-9]*[MGT]$"
-LOOP_OSD_SPEC_PATTERN = r"^loop,[1-9][0-9]*[MGT],[1-9][0-9]*$"
+HOST_ROOT = Path("/host")
+LOOP_FALLBACK_STORAGE_PATH = Path("/var/lib/bertrand/rook-loop")
+OSD_DEVICE_LINK_ROOT = Path("/var/lib/bertrand/rook-osd/devices")
+OSD_LOCK_FILE = Path("/var/lib/bertrand/run/rook-osd.lock")
+ROOK_NAMESPACE = "rook-ceph"
+ROOK_TOOLBOX_DEPLOYMENT = "deploy/rook-ceph-tools"
+BERTRAND_LVM_VG = "bertrand"
+SIZE_PATTERN = r"^[1-9][0-9]*[MGT]$"
+LVM_TAG = "bertrand"
 
 
 @dataclass(frozen=True)
 class CephCapacitySnapshot:
-    """Raw Ceph capacity snapshot used by autoscaler reconciliation.
-
-    Attributes
-    ----------
-    total_bytes : int
-        Total raw cluster capacity in bytes.
-    used_bytes : int
-        Currently used raw cluster capacity in bytes.
-    used_ratio : float
-        Used/total ratio in [0, 1].
-    """
+    """Raw Ceph capacity snapshot used by autoscaler reconciliation."""
 
     total_bytes: int
     used_bytes: int
@@ -50,34 +39,51 @@ class CephCapacitySnapshot:
 
 @dataclass(frozen=True)
 class NodeCapacitySnapshot:
-    """Host-local capacity snapshot for one autoscaler agent node.
-
-    Attributes
-    ----------
-    free_bytes : int
-        Free bytes on the filesystem where MicroCeph loop files are stored.
-    path : Path
-        Host-visible path that was inspected.
-    """
+    """Host-local capacity snapshot for one storage-agent node."""
 
     free_bytes: int
     path: Path
+    lvm_free_bytes: int = 0
+    lvm_pvs: tuple[LvmPhysicalVolume, ...] = ()
+    loop_fallback_active: bool = False
+
+
+@dataclass(frozen=True)
+class LvmPhysicalVolume:
+    """One physical volume belonging to Bertrand's preferred LVM volume group."""
+
+    pv_name: str
+    pv_uuid: str
+    size_bytes: int
+    free_bytes: int
+
+
+@dataclass(frozen=True)
+class PreparedOSD:
+    """Host-local block substrate prepared for a Rook PVC-backed OSD."""
+
+    block_path: Path
+    observed_bytes: int
+    pv_name: str = ""
+    pv_uuid: str = ""
+    pv_device: str = ""
+    lv_name: str = ""
+    lv_path: str = ""
+    loop_file: Path | None = None
+    loop_device: str = ""
+
+
+@dataclass(frozen=True)
+class DiscoveredOSD:
+    """Host-local OSD substrate recovered from durable Bertrand host metadata."""
+
+    name: str
+    prepared: PreparedOSD
 
 
 @dataclass(frozen=True)
 class CephHealthSnapshot:
-    """Cluster health state used by shrink safety planning.
-
-    Attributes
-    ----------
-    status : str
-        Ceph health status, such as ``"HEALTH_OK"``.
-    clean : bool
-        Whether Ceph reports healthy placement groups with no active recovery or
-        degradation states.
-    detail : str
-        Concise diagnostic text explaining the health decision.
-    """
+    """Cluster health state used by capacity safety planning."""
 
     status: str
     clean: bool
@@ -86,19 +92,7 @@ class CephHealthSnapshot:
 
 @dataclass(frozen=True)
 class CephOSD:
-    """One OSD reported by Ceph's CRUSH tree.
-
-    Attributes
-    ----------
-    osd_id : int
-        Numeric OSD identifier.
-    node_name : str
-        Host bucket that currently owns the OSD.
-    up : bool
-        Whether the OSD is up.
-    in_cluster : bool
-        Whether the OSD currently has nonzero cluster weight.
-    """
+    """One OSD reported by Ceph's CRUSH tree."""
 
     osd_id: int
     node_name: str
@@ -107,881 +101,955 @@ class CephOSD:
 
     @property
     def name(self) -> str:
-        """Return the canonical Ceph OSD name.
-
-        Returns
-        -------
-        str
-            OSD name in ``osd.<id>`` form.
-        """
+        """Return the canonical Ceph OSD name."""
         return f"osd.{self.osd_id}"
 
 
-@dataclass(frozen=True)
-class LoopOSDSpec:
-    """MicroCeph loop-backed OSD allocation request.
+def parse_size_bytes(size: str) -> int:
+    """Parse a Bertrand storage size string into bytes.
 
     Parameters
     ----------
     size : str
-        Per-loop OSD size such as ``"4G"``.
-    count : int, default 1
-        Number of loop OSDs to allocate.
+        Storage size such as ``"16G"``.
+
+    Returns
+    -------
+    int
+        Size in bytes.
+
+    Raises
+    ------
+    ValueError
+        If `size` is not a supported Bertrand storage size.
     """
-
-    size: str
-    count: int = 1
-
-    def __post_init__(self) -> None:
-        """Normalize and validate the allocation request.
-
-        Raises
-        ------
-        ValueError
-            If the requested loop size or count is invalid.
-        """
-        object.__setattr__(self, "size", _normalize_size(self.size))
-        if (
-            not isinstance(self.count, int)
-            or isinstance(self.count, bool)
-            or self.count <= 0
-        ):
-            msg = f"invalid MicroCeph loop OSD count: {self.count!r}"
-            raise ValueError(msg)
-
-    @property
-    def bytes(self) -> int:
-        """Return the total requested allocation size in bytes.
-
-        Returns
-        -------
-        int
-            Total requested bytes across all loop OSDs.
-        """
-        return parse_size_bytes(self.size) * self.count
-
-    def render(self) -> str:
-        """Render this allocation as a MicroCeph loop OSD spec string.
-
-        Returns
-        -------
-        str
-            MicroCeph ``disk add`` loop spec string.
-        """
-        return f"loop,{self.size},{self.count}"
+    normalized = size.strip().upper()
+    if not re.fullmatch(SIZE_PATTERN, normalized):
+        msg = f"invalid storage size: {size!r}"
+        raise ValueError(msg)
+    scale = {"M": 1024**2, "G": 1024**3, "T": 1024**4}[normalized[-1]]
+    return int(normalized[:-1]) * scale
 
 
-@dataclass(frozen=True)
-class BlockOSDSpec:
-    """MicroCeph block-backed OSD allocation request.
+async def _run_text(argv: list[str], *, timeout: float) -> str:
+    result = await run(argv, timeout=timeout, capture_output=True)
+    return result.stdout if isinstance(result.stdout, str) else result.stdout.decode()
 
-    Parameters
-    ----------
-    device : str
-        Absolute host block device path to add as the OSD data device.
-    wal_device : str | None, optional
-        Optional absolute block device path for the WAL device.
-    db_device : str | None, optional
-        Optional absolute block device path for the DB device.
-    encrypt : bool, default False
-        Whether MicroCeph should encrypt the data device before use.
-    wipe : bool, default False
-        Whether MicroCeph should wipe the data device before use.
-    """
 
-    device: str
-    wal_device: str | None = None
-    db_device: str | None = None
-    encrypt: bool = False
-    wipe: bool = False
-
-    def __post_init__(self) -> None:
-        """Validate device paths.
-
-        Raises
-        ------
-        ValueError
-            If any device path is invalid or reused for multiple roles.
-        """
-        object.__setattr__(self, "device", _normalize_device_path(self.device))
-        if self.wal_device is not None:
-            object.__setattr__(
-                self,
-                "wal_device",
-                _normalize_device_path(self.wal_device),
-            )
-        if self.db_device is not None:
-            object.__setattr__(
-                self,
-                "db_device",
-                _normalize_device_path(self.db_device),
-            )
-        paths = [
-            path
-            for path in (self.device, self.wal_device, self.db_device)
-            if path is not None
+def _ceph_argv(argv: list[str]) -> list[str]:
+    if shutil.which("ceph"):
+        return ["ceph", *argv]
+    if shutil.which("microk8s"):
+        return [
+            "microk8s",
+            "kubectl",
+            "-n",
+            ROOK_NAMESPACE,
+            "exec",
+            ROOK_TOOLBOX_DEPLOYMENT,
+            "--",
+            "ceph",
+            *argv,
         ]
-        if len(paths) != len(set(paths)):
-            msg = "MicroCeph block OSD data, WAL, and DB devices must be distinct"
-            raise ValueError(msg)
-
-    def argv(self) -> list[str]:
-        """Render MicroCeph ``disk add`` arguments for this OSD.
-
-        Returns
-        -------
-        list[str]
-            Arguments after ``microceph disk add``.
-        """
-        argv = [self.device]
-        if self.wal_device is not None:
-            argv.extend(["--wal-device", self.wal_device])
-        if self.db_device is not None:
-            argv.extend(["--db-device", self.db_device])
-        if self.encrypt:
-            argv.append("--encrypt")
-        if self.wipe:
-            argv.append("--wipe")
-        return argv
+    return ["ceph", *argv]
 
 
-@dataclass(frozen=True)
-class BlockDeviceInspection:
-    """Host-local safety inspection for one requested block OSD device.
-
-    Attributes
-    ----------
-    path : str
-        Requested host device path.
-    size_bytes : int
-        Device size reported by the host, or zero if unavailable.
-    device_number : int
-        Host device number used to detect aliases to the same block device.
-    mounted : bool
-        Whether the device or one of its children is mounted.
-    has_signatures : bool
-        Whether the device or one of its children has existing filesystem,
-        partition, UUID, or label signatures.
-    ceph_claimed : bool
-        Whether host metadata indicates an existing Ceph BlueStore claim.
-    signatures : tuple[str, ...]
-        Concise signature labels discovered during inspection.
-    """
-
-    path: str
-    size_bytes: int
-    device_number: int
-    mounted: bool
-    has_signatures: bool
-    ceph_claimed: bool
-    signatures: tuple[str, ...] = ()
-
-    def unavailable_reason(self, *, wipe: bool) -> str:
-        """Return a diagnostic if the device should not be accepted.
-
-        Parameters
-        ----------
-        wipe : bool
-            Whether the caller requested destructive signature removal.
-
-        Returns
-        -------
-        str
-            Empty when the device is available, otherwise an actionable diagnostic.
-        """
-        if self.mounted:
-            return f"{self.path} is mounted; unmount it before adding it as an OSD"
-        if self.ceph_claimed:
-            return f"{self.path} already appears to be claimed by Ceph"
-        if self.has_signatures and not wipe:
-            details = ", ".join(self.signatures) if self.signatures else "signatures"
-            return (
-                f"{self.path} contains existing storage metadata ({details}); pass "
-                "--wipe after confirming the device can be destroyed"
-            )
-        return ""
+@overload
+async def ceph(
+    argv: list[str],
+    *,
+    timeout: float = INFINITY,
+    check: bool = True,
+    capture_output: Literal[True],
+) -> CompletedProcess: ...
 
 
-def _container_path(path: Path) -> Path:
-    if MICROCEPH_HOST_ROOT.is_dir():
-        return MICROCEPH_HOST_ROOT / path.relative_to("/")
-    return path
+@overload
+async def ceph(
+    argv: list[str],
+    *,
+    timeout: float = INFINITY,
+    check: bool = True,
+    capture_output: Literal[False] = False,
+) -> str: ...
 
 
 async def ceph(
     argv: list[str],
     *,
-    check: bool = True,
-    capture_output: bool | None = False,
-    stdin: str | None = None,
     timeout: float = INFINITY,
-    attempts: int = 1,
-    delay: float = 0.1,
-    cwd: Path | None = None,
-    env: Mapping[str, str] | None = None,
-) -> CompletedProcess:
-    """Invoke the MicroCeph-backed Ceph CLI.
-
-    Parameters
-    ----------
-    argv : list[str]
-        Ceph arguments without the `microceph.ceph` prefix.
-    check : bool, optional
-        Whether nonzero command exits raise `CommandError`.
-    capture_output : bool | None, optional
-        Whether to capture, inherit, or tee subprocess output.
-    stdin : str | None, optional
-        Optional text to pass to command stdin.
-    timeout : float, optional
-        Maximum command runtime in seconds.
-    attempts : int, optional
-        Number of command attempts.
-    delay : float, optional
-        Delay between attempts in seconds.
-    cwd : Path | None, optional
-        Optional working directory.
-    env : Mapping[str, str] | None, optional
-        Optional environment overrides.
+    check: bool = True,
+    capture_output: bool = False,
+) -> CompletedProcess | str:
+    """Invoke the Ceph CLI for the Rook-managed cluster.
 
     Returns
     -------
-    CompletedProcess
-        Completed command result.
+    CompletedProcess | str
+        Captured process output when requested, otherwise stdout text.
     """
-    return await run(
-        ["microceph.ceph", *argv],
-        check=check,
-        capture_output=capture_output,
-        stdin=stdin,
-        timeout=timeout,
-        attempts=attempts,
-        delay=delay,
-        cwd=cwd,
-        env=env,
-    )
+    if capture_output:
+        return await run(
+            _ceph_argv(argv),
+            timeout=timeout,
+            check=check,
+            capture_output=True,
+        )
+    return await _run_text(_ceph_argv(argv), timeout=timeout)
 
 
-def _normalize_size(size: str) -> str:
-    normalized = size.strip().upper()
-    if not re.fullmatch(LOOP_OSD_SIZE_PATTERN, normalized):
-        msg = f"invalid MicroCeph loop OSD size: {size!r}"
-        raise ValueError(msg)
-    return normalized
-
-
-def _normalize_device_path(path: str) -> str:
-    normalized = path.strip()
-    if not normalized or not normalized.startswith("/"):
-        msg = f"MicroCeph block OSD device path must be absolute: {path!r}"
-        raise ValueError(msg)
-    return normalized
-
-
-def _json_payload(stdout: str, *, context: str) -> Mapping[str, Any]:
+def _json_object(text: str, *, context: str) -> dict[str, Any]:
     try:
-        payload = json.loads(stdout)
+        payload = json.loads(text)
     except json.JSONDecodeError as err:
-        msg = f"{context} returned malformed JSON: {err}"
+        msg = f"could not parse {context} JSON: {err}"
         raise OSError(msg) from err
     if not isinstance(payload, dict):
-        msg = f"{context} returned malformed JSON: expected an object"
+        msg = f"{context} did not return a JSON object"
         raise OSError(msg)
     return payload
 
 
-def _osd_id(value: object) -> int | None:
-    if isinstance(value, int) and value >= 0:
-        return value
-    if isinstance(value, str):
-        match = re.fullmatch(r"osd\.([0-9]+)", value.strip())
-        if match is not None:
-            return int(match.group(1))
-    return None
-
-
-def parse_size_bytes(size: str) -> int:
-    """Parse a MicroCeph size string into bytes.
-
-    Parameters
-    ----------
-    size : str
-        Size string using ``M``, ``G``, or ``T`` suffixes.
-
-    Returns
-    -------
-    int
-        Parsed byte count.
-
-    """
-    normalized = _normalize_size(size)
-    scale = {"M": 2**20, "G": 2**30, "T": 2**40}[normalized[-1]]
-    return int(normalized[:-1]) * scale
-
-
-def parse_loop_osd_spec(value: str) -> LoopOSDSpec:
-    """Parse a MicroCeph loop OSD spec string.
-
-    Parameters
-    ----------
-    value : str
-        Loop OSD spec such as ``"loop,4G,1"``.
-
-    Returns
-    -------
-    LoopOSDSpec
-        Parsed allocation request.
-
-    Raises
-    ------
-    ValueError
-        If `value` does not use the supported MicroCeph loop OSD spec format.
-    """
-    parts = [part.strip() for part in value.strip().split(",")]
-    if len(parts) != 3 or parts[0] != "loop":
-        msg = f"invalid MicroCeph loop OSD spec: {value!r}"
-        raise ValueError(msg)
-    try:
-        count = int(parts[2])
-    except ValueError as err:
-        msg = f"invalid MicroCeph loop OSD count: {parts[2]!r}"
-        raise ValueError(msg) from err
-    return LoopOSDSpec(size=parts[1], count=count)
-
-
-async def host_command(
-    argv: list[str],
-    *,
-    timeout: float,
-) -> subprocess.CompletedProcess[str]:
-    """Run a MicroCeph command in host or privileged-container context.
-
-    Parameters
-    ----------
-    argv : list[str]
-        Command vector to execute.
-    timeout : float
-        Maximum command runtime in seconds.
-
-    Returns
-    -------
-    subprocess.CompletedProcess[str]
-        Completed command result with captured text streams.
-
-    Raises
-    ------
-    TimeoutError
-        If `timeout` is non-positive.
-    """
-    if timeout <= 0:
-        msg = "timeout must be non-negative"
-        raise TimeoutError(msg)
-    if MICROCEPH_HOST_ROOT.is_dir() and not shutil.which(argv[0]):
-        cmd = ["chroot", str(MICROCEPH_HOST_ROOT), *argv]
-    else:
-        cmd = argv
-    return await run(
-        cmd,
-        check=False,
-        capture_output=True,
-        timeout=timeout,
-    )
-
-
 async def ceph_df(*, timeout: float) -> CephCapacitySnapshot:
-    """Inspect raw Ceph cluster capacity using MicroCeph's Ceph CLI.
-
-    Parameters
-    ----------
-    timeout : float
-        Maximum command runtime in seconds.
+    """Inspect raw Ceph cluster capacity.
 
     Returns
     -------
     CephCapacitySnapshot
-        Parsed raw capacity snapshot.
+        Raw capacity totals reported by Ceph.
 
     Raises
     ------
     OSError
-        If the MicroCeph command fails or returns malformed capacity data.
+        If the Ceph CLI output is malformed or reports no capacity.
     """
-    result = await host_command(
-        ["microceph.ceph", "df", "--format", "json"], timeout=timeout
+    payload = _json_object(
+        str(await ceph(["df", "--format", "json"], timeout=timeout)),
+        context="ceph df",
     )
-    if result.returncode != 0:
-        msg = f"failed to inspect Ceph capacity:\n{result}"
+    stats = payload.get("stats")
+    if not isinstance(stats, dict):
+        msg = "ceph df output did not include stats"
         raise OSError(msg)
-    payload = _json_payload(result.stdout, context="ceph df")
-
-    stats = payload.get("stats", {}) if isinstance(payload, dict) else {}
-    total = int(stats.get("total_bytes") or stats.get("total_space") or 0)
-    used = int(
-        stats.get("total_used_bytes")
-        or stats.get("total_used_raw_bytes")
-        or stats.get("total_used")
-        or 0
-    )
+    total = int(stats.get("total_bytes") or 0)
+    used = int(stats.get("total_used_bytes") or stats.get("total_used_raw_bytes") or 0)
     if total <= 0:
-        msg = f"ceph df reported invalid total capacity: {total}"
-        raise OSError(msg)
-    if used < 0:
-        msg = f"ceph df reported invalid used capacity: {used}"
+        msg = "ceph df reported no raw cluster capacity"
         raise OSError(msg)
     return CephCapacitySnapshot(
-        total_bytes=total, used_bytes=used, used_ratio=used / total
+        total_bytes=total,
+        used_bytes=used,
+        used_ratio=used / total,
     )
 
 
 async def ceph_health(*, timeout: float) -> CephHealthSnapshot:
-    """Inspect Ceph health and placement-group cleanliness.
-
-    Parameters
-    ----------
-    timeout : float
-        Maximum command runtime in seconds.
+    """Inspect Ceph health and recovery state.
 
     Returns
     -------
     CephHealthSnapshot
-        Parsed Ceph health and cleanliness state.
+        Cluster health summary.
 
     Raises
     ------
     OSError
-        If Ceph health cannot be queried or parsed.
+        If the Ceph CLI output is malformed.
     """
-    result = await host_command(
-        ["microceph.ceph", "status", "--format", "json"],
-        timeout=timeout,
+    payload = _json_object(
+        str(await ceph(["status", "--format", "json"], timeout=timeout)),
+        context="ceph status",
     )
-    if result.returncode != 0:
-        msg = f"failed to inspect Ceph health:\n{result}"
+    health = payload.get("health")
+    if not isinstance(health, dict):
+        msg = "ceph status output did not include health"
         raise OSError(msg)
-    payload = _json_payload(result.stdout, context="ceph status")
-    health = payload.get("health", {})
-    status = ""
-    if isinstance(health, dict):
-        status = str(health.get("status") or "").strip().upper()
-    pgmap = payload.get("pgmap", {})
-    states = pgmap.get("pgs_by_state", []) if isinstance(pgmap, dict) else []
-    non_clean: list[str] = []
-    if isinstance(states, list):
-        for item in states:
-            if not isinstance(item, dict):
-                continue
-            state = str(item.get("state_name") or "").strip()
-            count = int(item.get("count") or 0)
-            if count > 0 and state != "active+clean":
-                non_clean.append(f"{count} {state}")
-    clean = status == "HEALTH_OK" and not non_clean
-    detail = status or "UNKNOWN"
-    if non_clean:
-        detail = f"{detail}; non-clean PGs: {', '.join(non_clean)}"
-    return CephHealthSnapshot(status=status, clean=clean, detail=detail)
+    status = str(health.get("status") or "HEALTH_UNKNOWN")
+    detail = json.dumps(health.get("checks") or {}, sort_keys=True)
+    raw_pgmap = payload.get("pgmap")
+    pgmap = raw_pgmap if isinstance(raw_pgmap, dict) else {}
+    states = str(pgmap.get("states") or "")
+    blocked = ("recover", "degraded", "undersized", "peering", "backfill")
+    clean = status == "HEALTH_OK" and not any(token in states for token in blocked)
+    return CephHealthSnapshot(status=status, clean=clean, detail=detail or states)
 
 
 async def ceph_osds(*, timeout: float) -> tuple[CephOSD, ...]:
-    """Inspect the current Ceph OSD tree.
-
-    Parameters
-    ----------
-    timeout : float
-        Maximum command runtime in seconds.
+    """Inspect live Ceph OSD inventory.
 
     Returns
     -------
     tuple[CephOSD, ...]
-        Live OSD inventory sorted by OSD ID.
+        Live OSD inventory.
 
     Raises
     ------
     OSError
-        If the OSD tree cannot be queried or parsed.
+        If the Ceph CLI output is malformed.
     """
-    result = await host_command(
-        ["microceph.ceph", "osd", "tree", "--format", "json"],
-        timeout=timeout,
+    payload = _json_object(
+        str(await ceph(["osd", "tree", "--format", "json"], timeout=timeout)),
+        context="ceph osd tree",
     )
-    if result.returncode != 0:
-        msg = f"failed to inspect Ceph OSD tree:\n{result}"
-        raise OSError(msg)
-    payload = _json_payload(result.stdout, context="ceph osd tree")
     nodes = payload.get("nodes")
     if not isinstance(nodes, list):
-        msg = "ceph osd tree returned malformed JSON: expected 'nodes' list"
+        msg = "ceph osd tree output did not include nodes"
         raise OSError(msg)
-
-    host_by_osd: dict[int, str] = {}
-    for node in nodes:
-        if not isinstance(node, dict) or node.get("type") != "host":
+    hosts: dict[int, str] = {}
+    for item in nodes:
+        if not isinstance(item, dict) or item.get("type") != "host":
             continue
-        name = str(node.get("name") or "").strip()
-        children = node.get("children")
-        if not name or not isinstance(children, list):
+        children = item.get("children")
+        if not isinstance(children, list):
             continue
         for child in children:
-            osd_id = _osd_id(child)
-            if osd_id is not None:
-                host_by_osd[osd_id] = name
-
+            if isinstance(child, int):
+                hosts[child] = str(item.get("name") or "")
     osds: list[CephOSD] = []
-    for node in nodes:
-        if not isinstance(node, dict) or node.get("type") != "osd":
+    for item in nodes:
+        if not isinstance(item, dict) or item.get("type") != "osd":
             continue
-        osd_id = _osd_id(node.get("id"))
-        if osd_id is None:
-            osd_id = _osd_id(node.get("name"))
-        if osd_id is None:
+        osd_id = item.get("id")
+        if not isinstance(osd_id, int) or osd_id < 0:
             continue
-        status = str(node.get("status") or "").strip().lower()
-        try:
-            reweight = float(node.get("reweight", 0.0) or 0.0)
-        except (TypeError, ValueError):
-            reweight = 0.0
         osds.append(
             CephOSD(
                 osd_id=osd_id,
-                node_name=host_by_osd.get(osd_id, ""),
-                up=status == "up",
-                in_cluster=reweight > 0.0,
+                node_name=hosts.get(osd_id, ""),
+                up=item.get("status") == "up",
+                in_cluster=float(item.get("reweight") or 0.0) > 0,
             )
         )
-    return tuple(sorted(osds, key=lambda item: item.osd_id))
+    return tuple(sorted(osds, key=lambda osd: osd.osd_id))
 
 
-def host_free_bytes(path: Path = MICROCEPH_LOOP_STORAGE_PATH) -> NodeCapacitySnapshot:
-    """Inspect free host bytes for MicroCeph loop-backed OSD storage.
+async def _host_json(argv: list[str], *, timeout: float) -> dict[str, Any]:
+    command = _host_argv(argv)
+    payload = await _run_text(command, timeout=timeout)
+    return _json_object(payload, context=" ".join(argv))
 
-    Parameters
-    ----------
-    path : Path, default MICROCEPH_LOOP_STORAGE_PATH
-        Host path whose filesystem free space should be inspected.
+
+def _host_argv(argv: list[str]) -> list[str]:
+    if (
+        HOST_ROOT.exists()
+        and shutil.which("nsenter")
+        and Path("/proc/1/ns/mnt").exists()
+    ):
+        return ["nsenter", "--mount=/proc/1/ns/mnt", "--", *argv]
+    if HOST_ROOT.exists() and (HOST_ROOT / "bin").exists():
+        return ["chroot", HOST_ROOT.as_posix(), *argv]
+    return argv
+
+
+async def _host_text(argv: list[str], *, timeout: float) -> str:
+    return await _run_text(_host_argv(argv), timeout=timeout)
+
+
+def _local_path(path: Path) -> Path:
+    if HOST_ROOT.exists():
+        return HOST_ROOT / path.relative_to("/")
+    return path
+
+
+def _host_lock(timeout: float) -> HostLock:
+    return HostLock(_local_path(OSD_LOCK_FILE), timeout=timeout)
+
+
+def host_id_from_host_state() -> str:
+    """Return the durable Bertrand host UUID from the mounted host state.
+
+    Returns
+    -------
+    str
+        Host UUID hex string.
+
+    Raises
+    ------
+    OSError
+        If the mounted host state is missing or malformed.
+    """
+    try:
+        return uuid.UUID(
+            _local_path(HOST_ID_FILE).read_text(encoding="utf-8").strip()
+        ).hex
+    except (OSError, ValueError) as err:
+        msg = (
+            f"failed to read Bertrand host identity at {HOST_ID_FILE}; run "
+            "`bertrand init`"
+        )
+        raise OSError(msg) from err
+
+
+def _ceil_mib(value: int) -> int:
+    return max(1, math.ceil(value / 1024**2))
+
+
+def _lvm_size(value: int) -> str:
+    return f"{_ceil_mib(value)}M"
+
+
+def kube_quantity(value: int) -> str:
+    """Return a Kubernetes binary storage quantity for a byte request.
+
+    Returns
+    -------
+    str
+        Quantity string using mebibyte units.
+    """
+    return f"{_ceil_mib(value)}Mi"
+
+
+def _parse_lvm_int(value: object) -> int:
+    text = str(value or "0").strip()
+    if not text:
+        return 0
+    return int(float(text))
+
+
+def _safe_name(value: str) -> str:
+    return re.sub(r"[^a-zA-Z0-9_.+-]+", "-", value).strip("-") or uuid.uuid4().hex
+
+
+def _fallback_loop_active(path: Path = LOOP_FALLBACK_STORAGE_PATH) -> bool:
+    root = _local_path(path)
+    return any(root.glob("*.img")) if root.exists() else False
+
+
+async def lvm_inventory(*, timeout: float = 5.0) -> tuple[LvmPhysicalVolume, ...]:
+    """Return concrete PV inventory for the ``bertrand`` LVM VG.
+
+    Returns
+    -------
+    tuple[LvmPhysicalVolume, ...]
+        Physical volumes in the Bertrand VG, sorted by stable UUID.
+    """
+    if not (shutil.which("pvs") or HOST_ROOT.exists()):
+        return ()
+    try:
+        payload = await _host_json(
+            [
+                "pvs",
+                "--reportformat",
+                "json",
+                "--units",
+                "b",
+                "--nosuffix",
+                "--options",
+                "pv_name,pv_uuid,vg_name,pv_size,pv_free",
+            ],
+            timeout=timeout,
+        )
+    except (OSError, TimeoutError):
+        return ()
+    reports = payload.get("report")
+    rows: list[dict[str, object]] = []
+    if isinstance(reports, list):
+        for report in reports:
+            if isinstance(report, dict) and isinstance(report.get("pv"), list):
+                rows.extend(row for row in report["pv"] if isinstance(row, dict))
+    pvs: list[LvmPhysicalVolume] = []
+    for row in rows:
+        if str(row.get("vg_name") or "").strip() != BERTRAND_LVM_VG:
+            continue
+        pv_name = str(row.get("pv_name") or "").strip()
+        pv_uuid = str(row.get("pv_uuid") or "").strip()
+        pv_free = _parse_lvm_int(row.get("pv_free"))
+        pv_size = _parse_lvm_int(row.get("pv_size"))
+        if pv_name and pv_uuid:
+            pvs.append(
+                LvmPhysicalVolume(
+                    pv_name=pv_name,
+                    pv_uuid=pv_uuid,
+                    size_bytes=pv_size,
+                    free_bytes=pv_free,
+                )
+            )
+    return tuple(sorted(pvs, key=lambda item: (item.pv_uuid, item.pv_name)))
+
+
+async def host_capacity_snapshot(
+    path: Path = LOOP_FALLBACK_STORAGE_PATH,
+    *,
+    timeout: float,
+) -> NodeCapacitySnapshot:
+    """Inspect host capacity from async controller code.
 
     Returns
     -------
     NodeCapacitySnapshot
-        Free-space snapshot for the requested host path.
+        Loop fallback filesystem and Bertrand LVM capacity summary.
     """
-    target = _container_path(path)
-    usage = shutil.disk_usage(target)
-    return NodeCapacitySnapshot(free_bytes=int(usage.free), path=path)
+    root = _local_path(path)
+    root.mkdir(parents=True, exist_ok=True)
+    stats = os.statvfs(root)
+    lvm_pvs = await lvm_inventory(timeout=timeout)
+    return NodeCapacitySnapshot(
+        free_bytes=stats.f_bavail * stats.f_frsize,
+        path=path,
+        lvm_free_bytes=sum(pv.free_bytes for pv in lvm_pvs),
+        lvm_pvs=lvm_pvs,
+        loop_fallback_active=_fallback_loop_active(path),
+    )
 
 
-def _flatten_lsblk_devices(devices: object) -> list[Mapping[str, Any]]:
-    rows: list[Mapping[str, Any]] = []
-    if not isinstance(devices, list):
-        return rows
-    for item in devices:
-        if not isinstance(item, dict):
-            continue
-        row = cast("Mapping[str, Any]", item)
-        rows.append(row)
-        rows.extend(_flatten_lsblk_devices(row.get("children")))
-    return rows
-
-
-def _signature_labels(rows: list[Mapping[str, Any]]) -> tuple[str, ...]:
-    labels: list[str] = []
-    for row in rows:
-        for key in ("fstype", "pttype", "uuid", "partuuid", "label"):
-            value = row.get(key)
-            if value is None:
-                continue
-            text = str(value).strip()
-            if text:
-                labels.append(f"{key}={text}")
-    return tuple(dict.fromkeys(labels))
-
-
-async def inspect_block_device(path: str, *, timeout: float) -> BlockDeviceInspection:
-    """Inspect one host block device before adding it to MicroCeph.
-
-    Parameters
-    ----------
-    path : str
-        Absolute host block device path to inspect.
-    timeout : float
-        Maximum inspection budget in seconds.
-
-    Returns
-    -------
-    BlockDeviceInspection
-        Parsed host safety report for the requested device.
-
-    Raises
-    ------
-    FileNotFoundError
-        If `path` does not exist.
-    OSError
-        If `path` is not a block device or host metadata cannot be inspected.
-    TimeoutError
-        If `timeout` is non-positive.
-    """
-    normalized = _normalize_device_path(path)
-    target = _container_path(Path(normalized))
-    if timeout <= 0:
-        msg = "block device inspection timeout must be non-negative"
-        raise TimeoutError(msg)
-    try:
-        info = target.stat()
-    except FileNotFoundError as err:
-        msg = f"block OSD device does not exist: {normalized}"
-        raise FileNotFoundError(msg) from err
-    mode = info.st_mode
-    if not stat.S_ISBLK(mode):
-        msg = f"block OSD path is not a block device: {normalized}"
-        raise OSError(msg)
-
-    result = await host_command(
+async def _lvs(*, timeout: float) -> list[dict[str, object]]:
+    payload = await _host_json(
         [
-            "lsblk",
-            "--json",
-            "--bytes",
-            "--output",
-            "PATH,TYPE,SIZE,MOUNTPOINT,FSTYPE,PTTYPE,UUID,PARTUUID,LABEL",
-            normalized,
+            "lvs",
+            "--segments",
+            "--reportformat",
+            "json",
+            "--units",
+            "b",
+            "--nosuffix",
+            "--options",
+            "lv_name,vg_name,lv_path,lv_size,devices,seg_pe_ranges,lv_tags",
         ],
         timeout=timeout,
     )
-    if result.returncode != 0:
-        msg = f"failed to inspect block OSD device {normalized}:\n{result}"
-        raise OSError(msg)
-    try:
-        payload = json.loads(result.stdout)
-    except json.JSONDecodeError as err:
-        msg = f"lsblk returned malformed JSON for {normalized}: {err}"
-        raise OSError(msg) from err
-    if not isinstance(payload, dict):
-        msg = f"lsblk returned malformed JSON for {normalized}: expected object"
-        raise OSError(msg)
-    rows = _flatten_lsblk_devices(payload.get("blockdevices"))
-    if not rows:
-        msg = f"lsblk did not report block OSD device {normalized}"
-        raise OSError(msg)
-    root = rows[0]
-    try:
-        size_bytes = int(root.get("size") or 0)
-    except (TypeError, ValueError):
-        size_bytes = 0
-    mounted = any(str(row.get("mountpoint") or "").strip() for row in rows)
-    signatures = _signature_labels(rows)
-    ceph_claimed = any("ceph" in label.lower() for label in signatures)
-    return BlockDeviceInspection(
-        path=normalized,
-        size_bytes=max(size_bytes, 0),
-        device_number=info.st_rdev,
-        mounted=mounted,
-        has_signatures=bool(signatures),
-        ceph_claimed=ceph_claimed,
-        signatures=signatures,
-    )
+    reports = payload.get("report")
+    rows: list[dict[str, object]] = []
+    if isinstance(reports, list):
+        for report in reports:
+            if isinstance(report, dict) and isinstance(report.get("lv"), list):
+                rows.extend(row for row in report["lv"] if isinstance(row, dict))
+    return rows
 
 
-async def inspect_block_osd_spec(
-    spec: BlockOSDSpec,
-    *,
-    timeout: float,
-) -> tuple[BlockDeviceInspection, ...]:
-    """Inspect every device referenced by a block-backed OSD request.
-
-    Parameters
-    ----------
-    spec : BlockOSDSpec
-        Block-backed OSD allocation request.
-    timeout : float
-        Maximum inspection budget in seconds.
-
-    Returns
-    -------
-    tuple[BlockDeviceInspection, ...]
-        Inspection reports for data, WAL, and DB devices in request order.
-    """
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
-    paths = [
-        path
-        for path in (spec.device, spec.wal_device, spec.db_device)
-        if path is not None
+async def _find_lv(lv_name: str, *, timeout: float) -> dict[str, object] | None:
+    matches = [
+        row
+        for row in await _lvs(timeout=timeout)
+        if str(row.get("vg_name") or "").strip() == BERTRAND_LVM_VG
+        and str(row.get("lv_name") or "").strip() == lv_name
     ]
-    return tuple(
-        await asyncio.gather(
-            *(
-                inspect_block_device(path, timeout=deadline - loop.time())
-                for path in paths
-            )
+    if not matches:
+        return None
+    merged = dict(matches[0])
+    merged["devices"] = ",".join(str(row.get("devices") or "") for row in matches)
+    merged["seg_pe_ranges"] = ",".join(
+        str(row.get("seg_pe_ranges") or "") for row in matches
+    )
+    return merged
+
+
+def _validate_lv_devices(row: dict[str, object], *, pv_name: str) -> None:
+    devices = str(row.get("seg_pe_ranges") or row.get("devices") or "")
+    if not devices:
+        msg = "LVM did not report devices for Bertrand OSD LV"
+        raise OSError(msg)
+    mismatched = [
+        chunk
+        for chunk in re.split(r"[, ]+", devices)
+        if chunk and not chunk.startswith(f"{pv_name}(")
+    ]
+    if mismatched:
+        joined = ", ".join(mismatched)
+        msg = (
+            f"Bertrand OSD LV spans non-original PV extents: {joined}; "
+            f"expected all extents on {pv_name!r}"
         )
+        raise OSError(msg)
+
+
+def _lv_tags(row: dict[str, object]) -> frozenset[str]:
+    return frozenset(
+        tag.strip() for tag in str(row.get("lv_tags") or "").split(",") if tag.strip()
     )
 
 
-async def validate_block_osd_devices(
-    spec: BlockOSDSpec,
-    *,
-    timeout: float,
-) -> tuple[BlockDeviceInspection, ...]:
-    """Fail closed unless all devices in a block OSD request are available.
+def _tag_value(tags: frozenset[str], prefix: str) -> str:
+    prefix = prefix.rstrip("=") + "="
+    for tag in tags:
+        if tag.startswith(prefix):
+            return tag.removeprefix(prefix).strip()
+    return ""
 
-    Parameters
-    ----------
-    spec : BlockOSDSpec
-        Block-backed OSD allocation request.
-    timeout : float
-        Maximum inspection budget in seconds.
+
+def _first_lvm_pv(row: dict[str, object]) -> str:
+    devices = str(row.get("seg_pe_ranges") or row.get("devices") or "")
+    for chunk in re.split(r"[, ]+", devices):
+        if not chunk:
+            continue
+        return chunk.split("(", 1)[0].strip()
+    return ""
+
+
+def _device_link(name: str) -> Path:
+    return OSD_DEVICE_LINK_ROOT / f"{_safe_name(name)}.block"
+
+
+def _ensure_link(path: Path, target: str) -> None:
+    local = _local_path(path)
+    local.parent.mkdir(parents=True, exist_ok=True)
+    if local.is_symlink() or local.exists():
+        local.unlink()
+    local.symlink_to(target)
+
+
+async def prepare_lvm_osd(
+    *,
+    name: str,
+    target_bytes: int,
+    pv_name: str,
+    lv_name: str | None,
+    timeout: float,
+) -> PreparedOSD:
+    """Expand or create a PV-pinned LVM block substrate for a Rook OSD.
 
     Returns
     -------
-    tuple[BlockDeviceInspection, ...]
-        Inspection reports for accepted devices.
+    PreparedOSD
+        Prepared block-device substrate and observed host metadata.
 
     Raises
     ------
     OSError
-        If any requested device is mounted, Ceph-owned, or needs `--wipe`.
-    """
-    inspections = await inspect_block_osd_spec(spec, timeout=timeout)
-    device_numbers = [report.device_number for report in inspections]
-    if len(device_numbers) != len(set(device_numbers)):
-        msg = "block OSD data, WAL, and DB paths must refer to distinct devices"
-        raise OSError(msg)
-    errors = [
-        reason
-        for report in inspections
-        if (reason := report.unavailable_reason(wipe=spec.wipe))
-    ]
-    if errors:
-        raise OSError("\n".join(errors))
-    return inspections
-
-
-async def add_loop_osd(
-    loop_spec: LoopOSDSpec | str,
-    *,
-    timeout: float,
-) -> tuple[int, ...]:
-    """Add one or more loop-backed OSDs through MicroCeph.
-
-    Parameters
-    ----------
-    loop_spec : LoopOSDSpec | str
-        Loop OSD allocation request.
-    timeout : float
-        Maximum command runtime in seconds.
-
-    Returns
-    -------
-    tuple[int, ...]
-        Numeric OSD IDs created by the add operation, when they can be inferred.
-
-    Raises
-    ------
-    OSError
-        If MicroCeph rejects the loop OSD allocation.
-    """
-    spec = (
-        loop_spec
-        if isinstance(loop_spec, LoopOSDSpec)
-        else parse_loop_osd_spec(loop_spec)
-    )
-    rendered = spec.render()
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
-    before = {osd.osd_id for osd in await ceph_osds(timeout=deadline - loop.time())}
-    result = await host_command(
-        ["microceph", "disk", "add", rendered],
-        timeout=deadline - loop.time(),
-    )
-    if result.returncode != 0:
-        msg = f"microceph disk add failed for {rendered}:\n{result}"
-        raise OSError(msg)
-    after = {osd.osd_id for osd in await ceph_osds(timeout=deadline - loop.time())}
-    return tuple(sorted(after - before))
-
-
-async def add_block_osd(
-    block_spec: BlockOSDSpec,
-    *,
-    timeout: float,
-) -> tuple[int, ...]:
-    """Add one block-backed OSD through MicroCeph.
-
-    Parameters
-    ----------
-    block_spec : BlockOSDSpec
-        Block-backed OSD allocation request.
-    timeout : float
-        Maximum command runtime in seconds.
-
-    Returns
-    -------
-    tuple[int, ...]
-        Numeric OSD IDs created by the add operation, when they can be inferred.
-
-    Raises
-    ------
-    OSError
-        If MicroCeph rejects the block OSD allocation.
-    TimeoutError
-        If `timeout` is non-positive.
-    """
-    if timeout <= 0:
-        msg = "MicroCeph block OSD timeout must be non-negative"
-        raise TimeoutError(msg)
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
-    before = {osd.osd_id for osd in await ceph_osds(timeout=deadline - loop.time())}
-    result = await host_command(
-        ["microceph", "disk", "add", *block_spec.argv()],
-        timeout=deadline - loop.time(),
-    )
-    if result.returncode != 0:
-        msg = f"microceph disk add failed for {block_spec.device}:\n{result}"
-        raise OSError(msg)
-    after = {osd.osd_id for osd in await ceph_osds(timeout=deadline - loop.time())}
-    return tuple(sorted(after - before))
-
-
-async def remove_osd(osd_id: int, *, timeout: float) -> None:
-    """Remove one OSD through MicroCeph's guarded disk removal command.
-
-    Parameters
-    ----------
-    osd_id : int
-        Numeric OSD identifier to remove.
-    timeout : float
-        Maximum command runtime in seconds.
-
-    Raises
-    ------
-    TimeoutError
-        If `timeout` is non-positive.
-    OSError
-        If MicroCeph rejects the disk removal or the OSD remains present.
+        If LVM cannot allocate the LV entirely on the requested physical volume.
     ValueError
-        If `osd_id` is negative.
+        If the requested size or physical volume is invalid.
     """
-    if osd_id < 0:
-        msg = f"invalid Ceph OSD ID: {osd_id!r}"
+    if target_bytes <= 0:
+        msg = "LVM OSD target size must be positive"
         raise ValueError(msg)
-    if timeout <= 0:
-        msg = "MicroCeph OSD removal timeout must be non-negative"
-        raise TimeoutError(msg)
+    pv_name = pv_name.strip()
+    if not pv_name:
+        msg = "LVM OSD allocation requires a concrete PV name"
+        raise ValueError(msg)
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout
-    if math.isinf(timeout):
-        remove_timeout = MICROCEPH_DISK_REMOVE_TIMEOUT_SECONDS
-    else:
-        remove_timeout = max(
-            1,
-            min(MICROCEPH_DISK_REMOVE_TIMEOUT_SECONDS, int(timeout)),
+    async with _host_lock(deadline - loop.time()):
+        inventory = await lvm_inventory(timeout=deadline - loop.time())
+        pv = next((item for item in inventory if item.pv_name == pv_name), None)
+        if pv is None:
+            msg = f"PV {pv_name!r} is not part of the {BERTRAND_LVM_VG!r} VG"
+            raise OSError(msg)
+        lv_name = (lv_name or f"bertrand-osd-{_safe_name(name)[-32:]}").strip()
+        existing = await _find_lv(lv_name, timeout=deadline - loop.time())
+        if existing is None:
+            if pv.free_bytes < target_bytes:
+                msg = (
+                    f"PV {pv_name!r} has only {pv.free_bytes} bytes free; "
+                    f"{target_bytes} bytes are required"
+                )
+                raise OSError(msg)
+            await _host_text(
+                [
+                    "lvcreate",
+                    "--yes",
+                    "--wipesignatures",
+                    "y",
+                    "--addtag",
+                    LVM_TAG,
+                    "--addtag",
+                    f"bertrand.osd={name}",
+                    "--name",
+                    lv_name,
+                    "--size",
+                    _lvm_size(target_bytes),
+                    BERTRAND_LVM_VG,
+                    pv_name,
+                ],
+                timeout=deadline - loop.time(),
+            )
+        else:
+            current = _parse_lvm_int(existing.get("lv_size"))
+            if current < target_bytes:
+                if pv.free_bytes < target_bytes - current:
+                    msg = (
+                        f"PV {pv_name!r} has only {pv.free_bytes} bytes free; "
+                        f"{target_bytes - current} bytes are required"
+                    )
+                    raise OSError(msg)
+                lv_path = str(
+                    existing.get("lv_path") or f"/dev/{BERTRAND_LVM_VG}/{lv_name}"
+                )
+                await _host_text(
+                    [
+                        "lvextend",
+                        "--yes",
+                        "--size",
+                        _lvm_size(target_bytes),
+                        lv_path,
+                        pv_name,
+                    ],
+                    timeout=deadline - loop.time(),
+                )
+        live = await _find_lv(lv_name, timeout=deadline - loop.time())
+        if live is None:
+            msg = f"Bertrand OSD LV {lv_name!r} disappeared after allocation"
+            raise OSError(msg)
+        _validate_lv_devices(live, pv_name=pv_name)
+        lv_path = str(live.get("lv_path") or f"/dev/{BERTRAND_LVM_VG}/{lv_name}")
+        observed = _parse_lvm_int(live.get("lv_size"))
+        block_path = _device_link(name)
+        _ensure_link(block_path, lv_path)
+        return PreparedOSD(
+            block_path=block_path,
+            observed_bytes=observed,
+            pv_name=pv.pv_name,
+            pv_uuid=pv.pv_uuid,
+            pv_device=pv.pv_name,
+            lv_name=lv_name,
+            lv_path=lv_path,
         )
-    name = f"osd.{osd_id}"
-    result = await host_command(
-        ["microceph", "disk", "remove", name, "--timeout", str(remove_timeout)],
-        timeout=deadline - loop.time(),
+
+
+async def discover_lvm_osds(*, timeout: float) -> tuple[DiscoveredOSD, ...]:
+    """Discover Bertrand-tagged LVM OSD substrates on this host.
+
+    Returns
+    -------
+    tuple[DiscoveredOSD, ...]
+        Prepared LVM OSD substrates recovered from host LVM tags.
+    """
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    async with _host_lock(deadline - loop.time()):
+        pvs = await lvm_inventory(timeout=deadline - loop.time())
+        inventory = {item.pv_name: item for item in pvs}
+        discoveries: list[DiscoveredOSD] = []
+        for row in await _lvs(timeout=deadline - loop.time()):
+            if str(row.get("vg_name") or "").strip() != BERTRAND_LVM_VG:
+                continue
+            tags = _lv_tags(row)
+            if LVM_TAG not in tags:
+                continue
+            name = _tag_value(tags, "bertrand.osd")
+            lv_name = str(row.get("lv_name") or "").strip()
+            if not name or not lv_name:
+                continue
+            pv_name = _first_lvm_pv(row)
+            pv = inventory.get(pv_name)
+            if pv is None:
+                continue
+            live = await _find_lv(lv_name, timeout=deadline - loop.time())
+            if live is None:
+                continue
+            _validate_lv_devices(live, pv_name=pv_name)
+            lv_path = str(live.get("lv_path") or f"/dev/{BERTRAND_LVM_VG}/{lv_name}")
+            block_path = _device_link(name)
+            _ensure_link(block_path, lv_path)
+            discoveries.append(
+                DiscoveredOSD(
+                    name=name,
+                    prepared=PreparedOSD(
+                        block_path=block_path,
+                        observed_bytes=_parse_lvm_int(live.get("lv_size")),
+                        pv_name=pv.pv_name,
+                        pv_uuid=pv.pv_uuid,
+                        pv_device=pv.pv_name,
+                        lv_name=lv_name,
+                        lv_path=lv_path,
+                    ),
+                )
+            )
+        return tuple(sorted(discoveries, key=lambda item: item.name))
+
+
+async def _loop_devices(*, timeout: float) -> list[dict[str, object]]:
+    try:
+        payload = await _host_json(
+            ["losetup", "--json", "--list", "--output", "NAME,BACK-FILE"],
+            timeout=timeout,
+        )
+    except OSError:
+        return []
+    devices = payload.get("loopdevices")
+    if not isinstance(devices, list):
+        return []
+    return [item for item in devices if isinstance(item, dict)]
+
+
+async def _loop_device_for_file(path: Path, *, timeout: float) -> str | None:
+    for item in await _loop_devices(timeout=timeout):
+        if str(item.get("back-file") or "") == path.as_posix():
+            name = str(item.get("name") or "").strip()
+            if name:
+                return name
+    return None
+
+
+async def prepare_loop_fallback_osd(
+    *,
+    name: str,
+    target_bytes: int,
+    timeout: float,
+) -> PreparedOSD:
+    """Expand or create the node's single loop-backed fallback block substrate.
+
+    Returns
+    -------
+    PreparedOSD
+        Prepared loop-backed block-device substrate and observed host metadata.
+
+    Raises
+    ------
+    OSError
+        If the loop device cannot be created or refreshed.
+    ValueError
+        If the requested size is invalid.
+    """
+    if target_bytes <= 0:
+        msg = "loop fallback OSD target size must be positive"
+        raise ValueError(msg)
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    async with _host_lock(deadline - loop.time()):
+        file_path = LOOP_FALLBACK_STORAGE_PATH / f"{_safe_name(name)}.img"
+        local_file = _local_path(file_path)
+        local_file.parent.mkdir(parents=True, exist_ok=True)
+        with local_file.open("ab") as handle:
+            handle.truncate(target_bytes)
+        device = await _loop_device_for_file(file_path, timeout=deadline - loop.time())
+        if device is None:
+            device = (
+                await _host_text(
+                    ["losetup", "--find", "--show", file_path.as_posix()],
+                    timeout=deadline - loop.time(),
+                )
+            ).strip()
+        else:
+            await _host_text(
+                ["losetup", "--set-capacity", device],
+                timeout=deadline - loop.time(),
+            )
+        if not device:
+            msg = f"failed to create loop device for {file_path}"
+            raise OSError(msg)
+        block_path = _device_link(name)
+        _ensure_link(block_path, device)
+        return PreparedOSD(
+            block_path=block_path,
+            observed_bytes=target_bytes,
+            loop_file=file_path,
+            loop_device=device,
+        )
+
+
+async def discover_loop_fallback_osd(
+    *,
+    name: str,
+    timeout: float,
+) -> PreparedOSD | None:
+    """Discover and reattach this host's deterministic loop fallback OSD.
+
+    Returns
+    -------
+    PreparedOSD | None
+        Prepared loop fallback substrate, or None when no backing file exists.
+    """
+    file_path = LOOP_FALLBACK_STORAGE_PATH / f"{_safe_name(name)}.img"
+    local_file = _local_path(file_path)
+    if not local_file.exists():
+        return None
+    target_bytes = local_file.stat().st_size
+    if target_bytes <= 0:
+        return None
+    return await prepare_loop_fallback_osd(
+        name=name,
+        target_bytes=target_bytes,
+        timeout=timeout,
     )
-    if result.returncode != 0:
-        msg = f"microceph disk remove failed for {name}:\n{result}"
-        raise OSError(msg)
-    remaining = {osd.osd_id for osd in await ceph_osds(timeout=deadline - loop.time())}
-    if osd_id in remaining:
-        msg = f"microceph disk remove completed but {name} is still present"
-        raise OSError(msg)
+
+
+async def drain_loop_osd(osd_id: int, *, timeout: float) -> None:
+    """Mark a loop-backed fallback OSD out and wait until Ceph says it is safe."""
+    await drain_ceph_osd(osd_id, timeout=timeout)
+
+
+async def drain_ceph_osd(osd_id: int, *, timeout: float) -> None:
+    """Mark an OSD out and wait until Ceph says it is safe to destroy."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    await ceph(["osd", "out", str(osd_id)], timeout=deadline - loop.time())
+
+    async def safe_to_destroy(remaining: float) -> None:
+        result = await ceph(
+            ["osd", "safe-to-destroy", str(osd_id)],
+            timeout=remaining,
+            check=False,
+            capture_output=True,
+        )
+        if result.returncode != 0:
+            detail = result.stderr or result.stdout or "not safe to destroy yet"
+            msg = f"osd.{osd_id} is not safe to destroy: {detail}".strip()
+            raise TimeoutError(msg)
+
+    await until(
+        safe_to_destroy,
+        timeout=deadline - loop.time(),
+        interval=5.0,
+        action=f"waiting for osd.{osd_id} to become safe to destroy",
+    )
+
+
+async def purge_loop_osd(osd_id: int, *, timeout: float) -> None:
+    """Purge a loop-backed fallback OSD after Rook has stopped owning it."""
+    await purge_ceph_osd(osd_id, timeout=timeout)
+
+
+async def purge_ceph_osd(osd_id: int, *, timeout: float) -> None:
+    """Purge an OSD after Rook has stopped owning it."""
+    await ceph(
+        ["osd", "purge", str(osd_id), "--yes-i-really-mean-it"],
+        timeout=timeout,
+    )
+
+
+async def delete_lvm_osd_substrate(
+    *,
+    lv_name: str,
+    block_path: str,
+    timeout: float,
+) -> None:
+    """Remove a retired Bertrand-tagged LVM OSD substrate.
+
+    Raises
+    ------
+    ValueError
+        If the LV name is empty.
+    OSError
+        If the target LV exists but is not Bertrand-managed.
+    """
+    lv_name = lv_name.strip()
+    if not lv_name:
+        msg = "LVM OSD deletion requires a non-empty LV name"
+        raise ValueError(msg)
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    async with _host_lock(deadline - loop.time()):
+        row = await _find_lv(lv_name, timeout=deadline - loop.time())
+        if row is not None:
+            tags = _lv_tags(row)
+            if LVM_TAG not in tags:
+                msg = f"refusing to delete unmanaged LV {lv_name!r}"
+                raise OSError(msg)
+            lv_path = str(row.get("lv_path") or f"/dev/{BERTRAND_LVM_VG}/{lv_name}")
+            await _host_text(
+                ["lvremove", "--yes", lv_path],
+                timeout=deadline - loop.time(),
+            )
+        if block_path.strip():
+            with contextlib.suppress(OSError):
+                _local_path(Path(block_path)).unlink()
+
+
+async def delete_loop_fallback_substrate(
+    *,
+    loop_file: str,
+    loop_device: str,
+    block_path: str,
+    timeout: float,
+) -> None:
+    """Detach and remove a retired loop fallback substrate."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    async with _host_lock(deadline - loop.time()):
+        device = loop_device.strip()
+        file_path = Path(loop_file)
+        if file_path.as_posix():
+            device = device or (
+                await _loop_device_for_file(file_path, timeout=deadline - loop.time())
+                or ""
+            )
+        if device:
+            await _host_text(
+                ["losetup", "--detach", device],
+                timeout=deadline - loop.time(),
+            )
+        if block_path.strip():
+            with contextlib.suppress(OSError):
+                _local_path(Path(block_path)).unlink()
+        if file_path.as_posix():
+            with contextlib.suppress(OSError):
+                _local_path(file_path).unlink()
+
+
+async def bind_block_device(
+    *,
+    block_path: str,
+    target_path: str,
+    timeout: float,
+) -> None:
+    """Bind-mount a host block device path to a kubelet CSI target path.
+
+    Raises
+    ------
+    ValueError
+        If either path is empty.
+    OSError
+        If the target is already mounted from a different source.
+    """
+    block = block_path.strip()
+    target = target_path.strip()
+    if not block or not target:
+        msg = "block device bind mount requires non-empty source and target paths"
+        raise ValueError(msg)
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    async with _host_lock(deadline - loop.time()):
+        local_target = _local_path(Path(target))
+        local_target.parent.mkdir(parents=True, exist_ok=True)
+        local_target.touch(exist_ok=True)
+        try:
+            mounted_source = (
+                await _host_text(
+                    [
+                        "findmnt",
+                        "--noheadings",
+                        "--output",
+                        "SOURCE",
+                        "--target",
+                        target,
+                    ],
+                    timeout=deadline - loop.time(),
+                )
+            ).strip()
+        except (OSError, TimeoutError):
+            mounted_source = ""
+        if mounted_source:
+            expected = (
+                await _host_text(
+                    ["readlink", "-f", block],
+                    timeout=deadline - loop.time(),
+                )
+            ).strip()
+            observed = (
+                await _host_text(
+                    ["readlink", "-f", mounted_source],
+                    timeout=deadline - loop.time(),
+                )
+            ).strip()
+            if observed == expected:
+                return
+            msg = (
+                f"CSI target {target!r} is already mounted from {mounted_source!r}; "
+                f"expected {block!r}"
+            )
+            raise OSError(msg)
+        await _host_text(
+            ["mount", "--bind", block, target],
+            timeout=deadline - loop.time(),
+        )
+
+
+async def unbind_block_device(*, target_path: str, timeout: float) -> None:
+    """Unmount and remove a kubelet CSI raw block target path if present.
+
+    Raises
+    ------
+    ValueError
+        If the target path is empty.
+    """
+    target = target_path.strip()
+    if not target:
+        msg = "block device unmount requires a non-empty target path"
+        raise ValueError(msg)
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    async with _host_lock(deadline - loop.time()):
+        with contextlib.suppress(OSError, TimeoutError):
+            await _host_text(["umount", target], timeout=deadline - loop.time())
+        with contextlib.suppress(OSError):
+            _local_path(Path(target)).unlink()

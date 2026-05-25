@@ -1,505 +1,422 @@
-"""MicroCeph bootstrap helpers for Bertrand's shared Ceph runtime.
-
-Bertrand v1 targets the supported default MicroCeph snap.  Existing clusters are
-allowed and treated as shared; Bertrand creates only its managed Ceph/Kubernetes
-state and leaves destructive repository cleanup to future explicit commands.
-"""
+"""Rook-managed Ceph bootstrap helpers for Bertrand storage."""
 
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import json
-import shutil
+from typing import TYPE_CHECKING
 
-from bertrand.env.git import (
-    CommandError,
-    GroupStatus,
-    HostLock,
-    TimeoutExpired,
-    confirm,
-    run,
-    until,
+from bertrand.env.git import BERTRAND_ENV, until
+from bertrand.env.kube.api.bootstrap import kubectl
+from bertrand.env.kube.ceph.csi import CSI_DRIVER_NAME
+from bertrand.env.kube.crd import CustomResourceDefinition
+from bertrand.env.kube.deployment import Deployment
+from bertrand.env.kube.namespace import Namespace
+from bertrand.env.kube.volume import StorageClass
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
+
+    from bertrand.env.kube.api.client import Kube
+
+ROOK_VERSION = "v1.17.9"
+CEPH_IMAGE = "quay.io/ceph/ceph:v19.2.3"
+
+ROOK_NAMESPACE = "rook-ceph"
+ROOK_OPERATOR_DEPLOYMENT = "rook-ceph-operator"
+ROOK_TOOLBOX_DEPLOYMENT = "rook-ceph-tools"
+ROOK_CLUSTER_NAME = "bertrand-ceph"
+ROOK_CEPHFS_NAME = "ceph"
+ROOK_CEPHFS_DATA_POOL = "cephfs-data0"
+ROOK_CEPHFS_METADATA_POOL = "cephfs-metadata"
+
+ROOK_OSD_STORAGE_CLASS = "bertrand-osd-csi"
+ROOK_CEPHFS_STORAGE_CLASS = "cephfs"
+ROOK_CEPHFS_FALLBACK_STORAGE_CLASS = "rook-cephfs"
+
+ROOK_INSTALL_BASE = (
+    f"https://raw.githubusercontent.com/rook/rook/{ROOK_VERSION}/deploy/examples"
 )
-from bertrand.env.host import RUN_DIR
-from bertrand.env.host.snap import (
-    ensure_snapd,
-    install_or_refresh_snap,
-    snap_package_ready,
-)
-from bertrand.env.kube.api.bootstrap import kubectl, microk8s_cluster_ready
-
-MICROCEPH_CHANNEL = "quincy/stable"
-MICROCEPH_GROUP = "microceph"
-CEPH_LOCK_FILE = RUN_DIR / "microceph.lock"
-KUBE_CEPH_LINK_LOCK_FILE = RUN_DIR / "kube-ceph-link.lock"
-
-
-async def _microceph_ready() -> bool:
-    return await snap_package_ready("microceph", executable="microceph")
+ROOK_CRDS_URL = f"{ROOK_INSTALL_BASE}/crds.yaml"
+ROOK_COMMON_URL = f"{ROOK_INSTALL_BASE}/common.yaml"
+ROOK_OPERATOR_URL = f"{ROOK_INSTALL_BASE}/operator.yaml"
+ROOK_TOOLBOX_URL = f"{ROOK_INSTALL_BASE}/toolbox.yaml"
+ROOK_BACKEND_POLL_SECONDS = 0.5
+ROOK_MANAGED_LABEL = "bertrand.dev/rook-ceph"
+ROOK_MANAGED_VALUE = "v1"
+ROOK_LABELS = {
+    BERTRAND_ENV: "1",
+    ROOK_MANAGED_LABEL: ROOK_MANAGED_VALUE,
+}
 
 
-async def install_microceph(
-    *,
-    package_manager: str,
-    user: str,
-    distro_id: str,
-    assume_yes: bool,
-) -> None:
-    """Install or refresh access to the default shared MicroCeph runtime.
+async def ensure_rook_ceph_base(kube: Kube, *, timeout: float) -> None:
+    """Install Bertrand's Rook operator substrate without waiting for Ceph health.
 
     Parameters
     ----------
-    package_manager : str
-        Host package manager to use for installing dependencies.
-    user : str
-        Host username to configure for runtime group access.
-    distro_id : str
-        Host Linux distribution ID, retained for diagnostics.
-    assume_yes : bool
-        Whether to automatically answer yes to prompts.
-
-    Raises
-    ------
-    PermissionError
-        If installation requires root privileges and they are unavailable or declined.
-    OSError
-        If MicroCeph cannot be installed, found, or made ready.
-    """
-    _ = distro_id
-    group = GroupStatus.get(user, MICROCEPH_GROUP)
-    if await _microceph_ready():
-        await group.activate(assume_yes=assume_yes)
-        return
-
-    await ensure_snapd(package_manager, assume_yes=assume_yes, component="MicroCeph")
-    if not await _microceph_ready():
-        if not confirm(
-            "Bertrand uses the default shared MicroCeph snap as its kubernetes "
-            "storage backend. Would you like to install/refresh MicroCeph now at "
-            f"channel {MICROCEPH_CHANNEL!r} (requires sudo)?\n[y/N] ",
-            assume_yes=assume_yes,
-        ):
-            msg = "MicroCeph installation declined by user."
-            raise PermissionError(msg)
-        await install_or_refresh_snap(
-            "microceph",
-            channel=MICROCEPH_CHANNEL,
-            assume_yes=assume_yes,
-            component="MicroCeph",
-        )
-        if not await _microceph_ready():
-            msg = (
-                "MicroCeph installation completed, but the shared runtime is still "
-                "not available. Check `snap list microceph` and `microceph --help` "
-                "for diagnostics."
-            )
-            raise OSError(msg)
-
-    await group.activate(assume_yes=assume_yes)
-
-
-async def assert_microceph_installed(*, user: str) -> None:
-    """Raise with actionable diagnostics when MicroCeph runtime is unusable.
-
-    Parameters
-    ----------
-    user : str
-        Host username to check for runtime group access.
-
-    Raises
-    ------
-    OSError
-        If MicroCeph is not installed, not usable, or group access is missing.
-    """
-    if not await _microceph_ready():
-        msg = (
-            "MicroCeph is installed but not usable after init bootstrap. Run "
-            "`snap list microceph` and `microceph --help` for diagnostics."
-        )
-        raise OSError(msg)
-    group = GroupStatus.get(user, MICROCEPH_GROUP)
-    if not group.configured:
-        msg = (
-            f"user {user!r} is not in {MICROCEPH_GROUP!r}. Rerun `bertrand init` "
-            "to configure MicroCeph access."
-        )
-        raise OSError(msg)
-
-
-async def microceph_cluster_ready(*, timeout: float) -> bool:
-    """Return whether the local MicroCeph cluster reports ready.
-
-    Parameters
-    ----------
+    kube : Kube
+        Active Kubernetes API context.
     timeout : float
-        Maximum readiness probe runtime in seconds.
+        Maximum convergence budget in seconds.
+
+    Raises
+    ------
+    TimeoutError
+        If `timeout` is non-positive or convergence exceeds the budget.
+    """
+    if timeout <= 0:
+        msg = "Rook Ceph base convergence timeout must be positive"
+        raise TimeoutError(msg)
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    await _ensure_namespace_owned(kube, ROOK_NAMESPACE, timeout=deadline - loop.time())
+    await _apply_urls(
+        ROOK_CRDS_URL,
+        ROOK_COMMON_URL,
+        ROOK_OPERATOR_URL,
+        timeout=deadline - loop.time(),
+    )
+    await _wait_crd_established(
+        kube,
+        "cephclusters.ceph.rook.io",
+        timeout=deadline - loop.time(),
+    )
+    await _wait_crd_established(
+        kube,
+        "cephfilesystems.ceph.rook.io",
+        timeout=deadline - loop.time(),
+    )
+    await _wait_deployment(
+        kube,
+        namespace=ROOK_NAMESPACE,
+        name=ROOK_OPERATOR_DEPLOYMENT,
+        timeout=deadline - loop.time(),
+    )
+    await _ensure_rook_storage_classes(timeout=deadline - loop.time())
+    await _ensure_rook_cluster(timeout=deadline - loop.time())
+    await _apply_urls(ROOK_TOOLBOX_URL, timeout=deadline - loop.time())
+
+
+async def wait_rook_ceph_ready(kube: Kube, *, timeout: float) -> None:
+    """Wait until the Rook-managed Ceph cluster and storage classes are ready.
+
+    Raises
+    ------
+    TimeoutError
+        If `timeout` is non-positive or readiness exceeds the budget.
+    """
+    if timeout <= 0:
+        msg = "Rook Ceph readiness timeout must be positive"
+        raise TimeoutError(msg)
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    await _wait_ceph_cluster_ready(kube, timeout=deadline - loop.time())
+    await _wait_deployment(
+        kube,
+        namespace=ROOK_NAMESPACE,
+        name=ROOK_TOOLBOX_DEPLOYMENT,
+        timeout=deadline - loop.time(),
+    )
+    await _wait_storage_classes(kube, timeout=deadline - loop.time())
+
+
+async def rook_ceph_ready(kube: Kube, *, timeout: float) -> bool:
+    """Return whether the Rook-managed Ceph substrate appears ready.
 
     Returns
     -------
     bool
-        True when MicroCeph and the Ceph CLI both report usable status.
+        True when Rook and Bertrand storage classes can be observed.
     """
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
-    result = await run(
-        ["microceph", "status"],
-        check=False,
-        capture_output=True,
-        timeout=deadline - loop.time(),
-    )
-    if result.returncode != 0 or not shutil.which("microceph.ceph"):
-        return False
-    return (
-        await run(
-            ["microceph.ceph", "status", "--format", "json"],
-            check=False,
-            capture_output=True,
-            timeout=deadline - loop.time(),
-        )
-    ).returncode == 0
-
-
-async def start_microceph(*, timeout: float) -> None:
-    """Ensure that the shared MicroCeph cluster is bootstrapped and ready.
-
-    Parameters
-    ----------
-    timeout : float
-        Maximum startup/readiness budget in seconds.
-
-    Raises
-    ------
-    TimeoutError
-        If readiness checks do not succeed before `timeout`.
-    OSError
-        If MicroCeph is missing or cluster bootstrap fails.
-    """
-    if timeout <= 0:
-        msg = "MicroCeph timeout must be non-negative."
-        raise TimeoutError(msg)
-    if not shutil.which("microceph"):
-        msg = (
-            "MicroCeph CLI was not found in PATH. Run `bertrand init` to install "
-            "or configure the shared runtime."
-        )
-        raise OSError(msg)
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
-
-    if await microceph_cluster_ready(timeout=deadline - loop.time()):
-        return
-
     try:
-        async with HostLock(CEPH_LOCK_FILE, timeout=deadline - loop.time()):
-            if await microceph_cluster_ready(timeout=deadline - loop.time()):
-                return
-            try:
-                await run(
-                    ["microceph", "cluster", "bootstrap"],
-                    capture_output=True,
-                    timeout=deadline - loop.time(),
-                )
-            except CommandError as err:
-                out = f"{err.stdout}\n{err.stderr}".strip().lower()
-                if not (
-                    "already initialized" in out
-                    or "already exists" in out
-                    or "already part of a cluster" in out
-                    or "already bootstrapped" in out
-                ):
-                    msg = f"failed to bootstrap MicroCeph cluster:\n{err}"
-                    raise OSError(msg) from err
-
-        async def ready(remaining: float) -> None:
-            if await microceph_cluster_ready(timeout=remaining):
-                return
-            msg = "MicroCeph is not ready yet"
-            raise TimeoutError(msg)
-
-        try:
-            await until(
-                ready,
-                timeout=deadline - loop.time(),
-                interval=0.1,
-                action="waiting for MicroCeph to become ready",
-            )
-        except TimeoutError as err:
-            msg = (
-                f"timed out waiting for MicroCeph to become ready after {timeout} "
-                "seconds"
-            )
-            raise TimeoutError(msg) from err
-        else:
-            return
-    except TimeoutExpired as err:
-        msg = f"timed out waiting for MicroCeph to become ready after {timeout} seconds"
-        raise TimeoutError(msg) from err
-    except CommandError as err:
-        msg = (
-            "Failed to start MicroCeph. You may need to re-run `bertrand init` to "
-            f"ensure proper setup and group membership.\n{err}"
+        await _wait_deployment(
+            kube,
+            namespace=ROOK_NAMESPACE,
+            name=ROOK_OPERATOR_DEPLOYMENT,
+            timeout=timeout,
         )
-        raise OSError(msg) from err
+        await _wait_ceph_cluster_ready(kube, timeout=timeout)
+        await _wait_storage_classes(kube, timeout=timeout)
+    except (OSError, TimeoutError, ValueError):
+        return False
+    return True
 
 
-async def microceph_join_token(name: str, *, timeout: float) -> str:
-    """Generate one MicroCeph join token from this cluster.
+async def _ensure_namespace_owned(kube: Kube, name: str, *, timeout: float) -> None:
+    current = await Namespace.get(kube, name=name, timeout=timeout)
+    if current is not None:
+        labels = current.labels
+        if labels.get(ROOK_MANAGED_LABEL) != ROOK_MANAGED_VALUE:
+            msg = (
+                f"namespace {name!r} already exists and is not labelled as "
+                "Bertrand-managed; refusing to mutate a shared Rook install"
+            )
+            raise OSError(msg)
+    await Namespace.upsert(kube, name=name, labels=ROOK_LABELS, timeout=timeout)
 
-    Parameters
-    ----------
-    name : str
-        Intended MicroCeph member name for the joining host.
-    timeout : float
-        Maximum command runtime in seconds.
 
-    Returns
-    -------
-    str
-        Sensitive MicroCeph join token.
+async def _apply_urls(*urls: str, timeout: float) -> None:
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    for url in urls:
+        try:
+            await kubectl(
+                ["apply", "--server-side", "-f", url],
+                capture_output=True,
+                timeout=deadline - loop.time(),
+            )
+        except OSError as err:
+            msg = f"failed to apply storage backend manifest {url!r}"
+            raise OSError(msg) from err
 
-    Raises
-    ------
-    OSError
-        If MicroCeph is not ready or the token cannot be generated.
-    TimeoutError
-        If `timeout` is non-positive.
-    ValueError
-        If `name` is empty.
-    """
-    if timeout <= 0:
-        msg = "MicroCeph cluster add timeout must be non-negative"
-        raise TimeoutError(msg)
-    name = name.strip()
-    if not name:
-        msg = "MicroCeph join token requires a non-empty node name"
-        raise ValueError(msg)
-    if not await microceph_cluster_ready(timeout=timeout):
-        msg = "MicroCeph must be running before generating a join token"
-        raise OSError(msg)
-    result = await run(
-        ["microceph", "cluster", "add", name],
+
+async def _kubectl_apply_manifest(
+    manifest: Mapping[str, object],
+    *,
+    timeout: float,
+) -> None:
+    await kubectl(
+        ["apply", "--server-side", "-f", "-"],
+        stdin=json.dumps(manifest, separators=(",", ":")),
         capture_output=True,
         timeout=timeout,
     )
-    token = result.stdout.strip()
-    if not token:
-        msg = "MicroCeph cluster add returned an empty join token"
-        raise OSError(msg)
-    return token
 
 
-async def join_microceph_cluster(
-    token: str,
+async def _wait_crd_established(
+    kube: Kube,
+    name: str,
     *,
-    microceph_ip: str | None = None,
     timeout: float,
-) -> None:
-    """Join the local shared MicroCeph runtime to an existing cluster.
-
-    Parameters
-    ----------
-    token : str
-        Sensitive MicroCeph join token produced by ``microceph cluster add``.
-    microceph_ip : str | None, optional
-        Optional bind address passed to ``--microceph-ip``.
-    timeout : float
-        Maximum join/readiness budget in seconds.
-
-    Raises
-    ------
-    OSError
-        If this host already appears to belong to a MicroCeph cluster or join fails.
-    TimeoutError
-        If `timeout` is non-positive.
-    ValueError
-        If `token` is empty.
-    """
-    if timeout <= 0:
-        msg = "MicroCeph join timeout must be non-negative."
-        raise TimeoutError(msg)
-    token = token.strip()
-    if not token:
-        msg = "MicroCeph join token cannot be empty"
-        raise ValueError(msg)
-    if await microceph_cluster_ready(timeout=timeout):
-        msg = (
-            "local MicroCeph already reports a ready cluster; refusing to join it to "
-            "another cluster.  Remove or reset the existing MicroCeph membership "
-            "outside Bertrand if this host should join a different cluster."
-        )
-        raise OSError(msg)
-
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
-    argv = ["microceph", "cluster", "join", token]
-    if microceph_ip is not None:
-        microceph_ip = microceph_ip.strip()
-        if microceph_ip:
-            argv.extend(["--microceph-ip", microceph_ip])
-    async with HostLock(CEPH_LOCK_FILE, timeout=deadline - loop.time()):
-        await run(argv, capture_output=True, timeout=deadline - loop.time())
-
-        async def ready(remaining: float) -> None:
-            if await microceph_cluster_ready(timeout=remaining):
-                return
-            msg = "MicroCeph has not joined the cluster yet"
+) -> CustomResourceDefinition:
+    async def established(remaining: float) -> CustomResourceDefinition:
+        crd = await CustomResourceDefinition.get(kube, name=name, timeout=remaining)
+        if crd is None:
+            msg = f"storage backend CRD {name!r} is not installed yet"
             raise TimeoutError(msg)
-
-        await until(
-            ready,
-            timeout=deadline - loop.time(),
-            interval=0.5,
-            action="waiting for MicroCeph cluster join",
-        )
-
-
-async def _ceph_csi_storage_classes(*, timeout: float) -> list[str]:
-    try:
-        result = await kubectl(
-            ["get", "storageclass", "-o", "json"],
-            capture_output=True,
-            timeout=timeout,
-        )
-    except CommandError as err:
-        msg = (
-            "failed to query Kubernetes storage classes while linking MicroK8s to "
-            f"MicroCeph:\n{err}"
-        )
-        raise OSError(msg) from err
-    try:
-        payload = json.loads(result.stdout)
-    except (TypeError, ValueError) as err:
-        msg = (
-            "failed to parse storage class payload while linking MicroK8s to "
-            f"MicroCeph: {err}"
-        )
-        raise OSError(msg) from err
-    items = payload.get("items")
-    if not isinstance(items, list):
-        msg = "storage class payload is malformed: expected top-level 'items' list"
-        raise OSError(msg)
-
-    out: list[str] = []
-    for item in items:
-        if not isinstance(item, dict):
-            continue
-        metadata = item.get("metadata")
-        name = ""
-        if isinstance(metadata, dict):
-            raw_name = metadata.get("name")
-            if isinstance(raw_name, str):
-                name = raw_name.strip()
-        provisioner = item.get("provisioner")
-        if (
-            not isinstance(provisioner, str)
-            or "csi.ceph.com" not in provisioner.strip().lower()
-        ):
-            continue
-        if name:
-            out.append(name)
-    return sorted(set(out))
-
-
-async def link_kube_ceph(*, timeout: float) -> None:
-    """Converge shared MicroK8s rook-ceph integration with shared MicroCeph.
-
-    Parameters
-    ----------
-    timeout : float
-        Maximum linkage convergence budget in seconds.
-
-    Raises
-    ------
-    TimeoutError
-        If linkage does not converge before `timeout`.
-    OSError
-        If runtimes are unavailable, addon/link commands fail, or storage classes
-        do not materialize.
-    """
-    if timeout <= 0:
-        msg = "kube-ceph link timeout must be non-negative."
-        raise TimeoutError(msg)
-    if not shutil.which("microk8s"):
-        msg = "MicroK8s CLI was not found in PATH. Run `bertrand init` first."
-        raise OSError(msg)
-    if not shutil.which("microceph"):
-        msg = "MicroCeph CLI was not found in PATH. Run `bertrand init` first."
-        raise OSError(msg)
-
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
-    async with HostLock(
-        KUBE_CEPH_LINK_LOCK_FILE,
-        timeout=deadline - loop.time(),
-    ):
-        if not await microk8s_cluster_ready(timeout=deadline - loop.time()):
-            msg = "MicroK8s must be started before linking to MicroCeph."
-            raise OSError(msg)
-        if not await microceph_cluster_ready(timeout=deadline - loop.time()):
-            msg = "MicroCeph must be started before linking to MicroK8s."
-            raise OSError(msg)
-        if await _ceph_csi_storage_classes(timeout=deadline - loop.time()):
-            return
-
-        try:
-            await run(
-                ["microk8s", "enable", "rook-ceph"],
-                capture_output=True,
-                timeout=deadline - loop.time(),
-            )
-        except CommandError as err:
-            detail = f"{err.stdout}\n{err.stderr}".lower()
-            if not (
-                "already enabled" in detail
-                or "is already enabled" in detail
-                or "already exists" in detail
-                or "alreadyexist" in detail
-            ):
-                msg = (
-                    "failed to enable MicroK8s rook-ceph addon while linking to "
-                    f"MicroCeph:\n{err}"
-                )
-                raise OSError(msg) from err
-
-        try:
-            await run(
-                ["microk8s", "connect-external-ceph"],
-                capture_output=True,
-                timeout=deadline - loop.time(),
-            )
-        except CommandError as err:
-            detail = f"{err.stdout}\n{err.stderr}".lower()
-            if not (
-                "already connected" in detail
-                or "already imported" in detail
-                or "already configured" in detail
-                or "already exists" in detail
-                or "alreadyexist" in detail
-            ):
-                msg = (
-                    "failed to link MicroK8s rook-ceph to the external MicroCeph "
-                    f"cluster.\n{err}"
-                )
-                raise OSError(msg) from err
-
-        async def linked(remaining: float) -> None:
-            if await _ceph_csi_storage_classes(timeout=remaining):
-                return
-            msg = "Ceph CSI storage classes are not available yet"
+        if not crd.is_established:
+            msg = f"storage backend CRD {name!r} is not Established yet"
             raise TimeoutError(msg)
+        return crd
 
-        with contextlib.suppress(TimeoutError):
-            await until(
-                linked,
-                timeout=deadline - loop.time(),
-                interval=0.1,
-                action="waiting for Ceph CSI storage classes",
-            )
-            return
-
-    msg = (
-        "MicroK8s rook-ceph linkage completed, but no Ceph CSI storage classes were "
-        "discovered."
+    return await until(
+        established,
+        timeout=timeout,
+        interval=ROOK_BACKEND_POLL_SECONDS,
+        action=f"waiting for storage backend CRD {name!r}",
     )
-    raise OSError(msg)
+
+
+async def _wait_deployment(
+    kube: Kube,
+    *,
+    namespace: str,
+    name: str,
+    timeout: float,
+) -> Deployment:
+    async def available(remaining: float) -> Deployment:
+        deployment = await Deployment.get(
+            kube,
+            namespace=namespace,
+            name=name,
+            timeout=remaining,
+        )
+        if deployment is None:
+            msg = f"Deployment {namespace}/{name} is not created yet"
+            raise TimeoutError(msg)
+        if not deployment.has_available_replicas():
+            msg = f"Deployment {namespace}/{name} is not Available yet"
+            raise TimeoutError(msg)
+        return deployment
+
+    return await until(
+        available,
+        timeout=timeout,
+        interval=ROOK_BACKEND_POLL_SECONDS,
+        action=f"waiting for Deployment {namespace}/{name}",
+    )
+
+
+async def _ensure_rook_storage_classes(*, timeout: float) -> None:
+    manifest = {
+        "apiVersion": "v1",
+        "kind": "List",
+        "items": [
+            {
+                "apiVersion": "storage.k8s.io/v1",
+                "kind": "StorageClass",
+                "metadata": {
+                    "name": ROOK_OSD_STORAGE_CLASS,
+                    "labels": ROOK_LABELS,
+                },
+                "provisioner": CSI_DRIVER_NAME,
+                "allowVolumeExpansion": True,
+                "volumeBindingMode": "WaitForFirstConsumer",
+                "reclaimPolicy": "Delete",
+            },
+            {
+                "apiVersion": "storage.k8s.io/v1",
+                "kind": "StorageClass",
+                "metadata": {
+                    "name": ROOK_CEPHFS_STORAGE_CLASS,
+                    "labels": ROOK_LABELS,
+                },
+                "provisioner": f"{ROOK_NAMESPACE}.cephfs.csi.ceph.com",
+                "allowVolumeExpansion": True,
+                "reclaimPolicy": "Retain",
+                "parameters": {
+                    "clusterID": ROOK_NAMESPACE,
+                    "fsName": ROOK_CEPHFS_NAME,
+                    "pool": ROOK_CEPHFS_DATA_POOL,
+                    "csi.storage.k8s.io/provisioner-secret-name": (
+                        "rook-csi-cephfs-provisioner"
+                    ),
+                    "csi.storage.k8s.io/provisioner-secret-namespace": (ROOK_NAMESPACE),
+                    "csi.storage.k8s.io/controller-expand-secret-name": (
+                        "rook-csi-cephfs-provisioner"
+                    ),
+                    "csi.storage.k8s.io/controller-expand-secret-namespace": (
+                        ROOK_NAMESPACE
+                    ),
+                    "csi.storage.k8s.io/node-stage-secret-name": (
+                        "rook-csi-cephfs-node"
+                    ),
+                    "csi.storage.k8s.io/node-stage-secret-namespace": ROOK_NAMESPACE,
+                },
+            },
+        ],
+    }
+    await _kubectl_apply_manifest(manifest, timeout=timeout)
+
+
+async def _ensure_rook_cluster(*, timeout: float) -> None:
+    manifest = {
+        "apiVersion": "v1",
+        "kind": "List",
+        "items": [
+            {
+                "apiVersion": "ceph.rook.io/v1",
+                "kind": "CephCluster",
+                "metadata": {
+                    "name": ROOK_CLUSTER_NAME,
+                    "namespace": ROOK_NAMESPACE,
+                    "labels": ROOK_LABELS,
+                },
+                "spec": {
+                    "cephVersion": {"image": CEPH_IMAGE},
+                    "dataDirHostPath": "/var/lib/rook",
+                    "mon": {"count": 1, "allowMultiplePerNode": True},
+                    "mgr": {"count": 1, "allowMultiplePerNode": True},
+                    "dashboard": {"enabled": False},
+                    "crashCollector": {"disable": False},
+                    "storage": {
+                        "useAllNodes": False,
+                        "useAllDevices": False,
+                        "allowOsdCrushWeightUpdate": True,
+                        "storageClassDeviceSets": [],
+                    },
+                },
+            },
+            {
+                "apiVersion": "ceph.rook.io/v1",
+                "kind": "CephFilesystem",
+                "metadata": {
+                    "name": ROOK_CEPHFS_NAME,
+                    "namespace": ROOK_NAMESPACE,
+                    "labels": ROOK_LABELS,
+                },
+                "spec": {
+                    "metadataPool": {"replicated": {"size": 1}},
+                    "dataPools": [
+                        {
+                            "name": "data0",
+                            "replicated": {"size": 1},
+                        }
+                    ],
+                    "metadataServer": {
+                        "activeCount": 1,
+                        "activeStandby": False,
+                    },
+                },
+            },
+        ],
+    }
+    await _kubectl_apply_manifest(manifest, timeout=timeout)
+
+
+async def _wait_ceph_cluster_ready(kube: Kube, *, timeout: float) -> None:
+    async def ready(remaining: float) -> None:
+        obj = await kube.run(
+            lambda request_timeout: kube.custom.get_namespaced_custom_object(
+                group="ceph.rook.io",
+                version="v1",
+                namespace=ROOK_NAMESPACE,
+                plural="cephclusters",
+                name=ROOK_CLUSTER_NAME,
+                _request_timeout=request_timeout,
+            ),
+            timeout=remaining,
+            context=f"failed to read Rook CephCluster {ROOK_NAMESPACE}/"
+            f"{ROOK_CLUSTER_NAME}",
+        )
+        if not isinstance(obj, dict):
+            msg = "Rook CephCluster payload is malformed"
+            raise TimeoutError(msg)
+        status = obj.get("status")
+        phase = ""
+        health = ""
+        if isinstance(status, dict):
+            phase = str(status.get("phase") or "").strip()
+            ceph = status.get("ceph")
+            if isinstance(ceph, dict):
+                health = str(ceph.get("health") or "").strip()
+        if (
+            phase.lower() not in {"ready", "connected"}
+            and health.upper() != "HEALTH_OK"
+        ):
+            msg = (
+                f"Rook CephCluster {ROOK_CLUSTER_NAME!r} is not ready yet "
+                f"(phase={phase!r}, health={health!r})"
+            )
+            raise TimeoutError(msg)
+
+    await until(
+        ready,
+        timeout=timeout,
+        interval=ROOK_BACKEND_POLL_SECONDS,
+        action=f"waiting for Rook CephCluster {ROOK_CLUSTER_NAME!r}",
+    )
+
+
+async def _wait_storage_classes(kube: Kube, *, timeout: float) -> None:
+    async def ready(remaining: float) -> None:
+        cephfs = await StorageClass.get(
+            kube,
+            name=ROOK_CEPHFS_STORAGE_CLASS,
+            timeout=remaining,
+        )
+        if cephfs is None:
+            cephfs = await StorageClass.get(
+                kube,
+                name=ROOK_CEPHFS_FALLBACK_STORAGE_CLASS,
+                timeout=remaining,
+            )
+        osd_csi = await StorageClass.get(
+            kube,
+            name=ROOK_OSD_STORAGE_CLASS,
+            timeout=remaining,
+        )
+        if cephfs is None:
+            msg = "Rook CephFS StorageClass is not available yet"
+            raise TimeoutError(msg)
+        if osd_csi is None:
+            msg = "Bertrand OSD CSI StorageClass is not available yet"
+            raise TimeoutError(msg)
+
+    await until(
+        ready,
+        timeout=timeout,
+        interval=ROOK_BACKEND_POLL_SECONDS,
+        action="waiting for Bertrand storage classes",
+    )

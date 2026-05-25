@@ -1,7 +1,7 @@
 """Teardown Bertrand-managed local runtime state in a shared cluster.
 
-Bertrand v1 treats the default MicroK8s and MicroCeph snaps as shared host
-runtimes.  Cleanup therefore removes only reconstructible Bertrand cluster
+Bertrand v1 treats the default MicroK8s snap and in-cluster Rook-Ceph substrate
+as shared runtime state.  Cleanup removes only reconstructible Bertrand cluster
 state, host-local Bertrand state, and this host's mount aliases; it never
 uninstalls snaps or deletes durable repository PVCs, volume records,
 credentials, snapshots, or Ceph data.
@@ -316,12 +316,12 @@ async def bertrand_clean(*, timeout: float, assume_yes: bool, force: bool) -> No
         )
         raise PermissionError(msg)
     if not confirm(
-        "This operates on a shared MicroK8s/MicroCeph runtime. It will retire "
+        "This operates on a shared MicroK8s/Rook-Ceph runtime. It will retire "
         "this host's Bertrand repository mount and node records, delete volatile "
         "dev-session and dashboard resources, remove local repository aliases and "
         f"hidden mounts, and delete local Bertrand state in {STATE_DIR}. "
         "It preserves repository PVCs, volume records, credentials, snapshots, and "
-        "Ceph data, and does not uninstall MicroK8s or MicroCeph. Do you want to "
+        "Ceph data, and does not uninstall MicroK8s. Do you want to "
         "proceed?\n[y/N] ",
         assume_yes=assume_yes,
     ):

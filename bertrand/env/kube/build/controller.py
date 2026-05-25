@@ -33,6 +33,7 @@ from bertrand.env.kube.build.manifest import _publish_project_image_manifest
 from bertrand.env.kube.build.repository import IMAGES
 from bertrand.env.kube.build.request import (
     BUILDKIT_BUILD_GROUP,
+    BUILDKIT_BUILD_KIND,
     BUILDKIT_BUILD_LABEL,
     BUILDKIT_BUILD_LABEL_VALUE,
     BUILDKIT_BUILD_LABELS,
@@ -47,6 +48,14 @@ from bertrand.env.kube.build.request import (
 from bertrand.env.kube.capability.device import (
     BERTRAND_DEVICE_GROUP,
     BERTRAND_DEVICE_PLURAL,
+)
+from bertrand.env.kube.ceph.api import parse_size_bytes
+from bertrand.env.kube.ceph.capacity import (
+    CEPH_CAPACITY_GROUP,
+    STORAGE_POLICY_PLURAL,
+    STORAGE_RESERVATION_PLURAL,
+    read_storage_policy,
+    reserve_ceph_storage,
 )
 from bertrand.env.kube.ceph.snapshot import cleanup_orphaned_build_sources
 from bertrand.env.kube.control import MaintenanceClock
@@ -184,17 +193,30 @@ class _BuildKitBuildController:
                 log_excerpt="",
                 timeout=deadline - loop.time(),
             )
-            platform_refs = await self._publish_platforms(
+            reservation_bytes = await self._default_write_reservation_bytes(
                 kube,
-                request=request,
-                deadline=deadline,
+                timeout=deadline - loop.time(),
             )
-            publication = await self._publish_manifest(
+            async with reserve_ceph_storage(
                 kube,
-                request=request,
-                platform_refs=platform_refs,
-                deadline=deadline,
-            )
+                owner_kind=BUILDKIT_BUILD_KIND,
+                owner_name=request.metadata.name,
+                request_id=str(request.metadata.generation),
+                requested_bytes=reservation_bytes,
+                reason="BuildKit image publication",
+                timeout=deadline - loop.time(),
+            ):
+                platform_refs = await self._publish_platforms(
+                    kube,
+                    request=request,
+                    deadline=deadline,
+                )
+                publication = await self._publish_manifest(
+                    kube,
+                    request=request,
+                    platform_refs=platform_refs,
+                    deadline=deadline,
+                )
             await patch_buildkit_build_status(
                 kube,
                 name=request.metadata.name,
@@ -289,6 +311,22 @@ class _BuildKitBuildController:
             job_observer=observe_job,
             timeout=deadline - loop.time(),
         )
+
+    async def _default_write_reservation_bytes(
+        self,
+        kube: Kube,
+        *,
+        timeout: float,
+    ) -> int:
+        """Return the default raw Ceph reservation for image publication.
+
+        Returns
+        -------
+        int
+            Reservation bytes parsed from the active storage policy.
+        """
+        policy = await read_storage_policy(kube, timeout=timeout)
+        return parse_size_bytes(policy.spec.default_write_reservation)
 
     async def _maybe_gc(self, kube: Kube, *, deadline: float) -> None:
         await self._maybe_project_image_gc(kube, deadline=deadline)
@@ -701,6 +739,16 @@ def _controller_rules() -> tuple[PolicyRuleSpec, ...]:
             api_groups=[BERTRAND_DEVICE_GROUP],
             resources=[BERTRAND_DEVICE_PLURAL],
             verbs=["get", "list", "watch"],
+        ),
+        PolicyRuleSpec(
+            api_groups=[CEPH_CAPACITY_GROUP],
+            resources=[STORAGE_POLICY_PLURAL, STORAGE_RESERVATION_PLURAL],
+            verbs=["get", "list", "watch", "create", "update", "patch"],
+        ),
+        PolicyRuleSpec(
+            api_groups=[CEPH_CAPACITY_GROUP],
+            resources=[f"{STORAGE_RESERVATION_PLURAL}/status"],
+            verbs=["get", "update", "patch"],
         ),
     )
 

@@ -1,9 +1,9 @@
 """Bootstrap Bertrand's shared host runtime.
 
-Bertrand v1 uses the supported default MicroK8s and MicroCeph snaps as shared
-host runtimes.  This module may install or start them when missing, but it never
-assumes exclusive snap ownership.  It also generates or configures a project
-repository when requested.
+Bertrand v1 uses the supported default MicroK8s snap as its shared Kubernetes
+runtime and converges Rook-managed Ceph inside that cluster.  This module may
+install or start MicroK8s when missing, but it never assumes exclusive snap
+ownership.  It also generates or configures a project repository when requested.
 """
 
 from __future__ import annotations
@@ -60,12 +60,7 @@ from bertrand.env.kube.build.controller import ensure_buildkit_build_controller
 from bertrand.env.kube.build.daemon import BUILDKIT_POOL
 from bertrand.env.kube.build.repository import IMAGES
 from bertrand.env.kube.capability.device import ensure_dra_backend
-from bertrand.env.kube.ceph.bootstrap import (
-    assert_microceph_installed,
-    install_microceph,
-    link_kube_ceph,
-    start_microceph,
-)
+from bertrand.env.kube.ceph.bootstrap import ensure_rook_ceph_base, wait_rook_ceph_ready
 from bertrand.env.kube.ceph.mount import (
     ensure_repository_mount,
     finalize_repository_mount,
@@ -92,7 +87,7 @@ if TYPE_CHECKING:
 INIT_LOCK = Path("/tmp/bertrand-init.lock")
 INIT_LOCK_MODE = 0o666
 INIT_STATE_FILE = STATE_DIR / "init.state.json"
-INIT_STATE_VERSION: int = 1
+INIT_STATE_VERSION: int = 2
 INIT_PREREQS = {
     "apt": {
         "getfacl": "acl",
@@ -100,6 +95,11 @@ INIT_PREREQS = {
         "groupadd": "passwd",
         "usermod": "passwd",
         "install": "coreutils",
+        "mount.ceph": "ceph-common",
+        "pvs": "lvm2",
+        "vgs": "lvm2",
+        "lvs": "lvm2",
+        "losetup": "util-linux",
     },
     "dnf": {
         "getfacl": "acl",
@@ -107,6 +107,11 @@ INIT_PREREQS = {
         "groupadd": "shadow-utils",
         "usermod": "shadow-utils",
         "install": "coreutils",
+        "mount.ceph": "ceph-common",
+        "pvs": "lvm2",
+        "vgs": "lvm2",
+        "lvs": "lvm2",
+        "losetup": "util-linux",
     },
     "yum": {
         "getfacl": "acl",
@@ -114,6 +119,11 @@ INIT_PREREQS = {
         "groupadd": "shadow-utils",
         "usermod": "shadow-utils",
         "install": "coreutils",
+        "mount.ceph": "ceph-common",
+        "pvs": "lvm2",
+        "vgs": "lvm2",
+        "lvs": "lvm2",
+        "losetup": "util-linux",
     },
     "zypper": {
         "getfacl": "acl",
@@ -121,6 +131,11 @@ INIT_PREREQS = {
         "groupadd": "shadow",
         "usermod": "shadow",
         "install": "coreutils",
+        "mount.ceph": "ceph-common",
+        "pvs": "lvm2",
+        "vgs": "lvm2",
+        "lvs": "lvm2",
+        "losetup": "util-linux",
     },
     "pacman": {
         "getfacl": "acl",
@@ -128,6 +143,11 @@ INIT_PREREQS = {
         "groupadd": "shadow",
         "usermod": "shadow",
         "install": "coreutils",
+        "mount.ceph": "ceph",
+        "pvs": "lvm2",
+        "vgs": "lvm2",
+        "lvs": "lvm2",
+        "losetup": "util-linux",
     },
     "apk": {
         "getfacl": "acl",
@@ -135,6 +155,11 @@ INIT_PREREQS = {
         "groupadd": "shadow",
         "usermod": "shadow",
         "install": "coreutils",
+        "mount.ceph": "ceph",
+        "pvs": "lvm2",
+        "vgs": "lvm2",
+        "lvs": "lvm2",
+        "losetup": "util-linux",
     },
 }
 INIT_CHECK_PREREQS = (
@@ -143,6 +168,11 @@ INIT_CHECK_PREREQS = (
     ("groupadd", ("groupadd",)),
     ("usermod", ("usermod",)),
     ("install", ("install",)),
+    ("mount.ceph", ("mount.ceph",)),
+    ("pvs", ("pvs",)),
+    ("vgs", ("vgs",)),
+    ("lvs", ("lvs",)),
+    ("losetup", ("losetup",)),
 )
 
 
@@ -151,7 +181,6 @@ type _InitStage = Literal[
     "detect_platform",
     "install_prereqs",
     "bootstrap_state_dir",
-    "install_ceph_runtime",
     "install_kube_runtime",
     "installed",
 ]
@@ -352,25 +381,6 @@ async def _bootstrap_state_dir(state: _InitState, context: _InitContext) -> None
     )
 
 
-async def _install_ceph_runtime(state: _InitState, context: _InitContext) -> None:
-    if state.user is None:
-        msg = "init state user is missing; rerun `bertrand init`."
-        raise OSError(msg)
-    if state.package_manager is None:
-        msg = "Package manager is not detected; cannot install Ceph runtime."
-        raise OSError(msg)
-    if state.distro_id is None:
-        msg = "Distro ID is not detected; cannot install Ceph runtime."
-        raise OSError(msg)
-
-    await install_microceph(
-        user=state.user,
-        package_manager=state.package_manager,
-        distro_id=state.distro_id,
-        assume_yes=context.assume_yes,
-    )
-
-
 async def _install_kube_runtime(state: _InitState, context: _InitContext) -> None:
     if state.user is None:
         msg = "init state user is missing; rerun `bertrand init`."
@@ -410,7 +420,6 @@ async def _assert_installed(state: _InitState, _context: _InitContext) -> None:
         )
         raise OSError(msg)
 
-    await assert_microceph_installed(user=state.user)
     await assert_microk8s_installed(user=state.user)
 
 
@@ -429,7 +438,6 @@ INIT_STAGES: tuple[tuple[_InitStage, _InitStep], ...] = (
     ("detect_platform", _detect_platform),
     ("install_prereqs", _install_prereqs),
     ("bootstrap_state_dir", _bootstrap_state_dir),
-    ("install_ceph_runtime", _install_ceph_runtime),
     ("install_kube_runtime", _install_kube_runtime),
     ("installed", _assert_installed),
 )
@@ -485,7 +493,6 @@ async def ensure_shared_runtime_installed(*, timeout: float, yes: bool) -> None:
             raise OSError(msg)
         for group, purpose in (
             (BERTRAND_GROUP, "shared Bertrand host-state access"),
-            ("microceph", "MicroCeph CLI/storage access"),
             ("microk8s", "MicroK8s runtime access"),
         ):
             status = GroupStatus.get(state.user, group)
@@ -1021,6 +1028,7 @@ async def _converge_cluster_runtime(kube: Kube, *, timeout: float) -> None:
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout
     await ensure_local_bertrand_node(kube, timeout=deadline - loop.time())
+    await ensure_rook_ceph_base(kube, timeout=deadline - loop.time())
     await _converge_build_runtime(kube, timeout=deadline - loop.time())
     await ensure_dev_backend(kube, timeout=deadline - loop.time())
     await ensure_network_backend(kube, timeout=deadline - loop.time())
@@ -1029,6 +1037,7 @@ async def _converge_cluster_runtime(kube: Kube, *, timeout: float) -> None:
         image=control_plane_image(),
         timeout=deadline - loop.time(),
     )
+    await wait_rook_ceph_ready(kube, timeout=deadline - loop.time())
 
 
 async def bertrand_init(
@@ -1118,7 +1127,6 @@ async def bertrand_init(
             raise OSError(msg)
         for group, purpose in (
             (BERTRAND_GROUP, "shared Bertrand host-state access"),
-            ("microceph", "MicroCeph CLI/storage access"),
             ("microk8s", "MicroK8s runtime access"),
         ):
             status = GroupStatus.get(state.user, group)
@@ -1136,13 +1144,11 @@ async def bertrand_init(
                 )
                 raise OSError(msg)
 
-        # Start both shared clusters and link them via Rook-Ceph.
+        # Start MicroK8s and converge the in-cluster Rook/Ceph substrate.
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
-        await start_microceph(timeout=deadline - loop.time())
         await start_microk8s(timeout=deadline - loop.time())
         await ensure_microk8s_kubeconfig(timeout=deadline - loop.time())
-        await link_kube_ceph(timeout=deadline - loop.time())
 
         # bootstrap internal kubernetes runtime control plane
         with await Kube.host(timeout=deadline - loop.time()) as kube:

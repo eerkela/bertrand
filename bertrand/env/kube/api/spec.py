@@ -213,12 +213,15 @@ class VolumeMountSpec:
         Whether the mount is read-only. `None` leaves the Kubernetes default.
     sub_path : str | None, optional
         Optional single file or directory within the volume to mount.
+    mount_propagation : str | None, optional
+        Optional Kubernetes mount propagation mode.
     """
 
     name: str
     mount_path: str
     read_only: bool | None = None
     sub_path: str | None = None
+    mount_propagation: str | None = None
 
 
 @dataclass(frozen=True)

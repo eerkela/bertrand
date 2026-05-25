@@ -285,7 +285,7 @@ class External:
                 "--name",
                 default=None,
                 metavar="NODE",
-                help="Desired MicroCeph member name for the joining host.",
+                help="Display name hint for the joining Bertrand host.",
             )
             invite.add_argument(
                 "--worker",
@@ -314,12 +314,6 @@ class External:
                 "--worker",
                 action="store_true",
                 help="Force the MicroK8s join to use worker-node semantics.",
-            )
-            join.add_argument(
-                "--microceph-ip",
-                default=None,
-                metavar="IP",
-                help="Optional address passed to MicroCeph --microceph-ip.",
             )
             join.add_argument(
                 "-t",
@@ -452,6 +446,37 @@ class External:
                 help="Maximum time in seconds for Kubernetes API convergence.",
             )
             cluster_device_list.set_defaults(handler=External.cluster)
+
+            storage = subcommands.add_parser(
+                "storage",
+                help="Inspect cluster-wide Rook/Ceph storage status.",
+            )
+            storage_subcommands = storage.add_subparsers(
+                dest="cluster_storage_command",
+                title="storage commands",
+                metavar="(command)",
+                required=True,
+            )
+            cluster_storage_status = storage_subcommands.add_parser(
+                "status",
+                help="Show cluster-wide Rook/Ceph autoscaler state.",
+            )
+            cluster_storage_status.add_argument(
+                "--json",
+                action="store_true",
+                help="Emit machine-readable JSON instead of human-readable text.",
+            )
+            cluster_storage_status.set_defaults(handler=External.cluster)
+            cluster_storage_doctor = storage_subcommands.add_parser(
+                "doctor",
+                help="Print actionable Rook/Ceph storage diagnostics.",
+            )
+            cluster_storage_doctor.add_argument(
+                "--json",
+                action="store_true",
+                help="Emit machine-readable JSON instead of human-readable text.",
+            )
+            cluster_storage_doctor.set_defaults(handler=External.cluster)
 
             network = subcommands.add_parser(
                 "network",
@@ -837,7 +862,7 @@ class External:
 
             storage = subcommands.add_parser(
                 "storage",
-                help="Inspect or request local Ceph storage actions.",
+                help="Inspect local Rook/Ceph storage status.",
             )
             storage_subcommands = storage.add_subparsers(
                 dest="storage_command",
@@ -855,72 +880,16 @@ class External:
                 help="Emit machine-readable JSON instead of human-readable text.",
             )
             storage_status.set_defaults(handler=External.node)
-            actions = storage_subcommands.add_parser(
-                "actions",
-                help="List tracked Ceph storage actions.",
+            doctor = storage_subcommands.add_parser(
+                "doctor",
+                help="Print local Rook/Ceph storage diagnostics.",
             )
-            actions.add_argument(
+            doctor.add_argument(
                 "--json",
                 action="store_true",
                 help="Emit machine-readable JSON instead of human-readable text.",
             )
-            actions.set_defaults(handler=External.node)
-
-            osd = storage_subcommands.add_parser(
-                "osd",
-                help="Request local OSD operations through the storage agent.",
-            )
-            osd_subcommands = osd.add_subparsers(
-                dest="osd_command",
-                title="osd commands",
-                metavar="(command)",
-                required=True,
-            )
-            add_block = osd_subcommands.add_parser(
-                "add-block",
-                help="Add an explicit local block device as a durable MicroCeph OSD.",
-            )
-            add_block.add_argument(
-                "device",
-                metavar="DEVICE",
-                help="Absolute host block device path for the OSD data device.",
-            )
-            add_block.add_argument(
-                "--wal",
-                default=None,
-                metavar="DEVICE",
-                help="Optional absolute host block device path for WAL.",
-            )
-            add_block.add_argument(
-                "--db",
-                default=None,
-                metavar="DEVICE",
-                help="Optional absolute host block device path for DB.",
-            )
-            add_block.add_argument(
-                "--encrypt",
-                action="store_true",
-                help="Ask MicroCeph to encrypt the data device before use.",
-            )
-            add_block.add_argument(
-                "--wipe",
-                action="store_true",
-                help="Allow MicroCeph to wipe existing storage metadata before use.",
-            )
-            add_block.add_argument(
-                "-y",
-                "--yes",
-                action="store_true",
-                help="Auto-accept the --wipe confirmation.",
-            )
-            add_block.add_argument(
-                "-t",
-                "--timeout",
-                type=float,
-                default=INFINITY,
-                help="Maximum time in seconds for action creation.",
-            )
-            add_block.set_defaults(handler=External.node)
+            doctor.set_defaults(handler=External.node)
 
             secret = subcommands.add_parser(
                 "secret",
@@ -1265,7 +1234,7 @@ class External:
             command = self.commands.add_parser(
                 "clean",
                 help="Remove host-local Bertrand runtime state in the shared "
-                "MicroK8s/MicroCeph model while preserving repository PVCs and "
+                "MicroK8s/Rook-Ceph model while preserving repository PVCs and "
                 "snap installations.",
             )
             command.add_argument(
@@ -1484,6 +1453,8 @@ class External:
                     cmd.append(args.cluster_secret_command)
                 if args.cluster_command == "device":
                     cmd.append(args.cluster_device_command)
+                if args.cluster_command == "storage":
+                    cmd.append(args.cluster_storage_command)
                 if args.cluster_command == "network":
                     cmd.append(args.network_command)
                     if args.network_command == "lb":
@@ -1534,8 +1505,6 @@ class External:
                     cmd.append(args.node_device_command)
                 if args.node_command == "storage":
                     cmd.append(args.storage_command)
-                    if args.storage_command == "osd":
-                        cmd.append(args.osd_command)
                 raise TimeoutExpired(
                     cmd=cmd,
                     timeout=timeout,

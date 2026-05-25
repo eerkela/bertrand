@@ -17,7 +17,6 @@ from bertrand.env.config.core import UUIDHex, _check_uuid
 from bertrand.env.git import CommandError
 from bertrand.env.host import RUN_DIR
 from bertrand.env.kube.ceph.api import ceph
-from bertrand.env.kube.ceph.bootstrap import start_microceph
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -233,7 +232,7 @@ class RepoCredentials:
         Raises
         ------
         OSError
-            If MicroCeph fails to create, read, or parse credentials.
+            If Ceph fails to create, read, or parse credentials.
         TimeoutError
             If `timeout` is non-positive.
         ValueError
@@ -260,9 +259,6 @@ class RepoCredentials:
 
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
-
-        # bootstrap the microceph cluster if it's not already running
-        await start_microceph(timeout=deadline - loop.time())
 
         # `fs authorize` is idempotent and converges CephX caps for this identity.
         await ceph(
@@ -326,9 +322,6 @@ class RepoCredentials:
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
 
-        # bootstrap the microceph cluster if it's not already running
-        await start_microceph(timeout=deadline - loop.time())
-
         # get repository credentials if they exist
         key = await _get_key(entity, timeout=deadline - loop.time())
         if key is None:
@@ -365,7 +358,7 @@ class RepoCredentials:
         Raises
         ------
         OSError
-            If MicroCeph rejects credential deletion.
+            If Ceph rejects credential deletion.
         TimeoutError
             If `timeout` is non-positive.
 
@@ -381,9 +374,6 @@ class RepoCredentials:
         _, _, entity = self._identity(self.repo_id)
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
-
-        # bootstrap the microceph cluster if it's not already running
-        await start_microceph(timeout=deadline - loop.time())
 
         result = await ceph(
             ["auth", "del", entity],

@@ -360,6 +360,9 @@ RUN apt-get update \
         ripgrep \
         git \
         ccache \
+        ceph-common \
+        lvm2 \
+        util-linux \
     && rm -rf /var/lib/apt/lists/*
 
 # Bring in final toolchain
