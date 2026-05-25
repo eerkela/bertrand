@@ -6,11 +6,11 @@ ty-native keys to pass through unchanged for forward compatibility.
 
 from __future__ import annotations
 
-from typing import Annotated, Any, Literal
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
-from .core import Config, NonEmpty, Resource, Trimmed, resource
+from .core import NonEmpty, Resource, Trimmed, resource
 
 type TyRuleName = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 type TyRuleSeverity = Literal["ignore", "warn", "error"]
@@ -113,35 +113,3 @@ class TyConfig(Resource):
                 description="Terminal output and exit-policy settings for ty.",
             ),
         ]
-
-    async def init(self, config: Config, cli: Config.Init) -> dict[str, Any]:
-        """Return default ty configuration.
-
-        Returns
-        -------
-        dict[str, Any]
-            Default ty configuration data.
-        """
-        _ = config, cli
-        return self.Model.model_construct().model_dump(by_alias=True)
-
-    async def validate(self, config: Config, fragment: Any) -> Model | None:
-        """Validate ty configuration.
-
-        Returns
-        -------
-        Model | None
-            Validated ty configuration.
-        """
-        _ = config
-        return self.Model.model_validate(fragment)
-
-    async def schema(self) -> dict[str, Any]:
-        """Return the ty configuration schema.
-
-        Returns
-        -------
-        dict[str, Any]
-            JSON Schema for the ty configuration.
-        """
-        return self.Model.model_json_schema(by_alias=True, mode="validation")

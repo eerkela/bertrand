@@ -9,17 +9,19 @@ from typing import TYPE_CHECKING, Self
 from kubernetes import client as kube_client
 
 from .api.metadata import NamespacedKubeMetadata
-from .api.resource import ResourceClient
+from .api.resource import NamespacedMutableResourceMixin, ResourceClient
 
 if TYPE_CHECKING:
-    import builtins
-    from collections.abc import Collection, Mapping
+    from collections.abc import Mapping
 
     from .api.client import Kube
 
 
 @dataclass(frozen=True)
-class ConfigMap(NamespacedKubeMetadata[kube_client.V1ConfigMap]):
+class ConfigMap(
+    NamespacedMutableResourceMixin[kube_client.V1ConfigMap],
+    NamespacedKubeMetadata[kube_client.V1ConfigMap],
+):
     """General-purpose wrapper around one Kubernetes ConfigMap object.
 
     Parameters
@@ -87,75 +89,6 @@ class ConfigMap(NamespacedKubeMetadata[kube_client.V1ConfigMap]):
                     _request_timeout=request_timeout,
                 )
             ),
-        )
-
-    @classmethod
-    async def get(
-        cls,
-        kube: Kube,
-        *,
-        namespace: str,
-        timeout: float,
-        name: str,
-    ) -> Self | None:
-        """Read one Kubernetes ConfigMap by name.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        namespace : str
-            Namespace that owns the ConfigMap.
-        timeout : float
-            Maximum request budget in seconds. If infinite, wait indefinitely.
-        name : str
-            ConfigMap name to read.
-
-        Returns
-        -------
-        ConfigMap | None
-            Wrapped Kubernetes ConfigMap, or `None` if it does not exist.
-        """
-        return await cls._client().get(
-            kube,
-            namespace=namespace,
-            name=name,
-            timeout=timeout,
-        )
-
-    @classmethod
-    async def list(
-        cls,
-        kube: Kube,
-        *,
-        timeout: float,
-        namespaces: Collection[str] | None = None,
-        labels: Mapping[str, str] | None = None,
-    ) -> builtins.list[Self]:
-        """List Kubernetes ConfigMaps with optional namespace and label filtering.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        timeout : float
-            Maximum request budget in seconds. If infinite, wait indefinitely.
-        namespaces : Collection[str] | None, optional
-            Optional namespace filters. `None` queries all namespaces. Otherwise,
-            entries are trimmed, deduplicated, and queried individually.
-        labels : Mapping[str, str] | None, optional
-            Optional label selector key/value pairs.
-
-        Returns
-        -------
-        list[ConfigMap]
-            Wrapped Kubernetes ConfigMaps matching the requested filters.
-        """
-        return await cls._client().list(
-            kube,
-            timeout=timeout,
-            namespaces=namespaces,
-            labels=labels,
         )
 
     @staticmethod
@@ -271,70 +204,3 @@ class ConfigMap(NamespacedKubeMetadata[kube_client.V1ConfigMap]):
             Read-only view of ConfigMap binary data.
         """
         return MappingProxyType(self._obj.binary_data or {})
-
-    async def refresh(self, kube: Kube, *, timeout: float) -> Self | None:
-        """Re-read this ConfigMap by its metadata namespace and name.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        timeout : float
-            Maximum request budget in seconds. If infinite, wait indefinitely.
-
-        Returns
-        -------
-        ConfigMap | None
-            Fresh wrapper for the same ConfigMap, or `None` if it no longer exists.
-        """
-        namespace, name = self._require_namespace_name("refresh ConfigMap")
-        return await type(self).get(
-            kube,
-            namespace=namespace,
-            timeout=timeout,
-            name=name,
-        )
-
-    async def delete(self, kube: Kube, *, timeout: float) -> None:
-        """Delete this ConfigMap from the cluster.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        timeout : float
-            Maximum request budget in seconds. If infinite, wait indefinitely.
-        """
-        namespace, name = self._require_namespace_name("delete ConfigMap")
-        await (
-            type(self)
-            ._client()
-            .delete_by_name(
-                kube,
-                namespace=namespace,
-                name=name,
-                timeout=timeout,
-            )
-        )
-
-    async def wait_deleted(self, kube: Kube, *, timeout: float) -> None:
-        """Wait until this ConfigMap is deleted from the cluster.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        timeout : float
-            Maximum wait time in seconds. Must be positive.
-
-        """
-        namespace, name = self._require_namespace_name("wait for ConfigMap deletion")
-        await (
-            type(self)
-            ._client()
-            .wait_deleted(
-                label=self._object_label(name=name, namespace=namespace),
-                timeout=timeout,
-                refresh=lambda remaining: self.refresh(kube, timeout=remaining),
-            )
-        )

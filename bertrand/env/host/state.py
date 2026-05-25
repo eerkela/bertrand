@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import contextlib
 import grp
 import os
@@ -15,6 +14,7 @@ from pathlib import Path
 from bertrand.env.git import bertrand_git as _git
 from bertrand.env.git.bertrand_git import (
     CommandError,
+    Deadline,
     GroupStatus,
     atomic_write_text,
     can_escalate,
@@ -99,8 +99,7 @@ async def _state_acl_configured(group: str) -> bool:
     return access in lines and default in lines
 
 
-async def _configure_state_acl(*, deadline: float, assume_yes: bool) -> None:
-    loop = asyncio.get_running_loop()
+async def _configure_state_acl(*, deadline: Deadline, assume_yes: bool) -> None:
     if not shutil.which("setfacl") or not shutil.which("getfacl"):
         msg = (
             "Strict Bertrand state ACL setup requires `setfacl` and `getfacl`, "
@@ -114,7 +113,7 @@ async def _configure_state_acl(*, deadline: float, assume_yes: bool) -> None:
         ["setfacl", "-d", "-m", f"group:{BERTRAND_GROUP}:rwx", str(STATE_DIR)],
         ["setfacl", "-d", "-m", "mask::rwx", str(STATE_DIR)],
     ):
-        await run(sudo(cmd, non_interactive=assume_yes), timeout=deadline - loop.time())
+        await run(sudo(cmd, non_interactive=assume_yes), timeout=deadline.remaining())
 
     await run(
         sudo(
@@ -131,7 +130,7 @@ async def _configure_state_acl(*, deadline: float, assume_yes: bool) -> None:
             ],
             non_interactive=assume_yes,
         ),
-        timeout=deadline - loop.time(),
+        timeout=deadline.remaining(),
     )
 
 
@@ -203,8 +202,10 @@ async def _configure_run_tmpfs_mount(
             f"mount at {RUN_DIR}."
         )
         raise OSError(msg)
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
+    deadline = Deadline.from_timeout(
+        timeout,
+        message="Bertrand runtime tmpfs mount timeout must be non-negative",
+    )
 
     fd: int | None = None
     temp_unit: Path | None = None
@@ -231,7 +232,7 @@ async def _configure_run_tmpfs_mount(
                 ],
                 non_interactive=assume_yes,
             ),
-            timeout=deadline - loop.time(),
+            timeout=deadline.remaining(),
         )
     finally:
         if fd is not None:
@@ -246,7 +247,7 @@ async def _configure_run_tmpfs_mount(
     ):
         await run(
             sudo(cmd, non_interactive=assume_yes),
-            timeout=deadline - loop.time(),
+            timeout=deadline.remaining(),
         )
 
 
@@ -308,8 +309,10 @@ async def ensure_host_group(
     CommandError
         If the host group creation command fails unexpectedly.
     """
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
+    deadline = Deadline.from_timeout(
+        timeout,
+        message="Bertrand shared group bootstrap timeout must be non-negative",
+    )
 
     try:
         return grp.getgrnam(BERTRAND_GROUP)
@@ -338,12 +341,12 @@ async def ensure_host_group(
                 non_interactive=assume_yes,
             ),
             capture_output=True,
-            timeout=deadline - loop.time(),
+            timeout=deadline.remaining(),
         )
-    except CommandError as err:
-        out = f"{err.stdout}\n{err.stderr}".lower().strip()
-        if "already exists" not in out and "alreadyexist" not in out:
-            raise
+    except CommandError:
+        with contextlib.suppress(KeyError):
+            return grp.getgrnam(BERTRAND_GROUP)
+        raise
 
     try:
         return grp.getgrnam(BERTRAND_GROUP)
@@ -385,11 +388,13 @@ async def ensure_host_state(
     if os.name != "posix":
         msg = "Bertrand state bootstrap requires a POSIX host."
         raise OSError(msg)
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
+    deadline = Deadline.from_timeout(
+        timeout,
+        message="Bertrand host state bootstrap timeout must be non-negative",
+    )
 
     group_info = await ensure_host_group(
-        timeout=deadline - loop.time(),
+        timeout=deadline.remaining(),
         assume_yes=assume_yes,
     )
     if (
@@ -428,7 +433,7 @@ async def ensure_host_state(
                 ],
                 non_interactive=assume_yes,
             ),
-            timeout=deadline - loop.time(),
+            timeout=deadline.remaining(),
         )
         await _configure_state_acl(
             deadline=deadline,
@@ -437,7 +442,7 @@ async def ensure_host_state(
         await _configure_run_tmpfs_mount(
             group_gid=group_info.gr_gid,
             assume_yes=assume_yes,
-            timeout=deadline - loop.time(),
+            timeout=deadline.remaining(),
         )
 
     if not _host_id_configured():
@@ -485,19 +490,21 @@ async def disable_run_tmpfs_mount(*, timeout: float) -> None:
     timeout : float
         Maximum time in seconds to wait for systemd commands.
     """
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
+    deadline = Deadline.from_timeout(
+        timeout,
+        message="Bertrand runtime tmpfs disable timeout must be non-negative",
+    )
     if shutil.which("systemctl"):
         await run(
             ["systemctl", "disable", "--now", RUN_TMPFS_MOUNT_UNIT_NAME],
             check=False,
             capture_output=True,
-            timeout=deadline - loop.time(),
+            timeout=deadline.remaining(),
         )
         RUN_TMPFS_MOUNT_UNIT_PATH.unlink(missing_ok=True)
         await run(
             ["systemctl", "daemon-reload"],
             check=False,
             capture_output=True,
-            timeout=deadline - loop.time(),
+            timeout=deadline.remaining(),
         )

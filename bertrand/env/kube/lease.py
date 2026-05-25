@@ -8,19 +8,25 @@ from typing import TYPE_CHECKING, Self
 from kubernetes import client as kube_client
 
 from .api.metadata import NamespacedKubeMetadata
-from .api.resource import ResourceClient
+from .api.resource import (
+    NamespacedMutableResourceMixin,
+    NamespacedWatchMixin,
+    ResourceClient,
+)
 
 if TYPE_CHECKING:
-    import builtins
-    from collections.abc import AsyncIterator, Collection, Mapping
+    from collections.abc import Mapping
     from datetime import datetime
 
     from .api.client import Kube
-    from .api.watch import WatchEvent
 
 
 @dataclass(frozen=True)
-class Lease(NamespacedKubeMetadata[kube_client.V1Lease]):
+class Lease(
+    NamespacedWatchMixin[kube_client.V1Lease],
+    NamespacedMutableResourceMixin[kube_client.V1Lease],
+    NamespacedKubeMetadata[kube_client.V1Lease],
+):
     """General-purpose wrapper around one Kubernetes Lease object.
 
     Parameters
@@ -86,117 +92,6 @@ class Lease(NamespacedKubeMetadata[kube_client.V1Lease]):
             watch_all=lambda kube: kube.coordination.list_lease_for_all_namespaces,
             watch_namespace=lambda kube: kube.coordination.list_namespaced_lease,
         )
-
-    @classmethod
-    async def get(
-        cls,
-        kube: Kube,
-        *,
-        namespace: str,
-        name: str,
-        timeout: float,
-    ) -> Self | None:
-        """Read one Kubernetes Lease by name.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        namespace : str
-            Namespace that owns the Lease.
-        name : str
-            Lease name to read.
-        timeout : float
-            Maximum request budget in seconds. If infinite, wait indefinitely.
-
-        Returns
-        -------
-        Lease | None
-            Wrapped Kubernetes Lease, or `None` if it does not exist.
-        """
-        return await cls._client().get(
-            kube,
-            namespace=namespace,
-            name=name,
-            timeout=timeout,
-        )
-
-    @classmethod
-    async def list(
-        cls,
-        kube: Kube,
-        *,
-        timeout: float,
-        namespaces: Collection[str] | None = None,
-        labels: Mapping[str, str] | None = None,
-    ) -> builtins.list[Self]:
-        """List Kubernetes Leases with optional namespace and label filtering.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        timeout : float
-            Maximum request budget in seconds. If infinite, wait indefinitely.
-        namespaces : Collection[str] | None, optional
-            Optional namespace filters. `None` queries all namespaces.
-        labels : Mapping[str, str] | None, optional
-            Optional label selector key/value pairs.
-
-        Returns
-        -------
-        list[Lease]
-            Wrapped Leases matching the requested filters.
-        """
-        return await cls._client().list(
-            kube,
-            timeout=timeout,
-            namespaces=namespaces,
-            labels=labels,
-        )
-
-    @classmethod
-    async def watch(
-        cls,
-        kube: Kube,
-        *,
-        timeout: float,
-        namespace: str | None = None,
-        labels: Mapping[str, str] | None = None,
-        field_selector: str | None = None,
-        resource_version: str | None = None,
-    ) -> AsyncIterator[WatchEvent[Self]]:
-        """Watch Kubernetes Leases.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        timeout : float
-            Maximum watch budget in seconds. If infinite, wait indefinitely.
-        namespace : str | None, optional
-            Namespace to watch. If omitted, watches Leases across all namespaces.
-        labels : Mapping[str, str] | None, optional
-            Optional label selector key/value pairs.
-        field_selector : str | None, optional
-            Raw Kubernetes field selector.
-        resource_version : str | None, optional
-            Resource version to watch from.
-
-        Yields
-        ------
-        WatchEvent[Lease]
-            Typed watch events containing wrapped Leases.
-        """
-        async for event in cls._client().watch(
-            kube,
-            timeout=timeout,
-            namespace=namespace,
-            labels=labels,
-            field_selector=field_selector,
-            resource_version=resource_version,
-        ):
-            yield event
 
     @staticmethod
     def _manifest(
@@ -313,6 +208,7 @@ class Lease(NamespacedKubeMetadata[kube_client.V1Lease]):
             ),
             timeout=timeout,
             context=f"failed to create Lease {namespace}/{name}",
+            missing_ok=False,
         )
         if not isinstance(created, kube_client.V1Lease):
             msg = (
@@ -411,6 +307,7 @@ class Lease(NamespacedKubeMetadata[kube_client.V1Lease]):
             ),
             timeout=timeout,
             context=f"failed to replace Lease {namespace}/{name}",
+            missing_ok=False,
         )
         if not isinstance(replaced, kube_client.V1Lease):
             msg = (
@@ -544,70 +441,3 @@ class Lease(NamespacedKubeMetadata[kube_client.V1Lease]):
         """
         spec = self._obj.spec
         return spec.renew_time if spec is not None else None
-
-    async def refresh(self, kube: Kube, *, timeout: float) -> Self | None:
-        """Re-read this Lease by its metadata namespace and name.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        timeout : float
-            Maximum request budget in seconds. If infinite, wait indefinitely.
-
-        Returns
-        -------
-        Lease | None
-            Fresh wrapper for the same Lease, or `None` if it no longer exists.
-        """
-        namespace, name = self._require_namespace_name("refresh Lease")
-        return await type(self).get(
-            kube,
-            namespace=namespace,
-            timeout=timeout,
-            name=name,
-        )
-
-    async def delete(self, kube: Kube, *, timeout: float) -> None:
-        """Delete this Lease from the cluster.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        timeout : float
-            Maximum request budget in seconds. If infinite, wait indefinitely.
-        """
-        namespace, name = self._require_namespace_name("delete Lease")
-        await (
-            type(self)
-            ._client()
-            .delete_by_name(
-                kube,
-                namespace=namespace,
-                name=name,
-                timeout=timeout,
-            )
-        )
-
-    async def wait_deleted(self, kube: Kube, *, timeout: float) -> None:
-        """Wait until this Lease is deleted from the cluster.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        timeout : float
-            Maximum wait time in seconds. Must be positive.
-
-        """
-        namespace, name = self._require_namespace_name("wait for Lease deletion")
-        await (
-            type(self)
-            ._client()
-            .wait_deleted(
-                label=self._object_label(name=name, namespace=namespace),
-                timeout=timeout,
-                refresh=lambda remaining: self.refresh(kube, timeout=remaining),
-            )
-        )

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import contextlib
 import json
 import math
@@ -14,7 +13,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, overload
 
-from bertrand.env.git import INFINITY, CompletedProcess, HostLock, run, until
+from bertrand.env.git import (
+    INFINITY,
+    CompletedProcess,
+    Deadline,
+    HostLock,
+    run,
+    until,
+)
 from bertrand.env.host import HOST_ID_FILE
 
 HOST_ROOT = Path("/host")
@@ -616,16 +622,15 @@ async def prepare_lvm_osd(
     if not pv_name:
         msg = "LVM OSD allocation requires a concrete PV name"
         raise ValueError(msg)
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
-    async with _host_lock(deadline - loop.time()):
-        inventory = await lvm_inventory(timeout=deadline - loop.time())
+    deadline = Deadline.from_timeout(timeout, message="timeout must be non-negative")
+    async with _host_lock(deadline.remaining()):
+        inventory = await lvm_inventory(timeout=deadline.remaining())
         pv = next((item for item in inventory if item.pv_name == pv_name), None)
         if pv is None:
             msg = f"PV {pv_name!r} is not part of the {BERTRAND_LVM_VG!r} VG"
             raise OSError(msg)
         lv_name = (lv_name or f"bertrand-osd-{_safe_name(name)[-32:]}").strip()
-        existing = await _find_lv(lv_name, timeout=deadline - loop.time())
+        existing = await _find_lv(lv_name, timeout=deadline.remaining())
         if existing is None:
             if pv.free_bytes < target_bytes:
                 msg = (
@@ -650,7 +655,7 @@ async def prepare_lvm_osd(
                     BERTRAND_LVM_VG,
                     pv_name,
                 ],
-                timeout=deadline - loop.time(),
+                timeout=deadline.remaining(),
             )
         else:
             current = _parse_lvm_int(existing.get("lv_size"))
@@ -673,9 +678,9 @@ async def prepare_lvm_osd(
                         lv_path,
                         pv_name,
                     ],
-                    timeout=deadline - loop.time(),
+                    timeout=deadline.remaining(),
                 )
-        live = await _find_lv(lv_name, timeout=deadline - loop.time())
+        live = await _find_lv(lv_name, timeout=deadline.remaining())
         if live is None:
             msg = f"Bertrand OSD LV {lv_name!r} disappeared after allocation"
             raise OSError(msg)
@@ -703,13 +708,12 @@ async def discover_lvm_osds(*, timeout: float) -> tuple[DiscoveredOSD, ...]:
     tuple[DiscoveredOSD, ...]
         Prepared LVM OSD substrates recovered from host LVM tags.
     """
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
-    async with _host_lock(deadline - loop.time()):
-        pvs = await lvm_inventory(timeout=deadline - loop.time())
+    deadline = Deadline.from_timeout(timeout, message="timeout must be non-negative")
+    async with _host_lock(deadline.remaining()):
+        pvs = await lvm_inventory(timeout=deadline.remaining())
         inventory = {item.pv_name: item for item in pvs}
         discoveries: list[DiscoveredOSD] = []
-        for row in await _lvs(timeout=deadline - loop.time()):
+        for row in await _lvs(timeout=deadline.remaining()):
             if str(row.get("vg_name") or "").strip() != BERTRAND_LVM_VG:
                 continue
             tags = _lv_tags(row)
@@ -723,7 +727,7 @@ async def discover_lvm_osds(*, timeout: float) -> tuple[DiscoveredOSD, ...]:
             pv = inventory.get(pv_name)
             if pv is None:
                 continue
-            live = await _find_lv(lv_name, timeout=deadline - loop.time())
+            live = await _find_lv(lv_name, timeout=deadline.remaining())
             if live is None:
                 continue
             _validate_lv_devices(live, pv_name=pv_name)
@@ -793,26 +797,25 @@ async def prepare_loop_fallback_osd(
     if target_bytes <= 0:
         msg = "loop fallback OSD target size must be positive"
         raise ValueError(msg)
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
-    async with _host_lock(deadline - loop.time()):
+    deadline = Deadline.from_timeout(timeout, message="timeout must be non-negative")
+    async with _host_lock(deadline.remaining()):
         file_path = LOOP_FALLBACK_STORAGE_PATH / f"{_safe_name(name)}.img"
         local_file = _local_path(file_path)
         local_file.parent.mkdir(parents=True, exist_ok=True)
         with local_file.open("ab") as handle:
             handle.truncate(target_bytes)
-        device = await _loop_device_for_file(file_path, timeout=deadline - loop.time())
+        device = await _loop_device_for_file(file_path, timeout=deadline.remaining())
         if device is None:
             device = (
                 await _host_text(
                     ["losetup", "--find", "--show", file_path.as_posix()],
-                    timeout=deadline - loop.time(),
+                    timeout=deadline.remaining(),
                 )
             ).strip()
         else:
             await _host_text(
                 ["losetup", "--set-capacity", device],
-                timeout=deadline - loop.time(),
+                timeout=deadline.remaining(),
             )
         if not device:
             msg = f"failed to create loop device for {file_path}"
@@ -860,9 +863,8 @@ async def drain_loop_osd(osd_id: int, *, timeout: float) -> None:
 
 async def drain_ceph_osd(osd_id: int, *, timeout: float) -> None:
     """Mark an OSD out and wait until Ceph says it is safe to destroy."""
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
-    await ceph(["osd", "out", str(osd_id)], timeout=deadline - loop.time())
+    deadline = Deadline.from_timeout(timeout, message="timeout must be non-negative")
+    await ceph(["osd", "out", str(osd_id)], timeout=deadline.remaining())
 
     async def safe_to_destroy(remaining: float) -> None:
         result = await ceph(
@@ -878,7 +880,7 @@ async def drain_ceph_osd(osd_id: int, *, timeout: float) -> None:
 
     await until(
         safe_to_destroy,
-        timeout=deadline - loop.time(),
+        timeout=deadline.remaining(),
         interval=5.0,
         action=f"waiting for osd.{osd_id} to become safe to destroy",
     )
@@ -916,10 +918,9 @@ async def delete_lvm_osd_substrate(
     if not lv_name:
         msg = "LVM OSD deletion requires a non-empty LV name"
         raise ValueError(msg)
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
-    async with _host_lock(deadline - loop.time()):
-        row = await _find_lv(lv_name, timeout=deadline - loop.time())
+    deadline = Deadline.from_timeout(timeout, message="timeout must be non-negative")
+    async with _host_lock(deadline.remaining()):
+        row = await _find_lv(lv_name, timeout=deadline.remaining())
         if row is not None:
             tags = _lv_tags(row)
             if LVM_TAG not in tags:
@@ -928,7 +929,7 @@ async def delete_lvm_osd_substrate(
             lv_path = str(row.get("lv_path") or f"/dev/{BERTRAND_LVM_VG}/{lv_name}")
             await _host_text(
                 ["lvremove", "--yes", lv_path],
-                timeout=deadline - loop.time(),
+                timeout=deadline.remaining(),
             )
         if block_path.strip():
             with contextlib.suppress(OSError):
@@ -943,20 +944,19 @@ async def delete_loop_fallback_substrate(
     timeout: float,
 ) -> None:
     """Detach and remove a retired loop fallback substrate."""
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
-    async with _host_lock(deadline - loop.time()):
+    deadline = Deadline.from_timeout(timeout, message="timeout must be non-negative")
+    async with _host_lock(deadline.remaining()):
         device = loop_device.strip()
         file_path = Path(loop_file)
         if file_path.as_posix():
             device = device or (
-                await _loop_device_for_file(file_path, timeout=deadline - loop.time())
+                await _loop_device_for_file(file_path, timeout=deadline.remaining())
                 or ""
             )
         if device:
             await _host_text(
                 ["losetup", "--detach", device],
-                timeout=deadline - loop.time(),
+                timeout=deadline.remaining(),
             )
         if block_path.strip():
             with contextlib.suppress(OSError):
@@ -986,9 +986,8 @@ async def bind_block_device(
     if not block or not target:
         msg = "block device bind mount requires non-empty source and target paths"
         raise ValueError(msg)
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
-    async with _host_lock(deadline - loop.time()):
+    deadline = Deadline.from_timeout(timeout, message="timeout must be non-negative")
+    async with _host_lock(deadline.remaining()):
         local_target = _local_path(Path(target))
         local_target.parent.mkdir(parents=True, exist_ok=True)
         local_target.touch(exist_ok=True)
@@ -1003,7 +1002,7 @@ async def bind_block_device(
                         "--target",
                         target,
                     ],
-                    timeout=deadline - loop.time(),
+                    timeout=deadline.remaining(),
                 )
             ).strip()
         except (OSError, TimeoutError):
@@ -1012,13 +1011,13 @@ async def bind_block_device(
             expected = (
                 await _host_text(
                     ["readlink", "-f", block],
-                    timeout=deadline - loop.time(),
+                    timeout=deadline.remaining(),
                 )
             ).strip()
             observed = (
                 await _host_text(
                     ["readlink", "-f", mounted_source],
-                    timeout=deadline - loop.time(),
+                    timeout=deadline.remaining(),
                 )
             ).strip()
             if observed == expected:
@@ -1030,7 +1029,7 @@ async def bind_block_device(
             raise OSError(msg)
         await _host_text(
             ["mount", "--bind", block, target],
-            timeout=deadline - loop.time(),
+            timeout=deadline.remaining(),
         )
 
 
@@ -1046,10 +1045,9 @@ async def unbind_block_device(*, target_path: str, timeout: float) -> None:
     if not target:
         msg = "block device unmount requires a non-empty target path"
         raise ValueError(msg)
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
-    async with _host_lock(deadline - loop.time()):
+    deadline = Deadline.from_timeout(timeout, message="timeout must be non-negative")
+    async with _host_lock(deadline.remaining()):
         with contextlib.suppress(OSError, TimeoutError):
-            await _host_text(["umount", target], timeout=deadline - loop.time())
+            await _host_text(["umount", target], timeout=deadline.remaining())
         with contextlib.suppress(OSError):
             _local_path(Path(target)).unlink()

@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Self, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from bertrand.env.kube.custom_object import (
-    CustomObject,
-    CustomObjectClient,
+    CustomObjectResource,
     CustomObjectSpec,
+    CustomObjectWrapper,
 )
 
 if TYPE_CHECKING:
@@ -20,35 +19,28 @@ if TYPE_CHECKING:
 GATEWAY_API_GROUP = "gateway.networking.k8s.io"
 GATEWAY_API_VERSION = "v1"
 
-_GATEWAY_CLASS_CLIENT = CustomObjectClient(
-    CustomObjectSpec(
-        group=GATEWAY_API_GROUP,
-        version=GATEWAY_API_VERSION,
-        kind="GatewayClass",
-        plural="gatewayclasses",
-        scope="cluster",
-    )
+_GATEWAY_CLASS_SPEC = CustomObjectSpec(
+    group=GATEWAY_API_GROUP,
+    version=GATEWAY_API_VERSION,
+    kind="GatewayClass",
+    plural="gatewayclasses",
+    scope="cluster",
 )
-_GATEWAY_CLIENT = CustomObjectClient(
-    CustomObjectSpec(
-        group=GATEWAY_API_GROUP,
-        version=GATEWAY_API_VERSION,
-        kind="Gateway",
-        plural="gateways",
-    )
+_GATEWAY_SPEC = CustomObjectSpec(
+    group=GATEWAY_API_GROUP,
+    version=GATEWAY_API_VERSION,
+    kind="Gateway",
+    plural="gateways",
 )
-_HTTP_ROUTE_CLIENT = CustomObjectClient(
-    CustomObjectSpec(
-        group=GATEWAY_API_GROUP,
-        version=GATEWAY_API_VERSION,
-        kind="HTTPRoute",
-        plural="httproutes",
-    )
+_HTTP_ROUTE_SPEC = CustomObjectSpec(
+    group=GATEWAY_API_GROUP,
+    version=GATEWAY_API_VERSION,
+    kind="HTTPRoute",
+    plural="httproutes",
 )
 
 
-@dataclass(frozen=True)
-class GatewayClass:
+class GatewayClass(CustomObjectWrapper):
     """Wrapper around one Gateway API GatewayClass.
 
     Parameters
@@ -57,8 +49,6 @@ class GatewayClass:
         Generic custom object payload returned by Kubernetes.
     """
 
-    _obj: CustomObject
-
     @classmethod
     async def get(
         cls,
@@ -66,7 +56,7 @@ class GatewayClass:
         *,
         name: str,
         timeout: float,
-    ) -> Self | None:
+    ) -> GatewayClass | None:
         """Read one GatewayClass by name.
 
         Parameters
@@ -83,12 +73,11 @@ class GatewayClass:
         GatewayClass | None
             Wrapped GatewayClass, or `None` if it does not exist.
         """
-        obj = await _GATEWAY_CLASS_CLIENT.get(
+        return await _GATEWAY_CLASS_RESOURCE.get(
             kube,
             name=name,
             timeout=timeout,
         )
-        return cls(obj) if obj is not None else None
 
     @classmethod
     async def upsert(
@@ -99,7 +88,7 @@ class GatewayClass:
         controller_name: str,
         timeout: float,
         labels: Mapping[str, str] | None = None,
-    ) -> Self:
+    ) -> GatewayClass:
         """Create or patch one GatewayClass.
 
         Parameters
@@ -120,36 +109,13 @@ class GatewayClass:
         GatewayClass
             Wrapped created or patched GatewayClass.
         """
-        obj = await _GATEWAY_CLASS_CLIENT.upsert(
+        return await _GATEWAY_CLASS_RESOURCE.upsert(
             kube,
             name=name,
             spec={"controllerName": controller_name},
             labels=labels,
             timeout=timeout,
         )
-        return cls(obj)
-
-    @property
-    def name(self) -> str:
-        """Return the GatewayClass name.
-
-        Returns
-        -------
-        str
-            Kubernetes `metadata.name`.
-        """
-        return self._obj.name
-
-    @property
-    def labels(self) -> Mapping[str, str]:
-        """Return GatewayClass labels.
-
-        Returns
-        -------
-        Mapping[str, str]
-            Read-only labels applied to the GatewayClass.
-        """
-        return self._obj.labels
 
     @property
     def accepted(self) -> bool:
@@ -183,15 +149,20 @@ class GatewayClass:
         timeout : float
             Maximum request budget in seconds. If infinite, wait indefinitely.
         """
-        await _GATEWAY_CLASS_CLIENT.delete_by_name(
+        await _GATEWAY_CLASS_RESOURCE.delete_by_name(
             kube,
             name=self.name,
             timeout=timeout,
         )
 
 
-@dataclass(frozen=True)
-class Gateway:
+_GATEWAY_CLASS_RESOURCE: CustomObjectResource[GatewayClass] = CustomObjectResource(
+    spec=_GATEWAY_CLASS_SPEC,
+    parser=GatewayClass._from_object,
+)
+
+
+class Gateway(CustomObjectWrapper):
     """Wrapper around one Gateway API Gateway.
 
     Parameters
@@ -199,8 +170,6 @@ class Gateway:
     _obj : CustomObject
         Generic custom object payload returned by Kubernetes.
     """
-
-    _obj: CustomObject
 
     @classmethod
     async def get(
@@ -210,7 +179,7 @@ class Gateway:
         namespace: str,
         name: str,
         timeout: float,
-    ) -> Self | None:
+    ) -> Gateway | None:
         """Read one Gateway by name.
 
         Parameters
@@ -229,13 +198,12 @@ class Gateway:
         Gateway | None
             Wrapped Gateway, or `None` if it does not exist.
         """
-        obj = await _GATEWAY_CLIENT.get(
+        return await _GATEWAY_RESOURCE.get(
             kube,
             namespace=namespace,
             name=name,
             timeout=timeout,
         )
-        return cls(obj) if obj is not None else None
 
     @classmethod
     async def upsert(
@@ -248,7 +216,7 @@ class Gateway:
         listeners: Sequence[Mapping[str, object]],
         timeout: float,
         labels: Mapping[str, str] | None = None,
-    ) -> Self:
+    ) -> Gateway:
         """Create or patch one Gateway.
 
         Parameters
@@ -273,7 +241,7 @@ class Gateway:
         Gateway
             Wrapped created or patched Gateway.
         """
-        obj = await _GATEWAY_CLIENT.upsert(
+        return await _GATEWAY_RESOURCE.upsert(
             kube,
             namespace=namespace,
             name=name,
@@ -284,40 +252,6 @@ class Gateway:
             labels=labels,
             timeout=timeout,
         )
-        return cls(obj)
-
-    @property
-    def name(self) -> str:
-        """Return the Gateway name.
-
-        Returns
-        -------
-        str
-            Kubernetes `metadata.name`.
-        """
-        return self._obj.name
-
-    @property
-    def namespace(self) -> str:
-        """Return the Gateway namespace.
-
-        Returns
-        -------
-        str
-            Kubernetes `metadata.namespace`.
-        """
-        return self._obj.namespace
-
-    @property
-    def labels(self) -> Mapping[str, str]:
-        """Return Gateway labels.
-
-        Returns
-        -------
-        Mapping[str, str]
-            Read-only labels applied to the Gateway.
-        """
-        return self._obj.labels
 
     @property
     def addresses(self) -> tuple[str, ...]:
@@ -350,7 +284,7 @@ class Gateway:
         timeout : float
             Maximum request budget in seconds. If infinite, wait indefinitely.
         """
-        await _GATEWAY_CLIENT.delete_by_name(
+        await _GATEWAY_RESOURCE.delete_by_name(
             kube,
             namespace=self.namespace,
             name=self.name,
@@ -358,8 +292,13 @@ class Gateway:
         )
 
 
-@dataclass(frozen=True)
-class HTTPRoute:
+_GATEWAY_RESOURCE: CustomObjectResource[Gateway] = CustomObjectResource(
+    spec=_GATEWAY_SPEC,
+    parser=Gateway._from_object,
+)
+
+
+class HTTPRoute(CustomObjectWrapper):
     """Wrapper around one Gateway API HTTPRoute.
 
     Parameters
@@ -367,8 +306,6 @@ class HTTPRoute:
     _obj : CustomObject
         Generic custom object payload returned by Kubernetes.
     """
-
-    _obj: CustomObject
 
     @classmethod
     async def get(
@@ -378,7 +315,7 @@ class HTTPRoute:
         namespace: str,
         name: str,
         timeout: float,
-    ) -> Self | None:
+    ) -> HTTPRoute | None:
         """Read one HTTPRoute by name.
 
         Parameters
@@ -397,13 +334,12 @@ class HTTPRoute:
         HTTPRoute | None
             Wrapped HTTPRoute, or `None` if it does not exist.
         """
-        obj = await _HTTP_ROUTE_CLIENT.get(
+        return await _HTTP_ROUTE_RESOURCE.get(
             kube,
             namespace=namespace,
             name=name,
             timeout=timeout,
         )
-        return cls(obj) if obj is not None else None
 
     @classmethod
     async def list(
@@ -413,7 +349,7 @@ class HTTPRoute:
         namespace: str,
         timeout: float,
         labels: Mapping[str, str] | None = None,
-    ) -> builtins.list[Self]:
+    ) -> builtins.list[HTTPRoute]:
         """List HTTPRoutes with optional label filtering.
 
         Parameters
@@ -432,13 +368,12 @@ class HTTPRoute:
         list[HTTPRoute]
             Wrapped HTTPRoutes matching the requested filters.
         """
-        objects = await _HTTP_ROUTE_CLIENT.list(
+        return await _HTTP_ROUTE_RESOURCE.list(
             kube,
             namespace=namespace,
             labels=labels,
             timeout=timeout,
         )
-        return [cls(obj) for obj in objects]
 
     @classmethod
     async def upsert(
@@ -452,7 +387,7 @@ class HTTPRoute:
         rules: Sequence[Mapping[str, object]],
         timeout: float,
         labels: Mapping[str, str] | None = None,
-    ) -> Self:
+    ) -> HTTPRoute:
         """Create or patch one HTTPRoute.
 
         Parameters
@@ -479,7 +414,7 @@ class HTTPRoute:
         HTTPRoute
             Wrapped created or patched HTTPRoute.
         """
-        obj = await _HTTP_ROUTE_CLIENT.upsert(
+        return await _HTTP_ROUTE_RESOURCE.upsert(
             kube,
             namespace=namespace,
             name=name,
@@ -491,40 +426,6 @@ class HTTPRoute:
             labels=labels,
             timeout=timeout,
         )
-        return cls(obj)
-
-    @property
-    def name(self) -> str:
-        """Return the HTTPRoute name.
-
-        Returns
-        -------
-        str
-            Kubernetes `metadata.name`.
-        """
-        return self._obj.name
-
-    @property
-    def namespace(self) -> str:
-        """Return the HTTPRoute namespace.
-
-        Returns
-        -------
-        str
-            Kubernetes `metadata.namespace`.
-        """
-        return self._obj.namespace
-
-    @property
-    def labels(self) -> Mapping[str, str]:
-        """Return HTTPRoute labels.
-
-        Returns
-        -------
-        Mapping[str, str]
-            Read-only labels applied to the HTTPRoute.
-        """
-        return self._obj.labels
 
     @property
     def hostnames(self) -> tuple[str, ...]:
@@ -554,12 +455,18 @@ class HTTPRoute:
         timeout : float
             Maximum request budget in seconds. If infinite, wait indefinitely.
         """
-        await _HTTP_ROUTE_CLIENT.delete_by_name(
+        await _HTTP_ROUTE_RESOURCE.delete_by_name(
             kube,
             namespace=self.namespace,
             name=self.name,
             timeout=timeout,
         )
+
+
+_HTTP_ROUTE_RESOURCE: CustomObjectResource[HTTPRoute] = CustomObjectResource(
+    spec=_HTTP_ROUTE_SPEC,
+    parser=HTTPRoute._from_object,
+)
 
 
 def _condition_status(status: Mapping[str, Any], kind: str) -> str:

@@ -7,13 +7,13 @@ Ruff-native keys to pass through unchanged for forward compatibility.
 from __future__ import annotations
 
 import re
-from typing import Annotated, Any
+from typing import Annotated
 
 from pydantic import BaseModel, ConfigDict, Field, PositiveInt, StringConstraints
 
 from bertrand.env.version import VERSION
 
-from .core import Config, Resource, Trimmed, resource
+from .core import Resource, Trimmed, resource
 
 type RuffRule = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 
@@ -184,35 +184,3 @@ class RuffConfig(Resource):
                 description="Linting settings for Ruff.",
             ),
         ]
-
-    async def init(self, config: Config, cli: Config.Init) -> dict[str, Any]:
-        """Return default Ruff configuration.
-
-        Returns
-        -------
-        dict[str, Any]
-            Default Ruff configuration data.
-        """
-        _ = config, cli
-        return self.Model.model_construct().model_dump(by_alias=True)
-
-    async def validate(self, config: Config, fragment: Any) -> Model | None:
-        """Validate Ruff configuration.
-
-        Returns
-        -------
-        Model | None
-            Validated Ruff configuration.
-        """
-        _ = config
-        return self.Model.model_validate(fragment)
-
-    async def schema(self) -> dict[str, Any]:
-        """Return the Ruff configuration schema.
-
-        Returns
-        -------
-        dict[str, Any]
-            JSON Schema for the Ruff configuration.
-        """
-        return self.Model.model_json_schema(by_alias=True, mode="validation")

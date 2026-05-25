@@ -8,7 +8,6 @@ ownership.  It also generates or configures a project repository when requested.
 
 from __future__ import annotations
 
-import asyncio
 import contextlib
 import hashlib
 import inspect
@@ -28,6 +27,7 @@ from bertrand.env.config.core import RESOURCE_NAMES, Config, Resource
 from bertrand.env.git import (
     BERTRAND_NAMESPACE,
     INFINITY,
+    Deadline,
     GitRepository,
     GroupStatus,
     HostLock,
@@ -388,14 +388,9 @@ async def _install_kube_runtime(state: _InitState, context: _InitContext) -> Non
     if state.package_manager is None:
         msg = "Package manager is not detected; cannot install Kubernetes runtime."
         raise OSError(msg)
-    if state.distro_id is None:
-        msg = "Distro ID is not detected; cannot install Kubernetes runtime."
-        raise OSError(msg)
-
     await install_microk8s(
         package_manager=state.package_manager,
         user=state.user,
-        distro_id=state.distro_id,
         assume_yes=context.assume_yes,
     )
 
@@ -443,6 +438,83 @@ INIT_STAGES: tuple[tuple[_InitStage, _InitStep], ...] = (
 )
 
 
+def _init_stage_index(state: _InitState) -> int:
+    return next(
+        (i for i, (stage, _) in enumerate(INIT_STAGES) if stage == state.stage),
+        0,
+    )
+
+
+async def _converge_init_state(context: _InitContext) -> _InitState:
+    state = _InitState.load()
+    index = _init_stage_index(state)
+    if index == len(INIT_STAGES) - 1:
+        try:
+            await _assert_installed(state, context)
+        except OSError:
+            index = 0
+            state = _InitState(version=INIT_STATE_VERSION)
+            if _InitState.backend_trustworthy():
+                state.dump()
+
+    for stage, step in INIT_STAGES[index:]:
+        await _run_init_step(step, state, context)
+        state.stage = stage
+        if _InitState.backend_trustworthy():
+            state.dump()
+    return state
+
+
+def _validate_shared_runtime_groups(state: _InitState) -> None:
+    if state.user is None:
+        msg = "init state user is missing; rerun `bertrand init`."
+        raise OSError(msg)
+    for group, purpose in (
+        (BERTRAND_GROUP, "shared Bertrand host-state access"),
+        ("microk8s", "MicroK8s runtime access"),
+    ):
+        status = GroupStatus.get(state.user, group)
+        if not status.configured:
+            msg = (
+                f"user {state.user!r} is not in {group!r}.  Rerun `bertrand init` "
+                f"to configure {purpose}."
+            )
+            raise OSError(msg)
+        if not status.active:
+            msg = (
+                f"user {state.user!r} is in {group!r}, but the current session is "
+                f"not active in that group.  Run `newgrp {group}` or log out and "
+                "back in, then rerun `bertrand init`."
+            )
+            raise OSError(msg)
+
+
+async def _ensure_shared_runtime(
+    *,
+    timeout: float,
+    yes: bool,
+    converge_cluster: bool,
+) -> Deadline:
+    msg = "timed out before checking host bootstrap"
+    if timeout <= 0:
+        raise TimeoutError(msg)
+    deadline = Deadline.from_timeout(timeout, message=msg)
+    async with HostLock(
+        INIT_LOCK,
+        timeout=deadline.remaining(),
+        privileges=INIT_LOCK_MODE,
+    ):
+        context = _InitContext(assume_yes=yes)
+        state = await _converge_init_state(context)
+        _validate_shared_runtime_groups(state)
+
+        if not converge_cluster:
+            return deadline
+
+        await _converge_host_cluster_runtime(deadline, start=True)
+        return deadline
+
+
 async def ensure_shared_runtime_installed(*, timeout: float, yes: bool) -> None:
     """Install shared host prerequisites without bootstrapping local clusters.
 
@@ -453,62 +525,12 @@ async def ensure_shared_runtime_installed(*, timeout: float, yes: bool) -> None:
     yes : bool
         Whether to auto-accept installation prompts.
 
-    Raises
-    ------
-    OSError
-        If required host runtime prerequisites cannot be converged.
-    TimeoutError
-        If convergence cannot start before `timeout` expires.
     """
-    if timeout <= 0:
-        msg = "timed out before checking host bootstrap"
-        raise TimeoutError(msg)
-    async with HostLock(
-        INIT_LOCK,
+    await _ensure_shared_runtime(
         timeout=timeout,
-        privileges=INIT_LOCK_MODE,
-    ):
-        context = _InitContext(assume_yes=yes)
-        state = _InitState.load()
-        index = next(
-            (i for i, (stage, _) in enumerate(INIT_STAGES) if stage == state.stage),
-            0,
-        )
-        if index == len(INIT_STAGES) - 1:
-            try:
-                await _assert_installed(state, context)
-            except OSError:
-                index = 0
-                state = _InitState(version=INIT_STATE_VERSION)
-                if _InitState.backend_trustworthy():
-                    state.dump()
-        for stage, step in INIT_STAGES[index:]:
-            await _run_init_step(step, state, context)
-            state.stage = stage
-            if _InitState.backend_trustworthy():
-                state.dump()
-
-        if state.user is None:
-            msg = "init state user is missing; rerun `bertrand init`."
-            raise OSError(msg)
-        for group, purpose in (
-            (BERTRAND_GROUP, "shared Bertrand host-state access"),
-            ("microk8s", "MicroK8s runtime access"),
-        ):
-            status = GroupStatus.get(state.user, group)
-            if not status.configured:
-                msg = (
-                    f"user {state.user!r} is not in {group!r}.  Rerun `bertrand init` "
-                    f"to configure {purpose}."
-                )
-                raise OSError(msg)
-            if not status.active:
-                msg = (
-                    f"user {state.user!r} is in {group!r}, but the current session is "
-                    f"not active in that group.  Run `newgrp {group}` or log out and "
-                    "back in, then rerun `bertrand init`."
-                )
-                raise OSError(msg)
+        yes=yes,
+        converge_cluster=False,
+    )
 
 
 @dataclass(frozen=True)
@@ -577,7 +599,7 @@ class _RepoState:
     worktree: Path
     repo_id: str
     mount_alias: Path | None
-    deadline: float
+    deadline: Deadline
 
     def __post_init__(self) -> None:
         self.target = abspath(self.target)
@@ -596,11 +618,10 @@ async def _ensure_repo_storage(
     state: _RepoState,
     context: _RepoContext,
 ) -> None:
-    loop = asyncio.get_running_loop()
     volumes = await RepoVolume.list(
         state.kube,
         state.repo_id,
-        timeout=state.deadline - loop.time(),
+        timeout=state.deadline.remaining(),
     )
 
     # no existing claim was found: prompt before converting an unmanaged repo
@@ -623,7 +644,7 @@ async def _ensure_repo_storage(
     repository_mount = await ensure_repository_mount(
         state.kube,
         repo_id=state.repo_id,
-        timeout=state.deadline - loop.time(),
+        timeout=state.deadline.remaining(),
         size_request=DEFAULT_VOLUME_SIZE,
         target=state.target,
         volumes=volumes,
@@ -639,7 +660,6 @@ async def _ensure_bare_worktrees(
         msg = "bare-worktree convergence requires a mounted repository alias"
         raise OSError(msg)
     mount = GitRepository(REPO_DIR / state.repo_id / REPO_MOUNT_EXT / ".git")
-    loop = asyncio.get_running_loop()
     deadline = state.deadline
     target_branch: str | None = None
 
@@ -700,7 +720,7 @@ async def _ensure_bare_worktrees(
                 "worktree has uncommitted changes"
             )
             raise OSError(msg)
-        await mount.mirror_from(state.repo, timeout=deadline - loop.time())
+        await mount.mirror_from(state.repo, timeout=deadline.remaining())
 
     # assert mounted directory is well-formed, then sync worktrees
     if not mount:
@@ -793,7 +813,6 @@ async def _render_config_artifacts(
     state: _RepoState,
     context: _RepoContext,
 ) -> None:
-    loop = asyncio.get_running_loop()
     render_targets: list[Path] = []
 
     # repository-level targeting converges all branch-attached in-repo worktrees;
@@ -832,7 +851,7 @@ async def _render_config_artifacts(
             root,
             kube=state.kube,
             repo=state.repo,
-            timeout=state.deadline - loop.time(),
+            timeout=state.deadline.remaining(),
         )
         config.resources.update({resource.name: None for resource in context.enable})
         config.init = Config.Init(
@@ -860,7 +879,6 @@ async def _make_initial_commit(
     state: _RepoState,
     _context: _RepoContext,
 ) -> None:
-    loop = asyncio.get_running_loop()
     worktree_path: Path | None = None
 
     # repository-level target: use the HEAD or first branch-attached worktree for
@@ -895,7 +913,7 @@ async def _make_initial_commit(
         cwd=worktree_path,
         check=False,
         capture_output=True,
-        timeout=state.deadline - loop.time(),
+        timeout=state.deadline.remaining(),
     )
     if head.returncode == 0:
         return  # repository already has commits
@@ -908,14 +926,14 @@ async def _make_initial_commit(
         ["git", "add", "-A"],
         cwd=worktree_path,
         capture_output=True,
-        timeout=state.deadline - loop.time(),
+        timeout=state.deadline.remaining(),
     )
     staged = await run(
         ["git", "diff", "--cached", "--quiet"],
         cwd=worktree_path,
         check=False,
         capture_output=True,
-        timeout=state.deadline - loop.time(),
+        timeout=state.deadline.remaining(),
     )
     if staged.returncode == 0:
         return  # nothing staged after render
@@ -928,7 +946,7 @@ async def _make_initial_commit(
         ["git", "commit", "--quiet", "-m", "Initial commit"],
         cwd=worktree_path,
         capture_output=True,
-        timeout=state.deadline - loop.time(),
+        timeout=state.deadline.remaining(),
     )
 
 
@@ -956,24 +974,23 @@ async def _finalize(
             assume_yes=context.assume_yes,
         )
 
-    loop = asyncio.get_running_loop()
     state.mount_alias = await finalize_repository_mount(
         state.kube,
         repo_id=state.repo_id,
         target=target,
         alias=mount_alias,
         replace_existing=replace_existing,
-        timeout=state.deadline - loop.time(),
+        timeout=state.deadline.remaining(),
     )
     await refresh_repository_alias_for_path(
         state.kube,
         state.mount_alias,
-        timeout=state.deadline - loop.time(),
+        timeout=state.deadline.remaining(),
     )
     await prune_repository_mount_aliases(
         state.kube,
         repo_id=state.repo_id,
-        timeout=state.deadline - loop.time(),
+        timeout=state.deadline.remaining(),
     )
 
 
@@ -988,56 +1005,85 @@ REPO_STAGES: tuple[_RepoStep, ...] = (
 
 
 async def _converge_build_runtime(kube: Kube, *, timeout: float) -> None:
+    msg = "build runtime timeout must be non-negative"
     if timeout <= 0:
-        msg = "build runtime timeout must be non-negative"
         raise TimeoutError(msg)
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
+    deadline = Deadline.from_timeout(timeout, message=msg)
     await Namespace.upsert(
         kube,
         name=BERTRAND_NAMESPACE,
-        timeout=deadline - loop.time(),
+        timeout=deadline.remaining(),
     )
-    await IMAGES.ensure(kube, timeout=deadline - loop.time())
-    await IMAGES.ensure_node_trust(kube, timeout=deadline - loop.time())
-    await IMAGES.assert_node_trust(kube, timeout=deadline - loop.time())
+    await IMAGES.ensure(kube, timeout=deadline.remaining())
+    await IMAGES.ensure_node_trust(kube, timeout=deadline.remaining())
+    await IMAGES.assert_node_trust(kube, timeout=deadline.remaining())
     await BUILDKIT_POOL.ensure(
         kube,
-        timeout=deadline - loop.time(),
+        timeout=deadline.remaining(),
         config_hash=await IMAGES.current_buildkit_config_hash(
             kube,
-            timeout=deadline - loop.time(),
+            timeout=deadline.remaining(),
         ),
     )
     await ensure_dra_backend(
         kube,
         image=control_plane_image(),
-        timeout=deadline - loop.time(),
+        timeout=deadline.remaining(),
     )
     await ensure_buildkit_build_controller(
         kube,
         image=control_plane_image(),
-        timeout=deadline - loop.time(),
+        timeout=deadline.remaining(),
     )
 
 
 async def _converge_cluster_runtime(kube: Kube, *, timeout: float) -> None:
+    msg = "cluster runtime timeout must be non-negative"
     if timeout <= 0:
-        msg = "cluster runtime timeout must be non-negative"
         raise TimeoutError(msg)
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
-    await ensure_local_bertrand_node(kube, timeout=deadline - loop.time())
-    await ensure_rook_ceph_base(kube, timeout=deadline - loop.time())
-    await _converge_build_runtime(kube, timeout=deadline - loop.time())
-    await ensure_dev_backend(kube, timeout=deadline - loop.time())
-    await ensure_network_backend(kube, timeout=deadline - loop.time())
+    deadline = Deadline.from_timeout(timeout, message=msg)
+    await ensure_local_bertrand_node(kube, timeout=deadline.remaining())
+    await ensure_rook_ceph_base(kube, timeout=deadline.remaining())
+    await _converge_build_runtime(kube, timeout=deadline.remaining())
+    await ensure_dev_backend(kube, timeout=deadline.remaining())
+    await ensure_network_backend(kube, timeout=deadline.remaining())
     await ensure_ceph_storage_controller(
         kube,
         image=control_plane_image(),
-        timeout=deadline - loop.time(),
+        timeout=deadline.remaining(),
     )
-    await wait_rook_ceph_ready(kube, timeout=deadline - loop.time())
+    await wait_rook_ceph_ready(kube, timeout=deadline.remaining())
+
+
+async def _converge_host_cluster_runtime(
+    deadline: Deadline,
+    *,
+    start: bool,
+) -> None:
+    if start:
+        await start_microk8s(timeout=deadline.remaining())
+    await ensure_microk8s_kubeconfig(timeout=deadline.remaining())
+    with await Kube.host(timeout=deadline.remaining()) as kube:
+        await _converge_cluster_runtime(kube, timeout=deadline.remaining())
+
+
+async def _mark_repo_failure(
+    kube: Kube,
+    *,
+    repo_id: str,
+    err: BaseException,
+    deadline: Deadline,
+) -> None:
+    remaining = deadline.remaining()
+    if remaining <= 0:
+        return
+    with contextlib.suppress(Exception):
+        await mark_repository_volume_failed(
+            kube,
+            repo_id=repo_id,
+            last_error=str(err),
+            timeout=remaining,
+        )
 
 
 async def bertrand_init(
@@ -1095,64 +1141,11 @@ async def bertrand_init(
         msg = "timed out before checking host bootstrap"
         raise TimeoutError(msg)
 
-    # bootstrap shared host runtime control plane (persistent, system-wide)
-    async with HostLock(
-        INIT_LOCK,
+    deadline = await _ensure_shared_runtime(
         timeout=timeout,
-        privileges=INIT_LOCK_MODE,
-    ):
-        context = _InitContext(assume_yes=yes)
-        state = _InitState.load()
-        index = next(
-            (i for i, (stage, _) in enumerate(INIT_STAGES) if stage == state.stage),
-            0,
-        )
-        if index == len(INIT_STAGES) - 1:
-            try:
-                await _assert_installed(state, context)
-            # reported as finished, but runtime is not actually installed
-            except OSError:
-                index = 0
-                state = _InitState(version=INIT_STATE_VERSION)
-                if _InitState.backend_trustworthy():
-                    state.dump()
-        for stage, step in INIT_STAGES[index:]:
-            await _run_init_step(step, state, context)
-            state.stage = stage
-            if _InitState.backend_trustworthy():
-                state.dump()
-
-        if state.user is None:
-            msg = "init state user is missing; rerun `bertrand init`."
-            raise OSError(msg)
-        for group, purpose in (
-            (BERTRAND_GROUP, "shared Bertrand host-state access"),
-            ("microk8s", "MicroK8s runtime access"),
-        ):
-            status = GroupStatus.get(state.user, group)
-            if not status.configured:
-                msg = (
-                    f"user {state.user!r} is not in {group!r}.  Rerun `bertrand init` "
-                    f"to configure {purpose}."
-                )
-                raise OSError(msg)
-            if not status.active:
-                msg = (
-                    f"user {state.user!r} is in {group!r}, but the current session is "
-                    f"not active in that group.  Run `newgrp {group}` or log out and "
-                    "back in, then rerun `bertrand init`."
-                )
-                raise OSError(msg)
-
-        # Start MicroK8s and converge the in-cluster Rook/Ceph substrate.
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + timeout
-        await start_microk8s(timeout=deadline - loop.time())
-        await ensure_microk8s_kubeconfig(timeout=deadline - loop.time())
-
-        # bootstrap internal kubernetes runtime control plane
-        with await Kube.host(timeout=deadline - loop.time()) as kube:
-            await _converge_cluster_runtime(kube, timeout=deadline - loop.time())
+        yes=yes,
+        converge_cluster=True,
+    )
 
     # if no project root is provided, then we're done
     if path is None:
@@ -1180,13 +1173,13 @@ async def bertrand_init(
         raise OSError(msg)
     raw_path = abspath(path)
 
-    with await Kube.host(timeout=deadline - loop.time()) as kube:
+    with await Kube.host(timeout=deadline.remaining()) as kube:
         # run managed-alias resurrection before git path resolution so repository
         # discovery sees the recovered hidden mount layout if one was detached
         resurrected = await resurrect_repository_mount(
             kube,
             raw_path,
-            timeout=deadline - loop.time(),
+            timeout=deadline.remaining(),
         )
         recovered_repo_id: str | None = None
         if resurrected is not None:
@@ -1212,7 +1205,7 @@ async def bertrand_init(
 
         # synchronize uniquely for each repository path to limit global init lock
         # contention
-        async with _RepoState.lock(repo.root, timeout=deadline - loop.time()):
+        async with _RepoState.lock(repo.root, timeout=deadline.remaining()):
             if repo and await repo.dirty():
                 msg = (
                     f"repository at {repo.root} has uncommitted changes; please "
@@ -1245,13 +1238,10 @@ async def bertrand_init(
                 for stage in REPO_STAGES:
                     await stage(state, repo_context)
             except Exception as err:
-                remaining = deadline - asyncio.get_running_loop().time()
-                if remaining > 0:
-                    with contextlib.suppress(Exception):
-                        await mark_repository_volume_failed(
-                            kube,
-                            repo_id=state.repo_id,
-                            last_error=str(err),
-                            timeout=remaining,
-                        )
+                await _mark_repo_failure(
+                    kube,
+                    repo_id=state.repo_id,
+                    err=err,
+                    deadline=deadline,
+                )
                 raise

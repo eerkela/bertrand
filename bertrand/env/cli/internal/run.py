@@ -32,16 +32,17 @@ def bertrand_run(args: argparse.Namespace) -> None:
         )
         raise ValueError(msg)
 
-    async def run() -> None:
-        async with live_project_context("run") as context:
-            await run_configured_project(
-                context.kube,
-                config=context.config,
-                repo_id=context.repo_id,
-                detach=args.detach,
-                tty=args.tty,
-                args=tuple(args.args),
-                ensure_build_crds=False,
-            )
+    asyncio.run(_bertrand_run_async(args))
 
-    asyncio.run(run())
+
+async def _bertrand_run_async(args: argparse.Namespace) -> None:
+    async with live_project_context("run") as context:
+        await run_configured_project(
+            context.kube,
+            config=context.config,
+            repo_id=context.repo_id,
+            detach=args.detach,
+            tty=args.tty,
+            args=tuple(args.args),
+            ensure_build_crds=False,
+        )

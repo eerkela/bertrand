@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-import asyncio
 from typing import TYPE_CHECKING
+
+from bertrand.env.git import Deadline
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -46,12 +47,13 @@ async def job_logs(
     if timeout <= 0:
         return ""
     try:
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + timeout
-        pods = await job.pods(kube, timeout=deadline - loop.time())
+        deadline = Deadline.from_timeout(
+            timeout, message="timeout must be non-negative"
+        )
+        pods = await job.pods(kube, timeout=deadline.remaining())
         chunks: list[str] = []
         for pod in pods:
-            remaining = deadline - loop.time()
+            remaining = deadline.remaining()
             if remaining <= 0:
                 break
             log = await pod.logs(
@@ -133,15 +135,16 @@ async def delete_job(
     if timeout <= 0:
         return
     try:
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + timeout
+        deadline = Deadline.from_timeout(
+            timeout, message="timeout must be non-negative"
+        )
         await job.delete(
             kube,
-            timeout=deadline - loop.time(),
+            timeout=deadline.remaining(),
             propagation_policy="Foreground",
         )
         if wait:
-            await job.wait_deleted(kube, timeout=deadline - loop.time())
+            await job.wait_deleted(kube, timeout=deadline.remaining())
     except (OSError, TimeoutError):
         return
 
@@ -199,22 +202,27 @@ async def wait_job_complete(
     try:
         return await job.wait_complete(kube, timeout=timeout)
     except (OSError, TimeoutError) as err:
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + diagnostic_timeout
-        logs = await job_logs(
-            kube,
-            job,
-            timeout=deadline - loop.time(),
-            tail_lines=tail_lines,
-            failure_label=log_failure_label,
-            include_headers=include_log_headers,
-        )
-        diagnostics = await job_pod_diagnostics(
-            kube,
-            job,
-            timeout=deadline - loop.time(),
-            failure_label="Job pod status diagnostics",
-        )
+        logs = ""
+        diagnostics = ""
+        if diagnostic_timeout > 0:
+            deadline = Deadline.from_timeout(
+                diagnostic_timeout,
+                message="diagnostic timeout must be non-negative",
+            )
+            logs = await job_logs(
+                kube,
+                job,
+                timeout=deadline.remaining(),
+                tail_lines=tail_lines,
+                failure_label=log_failure_label,
+                include_headers=include_log_headers,
+            )
+            diagnostics = await job_pod_diagnostics(
+                kube,
+                job,
+                timeout=deadline.remaining(),
+                failure_label="Job pod status diagnostics",
+            )
         await delete_job(kube, job, timeout=cleanup_timeout)
         msg = f"{failure_context}: {err}"
         diagnostics = diagnostics.strip()
@@ -284,15 +292,16 @@ async def run_observed_job(
     if timeout <= 0:
         msg = "observed Job timeout must be non-negative"
         raise TimeoutError(msg)
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
+    deadline = Deadline.from_timeout(
+        timeout, message="timeout must be non-negative"
+    )
     if observer is not None:
         await observer(job)
     try:
         await wait_job_complete(
             kube,
             job,
-            timeout=deadline - loop.time(),
+            timeout=deadline.remaining(),
             failure_context=failure_context,
             log_heading=log_heading,
             log_failure_label=log_failure_label,
@@ -308,7 +317,7 @@ async def run_observed_job(
     return await job_logs(
         kube,
         job,
-        timeout=deadline - loop.time(),
+        timeout=deadline.remaining(),
         tail_lines=tail_lines,
         failure_label=log_failure_label,
         include_headers=include_log_headers,

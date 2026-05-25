@@ -6,29 +6,32 @@ import asyncio
 import hashlib
 import uuid
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING
 
-from bertrand.env.config.bertrand import Bertrand
 from bertrand.env.git import (
     BERTRAND_NAMESPACE,
     CONTAINER_ID_ENV,
     IMAGE_ID_ENV,
+    Deadline,
 )
 from bertrand.env.kube.api.spec import EnvVarSpec, PolicyRuleSpec
 from bertrand.env.kube.build.project import project_image_build
 from bertrand.env.kube.build.refs import digest_from_ref, digest_ref
-from bertrand.env.kube.capability.device import upsert_resource_claim_templates
 from bertrand.env.kube.dev.mailbox import (
     DEV_GROUP,
     code_open_host_labels,
+    delete_code_open_request,
     ensure_code_open_request_crd,
     list_code_open_requests,
 )
-from bertrand.env.kube.node_identity import resolve_host_id_for_node
 from bertrand.env.kube.pod import Pod
 from bertrand.env.kube.rbac import ClusterRole, ClusterRoleBinding, Role, RoleBinding
 from bertrand.env.kube.service_account import ServiceAccount
-from bertrand.env.kube.workload.config import workload_pod_from_config
+from bertrand.env.kube.workload.controller import ensure_workload_claim_templates
+from bertrand.env.kube.workload.project import (
+    _project_workload_config,
+    _render_project_workload_pod,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -114,11 +117,13 @@ class DevSession:
         if timeout <= 0:
             msg = f"timed out waiting for dev session Pod {self.name!r}"
             raise TimeoutError(msg)
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + timeout
+        deadline = Deadline.from_timeout(
+            timeout,
+            message=f"timed out waiting for dev session Pod {self.name!r}",
+        )
         current = self.pod
         while True:
-            remaining = deadline - loop.time()
+            remaining = deadline.remaining()
             if remaining <= 0:
                 msg = f"timed out waiting for dev session Pod {self.name!r}"
                 raise TimeoutError(msg)
@@ -137,7 +142,7 @@ class DevSession:
             ):
                 return live
             current = live
-            await asyncio.sleep(min(DEV_SESSION_POLL_SECONDS, remaining))
+            await asyncio.sleep(deadline.bounded(DEV_SESSION_POLL_SECONDS))
 
     async def delete(self, kube: Kube, *, timeout: float) -> None:
         """Delete the generated dev Pod.
@@ -170,15 +175,17 @@ async def ensure_dev_backend(kube: Kube, *, timeout: float) -> None:
     if timeout <= 0:
         msg = "dev-session backend convergence timeout must be non-negative"
         raise TimeoutError(msg)
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
-    await ensure_code_open_request_crd(kube, timeout=deadline - loop.time())
+    deadline = Deadline.from_timeout(
+        timeout,
+        message="dev-session backend convergence timeout must be non-negative",
+    )
+    await ensure_code_open_request_crd(kube, timeout=deadline.remaining())
     await ServiceAccount.upsert(
         kube,
         namespace=BERTRAND_NAMESPACE,
         name=DEV_SERVICE_ACCOUNT,
         labels=_DEV_LABELS,
-        timeout=deadline - loop.time(),
+        timeout=deadline.remaining(),
     )
     await Role.upsert(
         kube,
@@ -186,7 +193,7 @@ async def ensure_dev_backend(kube: Kube, *, timeout: float) -> None:
         name=DEV_SERVICE_ACCOUNT,
         labels=_DEV_LABELS,
         rules=_dev_namespace_rules(),
-        timeout=deadline - loop.time(),
+        timeout=deadline.remaining(),
     )
     await RoleBinding.upsert(
         kube,
@@ -196,14 +203,14 @@ async def ensure_dev_backend(kube: Kube, *, timeout: float) -> None:
         service_account_name=DEV_SERVICE_ACCOUNT,
         service_account_namespace=BERTRAND_NAMESPACE,
         labels=_DEV_LABELS,
-        timeout=deadline - loop.time(),
+        timeout=deadline.remaining(),
     )
     await ClusterRole.upsert(
         kube,
         name=DEV_SERVICE_ACCOUNT,
         labels=_DEV_LABELS,
         rules=_dev_cluster_rules(),
-        timeout=deadline - loop.time(),
+        timeout=deadline.remaining(),
     )
     await ClusterRoleBinding.upsert(
         kube,
@@ -212,7 +219,7 @@ async def ensure_dev_backend(kube: Kube, *, timeout: float) -> None:
         service_account_name=DEV_SERVICE_ACCOUNT,
         service_account_namespace=BERTRAND_NAMESPACE,
         labels=_DEV_LABELS,
-        timeout=deadline - loop.time(),
+        timeout=deadline.remaining(),
     )
 
 
@@ -274,40 +281,33 @@ async def create_project_dev_session(
     if not config:
         msg = "dev session creation requires an active config context"
         raise RuntimeError(msg)
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
-    await ensure_dev_backend(kube, timeout=deadline - loop.time())
+    deadline = Deadline.from_timeout(
+        timeout,
+        message="dev session creation timeout must be positive",
+    )
+    await ensure_dev_backend(kube, timeout=deadline.remaining())
 
     build = project_image_build(config, repo_id=repo_id)
     image = _validate_image_ref(image_ref, image=build.identity.image)
-    bertrand = config.get(Bertrand)
+    bertrand = _project_workload_config(config)
     if bertrand is None or not bertrand.containers:
         msg = "`bertrand enter` and `bertrand code` require configured containers"
         raise ValueError(msg)
-    host_scope = (
-        await resolve_host_id_for_node(
-            kube, node_name=node, timeout=deadline - loop.time()
-        )
-        if node is not None
-        else None
-    )
-    workload = await workload_pod_from_config(
+    workload = await _render_project_workload_pod(
         kube,
-        config=cast("Any", bertrand),
-        repo_id=build.identity.repo_id,
-        worktree=build.identity.worktree,
-        worktree_id=build.identity.worktree_id,
+        workload_config=bertrand,
+        image_identity=build.identity,
         image=image,
-        host_id=host_scope,
-        timeout=deadline - loop.time(),
+        node=node,
+        deadline=deadline,
     )
     if workload is None:
         msg = "dev session creation requires a rendered workload pod"
         raise ValueError(msg)
-    await _ensure_claim_templates(
+    await ensure_workload_claim_templates(
         kube,
         workload=workload,
-        timeout=deadline - loop.time(),
+        timeout=deadline.remaining(),
     )
     name = dev_session_name(session_id)
     labels = _dev_session_labels(session_id=session_id, host_id=host_id)
@@ -326,7 +326,7 @@ async def create_project_dev_session(
         name=name,
         labels=labels,
         pod_template=template,
-        timeout=deadline - loop.time(),
+        timeout=deadline.remaining(),
     )
     return DevSession(
         session_id=session_id,
@@ -364,8 +364,10 @@ async def delete_dev_backend_state(
         raise TimeoutError(msg)
     if host_id is None:
         return
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
+    deadline = Deadline.from_timeout(
+        timeout,
+        message="dev-session backend cleanup timeout must be non-negative",
+    )
     pod_labels = {
         DEV_SESSION_LABEL: DEV_SESSION_LABEL_VALUE,
         DEV_SESSION_HOST_LABEL: _hash_label(host_id),
@@ -374,12 +376,12 @@ async def delete_dev_backend_state(
         kube,
         namespaces=(BERTRAND_NAMESPACE,),
         labels=pod_labels,
-        timeout=deadline - loop.time(),
+        timeout=deadline.remaining(),
     )
     for pod in pods:
         await pod.delete(
             kube,
-            timeout=deadline - loop.time(),
+            timeout=deadline.remaining(),
             grace_period_seconds=1,
         )
 
@@ -387,17 +389,16 @@ async def delete_dev_backend_state(
         requests = await list_code_open_requests(
             kube,
             labels=code_open_host_labels(host_id),
-            timeout=deadline - loop.time(),
+            timeout=deadline.remaining(),
         )
     except OSError:
         return
-    from bertrand.env.kube.dev.mailbox import delete_code_open_request
 
     for request in requests:
         await delete_code_open_request(
             kube,
             record=request,
-            timeout=deadline - loop.time(),
+            timeout=deadline.remaining(),
         )
 
 
@@ -426,23 +427,6 @@ def dev_session_name(session_id: str) -> str:
         DNS-label-safe Pod name.
     """
     return f"{DEV_SESSION_NAME_PREFIX}{_hash_label(session_id, chars=48)}"
-
-
-async def _ensure_claim_templates(
-    kube: Kube,
-    *,
-    workload: WorkloadPod,
-    timeout: float,
-) -> None:
-    if not workload.resource_claim_templates:
-        return
-    await upsert_resource_claim_templates(
-        kube,
-        namespace=BERTRAND_NAMESPACE,
-        intents=workload.resource_claim_templates,
-        labels=workload.labels,
-        timeout=timeout,
-    )
 
 
 def _dev_session_template(

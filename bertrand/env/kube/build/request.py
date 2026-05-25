@@ -28,13 +28,11 @@ from bertrand.env.git import (
     REPO_ID_ENV,
     WORKTREE_ENV,
     WORKTREE_ID_ENV,
+    Deadline,
 )
-from bertrand.env.kube.crd import CustomResourceDefinition
-from bertrand.env.kube.custom_object import (
-    CustomObjectClient,
-    CustomObjectMetadata,
-    CustomObjectSpec,
-)
+from bertrand.env.kube.api._helpers import _is_missing_api_resource
+from bertrand.env.kube.custom_object import CustomObjectMetadata  # noqa: TC001
+from bertrand.env.kube.custom_resource import CustomResource
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -61,14 +59,6 @@ type BuildPullPolicy = Literal["missing", "always", "never"]
 type BuildKitBuildPhase = Literal["Pending", "Running", "Succeeded", "Failed"]
 type _NonEmptyString = Annotated[str, Field(min_length=1)]
 
-_BUILDKIT_BUILD_SPEC = CustomObjectSpec(
-    group=BUILDKIT_BUILD_GROUP,
-    version=BUILDKIT_BUILD_VERSION,
-    kind=BUILDKIT_BUILD_KIND,
-    plural=BUILDKIT_BUILD_PLURAL,
-    labels=BUILDKIT_BUILD_LABELS,
-)
-_BUILDKIT_BUILD_CLIENT = CustomObjectClient(_BUILDKIT_BUILD_SPEC)
 _STRING_MAP_SCHEMA = {"type": "object", "additionalProperties": {"type": "string"}}
 _BOOL_MAP_SCHEMA = {"type": "object", "additionalProperties": {"type": "boolean"}}
 _BUILDKIT_BUILD_SPEC_SCHEMA = {
@@ -598,6 +588,21 @@ def _label_hash(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()[:16]
 
 
+_BUILDKIT_BUILD_RESOURCE = CustomResource[BuildKitBuildRecord](
+    group=BUILDKIT_BUILD_GROUP,
+    version=BUILDKIT_BUILD_VERSION,
+    kind=BUILDKIT_BUILD_KIND,
+    plural=BUILDKIT_BUILD_PLURAL,
+    singular="buildkitbuild",
+    short_names=("bkbuild",),
+    parser=BuildKitBuildRecord.from_payload,
+    spec_schema=_BUILDKIT_BUILD_SPEC_SCHEMA,
+    status_schema=_BUILDKIT_BUILD_STATUS_SCHEMA,
+    labels=BUILDKIT_BUILD_LABELS,
+    default_namespace=BERTRAND_NAMESPACE,
+)
+
+
 async def ensure_buildkit_build_crd(kube: Kube, *, timeout: float) -> None:
     """Converge the durable BuildKit build request CRD.
 
@@ -616,22 +621,7 @@ async def ensure_buildkit_build_crd(kube: Kube, *, timeout: float) -> None:
     if timeout <= 0:
         msg = "BuildKitBuild CRD timeout must be non-negative"
         raise TimeoutError(msg)
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
-    crd = await CustomResourceDefinition.upsert(
-        kube,
-        group=BUILDKIT_BUILD_GROUP,
-        version=BUILDKIT_BUILD_VERSION,
-        plural=BUILDKIT_BUILD_PLURAL,
-        singular="buildkitbuild",
-        kind=BUILDKIT_BUILD_KIND,
-        short_names=("bkbuild",),
-        spec_schema=_BUILDKIT_BUILD_SPEC_SCHEMA,
-        status_schema=_BUILDKIT_BUILD_STATUS_SCHEMA,
-        labels=BUILDKIT_BUILD_LABELS,
-        timeout=deadline - loop.time(),
-    )
-    await crd.wait_established(kube, timeout=deadline - loop.time())
+    await _BUILDKIT_BUILD_RESOURCE.ensure_crd(kube, timeout=timeout)
 
 
 async def submit_buildkit_build(
@@ -664,17 +654,16 @@ async def submit_buildkit_build(
     if timeout <= 0:
         msg = "BuildKitBuild submit timeout must be non-negative"
         raise TimeoutError(msg)
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
-    obj = await _BUILDKIT_BUILD_CLIENT.create(
+    deadline = Deadline.from_timeout(
+        timeout, message="timeout must be non-negative"
+    )
+    return await _BUILDKIT_BUILD_RESOURCE.create(
         kube,
-        namespace=BERTRAND_NAMESPACE,
         name=_buildkit_build_name(spec),
         spec=spec.model_dump(mode="json"),
         labels=spec.request_labels,
-        timeout=deadline - loop.time(),
+        timeout=deadline.remaining(),
     )
-    return BuildKitBuildRecord.from_payload(obj.payload)
 
 
 async def get_buildkit_build(
@@ -699,15 +688,11 @@ async def get_buildkit_build(
     BuildKitBuildRecord | None
         Build request, or `None` if it does not exist.
     """
-    obj = await _BUILDKIT_BUILD_CLIENT.get(
+    return await _BUILDKIT_BUILD_RESOURCE.get(
         kube,
-        namespace=BERTRAND_NAMESPACE,
         name=name,
         timeout=timeout,
     )
-    if obj is None:
-        return None
-    return BuildKitBuildRecord.from_payload(obj.payload)
 
 
 async def list_buildkit_builds(
@@ -745,21 +730,16 @@ async def list_buildkit_builds(
     if timeout <= 0:
         msg = "BuildKitBuild list timeout must be non-negative"
         raise TimeoutError(msg)
-    selector = {BUILDKIT_BUILD_LABEL: BUILDKIT_BUILD_LABEL_VALUE}
-    selector.update(labels or {})
     try:
-        objects = await _BUILDKIT_BUILD_CLIENT.list(
+        return await _BUILDKIT_BUILD_RESOURCE.list(
             kube,
-            namespace=BERTRAND_NAMESPACE,
-            labels=selector,
+            labels=labels,
             timeout=timeout,
         )
     except OSError as err:
-        detail = str(err).lower()
-        if missing_ok and ("not found" in detail or "status 404" in detail):
+        if missing_ok and _is_missing_api_resource(err):
             return []
         raise
-    return [BuildKitBuildRecord.from_payload(obj.payload) for obj in objects]
 
 
 async def has_active_buildkit_builds(
@@ -865,11 +845,12 @@ async def wait_buildkit_build(
     if timeout <= 0:
         msg = "BuildKitBuild wait timeout must be non-negative"
         raise TimeoutError(msg)
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
+    deadline = Deadline.from_timeout(
+        timeout, message="timeout must be non-negative"
+    )
     seen_version = ""
     while True:
-        remaining = deadline - loop.time()
+        remaining = deadline.remaining()
         if remaining <= 0:
             msg = f"BuildKitBuild {name!r} did not finish before timeout"
             raise TimeoutError(msg)
@@ -883,7 +864,7 @@ async def wait_buildkit_build(
                 await on_update(record)
         if record.is_terminal:
             return record
-        await asyncio.sleep(min(BUILDKIT_BUILD_WAIT_POLL_SECONDS, remaining))
+        await asyncio.sleep(deadline.bounded(BUILDKIT_BUILD_WAIT_POLL_SECONDS))
 
 
 async def patch_buildkit_build_status(
@@ -925,8 +906,9 @@ async def patch_buildkit_build_status(
     if timeout <= 0:
         msg = "BuildKitBuild status patch timeout must be non-negative"
         raise TimeoutError(msg)
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
+    deadline = Deadline.from_timeout(
+        timeout, message="timeout must be non-negative"
+    )
     payload: dict[str, object] = {}
     payload.update(updates)
     payload["phase"] = phase
@@ -936,14 +918,12 @@ async def patch_buildkit_build_status(
         by_alias=True,
         exclude_unset=True,
     )
-    obj = await _BUILDKIT_BUILD_CLIENT.patch_status(
+    return await _BUILDKIT_BUILD_RESOURCE.patch_status(
         kube,
-        namespace=BERTRAND_NAMESPACE,
         name=name,
         status=status,
-        timeout=deadline - loop.time(),
+        timeout=deadline.remaining(),
     )
-    return BuildKitBuildRecord.from_payload(obj.payload)
 
 
 def _buildkit_build_name(spec: BuildKitBuildSpec) -> str:

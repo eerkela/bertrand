@@ -39,18 +39,18 @@ def bertrand_build(args: argparse.Namespace) -> None:
         Parsed internal CLI arguments.
 
     """
+    asyncio.run(_bertrand_build_async(args))
 
-    async def build() -> None:
-        cli_args = _parse_build_args(args.build_arg)
-        resolved_args = _resolve_image_build_args(cli_args)
-        if inside_container():
-            async with live_project_context("build") as context:
-                await _build(context.config, build_args=resolved_args)
-        else:
-            async with image_build_context("build") as config:
-                await _build(config, build_args=resolved_args)
 
-    asyncio.run(build())
+async def _bertrand_build_async(args: argparse.Namespace) -> None:
+    cli_args = _parse_build_args(args.build_arg)
+    resolved_args = _resolve_image_build_args(cli_args)
+    if inside_container():
+        async with live_project_context("build") as context:
+            await _build(context.config, build_args=resolved_args)
+    else:
+        async with image_build_context("build") as config:
+            await _build(config, build_args=resolved_args)
 
 
 def _parse_build_args(entries: Sequence[str]) -> dict[str, str]:

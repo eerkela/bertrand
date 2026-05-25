@@ -12,13 +12,46 @@ from typing import TYPE_CHECKING, Self
 import kubernetes
 from kubernetes.client.rest import ApiException
 
-from bertrand.env.git import BERTRAND_NAMESPACE
+from bertrand.env.git import BERTRAND_NAMESPACE, Deadline
+from bertrand.env.kube.api.bootstrap import (
+    KUBE_CONFIG_FILE,
+    ensure_microk8s_kubeconfig,
+    kubeconfig_identity,
+    microk8s_config_payload,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
 CLUSTER_REGISTRY_READY_LABEL = "bertrand.dev/registry-ready"
 CLUSTER_REGISTRY_READY_VALUE = "true"
+
+
+class KubeApiError(OSError):
+    """Structured Kubernetes API failure raised by :meth:`Kube.run`.
+
+    Parameters
+    ----------
+    context : str
+        Human-readable operation context.
+    status : int
+        Kubernetes API HTTP status code.
+    detail : str
+        Kubernetes API failure detail.
+    """
+
+    context: str
+    status: int
+    detail: str
+
+    def __init__(self, *, context: str, status: int, detail: str) -> None:
+        """Initialize a structured Kubernetes API error."""
+        self.context = context
+        self.status = status
+        self.detail = detail
+        super().__init__(
+            f"{context} failed with kubernetes API status {status}: {detail}"
+        )
 
 
 @dataclass
@@ -113,8 +146,6 @@ class Kube:
             strict Bertrand-managed path.
         """
         if config_file is None:
-            from .bootstrap import KUBE_CONFIG_FILE
-
             config_file = KUBE_CONFIG_FILE
         if not config_file.is_file():
             msg = (
@@ -165,24 +196,20 @@ class Kube:
         if timeout <= 0:
             msg = "kubernetes host-client timeout must be non-negative"
             raise TimeoutError(msg)
-        from .bootstrap import (
-            ensure_microk8s_kubeconfig,
-            kubeconfig_identity,
-            microk8s_config_payload,
+        deadline = Deadline.from_timeout(
+            timeout,
+            message="kubernetes host-client timeout must be non-negative",
         )
-
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + timeout
 
         # NOTE: we always converge from `microk8s config` first so the managed
         # kubeconfig cannot drift from the local control-plane identity.
-        config_file = await ensure_microk8s_kubeconfig(timeout=deadline - loop.time())
+        config_file = await ensure_microk8s_kubeconfig(timeout=deadline.remaining())
         try:
             managed_payload = config_file.read_text(encoding="utf-8")
         except OSError as err:
             msg = f"failed to read managed kubeconfig at {config_file}: {err}"
             raise OSError(msg) from err
-        fresh_payload = await microk8s_config_payload(timeout=deadline - loop.time())
+        fresh_payload = await microk8s_config_payload(timeout=deadline.remaining())
 
         managed_server, managed_ca = kubeconfig_identity(
             managed_payload,
@@ -279,6 +306,7 @@ class Kube:
         *,
         timeout: float,
         context: str,
+        missing_ok: bool = True,
     ) -> T | None:
         """Run one Kubernetes API operation across the sync/async boundary.
 
@@ -291,17 +319,21 @@ class Kube:
             Maximum runtime budget in seconds.  If infinite, wait indefinitely.
         context : str
             Human-readable context for timeout and API error messages.
+        missing_ok : bool, optional
+            Whether HTTP 404 should be returned as ``None`` instead of raised as a
+            structured API error.
 
         Returns
         -------
         T | None
-            The API payload, or `None` if the operation returned HTTP 404.
+            The API payload, or ``None`` if the operation returned HTTP 404 and
+            `missing_ok` is true.
 
         Raises
         ------
         TimeoutError
             If the operation exceeds the timeout budget.
-        OSError
+        KubeApiError
             If the API call fails with any non-404 error.
         """
         if timeout <= 0:
@@ -317,8 +349,11 @@ class Kube:
             msg = f"{context} timed out after {timeout} seconds"
             raise TimeoutError(msg) from err
         except ApiException as err:
-            if err.status == 404:
+            if err.status == 404 and missing_ok:
                 return None
             detail = (err.body or err.reason or str(err)).strip()
-            msg = f"{context} failed with kubernetes API status {err.status}: {detail}"
-            raise OSError(msg) from err
+            raise KubeApiError(
+                context=context,
+                status=int(err.status or 0),
+                detail=detail,
+            ) from err

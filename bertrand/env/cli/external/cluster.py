@@ -10,6 +10,19 @@ from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, cast
 
+from bertrand.env.cli.external._device import device_line, device_payload
+from bertrand.env.cli.external._runtime import emit_json
+from bertrand.env.cli.external._storage import (
+    print_storage_csi_line,
+    print_storage_status_fields,
+    storage_cli_snapshot,
+    storage_csi_ready,
+    storage_osd_line,
+)
+from bertrand.env.cli.external.init import (
+    _converge_host_cluster_runtime,
+    ensure_shared_runtime_installed,
+)
 from bertrand.env.cli.external.secret import (
     add_capability,
     list_capabilities,
@@ -17,9 +30,8 @@ from bertrand.env.cli.external.secret import (
     shared_capability_ref,
     shared_scope_targets,
 )
-from bertrand.env.git import BERTRAND_NAMESPACE, INFINITY
+from bertrand.env.git import BERTRAND_NAMESPACE, INFINITY, Deadline
 from bertrand.env.kube.api.bootstrap import (
-    ensure_microk8s_kubeconfig,
     join_microk8s_cluster,
     microk8s_cluster_ready,
     microk8s_join_token,
@@ -27,15 +39,13 @@ from bertrand.env.kube.api.bootstrap import (
 from bertrand.env.kube.api.client import Kube
 from bertrand.env.kube.build.daemon import BUILDKIT_POOL
 from bertrand.env.kube.build.repository import IMAGES
-from bertrand.env.kube.capability.device import (
-    BertrandDeviceRecord,
-    list_device_inventory,
-)
+from bertrand.env.kube.capability.device import list_device_inventory
 from bertrand.env.kube.ceph.bootstrap import rook_ceph_ready
-from bertrand.env.kube.ceph.csi import CSI_DRIVER_NAME
-from bertrand.env.kube.ceph.storage import CSI_CONTROLLER_NAME, CSI_NODE_NAME
+from bertrand.env.kube.ceph.capacity import (
+    STORAGE_NODE_REPORT_MAX_AGE_SECONDS,
+    read_storage_policy,
+)
 from bertrand.env.kube.crd import CustomResourceDefinition
-from bertrand.env.kube.daemonset import DaemonSet
 from bertrand.env.kube.deployment import Deployment
 from bertrand.env.kube.dev.mailbox import CODE_OPEN_PLURAL, DEV_GROUP
 from bertrand.env.kube.gateway import Gateway, GatewayClass, HTTPRoute
@@ -60,7 +70,7 @@ from bertrand.env.kube.network.load_balancer import (
     metallb_status,
 )
 from bertrand.env.kube.network.profile import NETWORK_PROFILE_NAME, NetworkProfile
-from bertrand.env.kube.node_identity import BertrandNodeRecord, list_bertrand_nodes
+from bertrand.env.kube.node_identity import list_bertrand_nodes
 from bertrand.env.kube.volume import StorageClass
 
 if TYPE_CHECKING:
@@ -142,7 +152,7 @@ async def bertrand_cluster_status(*, json_output: bool) -> None:
         "dev": await _probe_kube(_dev_status),
     }
     if json_output:
-        print(json.dumps(status, indent=2, sort_keys=True))
+        emit_json(status)
         return
     print("cluster:")
     for name, value in status.items():
@@ -174,14 +184,13 @@ async def bertrand_cluster_invite(
     TimeoutError
         If `timeout` is non-positive.
     """
+    msg = "cluster invite timeout must be non-negative"
     if timeout <= 0:
-        msg = "cluster invite timeout must be non-negative"
         raise TimeoutError(msg)
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
+    deadline = Deadline.from_timeout(timeout, message=msg)
     microk8s = await microk8s_join_token(
         worker=worker,
-        timeout=deadline - loop.time(),
+        timeout=deadline.remaining(),
     )
     node_name = (
         name or f"bertrand-node-{datetime.now(UTC).strftime('%Y%m%d%H%M%S')}"
@@ -224,26 +233,19 @@ async def bertrand_cluster_join(
     TimeoutError
         If `timeout` is non-positive.
     """
+    msg = "cluster join timeout must be non-negative"
     if timeout <= 0:
-        msg = "cluster join timeout must be non-negative"
         raise TimeoutError(msg)
-    from bertrand.env.cli.external.init import (
-        _converge_cluster_runtime,
-        ensure_shared_runtime_installed,
-    )
 
     bundle = _decode_bundle(token)
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
-    await ensure_shared_runtime_installed(timeout=deadline - loop.time(), yes=False)
+    deadline = Deadline.from_timeout(timeout, message=msg)
+    await ensure_shared_runtime_installed(timeout=deadline.remaining(), yes=False)
     await join_microk8s_cluster(
         str(bundle["microk8s"]),
         worker=worker or bool(bundle.get("worker")),
-        timeout=deadline - loop.time(),
+        timeout=deadline.remaining(),
     )
-    await ensure_microk8s_kubeconfig(timeout=deadline - loop.time())
-    with await Kube.host(timeout=deadline - loop.time()) as kube:
-        await _converge_cluster_runtime(kube, timeout=deadline - loop.time())
+    await _converge_host_cluster_runtime(deadline, start=False)
     print("Bertrand cluster join complete.")
 
 
@@ -327,60 +329,21 @@ async def bertrand_cluster_device_list(
             for item in await list_bertrand_nodes(kube, timeout=timeout)
         }
     payload = [
-        _device_record_payload(record, node=nodes.get(record.host_id))
+        device_payload(
+            record,
+            owner=nodes.get(record.host_id),
+            include_display_name=True,
+        )
         for record in records
     ]
     if json_output:
-        print(json.dumps(payload, indent=2, sort_keys=True))
+        emit_json(payload)
         return
     if not records:
         print("no DRA devices")
         return
     for record in records:
-        display = nodes.get(record.host_id)
-        owner = (
-            f"{record.host_id}"
-            if display is None or not display.display_name
-            else f"{display.display_name} ({record.host_id})"
-        )
-        print(
-            f"{record.capability_id} {record.spec.device_name} "
-            f"[{owner}; kube={record.node_name}] -> {record.cdi_selector}"
-        )
-
-
-async def _osd_csi_status(kube: Kube) -> dict[str, object]:
-    driver = await kube.run(
-        lambda request_timeout: kube.storage.read_csi_driver(
-            name=CSI_DRIVER_NAME,
-            _request_timeout=request_timeout,
-        ),
-        timeout=INFINITY,
-        context=f"failed to inspect CSIDriver {CSI_DRIVER_NAME!r}",
-    )
-    controller = await Deployment.get(
-        kube,
-        namespace=BERTRAND_NAMESPACE,
-        name=CSI_CONTROLLER_NAME,
-        timeout=INFINITY,
-    )
-    node = await DaemonSet.get(
-        kube,
-        namespace=BERTRAND_NAMESPACE,
-        name=CSI_NODE_NAME,
-        timeout=INFINITY,
-    )
-    return {
-        "driver": driver is not None,
-        "controller_ready": controller is not None and controller.ready_replicas >= 1,
-        "node_ready": (
-            node is not None
-            and node.desired_number_scheduled > 0
-            and node.number_available >= node.desired_number_scheduled
-        ),
-        "node_available": node.number_available if node is not None else 0,
-        "node_desired": node.desired_number_scheduled if node is not None else 0,
-    }
+        print(device_line(record, owner=nodes.get(record.host_id), cluster=True))
 
 
 async def bertrand_cluster_storage_status(
@@ -397,105 +360,35 @@ async def bertrand_cluster_storage_status(
     doctor : bool
         Whether to print diagnostic guidance in addition to status.
     """
-    from bertrand.env.kube.ceph.capacity import (
-        STORAGE_NODE_REPORT_MAX_AGE_SECONDS,
-        CephStoragePlanner,
-        list_storage_actions,
-        list_storage_node_reports,
-        list_storage_osds,
-        list_storage_reservations,
-        read_storage_policy,
-    )
-
     with await Kube.host(timeout=INFINITY) as kube:
-        policy = await read_storage_policy(kube, timeout=INFINITY)
-        actions = await list_storage_actions(kube, timeout=INFINITY)
-        reservations = await list_storage_reservations(kube, timeout=INFINITY)
-        reports = await list_storage_node_reports(kube, timeout=INFINITY)
-        osds = await list_storage_osds(kube, timeout=INFINITY)
-        csi_status = await _osd_csi_status(kube)
-    planner = CephStoragePlanner()
-    payload = {
-        "policy": policy.spec.model_dump(mode="json"),
-        "status": policy.status.model_dump(mode="json") if policy.status else None,
-        "action_counts": planner.action_counts(actions),
-        "reservations": [
-            reservation.model_dump(mode="json") for reservation in reservations
-        ],
-        "reports": [report.model_dump(mode="json") for report in reports],
-        "osds": [osd.model_dump(mode="json") for osd in osds],
-        "csi": csi_status,
-    }
+        snapshot = await storage_cli_snapshot(kube)
+    payload = snapshot.status_payload()
     if json_output:
-        print(json.dumps(payload, indent=2, sort_keys=True))
+        emit_json(payload)
         return
 
     print("storage:")
     status = payload["status"]
-    if isinstance(status, dict):
-        print(f"  used: {status.get('used_ratio')}")
-        print(f"  loop fallback OSDs: {status.get('loop_osds')}")
-        print(f"  LVM-backed OSDs: {status.get('lvm_osds')}")
-        print(f"  elastic bytes: {status.get('elastic_bytes')}")
-        print(f"  durable bytes: {status.get('durable_bytes')}")
-        print(f"  free bytes: {status.get('free_bytes')}")
-        print(f"  target headroom bytes: {status.get('headroom_target_bytes')}")
-        print(f"  reserved bytes: {status.get('reserved_bytes')}")
-        print(
-            "  write rate EWMA bytes/s: "
-            f"{status.get('write_rate_ewma_bytes_per_second')}"
-        )
-        print(
-            "  projected seconds to headroom floor: "
-            f"{status.get('projected_seconds_to_headroom_floor')}"
-        )
-        print(
-            "  growth recommendation bytes: "
-            f"{status.get('growth_recommendation_bytes')}"
-        )
-        print(f"  missing LVM OSD PVs: {status.get('missing_lvm_osd_pvs')}")
-        print(f"  LVM reclaimable bytes: {status.get('lvm_reclaimable_bytes')}")
-        print(f"  LVM shrink candidate: {status.get('lvm_shrink_candidate') or 'none'}")
-        print(f"  LVM shrink target bytes: {status.get('lvm_shrink_target_bytes')}")
-        print(f"  last error: {status.get('last_error') or 'none'}")
-    print(f"  node reports: {len(reports)}")
-    print(f"  managed OSD records: {len(osds)}")
-    csi = payload["csi"]
-    if isinstance(csi, dict):
-        print(
-            "  CSI: "
-            f"driver={'ready' if csi.get('driver') else 'missing'}, "
-            f"controller={'ready' if csi.get('controller_ready') else 'not ready'}, "
-            f"nodes={csi.get('node_available')}/{csi.get('node_desired')}"
-        )
-    for osd in osds:
-        print(
-            f"    {osd.metadata.name}: {osd.spec.origin} "
-            f"{osd.status.phase} node={osd.spec.node_name} "
-            f"ceph=osd.{osd.status.ceph_osd_id}"
-            if osd.status.ceph_osd_id is not None
-            else (
-                f"    {osd.metadata.name}: {osd.spec.origin} "
-                f"{osd.status.phase} node={osd.spec.node_name}"
-            )
-        )
+    print_storage_status_fields(status, local=False)
+    print(f"  node reports: {len(snapshot.reports)}")
+    print(f"  managed OSD records: {len(snapshot.osds)}")
+    print_storage_csi_line(payload["csi"])
+    for osd in snapshot.osds:
+        print(storage_osd_line(osd, include_ceph_id=True))
     print("  actions:")
-    for phase, count in payload["action_counts"].items():
+    action_counts = cast("Mapping[str, object]", payload["action_counts"])
+    for phase, count in action_counts.items():
         print(f"    {phase}: {count}")
-    active_reservations = [
-        reservation
-        for reservation in reservations
-        if reservation.status.phase in {"Pending", "Ready"}
-    ]
+    active_reservations = snapshot.active_reservations()
     print(f"  active reservations: {len(active_reservations)}")
     if doctor:
         print("doctor:")
-        if not reports:
+        if not snapshot.reports:
             print("  no storage-agent node reports are available")
         now = datetime.now(UTC)
         stale_reports = [
             report
-            for report in reports
+            for report in snapshot.reports
             if report.status is None
             or report.status.heartbeat_at is None
             or (
@@ -513,7 +406,9 @@ async def bertrand_cluster_storage_status(
                 f"  storage report {report.metadata.name} is stale "
                 f"(host={report.spec.host_id}, kube={report.spec.node_name})"
             )
-        if not any((report.status and report.status.lvm_pvs) for report in reports):
+        if not any(
+            (report.status and report.status.lvm_pvs) for report in snapshot.reports
+        ):
             print("  no node reports a 'bertrand' LVM volume group with free PVs")
             print(
                 "  create a host LVM volume group named 'bertrand' for preferred OSDs"
@@ -521,20 +416,18 @@ async def bertrand_cluster_storage_status(
         else:
             total_lvm_free = sum(
                 report.status.lvm_free_bytes
-                for report in reports
+                for report in snapshot.reports
                 if report.status is not None
             )
             print(f"  reported free LVM bytes in 'bertrand' VG: {total_lvm_free}")
-        if isinstance(csi, dict) and not all(
-            (csi.get("driver"), csi.get("controller_ready"), csi.get("node_ready"))
-        ):
+        if not storage_csi_ready(snapshot.csi):
             print(
                 "  Bertrand OSD CSI is not fully ready; PVC-backed OSD growth may "
                 "be blocked"
             )
         stuck = [
             osd
-            for osd in osds
+            for osd in snapshot.osds
             if osd.status.phase in {"HostPrepared", "Binding", "Expanding", "Shrinking"}
         ]
         for osd in stuck[:5]:
@@ -551,11 +444,11 @@ async def bertrand_cluster_storage_status(
         active_loop = any(
             osd.spec.origin == "loop-fallback"
             and osd.status.phase not in {"Retired", "Failed"}
-            for osd in osds
+            for osd in snapshot.osds
         )
         lvm_available = any(
             report.status is not None and report.status.lvm_free_bytes > 0
-            for report in reports
+            for report in snapshot.reports
         )
         if active_loop and lvm_available:
             print(
@@ -564,16 +457,18 @@ async def bertrand_cluster_storage_status(
                 "Ceph reports it is safe"
             )
         if isinstance(status, dict):
-            if (status.get("missing_lvm_osd_pvs") or 0) > 0:
+            status_map = cast("dict[str, object]", status)
+            missing_lvm_osds = status_map.get("missing_lvm_osd_pvs")
+            if isinstance(missing_lvm_osds, int) and missing_lvm_osds > 0:
                 print(
                     "  one or more usable LVM PVs do not yet have managed OSD "
                     "coverage; Bertrand will create minimum-size OSDs first"
                 )
-            if status.get("lvm_shrink_candidate"):
+            if status_map.get("lvm_shrink_candidate"):
                 print(
                     "  LVM shrink candidate selected: "
-                    f"{status.get('lvm_shrink_candidate')} -> "
-                    f"{status.get('lvm_shrink_target_bytes')} bytes"
+                    f"{status_map.get('lvm_shrink_candidate')} -> "
+                    f"{status_map.get('lvm_shrink_target_bytes')} bytes"
                 )
         for reservation in active_reservations[:5]:
             if reservation.status.phase == "Pending":
@@ -581,10 +476,12 @@ async def bertrand_cluster_storage_status(
                     f"  reservation {reservation.metadata.name} is pending: "
                     f"{reservation.status.last_error or 'waiting for headroom'}"
                 )
-        for osd in osds:
+        for osd in snapshot.osds:
             if osd.status.last_error:
                 print(f"  OSD {osd.metadata.name} error: {osd.status.last_error}")
-        failed = [action for action in actions if action.status.phase == "Failed"]
+        failed = [
+            action for action in snapshot.actions if action.status.phase == "Failed"
+        ]
         for action in failed[:5]:
             print(f"  failed {action.metadata.name}: {action.status.message}")
 
@@ -617,7 +514,7 @@ async def bertrand_cluster_network_status(*, json_output: bool) -> None:
     """
     report = await _network_report()
     if json_output:
-        print(json.dumps(report, indent=2, sort_keys=True))
+        emit_json(report)
         return
     _print_network_report(report)
 
@@ -633,13 +530,7 @@ async def bertrand_cluster_network_doctor(*, json_output: bool) -> None:
     report = await _network_report()
     issues = _network_issues(report)
     if json_output:
-        print(
-            json.dumps(
-                {"ready": not issues, "issues": issues, "status": report},
-                indent=2,
-                sort_keys=True,
-            )
-        )
+        emit_json({"ready": not issues, "issues": issues, "status": report})
         return
     _print_network_report(report)
     print("doctor:")
@@ -682,7 +573,7 @@ async def bertrand_cluster_network_lb_status(*, json_output: bool) -> None:
     with await Kube.host(timeout=INFINITY) as kube:
         status = await metallb_status(kube, timeout=INFINITY)
     if json_output:
-        print(json.dumps(status, indent=2, sort_keys=True))
+        emit_json(status)
         return
     _print_metallb_status(status)
 
@@ -1052,23 +943,6 @@ def _ready(*, value: bool) -> str:
     return "ready" if value else "not ready"
 
 
-def _device_record_payload(
-    record: BertrandDeviceRecord,
-    *,
-    node: BertrandNodeRecord | None = None,
-) -> dict[str, object]:
-    return {
-        "name": record.name,
-        "capability_id": record.capability_id,
-        "host_id": record.host_id,
-        "display_name": "" if node is None else node.display_name,
-        "node_name": record.node_name,
-        "device_name": record.spec.device_name,
-        "cdi_selector": record.cdi_selector,
-        "attributes": dict(record.spec.attributes),
-    }
-
-
 async def _bertrand_cluster_network_dns(args: argparse.Namespace) -> None:
     command = args.dns_command
     if command == "set":
@@ -1090,26 +964,25 @@ async def _bertrand_cluster_network_dns(args: argparse.Namespace) -> None:
 
 
 async def _apply_network_profile(profile: NetworkProfile, *, timeout: float) -> None:
+    msg = "network convergence timeout must be non-negative"
     if timeout <= 0:
-        msg = "network convergence timeout must be non-negative"
         raise TimeoutError(msg)
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
-    with await Kube.host(timeout=deadline - loop.time()) as kube:
+    deadline = Deadline.from_timeout(timeout, message=msg)
+    with await Kube.host(timeout=deadline.remaining()) as kube:
         await Namespace.upsert(
             kube,
             name=BERTRAND_NAMESPACE,
-            timeout=deadline - loop.time(),
+            timeout=deadline.remaining(),
         )
-        await profile.upsert(kube, timeout=deadline - loop.time())
-        await IMAGES.ensure(kube, timeout=deadline - loop.time())
+        await profile.upsert(kube, timeout=deadline.remaining())
+        await IMAGES.ensure(kube, timeout=deadline.remaining())
         config_hash = await IMAGES.current_buildkit_config_hash(
             kube,
-            timeout=deadline - loop.time(),
+            timeout=deadline.remaining(),
         )
         await BUILDKIT_POOL.ensure(
             kube,
-            timeout=deadline - loop.time(),
+            timeout=deadline.remaining(),
             config_hash=config_hash,
         )
 
@@ -1181,8 +1054,6 @@ async def _buildkit_status(kube: Kube) -> dict[str, object]:
 
 
 async def _gateway_status(kube: Kube) -> dict[str, object]:
-    from bertrand.env.kube.deployment import Deployment
-
     deployment = await Deployment.get(
         kube,
         namespace=ENVOY_GATEWAY_NAMESPACE,
@@ -1215,8 +1086,6 @@ async def _ceph_csi_status(kube: Kube) -> dict[str, object]:
 
 
 async def _storage_status(kube: Kube) -> dict[str, object]:
-    from bertrand.env.kube.ceph.capacity import read_storage_policy
-
     policy = await read_storage_policy(kube, timeout=INFINITY)
     status = policy.status
     ready = status is not None and not status.last_error

@@ -8,6 +8,7 @@ import uuid
 from collections.abc import AsyncIterator, Callable, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
+from functools import total_ordering
 from pathlib import Path, PosixPath
 from typing import (
     TYPE_CHECKING,
@@ -274,6 +275,7 @@ def dump_yaml(payload: dict[str, Any], *, resource_name: str) -> str:
     return text
 
 
+@total_ordering
 class Resource:
     """Represent one parseable or renderable configuration entity.
 
@@ -292,6 +294,16 @@ class Resource:
 
     name: ClassVar[ResourceName]
     paths: ClassVar[frozenset[RelativePath]]
+
+    @classmethod
+    def _model_type(cls) -> type[BaseModel] | None:
+        model = getattr(cls, "Model", None)
+        if model is None:
+            return None
+        if isinstance(model, type) and issubclass(model, BaseModel):
+            return model
+        msg = f"resource {cls.__name__}.Model must be a Pydantic BaseModel subclass"
+        raise TypeError(msg)
 
     def __hash__(self) -> int:
         """Hash by resource name.
@@ -317,20 +329,6 @@ class Resource:
             return self.name < other
         return NotImplemented
 
-    def __le__(self, other: object) -> bool:
-        """Compare resource order by name.
-
-        Returns
-        -------
-        bool
-            True if this resource sorts at or before `other`.
-        """
-        if isinstance(other, Resource):
-            return self.name <= other.name
-        if isinstance(other, str):
-            return self.name <= other
-        return NotImplemented
-
     def __eq__(self, other: object) -> bool:
         """Compare resource equality by name.
 
@@ -345,49 +343,11 @@ class Resource:
             return self.name == other
         return NotImplemented
 
-    def __ne__(self, other: object) -> bool:
-        """Compare resource inequality by name.
-
-        Returns
-        -------
-        bool
-            True if `other` identifies a different resource.
-        """
-        if isinstance(other, Resource):
-            return self.name != other.name
-        if isinstance(other, str):
-            return self.name != other
-        return NotImplemented
-
-    def __ge__(self, other: object) -> bool:
-        """Compare resource order by name.
-
-        Returns
-        -------
-        bool
-            True if this resource sorts at or after `other`.
-        """
-        if isinstance(other, Resource):
-            return self.name >= other.name
-        if isinstance(other, str):
-            return self.name >= other
-        return NotImplemented
-
-    def __gt__(self, other: object) -> bool:
-        """Compare resource order by name.
-
-        Returns
-        -------
-        bool
-            True if this resource sorts after `other`.
-        """
-        if isinstance(other, Resource):
-            return self.name > other.name
-        if isinstance(other, str):
-            return self.name > other
-        return NotImplemented
-
-    async def init(self, config: Config, cli: Config.Init) -> dict[str, Any]:
+    async def init(
+        self,
+        config: Config,  # noqa: ARG002
+        cli: Config.Init,  # noqa: ARG002
+    ) -> dict[str, Any]:
         """Render this resource's initial contents during `bertrand init`.
 
         Parameters
@@ -416,10 +376,14 @@ class Resource:
         always expects to find valid config data from other resources via their
         `parse()` hooks.
         """
-        _ = config, cli
+        if (model := self._model_type()) is not None:
+            return model.model_construct().model_dump(by_alias=True)
         return {}
 
-    async def parse(self, config: Config) -> dict[str, dict[str, Any]]:
+    async def parse(
+        self,
+        config: Config,  # noqa: ARG002
+    ) -> dict[str, dict[str, Any]]:
         """Extract normalized config data from this resource.
 
         Parameters
@@ -447,10 +411,13 @@ class Resource:
 
         Resources that do not implement this function will be treated as output-only.
         """
-        _ = config
         return {}
 
-    async def validate(self, config: Config, fragment: Any) -> BaseModel | None:
+    async def validate(
+        self,
+        config: Config,  # noqa: ARG002
+        fragment: Any,
+    ) -> BaseModel | None:
         """Validate merged `parse()` output for this resource.
 
         Parameters
@@ -478,7 +445,8 @@ class Resource:
         is what allows resources mentioned in config to always be rendered during
         `sync()`, even if their original source files are missing.
         """
-        _ = config, fragment
+        if (model := self._model_type()) is not None:
+            return model.model_validate(fragment)
         return None
 
     async def render(self, config: Config, *, image_build: bool) -> None:
@@ -515,6 +483,8 @@ class Resource:
         This is internal docs infrastructure used to expose authoritative resource
         schemas without coupling to CLI/docsite export behavior.
         """
+        if (model := self._model_type()) is not None:
+            return model.model_json_schema(by_alias=True, mode="validation")
         return None
 
 
@@ -663,6 +633,14 @@ class Config:
         """
         return self.repo.root / self.worktree
 
+    @staticmethod
+    def _discover_resources(root: Path) -> dict[ResourceName, None]:
+        return {
+            r.name: None
+            for r in RESOURCES
+            if r.paths and all((root / p).exists() for p in r.paths)
+        }
+
     @classmethod
     async def load(
         cls,
@@ -737,13 +715,7 @@ class Config:
                 kube=kube,
                 timeout=timeout,
             )
-            self.resources.update(
-                {
-                    r.name: None
-                    for r in RESOURCES
-                    if r.paths and all((worktree / p).exists() for p in r.paths)
-                }
-            )
+            self.resources.update(cls._discover_resources(worktree))
             return self
 
     @classmethod
@@ -793,13 +765,7 @@ class Config:
             kube=None,
             timeout=timeout,
         )
-        self.resources.update(
-            {
-                r.name: None
-                for r in RESOURCES
-                if r.paths and all((root / p).exists() for p in r.paths)
-            }
-        )
+        self.resources.update(cls._discover_resources(root))
         return self
 
     def _merge_fragment(
@@ -848,6 +814,87 @@ class Config:
             else:
                 snapshot[key] = value
 
+    async def _init_snapshot(self) -> dict[str, Any]:
+        if self.init is None:
+            return {}
+        return {
+            name: await RESOURCE_NAMES[name].init(self, self.init)
+            for name in sorted(self.resources)
+        }
+
+    async def _parse_resource(
+        self,
+        r: Resource,
+    ) -> dict[str, dict[str, Any]]:
+        try:
+            fragment = await r.parse(self)
+        except Exception as err:
+            msg = f"failed to parse resource {r.name!r}: {err}"
+            raise OSError(msg) from err
+        if not isinstance(fragment, dict):
+            msg = (
+                f"parse hook for resource {r.name!r} must return a string "
+                f"mapping: {fragment}"
+            )
+            raise OSError(msg)
+        return fragment
+
+    def _merge_resource_snapshot(
+        self,
+        r: Resource,
+        fragment: dict[str, dict[str, Any]],
+        snapshot: dict[str, Any],
+        key_owner: dict[tuple[str, ...], ResourceName],
+    ) -> None:
+        for raw_key, table in fragment.items():
+            if not isinstance(raw_key, str):
+                msg = (
+                    f"parse hook for resource {r.name!r} returned "
+                    f"non-string key: {raw_key}"
+                )
+                raise OSError(msg)
+            if not isinstance(table, dict):
+                msg = (
+                    f"parse hook for resource {r.name!r} returned "
+                    f"non-mapping value for key '{raw_key}': {table}"
+                )
+                raise OSError(msg)
+            lookup = RESOURCE_NAMES.get(raw_key)
+            if lookup is not None:
+                self._merge_fragment(
+                    r,
+                    table,
+                    snapshot.setdefault(lookup.name, {}),
+                    key_owner=key_owner,
+                    path_prefix=(lookup.name,),
+                )
+
+    async def _parse_snapshot(self, snapshot: dict[str, Any]) -> None:
+        key_owner: dict[tuple[str, ...], ResourceName] = {}
+        for name in sorted(self.resources):
+            r = RESOURCE_NAMES[name]
+            self._merge_resource_snapshot(
+                r,
+                await self._parse_resource(r),
+                snapshot,
+                key_owner,
+            )
+
+    async def _validate_snapshot(self, snapshot: dict[str, Any]) -> None:
+        for key, table in snapshot.items():
+            lookup = RESOURCE_NAMES.get(key)
+            if lookup is None:
+                continue
+
+            model = await lookup.validate(self, table)
+            if self.resources.get(lookup.name) is not None:
+                msg = (
+                    f"config validation collision for resource '{lookup.name}': "
+                    "multiple resources writing to the same top-level table"
+                )
+                raise OSError(msg)
+            self.resources[lookup.name] = model
+
     async def __aenter__(self) -> Self:
         """Parse and validate resource config data.
 
@@ -858,12 +905,6 @@ class Config:
         Self
             The active configuration context.
 
-        Raises
-        ------
-        OSError
-            If any resource parsing or validation fails, or if there are any key
-            collisions between parsed config fragments from different resources
-            (enforcing unique ownership).
         """
         if self._entered > 0:  # re-entrant case
             self._entered += 1
@@ -877,76 +918,13 @@ class Config:
                 worktree=self.root,
                 timeout=self.timeout,
             ):
-                # invoke `init()` hooks for all resources to get baseline snapshot
-                snapshot = (
-                    {}
-                    if self.init is None
-                    else {
-                        r: await RESOURCE_NAMES[r].init(self, self.init)
-                        for r in sorted(self.resources)
-                    }
-                )
-
-                # invoke parse hooks for all resources in deterministic order
-                key_owner: dict[tuple[str, ...], ResourceName] = {}
-                for name in sorted(self.resources):
-                    r = RESOURCE_NAMES[name]
-                    try:
-                        fragment = await r.parse(self)
-                    except Exception as err:
-                        msg = f"failed to parse resource {r.name!r}: {err}"
-                        raise OSError(msg) from err
-                    if not isinstance(fragment, dict):
-                        msg = (
-                            f"parse hook for resource {r.name!r} must return a string "
-                            f"mapping: {fragment}"
-                        )
-                        raise OSError(msg)
-
-                    # normalize aliases and merge fragment, checking for key collisions
-                    for raw_key, table in fragment.items():
-                        if not isinstance(raw_key, str):
-                            msg = (
-                                f"parse hook for resource {r.name!r} returned "
-                                f"non-string key: {raw_key}"
-                            )
-                            raise OSError(msg)
-                        if not isinstance(table, dict):
-                            msg = (
-                                f"parse hook for resource {r.name!r} returned "
-                                f"non-mapping value for key '{raw_key}': {table}"
-                            )
-                            raise OSError(msg)
-                        lookup = RESOURCE_NAMES.get(raw_key)
-                        if lookup is not None:
-                            self._merge_fragment(
-                                r,
-                                table,
-                                snapshot.setdefault(lookup.name, {}),
-                                key_owner=key_owner,
-                                path_prefix=(lookup.name,),
-                            )
-
-                # validate each parsed fragment against its corresponding resource
-                for key, table in snapshot.items():
-                    lookup = RESOURCE_NAMES.get(key)
-                    if lookup is None:
-                        continue  # skip unrecognized tables
-
-                    # record validated output for future, type-safe access
-                    model = await lookup.validate(self, table)
-                    if self.resources.get(lookup.name) is not None:
-                        msg = (
-                            f"config validation collision for resource "
-                            f"'{lookup.name}': "
-                            f"multiple resources writing to the same top-level table"
-                        )
-                        raise OSError(msg)
-                    self.resources[lookup.name] = model
+                snapshot = await self._init_snapshot()
+                await self._parse_snapshot(snapshot)
+                await self._validate_snapshot(snapshot)
 
                 self._entered += 1
                 return self
-        except:
+        except BaseException:
             self.resources = old_resources
             self._entered = 0
             raise

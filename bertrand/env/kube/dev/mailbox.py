@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from bertrand.env.git import BERTRAND_NAMESPACE, REPO_ID_ENV
+from bertrand.env.git import BERTRAND_NAMESPACE, REPO_ID_ENV, Deadline
 from bertrand.env.kube.crd import CustomResourceDefinition
 from bertrand.env.kube.custom_object import (
     CustomObjectClient,
@@ -349,8 +349,10 @@ async def ensure_code_open_request_crd(kube: Kube, *, timeout: float) -> None:
     if timeout <= 0:
         msg = "CodeOpenRequest CRD timeout must be non-negative"
         raise TimeoutError(msg)
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
+    deadline = Deadline.from_timeout(
+        timeout,
+        message="CodeOpenRequest CRD timeout must be non-negative",
+    )
     crd = await CustomResourceDefinition.upsert(
         kube,
         group=DEV_GROUP,
@@ -362,9 +364,9 @@ async def ensure_code_open_request_crd(kube: Kube, *, timeout: float) -> None:
         spec_schema=_CODE_OPEN_SPEC_SCHEMA,
         status_schema=_CODE_OPEN_STATUS_SCHEMA,
         labels=_CODE_OPEN_LABELS,
-        timeout=deadline - loop.time(),
+        timeout=deadline.remaining(),
     )
-    await crd.wait_established(kube, timeout=deadline - loop.time())
+    await crd.wait_established(kube, timeout=deadline.remaining())
 
 
 async def create_code_open_request(
@@ -570,10 +572,12 @@ async def wait_code_open_request(
     if timeout <= 0:
         msg = f"timed out waiting for {CODE_OPEN_KIND} {name!r}"
         raise TimeoutError(msg)
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
+    deadline = Deadline.from_timeout(
+        timeout,
+        message=f"timed out waiting for {CODE_OPEN_KIND} {name!r}",
+    )
     while True:
-        remaining = deadline - loop.time()
+        remaining = deadline.remaining()
         if remaining <= 0:
             msg = (
                 "No host Bertrand editor bridge accepted the request before the "
@@ -595,7 +599,7 @@ async def wait_code_open_request(
                 message="request deadline expired before a host bridge completed it",
                 timeout=remaining,
             )
-        await asyncio.sleep(min(0.5, remaining))
+        await asyncio.sleep(deadline.bounded(0.5))
 
 
 def code_open_request_name(session_id: str, request_id: str) -> str:

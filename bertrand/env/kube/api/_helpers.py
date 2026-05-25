@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 import kubernetes
 
 from bertrand.env.git import until
+from bertrand.env.kube.api.client import KubeApiError
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Collection, Mapping
@@ -86,8 +87,18 @@ def _typed_list_items[T](
 
 
 def _is_conflict(err: OSError) -> bool:
-    detail = str(err).lower()
-    return "status 409" in detail or "already exists" in detail
+    return isinstance(err, KubeApiError) and err.status == 409
+
+
+def _is_not_found(err: OSError) -> bool:
+    return isinstance(err, KubeApiError) and err.status == 404
+
+
+def _is_missing_api_resource(err: OSError) -> bool:
+    if not _is_not_found(err):
+        return False
+    detail = err.detail.lower() if isinstance(err, KubeApiError) else str(err).lower()
+    return "the server could not find the requested resource" in detail
 
 
 async def _create_or_patch[T](
@@ -102,14 +113,24 @@ async def _create_or_patch[T](
     payload_context: str,
 ) -> T:
     try:
-        created = await kube.run(create, timeout=timeout, context=create_context)
+        created = await kube.run(
+            create,
+            timeout=timeout,
+            context=create_context,
+            missing_ok=False,
+        )
     except OSError as err:
         if not _is_conflict(err):
             raise
     else:
         return _typed_payload(created, expected, context=payload_context)
 
-    patched = await kube.run(patch, timeout=timeout, context=patch_context)
+    patched = await kube.run(
+        patch,
+        timeout=timeout,
+        context=patch_context,
+        missing_ok=False,
+    )
     return _typed_payload(patched, expected, context=payload_context)
 
 
@@ -121,87 +142,3 @@ def _normalized_namespaces(
     normalized = {namespace.strip() for namespace in namespaces}
     normalized.discard("")
     return tuple(sorted(normalized))
-
-
-async def _list_cluster_items[T](
-    kube: Kube,
-    *,
-    timeout: float,
-    labels: Mapping[str, str] | None,
-    list_items: Callable[[str | None, float | None], object],
-    list_type: type[object],
-    item_type: type[T],
-    context: str,
-    list_context: str,
-    item_context: str,
-) -> list[T]:
-    label_selector = _label_selector(labels)
-    payload = await kube.run(
-        lambda request_timeout: list_items(label_selector, request_timeout),
-        timeout=timeout,
-        context=context,
-    )
-    return _typed_list_items(
-        payload,
-        list_type=list_type,
-        item_type=item_type,
-        list_context=list_context,
-        item_context=item_context,
-    )
-
-
-async def _list_namespaced_items[T](
-    kube: Kube,
-    *,
-    timeout: float,
-    namespaces: Collection[str] | None,
-    labels: Mapping[str, str] | None,
-    list_all: Callable[[str | None, float | None], object],
-    list_namespace: Callable[[str, str | None, float | None], object],
-    list_type: type[object],
-    item_type: type[T],
-    all_context: str,
-    namespace_context: Callable[[str], str],
-    list_context: str,
-    item_context: str,
-) -> list[T]:
-    label_selector = _label_selector(labels)
-    normalized = _normalized_namespaces(namespaces)
-    payloads: list[object] = []
-
-    if normalized is None:
-        payload = await kube.run(
-            lambda request_timeout: list_all(label_selector, request_timeout),
-            timeout=timeout,
-            context=all_context,
-        )
-        if payload is not None:
-            payloads.append(payload)
-    elif not normalized:
-        return []
-    else:
-        for namespace in normalized:
-            payload = await kube.run(
-                lambda request_timeout, namespace=namespace: list_namespace(
-                    namespace,
-                    label_selector,
-                    request_timeout,
-                ),
-                timeout=timeout,
-                context=namespace_context(namespace),
-            )
-            if payload is not None:
-                payloads.append(payload)
-
-    out: list[T] = []
-    for payload in payloads:
-        out.extend(
-            _typed_list_items(
-                payload,
-                list_type=list_type,
-                item_type=item_type,
-                list_context=list_context,
-                item_context=item_context,
-            )
-        )
-    return out

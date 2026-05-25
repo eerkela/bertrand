@@ -6,6 +6,7 @@ import argparse
 import asyncio
 import json
 import subprocess
+import sys
 from pathlib import Path
 from typing import cast
 
@@ -164,8 +165,6 @@ class Internal:
             argparse.Namespace
                 The parsed command-line arguments.
             """
-            import sys
-
             argv = sys.argv[1:]
             if argv[:1] == ["run"]:
                 return self._parse_run(argv[1:])

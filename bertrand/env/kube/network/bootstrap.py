@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-import asyncio
 from typing import TYPE_CHECKING
 
-from bertrand.env.git import until
+from bertrand.env.git import Deadline, until
 from bertrand.env.kube.api.bootstrap import kubectl
 from bertrand.env.kube.crd import CustomResourceDefinition
 from bertrand.env.kube.deployment import Deployment
@@ -46,16 +45,18 @@ async def ensure_network_backend(kube: Kube, *, timeout: float) -> None:
     if timeout <= 0:
         msg = "network backend convergence timeout must be positive"
         raise TimeoutError(msg)
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
-    await _apply_envoy_gateway(timeout=deadline - loop.time())
+    deadline = Deadline.from_timeout(
+        timeout,
+        message="network backend convergence timeout must be positive",
+    )
+    await _apply_envoy_gateway(timeout=deadline.remaining())
     for crd_name in GATEWAY_API_CRDS:
         await _wait_crd_established(
             kube,
             name=crd_name,
-            timeout=deadline - loop.time(),
+            timeout=deadline.remaining(),
         )
-    await _wait_envoy_gateway_available(kube, timeout=deadline - loop.time())
+    await _wait_envoy_gateway_available(kube, timeout=deadline.remaining())
 
 
 async def _apply_envoy_gateway(*, timeout: float) -> None:

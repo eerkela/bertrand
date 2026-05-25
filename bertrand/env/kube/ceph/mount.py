@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import os
 import platform
 import shutil
@@ -14,9 +13,10 @@ from typing import TYPE_CHECKING, Self
 from bertrand.env.config.core import UUIDHex, _check_uuid
 from bertrand.env.git import (
     HOST_MOUNTS,
-    INFINITY,
     METADATA_REPO_ID,
+    REPO_ID_ENV,
     CommandError,
+    Deadline,
     HostLock,
     abspath,
     atomic_symlink,
@@ -26,14 +26,28 @@ from bertrand.env.git import (
     symlink_points_to,
 )
 from bertrand.env.host import HOST_ID_FILE, REPO_DIR, REPO_LOCK_EXT, REPO_MOUNT_EXT
+from bertrand.env.kube.ceph.auth import RepoCredentials
+from bertrand.env.kube.ceph.volume import (
+    REPOSITORY_MOUNT_HOST_HASH_LABEL,
+    REPOSITORY_MOUNT_PATH_HASH_LABEL,
+    REPOSITORY_MOUNT_PHASE_LABEL,
+    RepoVolume,
+    ensure_repository_mount_crd,
+    ensure_repository_mount_record,
+    ensure_repository_volume_record,
+    list_repository_mount_records,
+    mark_repository_volume_ready,
+    repository_mount_host_hash,
+    repository_mount_path_hash,
+    retire_repository_mount,
+    retire_repository_mount_record,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
     from types import TracebackType
 
     from bertrand.env.kube.api.client import Kube
-    from bertrand.env.kube.ceph.auth import RepoCredentials
-    from bertrand.env.kube.ceph.volume import RepoVolume
 
 DEFAULT_REPO_FS_NAME = "ceph"
 if not DEFAULT_REPO_FS_NAME:
@@ -58,6 +72,52 @@ def _current_host_id() -> str:
             "`bertrand init` to repair host state"
         )
         raise OSError(msg) from err
+
+
+def _warn(message: str) -> None:
+    print(f"bertrand: warning: {message}", file=sys.stderr)
+
+
+def _staged_alias_path(target: Path, repo_id: str) -> Path:
+    return target.parent / f".{target.name}.bertrand.mount.{repo_id}"
+
+
+def _swap_path(target: Path, repo_id: str) -> Path:
+    return target.parent / f".{target.name}.bertrand.swap.{repo_id}"
+
+
+async def _record_repository_mount(
+    kube: Kube,
+    *,
+    repo_id: str,
+    host_id: str,
+    alias_path: Path,
+    timeout: float,
+) -> None:
+    await ensure_repository_mount_record(
+        kube,
+        repo_id=repo_id,
+        host_id=host_id,
+        alias_path=alias_path.as_posix(),
+        node_name=platform.node(),
+        timeout=timeout,
+    )
+
+
+def _single_repository_volume(
+    repo_id: str,
+    volumes: Sequence[RepoVolume],
+) -> RepoVolume | None:
+    if not volumes:
+        return None
+    if len(volumes) == 1:
+        return volumes[0]
+    names = ", ".join(sorted(volume.pvc.name for volume in volumes))
+    msg = (
+        "repository identity maps to multiple cluster claims and cannot be "
+        f"disambiguated safely for {repo_id!r}: {names}"
+    )
+    raise OSError(msg)
 
 
 def _managed_alias_ancestor(
@@ -365,9 +425,10 @@ class MountInfo:
         if os.name != "posix" or platform.system() != "Linux":
             msg = "repository mounts are only supported on Linux platforms"
             raise OSError(msg)
+        message = "timeout must be non-negative"
         if timeout <= 0:
-            msg = "timeout must be non-negative"
-            raise TimeoutError(msg)
+            raise TimeoutError(message)
+        deadline = Deadline.from_timeout(timeout, message=message)
 
         ceph_user = ceph_user.strip()
         if not ceph_user:
@@ -394,13 +455,11 @@ class MountInfo:
 
         root = REPO_DIR / repo_id
         mount_path = root / REPO_MOUNT_EXT
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + timeout
         root.mkdir(parents=True, exist_ok=True)
 
         async with HostLock(
             root / REPO_LOCK_EXT,
-            timeout=deadline - loop.time(),
+            timeout=deadline.remaining(),
         ):
             mounted = cls.search(mount_path)
             if mounted is None:
@@ -424,7 +483,7 @@ class MountInfo:
                         ]
                     ),
                     capture_output=True,
-                    timeout=deadline - loop.time(),
+                    timeout=deadline.remaining(),
                 )
                 mounted = cls.search(mount_path)
                 if mounted is None:
@@ -517,7 +576,7 @@ class MountInfo:
         _root: Path = field(init=False)
         _mount_path: Path = field(init=False)
         _lock: HostLock | None = field(default=None)
-        _deadline: float = field(default=INFINITY)
+        _deadline: Deadline | None = field(default=None)
         _depth: int = field(default=0)
 
         def __post_init__(self) -> None:
@@ -556,12 +615,14 @@ class MountInfo:
 
             # hold the repo-local lock for the entire mutation window so alias
             # symlinks cannot drift across concurrent init/clean callers
-            loop = asyncio.get_running_loop()
-            self._deadline = loop.time() + self.timeout
+            self._deadline = Deadline.from_timeout(
+                self.timeout,
+                message="timeout must be non-negative",
+            )
             self._root.mkdir(parents=True, exist_ok=True)
             self._lock = HostLock(
                 self._root / REPO_LOCK_EXT,
-                timeout=self._deadline - loop.time(),
+                timeout=self._deadline.remaining(),
             )
             await self._lock.lock()  # block until acquire or deadline
 
@@ -767,40 +828,24 @@ async def ensure_repository_mount(
     TimeoutError
         If `timeout` is non-positive.
     """
-    from bertrand.env.kube.ceph.auth import RepoCredentials
-    from bertrand.env.kube.ceph.volume import (
-        RepoVolume,
-        ensure_repository_mount_record,
-        ensure_repository_volume_record,
-    )
-
     repo_id = _check_uuid(repo_id)
     target = abspath(target)
+    message = "timed out before repository mount convergence started"
     if timeout <= 0:
-        msg = "timed out before repository mount convergence started"
-        raise TimeoutError(msg)
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
+        raise TimeoutError(message)
+    deadline = Deadline.from_timeout(timeout, message=message)
 
     candidates = (
         list(volumes)
         if volumes is not None
-        else await RepoVolume.list(kube, repo_id, timeout=deadline - loop.time())
+        else await RepoVolume.list(kube, repo_id, timeout=deadline.remaining())
     )
-    if len(candidates) > 1:
-        names = ", ".join(sorted(volume.pvc.name for volume in candidates))
-        msg = (
-            "repository identity maps to multiple cluster claims and cannot be "
-            f"disambiguated safely for {repo_id!r}: {names}"
-        )
-        raise OSError(msg)
-
     hidden_mount = REPO_DIR / repo_id / REPO_MOUNT_EXT
-    if candidates:
-        volume = candidates[0]
+    volume = _single_repository_volume(repo_id, candidates)
+    if volume is not None:
         ceph_path = await volume.resolve_ceph_path(
             kube,
-            timeout=deadline - loop.time(),
+            timeout=deadline.remaining(),
         )
         mounted = MountInfo.search(hidden_mount)
         if mounted is not None and not (
@@ -815,25 +860,25 @@ async def ensure_repository_mount(
         volume = await RepoVolume.ensure(
             kube,
             repo_id=repo_id,
-            timeout=deadline - loop.time(),
+            timeout=deadline.remaining(),
             size_request=size_request,
         )
         ceph_path = await volume.resolve_ceph_path(
             kube,
-            timeout=deadline - loop.time(),
+            timeout=deadline.remaining(),
         )
     await ensure_repository_volume_record(
         kube,
         repo_id=repo_id,
-        timeout=deadline - loop.time(),
+        timeout=deadline.remaining(),
     )
 
     credentials: RepoCredentials = await RepoCredentials.ensure(
         repo_id=repo_id,
         ceph_path=ceph_path,
-        timeout=deadline - loop.time(),
+        timeout=deadline.remaining(),
     )
-    staged_alias = target.parent / f".{target.name}.bertrand.mount.{repo_id}"
+    staged_alias = _staged_alias_path(target, repo_id)
     target_occupied = target.exists() or target.is_symlink()
     if not target_occupied or symlink_points_to(target, hidden_mount):
         alias = target
@@ -844,12 +889,12 @@ async def ensure_repository_mount(
         mount = await MountInfo.mount(
             repo_id=repo_id,
             ceph_path=ceph_path,
-            timeout=deadline - loop.time(),
+            timeout=deadline.remaining(),
             monitors=credentials.monitors,
             ceph_user=credentials.user,
             ceph_secretfile=ceph_secretfile,
         )
-    async with mount.aliases(timeout=deadline - loop.time()) as aliases:
+    async with mount.aliases(timeout=deadline.remaining()) as aliases:
         aliases.link(alias)
 
     atomic_write_text(
@@ -857,13 +902,12 @@ async def ensure_repository_mount(
         repo_id,
         encoding="utf-8",
     )
-    await ensure_repository_mount_record(
+    await _record_repository_mount(
         kube,
         repo_id=repo_id,
         host_id=_current_host_id(),
-        alias_path=alias.as_posix(),
-        node_name=platform.node(),
-        timeout=deadline - loop.time(),
+        alias_path=alias,
+        timeout=deadline.remaining(),
     )
     return RepositoryMount(
         repo_id=repo_id,
@@ -915,24 +959,16 @@ async def finalize_repository_mount(
     TimeoutError
         If `timeout` is non-positive.
     """
-    from bertrand.env.kube.ceph.volume import (
-        ensure_repository_mount_record,
-        mark_repository_volume_ready,
-        retire_repository_mount,
-    )
-
     repo_id = _check_uuid(repo_id)
     target = abspath(target)
     alias = abspath(alias)
+    message = "timed out before repository mount finalization started"
     if timeout <= 0:
-        msg = "timed out before repository mount finalization started"
-        raise TimeoutError(msg)
-
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
+        raise TimeoutError(message)
+    deadline = Deadline.from_timeout(timeout, message=message)
     hidden_mount = REPO_DIR / repo_id / REPO_MOUNT_EXT
-    staged_alias = target.parent / f".{target.name}.bertrand.mount.{repo_id}"
-    swap_path = target.parent / f".{target.name}.bertrand.swap.{repo_id}"
+    staged_alias = _staged_alias_path(target, repo_id)
+    swap_path = _swap_path(target, repo_id)
     host_id = _current_host_id()
 
     if alias == target:
@@ -1021,11 +1057,7 @@ async def finalize_repository_mount(
             else:
                 swap_path.unlink()
         except OSError as err:
-            print(
-                "bertrand: warning: failed to delete conversion swap path "
-                f"at {swap_path}: {err}",
-                file=sys.stderr,
-            )
+            _warn(f"failed to delete conversion swap path at {swap_path}: {err}")
 
     for stale_alias in (alias, staged_alias):
         if (
@@ -1034,7 +1066,7 @@ async def finalize_repository_mount(
             and symlink_points_to(stale_alias, hidden_mount)
         ):
             mount = MountInfo(mount_point=hidden_mount)
-            async with mount.aliases(timeout=deadline - loop.time()) as aliases:
+            async with mount.aliases(timeout=deadline.remaining()) as aliases:
                 aliases.unlink(stale_alias)
         if stale_alias != target:
             await retire_repository_mount(
@@ -1042,21 +1074,20 @@ async def finalize_repository_mount(
                 repo_id=repo_id,
                 host_id=host_id,
                 alias_path=stale_alias.as_posix(),
-                timeout=deadline - loop.time(),
+                timeout=deadline.remaining(),
             )
 
-    await ensure_repository_mount_record(
+    await _record_repository_mount(
         kube,
         repo_id=repo_id,
         host_id=host_id,
-        alias_path=target.as_posix(),
-        node_name=platform.node(),
-        timeout=deadline - loop.time(),
+        alias_path=target,
+        timeout=deadline.remaining(),
     )
     await mark_repository_volume_ready(
         kube,
         repo_id=repo_id,
-        timeout=deadline - loop.time(),
+        timeout=deadline.remaining(),
     )
 
     return target
@@ -1068,48 +1099,34 @@ async def _mount_repository_volume(
     repo_id: str,
     timeout: float,
 ) -> MountInfo:
-    from bertrand.env.kube.ceph.auth import RepoCredentials
-    from bertrand.env.kube.ceph.volume import (
-        RepoVolume,
-        mark_repository_volume_ready,
+    deadline = Deadline.from_timeout(
+        timeout,
+        message="timed out before repository volume remount started",
     )
-
-    if timeout <= 0:
-        msg = "timed out before repository volume remount started"
-        raise TimeoutError(msg)
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
     volumes = await RepoVolume.list(
         kube,
         repo_id,
-        timeout=deadline - loop.time(),
+        timeout=deadline.remaining(),
     )
-    if not volumes:
+    volume = _single_repository_volume(repo_id, volumes)
+    if volume is None:
         msg = (
             f"repository {repo_id} has mount recovery metadata, but no matching "
             "cluster claim exists"
         )
         raise OSError(msg)
-    if len(volumes) != 1:
-        names = ", ".join(sorted(volume.pvc.name for volume in volumes))
-        msg = (
-            "repository identity maps to multiple cluster claims and cannot be "
-            f"disambiguated safely for {repo_id!r}: {names}"
-        )
-        raise OSError(msg)
 
-    volume = volumes[0]
-    ceph_path = await volume.resolve_ceph_path(kube, timeout=deadline - loop.time())
+    ceph_path = await volume.resolve_ceph_path(kube, timeout=deadline.remaining())
     credentials: RepoCredentials = await RepoCredentials.ensure(
         repo_id=repo_id,
         ceph_path=ceph_path,
-        timeout=deadline - loop.time(),
+        timeout=deadline.remaining(),
     )
     with credentials.secretfile() as ceph_secretfile:
         mount = await MountInfo.mount(
             repo_id=repo_id,
             ceph_path=ceph_path,
-            timeout=deadline - loop.time(),
+            timeout=deadline.remaining(),
             monitors=credentials.monitors,
             ceph_user=credentials.user,
             ceph_secretfile=ceph_secretfile,
@@ -1117,7 +1134,7 @@ async def _mount_repository_volume(
     await mark_repository_volume_ready(
         kube,
         repo_id=repo_id,
-        timeout=deadline - loop.time(),
+        timeout=deadline.remaining(),
     )
     atomic_write_text(
         REPO_DIR / repo_id / REPO_MOUNT_EXT / METADATA_REPO_ID,
@@ -1133,21 +1150,12 @@ async def _resurrect_repository_mount_record(
     *,
     timeout: float,
 ) -> tuple[UUIDHex, MountInfo] | None:
-    from bertrand.env.kube.ceph.volume import (
-        REPOSITORY_MOUNT_PATH_HASH_LABEL,
-        ensure_repository_mount_crd,
-        ensure_repository_mount_record,
-        list_repository_mount_records,
-        repository_mount_path_hash,
+    deadline = Deadline.from_timeout(
+        timeout,
+        message="timed out before repository mount record recovery started",
     )
-
-    if timeout <= 0:
-        msg = "timed out before repository mount record recovery started"
-        raise TimeoutError(msg)
     inspected = abspath(path)
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
-    await ensure_repository_mount_crd(kube, timeout=deadline - loop.time())
+    await ensure_repository_mount_crd(kube, timeout=deadline.remaining())
 
     for candidate in (inspected, *inspected.parents):
         alias_path = candidate.as_posix()
@@ -1160,7 +1168,7 @@ async def _resurrect_repository_mount_record(
                         alias_path
                     )
                 },
-                timeout=deadline - loop.time(),
+                timeout=deadline.remaining(),
             )
             if record.alias_path == alias_path
         ]
@@ -1190,17 +1198,16 @@ async def _resurrect_repository_mount_record(
         mount = await _mount_repository_volume(
             kube,
             repo_id=repo_id,
-            timeout=deadline - loop.time(),
+            timeout=deadline.remaining(),
         )
-        async with mount.aliases(timeout=deadline - loop.time()) as aliases:
+        async with mount.aliases(timeout=deadline.remaining()) as aliases:
             aliases.link(candidate)
-        await ensure_repository_mount_record(
+        await _record_repository_mount(
             kube,
             repo_id=repo_id,
             host_id=_current_host_id(),
-            alias_path=alias_path,
-            node_name=platform.node(),
-            timeout=deadline - loop.time(),
+            alias_path=candidate,
+            timeout=deadline.remaining(),
         )
         return repo_id, mount
 
@@ -1235,11 +1242,10 @@ async def resurrect_repository_mount(
     TimeoutError
         If `timeout` is non-positive.
     """
+    message = "timed out before repository mount resurrection started"
     if timeout <= 0:
-        msg = "timed out before repository mount resurrection started"
-        raise TimeoutError(msg)
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
+        raise TimeoutError(message)
+    deadline = Deadline.from_timeout(timeout, message=message)
 
     # Search for managed Bertrand symlink alias pointing to a mounted volume.
     repo_id, mount = MountInfo.resolve(path)
@@ -1247,7 +1253,7 @@ async def resurrect_repository_mount(
         return await _resurrect_repository_mount_record(
             kube,
             path,
-            timeout=deadline - loop.time(),
+            timeout=deadline.remaining(),
         )
     if mount is not None:
         return repo_id, mount
@@ -1257,7 +1263,7 @@ async def resurrect_repository_mount(
     mount = await _mount_repository_volume(
         kube,
         repo_id=repo_id,
-        timeout=deadline - loop.time(),
+        timeout=deadline.remaining(),
     )
     return repo_id, mount
 
@@ -1290,13 +1296,10 @@ async def refresh_repository_alias_for_path(
     TimeoutError
         If `timeout` is non-positive.
     """
-    from bertrand.env.kube.ceph.volume import ensure_repository_mount_record
-
+    message = "timed out before repository alias refresh started"
     if timeout <= 0:
-        msg = "timed out before repository alias refresh started"
-        raise TimeoutError(msg)
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
+        raise TimeoutError(message)
+    deadline = Deadline.from_timeout(timeout, message=message)
 
     managed = _managed_alias_ancestor(path)
     if managed is not None:
@@ -1305,22 +1308,21 @@ async def refresh_repository_alias_for_path(
             mount = await _mount_repository_volume(
                 kube,
                 repo_id=repo_id,
-                timeout=deadline - loop.time(),
+                timeout=deadline.remaining(),
             )
-        await ensure_repository_mount_record(
+        await _record_repository_mount(
             kube,
             repo_id=repo_id,
             host_id=_current_host_id(),
-            alias_path=alias.as_posix(),
-            node_name=platform.node(),
-            timeout=deadline - loop.time(),
+            alias_path=alias,
+            timeout=deadline.remaining(),
         )
         return repo_id
 
     resurrected = await _resurrect_repository_mount_record(
         kube,
         path,
-        timeout=deadline - loop.time(),
+        timeout=deadline.remaining(),
     )
     if resurrected is None:
         return None
@@ -1357,22 +1359,12 @@ async def prune_repository_mount_aliases(
     TimeoutError
         If `timeout` is non-positive.
     """
-    from bertrand.env.git import REPO_ID_ENV
-    from bertrand.env.kube.ceph.volume import (
-        REPOSITORY_MOUNT_HOST_HASH_LABEL,
-        REPOSITORY_MOUNT_PHASE_LABEL,
-        list_repository_mount_records,
-        repository_mount_host_hash,
-        retire_repository_mount_record,
-    )
-
+    message = "timed out before repository alias pruning started"
     if timeout <= 0:
-        msg = "timed out before repository alias pruning started"
-        raise TimeoutError(msg)
+        raise TimeoutError(message)
+    deadline = Deadline.from_timeout(timeout, message=message)
     repo_id = _check_uuid(repo_id)
     host_id = _current_host_id()
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
     records = await list_repository_mount_records(
         kube,
         labels={
@@ -1380,7 +1372,7 @@ async def prune_repository_mount_aliases(
             REPOSITORY_MOUNT_HOST_HASH_LABEL: repository_mount_host_hash(host_id),
             REPOSITORY_MOUNT_PHASE_LABEL: "active",
         },
-        timeout=deadline - loop.time(),
+        timeout=deadline.remaining(),
     )
     hidden_mount = REPO_DIR / repo_id / REPO_MOUNT_EXT
     live = False
@@ -1400,7 +1392,7 @@ async def prune_repository_mount_aliases(
         await retire_repository_mount_record(
             kube,
             record=record,
-            timeout=deadline - loop.time(),
+            timeout=deadline.remaining(),
         )
     return live
 
@@ -1434,17 +1426,16 @@ async def prune_repository_mounts(
     ValueError
         If `limit` is negative.
     """
+    message = "timed out before repository mount pruning started"
     if timeout <= 0:
-        msg = "timed out before repository mount pruning started"
-        raise TimeoutError(msg)
+        raise TimeoutError(message)
+    deadline = Deadline.from_timeout(timeout, message=message)
     if limit < 0:
         msg = "repository mount prune limit cannot be negative"
         raise ValueError(msg)
     if limit == 0:
         return ()
 
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
     mounted = [
         mount
         for mount in MountInfo.under(REPO_DIR).values()
@@ -1459,13 +1450,13 @@ async def prune_repository_mounts(
         live = await prune_repository_mount_aliases(
             kube,
             repo_id=repo_id,
-            timeout=deadline - loop.time(),
+            timeout=deadline.remaining(),
         )
         if live:
             continue
         current = MountInfo.search(mount.mount_point)
         if current is None:
             continue
-        await current.unmount(timeout=deadline - loop.time(), force=False)
+        await current.unmount(timeout=deadline.remaining(), force=False)
         pruned.append(repo_id)
     return tuple(pruned)

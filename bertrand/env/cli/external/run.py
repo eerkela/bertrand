@@ -15,16 +15,12 @@ import tty as tty_module
 from typing import TYPE_CHECKING, Any, Literal
 
 from bertrand.env.cli.external._helper import (
-    prune_repository_mounts_quietly,
-    resolve_project_worktree,
+    _project_command_context,
 )
-from bertrand.env.cli.external.build import BuildLogFollower, _assert_build_runtime
+from bertrand.env.cli.external.build import _publish_project_image
 from bertrand.env.config.bertrand import Bertrand
-from bertrand.env.config.core import Config
 from bertrand.env.git import BERTRAND_NAMESPACE, INFINITY
-from bertrand.env.kube.api.client import Kube
 from bertrand.env.kube.build.execution import job_pod_diagnostics
-from bertrand.env.kube.build.project import project_image_build
 from bertrand.env.kube.cronjob import CronJob
 from bertrand.env.kube.deployment import Deployment
 from bertrand.env.kube.pod import Pod
@@ -37,6 +33,8 @@ if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Sequence
     from pathlib import Path
 
+    from bertrand.env.config.core import Config
+    from bertrand.env.kube.api.client import Kube
     from bertrand.env.kube.job import Job
 
 _RUN_LOG_POLL_SECONDS = 1.0
@@ -86,24 +84,16 @@ async def bertrand_run(
             "attach"
         )
         raise ValueError(msg)
-    with await Kube.host(timeout=INFINITY) as kube:
-        repo, worktree = await resolve_project_worktree(
-            kube,
-            target,
-            timeout=INFINITY,
+    async with _project_command_context(target, timeout=INFINITY) as context:
+        await run_configured_project(
+            context.kube,
+            config=context.config,
+            repo_id=context.config.repo.repo_id,
+            detach=detach,
+            tty=tty,
+            args=args,
+            ensure_build_crds=True,
         )
-        config = await Config.load(worktree, kube=kube, repo=repo, timeout=INFINITY)
-        async with config:
-            await run_configured_project(
-                kube,
-                config=config,
-                repo_id=config.repo.repo_id,
-                detach=detach,
-                tty=tty,
-                args=args,
-                ensure_build_crds=True,
-            )
-        await prune_repository_mounts_quietly(kube, timeout=INFINITY)
 
 
 async def run_configured_project(
@@ -171,20 +161,14 @@ async def run_configured_project(
     )
     primary_container = _primary_container_name(bertrand)
 
-    await _assert_build_runtime(kube, timeout=INFINITY)
-    build = project_image_build(config, repo_id=repo_id)
-    build_follower = None if detach else BuildLogFollower(kube)
-    try:
-        publication = await build.publish(
-            kube,
-            timeout=INFINITY,
-            on_update=None if build_follower is None else build_follower.update,
-            ensure_crds=ensure_build_crds,
-        )
-    finally:
-        if build_follower is not None:
-            await build_follower.close()
-
+    publication = await _publish_project_image(
+        kube,
+        config=config,
+        repo_id=repo_id,
+        timeout=INFINITY,
+        quiet=detach,
+        ensure_crds=ensure_build_crds,
+    )
     image_ref = publication.record.digest_ref
     interactive = attach_mode == "tty"
 

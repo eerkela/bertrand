@@ -537,18 +537,11 @@ class Clangd(Resource):
             ),
         ]
 
-    async def init(self, config: Config, cli: Config.Init) -> dict[str, Any]:
-        """Return default clangd configuration.
-
-        Returns
-        -------
-        dict[str, Any]
-            Default clangd configuration data.
-        """
-        _ = config, cli
-        return self.Model.model_construct().model_dump(by_alias=True)
-
-    async def validate(self, config: Config, fragment: Any) -> Model | None:
+    async def validate(
+        self,
+        config: Config,  # noqa: ARG002
+        fragment: Any,
+    ) -> Model | None:
         """Validate clangd configuration.
 
         Returns
@@ -556,7 +549,6 @@ class Clangd(Resource):
         Model | None
             Validated clangd configuration.
         """
-        _ = config
         return self.Model.model_validate(fragment)
 
     async def render(self, config: Config, *, image_build: bool) -> None:
@@ -648,13 +640,3 @@ class Clangd(Resource):
             content,
             encoding="utf-8",
         )
-
-    async def schema(self) -> dict[str, Any]:
-        """Return the clangd configuration schema.
-
-        Returns
-        -------
-        dict[str, Any]
-            JSON Schema for the clangd configuration.
-        """
-        return self.Model.model_json_schema(by_alias=True, mode="validation")

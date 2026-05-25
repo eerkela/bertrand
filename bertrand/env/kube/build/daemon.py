@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-import asyncio
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from bertrand.env.git import BERTRAND_NAMESPACE, INFINITY
+from bertrand.env.git import BERTRAND_NAMESPACE, INFINITY, Deadline
 from bertrand.env.host import CACHE_DIR
 from bertrand.env.kube.api.spec import (
     ContainerPortSpec,
@@ -268,12 +267,11 @@ class BuildKitPool:
         OSError
             If the cluster has no ready, schedulable Linux build nodes.
         """
+        msg = "BuildKit pool timeout must be non-negative"
         if timeout <= 0:
-            msg = "BuildKit pool timeout must be non-negative"
             raise TimeoutError(msg)
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + timeout
-        eligible = await self._eligible_nodes(kube, timeout=deadline - loop.time())
+        deadline = Deadline.from_timeout(timeout, message=msg)
+        eligible = await self._eligible_nodes(kube, timeout=deadline.remaining())
         if not eligible:
             msg = "BuildKit pool requires at least one ready schedulable Linux node"
             raise OSError(msg)
@@ -389,10 +387,10 @@ class BuildKitPool:
                 node_selector=BUILDKIT_NODE_SELECTOR,
                 tolerations=BUILDKIT_CONTROL_PLANE_TOLERATIONS,
             ),
-            timeout=deadline - loop.time(),
+            timeout=deadline.remaining(),
         )
         try:
-            await daemonset.wait_rollout(kube, timeout=deadline - loop.time())
+            await daemonset.wait_rollout(kube, timeout=deadline.remaining())
         except (OSError, TimeoutError) as err:
             msg = (
                 f"BuildKit DaemonSet {self.namespace}/{self.name} did not become ready"
@@ -444,15 +442,14 @@ class BuildKitPool:
         OSError
             If Kubernetes read operations fail or return malformed data.
         """
+        msg = "BuildKit pool status timeout must be non-negative"
         if timeout <= 0:
-            msg = "BuildKit pool status timeout must be non-negative"
             raise TimeoutError(msg)
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + timeout
+        deadline = Deadline.from_timeout(timeout, message=msg)
         try:
             snapshot = await self._snapshot(
                 kube,
-                timeout=deadline - loop.time(),
+                timeout=deadline.remaining(),
                 config_hash=config_hash,
                 include_daemonset=True,
             )
@@ -509,22 +506,24 @@ class BuildKitPool:
         if timeout <= 0:
             msg = "BuildKit pool discovery timeout must be non-negative"
             raise TimeoutError(msg)
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + timeout
+        deadline = Deadline.from_timeout(
+            timeout,
+            message="BuildKit pool discovery timeout must be non-negative",
+        )
         daemonset = (
             await DaemonSet.get(
                 kube,
                 namespace=self.namespace,
                 name=self.name,
-                timeout=deadline - loop.time(),
+                timeout=deadline.remaining(),
             )
             if include_daemonset
             else None
         )
-        nodes = await Node.list(kube, timeout=deadline - loop.time())
+        nodes = await Node.list(kube, timeout=deadline.remaining())
         pods = await Pod.list(
             kube,
-            timeout=deadline - loop.time(),
+            timeout=deadline.remaining(),
             namespaces=(self.namespace,),
             labels=self.selector,
         )

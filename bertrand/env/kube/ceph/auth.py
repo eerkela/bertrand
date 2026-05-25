@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import os
 import re
 import tempfile
@@ -14,7 +13,7 @@ from typing import TYPE_CHECKING, Annotated, Self
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from bertrand.env.config.core import UUIDHex, _check_uuid
-from bertrand.env.git import CommandError
+from bertrand.env.git import CommandError, Deadline
 from bertrand.env.host import RUN_DIR
 from bertrand.env.kube.ceph.api import ceph
 
@@ -256,20 +255,21 @@ class RepoCredentials:
             raise ValueError(msg)
         if not ceph_path.is_absolute():
             ceph_path = PosixPath("/") / ceph_path
-
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + timeout
+        deadline = Deadline.from_timeout(
+            timeout,
+            message="timeout must be non-negative",
+        )
 
         # `fs authorize` is idempotent and converges CephX caps for this identity.
         await ceph(
             ["fs", "authorize", REPO_FS_NAME, entity, str(ceph_path), "rw"],
-            timeout=deadline - loop.time(),
+            timeout=deadline.remaining(),
             capture_output=True,
         )
 
         # `fs authorize` should materialize a key for this entity if it didn't already
         # exist.
-        key = await _get_key(entity, timeout=deadline - loop.time())
+        key = await _get_key(entity, timeout=deadline.remaining())
         if key is None:
             msg = f"Ceph authorization did not materialize credentials for {entity!r}"
             raise OSError(msg)
@@ -277,7 +277,7 @@ class RepoCredentials:
         # retrieve current monitor endpoints; this ensures the caller has enough
         # information to confidently connect to and mount the repository using the
         # returned credentials.
-        monitors = await _get_monitors(timeout=deadline - loop.time())
+        monitors = await _get_monitors(timeout=deadline.remaining())
         return cls(
             repo_id=repo_id,
             user=user,
@@ -319,16 +319,18 @@ class RepoCredentials:
             raise TimeoutError(msg)
 
         repo_id, user, entity = cls._identity(repo_id)
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + timeout
+        deadline = Deadline.from_timeout(
+            timeout,
+            message="timeout must be non-negative",
+        )
 
         # get repository credentials if they exist
-        key = await _get_key(entity, timeout=deadline - loop.time())
+        key = await _get_key(entity, timeout=deadline.remaining())
         if key is None:
             return None
 
         # retrieve current monitor endpoints
-        monitors = await _get_monitors(timeout=deadline - loop.time())
+        monitors = await _get_monitors(timeout=deadline.remaining())
         return cls(
             repo_id=repo_id,
             user=user,
@@ -372,12 +374,14 @@ class RepoCredentials:
             msg = "timeout must be non-negative"
             raise TimeoutError(msg)
         _, _, entity = self._identity(self.repo_id)
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + timeout
+        deadline = Deadline.from_timeout(
+            timeout,
+            message="timeout must be non-negative",
+        )
 
         result = await ceph(
             ["auth", "del", entity],
-            timeout=deadline - loop.time(),
+            timeout=deadline.remaining(),
             check=False,
             capture_output=True,
         )

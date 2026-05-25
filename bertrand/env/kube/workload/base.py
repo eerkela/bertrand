@@ -21,6 +21,14 @@ from bertrand.env.git.bertrand_git import (
 )
 from bertrand.env.kube.api.spec import EnvVarSpec, VolumeMountSpec, VolumeSpec
 from bertrand.env.kube.ceph.volume import RepoVolume
+from bertrand.env.kube.workload_refs import (
+    WORKLOAD_ID_LABEL,
+    WORKLOAD_LABEL,
+    WORKLOAD_LABEL_VALUE,
+    WORKLOAD_REPO_LABEL,
+    WORKLOAD_WORKTREE_ID_LABEL,
+    WORKLOAD_WORKTREE_LABEL,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -33,12 +41,6 @@ WORKLOAD_BOOTSTRAP_COMMAND = ("/bin/sh", "-c")
 WORKLOAD_BOOTSTRAP_ARG0 = "bertrand-workload-bootstrap"
 WORKLOAD_NAME_PREFIX = "bertrand-workload-"
 WORKLOAD_NAME_HASH_CHARS = 44
-WORKLOAD_LABEL = "bertrand.dev/workload"
-WORKLOAD_LABEL_VALUE = "v1"
-WORKLOAD_ID_LABEL = "bertrand.dev/workload-id"
-WORKLOAD_REPO_LABEL = "bertrand.dev/workload-repo"
-WORKLOAD_WORKTREE_LABEL = "bertrand.dev/workload-worktree"
-WORKLOAD_WORKTREE_ID_LABEL = "bertrand.dev/workload-worktree-id"
 
 
 @dataclass(frozen=True)

@@ -10,17 +10,18 @@ from typing import TYPE_CHECKING, Literal, Self
 
 import kubernetes
 
+from bertrand.env.git import Deadline
+
 from .api.metadata import KubeMetadata
-from .api.resource import ResourceClient
+from .api.resource import ClusterResourceMixin, ClusterWatchMixin, ResourceClient
 from .api.view import TaintView
 from .pod import Pod
 
 if TYPE_CHECKING:
     import builtins
-    from collections.abc import AsyncIterator, Collection, Mapping
+    from collections.abc import Collection, Mapping
 
     from .api.client import Kube
-    from .api.watch import WatchEvent
 
 NODE_SYSTEM_NAMESPACES = frozenset(
     {
@@ -47,7 +48,11 @@ type TaintEffect = Literal["NoSchedule", "PreferNoSchedule", "NoExecute"]
 
 
 @dataclass(frozen=True)
-class Node(KubeMetadata[kubernetes.client.V1Node]):
+class Node(
+    ClusterWatchMixin[kubernetes.client.V1Node],
+    ClusterResourceMixin[kubernetes.client.V1Node],
+    KubeMetadata[kubernetes.client.V1Node],
+):
     """General-purpose wrapper around one Kubernetes Node object.
 
     Parameters
@@ -85,97 +90,6 @@ class Node(KubeMetadata[kubernetes.client.V1Node]):
             ),
             watch_all=lambda kube: kube.core.list_node,
         )
-
-    @classmethod
-    async def get(
-        cls,
-        kube: Kube,
-        *,
-        timeout: float,
-        name: str,
-    ) -> Self | None:
-        """Read one Kubernetes Node by name.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        timeout : float
-            The maximum time to wait for Kubernetes node queries in seconds.  If
-            infinite, wait indefinitely.
-        name : str
-            Node name to read.
-
-        Returns
-        -------
-        Node | None
-            Validated Kubernetes node wrapper, or `None` if the node does not exist.
-
-        """
-        return await cls._client().get(kube, name=name, timeout=timeout)
-
-    @classmethod
-    async def list(
-        cls,
-        kube: Kube,
-        *,
-        timeout: float,
-        labels: Mapping[str, str] | None = None,
-    ) -> builtins.list[Self]:
-        """List Kubernetes Nodes with optional label filtering.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        timeout : float
-            The maximum time to wait for Kubernetes node list queries in seconds.  If
-            infinite, wait indefinitely.
-        labels : Mapping[str, str] | None, optional
-            Optional label filters.
-
-        Returns
-        -------
-        builtins.list[Node]
-            Validated Kubernetes node wrappers.
-
-        """
-        return await cls._client().list(kube, timeout=timeout, labels=labels)
-
-    @classmethod
-    async def watch(
-        cls,
-        kube: Kube,
-        *,
-        timeout: float,
-        labels: Mapping[str, str] | None = None,
-        resource_version: str | None = None,
-    ) -> AsyncIterator[WatchEvent[Self]]:
-        """Watch Kubernetes Nodes.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        timeout : float
-            Maximum watch budget in seconds. If infinite, wait indefinitely.
-        labels : Mapping[str, str] | None, optional
-            Optional label selector key/value pairs.
-        resource_version : str | None, optional
-            Resource version to watch from.
-
-        Yields
-        ------
-        WatchEvent[Node]
-            Typed watch events containing wrapped Nodes.
-        """
-        async for event in cls._client().watch(
-            kube,
-            timeout=timeout,
-            labels=labels,
-            resource_version=resource_version,
-        ):
-            yield event
 
     @classmethod
     async def local(cls, kube: Kube, *, timeout: float) -> Self:
@@ -837,12 +751,14 @@ class Node(KubeMetadata[kubernetes.client.V1Node]):
         if timeout <= 0:
             msg = "node drain timeout must be non-negative"
             raise TimeoutError(msg)
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + timeout
+        deadline = Deadline.from_timeout(
+            timeout,
+            message="node drain timeout must be non-negative",
+        )
 
         # cordon first to stop new placements while eviction converges
-        await self.cordon(kube=kube, timeout=deadline - loop.time())
-        pods = await self.pods(kube=kube, timeout=deadline - loop.time())
+        await self.cordon(kube=kube, timeout=deadline.remaining())
+        pods = await self.pods(kube=kube, timeout=deadline.remaining())
 
         # classification is explicit so refusal reasons are user-actionable before any
         # disruptive eviction requests are submitted
@@ -893,13 +809,13 @@ class Node(KubeMetadata[kubernetes.client.V1Node]):
                 try:
                     # we intentionally pass no grace override so each individual
                     # workload's terminationGracePeriodSeconds remains authoritative
-                    await pod.evict(kube, timeout=deadline - loop.time())
+                    await pod.evict(kube, timeout=deadline.remaining())
                     break
                 except OSError as err:
                     detail = str(err).lower()
                     if "status 429" not in detail and "too many requests" not in detail:
                         raise
-                    remaining = deadline - loop.time()
+                    remaining = deadline.remaining()
                     if remaining <= 0:
                         msg = (
                             f"timed out waiting for PDB eviction budget while draining "
@@ -907,13 +823,13 @@ class Node(KubeMetadata[kubernetes.client.V1Node]):
                         )
                         raise TimeoutError(msg) from err
                     await asyncio.sleep(
-                        min(NODE_DRAIN_POLL_INTERVAL_SECONDS, remaining)
+                        deadline.bounded(NODE_DRAIN_POLL_INTERVAL_SECONDS)
                     )
 
         # eviction admission does not guarantee immediate termination, so we poll
         # node-local pod state until every targeted pod disappears
         while pending:
-            remaining = deadline - loop.time()
+            remaining = deadline.remaining()
             if remaining <= 0:
                 remaining_pods = ", ".join(
                     f"{namespace}/{name}" for namespace, name in sorted(pending)
@@ -933,6 +849,4 @@ class Node(KubeMetadata[kubernetes.client.V1Node]):
             if pending:
                 # eviction admission is asynchronous, so we poll until all targeted
                 # pods terminate or timeout
-                await asyncio.sleep(
-                    min(NODE_DRAIN_POLL_INTERVAL_SECONDS, deadline - loop.time())
-                )
+                await asyncio.sleep(deadline.bounded(NODE_DRAIN_POLL_INTERVAL_SECONDS))

@@ -374,7 +374,11 @@ class PyProject(Resource):
         ]
         project: Project
 
-    async def init(self, config: Config, cli: Config.Init) -> dict[str, Any]:
+    async def init(
+        self,
+        config: Config,  # noqa: ARG002
+        cli: Config.Init,
+    ) -> dict[str, Any]:
         """Return default pyproject configuration.
 
         Returns
@@ -382,7 +386,6 @@ class PyProject(Resource):
         dict[str, Any]
             Default pyproject configuration data.
         """
-        _ = config
         return self.Model.model_construct(
             project=self.Model.Project.model_construct(
                 name=cli.repo.root.name,
@@ -554,13 +557,3 @@ class PyProject(Resource):
             rendered += "\n"
         if rendered != text:
             atomic_write_text(path, rendered, encoding="utf-8")
-
-    async def schema(self) -> dict[str, Any]:
-        """Return the pyproject configuration schema.
-
-        Returns
-        -------
-        dict[str, Any]
-            JSON Schema for the pyproject configuration.
-        """
-        return self.Model.model_json_schema(by_alias=True, mode="validation")

@@ -7,7 +7,6 @@ CRDs, and deterministic resource names rather than snap ownership.
 
 from __future__ import annotations
 
-import asyncio
 import re
 import shutil
 from collections.abc import Mapping
@@ -21,6 +20,7 @@ from bertrand.env.git import (
     INFINITY,
     CommandError,
     CompletedProcess,
+    Deadline,
     GroupStatus,
     HostLock,
     TimeoutExpired,
@@ -163,13 +163,14 @@ async def microk8s_config_payload(*, timeout: float) -> str:
     OSError
         If MicroK8s returns an empty payload.
     """
+    msg = "kubeconfig timeout must be non-negative"
     if timeout <= 0:
-        msg = "kubeconfig timeout must be non-negative"
         raise TimeoutError(msg)
+    deadline = Deadline.from_timeout(timeout, message=msg)
     result = await run(
         ["microk8s", "config"],
         capture_output=True,
-        timeout=timeout,
+        timeout=deadline.remaining(),
     )
     text = result.stdout.strip()
     if not text:
@@ -231,40 +232,6 @@ async def kubectl(
     )
 
 
-async def enable_microk8s_addon(name: str, *, timeout: float) -> None:
-    """Enable one MicroK8s addon idempotently.
-
-    Parameters
-    ----------
-    name : str
-        Addon name passed to `microk8s enable`.
-    timeout : float
-        Maximum runtime command timeout in seconds.
-
-    Raises
-    ------
-    TimeoutError
-        If `timeout` is non-positive.
-    OSError
-        If addon convergence fails.
-    """
-    if timeout <= 0:
-        msg = "MicroK8s addon timeout must be non-negative."
-        raise TimeoutError(msg)
-    try:
-        await run(
-            ["microk8s", "enable", name],
-            capture_output=True,
-            timeout=timeout,
-        )
-    except CommandError as err:
-        detail = f"{err.stdout}\n{err.stderr}".strip().lower()
-        if "already enabled" in detail or "alreadyenabled" in detail:
-            return
-        msg = f"failed to enable MicroK8s addon {name!r}:\n{err}"
-        raise OSError(msg) from err
-
-
 async def _microk8s_ready() -> bool:
     return await snap_package_ready("microk8s")
 
@@ -273,7 +240,6 @@ async def install_microk8s(
     *,
     package_manager: str,
     user: str,
-    distro_id: str,
     assume_yes: bool,
 ) -> None:
     """Install or refresh access to the default shared MicroK8s runtime.
@@ -284,8 +250,6 @@ async def install_microk8s(
         Host package manager to use for installing dependencies.
     user : str
         Host username to configure for runtime group access.
-    distro_id : str
-        Host Linux distribution ID, retained for diagnostics.
     assume_yes : bool
         Whether to automatically answer yes to prompts.
 
@@ -296,7 +260,6 @@ async def install_microk8s(
     OSError
         If MicroK8s cannot be installed, found, or made ready.
     """
-    _ = distro_id
     group = GroupStatus.get(user, MICROK8S_GROUP)
     if await _microk8s_ready():
         await group.activate(assume_yes=assume_yes)
@@ -382,30 +345,58 @@ async def microk8s_cluster_ready(*, timeout: float) -> bool:
     ).returncode == 0
 
 
+async def _wait_microk8s_ready(
+    *,
+    timeout: float,
+    interval: float,
+    message: str,
+    action: str,
+) -> None:
+    async def ready(remaining: float) -> None:
+        if await microk8s_cluster_ready(timeout=remaining):
+            return
+        raise TimeoutError(message)
+
+    await until(
+        ready,
+        timeout=timeout,
+        interval=interval,
+        action=action,
+    )
+
+
 async def _add_bertrand_kube_namespace(*, timeout: float) -> None:
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
-    ready = await kubectl(
+    deadline = Deadline.from_timeout(
+        timeout,
+        message="Bertrand namespace bootstrap timeout must be non-negative",
+    )
+    existing = await kubectl(
         ["get", "namespace", BERTRAND_NAMESPACE, "-o", "name"],
         check=False,
         capture_output=True,
-        timeout=deadline - loop.time(),
+        timeout=deadline.remaining(),
     )
-    if ready.returncode == 0:
+    if existing.returncode == 0:
         return
-    try:
-        await kubectl(
-            ["create", "namespace", BERTRAND_NAMESPACE],
-            capture_output=True,
-            timeout=deadline - loop.time(),
-        )
-    except CommandError as err:
-        stdout = err.stdout.strip() if err.stdout else ""
-        stderr = err.stderr.strip() if err.stderr else ""
-        out = "\n".join((stdout, stderr)).lower()
-        if "already exists" in out or "alreadyexists" in out:
-            return
-        raise
+
+    created = await kubectl(
+        ["create", "namespace", BERTRAND_NAMESPACE],
+        check=False,
+        capture_output=True,
+        timeout=deadline.remaining(),
+    )
+    if created.returncode == 0:
+        return
+
+    raced = await kubectl(
+        ["get", "namespace", BERTRAND_NAMESPACE, "-o", "name"],
+        check=False,
+        capture_output=True,
+        timeout=deadline.remaining(),
+    )
+    if raced.returncode == 0:
+        return
+    raise CommandError(created.returncode, created.args, created.stdout, created.stderr)
 
 
 async def start_microk8s(*, timeout: float) -> None:
@@ -423,45 +414,38 @@ async def start_microk8s(*, timeout: float) -> None:
     OSError
         If MicroK8s is missing, startup fails, or namespace bootstrap fails.
     """
+    message = "MicroK8s timeout must be non-negative."
     if timeout <= 0:
-        msg = "MicroK8s timeout must be non-negative."
-        raise TimeoutError(msg)
+        raise TimeoutError(message)
     if not shutil.which("microk8s"):
         msg = (
             "MicroK8s CLI was not found in PATH. Run `bertrand init` to install "
             "or configure the shared runtime."
         )
         raise OSError(msg)
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
+    deadline = Deadline.from_timeout(timeout, message=message)
 
-    if await microk8s_cluster_ready(timeout=deadline - loop.time()):
-        await _add_bertrand_kube_namespace(timeout=deadline - loop.time())
+    if await microk8s_cluster_ready(timeout=deadline.remaining()):
+        await _add_bertrand_kube_namespace(timeout=deadline.remaining())
         return
 
     try:
-        async with HostLock(KUBE_LOCK_FILE, timeout=deadline - loop.time()):
-            if await microk8s_cluster_ready(timeout=deadline - loop.time()):
-                await _add_bertrand_kube_namespace(timeout=deadline - loop.time())
+        async with HostLock(KUBE_LOCK_FILE, timeout=deadline.remaining()):
+            if await microk8s_cluster_ready(timeout=deadline.remaining()):
+                await _add_bertrand_kube_namespace(timeout=deadline.remaining())
                 return
 
             await run(
                 ["microk8s", "start"],
                 capture_output=True,
-                timeout=deadline - loop.time(),
+                timeout=deadline.remaining(),
             )
 
-            async def ready(remaining: float) -> None:
-                if await microk8s_cluster_ready(timeout=remaining):
-                    return
-                msg = "MicroK8s is not ready yet"
-                raise TimeoutError(msg)
-
             try:
-                await until(
-                    ready,
-                    timeout=deadline - loop.time(),
+                await _wait_microk8s_ready(
+                    timeout=deadline.remaining(),
                     interval=0.1,
+                    message="MicroK8s is not ready yet",
                     action="waiting for MicroK8s to become ready",
                 )
             except TimeoutError as err:
@@ -470,7 +454,7 @@ async def start_microk8s(*, timeout: float) -> None:
                     "seconds"
                 )
                 raise TimeoutError(msg) from err
-            await _add_bertrand_kube_namespace(timeout=deadline - loop.time())
+            await _add_bertrand_kube_namespace(timeout=deadline.remaining())
             return
     except TimeoutExpired as err:
         msg = f"timed out waiting for MicroK8s to become ready after {timeout} seconds"
@@ -506,16 +490,17 @@ async def microk8s_join_token(*, worker: bool, timeout: float) -> str:
     TimeoutError
         If `timeout` is non-positive.
     """
+    msg = "MicroK8s add-node timeout must be non-negative"
     if timeout <= 0:
-        msg = "MicroK8s add-node timeout must be non-negative"
         raise TimeoutError(msg)
-    if not await microk8s_cluster_ready(timeout=timeout):
+    deadline = Deadline.from_timeout(timeout, message=msg)
+    if not await microk8s_cluster_ready(timeout=deadline.remaining()):
         msg = "MicroK8s must be running before generating a join token"
         raise OSError(msg)
     result = await run(
         ["microk8s", "add-node"],
         capture_output=True,
-        timeout=timeout,
+        timeout=deadline.remaining(),
     )
     output = f"{result.stdout}\n{result.stderr}"
     matches = MICROK8S_JOIN_PATTERN.findall(output)
@@ -553,10 +538,11 @@ async def join_microk8s_cluster(
     TimeoutError
         If `timeout` is non-positive.
     """
+    message = "MicroK8s join timeout must be non-negative"
     if timeout <= 0:
-        msg = "MicroK8s join timeout must be non-negative"
-        raise TimeoutError(msg)
-    if await microk8s_cluster_ready(timeout=timeout):
+        raise TimeoutError(message)
+    deadline = Deadline.from_timeout(timeout, message=message)
+    if await microk8s_cluster_ready(timeout=deadline.remaining()):
         msg = (
             "local MicroK8s already reports a ready cluster; refusing to join it to "
             "another cluster.  Remove or reset the existing MicroK8s membership "
@@ -570,21 +556,13 @@ async def join_microk8s_cluster(
     argv = ["microk8s", "join", target]
     if worker:
         argv.append("--worker")
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
-    async with HostLock(KUBE_LOCK_FILE, timeout=deadline - loop.time()):
-        await run(argv, capture_output=True, timeout=deadline - loop.time())
+    async with HostLock(KUBE_LOCK_FILE, timeout=deadline.remaining()):
+        await run(argv, capture_output=True, timeout=deadline.remaining())
 
-        async def ready(remaining: float) -> None:
-            if await microk8s_cluster_ready(timeout=remaining):
-                return
-            msg = "MicroK8s has not joined the cluster yet"
-            raise TimeoutError(msg)
-
-        await until(
-            ready,
-            timeout=deadline - loop.time(),
+        await _wait_microk8s_ready(
+            timeout=deadline.remaining(),
             interval=0.5,
+            message="MicroK8s has not joined the cluster yet",
             action="waiting for MicroK8s cluster join",
         )
 
@@ -602,7 +580,11 @@ async def ensure_microk8s_kubeconfig(*, timeout: float) -> Path:
     Path
         The managed kubeconfig path that was converged.
     """
-    payload = await microk8s_config_payload(timeout=timeout)
+    deadline = Deadline.from_timeout(
+        timeout,
+        message="kubeconfig timeout must be non-negative",
+    )
+    payload = await microk8s_config_payload(timeout=deadline.remaining())
 
     if KUBE_CONFIG_FILE.is_file():
         try:

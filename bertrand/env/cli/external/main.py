@@ -3,14 +3,24 @@
 from __future__ import annotations
 
 import argparse
-import asyncio
 import math
 import sys
-import time
-from datetime import UTC, datetime
 from pathlib import Path
 
-from bertrand.env.git import INFINITY, TimeoutExpired
+from bertrand.env.cli.external._runtime import run_async, validate_timeout
+from bertrand.env.cli.external.build import bertrand_build
+from bertrand.env.cli.external.clean import bertrand_clean
+from bertrand.env.cli.external.cluster import bertrand_cluster
+from bertrand.env.cli.external.code import bertrand_code
+from bertrand.env.cli.external.dashboard import bertrand_dashboard
+from bertrand.env.cli.external.enter import bertrand_enter
+from bertrand.env.cli.external.init import bertrand_init
+from bertrand.env.cli.external.node import bertrand_node
+from bertrand.env.cli.external.rm import bertrand_rm
+from bertrand.env.cli.external.run import bertrand_run
+from bertrand.env.cli.external.scale import bertrand_scale
+from bertrand.env.cli.external.secret import bertrand_secret
+from bertrand.env.git import INFINITY
 from bertrand.env.version import __version__
 
 
@@ -1308,29 +1318,17 @@ class External:
         args : argparse.Namespace
             The parsed command-line arguments.
 
-        Raises
-        ------
-        OSError
-            If timeout is invalid (must be > 0 or inf).
         """
-        from bertrand.env.cli.external.init import bertrand_init
-
-        with asyncio.Runner() as runner:
-            timeout = args.timeout
-            if math.isnan(timeout) or timeout <= 0:
-                msg = f"invalid init timeout: {timeout} (must be > 0 seconds or inf)"
-                raise OSError(msg)
-            runner.run(
-                bertrand_init(
-                    None
-                    if args.path is None
-                    else Path(args.path).expanduser().resolve(),
-                    timeout=timeout,
-                    enable=args.enable,
-                    disable=args.disable,
-                    yes=args.yes,
-                )
+        timeout = validate_timeout("init", args.timeout)
+        run_async(
+            bertrand_init(
+                None if args.path is None else Path(args.path).expanduser().resolve(),
+                timeout=timeout,
+                enable=args.enable,
+                disable=args.disable,
+                yes=args.yes,
             )
+        )
 
     @staticmethod
     def build(args: argparse.Namespace) -> None:
@@ -1341,46 +1339,28 @@ class External:
         args : argparse.Namespace
             The parsed command-line arguments.
 
-        Raises
-        ------
-        TimeoutExpired
-            If a nested command times out while building the container.  This should
-            never occur under normal circumstances, and the 'build' command
-            intentionally does not accept a timeout argument, so this can only be
-            surfaced from an internal error.
         """
-        from bertrand.env.cli.external.build import bertrand_build
-
-        now = time.time()
-        with asyncio.Runner() as runner:
-            worktree = Path(args.path).expanduser().resolve()
-            try:
-                runner.run(
-                    bertrand_build(
-                        worktree,
-                        publish=args.publish,
-                        auth=args.auth,
-                        quiet=False,
-                        detach=args.detach,
-                    )
-                )
-            except (TimeoutError, TimeoutExpired) as err:
-                start = datetime.fromtimestamp(now, UTC)
-                cmd = ["bertrand", "build", str(worktree)]
-                if args.publish is not None:
-                    cmd.append("--publish")
-                    if args.publish:
-                        cmd.append(args.publish)
-                if args.auth:
-                    cmd.extend(["--auth", args.auth])
-                if args.detach:
-                    cmd.append("--detach")
-                raise TimeoutExpired(
-                    cmd=cmd,
-                    timeout=0.0,  # indefinite
-                    output=None,
-                    stderr=f"started: {start}\nstopped: {datetime.now(UTC)}\n",
-                ) from err
+        worktree = Path(args.path).expanduser().resolve()
+        cmd = ["bertrand", "build", str(worktree)]
+        if args.publish is not None:
+            cmd.append("--publish")
+            if args.publish:
+                cmd.append(args.publish)
+        if args.auth:
+            cmd.extend(["--auth", args.auth])
+        if args.detach:
+            cmd.append("--detach")
+        run_async(
+            bertrand_build(
+                worktree,
+                publish=args.publish,
+                auth=args.auth,
+                quiet=False,
+                detach=args.detach,
+            ),
+            cmd=cmd,
+            timeout=0.0,
+        )
 
     @staticmethod
     def secret(args: argparse.Namespace) -> None:
@@ -1391,34 +1371,12 @@ class External:
         args : argparse.Namespace
             The parsed command-line arguments.
 
-        Raises
-        ------
-        OSError
-            If timeout is invalid.
-        TimeoutExpired
-            If the secret command does not complete within its timeout.
         """
-        from bertrand.env.cli.external.secret import bertrand_secret
-
-        now = time.time()
-        timeout = getattr(args, "timeout", INFINITY)
-        if math.isnan(timeout) or timeout <= 0:
-            msg = f"invalid secret timeout: {timeout} (must be > 0 seconds or inf)"
-            raise OSError(msg)
-        with asyncio.Runner() as runner:
-            try:
-                runner.run(bertrand_secret(args))
-            except (TimeoutError, TimeoutExpired) as err:
-                start = datetime.fromtimestamp(now, UTC)
-                cmd = ["bertrand", "secret", args.secret_command]
-                if hasattr(args, "path"):
-                    cmd.append(str(Path(args.path).expanduser()))
-                raise TimeoutExpired(
-                    cmd=cmd,
-                    timeout=timeout,
-                    output=None,
-                    stderr=f"started: {start}\nstopped: {datetime.now(UTC)}\n",
-                ) from err
+        timeout = validate_timeout("secret", getattr(args, "timeout", INFINITY))
+        cmd = ["bertrand", "secret", args.secret_command]
+        if hasattr(args, "path"):
+            cmd.append(str(Path(args.path).expanduser()))
+        run_async(bertrand_secret(args), cmd=cmd, timeout=timeout)
 
     @staticmethod
     def cluster(args: argparse.Namespace) -> None:
@@ -1429,44 +1387,22 @@ class External:
         args : argparse.Namespace
             The parsed command-line arguments.
 
-        Raises
-        ------
-        OSError
-            If timeout is invalid.
-        TimeoutExpired
-            If the cluster command does not complete within its timeout.
         """
-        from bertrand.env.cli.external.cluster import bertrand_cluster
-
-        now = time.time()
-        timeout = getattr(args, "timeout", INFINITY)
-        if math.isnan(timeout) or timeout <= 0:
-            msg = f"invalid cluster timeout: {timeout} (must be > 0 seconds or inf)"
-            raise OSError(msg)
-        with asyncio.Runner() as runner:
-            try:
-                runner.run(bertrand_cluster(args))
-            except (TimeoutError, TimeoutExpired) as err:
-                start = datetime.fromtimestamp(now, UTC)
-                cmd = ["bertrand", "cluster", args.cluster_command]
-                if args.cluster_command == "secret":
-                    cmd.append(args.cluster_secret_command)
-                if args.cluster_command == "device":
-                    cmd.append(args.cluster_device_command)
-                if args.cluster_command == "storage":
-                    cmd.append(args.cluster_storage_command)
-                if args.cluster_command == "network":
-                    cmd.append(args.network_command)
-                    if args.network_command == "lb":
-                        cmd.append(args.lb_command)
-                    if args.network_command == "dns":
-                        cmd.append(args.dns_command)
-                raise TimeoutExpired(
-                    cmd=cmd,
-                    timeout=timeout,
-                    output=None,
-                    stderr=f"started: {start}\nstopped: {datetime.now(UTC)}\n",
-                ) from err
+        timeout = validate_timeout("cluster", getattr(args, "timeout", INFINITY))
+        cmd = ["bertrand", "cluster", args.cluster_command]
+        if args.cluster_command == "secret":
+            cmd.append(args.cluster_secret_command)
+        if args.cluster_command == "device":
+            cmd.append(args.cluster_device_command)
+        if args.cluster_command == "storage":
+            cmd.append(args.cluster_storage_command)
+        if args.cluster_command == "network":
+            cmd.append(args.network_command)
+            if args.network_command == "lb":
+                cmd.append(args.lb_command)
+            if args.network_command == "dns":
+                cmd.append(args.dns_command)
+        run_async(bertrand_cluster(args), cmd=cmd, timeout=timeout)
 
     @staticmethod
     def node(args: argparse.Namespace) -> None:
@@ -1477,40 +1413,18 @@ class External:
         args : argparse.Namespace
             The parsed command-line arguments.
 
-        Raises
-        ------
-        OSError
-            If timeout is invalid.
-        TimeoutExpired
-            If the node command does not complete within its timeout.
         """
-        from bertrand.env.cli.external.node import bertrand_node
-
-        now = time.time()
-        timeout = getattr(args, "timeout", INFINITY)
-        if math.isnan(timeout) or timeout <= 0:
-            msg = f"invalid node timeout: {timeout} (must be > 0 seconds or inf)"
-            raise OSError(msg)
-        with asyncio.Runner() as runner:
-            try:
-                runner.run(bertrand_node(args))
-            except (TimeoutError, TimeoutExpired) as err:
-                start = datetime.fromtimestamp(now, UTC)
-                cmd = ["bertrand", "node", args.node_command]
-                if args.node_command == "name":
-                    cmd.append(args.node_name_command)
-                if args.node_command == "secret":
-                    cmd.append(args.node_secret_command)
-                if args.node_command == "device":
-                    cmd.append(args.node_device_command)
-                if args.node_command == "storage":
-                    cmd.append(args.storage_command)
-                raise TimeoutExpired(
-                    cmd=cmd,
-                    timeout=timeout,
-                    output=None,
-                    stderr=f"started: {start}\nstopped: {datetime.now(UTC)}\n",
-                ) from err
+        timeout = validate_timeout("node", getattr(args, "timeout", INFINITY))
+        cmd = ["bertrand", "node", args.node_command]
+        if args.node_command == "name":
+            cmd.append(args.node_name_command)
+        if args.node_command == "secret":
+            cmd.append(args.node_secret_command)
+        if args.node_command == "device":
+            cmd.append(args.node_device_command)
+        if args.node_command == "storage":
+            cmd.append(args.storage_command)
+        run_async(bertrand_node(args), cmd=cmd, timeout=timeout)
 
     @staticmethod
     def run(args: argparse.Namespace) -> None:
@@ -1521,44 +1435,29 @@ class External:
         args : argparse.Namespace
             The parsed command-line arguments.
 
-        Raises
-        ------
-        TimeoutExpired
-            If a nested command times out while building or running the workload.
         """
-        from bertrand.env.cli.external.run import bertrand_run
-
-        now = time.time()
-        with asyncio.Runner() as runner:
-            try:
-                runner.run(
-                    bertrand_run(
-                        Path(args.path).expanduser().resolve(),
-                        detach=args.detach,
-                        tty=args.tty,
-                        args=args.args,
-                    )
-                )
-            except KeyboardInterrupt:
-                return
-            except (TimeoutError, TimeoutExpired) as err:
-                start = datetime.fromtimestamp(now, UTC)
-                cmd = ["bertrand", "run", str(Path(args.path).expanduser())]
-                if args.detach:
-                    cmd.append("--detach")
-                if args.tty is True:
-                    cmd.append("--tty")
-                elif args.tty is False:
-                    cmd.append("--no-tty")
-                if args.args:
-                    cmd.append("--")
-                    cmd.extend(args.args)
-                raise TimeoutExpired(
-                    cmd=cmd,
-                    timeout=0.0,  # indefinite
-                    output=None,
-                    stderr=f"started: {start}\nstopped: {datetime.now(UTC)}\n",
-                ) from err
+        target = Path(args.path).expanduser()
+        cmd = ["bertrand", "run", str(target)]
+        if args.detach:
+            cmd.append("--detach")
+        if args.tty is True:
+            cmd.append("--tty")
+        elif args.tty is False:
+            cmd.append("--no-tty")
+        if args.args:
+            cmd.append("--")
+            cmd.extend(args.args)
+        run_async(
+            bertrand_run(
+                target.resolve(),
+                detach=args.detach,
+                tty=args.tty,
+                args=args.args,
+            ),
+            cmd=cmd,
+            timeout=0.0,
+            swallow_keyboard_interrupt=True,
+        )
 
     @staticmethod
     def enter(args: argparse.Namespace) -> None:
@@ -1569,37 +1468,19 @@ class External:
         args : argparse.Namespace
             The parsed command-line arguments.
 
-        Raises
-        ------
-        TimeoutExpired
-            If a nested command times out while entering the container.  This should
-            never occur under normal circumstances, and the 'enter' command
-            intentionally does not accept a timeout argument, so this can only be
-            surfaced from an internal error.
         """
-        from bertrand.env.cli.external.enter import bertrand_enter
-
-        now = time.time()
-        with asyncio.Runner() as runner:
-            target = Path(args.path).expanduser().resolve()
-            try:
-                runner.run(
-                    bertrand_enter(
-                        target,
-                        shell=args.shell or None,
-                    )
-                )
-            except (TimeoutError, TimeoutExpired) as err:
-                start = datetime.fromtimestamp(now, UTC)
-                cmd = ["bertrand", "enter", str(Path(args.path).expanduser())]
-                if args.shell:
-                    cmd.extend(["--shell", args.shell])
-                raise TimeoutExpired(
-                    cmd=cmd,
-                    timeout=0.0,  # indefinite
-                    output=None,
-                    stderr=f"started: {start}\nstopped: {datetime.now(UTC)}\n",
-                ) from err
+        target = Path(args.path).expanduser()
+        cmd = ["bertrand", "enter", str(target)]
+        if args.shell:
+            cmd.extend(["--shell", args.shell])
+        run_async(
+            bertrand_enter(
+                target.resolve(),
+                shell=args.shell or None,
+            ),
+            cmd=cmd,
+            timeout=0.0,
+        )
 
     @staticmethod
     def code(args: argparse.Namespace) -> None:
@@ -1610,37 +1491,19 @@ class External:
         args : argparse.Namespace
             The parsed command-line arguments.
 
-        Raises
-        ------
-        TimeoutExpired
-            If a nested command times out while launching the editor.  This should
-            never occur under normal circumstances, and the 'code' command
-            intentionally does not accept a timeout argument, so this can only be
-            surfaced from an internal error.
         """
-        from bertrand.env.cli.external.code import bertrand_code
-
-        now = time.time()
-        with asyncio.Runner() as runner:
-            target = Path(args.path).expanduser().resolve()
-            try:
-                runner.run(
-                    bertrand_code(
-                        target,
-                        editor=args.editor or None,
-                    )
-                )
-            except (TimeoutError, TimeoutExpired) as err:
-                start = datetime.fromtimestamp(now, UTC)
-                cmd = ["bertrand", "code", str(Path(args.path).expanduser())]
-                if args.editor:
-                    cmd.extend(["--editor", args.editor])
-                raise TimeoutExpired(
-                    cmd=cmd,
-                    timeout=0.0,  # indefinite
-                    output=None,
-                    stderr=f"started: {start}\nstopped: {datetime.now(UTC)}\n",
-                ) from err
+        target = Path(args.path).expanduser()
+        cmd = ["bertrand", "code", str(target)]
+        if args.editor:
+            cmd.extend(["--editor", args.editor])
+        run_async(
+            bertrand_code(
+                target.resolve(),
+                editor=args.editor or None,
+            ),
+            cmd=cmd,
+            timeout=0.0,
+        )
 
     @staticmethod
     def scale(args: argparse.Namespace) -> None:
@@ -1653,53 +1516,38 @@ class External:
 
         Raises
         ------
-        TimeoutExpired
-            If the command does not complete within the specified timeout.
         OSError
-            If the replica count, grace period, or timeout is invalid.
+            If the replica count or grace period is invalid.
         """
-        from bertrand.env.cli.external.scale import bertrand_scale
-
-        now = time.time()
         if args.replicas < 0:
             msg = "scale replicas cannot be negative"
             raise OSError(msg)
         if args.grace < 0:
             msg = "scale grace period must be non-negative"
             raise OSError(msg)
-        if math.isnan(args.timeout) or args.timeout <= 0:
-            msg = f"invalid scale timeout: {args.timeout} (must be > 0 seconds or inf)"
-            raise OSError(msg)
-        with asyncio.Runner() as runner:
-            target = Path(args.path).expanduser().resolve()
-            try:
-                runner.run(
-                    bertrand_scale(
-                        target,
-                        replicas=args.replicas,
-                        grace_period_seconds=args.grace,
-                        timeout=args.timeout,
-                    )
-                )
-            except (TimeoutError, TimeoutExpired) as err:
-                start = datetime.fromtimestamp(now, UTC)
-                cmd = [
-                    "bertrand",
-                    "scale",
-                    str(Path(args.path).expanduser()),
-                    "--replicas",
-                    str(args.replicas),
-                ]
-                if args.grace != 10:
-                    cmd.extend(["--grace", str(args.grace)])
-                if not math.isinf(args.timeout):
-                    cmd.extend(["--timeout", str(args.timeout)])
-                raise TimeoutExpired(
-                    cmd=cmd,
-                    timeout=args.timeout,
-                    output=None,
-                    stderr=f"started: {start}\nstopped: {datetime.now(UTC)}\n",
-                ) from err
+        timeout = validate_timeout("scale", args.timeout)
+        target = Path(args.path).expanduser()
+        cmd = [
+            "bertrand",
+            "scale",
+            str(target),
+            "--replicas",
+            str(args.replicas),
+        ]
+        if args.grace != 10:
+            cmd.extend(["--grace", str(args.grace)])
+        if not math.isinf(timeout):
+            cmd.extend(["--timeout", str(timeout)])
+        run_async(
+            bertrand_scale(
+                target.resolve(),
+                replicas=args.replicas,
+                grace_period_seconds=args.grace,
+                timeout=timeout,
+            ),
+            cmd=cmd,
+            timeout=timeout,
+        )
 
     @staticmethod
     def rm(args: argparse.Namespace) -> None:
@@ -1712,43 +1560,28 @@ class External:
 
         Raises
         ------
-        TimeoutExpired
-            If the command does not complete within the specified timeout.
         OSError
-            If the grace period or timeout is invalid.
+            If the grace period is invalid.
         """
-        from bertrand.env.cli.external.rm import bertrand_rm
-
-        now = time.time()
         if args.grace < 0:
             msg = "rm grace period must be non-negative"
             raise OSError(msg)
-        if math.isnan(args.timeout) or args.timeout <= 0:
-            msg = f"invalid rm timeout: {args.timeout} (must be > 0 seconds or inf)"
-            raise OSError(msg)
-        with asyncio.Runner() as runner:
-            target = Path(args.path).expanduser().resolve()
-            try:
-                runner.run(
-                    bertrand_rm(
-                        target,
-                        grace_period_seconds=args.grace,
-                        timeout=args.timeout,
-                    )
-                )
-            except (TimeoutError, TimeoutExpired) as err:
-                start = datetime.fromtimestamp(now, UTC)
-                cmd = ["bertrand", "rm", str(Path(args.path).expanduser())]
-                if args.grace != 10:
-                    cmd.extend(["--grace", str(args.grace)])
-                if not math.isinf(args.timeout):
-                    cmd.extend(["--timeout", str(args.timeout)])
-                raise TimeoutExpired(
-                    cmd=cmd,
-                    timeout=args.timeout,
-                    output=None,
-                    stderr=f"started: {start}\nstopped: {datetime.now(UTC)}\n",
-                ) from err
+        timeout = validate_timeout("rm", args.timeout)
+        target = Path(args.path).expanduser()
+        cmd = ["bertrand", "rm", str(target)]
+        if args.grace != 10:
+            cmd.extend(["--grace", str(args.grace)])
+        if not math.isinf(timeout):
+            cmd.extend(["--timeout", str(timeout)])
+        run_async(
+            bertrand_rm(
+                target.resolve(),
+                grace_period_seconds=args.grace,
+                timeout=timeout,
+            ),
+            cmd=cmd,
+            timeout=timeout,
+        )
 
     @staticmethod
     def dashboard(args: argparse.Namespace) -> None:
@@ -1759,40 +1592,25 @@ class External:
         args : argparse.Namespace
             The parsed command-line arguments.
 
-        Raises
-        ------
-        TimeoutExpired
-            If the command does not complete within the specified timeout.
         """
-        from bertrand.env.cli.external.dashboard import bertrand_dashboard
-
-        now = time.time()
-        with asyncio.Runner() as runner:
-            try:
-                runner.run(
-                    bertrand_dashboard(
-                        port=args.port,
-                        open_browser=args.open_browser,
-                        timeout=args.timeout,
-                    )
-                )
-            except (TimeoutError, TimeoutExpired) as err:
-                start = datetime.fromtimestamp(now, UTC)
-                cmd = ["bertrand", "dashboard"]
-                if args.port:
-                    cmd.extend(["--port", str(args.port)])
-                if args.open_browser is True:
-                    cmd.append("--open")
-                elif args.open_browser is False:
-                    cmd.append("--no-open")
-                if not math.isinf(args.timeout):
-                    cmd.extend(["--timeout", str(args.timeout)])
-                raise TimeoutExpired(
-                    cmd=cmd,
-                    timeout=args.timeout,
-                    output=None,
-                    stderr=f"started: {start}\nstopped: {datetime.now(UTC)}\n",
-                ) from err
+        cmd = ["bertrand", "dashboard"]
+        if args.port:
+            cmd.extend(["--port", str(args.port)])
+        if args.open_browser is True:
+            cmd.append("--open")
+        elif args.open_browser is False:
+            cmd.append("--no-open")
+        if not math.isinf(args.timeout):
+            cmd.extend(["--timeout", str(args.timeout)])
+        run_async(
+            bertrand_dashboard(
+                port=args.port,
+                open_browser=args.open_browser,
+                timeout=args.timeout,
+            ),
+            cmd=cmd,
+            timeout=args.timeout,
+        )
 
     @staticmethod
     def clean(args: argparse.Namespace) -> None:
@@ -1803,26 +1621,15 @@ class External:
         args : argparse.Namespace
             The parsed command-line arguments.
 
-        Raises
-        ------
-        OSError
-            If timeout is invalid (must be > 0 or inf), or cleanup fails to
-            converge.
         """
-        from bertrand.env.cli.external.clean import bertrand_clean
-
-        with asyncio.Runner() as runner:
-            timeout = args.timeout
-            if math.isnan(timeout) or timeout <= 0:
-                msg = f"invalid clean timeout: {timeout} (must be > 0 seconds or inf)"
-                raise OSError(msg)
-            runner.run(
-                bertrand_clean(
-                    timeout=timeout,
-                    assume_yes=args.yes,
-                    force=args.force,
-                )
+        timeout = validate_timeout("clean", args.timeout)
+        run_async(
+            bertrand_clean(
+                timeout=timeout,
+                assume_yes=args.yes,
+                force=args.force,
             )
+        )
 
     def __call__(self) -> None:
         """Parse and dispatch the selected external command."""

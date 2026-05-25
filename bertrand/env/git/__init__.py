@@ -34,6 +34,7 @@ from .bertrand_git import (
     WORKTREE_MOUNT,
     CommandError,
     CompletedProcess,
+    Deadline,
     GitRefUpdate,
     GitRepository,
     GroupStatus,

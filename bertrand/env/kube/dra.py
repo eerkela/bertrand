@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, Self
+from typing import TYPE_CHECKING
 
 from bertrand.env.kube.custom_object import (
-    CustomObject,
-    CustomObjectClient,
+    CustomObjectResource,
     CustomObjectSpec,
+    CustomObjectWrapper,
 )
 
 if TYPE_CHECKING:
@@ -28,51 +27,36 @@ RESOURCE_CLAIM_PLURAL = "resourceclaims"
 RESOURCE_CLAIM_TEMPLATE_KIND = "ResourceClaimTemplate"
 RESOURCE_CLAIM_TEMPLATE_PLURAL = "resourceclaimtemplates"
 
-_DEVICE_CLASS_CLIENT = CustomObjectClient(
-    CustomObjectSpec(
-        group=DRA_GROUP,
-        version=DRA_VERSION,
-        kind=DEVICE_CLASS_KIND,
-        plural=DEVICE_CLASS_PLURAL,
-        scope="cluster",
-    )
+_DEVICE_CLASS_SPEC = CustomObjectSpec(
+    group=DRA_GROUP,
+    version=DRA_VERSION,
+    kind=DEVICE_CLASS_KIND,
+    plural=DEVICE_CLASS_PLURAL,
+    scope="cluster",
 )
-_RESOURCE_SLICE_CLIENT = CustomObjectClient(
-    CustomObjectSpec(
-        group=DRA_GROUP,
-        version=DRA_VERSION,
-        kind=RESOURCE_SLICE_KIND,
-        plural=RESOURCE_SLICE_PLURAL,
-        scope="cluster",
-    )
+_RESOURCE_SLICE_SPEC = CustomObjectSpec(
+    group=DRA_GROUP,
+    version=DRA_VERSION,
+    kind=RESOURCE_SLICE_KIND,
+    plural=RESOURCE_SLICE_PLURAL,
+    scope="cluster",
 )
-_RESOURCE_CLAIM_CLIENT = CustomObjectClient(
-    CustomObjectSpec(
-        group=DRA_GROUP,
-        version=DRA_VERSION,
-        kind=RESOURCE_CLAIM_KIND,
-        plural=RESOURCE_CLAIM_PLURAL,
-    )
+_RESOURCE_CLAIM_SPEC = CustomObjectSpec(
+    group=DRA_GROUP,
+    version=DRA_VERSION,
+    kind=RESOURCE_CLAIM_KIND,
+    plural=RESOURCE_CLAIM_PLURAL,
 )
-_RESOURCE_CLAIM_TEMPLATE_CLIENT = CustomObjectClient(
-    CustomObjectSpec(
-        group=DRA_GROUP,
-        version=DRA_VERSION,
-        kind=RESOURCE_CLAIM_TEMPLATE_KIND,
-        plural=RESOURCE_CLAIM_TEMPLATE_PLURAL,
-    )
+_RESOURCE_CLAIM_TEMPLATE_SPEC = CustomObjectSpec(
+    group=DRA_GROUP,
+    version=DRA_VERSION,
+    kind=RESOURCE_CLAIM_TEMPLATE_KIND,
+    plural=RESOURCE_CLAIM_TEMPLATE_PLURAL,
 )
 
 
-@dataclass(frozen=True)
-class DeviceClass:
+class DeviceClass(CustomObjectWrapper):
     """Wrapper around one Kubernetes DRA `DeviceClass`."""
-
-    _obj: CustomObject
-
-    @classmethod
-    def _from_object(cls, obj: CustomObject) -> Self:
-        return cls(_obj=obj)
 
     @classmethod
     async def upsert(
@@ -83,7 +67,7 @@ class DeviceClass:
         spec: Mapping[str, object],
         timeout: float,
         labels: Mapping[str, str] | None = None,
-    ) -> Self:
+    ) -> DeviceClass:
         """Create or patch a DRA `DeviceClass`.
 
         Parameters
@@ -101,28 +85,26 @@ class DeviceClass:
 
         Returns
         -------
-        Self
+        DeviceClass
             Wrapped class object.
         """
-        obj = await _DEVICE_CLASS_CLIENT.upsert(
+        return await _DEVICE_CLASS_RESOURCE.upsert(
             kube,
             name=name,
             spec=spec,
             labels=labels,
             timeout=timeout,
         )
-        return cls._from_object(obj)
 
 
-@dataclass(frozen=True)
-class ResourceSlice:
+_DEVICE_CLASS_RESOURCE: CustomObjectResource[DeviceClass] = CustomObjectResource(
+    spec=_DEVICE_CLASS_SPEC,
+    parser=DeviceClass._from_object,
+)
+
+
+class ResourceSlice(CustomObjectWrapper):
     """Wrapper around one Kubernetes DRA `ResourceSlice`."""
-
-    _obj: CustomObject
-
-    @classmethod
-    def _from_object(cls, obj: CustomObject) -> Self:
-        return cls(_obj=obj)
 
     @classmethod
     async def upsert(
@@ -133,7 +115,7 @@ class ResourceSlice:
         spec: Mapping[str, object],
         timeout: float,
         labels: Mapping[str, str] | None = None,
-    ) -> Self:
+    ) -> ResourceSlice:
         """Create or patch a DRA `ResourceSlice`.
 
         Parameters
@@ -151,28 +133,26 @@ class ResourceSlice:
 
         Returns
         -------
-        Self
+        ResourceSlice
             Wrapped ResourceSlice.
         """
-        obj = await _RESOURCE_SLICE_CLIENT.upsert(
+        return await _RESOURCE_SLICE_RESOURCE.upsert(
             kube,
             name=name,
             spec=spec,
             labels=labels,
             timeout=timeout,
         )
-        return cls._from_object(obj)
 
 
-@dataclass(frozen=True)
-class ResourceClaim:
+_RESOURCE_SLICE_RESOURCE: CustomObjectResource[ResourceSlice] = CustomObjectResource(
+    spec=_RESOURCE_SLICE_SPEC,
+    parser=ResourceSlice._from_object,
+)
+
+
+class ResourceClaim(CustomObjectWrapper):
     """Wrapper around one namespaced DRA `ResourceClaim`."""
-
-    _obj: CustomObject
-
-    @classmethod
-    def _from_object(cls, obj: CustomObject) -> Self:
-        return cls(_obj=obj)
 
     @classmethod
     async def get(
@@ -182,7 +162,7 @@ class ResourceClaim:
         namespace: str,
         name: str,
         timeout: float,
-    ) -> Self | None:
+    ) -> ResourceClaim | None:
         """Read one DRA `ResourceClaim` by name.
 
         Parameters
@@ -198,38 +178,15 @@ class ResourceClaim:
 
         Returns
         -------
-        Self | None
+        ResourceClaim | None
             Wrapped claim, or `None` when missing.
         """
-        obj = await _RESOURCE_CLAIM_CLIENT.get(
+        return await _RESOURCE_CLAIM_RESOURCE.get(
             kube,
             namespace=namespace,
             name=name,
             timeout=timeout,
         )
-        return None if obj is None else cls._from_object(obj)
-
-    @property
-    def name(self) -> str:
-        """Return the claim name.
-
-        Returns
-        -------
-        str
-            Kubernetes `metadata.name`.
-        """
-        return self._obj.name
-
-    @property
-    def namespace(self) -> str:
-        """Return the claim namespace.
-
-        Returns
-        -------
-        str
-            Kubernetes `metadata.namespace`.
-        """
-        return self._obj.namespace
 
     @property
     def status(self) -> Mapping[str, object]:
@@ -243,15 +200,14 @@ class ResourceClaim:
         return self._obj.status
 
 
-@dataclass(frozen=True)
-class ResourceClaimTemplate:
+_RESOURCE_CLAIM_RESOURCE: CustomObjectResource[ResourceClaim] = CustomObjectResource(
+    spec=_RESOURCE_CLAIM_SPEC,
+    parser=ResourceClaim._from_object,
+)
+
+
+class ResourceClaimTemplate(CustomObjectWrapper):
     """Wrapper around one namespaced DRA `ResourceClaimTemplate`."""
-
-    _obj: CustomObject
-
-    @classmethod
-    def _from_object(cls, obj: CustomObject) -> Self:
-        return cls(_obj=obj)
 
     @classmethod
     async def create(
@@ -263,7 +219,7 @@ class ResourceClaimTemplate:
         spec: Mapping[str, object],
         labels: Mapping[str, str],
         timeout: float,
-    ) -> Self:
+    ) -> ResourceClaimTemplate:
         """Create one DRA `ResourceClaimTemplate`.
 
         Parameters
@@ -283,10 +239,10 @@ class ResourceClaimTemplate:
 
         Returns
         -------
-        Self
+        ResourceClaimTemplate
             Wrapped ResourceClaimTemplate.
         """
-        obj = await _RESOURCE_CLAIM_TEMPLATE_CLIENT.create(
+        return await _RESOURCE_CLAIM_TEMPLATE_RESOURCE.create(
             kube,
             namespace=namespace,
             name=name,
@@ -294,7 +250,6 @@ class ResourceClaimTemplate:
             labels=labels,
             timeout=timeout,
         )
-        return cls._from_object(obj)
 
     @classmethod
     async def upsert(
@@ -306,7 +261,7 @@ class ResourceClaimTemplate:
         spec: Mapping[str, object],
         labels: Mapping[str, str],
         timeout: float,
-    ) -> Self:
+    ) -> ResourceClaimTemplate:
         """Create or patch one DRA `ResourceClaimTemplate`.
 
         Parameters
@@ -326,10 +281,10 @@ class ResourceClaimTemplate:
 
         Returns
         -------
-        Self
+        ResourceClaimTemplate
             Wrapped created or patched ResourceClaimTemplate.
         """
-        obj = await _RESOURCE_CLAIM_TEMPLATE_CLIENT.upsert(
+        return await _RESOURCE_CLAIM_TEMPLATE_RESOURCE.upsert(
             kube,
             namespace=namespace,
             name=name,
@@ -337,7 +292,6 @@ class ResourceClaimTemplate:
             labels=labels,
             timeout=timeout,
         )
-        return cls._from_object(obj)
 
     async def delete(self, kube: Kube, *, timeout: float) -> None:
         """Delete this ResourceClaimTemplate.
@@ -351,12 +305,20 @@ class ResourceClaimTemplate:
         """
         if not self._obj.namespace or not self._obj.name:
             return
-        await _RESOURCE_CLAIM_TEMPLATE_CLIENT.delete_by_name(
+        await _RESOURCE_CLAIM_TEMPLATE_RESOURCE.delete_by_name(
             kube,
             namespace=self._obj.namespace,
             name=self._obj.name,
             timeout=timeout,
         )
+
+
+_RESOURCE_CLAIM_TEMPLATE_RESOURCE: CustomObjectResource[ResourceClaimTemplate] = (
+    CustomObjectResource(
+        spec=_RESOURCE_CLAIM_TEMPLATE_SPEC,
+        parser=ResourceClaimTemplate._from_object,
+    )
+)
 
 
 async def ensure_dra_api(kube: Kube, *, timeout: float) -> None:
@@ -375,7 +337,7 @@ async def ensure_dra_api(kube: Kube, *, timeout: float) -> None:
         If the Kubernetes DRA API is unavailable.
     """
     try:
-        await _DEVICE_CLASS_CLIENT.list(kube, timeout=timeout)
+        await _DEVICE_CLASS_RESOURCE.list(kube, timeout=timeout)
     except OSError as err:
         msg = (
             "Kubernetes Dynamic Resource Allocation API "

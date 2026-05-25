@@ -4652,18 +4652,11 @@ class ClangFormat(Resource):
             ),
         ]
 
-    async def init(self, config: Config, cli: Config.Init) -> dict[str, Any]:
-        """Return default clang-format configuration.
-
-        Returns
-        -------
-        dict[str, Any]
-            Default clang-format configuration data.
-        """
-        _ = config, cli
-        return self.Model.model_construct().model_dump(by_alias=True)
-
-    async def validate(self, config: Config, fragment: Any) -> Model | None:
+    async def validate(
+        self,
+        config: Config,  # noqa: ARG002
+        fragment: Any,
+    ) -> Model | None:
         """Validate clang-format configuration.
 
         Returns
@@ -4671,7 +4664,6 @@ class ClangFormat(Resource):
         Model | None
             Validated clang-format configuration.
         """
-        _ = config
         return self.Model.model_validate(fragment)
 
     def _integer_literal_separator(self, name: str) -> dict[str, int]:
@@ -4969,13 +4961,3 @@ class ClangFormat(Resource):
             dump_yaml(content, resource_name=self.name),
             encoding="utf-8",
         )
-
-    async def schema(self) -> dict[str, Any]:
-        """Return the clang-format configuration schema.
-
-        Returns
-        -------
-        dict[str, Any]
-            JSON Schema for the clang-format configuration.
-        """
-        return self.Model.model_json_schema(by_alias=True, mode="validation")

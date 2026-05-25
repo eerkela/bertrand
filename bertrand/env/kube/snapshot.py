@@ -3,14 +3,13 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, Self, cast
+from typing import TYPE_CHECKING, cast
 
 from bertrand.env.git import until
 from bertrand.env.kube.custom_object import (
-    CustomObject,
-    CustomObjectClient,
+    CustomObjectResource,
     CustomObjectSpec,
+    CustomObjectWrapper,
 )
 
 if TYPE_CHECKING:
@@ -41,12 +40,9 @@ _VOLUME_SNAPSHOT_SPEC = CustomObjectSpec(
     kind=VOLUME_SNAPSHOT_KIND,
     plural=VOLUME_SNAPSHOT_PLURAL,
 )
-_VOLUME_SNAPSHOT_CLASS_CLIENT = CustomObjectClient(_VOLUME_SNAPSHOT_CLASS_SPEC)
-_VOLUME_SNAPSHOT_CLIENT = CustomObjectClient(_VOLUME_SNAPSHOT_SPEC)
 
 
-@dataclass(frozen=True)
-class VolumeSnapshotClass:
+class VolumeSnapshotClass(CustomObjectWrapper):
     """Wrapper around one cluster-scoped `VolumeSnapshotClass`.
 
     Parameters
@@ -55,12 +51,6 @@ class VolumeSnapshotClass:
         Generic custom object returned by the snapshot API.
     """
 
-    _obj: CustomObject
-
-    @classmethod
-    def _from_object(cls, obj: CustomObject) -> Self:
-        return cls(_obj=obj)
-
     @classmethod
     async def get(
         cls,
@@ -68,7 +58,7 @@ class VolumeSnapshotClass:
         *,
         name: str,
         timeout: float,
-    ) -> Self | None:
+    ) -> VolumeSnapshotClass | None:
         """Read one `VolumeSnapshotClass` by name.
 
         Parameters
@@ -85,12 +75,11 @@ class VolumeSnapshotClass:
         VolumeSnapshotClass | None
             Wrapped snapshot class, or `None` if it does not exist.
         """
-        obj = await _VOLUME_SNAPSHOT_CLASS_CLIENT.get(
+        return await _VOLUME_SNAPSHOT_CLASS_RESOURCE.get(
             kube,
             name=name,
             timeout=timeout,
         )
-        return None if obj is None else cls._from_object(obj)
 
     @classmethod
     async def list(
@@ -99,7 +88,7 @@ class VolumeSnapshotClass:
         *,
         timeout: float,
         labels: Mapping[str, str] | None = None,
-    ) -> builtins.list[Self]:
+    ) -> builtins.list[VolumeSnapshotClass]:
         """List `VolumeSnapshotClass` objects with optional labels.
 
         Parameters
@@ -116,12 +105,11 @@ class VolumeSnapshotClass:
         list[VolumeSnapshotClass]
             Wrapped snapshot classes matching the selector.
         """
-        objects = await _VOLUME_SNAPSHOT_CLASS_CLIENT.list(
+        return await _VOLUME_SNAPSHOT_CLASS_RESOURCE.list(
             kube,
             labels=labels,
             timeout=timeout,
         )
-        return [cls._from_object(obj) for obj in objects]
 
     @classmethod
     async def create(
@@ -134,7 +122,7 @@ class VolumeSnapshotClass:
         timeout: float,
         parameters: Mapping[str, str] | None = None,
         labels: Mapping[str, str] | None = None,
-    ) -> Self:
+    ) -> VolumeSnapshotClass:
         """Create one `VolumeSnapshotClass`.
 
         Parameters
@@ -167,34 +155,11 @@ class VolumeSnapshotClass:
             "deletionPolicy": deletion_policy,
             "parameters": dict(parameters or {}),
         }
-        obj = await _VOLUME_SNAPSHOT_CLASS_CLIENT.create_manifest(
+        return await _VOLUME_SNAPSHOT_CLASS_RESOURCE.create_manifest(
             kube,
             manifest=manifest,
             timeout=timeout,
         )
-        return cls._from_object(obj)
-
-    @property
-    def name(self) -> str:
-        """Return the snapshot class name.
-
-        Returns
-        -------
-        str
-            Kubernetes `metadata.name`, or an empty string when unavailable.
-        """
-        return self._obj.name
-
-    @property
-    def labels(self) -> Mapping[str, str]:
-        """Return snapshot class labels.
-
-        Returns
-        -------
-        Mapping[str, str]
-            Read-only label mapping.
-        """
-        return self._obj.labels
 
     @property
     def driver(self) -> str:
@@ -219,8 +184,15 @@ class VolumeSnapshotClass:
         return str(self._obj.payload.get("deletionPolicy") or "").strip()
 
 
-@dataclass(frozen=True)
-class VolumeSnapshot:
+_VOLUME_SNAPSHOT_CLASS_RESOURCE: CustomObjectResource[VolumeSnapshotClass] = (
+    CustomObjectResource(
+        spec=_VOLUME_SNAPSHOT_CLASS_SPEC,
+        parser=VolumeSnapshotClass._from_object,
+    )
+)
+
+
+class VolumeSnapshot(CustomObjectWrapper):
     """Wrapper around one namespaced `VolumeSnapshot`.
 
     Parameters
@@ -228,12 +200,6 @@ class VolumeSnapshot:
     _obj : CustomObject
         Generic custom object returned by the snapshot API.
     """
-
-    _obj: CustomObject
-
-    @classmethod
-    def _from_object(cls, obj: CustomObject) -> Self:
-        return cls(_obj=obj)
 
     @classmethod
     async def get(
@@ -243,7 +209,7 @@ class VolumeSnapshot:
         namespace: str,
         name: str,
         timeout: float,
-    ) -> Self | None:
+    ) -> VolumeSnapshot | None:
         """Read one `VolumeSnapshot` by name.
 
         Parameters
@@ -262,13 +228,12 @@ class VolumeSnapshot:
         VolumeSnapshot | None
             Wrapped snapshot, or `None` if it does not exist.
         """
-        obj = await _VOLUME_SNAPSHOT_CLIENT.get(
+        return await _VOLUME_SNAPSHOT_RESOURCE.get(
             kube,
             namespace=namespace,
             name=name,
             timeout=timeout,
         )
-        return None if obj is None else cls._from_object(obj)
 
     @classmethod
     async def list(
@@ -278,7 +243,7 @@ class VolumeSnapshot:
         namespace: str,
         timeout: float,
         labels: Mapping[str, str] | None = None,
-    ) -> builtins.list[Self]:
+    ) -> builtins.list[VolumeSnapshot]:
         """List namespaced `VolumeSnapshot` objects.
 
         Parameters
@@ -297,13 +262,12 @@ class VolumeSnapshot:
         list[VolumeSnapshot]
             Wrapped snapshots matching the selector.
         """
-        objects = await _VOLUME_SNAPSHOT_CLIENT.list(
+        return await _VOLUME_SNAPSHOT_RESOURCE.list(
             kube,
             namespace=namespace,
             labels=labels,
             timeout=timeout,
         )
-        return [cls._from_object(obj) for obj in objects]
 
     @classmethod
     async def create(
@@ -317,7 +281,7 @@ class VolumeSnapshot:
         timeout: float,
         labels: Mapping[str, str] | None = None,
         annotations: Mapping[str, str] | None = None,
-    ) -> Self:
+    ) -> VolumeSnapshot:
         """Create one snapshot from a source PersistentVolumeClaim.
 
         Parameters
@@ -344,7 +308,7 @@ class VolumeSnapshot:
         VolumeSnapshot
             Wrapped created snapshot.
         """
-        obj = await _VOLUME_SNAPSHOT_CLIENT.create(
+        return await _VOLUME_SNAPSHOT_RESOURCE.create(
             kube,
             namespace=namespace,
             name=name,
@@ -356,7 +320,6 @@ class VolumeSnapshot:
             annotations=annotations,
             timeout=timeout,
         )
-        return cls._from_object(obj)
 
     async def delete(self, kube: Kube, *, timeout: float) -> None:
         """Delete this snapshot.
@@ -369,14 +332,14 @@ class VolumeSnapshot:
             Maximum request budget in seconds. If infinite, wait indefinitely.
         """
         namespace, name = self._require_namespace_name("delete VolumeSnapshot")
-        await _VOLUME_SNAPSHOT_CLIENT.delete_by_name(
+        await _VOLUME_SNAPSHOT_RESOURCE.delete_by_name(
             kube,
             namespace=namespace,
             name=name,
             timeout=timeout,
         )
 
-    async def refresh(self, kube: Kube, *, timeout: float) -> Self | None:
+    async def refresh(self, kube: Kube, *, timeout: float) -> VolumeSnapshot | None:
         """Re-read this snapshot.
 
         Parameters
@@ -399,7 +362,7 @@ class VolumeSnapshot:
             timeout=timeout,
         )
 
-    async def wait_ready(self, kube: Kube, *, timeout: float) -> Self:
+    async def wait_ready(self, kube: Kube, *, timeout: float) -> VolumeSnapshot:
         """Wait until the snapshot reports `readyToUse`.
 
         Parameters
@@ -421,7 +384,7 @@ class VolumeSnapshot:
         """
         namespace, name = self._require_namespace_name("wait for VolumeSnapshot")
 
-        async def ready(remaining: float) -> Self:
+        async def ready(remaining: float) -> VolumeSnapshot:
             live = await self.refresh(kube, timeout=remaining)
             if live is None:
                 msg = f"VolumeSnapshot {namespace}/{name} disappeared before ready"
@@ -457,44 +420,11 @@ class VolumeSnapshot:
             Maximum wait budget in seconds.
         """
         namespace, name = self._require_namespace_name("wait for VolumeSnapshot")
-        await _VOLUME_SNAPSHOT_CLIENT.wait_deleted(
+        await _VOLUME_SNAPSHOT_RESOURCE.wait_deleted(
             label=f"VolumeSnapshot {namespace}/{name}",
             timeout=timeout,
             refresh=lambda remaining: self.refresh(kube, timeout=remaining),
         )
-
-    @property
-    def name(self) -> str:
-        """Return the snapshot name.
-
-        Returns
-        -------
-        str
-            Kubernetes `metadata.name`, or an empty string when unavailable.
-        """
-        return self._obj.name
-
-    @property
-    def namespace(self) -> str:
-        """Return the snapshot namespace.
-
-        Returns
-        -------
-        str
-            Kubernetes `metadata.namespace`, or an empty string when unavailable.
-        """
-        return self._obj.namespace
-
-    @property
-    def labels(self) -> Mapping[str, str]:
-        """Return snapshot labels.
-
-        Returns
-        -------
-        Mapping[str, str]
-            Read-only snapshot label mapping.
-        """
-        return self._obj.labels
 
     @property
     def created_at(self) -> datetime | None:
@@ -569,3 +499,9 @@ class VolumeSnapshot:
             msg = f"cannot {action} with missing metadata.name/namespace"
             raise OSError(msg)
         return namespace, name
+
+
+_VOLUME_SNAPSHOT_RESOURCE: CustomObjectResource[VolumeSnapshot] = CustomObjectResource(
+    spec=_VOLUME_SNAPSHOT_SPEC,
+    parser=VolumeSnapshot._from_object,
+)

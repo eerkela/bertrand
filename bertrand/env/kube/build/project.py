@@ -2,17 +2,17 @@
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import json
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING
 
 from bertrand.env.build_args import normalize_image_build_args
 from bertrand.env.config.bertrand import Bertrand, project_image_tag
 from bertrand.env.config.conan import ConanConfig
+from bertrand.env.config.core import Config, _check_uuid
 from bertrand.env.config.python import PyProject
-from bertrand.env.git import INFINITY, ensure_worktree_id
+from bertrand.env.git import INFINITY, Deadline, ensure_worktree_id
 from bertrand.env.kube.build.containerfile import project_containerfile
 from bertrand.env.kube.build.lifecycle import (
     ProjectImagePublication,
@@ -34,13 +34,9 @@ if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Mapping, Sequence
     from pathlib import Path
 
-    from bertrand.env.config.core import Config, KubeName
+    from bertrand.env.config.core import KubeName
     from bertrand.env.kube.api.client import Kube
-
-
-class _CapabilityRequest(Protocol):
-    id: KubeName
-    required: bool
+    from bertrand.env.kube.workload.capability import CapabilityRequest
 
 
 @dataclass(frozen=True)
@@ -112,11 +108,12 @@ class ProjectImageBuild:
         if timeout <= 0:
             msg = "project image publish timeout must be non-negative"
             raise TimeoutError(msg)
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + timeout
+        deadline = Deadline.from_timeout(
+            timeout, message="timeout must be non-negative"
+        )
         request = await self.submit(
             kube,
-            timeout=deadline - loop.time(),
+            timeout=deadline.remaining(),
             external_image=external_image,
             auth_id=auth_id,
             ensure_crds=ensure_crds,
@@ -124,7 +121,7 @@ class ProjectImageBuild:
         request = await wait_buildkit_build(
             kube,
             name=request.name,
-            timeout=deadline - loop.time(),
+            timeout=deadline.remaining(),
             on_update=on_update,
         )
         status = request.status
@@ -140,7 +137,7 @@ class ProjectImageBuild:
         record = await get_project_image(
             kube,
             name=status.record_name,
-            timeout=deadline - loop.time(),
+            timeout=deadline.remaining(),
         )
         if record is None:
             msg = (
@@ -191,11 +188,12 @@ class ProjectImageBuild:
         if timeout <= 0:
             msg = "project image submit timeout must be non-negative"
             raise TimeoutError(msg)
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + timeout
+        deadline = Deadline.from_timeout(
+            timeout, message="timeout must be non-negative"
+        )
         if ensure_crds:
-            await ensure_buildkit_build_crd(kube, timeout=deadline - loop.time())
-            await ensure_project_image_crd(kube, timeout=deadline - loop.time())
+            await ensure_buildkit_build_crd(kube, timeout=deadline.remaining())
+            await ensure_project_image_crd(kube, timeout=deadline.remaining())
         spec = self.spec.with_external_publication(
             external_image=external_image,
             auth_id=auth_id,
@@ -203,7 +201,7 @@ class ProjectImageBuild:
         return await submit_buildkit_build(
             kube,
             spec=spec,
-            timeout=deadline - loop.time(),
+            timeout=deadline.remaining(),
         )
 
 
@@ -237,8 +235,6 @@ def project_image_build(
         If Bertrand configuration is missing or a custom Containerfile cannot be
         read.
     """
-    from bertrand.env.config.core import Config, _check_uuid
-
     if not isinstance(config, Config):
         msg = "project image builds require an active Config instance"
         raise TypeError(msg)
@@ -324,7 +320,7 @@ def _build_args(args: Mapping[str, object]) -> dict[str, str]:
 
 
 def _capability_requests(
-    requests: Sequence[_CapabilityRequest],
+    requests: Sequence[CapabilityRequest],
 ) -> dict[KubeName, bool]:
     return {request.id: request.required for request in requests}
 

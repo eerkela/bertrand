@@ -130,6 +130,97 @@ type JSONValue = Scalar | Sequence[JSONValue] | Mapping[str, JSONValue] | None
 type GitRefState = Literal["prepared", "committed", "aborted"]
 
 
+@dataclass(frozen=True)
+class Deadline:
+    """Absolute event-loop deadline derived from a caller timeout.
+
+    Attributes
+    ----------
+    expires_at : float
+        Event-loop timestamp when the budget expires.
+    timeout : float
+        Original caller timeout in seconds.
+    """
+
+    expires_at: float
+    timeout: float
+
+    @classmethod
+    def from_timeout(cls, timeout: float, *, message: str) -> Self:
+        """Create a deadline from a positive timeout budget.
+
+        Parameters
+        ----------
+        timeout : float
+            Timeout budget in seconds.
+        message : str
+            Error message to raise when `timeout` is not positive.
+
+        Returns
+        -------
+        Self
+            Absolute deadline tracked against the current event loop.
+
+        Raises
+        ------
+        TimeoutError
+            If `timeout` is not positive.
+        """
+        if timeout <= 0:
+            raise TimeoutError(message)
+        loop = asyncio.get_running_loop()
+        return cls(expires_at=loop.time() + timeout, timeout=timeout)
+
+    def remaining(self) -> float:
+        """Return the remaining budget in seconds.
+
+        Returns
+        -------
+        float
+            Remaining time until expiration.  The value may be negative after the
+            deadline has elapsed.
+        """
+        return self.expires_at - asyncio.get_running_loop().time()
+
+    def check(self, message: str) -> float:
+        """Return remaining time or raise when the deadline has elapsed.
+
+        Parameters
+        ----------
+        message : str
+            Error message to raise when no time remains.
+
+        Returns
+        -------
+        float
+            Positive remaining budget in seconds.
+
+        Raises
+        ------
+        TimeoutError
+            If the deadline has elapsed.
+        """
+        remaining = self.remaining()
+        if remaining <= 0:
+            raise TimeoutError(message)
+        return remaining
+
+    def bounded(self, seconds: float) -> float:
+        """Cap an interval by the non-negative remaining budget.
+
+        Parameters
+        ----------
+        seconds : float
+            Desired interval in seconds.
+
+        Returns
+        -------
+        float
+            `seconds` capped to the remaining budget and floored at zero.
+        """
+        return min(seconds, max(0.0, self.remaining()))
+
+
 def inside_image() -> bool:
     """Check if the current process is in a Bertrand image context.
 
@@ -549,6 +640,10 @@ def confirm(prompt: str, *, assume_yes: bool = False) -> bool:
     return response in {"y", "yes"}
 
 
+def _warn(message: str) -> None:
+    print(f"bertrand: {message}", file=sys.stderr)
+
+
 async def _run_no_capture(
     argv: list[str],
     proc: asyncio.subprocess.Process,
@@ -775,8 +870,7 @@ async def run(
     # get overall deadline across attempts
     if timeout <= 0.0:
         raise TimeoutExpired(cmd=argv, timeout=timeout, output=None, stderr=None)
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
+    deadline = Deadline.from_timeout(timeout, message="")
 
     # loop until success, deadline is exceeded, or attempts are exhausted
     last_error: CommandError | None = None
@@ -789,8 +883,7 @@ async def run(
             cwd=cwd,
             env=env,
         )
-        if deadline is not None:
-            timeout = deadline - loop.time()
+        timeout = deadline.remaining()
 
         # capture_output=False -> inherit terminal streams and do not capture output
         result: CompletedProcess | CommandError | None = None
@@ -825,7 +918,7 @@ async def run(
         last_error = result
         attempts -= 1
         if attempts > 0:
-            await asyncio.sleep(delay)
+            await asyncio.sleep(deadline.bounded(delay))
 
     # exhausted all attempts
     if last_error is not None:
@@ -927,12 +1020,11 @@ async def until[T](
         msg = "interval must be non-negative"
         raise ValueError(msg)
 
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
+    deadline = Deadline.from_timeout(timeout, message=f"timed out {action}")
     last_error: TimeoutError | subprocess.TimeoutExpired | None = None
 
     while True:
-        remaining = deadline - loop.time()
+        remaining = deadline.remaining()
         if remaining <= 0:
             msg = f"timed out {action}"
             raise TimeoutError(msg) from last_error
@@ -942,11 +1034,11 @@ async def until[T](
         except (TimeoutError, subprocess.TimeoutExpired) as err:
             last_error = err
 
-        remaining = deadline - loop.time()
+        remaining = deadline.remaining()
         if remaining <= 0:
             msg = f"timed out {action}"
             raise TimeoutError(msg) from last_error
-        await asyncio.sleep(min(interval, remaining))
+        await asyncio.sleep(deadline.bounded(interval))
 
 
 def pid_alive(pid: int) -> bool:
@@ -1082,8 +1174,7 @@ async def install_packages(
             output=None,
             stderr="timed out before command could be started",
         )
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
+    deadline = Deadline.from_timeout(timeout, message="")
 
     # get package manager spec
     spec = _INSTALL_SPECS.get(package_manager)
@@ -1114,7 +1205,7 @@ async def install_packages(
         await run(
             sudo(cmd, non_interactive=assume_yes),
             env=env,
-            timeout=deadline - loop.time(),
+            timeout=deadline.remaining(),
         )
 
     # install requested packages
@@ -1123,7 +1214,9 @@ async def install_packages(
         cmd.extend(spec.yes_install)
     cmd.extend(packages)
     await run(
-        sudo(cmd, non_interactive=assume_yes), env=env, timeout=deadline - loop.time()
+        sudo(cmd, non_interactive=assume_yes),
+        env=env,
+        timeout=deadline.remaining(),
     )
 
 
@@ -1271,13 +1364,12 @@ class GroupStatus:
 
         # warn if group membership is not active in current session
         if not status.active:
-            print(
-                f"bertrand: added {status.user!r} to the {status.group!r} group, but "
+            _warn(
+                f"added {status.user!r} to the {status.group!r} group, but "
                 "sudo is still required for this session.  Run "
                 f"`newgrp {status.group}` "
                 "or log out and back in to pick up the new group privileges before "
-                "proceeding.",
-                file=sys.stderr,
+                "proceeding."
             )
 
 
@@ -1359,12 +1451,25 @@ class HostLock:
             raise RuntimeError(msg)
         return task
 
-    async def _acquire_file(self, deadline: float) -> bool:
-        loop = asyncio.get_running_loop()
+    def _clear_owner(
+        self,
+        *,
+        owner: asyncio.Task[Any] | None = None,
+        unregister: bool = False,
+    ) -> None:
+        with LOCK_GUARD:
+            if owner is not None and self._owner != owner:
+                return
+            self._owner = None
+            self._depth = 0
+            if unregister:
+                HOST_LOCKS.pop(self._key, None)
+
+    async def _acquire_file(self, deadline: Deadline) -> bool:
         while not await self._try_acquire_file():
-            if loop.time() >= deadline:
+            if deadline.remaining() <= 0:
                 return False
-            await asyncio.sleep(LOCK_POLL_SECONDS)
+            await asyncio.sleep(deadline.bounded(LOCK_POLL_SECONDS))
         return True
 
     async def _try_acquire_file(self) -> bool:
@@ -1431,14 +1536,19 @@ class HostLock:
         ------
         TimeoutError
             If the lock cannot be acquired before its timeout.
+        OSError
+            If the lock file cannot be created, locked, or cleaned up after a failed
+            acquisition.
         """
         if self.timeout <= 0:
             msg = f"could not acquire lock within {self.timeout} seconds"
             raise TimeoutError(msg)
 
         owner = self._get_owner()
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + self.timeout
+        deadline = Deadline.from_timeout(
+            self.timeout,
+            message=f"could not acquire lock within {self.timeout} seconds",
+        )
 
         # fast-path: same task re-entrancy
         while True:
@@ -1450,26 +1560,21 @@ class HostLock:
                 if self._owner == owner:
                     self._depth += 1
                     return self
-            if loop.time() >= deadline:
+            if deadline.remaining() <= 0:
                 msg = f"could not acquire lock within {self.timeout} seconds"
                 raise TimeoutError(msg)
-            await asyncio.sleep(LOCK_POLL_SECONDS)
+            await asyncio.sleep(deadline.bounded(LOCK_POLL_SECONDS))
 
         # slow path: acquire via backend
         try:
             if not await self._acquire_file(deadline):
                 msg = f"could not acquire lock within {self.timeout} seconds"
-                raise TimeoutError(msg)  # noqa: TRY301
+                raise TimeoutError(msg)
             return self  # noqa: TRY300
-        except Exception:
-            try:
+        except OSError:
+            with contextlib.suppress(OSError):
                 await self._release_file()
-            except Exception:  # noqa: BLE001
-                pass
-            finally:
-                with LOCK_GUARD:
-                    self._owner = None
-                    self._depth = 0
+            self._clear_owner(owner=owner)
             raise
 
     async def try_lock(self) -> bool:
@@ -1483,6 +1588,12 @@ class HostLock:
         bool
             `True` if the lock was successfully acquired, or `False` if the lock is
             currently held by another task or process.
+
+        Raises
+        ------
+        OSError
+            If the lock file cannot be created, locked, or cleaned up after a failed
+            acquisition.
         """
         owner = self._get_owner()
 
@@ -1499,22 +1610,16 @@ class HostLock:
         # slow path: single backend attempt only
         try:
             acquired = await self._try_acquire_file()
-        except Exception:
-            with contextlib.suppress(Exception):
+        except OSError:
+            with contextlib.suppress(OSError):
                 await self._release_file()
-            with LOCK_GUARD:
-                if self._owner == owner:
-                    self._owner = None
-                    self._depth = 0
+            self._clear_owner(owner=owner)
             raise
 
         if acquired:
             return True
 
-        with LOCK_GUARD:
-            if self._owner == owner:
-                self._owner = None
-                self._depth = 0
+        self._clear_owner(owner=owner)
         return False
 
     async def unlock(self, *, ignore_errors: bool = False) -> None:
@@ -1533,6 +1638,8 @@ class HostLock:
         ------
         RuntimeError
             If the current task does not hold this lock.
+        OSError
+            If the lock file cannot be released and `ignore_errors` is `False`.
         """
         owner = self._get_owner()
         with LOCK_GUARD:
@@ -1545,14 +1652,11 @@ class HostLock:
 
         try:
             await self._release_file()
-        except Exception:
+        except OSError:
             if not ignore_errors:
                 raise
         finally:
-            with LOCK_GUARD:
-                self._owner = None
-                self._depth = 0
-                HOST_LOCKS.pop(self._key, None)
+            self._clear_owner(unregister=True)
 
     async def __aenter__(self) -> Self:  # noqa: D105
         return await self.lock()
@@ -1902,8 +2006,10 @@ class GitRepository:
                 f"cannot mirror from uninitialized source repository: {source.git_dir}"
             )
             raise OSError(msg)
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + timeout
+        deadline = Deadline.from_timeout(
+            timeout,
+            message="timeout must be non-negative",
+        )
 
         # if this is a fresh repository, just clone directly to initialize it
         if not self:
@@ -1916,7 +2022,7 @@ class GitRepository:
                     str(self.git_dir),
                 ],
                 capture_output=True,
-                timeout=deadline - loop.time(),
+                timeout=deadline.remaining(),
             )
 
         # otherwise, fetch and mirror all refs to converge with the source repository
@@ -1932,7 +2038,7 @@ class GitRepository:
                     "+refs/*:refs/*",
                 ],
                 capture_output=True,
-                timeout=deadline - loop.time(),
+                timeout=deadline.remaining(),
             )
 
     async def run(
@@ -2316,6 +2422,12 @@ class GitRepository:
                 raise FileExistsError(msg)
         return current
 
+    async def _worktree_path(self, branch: str) -> Path | None:
+        for wt in await self.worktrees():
+            if wt.branch == branch:
+                return wt.path
+        return None
+
     def _intended_worktree_changes(
         self, updates: Sequence[GitRefUpdate]
     ) -> tuple[list[str], list[str], list[tuple[str, str]]]:
@@ -2378,10 +2490,9 @@ class GitRepository:
             if conflict is None:
                 winners.append(branch)
                 continue
-            print(
-                f"bertrand: skipping branch '{branch}' due nested path conflict with "
-                f"'{conflict}'",
-                file=sys.stderr,
+            _warn(
+                f"skipping branch '{branch}' due nested path conflict with "
+                f"'{conflict}'"
             )
 
         return {branch: desired[branch] for branch in winners}
@@ -2521,10 +2632,7 @@ class GitRepository:
             If the target path already exists, and is not the same as the source path.
         """
         if source is None:
-            for wt in await self.worktrees():
-                if wt.branch == branch:
-                    source = wt.path
-                    break
+            source = await self._worktree_path(branch)
             if source is None:
                 msg = f"no worktree found for branch '{branch}'"
                 raise FileNotFoundError(msg)
@@ -2584,10 +2692,7 @@ class GitRepository:
             If the target path does not belong to this repository.
         """
         if target is None:
-            for wt in await self.worktrees():
-                if wt.branch == branch:
-                    target = wt.path
-                    break
+            target = await self._worktree_path(branch)
             if target is None:
                 msg = f"no worktree found for branch '{branch}'"
                 raise FileNotFoundError(msg)
@@ -2617,6 +2722,58 @@ class GitRepository:
         await self.run(["worktree", "remove", str(target)], capture_output=True)
         self._clean_worktree_parents(target)
         return True
+
+    async def _sync_create_worktree(
+        self,
+        current: dict[str, Path],
+        branch: str,
+        target: Path,
+        *,
+        create_branch: bool,
+    ) -> None:
+        try:
+            await self.create_worktree(
+                branch,
+                target=target,
+                create_branch=create_branch,
+            )
+            current[branch] = target
+        except Exception as err:  # noqa: BLE001
+            _warn(
+                f"failed to create worktree for branch '{branch}' at {target}:\n{err}"
+            )
+
+    async def _sync_move_worktree(
+        self,
+        current: dict[str, Path],
+        branch: str,
+        *,
+        source: Path,
+        target: Path,
+        old_branch: str | None = None,
+    ) -> None:
+        try:
+            await self.move_worktree(branch, source=source, target=target)
+            if old_branch is not None:
+                current.pop(old_branch, None)
+            current[branch] = target
+        except Exception as err:  # noqa: BLE001
+            _warn(
+                f"failed to move worktree for branch '{branch}' from {source} "
+                f"to {target}:\n{err}"
+            )
+
+    async def _sync_destroy_worktree(
+        self,
+        current: dict[str, Path],
+        branch: str,
+        path: Path,
+    ) -> None:
+        try:
+            if await self.destroy_worktree(branch, target=path):
+                current.pop(branch, None)
+        except Exception as err:  # noqa: BLE001
+            _warn(f"failed to destroy worktree for branch '{branch}' at {path}:\n{err}")
 
     async def sync_worktrees(self, updates: Sequence[GitRefUpdate] = ()) -> None:
         """Converge worktrees to the authoritative branch set.
@@ -2651,56 +2808,38 @@ class GitRepository:
             target = desired.get(new_branch)
             if target is None or new_branch in current:
                 continue
-            try:
-                await self.move_worktree(new_branch, source=source, target=target)
-                current.pop(old_branch, None)
-                current[new_branch] = target
-            except Exception as err:  # noqa: BLE001
-                print(
-                    f"bertrand: failed to move worktree for branch '{new_branch}' from "
-                    f"{source} to {target}:\n{err}"
-                )
+            await self._sync_move_worktree(
+                current,
+                new_branch,
+                source=source,
+                target=target,
+                old_branch=old_branch,
+            )
 
         # apply explicit destroys for branches still present in current state
         for branch in destroyed:
             path = current.get(branch)
             if path is None or branch in desired:
                 continue
-            try:
-                if await self.destroy_worktree(branch, target=path):
-                    current.pop(branch, None)
-            except Exception as err:  # noqa: BLE001
-                print(
-                    f"bertrand: failed to destroy worktree for branch '{branch}' at "
-                    f"{path}:\n{err}"
-                )
+            await self._sync_destroy_worktree(current, branch, path)
 
         # apply explicit creates for branches that are still missing
         for branch in created:
             if branch in current or branch not in desired:
                 continue
             target = desired[branch]
-            try:
-                await self.create_worktree(branch, target=target, create_branch=True)
-                current[branch] = target
-            except Exception as err:  # noqa: BLE001
-                print(
-                    f"bertrand: failed to create worktree for branch '{branch}' at "
-                    f"{target}:\n{err}"
-                )
+            await self._sync_create_worktree(
+                current,
+                branch,
+                target,
+                create_branch=True,
+            )
 
         # remove branches no longer present in the repository
         stale = set(current) - set(desired)
         for branch in sorted(stale):
             path = current[branch]
-            try:
-                if await self.destroy_worktree(branch, target=path):
-                    current.pop(branch, None)
-            except Exception as err:  # noqa: BLE001
-                print(
-                    f"bertrand: failed to destroy worktree for branch '{branch}' at "
-                    f"{path}:\n{err}"
-                )
+            await self._sync_destroy_worktree(current, branch, path)
 
         # move branches that are present but located at non-canonical paths
         shared = set(current) & set(desired)
@@ -2709,24 +2848,20 @@ class GitRepository:
             target = desired[branch]
             if source == target:
                 continue
-            try:
-                await self.move_worktree(branch, source=source, target=target)
-                current[branch] = target
-            except Exception as err:  # noqa: BLE001
-                print(
-                    f"bertrand: failed to move worktree for branch '{branch}' from "
-                    f"{source} to {target}:\n{err}"
-                )
+            await self._sync_move_worktree(
+                current,
+                branch,
+                source=source,
+                target=target,
+            )
 
         # create worktrees for branches that don't yet have one
         missing = set(desired) - set(current)
         for branch in sorted(missing):
             target = desired[branch]
-            try:
-                await self.create_worktree(branch, target=target, create_branch=False)
-                current[branch] = target
-            except Exception as err:  # noqa: BLE001
-                print(
-                    f"bertrand: failed to create worktree for branch '{branch}' at "
-                    f"{target}:\n{err}"
-                )
+            await self._sync_create_worktree(
+                current,
+                branch,
+                target,
+                create_branch=False,
+            )

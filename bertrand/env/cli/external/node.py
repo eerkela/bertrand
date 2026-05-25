@@ -2,9 +2,17 @@
 
 from __future__ import annotations
 
-import json
 from typing import TYPE_CHECKING, cast
 
+from bertrand.env.cli.external._device import device_line, device_payload
+from bertrand.env.cli.external._runtime import emit_json
+from bertrand.env.cli.external._storage import (
+    print_storage_csi_line,
+    print_storage_status_fields,
+    storage_cli_snapshot,
+    storage_csi_ready,
+    storage_osd_line,
+)
 from bertrand.env.cli.external.secret import (
     add_capability,
     list_capabilities,
@@ -12,29 +20,17 @@ from bertrand.env.cli.external.secret import (
     local_node_scope_targets,
     remove_capability,
 )
-from bertrand.env.git import BERTRAND_NAMESPACE, INFINITY
+from bertrand.env.git import INFINITY
 from bertrand.env.kube.api.bootstrap import microk8s_cluster_ready
 from bertrand.env.kube.api.client import Kube
 from bertrand.env.kube.capability.device import (
-    BertrandDeviceRecord,
     delete_device_inventory,
     list_device_inventory,
     refresh_node_resource_slice,
     upsert_device_inventory,
 )
 from bertrand.env.kube.ceph.bootstrap import rook_ceph_ready
-from bertrand.env.kube.ceph.capacity import (
-    CephStoragePlanner,
-    list_storage_actions,
-    list_storage_node_reports,
-    list_storage_osds,
-    list_storage_reservations,
-    read_storage_policy,
-)
-from bertrand.env.kube.ceph.csi import CSI_DRIVER_NAME
-from bertrand.env.kube.ceph.storage import CSI_CONTROLLER_NAME, CSI_NODE_NAME
-from bertrand.env.kube.daemonset import DaemonSet
-from bertrand.env.kube.deployment import Deployment
+from bertrand.env.kube.ceph.capacity import list_storage_node_reports
 from bertrand.env.kube.node import Node
 from bertrand.env.kube.node_identity import (
     BertrandNodeRecord,
@@ -90,7 +86,7 @@ async def bertrand_node_status(*, json_output: bool) -> None:
     """
     payload = await _node_status_payload()
     if json_output:
-        print(json.dumps(payload, indent=2, sort_keys=True))
+        emit_json(payload)
         return
     print("node:")
     print(f"  host id: {payload['host_id'] or 'unconfigured'}")
@@ -227,52 +223,15 @@ async def bertrand_node_device_list(*, json_output: bool, timeout: float) -> Non
             host_ids=(node.host_id,),
             timeout=timeout,
         )
-    payload = [_device_payload(record) for record in records]
+    payload = [device_payload(record) for record in records]
     if json_output:
-        print(json.dumps(payload, indent=2, sort_keys=True))
+        emit_json(payload)
         return
     if not records:
         print("no DRA devices")
         return
     for record in records:
-        print(
-            f"{record.capability_id} {record.spec.device_name} "
-            f"[{record.node_name}] -> {record.cdi_selector}"
-        )
-
-
-async def _osd_csi_status(kube: Kube) -> dict[str, object]:
-    driver = await kube.run(
-        lambda request_timeout: kube.storage.read_csi_driver(
-            name=CSI_DRIVER_NAME,
-            _request_timeout=request_timeout,
-        ),
-        timeout=INFINITY,
-        context=f"failed to inspect CSIDriver {CSI_DRIVER_NAME!r}",
-    )
-    controller = await Deployment.get(
-        kube,
-        namespace=BERTRAND_NAMESPACE,
-        name=CSI_CONTROLLER_NAME,
-        timeout=INFINITY,
-    )
-    node = await DaemonSet.get(
-        kube,
-        namespace=BERTRAND_NAMESPACE,
-        name=CSI_NODE_NAME,
-        timeout=INFINITY,
-    )
-    return {
-        "driver": driver is not None,
-        "controller_ready": controller is not None and controller.ready_replicas >= 1,
-        "node_ready": (
-            node is not None
-            and node.desired_number_scheduled > 0
-            and node.number_available >= node.desired_number_scheduled
-        ),
-        "node_available": node.number_available if node is not None else 0,
-        "node_desired": node.desired_number_scheduled if node is not None else 0,
-    }
+        print(device_line(record))
 
 
 async def bertrand_node_device_add(
@@ -315,10 +274,7 @@ async def bertrand_node_device_add(
             node_name=node.node_name,
             timeout=timeout,
         )
-    print(
-        f"{record.capability_id} {record.spec.device_name} "
-        f"[{record.node_name}] -> {record.cdi_selector}"
-    )
+    print(device_line(record))
 
 
 async def bertrand_node_device_rm(
@@ -367,96 +323,24 @@ async def bertrand_node_storage_status(*, json_output: bool) -> None:
     """
     with await Kube.host(timeout=INFINITY) as kube:
         node = await ensure_local_bertrand_node(kube, timeout=INFINITY)
-        policy = await read_storage_policy(kube, timeout=INFINITY)
-        actions = [
-            action
-            for action in await list_storage_actions(kube, timeout=INFINITY)
-            if action.spec.host_id == node.host_id
-        ]
-        reservations = await list_storage_reservations(kube, timeout=INFINITY)
-        reports = [
-            report
-            for report in await list_storage_node_reports(kube, timeout=INFINITY)
-            if report.spec.host_id == node.host_id
-        ]
-        osds = [
-            osd
-            for osd in await list_storage_osds(kube, timeout=INFINITY)
-            if osd.spec.host_id == node.host_id
-        ]
-        csi_status = await _osd_csi_status(kube)
-    planner = CephStoragePlanner()
-    payload = {
-        "policy": policy.spec.model_dump(mode="json"),
-        "status": policy.status.model_dump(mode="json") if policy.status else None,
-        "action_counts": planner.action_counts(actions),
-        "reservations": [
-            reservation.model_dump(mode="json") for reservation in reservations
-        ],
-        "reports": [report.model_dump(mode="json") for report in reports],
-        "osds": [osd.model_dump(mode="json") for osd in osds],
-        "csi": csi_status,
-    }
+        snapshot = await storage_cli_snapshot(kube, host_id=node.host_id)
+    payload = snapshot.status_payload()
     if json_output:
-        print(json.dumps(payload, indent=2, sort_keys=True))
+        emit_json(payload)
         return
     print("storage:")
-    status = payload["status"]
-    if isinstance(status, dict):
-        print(f"  used: {status.get('used_ratio')}")
-        print(f"  loop fallback OSDs: {status.get('loop_osds')}")
-        print(f"  LVM-backed OSDs: {status.get('lvm_osds')}")
-        print(f"  elastic bytes: {status.get('elastic_bytes')}")
-        print(f"  durable bytes: {status.get('durable_bytes')}")
-        print(f"  free bytes: {status.get('free_bytes')}")
-        print(f"  target headroom bytes: {status.get('headroom_target_bytes')}")
-        print(f"  reserved bytes: {status.get('reserved_bytes')}")
-        print(
-            "  write rate EWMA bytes/s: "
-            f"{status.get('write_rate_ewma_bytes_per_second')}"
-        )
-        print(
-            "  projected seconds to headroom floor: "
-            f"{status.get('projected_seconds_to_headroom_floor')}"
-        )
-        print(
-            "  growth recommendation bytes: "
-            f"{status.get('growth_recommendation_bytes')}"
-        )
-        print(f"  missing LVM OSD PVs: {status.get('missing_lvm_osd_pvs')}")
-        print(f"  LVM reclaimable bytes: {status.get('lvm_reclaimable_bytes')}")
-        print(f"  LVM shrink candidate: {status.get('lvm_shrink_candidate') or 'none'}")
-        print(f"  LVM shrink target bytes: {status.get('lvm_shrink_target_bytes')}")
-        print(f"  LVM preferred: {status.get('lvm_preferred')}")
-        print(f"  managed OSDs: {status.get('managed_osds')}")
-        print(f"  shrink candidates: {status.get('shrink_candidates')}")
-        if status.get("last_error"):
-            print(f"  last error: {status['last_error']}")
+    print_storage_status_fields(payload["status"], local=True)
     print("  actions:")
-    for phase, count in payload["action_counts"].items():
+    action_counts = cast("dict[str, object]", payload["action_counts"])
+    for phase, count in action_counts.items():
         print(f"    {phase}: {count}")
-    active_reservations = sum(
-        1
-        for reservation in reservations
-        if reservation.status.phase in {"Pending", "Ready"}
-    )
-    print(f"  active reservations: {active_reservations}")
-    print(f"  node reports for this host: {len(reports)}")
-    print(f"  managed OSD records: {len(osds)}")
-    csi = payload["csi"]
-    if isinstance(csi, dict):
-        print(
-            "  CSI: "
-            f"driver={'ready' if csi.get('driver') else 'missing'}, "
-            f"controller={'ready' if csi.get('controller_ready') else 'not ready'}, "
-            f"nodes={csi.get('node_available')}/{csi.get('node_desired')}"
-        )
-    for osd in osds:
+    print(f"  active reservations: {len(snapshot.active_reservations())}")
+    print(f"  node reports for this host: {len(snapshot.reports)}")
+    print(f"  managed OSD records: {len(snapshot.osds)}")
+    print_storage_csi_line(payload["csi"])
+    for osd in snapshot.osds:
         if osd.spec.node_name:
-            print(
-                f"    {osd.metadata.name}: {osd.spec.origin} "
-                f"{osd.status.phase} node={osd.spec.node_name}"
-            )
+            print(storage_osd_line(osd, include_ceph_id=False))
 
 
 async def bertrand_node_storage_doctor(*, json_output: bool) -> None:
@@ -469,49 +353,14 @@ async def bertrand_node_storage_doctor(*, json_output: bool) -> None:
     """
     with await Kube.host(timeout=INFINITY) as kube:
         node = await ensure_local_bertrand_node(kube, timeout=INFINITY)
-        actions = [
-            action
-            for action in await list_storage_actions(kube, timeout=INFINITY)
-            if action.spec.host_id == node.host_id
-        ]
-        reservations = await list_storage_reservations(kube, timeout=INFINITY)
-        reports = [
-            report
-            for report in await list_storage_node_reports(kube, timeout=INFINITY)
-            if report.spec.host_id == node.host_id
-        ]
-        osds = [
-            osd
-            for osd in await list_storage_osds(kube, timeout=INFINITY)
-            if osd.spec.host_id == node.host_id
-        ]
-        csi_status = await _osd_csi_status(kube)
-    payload = [action.model_dump(mode="json") for action in actions]
+        snapshot = await storage_cli_snapshot(kube, host_id=node.host_id)
     if json_output:
-        print(
-            json.dumps(
-                {
-                    "actions": payload,
-                    "csi": csi_status,
-                    "reservations": [
-                        reservation.model_dump(mode="json")
-                        for reservation in reservations
-                    ],
-                    "reports": [report.model_dump(mode="json") for report in reports],
-                    "osds": [osd.model_dump(mode="json") for osd in osds],
-                },
-                indent=2,
-                sort_keys=True,
-            )
-        )
+        emit_json(snapshot.doctor_payload())
         return
-    csi_ready = all(
-        (
-            csi_status.get("driver"),
-            csi_status.get("controller_ready"),
-            csi_status.get("node_ready"),
-        )
-    )
+    actions = snapshot.actions
+    reports = snapshot.reports
+    osds = snapshot.osds
+    csi_ready = storage_csi_ready(snapshot.csi)
     print("storage doctor:")
     if not actions:
         print("  no tracked storage actions for this host")
@@ -547,10 +396,7 @@ async def bertrand_node_storage_doctor(*, json_output: bool) -> None:
             "  loop fallback is active and LVM space is available; migration will "
             "proceed once Ceph is healthy"
         )
-    # The policy status is cluster-wide, but these diagnostics are still useful
-    # from the local node command because shrink actions are node-executed.
-    with await Kube.host(timeout=INFINITY) as kube:
-        policy = await read_storage_policy(kube, timeout=INFINITY)
+    policy = snapshot.policy
     if policy.status is not None:
         if policy.status.missing_lvm_osd_pvs > 0:
             print(
@@ -563,7 +409,7 @@ async def bertrand_node_storage_doctor(*, json_output: bool) -> None:
                 f"{policy.status.lvm_shrink_candidate} -> "
                 f"{policy.status.lvm_shrink_target_bytes} bytes"
             )
-    for reservation in reservations:
+    for reservation in snapshot.reservations:
         if reservation.status.phase == "Pending":
             print(
                 f"  reservation {reservation.metadata.name} is pending: "
@@ -606,18 +452,6 @@ def _parse_attrs(values: list[str]) -> dict[str, str]:
             raise ValueError(msg)
         attributes[key] = value
     return dict(sorted(attributes.items()))
-
-
-def _device_payload(record: BertrandDeviceRecord) -> dict[str, object]:
-    return {
-        "name": record.name,
-        "capability_id": record.capability_id,
-        "host_id": record.host_id,
-        "node_name": record.node_name,
-        "device_name": record.spec.device_name,
-        "cdi_selector": record.cdi_selector,
-        "attributes": dict(record.spec.attributes),
-    }
 
 
 async def _node_status_payload() -> dict[str, object]:
@@ -679,18 +513,7 @@ async def _node_status_payload() -> dict[str, object]:
                 node_names=(node.name,),
                 timeout=INFINITY,
             )
-            payload["devices"] = [
-                {
-                    "name": device.name,
-                    "capability_id": device.capability_id,
-                    "host_id": device.host_id,
-                    "node_name": device.node_name,
-                    "device_name": device.spec.device_name,
-                    "cdi_selector": device.cdi_selector,
-                    "attributes": dict(device.spec.attributes),
-                }
-                for device in devices
-            ]
+            payload["devices"] = [device_payload(device) for device in devices]
     except (OSError, TimeoutError, RuntimeError, ValueError) as err:
         payload["kubernetes_error"] = str(err)
     return payload

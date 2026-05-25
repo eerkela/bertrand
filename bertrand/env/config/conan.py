@@ -32,6 +32,7 @@ from .core import (
     Resource,
     resource,
 )
+from .python import PyProject
 
 CONAN_CACHE: PosixPath = PosixPath("/opt/conan")
 CONAN_HOME: PosixPath = PosixPath("/opt/conan")
@@ -392,18 +393,11 @@ class ConanConfig(Resource):
             ),
         ]
 
-    async def init(self, config: Config, cli: Config.Init) -> dict[str, Any]:
-        """Return default Conan configuration.
-
-        Returns
-        -------
-        dict[str, Any]
-            Default Conan configuration data.
-        """
-        _ = config, cli
-        return self.Model.model_construct().model_dump(by_alias=True)
-
-    async def validate(self, config: Config, fragment: Any) -> Model | None:
+    async def validate(
+        self,
+        config: Config,  # noqa: ARG002
+        fragment: Any,
+    ) -> Model | None:
         """Validate Conan configuration.
 
         Returns
@@ -411,7 +405,6 @@ class ConanConfig(Resource):
         Model | None
             Validated Conan configuration.
         """
-        _ = config
         return self.Model.model_validate(fragment)
 
     @staticmethod
@@ -421,8 +414,6 @@ class ConanConfig(Resource):
                 out[f"{pattern}:{option}"] = value
 
     async def _render_conanfile(self, config: Config) -> None:
-        from .python import PyProject
-
         python = config.get(PyProject)
         conan = config.get(ConanConfig)
         assert conan is not None
@@ -655,13 +646,3 @@ class ConanConfig(Resource):
         await self._render_conanfile(config)
         await self._render_conanprofile(config)
         await self._render_conanremotes(config)
-
-    async def schema(self) -> dict[str, Any]:
-        """Return the Conan configuration schema.
-
-        Returns
-        -------
-        dict[str, Any]
-            JSON Schema for the Conan configuration.
-        """
-        return self.Model.model_json_schema(by_alias=True, mode="validation")

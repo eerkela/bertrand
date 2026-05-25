@@ -2,17 +2,16 @@
 
 from __future__ import annotations
 
-import asyncio
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, Self
+from typing import TYPE_CHECKING
 
-from bertrand.env.git import BERTRAND_ENV, until
+from bertrand.env.git import BERTRAND_ENV, Deadline, until
 from bertrand.env.kube.api.bootstrap import kubectl
 from bertrand.env.kube.crd import CustomResourceDefinition
 from bertrand.env.kube.custom_object import (
     CustomObject,
-    CustomObjectClient,
+    CustomObjectResource,
     CustomObjectSpec,
+    CustomObjectWrapper,
 )
 from bertrand.env.kube.daemonset import DaemonSet
 from bertrand.env.kube.deployment import Deployment
@@ -20,7 +19,7 @@ from bertrand.env.kube.namespace import Namespace
 
 if TYPE_CHECKING:
     import builtins
-    from collections.abc import Awaitable, Callable, Mapping, Sequence
+    from collections.abc import Mapping, Sequence
 
     from bertrand.env.kube.api.client import Kube
 
@@ -58,66 +57,51 @@ METALLB_CRDS = (
 )
 METALLB_WAIT_POLL_INTERVAL_SECONDS = 0.5
 
-_IP_ADDRESS_POOL_CLIENT = CustomObjectClient(
-    CustomObjectSpec(
-        group=METALLB_GROUP,
-        version=METALLB_V1BETA1,
-        kind="IPAddressPool",
-        plural="ipaddresspools",
-    )
+_IP_ADDRESS_POOL_SPEC = CustomObjectSpec(
+    group=METALLB_GROUP,
+    version=METALLB_V1BETA1,
+    kind="IPAddressPool",
+    plural="ipaddresspools",
 )
-_L2_ADVERTISEMENT_CLIENT = CustomObjectClient(
-    CustomObjectSpec(
-        group=METALLB_GROUP,
-        version=METALLB_V1BETA1,
-        kind="L2Advertisement",
-        plural="l2advertisements",
-    )
+_L2_ADVERTISEMENT_SPEC = CustomObjectSpec(
+    group=METALLB_GROUP,
+    version=METALLB_V1BETA1,
+    kind="L2Advertisement",
+    plural="l2advertisements",
 )
-_BGP_ADVERTISEMENT_CLIENT = CustomObjectClient(
-    CustomObjectSpec(
-        group=METALLB_GROUP,
-        version=METALLB_V1BETA1,
-        kind="BGPAdvertisement",
-        plural="bgpadvertisements",
-    )
+_BGP_ADVERTISEMENT_SPEC = CustomObjectSpec(
+    group=METALLB_GROUP,
+    version=METALLB_V1BETA1,
+    kind="BGPAdvertisement",
+    plural="bgpadvertisements",
 )
-_BGP_PEER_CLIENT = CustomObjectClient(
-    CustomObjectSpec(
-        group=METALLB_GROUP,
-        version=METALLB_V1BETA2,
-        kind="BGPPeer",
-        plural="bgppeers",
-    )
+_BGP_PEER_SPEC = CustomObjectSpec(
+    group=METALLB_GROUP,
+    version=METALLB_V1BETA2,
+    kind="BGPPeer",
+    plural="bgppeers",
 )
-_CONFIGURATION_STATE_CLIENT = CustomObjectClient(
-    CustomObjectSpec(
-        group=METALLB_GROUP,
-        version=METALLB_V1BETA1,
-        kind="ConfigurationState",
-        plural="configurationstates",
-    )
+_CONFIGURATION_STATE_SPEC = CustomObjectSpec(
+    group=METALLB_GROUP,
+    version=METALLB_V1BETA1,
+    kind="ConfigurationState",
+    plural="configurationstates",
 )
-_SERVICE_L2_STATUS_CLIENT = CustomObjectClient(
-    CustomObjectSpec(
-        group=METALLB_GROUP,
-        version=METALLB_V1BETA1,
-        kind="ServiceL2Status",
-        plural="servicel2statuses",
-    )
+_SERVICE_L2_STATUS_SPEC = CustomObjectSpec(
+    group=METALLB_GROUP,
+    version=METALLB_V1BETA1,
+    kind="ServiceL2Status",
+    plural="servicel2statuses",
 )
-_SERVICE_BGP_STATUS_CLIENT = CustomObjectClient(
-    CustomObjectSpec(
-        group=METALLB_GROUP,
-        version=METALLB_V1BETA1,
-        kind="ServiceBGPStatus",
-        plural="servicebgpstatuses",
-    )
+_SERVICE_BGP_STATUS_SPEC = CustomObjectSpec(
+    group=METALLB_GROUP,
+    version=METALLB_V1BETA1,
+    kind="ServiceBGPStatus",
+    plural="servicebgpstatuses",
 )
 
 
-@dataclass(frozen=True)
-class IPAddressPool:
+class IPAddressPool(CustomObjectWrapper):
     """Wrapper around one MetalLB IPAddressPool.
 
     Parameters
@@ -126,10 +110,10 @@ class IPAddressPool:
         Generic MetalLB custom object payload returned by Kubernetes.
     """
 
-    _obj: CustomObject
-
     @classmethod
-    async def get(cls, kube: Kube, *, name: str, timeout: float) -> Self | None:
+    async def get(
+        cls, kube: Kube, *, name: str, timeout: float
+    ) -> IPAddressPool | None:
         """Read one IPAddressPool by name.
 
         Parameters
@@ -146,16 +130,15 @@ class IPAddressPool:
         IPAddressPool | None
             Wrapped IPAddressPool, or ``None`` if it does not exist.
         """
-        obj = await _IP_ADDRESS_POOL_CLIENT.get(
+        return await _IP_ADDRESS_POOL_RESOURCE.get(
             kube,
             namespace=METALLB_NAMESPACE,
             name=name,
             timeout=timeout,
         )
-        return cls(obj) if obj is not None else None
 
     @classmethod
-    async def list(cls, kube: Kube, *, timeout: float) -> builtins.list[Self]:
+    async def list(cls, kube: Kube, *, timeout: float) -> builtins.list[IPAddressPool]:
         """List MetalLB IPAddressPools.
 
         Parameters
@@ -170,12 +153,11 @@ class IPAddressPool:
         list[IPAddressPool]
             Wrapped IPAddressPools.
         """
-        objects = await _IP_ADDRESS_POOL_CLIENT.list(
+        return await _IP_ADDRESS_POOL_RESOURCE.list(
             kube,
             namespace=METALLB_NAMESPACE,
             timeout=timeout,
         )
-        return [cls(obj) for obj in objects]
 
     @classmethod
     async def upsert(
@@ -186,7 +168,7 @@ class IPAddressPool:
         addresses: Sequence[str],
         auto_assign: bool,
         timeout: float,
-    ) -> Self:
+    ) -> IPAddressPool:
         """Create or patch one Bertrand-managed IPAddressPool.
 
         Parameters
@@ -209,40 +191,14 @@ class IPAddressPool:
         """
         name = _required_name(name, kind="IPAddressPool")
         normalized = _required_values(addresses, kind="IPAddressPool addresses")
-        await _require_managed_metallb_namespace(kube, timeout=timeout)
-        current = await cls.get(kube, name=name, timeout=timeout)
-        _assert_managed(current, kind="IPAddressPool")
-        obj = await _IP_ADDRESS_POOL_CLIENT.upsert(
+        return await _managed_upsert(
+            _IP_ADDRESS_POOL_RESOURCE,
             kube,
-            namespace=METALLB_NAMESPACE,
+            kind="IPAddressPool",
             name=name,
             spec={"addresses": list(normalized), "autoAssign": auto_assign},
-            labels=METALLB_LABELS,
             timeout=timeout,
         )
-        return cls(obj)
-
-    @property
-    def name(self) -> str:
-        """Return the IPAddressPool name.
-
-        Returns
-        -------
-        str
-            Kubernetes `metadata.name`.
-        """
-        return self._obj.name
-
-    @property
-    def labels(self) -> Mapping[str, str]:
-        """Return IPAddressPool labels.
-
-        Returns
-        -------
-        Mapping[str, str]
-            Read-only Kubernetes labels.
-        """
-        return self._obj.labels
 
     @property
     def addresses(self) -> tuple[str, ...]:
@@ -289,8 +245,13 @@ class IPAddressPool:
         return _int_status(self._obj.status, "assignedIPv4")
 
 
-@dataclass(frozen=True)
-class L2Advertisement:
+_IP_ADDRESS_POOL_RESOURCE: CustomObjectResource[IPAddressPool] = CustomObjectResource(
+    spec=_IP_ADDRESS_POOL_SPEC,
+    parser=IPAddressPool._from_object,
+)
+
+
+class L2Advertisement(CustomObjectWrapper):
     """Wrapper around one MetalLB L2Advertisement.
 
     Parameters
@@ -299,10 +260,10 @@ class L2Advertisement:
         Generic MetalLB custom object payload returned by Kubernetes.
     """
 
-    _obj: CustomObject
-
     @classmethod
-    async def get(cls, kube: Kube, *, name: str, timeout: float) -> Self | None:
+    async def get(
+        cls, kube: Kube, *, name: str, timeout: float
+    ) -> L2Advertisement | None:
         """Read one L2Advertisement by name.
 
         Parameters
@@ -319,16 +280,17 @@ class L2Advertisement:
         L2Advertisement | None
             Wrapped L2Advertisement, or ``None`` if absent.
         """
-        obj = await _L2_ADVERTISEMENT_CLIENT.get(
+        return await _L2_ADVERTISEMENT_RESOURCE.get(
             kube,
             namespace=METALLB_NAMESPACE,
             name=name,
             timeout=timeout,
         )
-        return cls(obj) if obj is not None else None
 
     @classmethod
-    async def list(cls, kube: Kube, *, timeout: float) -> builtins.list[Self]:
+    async def list(
+        cls, kube: Kube, *, timeout: float
+    ) -> builtins.list[L2Advertisement]:
         """List MetalLB L2Advertisements.
 
         Parameters
@@ -343,12 +305,11 @@ class L2Advertisement:
         list[L2Advertisement]
             Wrapped L2Advertisements.
         """
-        objects = await _L2_ADVERTISEMENT_CLIENT.list(
+        return await _L2_ADVERTISEMENT_RESOURCE.list(
             kube,
             namespace=METALLB_NAMESPACE,
             timeout=timeout,
         )
-        return [cls(obj) for obj in objects]
 
     @classmethod
     async def upsert(
@@ -359,7 +320,7 @@ class L2Advertisement:
         pool: str,
         interfaces: Sequence[str],
         timeout: float,
-    ) -> Self:
+    ) -> L2Advertisement:
         """Create or patch one Bertrand-managed L2Advertisement.
 
         Parameters
@@ -382,44 +343,18 @@ class L2Advertisement:
         """
         name = _required_name(name, kind="L2Advertisement")
         pool = _required_name(pool, kind="IPAddressPool")
-        await _require_managed_metallb_namespace(kube, timeout=timeout)
-        current = await cls.get(kube, name=name, timeout=timeout)
-        _assert_managed(current, kind="L2Advertisement")
         spec: dict[str, object] = {"ipAddressPools": [pool]}
         normalized_interfaces = _string_tuple(interfaces)
         if normalized_interfaces:
             spec["interfaces"] = list(normalized_interfaces)
-        obj = await _L2_ADVERTISEMENT_CLIENT.upsert(
+        return await _managed_upsert(
+            _L2_ADVERTISEMENT_RESOURCE,
             kube,
-            namespace=METALLB_NAMESPACE,
+            kind="L2Advertisement",
             name=name,
             spec=spec,
-            labels=METALLB_LABELS,
             timeout=timeout,
         )
-        return cls(obj)
-
-    @property
-    def name(self) -> str:
-        """Return the L2Advertisement name.
-
-        Returns
-        -------
-        str
-            Kubernetes `metadata.name`.
-        """
-        return self._obj.name
-
-    @property
-    def labels(self) -> Mapping[str, str]:
-        """Return L2Advertisement labels.
-
-        Returns
-        -------
-        Mapping[str, str]
-            Read-only Kubernetes labels.
-        """
-        return self._obj.labels
 
     @property
     def pools(self) -> tuple[str, ...]:
@@ -433,8 +368,15 @@ class L2Advertisement:
         return _string_tuple(self._obj.spec.get("ipAddressPools", ()))
 
 
-@dataclass(frozen=True)
-class BGPPeer:
+_L2_ADVERTISEMENT_RESOURCE: CustomObjectResource[L2Advertisement] = (
+    CustomObjectResource(
+        spec=_L2_ADVERTISEMENT_SPEC,
+        parser=L2Advertisement._from_object,
+    )
+)
+
+
+class BGPPeer(CustomObjectWrapper):
     """Wrapper around one MetalLB BGPPeer.
 
     Parameters
@@ -443,10 +385,8 @@ class BGPPeer:
         Generic MetalLB custom object payload returned by Kubernetes.
     """
 
-    _obj: CustomObject
-
     @classmethod
-    async def get(cls, kube: Kube, *, name: str, timeout: float) -> Self | None:
+    async def get(cls, kube: Kube, *, name: str, timeout: float) -> BGPPeer | None:
         """Read one BGPPeer by name.
 
         Parameters
@@ -463,16 +403,15 @@ class BGPPeer:
         BGPPeer | None
             Wrapped BGPPeer, or ``None`` if absent.
         """
-        obj = await _BGP_PEER_CLIENT.get(
+        return await _BGP_PEER_RESOURCE.get(
             kube,
             namespace=METALLB_NAMESPACE,
             name=name,
             timeout=timeout,
         )
-        return cls(obj) if obj is not None else None
 
     @classmethod
-    async def list(cls, kube: Kube, *, timeout: float) -> builtins.list[Self]:
+    async def list(cls, kube: Kube, *, timeout: float) -> builtins.list[BGPPeer]:
         """List MetalLB BGPPeers.
 
         Parameters
@@ -487,12 +426,11 @@ class BGPPeer:
         list[BGPPeer]
             Wrapped BGPPeers.
         """
-        objects = await _BGP_PEER_CLIENT.list(
+        return await _BGP_PEER_RESOURCE.list(
             kube,
             namespace=METALLB_NAMESPACE,
             timeout=timeout,
         )
-        return [cls(obj) for obj in objects]
 
     @classmethod
     async def upsert(
@@ -507,7 +445,7 @@ class BGPPeer:
         source_address: str | None,
         password_secret: str | None,
         timeout: float,
-    ) -> Self:
+    ) -> BGPPeer:
         """Create or patch one Bertrand-managed BGPPeer.
 
         Parameters
@@ -538,9 +476,6 @@ class BGPPeer:
         """
         name = _required_name(name, kind="BGPPeer")
         peer_address = _required_name(peer_address, kind="peer address")
-        await _require_managed_metallb_namespace(kube, timeout=timeout)
-        current = await cls.get(kube, name=name, timeout=timeout)
-        _assert_managed(current, kind="BGPPeer")
         spec: dict[str, object] = {
             "peerAddress": peer_address,
             "peerASN": peer_asn,
@@ -552,37 +487,14 @@ class BGPPeer:
             spec["sourceAddress"] = source_address
         if password_secret:
             spec["passwordSecret"] = {"name": password_secret}
-        obj = await _BGP_PEER_CLIENT.upsert(
+        return await _managed_upsert(
+            _BGP_PEER_RESOURCE,
             kube,
-            namespace=METALLB_NAMESPACE,
+            kind="BGPPeer",
             name=name,
             spec=spec,
-            labels=METALLB_LABELS,
             timeout=timeout,
         )
-        return cls(obj)
-
-    @property
-    def name(self) -> str:
-        """Return the BGPPeer name.
-
-        Returns
-        -------
-        str
-            Kubernetes `metadata.name`.
-        """
-        return self._obj.name
-
-    @property
-    def labels(self) -> Mapping[str, str]:
-        """Return BGPPeer labels.
-
-        Returns
-        -------
-        Mapping[str, str]
-            Read-only Kubernetes labels.
-        """
-        return self._obj.labels
 
     @property
     def peer_address(self) -> str:
@@ -596,8 +508,13 @@ class BGPPeer:
         return str(self._obj.spec.get("peerAddress") or "").strip()
 
 
-@dataclass(frozen=True)
-class BGPAdvertisement:
+_BGP_PEER_RESOURCE: CustomObjectResource[BGPPeer] = CustomObjectResource(
+    spec=_BGP_PEER_SPEC,
+    parser=BGPPeer._from_object,
+)
+
+
+class BGPAdvertisement(CustomObjectWrapper):
     """Wrapper around one MetalLB BGPAdvertisement.
 
     Parameters
@@ -606,10 +523,10 @@ class BGPAdvertisement:
         Generic MetalLB custom object payload returned by Kubernetes.
     """
 
-    _obj: CustomObject
-
     @classmethod
-    async def get(cls, kube: Kube, *, name: str, timeout: float) -> Self | None:
+    async def get(
+        cls, kube: Kube, *, name: str, timeout: float
+    ) -> BGPAdvertisement | None:
         """Read one BGPAdvertisement by name.
 
         Parameters
@@ -626,16 +543,17 @@ class BGPAdvertisement:
         BGPAdvertisement | None
             Wrapped BGPAdvertisement, or ``None`` if absent.
         """
-        obj = await _BGP_ADVERTISEMENT_CLIENT.get(
+        return await _BGP_ADVERTISEMENT_RESOURCE.get(
             kube,
             namespace=METALLB_NAMESPACE,
             name=name,
             timeout=timeout,
         )
-        return cls(obj) if obj is not None else None
 
     @classmethod
-    async def list(cls, kube: Kube, *, timeout: float) -> builtins.list[Self]:
+    async def list(
+        cls, kube: Kube, *, timeout: float
+    ) -> builtins.list[BGPAdvertisement]:
         """List MetalLB BGPAdvertisements.
 
         Parameters
@@ -650,12 +568,11 @@ class BGPAdvertisement:
         list[BGPAdvertisement]
             Wrapped BGPAdvertisements.
         """
-        objects = await _BGP_ADVERTISEMENT_CLIENT.list(
+        return await _BGP_ADVERTISEMENT_RESOURCE.list(
             kube,
             namespace=METALLB_NAMESPACE,
             timeout=timeout,
         )
-        return [cls(obj) for obj in objects]
 
     @classmethod
     async def upsert(
@@ -668,7 +585,7 @@ class BGPAdvertisement:
         local_pref: int | None,
         communities: Sequence[str],
         timeout: float,
-    ) -> Self:
+    ) -> BGPAdvertisement:
         """Create or patch one Bertrand-managed BGPAdvertisement.
 
         Parameters
@@ -695,9 +612,6 @@ class BGPAdvertisement:
         """
         name = _required_name(name, kind="BGPAdvertisement")
         pool = _required_name(pool, kind="IPAddressPool")
-        await _require_managed_metallb_namespace(kube, timeout=timeout)
-        current = await cls.get(kube, name=name, timeout=timeout)
-        _assert_managed(current, kind="BGPAdvertisement")
         spec: dict[str, object] = {"ipAddressPools": [pool]}
         normalized_peers = _string_tuple(peers)
         normalized_communities = _string_tuple(communities)
@@ -707,37 +621,14 @@ class BGPAdvertisement:
             spec["localPref"] = local_pref
         if normalized_communities:
             spec["communities"] = list(normalized_communities)
-        obj = await _BGP_ADVERTISEMENT_CLIENT.upsert(
+        return await _managed_upsert(
+            _BGP_ADVERTISEMENT_RESOURCE,
             kube,
-            namespace=METALLB_NAMESPACE,
+            kind="BGPAdvertisement",
             name=name,
             spec=spec,
-            labels=METALLB_LABELS,
             timeout=timeout,
         )
-        return cls(obj)
-
-    @property
-    def name(self) -> str:
-        """Return the BGPAdvertisement name.
-
-        Returns
-        -------
-        str
-            Kubernetes `metadata.name`.
-        """
-        return self._obj.name
-
-    @property
-    def labels(self) -> Mapping[str, str]:
-        """Return BGPAdvertisement labels.
-
-        Returns
-        -------
-        Mapping[str, str]
-            Read-only Kubernetes labels.
-        """
-        return self._obj.labels
 
     @property
     def pools(self) -> tuple[str, ...]:
@@ -749,6 +640,23 @@ class BGPAdvertisement:
             Values from `spec.ipAddressPools`.
         """
         return _string_tuple(self._obj.spec.get("ipAddressPools", ()))
+
+
+_BGP_ADVERTISEMENT_RESOURCE: CustomObjectResource[BGPAdvertisement] = (
+    CustomObjectResource(
+        spec=_BGP_ADVERTISEMENT_SPEC,
+        parser=BGPAdvertisement._from_object,
+    )
+)
+_CONFIGURATION_STATE_RESOURCE: CustomObjectResource[CustomObject] = (
+    CustomObjectResource(spec=_CONFIGURATION_STATE_SPEC)
+)
+_SERVICE_L2_STATUS_RESOURCE: CustomObjectResource[CustomObject] = (
+    CustomObjectResource(spec=_SERVICE_L2_STATUS_SPEC)
+)
+_SERVICE_BGP_STATUS_RESOURCE: CustomObjectResource[CustomObject] = (
+    CustomObjectResource(spec=_SERVICE_BGP_STATUS_SPEC)
+)
 
 
 async def ensure_metallb(kube: Kube, *, timeout: float) -> None:
@@ -769,18 +677,20 @@ async def ensure_metallb(kube: Kube, *, timeout: float) -> None:
     if timeout <= 0:
         msg = "MetalLB convergence timeout must be positive"
         raise TimeoutError(msg)
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
-    await _ensure_managed_metallb_namespace(kube, timeout=deadline - loop.time())
-    await _apply_metallb(timeout=deadline - loop.time())
+    deadline = Deadline.from_timeout(
+        timeout,
+        message="MetalLB convergence timeout must be positive",
+    )
+    await _ensure_managed_metallb_namespace(kube, timeout=deadline.remaining())
+    await _apply_metallb(timeout=deadline.remaining())
     for crd_name in METALLB_CRDS:
         await _wait_crd_established(
             kube,
             name=crd_name,
-            timeout=deadline - loop.time(),
+            timeout=deadline.remaining(),
         )
-    await _wait_controller_available(kube, timeout=deadline - loop.time())
-    await _wait_speaker_available(kube, timeout=deadline - loop.time())
+    await _wait_controller_available(kube, timeout=deadline.remaining())
+    await _wait_speaker_available(kube, timeout=deadline.remaining())
 
 
 async def metallb_status(kube: Kube, *, timeout: float) -> dict[str, object]:
@@ -813,22 +723,38 @@ async def metallb_status(kube: Kube, *, timeout: float) -> dict[str, object]:
         timeout=timeout,
     )
     crds = await _crd_status(kube, timeout=timeout)
-    pools = await _safe_list(lambda: IPAddressPool.list(kube, timeout=timeout))
-    l2 = await _safe_list(lambda: L2Advertisement.list(kube, timeout=timeout))
-    peers = await _safe_list(lambda: BGPPeer.list(kube, timeout=timeout))
-    bgp = await _safe_list(lambda: BGPAdvertisement.list(kube, timeout=timeout))
-    config_states = await _safe_custom_list(
-        _CONFIGURATION_STATE_CLIENT,
+    pools = await _safe_resource_list(
+        _IP_ADDRESS_POOL_RESOURCE,
         kube,
         timeout=timeout,
     )
-    l2_status = await _safe_custom_list(
-        _SERVICE_L2_STATUS_CLIENT,
+    l2 = await _safe_resource_list(
+        _L2_ADVERTISEMENT_RESOURCE,
         kube,
         timeout=timeout,
     )
-    bgp_status = await _safe_custom_list(
-        _SERVICE_BGP_STATUS_CLIENT,
+    peers = await _safe_resource_list(
+        _BGP_PEER_RESOURCE,
+        kube,
+        timeout=timeout,
+    )
+    bgp = await _safe_resource_list(
+        _BGP_ADVERTISEMENT_RESOURCE,
+        kube,
+        timeout=timeout,
+    )
+    config_states = await _safe_resource_list(
+        _CONFIGURATION_STATE_RESOURCE,
+        kube,
+        timeout=timeout,
+    )
+    l2_status = await _safe_resource_list(
+        _SERVICE_L2_STATUS_RESOURCE,
+        kube,
+        timeout=timeout,
+    )
+    bgp_status = await _safe_resource_list(
+        _SERVICE_BGP_STATUS_RESOURCE,
         kube,
         timeout=timeout,
     )
@@ -1016,22 +942,41 @@ async def _crd_status(kube: Kube, *, timeout: float) -> dict[str, bool]:
     return out
 
 
-async def _safe_list[T](fn: Callable[[], Awaitable[Sequence[T]]]) -> list[T]:
-    try:
-        result = await fn()  # type: ignore[operator]
-    except (OSError, TimeoutError, ValueError):
-        return []
-    return list(result)
+async def _managed_upsert[T](
+    resource: CustomObjectResource[T],
+    kube: Kube,
+    *,
+    kind: str,
+    name: str,
+    spec: Mapping[str, object],
+    timeout: float,
+) -> T:
+    await _require_managed_metallb_namespace(kube, timeout=timeout)
+    current = await resource.get(
+        kube,
+        namespace=METALLB_NAMESPACE,
+        name=name,
+        timeout=timeout,
+    )
+    _assert_managed(current, kind=kind)
+    return await resource.upsert(
+        kube,
+        namespace=METALLB_NAMESPACE,
+        name=name,
+        spec=spec,
+        labels=METALLB_LABELS,
+        timeout=timeout,
+    )
 
 
-async def _safe_custom_list(
-    client: CustomObjectClient,
+async def _safe_resource_list[T](
+    resource: CustomObjectResource[T],
     kube: Kube,
     *,
     timeout: float,
-) -> list[CustomObject]:
+) -> list[T]:
     try:
-        return await client.list(kube, namespace=METALLB_NAMESPACE, timeout=timeout)
+        return await resource.list(kube, namespace=METALLB_NAMESPACE, timeout=timeout)
     except (OSError, TimeoutError, ValueError):
         return []
 

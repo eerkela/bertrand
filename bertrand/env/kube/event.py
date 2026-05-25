@@ -8,16 +8,11 @@ from typing import TYPE_CHECKING, Self
 from kubernetes import client as kube_client
 
 from .api.metadata import NamespacedKubeMetadata
-from .api.resource import ResourceClient
+from .api.resource import NamespacedResourceMixin, NamespacedWatchMixin, ResourceClient
 from .api.view import ObjectReference
 
 if TYPE_CHECKING:
-    import builtins
-    from collections.abc import AsyncIterator, Collection, Mapping
     from datetime import datetime
-
-    from .api.client import Kube
-    from .api.watch import WatchEvent
 
 
 def _object_identity(
@@ -41,7 +36,11 @@ def _object_identity(
 
 
 @dataclass(frozen=True)
-class Event(NamespacedKubeMetadata[kube_client.EventsV1Event]):
+class Event(
+    NamespacedWatchMixin[kube_client.EventsV1Event],
+    NamespacedResourceMixin[kube_client.EventsV1Event],
+    NamespacedKubeMetadata[kube_client.EventsV1Event],
+):
     """Read-only wrapper around one Kubernetes Event object.
 
     Parameters
@@ -85,121 +84,6 @@ class Event(NamespacedKubeMetadata[kube_client.EventsV1Event]):
             watch_all=lambda kube: kube.events.list_event_for_all_namespaces,
             watch_namespace=lambda kube: kube.events.list_namespaced_event,
         )
-
-    @classmethod
-    async def get(
-        cls,
-        kube: Kube,
-        *,
-        namespace: str,
-        name: str,
-        timeout: float,
-    ) -> Self | None:
-        """Read one Kubernetes Event by name.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        namespace : str
-            Namespace that owns the Event.
-        name : str
-            Event name to read.
-        timeout : float
-            Maximum request budget in seconds. If infinite, wait indefinitely.
-
-        Returns
-        -------
-        Event | None
-            Wrapped Kubernetes Event, or `None` if it does not exist.
-        """
-        return await cls._client().get(
-            kube,
-            namespace=namespace,
-            name=name,
-            timeout=timeout,
-        )
-
-    @classmethod
-    async def list(
-        cls,
-        kube: Kube,
-        *,
-        timeout: float,
-        namespaces: Collection[str] | None = None,
-        labels: Mapping[str, str] | None = None,
-        field_selector: str | None = None,
-    ) -> builtins.list[Self]:
-        """List Kubernetes Events with optional filtering.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        timeout : float
-            Maximum request budget in seconds. If infinite, wait indefinitely.
-        namespaces : Collection[str] | None, optional
-            Optional namespace filters. `None` queries all namespaces.
-        labels : Mapping[str, str] | None, optional
-            Optional label selector key/value pairs.
-        field_selector : str | None, optional
-            Raw Kubernetes field selector.
-
-        Returns
-        -------
-        list[Event]
-            Wrapped Events matching the requested filters.
-        """
-        return await cls._client().list(
-            kube,
-            timeout=timeout,
-            namespaces=namespaces,
-            labels=labels,
-            field_selector=field_selector,
-        )
-
-    @classmethod
-    async def watch(
-        cls,
-        kube: Kube,
-        *,
-        timeout: float,
-        namespace: str | None = None,
-        labels: Mapping[str, str] | None = None,
-        field_selector: str | None = None,
-        resource_version: str | None = None,
-    ) -> AsyncIterator[WatchEvent[Self]]:
-        """Watch Kubernetes Events.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        timeout : float
-            Maximum watch budget in seconds. If infinite, wait indefinitely.
-        namespace : str | None, optional
-            Namespace to watch. If omitted, watches across all namespaces.
-        labels : Mapping[str, str] | None, optional
-            Optional label selector key/value pairs.
-        field_selector : str | None, optional
-            Raw Kubernetes field selector.
-        resource_version : str | None, optional
-            Resource version to watch from.
-
-        Yields
-        ------
-        WatchEvent[Event]
-            Typed watch events containing wrapped Events.
-        """
-        async for event in cls._client().watch(
-            kube,
-            timeout=timeout,
-            namespace=namespace,
-            labels=labels,
-            field_selector=field_selector,
-            resource_version=resource_version,
-        ):
-            yield event
 
     @property
     def reason(self) -> str:

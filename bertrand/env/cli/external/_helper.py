@@ -2,18 +2,53 @@
 
 from __future__ import annotations
 
-import sys
+from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from bertrand.env.cli.external._runtime import warn
+from bertrand.env.config.core import Config
 from bertrand.env.git import GitRepository, abspath
+from bertrand.env.kube.api.client import Kube
 from bertrand.env.kube.ceph.mount import (
     prune_repository_mounts,
     refresh_repository_alias_for_path,
 )
 
 if TYPE_CHECKING:
-    from bertrand.env.kube.api.client import Kube
+    from collections.abc import AsyncIterator
+
+
+@dataclass(frozen=True)
+class _ProjectCommandContext:
+    kube: Kube
+    repo: GitRepository
+    worktree: Path
+    config: Config
+
+
+@asynccontextmanager
+async def _project_command_context(
+    target: Path,
+    *,
+    timeout: float,
+) -> AsyncIterator[_ProjectCommandContext]:
+    with await Kube.host(timeout=timeout) as kube:
+        repo, worktree = await resolve_project_worktree(
+            kube,
+            target,
+            timeout=timeout,
+        )
+        config = await Config.load(worktree, kube=kube, repo=repo, timeout=timeout)
+        async with config:
+            yield _ProjectCommandContext(
+                kube=kube,
+                repo=repo,
+                worktree=worktree,
+                config=config,
+            )
+        await prune_repository_mounts_quietly(kube, timeout=timeout)
 
 
 async def resolve_project_worktree(
@@ -106,7 +141,4 @@ async def prune_repository_mounts_quietly(
     try:
         await prune_repository_mounts(kube, timeout=timeout)
     except (OSError, TimeoutError, ValueError) as err:
-        print(
-            f"bertrand: warning: repository mount pruning did not converge: {err}",
-            file=sys.stderr,
-        )
+        warn(f"repository mount pruning did not converge: {err}")

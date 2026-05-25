@@ -25,6 +25,8 @@ from pydantic import (
 )
 
 from bertrand.env.git import METADATA_DIR, Scalar, atomic_write_text, ensure_worktree_id
+from bertrand.env.kube.build.lifecycle import worktree_identity
+from bertrand.env.kube.ceph.volume import ensure_repository_worktree_record
 
 from .core import (
     Config,
@@ -2128,7 +2130,11 @@ class Bertrand(Resource):
                 raise ValueError(msg)
             return self
 
-    async def init(self, config: Config, cli: Config.Init) -> dict[str, Any]:
+    async def init(
+        self,
+        config: Config,  # noqa: ARG002
+        cli: Config.Init,  # noqa: ARG002
+    ) -> dict[str, Any]:
         """Return the default Bertrand configuration fragment.
 
         Returns
@@ -2136,7 +2142,6 @@ class Bertrand(Resource):
         dict[str, Any]
             Default configuration data serialized with TOML aliases.
         """
-        del config, cli
         return self.Model.model_construct().model_dump(
             by_alias=True,
             exclude_none=True,
@@ -2172,9 +2177,6 @@ class Bertrand(Resource):
         (config.root / "docs").mkdir(parents=True, exist_ok=True)
         worktree_id = ensure_worktree_id(config.root)
         if config.kube is not None:
-            from bertrand.env.kube.build.lifecycle import worktree_identity
-            from bertrand.env.kube.ceph.volume import ensure_repository_worktree_record
-
             await ensure_repository_worktree_record(
                 config.kube,
                 repo_id=config.repo.repo_id,
@@ -2200,16 +2202,6 @@ class Bertrand(Resource):
             config.root / ".gitignore", _dump_ignore_list(gitignore), encoding="utf-8"
         )
         _remove_legacy_publish_workflow(config.root)
-
-    async def schema(self) -> dict[str, Any]:
-        """Return the JSON schema for Bertrand configuration.
-
-        Returns
-        -------
-        dict[str, Any]
-            JSON schema for validation-mode Bertrand configuration.
-        """
-        return self.Model.model_json_schema(by_alias=True, mode="validation")
 
 
 def workload_topology(config: Bertrand.Model | None) -> WorkloadTopology:

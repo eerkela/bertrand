@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -11,7 +10,15 @@ from typing import TYPE_CHECKING, Any, Literal, Self, cast
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from .api._helpers import _label_selector, _wait_until_deleted
+from bertrand.env.git import Deadline
+
+from .api._helpers import (
+    _is_conflict,
+    _is_missing_api_resource,
+    _is_not_found,
+    _label_selector,
+    _wait_until_deleted,
+)
 from .api.watch import WatchEvent, WatchExpired
 from .api.watch import watch as kube_watch
 
@@ -129,6 +136,164 @@ class CustomObjectClient:
             "spec": dict(spec),
         }
 
+    async def _request(
+        self,
+        kube: Kube,
+        *,
+        endpoint: Callable[..., object],
+        api_kwargs: Mapping[str, object],
+        timeout: float,
+        context: str,
+        missing_ok: bool = False,
+    ) -> object | None:
+        return await kube.run(
+            lambda request_timeout: endpoint(
+                **api_kwargs,
+                _request_timeout=request_timeout,
+            ),
+            timeout=timeout,
+            context=context,
+            missing_ok=missing_ok,
+        )
+
+    def _read_endpoint(
+        self,
+        kube: Kube,
+        *,
+        namespace: str | None,
+        name: str,
+    ) -> tuple[Callable[..., object], dict[str, object]]:
+        if self.spec.scope == "cluster":
+            return kube.custom.get_cluster_custom_object, {
+                "group": self.spec.group,
+                "version": self.spec.version,
+                "plural": self.spec.plural,
+                "name": name,
+            }
+        return kube.custom.get_namespaced_custom_object, {
+            "group": self.spec.group,
+            "version": self.spec.version,
+            "namespace": cast("str", namespace),
+            "plural": self.spec.plural,
+            "name": name,
+        }
+
+    def _list_endpoint(
+        self,
+        kube: Kube,
+        *,
+        namespace: str | None,
+        label_selector: str | None,
+    ) -> tuple[Callable[..., object], dict[str, object]]:
+        if self.spec.scope == "cluster" or namespace is None:
+            return kube.custom.list_cluster_custom_object, {
+                "group": self.spec.group,
+                "version": self.spec.version,
+                "plural": self.spec.plural,
+                "label_selector": label_selector,
+            }
+        return kube.custom.list_namespaced_custom_object, {
+            "group": self.spec.group,
+            "version": self.spec.version,
+            "namespace": namespace,
+            "plural": self.spec.plural,
+            "label_selector": label_selector,
+        }
+
+    def _create_endpoint(
+        self,
+        kube: Kube,
+        *,
+        namespace: str | None,
+        body: Mapping[str, object],
+    ) -> tuple[Callable[..., object], dict[str, object]]:
+        if self.spec.scope == "cluster":
+            return kube.custom.create_cluster_custom_object, {
+                "group": self.spec.group,
+                "version": self.spec.version,
+                "plural": self.spec.plural,
+                "body": dict(body),
+            }
+        return kube.custom.create_namespaced_custom_object, {
+            "group": self.spec.group,
+            "version": self.spec.version,
+            "namespace": cast("str", namespace),
+            "plural": self.spec.plural,
+            "body": dict(body),
+        }
+
+    def _patch_endpoint(
+        self,
+        kube: Kube,
+        *,
+        namespace: str | None,
+        name: str,
+        body: Mapping[str, object],
+    ) -> tuple[Callable[..., object], dict[str, object]]:
+        if self.spec.scope == "cluster":
+            return kube.custom.patch_cluster_custom_object, {
+                "group": self.spec.group,
+                "version": self.spec.version,
+                "plural": self.spec.plural,
+                "name": name,
+                "body": dict(body),
+            }
+        return kube.custom.patch_namespaced_custom_object, {
+            "group": self.spec.group,
+            "version": self.spec.version,
+            "namespace": cast("str", namespace),
+            "plural": self.spec.plural,
+            "name": name,
+            "body": dict(body),
+        }
+
+    def _patch_status_endpoint(
+        self,
+        kube: Kube,
+        *,
+        namespace: str | None,
+        name: str,
+        status: Mapping[str, object],
+    ) -> tuple[Callable[..., object], dict[str, object]]:
+        if self.spec.scope == "cluster":
+            return kube.custom.patch_cluster_custom_object_status, {
+                "group": self.spec.group,
+                "version": self.spec.version,
+                "plural": self.spec.plural,
+                "name": name,
+                "body": {"status": dict(status)},
+            }
+        return kube.custom.patch_namespaced_custom_object_status, {
+            "group": self.spec.group,
+            "version": self.spec.version,
+            "namespace": cast("str", namespace),
+            "plural": self.spec.plural,
+            "name": name,
+            "body": {"status": dict(status)},
+        }
+
+    def _delete_endpoint(
+        self,
+        kube: Kube,
+        *,
+        namespace: str | None,
+        name: str,
+    ) -> tuple[Callable[..., object], dict[str, object]]:
+        if self.spec.scope == "cluster":
+            return kube.custom.delete_cluster_custom_object, {
+                "group": self.spec.group,
+                "version": self.spec.version,
+                "plural": self.spec.plural,
+                "name": name,
+            }
+        return kube.custom.delete_namespaced_custom_object, {
+            "group": self.spec.group,
+            "version": self.spec.version,
+            "namespace": cast("str", namespace),
+            "plural": self.spec.plural,
+            "name": name,
+        }
+
     async def get(
         self,
         kube: Kube,
@@ -155,36 +320,32 @@ class CustomObjectClient:
         -------
         CustomObject | None
             Wrapped custom object, or `None` if it does not exist.
+
+        Raises
+        ------
+        OSError
+            If the custom-object API kind is unavailable or the returned payload is
+            malformed.
         """
         namespace = self._single_namespace(namespace, action="read")
         label = self._object_label(name=name, namespace=namespace)
-        if self.spec.scope == "cluster":
-
-            def read(request_timeout: float | None) -> object:
-                return kube.custom.get_cluster_custom_object(
-                    group=self.spec.group,
-                    version=self.spec.version,
-                    plural=self.spec.plural,
-                    name=name,
-                    _request_timeout=request_timeout,
-                )
-        else:
-
-            def read(request_timeout: float | None) -> object:
-                return kube.custom.get_namespaced_custom_object(
-                    group=self.spec.group,
-                    version=self.spec.version,
-                    namespace=cast("str", namespace),
-                    plural=self.spec.plural,
-                    name=name,
-                    _request_timeout=request_timeout,
-                )
-
-        payload = await kube.run(
-            read,
-            timeout=timeout,
-            context=f"failed to read {self.spec.kind} {label}",
+        endpoint, api_kwargs = self._read_endpoint(
+            kube,
+            namespace=namespace,
+            name=name,
         )
+        try:
+            payload = await self._request(
+                kube,
+                endpoint=endpoint,
+                api_kwargs=api_kwargs,
+                timeout=timeout,
+                context=f"failed to read {self.spec.kind} {label}",
+            )
+        except OSError as err:
+            if _is_not_found(err) and not _is_missing_api_resource(err):
+                return None
+            raise
         if payload is None:
             return None
         return self._wrap(payload)
@@ -270,12 +431,14 @@ class CustomObjectClient:
             msg = f"{self.spec.kind} watch timeout must be non-negative"
             raise TimeoutError(msg)
         namespace = self._watch_namespace(namespace)
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + timeout
+        deadline = Deadline.from_timeout(
+            timeout,
+            message=f"{self.spec.kind} watch timeout must be non-negative",
+        )
         current_version = resource_version.strip() if resource_version else ""
         can_emit_initial = emit_initial and not current_version
         while True:
-            remaining = deadline - loop.time()
+            remaining = deadline.remaining()
             if remaining <= 0:
                 return
             if not current_version:
@@ -296,7 +459,7 @@ class CustomObjectClient:
                         )
                     can_emit_initial = False
 
-            remaining = deadline - loop.time()
+            remaining = deadline.remaining()
             if remaining <= 0:
                 return
             watch_fn, api_kwargs, context = self._watch_endpoint(
@@ -520,32 +683,18 @@ class CustomObjectClient:
         """
         namespace = self._single_namespace(namespace, action="delete")
         label = self._object_label(name=name, namespace=namespace)
-        if self.spec.scope == "cluster":
-
-            def delete(request_timeout: float | None) -> object:
-                return kube.custom.delete_cluster_custom_object(
-                    group=self.spec.group,
-                    version=self.spec.version,
-                    plural=self.spec.plural,
-                    name=name,
-                    _request_timeout=request_timeout,
-                )
-        else:
-
-            def delete(request_timeout: float | None) -> object:
-                return kube.custom.delete_namespaced_custom_object(
-                    group=self.spec.group,
-                    version=self.spec.version,
-                    namespace=cast("str", namespace),
-                    plural=self.spec.plural,
-                    name=name,
-                    _request_timeout=request_timeout,
-                )
-
-        await kube.run(
-            delete,
+        endpoint, api_kwargs = self._delete_endpoint(
+            kube,
+            namespace=namespace,
+            name=name,
+        )
+        await self._request(
+            kube,
+            endpoint=endpoint,
+            api_kwargs=api_kwargs,
             timeout=timeout,
             context=f"failed to delete {self.spec.kind} {label}",
+            missing_ok=True,
         )
 
     async def wait_deleted(
@@ -582,33 +731,20 @@ class CustomObjectClient:
     ) -> _CustomObjectSnapshot:
         namespace = self._watch_namespace(namespace)
         label_selector = _label_selector(labels)
-        if namespace is None:
-
-            def list_fn(request_timeout: float | None) -> object:
-                return kube.custom.list_cluster_custom_object(
-                    group=self.spec.group,
-                    version=self.spec.version,
-                    plural=self.spec.plural,
-                    label_selector=label_selector,
-                    _request_timeout=request_timeout,
-                )
-
-            context = f"failed to list {self.spec.kind}s"
-        else:
-
-            def list_fn(request_timeout: float | None) -> object:
-                return kube.custom.list_namespaced_custom_object(
-                    group=self.spec.group,
-                    version=self.spec.version,
-                    namespace=namespace,
-                    plural=self.spec.plural,
-                    label_selector=label_selector,
-                    _request_timeout=request_timeout,
-                )
-
-            context = f"failed to list {self.spec.kind}s in namespace {namespace!r}"
-        payload = await kube.run(
-            list_fn,
+        endpoint, api_kwargs = self._list_endpoint(
+            kube,
+            namespace=namespace,
+            label_selector=label_selector,
+        )
+        context = (
+            f"failed to list {self.spec.kind}s"
+            if namespace is None
+            else f"failed to list {self.spec.kind}s in namespace {namespace!r}"
+        )
+        payload = await self._request(
+            kube,
+            endpoint=endpoint,
+            api_kwargs=api_kwargs,
             timeout=timeout,
             context=context,
         )
@@ -644,30 +780,15 @@ class CustomObjectClient:
         timeout: float,
     ) -> CustomObject:
         label = self._manifest_label(body, namespace=namespace)
-        if self.spec.scope == "cluster":
-
-            def create(request_timeout: float | None) -> object:
-                return kube.custom.create_cluster_custom_object(
-                    group=self.spec.group,
-                    version=self.spec.version,
-                    plural=self.spec.plural,
-                    body=dict(body),
-                    _request_timeout=request_timeout,
-                )
-        else:
-
-            def create(request_timeout: float | None) -> object:
-                return kube.custom.create_namespaced_custom_object(
-                    group=self.spec.group,
-                    version=self.spec.version,
-                    namespace=cast("str", namespace),
-                    plural=self.spec.plural,
-                    body=dict(body),
-                    _request_timeout=request_timeout,
-                )
-
-        payload = await kube.run(
-            create,
+        endpoint, api_kwargs = self._create_endpoint(
+            kube,
+            namespace=namespace,
+            body=body,
+        )
+        payload = await self._request(
+            kube,
+            endpoint=endpoint,
+            api_kwargs=api_kwargs,
             timeout=timeout,
             context=f"failed to create {self.spec.kind} {label}",
         )
@@ -698,37 +819,20 @@ class CustomObjectClient:
                 timeout=timeout,
             )
         except OSError as err:
-            detail = str(err).lower()
-            if "status 409" not in detail and "already exists" not in detail:
+            if not _is_conflict(err):
                 raise
 
         label = self._object_label(name=name, namespace=namespace)
-        if self.spec.scope == "cluster":
-
-            def patch(request_timeout: float | None) -> object:
-                return kube.custom.patch_cluster_custom_object(
-                    group=self.spec.group,
-                    version=self.spec.version,
-                    plural=self.spec.plural,
-                    name=name,
-                    body=dict(body),
-                    _request_timeout=request_timeout,
-                )
-        else:
-
-            def patch(request_timeout: float | None) -> object:
-                return kube.custom.patch_namespaced_custom_object(
-                    group=self.spec.group,
-                    version=self.spec.version,
-                    namespace=cast("str", namespace),
-                    plural=self.spec.plural,
-                    name=name,
-                    body=dict(body),
-                    _request_timeout=request_timeout,
-                )
-
-        payload = await kube.run(
-            patch,
+        endpoint, api_kwargs = self._patch_endpoint(
+            kube,
+            namespace=namespace,
+            name=name,
+            body=body,
+        )
+        payload = await self._request(
+            kube,
+            endpoint=endpoint,
+            api_kwargs=api_kwargs,
             timeout=timeout,
             context=f"failed to patch {self.spec.kind} {label}",
         )
@@ -744,32 +848,16 @@ class CustomObjectClient:
         timeout: float,
     ) -> CustomObject:
         label = self._object_label(name=name, namespace=namespace)
-        if self.spec.scope == "cluster":
-
-            def patch(request_timeout: float | None) -> object:
-                return kube.custom.patch_cluster_custom_object_status(
-                    group=self.spec.group,
-                    version=self.spec.version,
-                    plural=self.spec.plural,
-                    name=name,
-                    body={"status": dict(status)},
-                    _request_timeout=request_timeout,
-                )
-        else:
-
-            def patch(request_timeout: float | None) -> object:
-                return kube.custom.patch_namespaced_custom_object_status(
-                    group=self.spec.group,
-                    version=self.spec.version,
-                    namespace=cast("str", namespace),
-                    plural=self.spec.plural,
-                    name=name,
-                    body={"status": dict(status)},
-                    _request_timeout=request_timeout,
-                )
-
-        payload = await kube.run(
-            patch,
+        endpoint, api_kwargs = self._patch_status_endpoint(
+            kube,
+            namespace=namespace,
+            name=name,
+            status=status,
+        )
+        payload = await self._request(
+            kube,
+            endpoint=endpoint,
+            api_kwargs=api_kwargs,
             timeout=timeout,
             context=f"failed to patch {self.spec.kind} status {label}",
         )
@@ -1149,6 +1237,332 @@ class CustomObject:
             Parsed UTC timestamp, or `None` when the input is empty or malformed.
         """
         return _parse_kubernetes_datetime(str(value or ""))
+
+
+@dataclass(frozen=True)
+class CustomObjectWrapper:
+    """Base wrapper around one Kubernetes custom object.
+
+    Parameters
+    ----------
+    _obj : CustomObject
+        Generic custom object returned by Kubernetes.
+    """
+
+    _obj: CustomObject
+
+    @classmethod
+    def _from_object(cls, obj: CustomObject) -> Self:
+        return cls(_obj=obj)
+
+    @property
+    def name(self) -> str:
+        """Return the Kubernetes object name.
+
+        Returns
+        -------
+        str
+            Kubernetes ``metadata.name``.
+        """
+        return self._obj.name
+
+    @property
+    def namespace(self) -> str:
+        """Return the Kubernetes object namespace.
+
+        Returns
+        -------
+        str
+            Kubernetes ``metadata.namespace``, or an empty string for cluster-scoped
+            objects.
+        """
+        return self._obj.namespace
+
+    @property
+    def labels(self) -> Mapping[str, str]:
+        """Return Kubernetes object labels.
+
+        Returns
+        -------
+        Mapping[str, str]
+            Read-only Kubernetes labels.
+        """
+        return self._obj.labels
+
+
+@dataclass(frozen=True)
+class CustomObjectResource[T_co]:
+    """Non-owning descriptor for an externally installed custom-object API.
+
+    Parameters
+    ----------
+    spec : CustomObjectSpec
+        Custom-object API coordinates.
+    parser : Callable[[CustomObject], T_co] | None, optional
+        Wrapper factory for low-level Kubernetes objects. If omitted, the raw
+        `CustomObject` is returned.
+    """
+
+    spec: CustomObjectSpec
+    parser: Callable[[CustomObject], T_co] | None = None
+
+    @property
+    def client(self) -> CustomObjectClient:
+        """Return the underlying low-level custom-object client.
+
+        Returns
+        -------
+        CustomObjectClient
+            Bound low-level client for this resource.
+        """
+        return CustomObjectClient(self.spec)
+
+    async def get(
+        self,
+        kube: Kube,
+        *,
+        name: str,
+        timeout: float,
+        namespace: str | None = None,
+    ) -> T_co | None:
+        """Read one custom object by name.
+
+        Parameters
+        ----------
+        kube : Kube
+            Active Kubernetes API context.
+        name : str
+            Custom object name.
+        timeout : float
+            Maximum request budget in seconds.
+        namespace : str | None, optional
+            Namespace that owns the custom object.
+
+        Returns
+        -------
+        T_co | None
+            Wrapped object, or ``None`` if it does not exist.
+        """
+        obj = await self.client.get(
+            kube,
+            namespace=namespace,
+            name=name,
+            timeout=timeout,
+        )
+        return None if obj is None else self._wrap(obj)
+
+    async def list(
+        self,
+        kube: Kube,
+        *,
+        timeout: float,
+        labels: Mapping[str, str] | None = None,
+        namespace: str | None = None,
+    ) -> builtins.list[T_co]:
+        """List custom objects with optional labels.
+
+        Parameters
+        ----------
+        kube : Kube
+            Active Kubernetes API context.
+        timeout : float
+            Maximum request budget in seconds.
+        labels : Mapping[str, str] | None, optional
+            Exact-match label selector.
+        namespace : str | None, optional
+            Optional namespace filter.
+
+        Returns
+        -------
+        list[T_co]
+            Wrapped objects returned by Kubernetes.
+        """
+        objects = await self.client.list(
+            kube,
+            namespace=namespace,
+            labels=labels,
+            timeout=timeout,
+        )
+        return [self._wrap(obj) for obj in objects]
+
+    async def create(
+        self,
+        kube: Kube,
+        *,
+        name: str,
+        spec: Mapping[str, object],
+        timeout: float,
+        namespace: str | None = None,
+        labels: Mapping[str, str] | None = None,
+        annotations: Mapping[str, str] | None = None,
+    ) -> T_co:
+        """Create one custom object from intent fields.
+
+        Parameters
+        ----------
+        kube : Kube
+            Active Kubernetes API context.
+        name : str
+            Custom object name.
+        spec : Mapping[str, object]
+            Desired custom object ``spec`` payload.
+        timeout : float
+            Maximum request budget in seconds.
+        namespace : str | None, optional
+            Namespace that owns the custom object.
+        labels : Mapping[str, str] | None, optional
+            Labels to apply.
+        annotations : Mapping[str, str] | None, optional
+            Annotations to apply.
+
+        Returns
+        -------
+        T_co
+            Wrapped created object.
+        """
+        obj = await self.client.create(
+            kube,
+            namespace=namespace,
+            name=name,
+            spec=spec,
+            labels=labels,
+            annotations=annotations,
+            timeout=timeout,
+        )
+        return self._wrap(obj)
+
+    async def create_manifest(
+        self,
+        kube: Kube,
+        *,
+        manifest: Mapping[str, object],
+        timeout: float,
+        namespace: str | None = None,
+    ) -> T_co:
+        """Create one custom object from a complete manifest.
+
+        Parameters
+        ----------
+        kube : Kube
+            Active Kubernetes API context.
+        manifest : Mapping[str, object]
+            Complete Kubernetes manifest.
+        timeout : float
+            Maximum request budget in seconds.
+        namespace : str | None, optional
+            Namespace that owns the custom object.
+
+        Returns
+        -------
+        T_co
+            Wrapped created object.
+        """
+        obj = await self.client.create_manifest(
+            kube,
+            namespace=namespace,
+            manifest=manifest,
+            timeout=timeout,
+        )
+        return self._wrap(obj)
+
+    async def upsert(
+        self,
+        kube: Kube,
+        *,
+        name: str,
+        spec: Mapping[str, object],
+        timeout: float,
+        namespace: str | None = None,
+        labels: Mapping[str, str] | None = None,
+        annotations: Mapping[str, str] | None = None,
+    ) -> T_co:
+        """Create or patch one custom object from intent fields.
+
+        Parameters
+        ----------
+        kube : Kube
+            Active Kubernetes API context.
+        name : str
+            Custom object name.
+        spec : Mapping[str, object]
+            Desired custom object ``spec`` payload.
+        timeout : float
+            Maximum request budget in seconds.
+        namespace : str | None, optional
+            Namespace that owns the custom object.
+        labels : Mapping[str, str] | None, optional
+            Labels to apply.
+        annotations : Mapping[str, str] | None, optional
+            Annotations to apply.
+
+        Returns
+        -------
+        T_co
+            Wrapped created or patched object.
+        """
+        obj = await self.client.upsert(
+            kube,
+            namespace=namespace,
+            name=name,
+            spec=spec,
+            labels=labels,
+            annotations=annotations,
+            timeout=timeout,
+        )
+        return self._wrap(obj)
+
+    async def delete_by_name(
+        self,
+        kube: Kube,
+        *,
+        name: str,
+        timeout: float,
+        namespace: str | None = None,
+    ) -> None:
+        """Delete one custom object by name.
+
+        Parameters
+        ----------
+        kube : Kube
+            Active Kubernetes API context.
+        name : str
+            Custom object name.
+        timeout : float
+            Maximum request budget in seconds.
+        namespace : str | None, optional
+            Namespace that owns the custom object.
+        """
+        await self.client.delete_by_name(
+            kube,
+            namespace=namespace,
+            name=name,
+            timeout=timeout,
+        )
+
+    async def wait_deleted(
+        self,
+        *,
+        label: str,
+        timeout: float,
+        refresh: Callable[[float], Awaitable[object | None]],
+    ) -> None:
+        """Wait for a custom object to disappear.
+
+        Parameters
+        ----------
+        label : str
+            Human-readable resource label for diagnostics.
+        timeout : float
+            Maximum wait budget in seconds.
+        refresh : Callable[[float], Awaitable[object | None]]
+            Callback that returns the live object or `None`.
+        """
+        await self.client.wait_deleted(label=label, timeout=timeout, refresh=refresh)
+
+    def _wrap(self, obj: CustomObject) -> T_co:
+        if self.parser is None:
+            return cast("T_co", obj)
+        return self.parser(obj)
 
 
 def _parse_kubernetes_datetime(value: str) -> datetime | None:

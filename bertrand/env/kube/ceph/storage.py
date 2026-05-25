@@ -12,7 +12,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from bertrand.env.git import BERTRAND_NAMESPACE, INFINITY
+from bertrand.env.git import BERTRAND_NAMESPACE, INFINITY, Deadline
 from bertrand.env.kube.api.client import (
     CLUSTER_REGISTRY_READY_LABEL,
     CLUSTER_REGISTRY_READY_VALUE,
@@ -59,8 +59,6 @@ from bertrand.env.kube.ceph.capacity import (
     CEPH_CAPACITY_GROUP,
     STORAGE_ACTION_PLURAL,
     STORAGE_ACTION_STALE_SECONDS,
-    STORAGE_CONTROLLER_LABEL,
-    STORAGE_CONTROLLER_LABEL_VALUE,
     STORAGE_CONTROLLER_LABELS,
     STORAGE_NODE_PLURAL,
     STORAGE_OSD_LABEL,
@@ -76,6 +74,8 @@ from bertrand.env.kube.ceph.capacity import (
     CephStoragePlanner,
     CephStoragePolicyRecord,
     CephStorageReservationRecord,
+    StorageOSDOrigin,
+    StorageOSDPhase,
     StoragePlan,
     create_storage_actions,
     ensure_ceph_capacity_crds,
@@ -133,7 +133,7 @@ from bertrand.env.kube.volume import PersistentVolumeClaim
 if TYPE_CHECKING:
     from collections.abc import Collection, Mapping
 
-    from bertrand.env.kube.custom_object import CustomObjectClient
+    from bertrand.env.kube.custom_resource import CustomResource
 
 STORAGE_CONTROLLER_SERVICE_ACCOUNT = "bertrand-ceph-storage-controller"
 STORAGE_CONTROLLER_NAME = "bertrand-ceph-storage-controller"
@@ -166,6 +166,20 @@ CSI_REGISTRATION_VOLUME = "csi-registration"
 CSI_KUBELET_VOLUME = "csi-kubelet"
 CSI_HOST_DEV_VOLUME = "host-dev"
 CSI_HOST_RUN_VOLUME = "host-run"
+
+
+def _storage_controller_container(*, image: str, role: str) -> ContainerSpec:
+    return ContainerSpec(
+        name=role,
+        image=image,
+        image_pull_policy="Always",
+        args=[role],
+        env=[EnvVarSpec.field_ref("NODE_NAME", field_path="spec.nodeName")],
+        security_context=SecurityContextSpec(privileged=True, run_as_user=0),
+        volume_mounts=[
+            VolumeMountSpec(name=HOST_ROOT_VOLUME, mount_path=HOST_ROOT_MOUNT)
+        ],
+    )
 
 
 def _osd_spec(
@@ -352,18 +366,18 @@ async def _wait_osd_claims_gone(
     record: CephStorageOSDRecord,
     timeout: float,
 ) -> None:
-    deadline = asyncio.get_running_loop().time() + timeout
-    while asyncio.get_running_loop().time() < deadline:
+    msg = f"timed out waiting for OSD PVCs for {record.metadata.name!r} to delete"
+    deadline = Deadline.from_timeout(timeout, message=msg)
+    while deadline.remaining() > 0:
         claims = await PersistentVolumeClaim.list(
             kube,
-            timeout=deadline - asyncio.get_running_loop().time(),
+            timeout=deadline.remaining(),
             namespaces=(ROOK_NAMESPACE,),
             labels={STORAGE_OSD_NAME_LABEL: record.metadata.name},
         )
         if not claims:
             return
-        await asyncio.sleep(STORAGE_OSD_WAIT_POLL_SECONDS)
-    msg = f"timed out waiting for OSD PVCs for {record.metadata.name!r} to delete"
+        await asyncio.sleep(deadline.bounded(STORAGE_OSD_WAIT_POLL_SECONDS))
     raise TimeoutError(msg)
 
 
@@ -373,20 +387,23 @@ async def _wait_osd_workloads_gone(
     record: CephStorageOSDRecord,
     timeout: float,
 ) -> None:
-    deadline = asyncio.get_running_loop().time() + timeout
+    msg = (
+        f"timed out waiting for Rook workloads for OSD {record.metadata.name!r} to stop"
+    )
+    deadline = Deadline.from_timeout(timeout, message=msg)
     claim_names = {
         claim.name
         for claim in await PersistentVolumeClaim.list(
             kube,
-            timeout=deadline - asyncio.get_running_loop().time(),
+            timeout=deadline.remaining(),
             namespaces=(ROOK_NAMESPACE,),
             labels={STORAGE_OSD_NAME_LABEL: record.metadata.name},
         )
     }
-    while asyncio.get_running_loop().time() < deadline:
+    while deadline.remaining() > 0:
         pods = await Pod.list(
             kube,
-            timeout=deadline - asyncio.get_running_loop().time(),
+            timeout=deadline.remaining(),
             namespaces=(ROOK_NAMESPACE,),
         )
         active = [
@@ -400,10 +417,7 @@ async def _wait_osd_workloads_gone(
         ]
         if not active:
             return
-        await asyncio.sleep(STORAGE_OSD_WAIT_POLL_SECONDS)
-    msg = (
-        f"timed out waiting for Rook workloads for OSD {record.metadata.name!r} to stop"
-    )
+        await asyncio.sleep(deadline.bounded(STORAGE_OSD_WAIT_POLL_SECONDS))
     raise TimeoutError(msg)
 
 
@@ -427,18 +441,27 @@ class _ObservedRookOSD:
     ready: bool
 
 
+def _deadline_from_budget(seconds: float) -> Deadline:
+    if seconds <= 0:
+        return Deadline(
+            expires_at=asyncio.get_running_loop().time(),
+            timeout=seconds,
+        )
+    return Deadline.from_timeout(seconds, message="")
+
+
 async def _observe_rook_osd(
     kube: Kube,
     *,
     record: CephStorageOSDRecord,
     timeout: float,
 ) -> _ObservedRookOSD:
-    deadline = asyncio.get_running_loop().time() + timeout
+    deadline = _deadline_from_budget(timeout)
     observed_id = record.status.ceph_osd_id
-    while asyncio.get_running_loop().time() < deadline:
+    while deadline.remaining() > 0:
         claims = await PersistentVolumeClaim.list(
             kube,
-            timeout=deadline - asyncio.get_running_loop().time(),
+            timeout=deadline.remaining(),
             namespaces=(ROOK_NAMESPACE,),
             labels={STORAGE_OSD_NAME_LABEL: record.metadata.name},
         )
@@ -451,7 +474,7 @@ async def _observe_rook_osd(
                 observed_id = osd_id
         pods = await Pod.list(
             kube,
-            timeout=deadline - asyncio.get_running_loop().time(),
+            timeout=deadline.remaining(),
             namespaces=(ROOK_NAMESPACE,),
         )
         for pod in pods:
@@ -465,15 +488,15 @@ async def _observe_rook_osd(
             if osd_id is not None:
                 observed_id = osd_id
         try:
-            live = await ceph_osds(timeout=deadline - asyncio.get_running_loop().time())
+            live = await ceph_osds(timeout=deadline.remaining())
         except (OSError, TimeoutError):
-            await asyncio.sleep(STORAGE_OSD_WAIT_POLL_SECONDS)
+            await asyncio.sleep(deadline.bounded(STORAGE_OSD_WAIT_POLL_SECONDS))
             continue
         if observed_id is not None:
             for osd in live:
                 if osd.osd_id == observed_id and osd.up and osd.in_cluster:
                     return _ObservedRookOSD(osd_id=observed_id, ready=True)
-        await asyncio.sleep(STORAGE_OSD_WAIT_POLL_SECONDS)
+        await asyncio.sleep(deadline.bounded(STORAGE_OSD_WAIT_POLL_SECONDS))
     return _ObservedRookOSD(osd_id=observed_id, ready=False)
 
 
@@ -539,9 +562,8 @@ async def _ensure_csi_controller(
     kube: Kube,
     *,
     image: str,
-    deadline: float,
+    deadline: Deadline,
 ) -> None:
-    loop = asyncio.get_running_loop()
     labels = _csi_common_labels(CSI_CONTROLLER_NAME)
     socket_mount = VolumeMountSpec(
         name=CSI_SOCKET_VOLUME,
@@ -596,13 +618,12 @@ async def _ensure_csi_controller(
             automount_service_account_token=True,
             node_selector={CLUSTER_REGISTRY_READY_LABEL: CLUSTER_REGISTRY_READY_VALUE},
         ),
-        timeout=deadline - loop.time(),
+        timeout=deadline.remaining(),
     )
-    await deployment.wait_rollout(kube, timeout=deadline - loop.time())
+    await deployment.wait_rollout(kube, timeout=deadline.remaining())
 
 
-async def _ensure_csi_node(kube: Kube, *, image: str, deadline: float) -> None:
-    loop = asyncio.get_running_loop()
+async def _ensure_csi_node(kube: Kube, *, image: str, deadline: Deadline) -> None:
     labels = _csi_common_labels(CSI_NODE_NAME)
     plugin_dir = f"{CSI_KUBELET_DIR}/plugins/{CSI_DRIVER_NAME}"
     daemonset = await DaemonSet.upsert(
@@ -707,26 +728,24 @@ async def _ensure_csi_node(kube: Kube, *, image: str, deadline: float) -> None:
             node_selector={CLUSTER_REGISTRY_READY_LABEL: CLUSTER_REGISTRY_READY_VALUE},
             host_pid=True,
         ),
-        timeout=deadline - loop.time(),
+        timeout=deadline.remaining(),
     )
-    await daemonset.wait_rollout(kube, timeout=deadline - loop.time())
+    await daemonset.wait_rollout(kube, timeout=deadline.remaining())
 
 
-async def _ensure_csi_driver(kube: Kube, *, image: str, deadline: float) -> None:
-    loop = asyncio.get_running_loop()
-    await _upsert_csi_driver_object(kube, timeout=deadline - loop.time())
+async def _ensure_csi_driver(kube: Kube, *, image: str, deadline: Deadline) -> None:
+    await _upsert_csi_driver_object(kube, timeout=deadline.remaining())
     await _ensure_csi_controller(kube, image=image, deadline=deadline)
     await _ensure_csi_node(kube, image=image, deadline=deadline)
 
 
-async def _ensure_rbac(kube: Kube, *, deadline: float) -> None:
-    loop = asyncio.get_running_loop()
+async def _ensure_rbac(kube: Kube, *, deadline: Deadline) -> None:
     await ServiceAccount.upsert(
         kube,
         namespace=BERTRAND_NAMESPACE,
         name=STORAGE_CONTROLLER_SERVICE_ACCOUNT,
         labels=STORAGE_CONTROLLER_LABELS,
-        timeout=deadline - loop.time(),
+        timeout=deadline.remaining(),
     )
     await ClusterRole.upsert(
         kube,
@@ -866,7 +885,7 @@ async def _ensure_rbac(kube: Kube, *, deadline: float) -> None:
                 verbs=["get", "list", "watch", "create"],
             ),
         ],
-        timeout=deadline - loop.time(),
+        timeout=deadline.remaining(),
     )
     await ClusterRoleBinding.upsert(
         kube,
@@ -875,26 +894,11 @@ async def _ensure_rbac(kube: Kube, *, deadline: float) -> None:
         service_account_name=STORAGE_CONTROLLER_SERVICE_ACCOUNT,
         service_account_namespace=BERTRAND_NAMESPACE,
         labels=STORAGE_CONTROLLER_LABELS,
-        timeout=deadline - loop.time(),
+        timeout=deadline.remaining(),
     )
 
 
-async def _ensure_workloads(kube: Kube, *, image: str, deadline: float) -> None:
-    loop = asyncio.get_running_loop()
-
-    def container(role: str) -> ContainerSpec:
-        return ContainerSpec(
-            name=role,
-            image=image,
-            image_pull_policy="Always",
-            args=[role],
-            env=[EnvVarSpec.field_ref("NODE_NAME", field_path="spec.nodeName")],
-            security_context=SecurityContextSpec(privileged=True, run_as_user=0),
-            volume_mounts=[
-                VolumeMountSpec(name=HOST_ROOT_VOLUME, mount_path=HOST_ROOT_MOUNT)
-            ],
-        )
-
+async def _ensure_workloads(kube: Kube, *, image: str, deadline: Deadline) -> None:
     volumes = [
         VolumeSpec.host_path(HOST_ROOT_VOLUME, path="/", host_path_type="Directory")
     ]
@@ -910,16 +914,18 @@ async def _ensure_workloads(kube: Kube, *, image: str, deadline: float) -> None:
         },
         selector={"app.kubernetes.io/name": STORAGE_CONTROLLER_NAME},
         pod_template=PodTemplateSpec(
-            containers=[container("controller")],
+            containers=[
+                _storage_controller_container(image=image, role="controller")
+            ],
             volumes=volumes,
             service_account_name=STORAGE_CONTROLLER_SERVICE_ACCOUNT,
             automount_service_account_token=True,
             node_selector={CLUSTER_REGISTRY_READY_LABEL: CLUSTER_REGISTRY_READY_VALUE},
             host_pid=True,
         ),
-        timeout=deadline - loop.time(),
+        timeout=deadline.remaining(),
     )
-    await controller.wait_rollout(kube, timeout=deadline - loop.time())
+    await controller.wait_rollout(kube, timeout=deadline.remaining())
 
     agent = await DaemonSet.upsert(
         kube,
@@ -932,16 +938,16 @@ async def _ensure_workloads(kube: Kube, *, image: str, deadline: float) -> None:
         },
         selector={"app.kubernetes.io/name": STORAGE_AGENT_NAME},
         pod_template=PodTemplateSpec(
-            containers=[container("agent")],
+            containers=[_storage_controller_container(image=image, role="agent")],
             volumes=volumes,
             service_account_name=STORAGE_CONTROLLER_SERVICE_ACCOUNT,
             automount_service_account_token=True,
             node_selector={CLUSTER_REGISTRY_READY_LABEL: CLUSTER_REGISTRY_READY_VALUE},
             host_pid=True,
         ),
-        timeout=deadline - loop.time(),
+        timeout=deadline.remaining(),
     )
-    await agent.wait_rollout(kube, timeout=deadline - loop.time())
+    await agent.wait_rollout(kube, timeout=deadline.remaining())
 
 
 async def ensure_ceph_storage_controller(
@@ -972,31 +978,31 @@ async def ensure_ceph_storage_controller(
     if not image:
         msg = "control plane image reference cannot be empty"
         raise ValueError(msg)
-    deadline = asyncio.get_running_loop().time() + timeout
+    deadline = Deadline.from_timeout(timeout, message="timeout must be non-negative")
     await ensure_ceph_capacity_crds(
         kube,
-        timeout=deadline - asyncio.get_running_loop().time(),
+        timeout=deadline.remaining(),
     )
     await ensure_repository_volume_crd(
         kube,
-        timeout=deadline - asyncio.get_running_loop().time(),
+        timeout=deadline.remaining(),
     )
     await ensure_repository_mount_crd(
         kube,
-        timeout=deadline - asyncio.get_running_loop().time(),
+        timeout=deadline.remaining(),
     )
     await ensure_repository_worktree_crd(
         kube,
-        timeout=deadline - asyncio.get_running_loop().time(),
+        timeout=deadline.remaining(),
     )
     await ensure_repository_snapshot_support(
         kube,
-        timeout=deadline - asyncio.get_running_loop().time(),
+        timeout=deadline.remaining(),
     )
     await _ensure_rbac(kube, deadline=deadline)
     await ensure_default_storage_policy(
         kube,
-        timeout=deadline - asyncio.get_running_loop().time(),
+        timeout=deadline.remaining(),
     )
     await _ensure_csi_driver(kube, image=image, deadline=deadline)
     await _ensure_workloads(kube, image=image, deadline=deadline)
@@ -1014,24 +1020,22 @@ class CephStorageController:
         self,
         kube: Kube,
         *,
-        client: CustomObjectClient,
+        client: CustomResource[object],
         wake: asyncio.Event,
-        deadline: float,
+        deadline: Deadline,
         context: str,
     ) -> None:
-        loop = asyncio.get_running_loop()
         while True:
             try:
                 async for _event in client.watch(
                     kube,
                     namespace=BERTRAND_NAMESPACE,
-                    labels={STORAGE_CONTROLLER_LABEL: STORAGE_CONTROLLER_LABEL_VALUE},
-                    timeout=deadline - loop.time(),
+                    timeout=deadline.remaining(),
                 ):
                     wake.set()
                 wake.set()
                 await asyncio.sleep(
-                    min(STORAGE_WATCH_RESTART_DELAY_SECONDS, deadline - loop.time())
+                    deadline.bounded(STORAGE_WATCH_RESTART_DELAY_SECONDS)
                 )
             except asyncio.CancelledError:
                 raise
@@ -1043,7 +1047,7 @@ class CephStorageController:
                 )
                 wake.set()
                 await asyncio.sleep(
-                    min(STORAGE_WATCH_RESTART_DELAY_SECONDS, deadline - loop.time())
+                    deadline.bounded(STORAGE_WATCH_RESTART_DELAY_SECONDS)
                 )
 
     async def _ready_nodes(self, kube: Kube, *, timeout: float) -> list[str]:
@@ -1223,7 +1227,7 @@ class CephStorageController:
         reservations: Collection[CephStorageReservationRecord],
         osd_records: Collection[CephStorageOSDRecord],
         capacity: CephCapacitySnapshot,
-        deadline: float,
+        deadline: Deadline,
     ) -> bool:
         """Refresh storage reservation status from current capacity.
 
@@ -1232,11 +1236,10 @@ class CephStorageController:
         bool
             True when one or more reservations changed status.
         """
-        loop = asyncio.get_running_loop()
         now = datetime.now(UTC)
         changed = False
         try:
-            health = await ceph_health(timeout=deadline - loop.time())
+            health = await ceph_health(timeout=deadline.remaining())
             health_error = "" if health.clean else health.detail or health.status
         except (OSError, TimeoutError) as err:
             health_error = str(err)
@@ -1265,7 +1268,7 @@ class CephStorageController:
                         "observed_free_bytes": growth.free_bytes,
                         "last_error": "reservation expired before it was released",
                     },
-                    timeout=deadline - loop.time(),
+                    timeout=deadline.remaining(),
                 )
                 changed = True
                 continue
@@ -1279,7 +1282,7 @@ class CephStorageController:
                         "observed_free_bytes": growth.free_bytes,
                         "last_error": "",
                     },
-                    timeout=deadline - loop.time(),
+                    timeout=deadline.remaining(),
                 )
                 changed = True
             elif not ready_possible and reservation.status.phase == "Pending":
@@ -1301,7 +1304,7 @@ class CephStorageController:
                         "observed_free_bytes": growth.free_bytes,
                         "last_error": "; ".join(blockers),
                     },
-                    timeout=deadline - loop.time(),
+                    timeout=deadline.remaining(),
                 )
                 changed = True
         return changed
@@ -1316,9 +1319,8 @@ class CephStorageController:
         osd_records: Collection[CephStorageOSDRecord],
         reservations: Collection[CephStorageReservationRecord],
         capacity: CephCapacitySnapshot,
-        deadline: float,
+        deadline: Deadline,
     ) -> StoragePlan:
-        loop = asyncio.get_running_loop()
         now = datetime.now(UTC)
         min_growth_bytes = parse_size_bytes(policy.spec.min_growth_step)
         growth = self._planner.growth_recommendation(
@@ -1327,7 +1329,7 @@ class CephStorageController:
             reservations=reservations,
             now=now,
         )
-        ready_nodes = await self._ready_nodes(kube, timeout=deadline - loop.time())
+        ready_nodes = await self._ready_nodes(kube, timeout=deadline.remaining())
         eligible_nodes = self._planner.eligible_nodes(
             ready_nodes=ready_nodes,
             reports=reports,
@@ -1365,9 +1367,9 @@ class CephStorageController:
         )
         last_shrink_at = self._planner.last_shrink_at(actions)
         if not planned and policy.spec.enabled and policy.spec.shrink_enabled:
-            health = await ceph_health(timeout=deadline - loop.time())
+            health = await ceph_health(timeout=deadline.remaining())
             if health.clean:
-                live_osds = await ceph_osds(timeout=deadline - loop.time())
+                live_osds = await ceph_osds(timeout=deadline.remaining())
                 shrink_candidates = self._planner.managed_osds(
                     osd_records=osd_records,
                     osds=live_osds,
@@ -1510,15 +1512,15 @@ class CephStorageController:
             "last_error": error,
         }
 
-    async def reconcile(self, kube: Kube, *, deadline: float) -> float:
+    async def reconcile(self, kube: Kube, *, deadline: Deadline) -> float:
         """Run one controller reconciliation pass and return the next interval.
 
         Parameters
         ----------
         kube : Kube
             Active Kubernetes API context.
-        deadline : float
-            Absolute event-loop deadline for this controller run.
+        deadline : Deadline
+            Event-loop deadline for this controller run.
 
         Returns
         -------
@@ -1530,41 +1532,40 @@ class CephStorageController:
         OSError
             If Ceph capacity cannot be read and no seed action can be selected.
         """
-        loop = asyncio.get_running_loop()
-        policy = await read_storage_policy(kube, timeout=deadline - loop.time())
-        actions = await list_storage_actions(kube, timeout=deadline - loop.time())
+        policy = await read_storage_policy(kube, timeout=deadline.remaining())
+        actions = await list_storage_actions(kube, timeout=deadline.remaining())
         reservations = await list_storage_reservations(
             kube,
-            timeout=deadline - loop.time(),
+            timeout=deadline.remaining(),
         )
         reports = await list_storage_node_reports(
             kube,
-            timeout=deadline - loop.time(),
+            timeout=deadline.remaining(),
         )
-        osd_records = await list_storage_osds(kube, timeout=deadline - loop.time())
+        osd_records = await list_storage_osds(kube, timeout=deadline.remaining())
         if await self._mark_stale_actions_failed(
             kube,
             actions=actions,
-            timeout=deadline - loop.time(),
+            timeout=deadline.remaining(),
         ):
-            actions = await list_storage_actions(kube, timeout=deadline - loop.time())
+            actions = await list_storage_actions(kube, timeout=deadline.remaining())
         if await self._mark_stale_osds_failed(
             kube,
             osd_records=osd_records,
-            timeout=deadline - loop.time(),
+            timeout=deadline.remaining(),
         ):
             osd_records = await list_storage_osds(
                 kube,
-                timeout=deadline - loop.time(),
+                timeout=deadline.remaining(),
             )
         await _patch_rook_device_sets(
             kube,
             records=osd_records,
-            timeout=deadline - loop.time(),
+            timeout=deadline.remaining(),
         )
         capacity_error = ""
         try:
-            capacity = await ceph_df(timeout=deadline - loop.time())
+            capacity = await ceph_df(timeout=deadline.remaining())
         except (OSError, TimeoutError) as err:
             capacity = CephCapacitySnapshot(
                 total_bytes=0,
@@ -1575,11 +1576,11 @@ class CephStorageController:
         if await self._refresh_osd_readiness(
             kube,
             osd_records=osd_records,
-            timeout=deadline - loop.time(),
+            timeout=deadline.remaining(),
         ):
             osd_records = await list_storage_osds(
                 kube,
-                timeout=deadline - loop.time(),
+                timeout=deadline.remaining(),
             )
         if await self._reconcile_reservations(
             kube,
@@ -1588,10 +1589,10 @@ class CephStorageController:
             osd_records=osd_records,
             capacity=capacity,
             deadline=deadline,
-        ):
+            ):
             reservations = await list_storage_reservations(
                 kube,
-                timeout=deadline - loop.time(),
+                timeout=deadline.remaining(),
             )
         plan = await self._plan_storage_actions(
             kube,
@@ -1608,10 +1609,10 @@ class CephStorageController:
                 kube,
                 policy_generation=policy.metadata.generation,
                 actions=plan.actions,
-                timeout=deadline - loop.time(),
+                timeout=deadline.remaining(),
             )
-            actions = await list_storage_actions(kube, timeout=deadline - loop.time())
-            osd_records = await list_storage_osds(kube, timeout=deadline - loop.time())
+            actions = await list_storage_actions(kube, timeout=deadline.remaining())
+            osd_records = await list_storage_osds(kube, timeout=deadline.remaining())
             inventory = self._planner.osd_inventory(osd_records)
             plan = StoragePlan(
                 actions=plan.actions,
@@ -1654,7 +1655,7 @@ class CephStorageController:
                 actions=actions,
                 plan=plan,
             ),
-            timeout=deadline - loop.time(),
+            timeout=deadline.remaining(),
         )
         if capacity_error and not plan.actions:
             raise OSError(capacity_error)
@@ -1664,22 +1665,21 @@ class CephStorageController:
         self,
         kube: Kube,
         *,
-        deadline: float,
+        deadline: Deadline,
     ) -> None:
         now = datetime.now(UTC)
         pass_deadline = self._repository_volume_gc.pass_deadline(
             now,
-            loop_deadline=deadline,
+            deadline=deadline,
             timeout=REPOSITORY_VOLUME_GC_TIMEOUT_SECONDS,
         )
         if pass_deadline is None:
             return
-        loop = asyncio.get_running_loop()
 
         try:
             next_gc = await next_repository_volume_gc_time(
                 kube,
-                timeout=pass_deadline - loop.time(),
+                timeout=pass_deadline.remaining(),
             )
             if next_gc is None:
                 self._repository_volume_gc.schedule_after(
@@ -1692,7 +1692,7 @@ class CephStorageController:
 
             await gc_repository_volumes(
                 kube,
-                timeout=pass_deadline - loop.time(),
+                timeout=pass_deadline.remaining(),
             )
             self._repository_volume_gc.schedule_after(
                 REPOSITORY_VOLUME_GC_READY_CHECK_SECONDS
@@ -1711,22 +1711,21 @@ class CephStorageController:
         self,
         kube: Kube,
         *,
-        deadline: float,
+        deadline: Deadline,
     ) -> None:
         now = datetime.now(UTC)
         pass_deadline = self._repository_snapshot.pass_deadline(
             now,
-            loop_deadline=deadline,
+            deadline=deadline,
             timeout=REPOSITORY_SNAPSHOT_TIMEOUT_SECONDS,
         )
         if pass_deadline is None:
             return
-        loop = asyncio.get_running_loop()
 
         try:
             next_snapshot = await next_repository_snapshot_time(
                 kube,
-                timeout=pass_deadline - loop.time(),
+                timeout=pass_deadline.remaining(),
             )
             if next_snapshot is None:
                 self._repository_snapshot.schedule_after(
@@ -1739,7 +1738,7 @@ class CephStorageController:
 
             await maintain_repository_snapshots(
                 kube,
-                timeout=pass_deadline - loop.time(),
+                timeout=pass_deadline.remaining(),
             )
             self._repository_snapshot.schedule_after(
                 REPOSITORY_SNAPSHOT_READY_CHECK_SECONDS
@@ -1753,15 +1752,14 @@ class CephStorageController:
                 file=sys.stderr,
             )
 
-    async def _patch_error(self, kube: Kube, *, error: str, deadline: float) -> None:
+    async def _patch_error(self, kube: Kube, *, error: str, deadline: Deadline) -> None:
         """Best-effort status patch for reconciliation failures."""
-        loop = asyncio.get_running_loop()
-        policy = await read_storage_policy(kube, timeout=deadline - loop.time())
+        policy = await read_storage_policy(kube, timeout=deadline.remaining())
         await patch_storage_policy_status(
             kube,
             policy=policy,
             status=self._error_status_payload(error),
-            timeout=deadline - loop.time(),
+            timeout=deadline.remaining(),
         )
 
     async def run(self, *, timeout: float = INFINITY) -> None:
@@ -1782,8 +1780,10 @@ class CephStorageController:
         if timeout <= 0:
             msg = "controller timeout must be positive"
             raise TimeoutError(msg)
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + timeout
+        deadline = Deadline.from_timeout(
+            timeout,
+            message="controller timeout must be positive",
+        )
         wake = asyncio.Event()
         wake.set()
         with Kube.inside_cluster() as kube:
@@ -1801,7 +1801,7 @@ class CephStorageController:
                 interval = STORAGE_CONTROLLER_DEFAULT_RECONCILE_SECONDS
                 while True:
                     if not wake.is_set():
-                        wait_timeout = min(interval, deadline - loop.time())
+                        wait_timeout = deadline.bounded(interval)
                         with suppress(TimeoutError):
                             await asyncio.wait_for(
                                 wake.wait(),
@@ -1815,7 +1815,7 @@ class CephStorageController:
                     except asyncio.CancelledError:
                         raise
                     except TimeoutError as err:
-                        if deadline - loop.time() <= 0:
+                        if deadline.remaining() <= 0:
                             raise
                         error = str(err)
                     except (OSError, ValueError, RuntimeError) as err:
@@ -1872,10 +1872,9 @@ class CephStorageAgent:
         kube: Kube,
         *,
         wake: asyncio.Event,
-        deadline: float,
+        deadline: Deadline,
     ) -> None:
-        loop = asyncio.get_running_loop()
-        action_client: CustomObjectClient | None = None
+        action_client: CustomResource[object] | None = None
         for client, context in storage_watch_targets():
             if context == STORAGE_ACTION_PLURAL:
                 action_client = client
@@ -1888,8 +1887,7 @@ class CephStorageAgent:
                 async for event in action_client.watch(
                     kube,
                     namespace=BERTRAND_NAMESPACE,
-                    labels={STORAGE_CONTROLLER_LABEL: STORAGE_CONTROLLER_LABEL_VALUE},
-                    timeout=deadline - loop.time(),
+                    timeout=deadline.remaining(),
                     emit_initial=True,
                 ):
                     try:
@@ -1909,7 +1907,7 @@ class CephStorageAgent:
                         wake.set()
                 wake.set()
                 await asyncio.sleep(
-                    min(STORAGE_WATCH_RESTART_DELAY_SECONDS, deadline - loop.time())
+                    deadline.bounded(STORAGE_WATCH_RESTART_DELAY_SECONDS)
                 )
             except asyncio.CancelledError:
                 raise
@@ -1921,13 +1919,13 @@ class CephStorageAgent:
                 )
                 wake.set()
                 await asyncio.sleep(
-                    min(STORAGE_WATCH_RESTART_DELAY_SECONDS, deadline - loop.time())
+                    deadline.bounded(STORAGE_WATCH_RESTART_DELAY_SECONDS)
                 )
 
-    async def _upsert_node_report(self, kube: Kube, *, timeout: float) -> None:
+    async def _upsert_node_report(self, kube: Kube, *, deadline: Deadline) -> None:
         """Report current host free capacity for this node."""
         try:
-            snapshot = await host_capacity_snapshot(timeout=timeout)
+            snapshot = await host_capacity_snapshot(timeout=deadline.remaining())
             status = {
                 "free_bytes": snapshot.free_bytes,
                 "path": snapshot.path.as_posix(),
@@ -1962,12 +1960,12 @@ class CephStorageAgent:
             node_name=self.node_name,
             host_id=self.host_id,
             status=status,
-            timeout=timeout,
+            timeout=deadline.remaining(),
         )
 
-    async def _recover_loop_devices(self, kube: Kube, *, timeout: float) -> None:
+    async def _recover_loop_devices(self, kube: Kube, *, deadline: Deadline) -> None:
         """Best-effort recreation of this node's loop fallback device."""
-        for record in await list_storage_osds(kube, timeout=timeout):
+        for record in await list_storage_osds(kube, timeout=deadline.remaining()):
             if (
                 record.spec.node_name != self.node_name
                 or record.spec.host_id != self.host_id
@@ -1980,7 +1978,7 @@ class CephStorageAgent:
                 await prepare_loop_fallback_osd(
                     name=record.metadata.name,
                     target_bytes=record.spec.target_bytes,
-                    timeout=timeout,
+                    timeout=deadline.remaining(),
                 )
             except (OSError, TimeoutError, ValueError) as err:
                 await patch_storage_osd_status(
@@ -1990,18 +1988,21 @@ class CephStorageAgent:
                         "phase": "Failed",
                         "last_error": str(err),
                     },
-                    timeout=timeout,
+                    timeout=deadline.remaining(),
                 )
 
-    async def _recover_missing_osd_records(self, kube: Kube, *, timeout: float) -> None:
+    async def _recover_missing_osd_records(
+        self,
+        kube: Kube,
+        *,
+        deadline: Deadline,
+    ) -> None:
         """Reconstruct OSD records from live Bertrand host substrates."""
         existing = {
             record.metadata.name: record
-            for record in await list_storage_osds(kube, timeout=timeout)
+            for record in await list_storage_osds(kube, timeout=deadline.remaining())
         }
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + timeout
-        for discovery in await discover_lvm_osds(timeout=deadline - loop.time()):
+        for discovery in await discover_lvm_osds(timeout=deadline.remaining()):
             if discovery.name in existing:
                 continue
             spec = _osd_spec(
@@ -2017,14 +2018,14 @@ class CephStorageAgent:
                 name=discovery.name,
                 spec=spec,
                 phase="HostPrepared",
-                timeout=deadline - loop.time(),
+                timeout=deadline.remaining(),
             )
         loop_name = storage_loop_osd_name(self.host_id)
         if loop_name in existing:
             return
         prepared = await discover_loop_fallback_osd(
             name=loop_name,
-            timeout=deadline - loop.time(),
+            timeout=deadline.remaining(),
         )
         if prepared is None:
             return
@@ -2041,11 +2042,11 @@ class CephStorageAgent:
             name=loop_name,
             spec=spec,
             phase="HostPrepared",
-            timeout=deadline - loop.time(),
+            timeout=deadline.remaining(),
         )
 
     async def _pending_actions(
-        self, kube: Kube, *, timeout: float
+        self, kube: Kube, *, deadline: Deadline
     ) -> list[CephStorageActionRecord]:
         """List pending actions assigned to this node.
 
@@ -2053,8 +2054,8 @@ class CephStorageAgent:
         ----------
         kube : Kube
             Active Kubernetes API context.
-        timeout : float
-            Maximum request budget in seconds.
+        deadline : Deadline
+            Event-loop deadline for this synchronization pass.
 
         Returns
         -------
@@ -2066,7 +2067,7 @@ class CephStorageAgent:
             for action in await pending_storage_actions(
                 kube,
                 node_name=self.node_name,
-                timeout=timeout,
+                timeout=deadline.remaining(),
             )
             if action.spec.host_id == self.host_id
         ]
@@ -2151,8 +2152,466 @@ class CephStorageAgent:
         )
         return OSError(msg)
 
+    async def _claim_action(
+        self,
+        kube: Kube,
+        *,
+        action: CephStorageActionRecord,
+        deadline: Deadline,
+    ) -> None:
+        await self._patch_action(
+            kube,
+            action=action,
+            status={
+                "phase": "Running",
+                "message": "action claimed by node agent",
+                "worker_node": self.node_name,
+                "started_at": datetime.now(UTC).isoformat(),
+            },
+            timeout=deadline.remaining(),
+        )
+
+    async def _succeed_action(
+        self,
+        kube: Kube,
+        *,
+        action: CephStorageActionRecord,
+        status: Mapping[str, object],
+        deadline: Deadline,
+    ) -> None:
+        await self._patch_action(
+            kube,
+            action=action,
+            status={
+                "phase": "Succeeded",
+                "worker_node": self.node_name,
+                **dict(status),
+                "finished_at": datetime.now(UTC).isoformat(),
+            },
+            timeout=deadline.remaining(),
+        )
+
+    async def _fail_action(
+        self,
+        kube: Kube,
+        *,
+        action: CephStorageActionRecord,
+        error: BaseException,
+        deadline: Deadline,
+    ) -> None:
+        await self._patch_action(
+            kube,
+            action=action,
+            status={
+                "phase": "Failed",
+                "message": str(error),
+                "diagnostics": str(error),
+                "worker_node": self.node_name,
+                "finished_at": datetime.now(UTC).isoformat(),
+            },
+            timeout=deadline.remaining(),
+        )
+
+    async def _osd_by_name(
+        self,
+        kube: Kube,
+        *,
+        name: str,
+        deadline: Deadline,
+    ) -> CephStorageOSDRecord | None:
+        return next(
+            (
+                item
+                for item in await list_storage_osds(
+                    kube,
+                    timeout=deadline.remaining(),
+                )
+                if item.metadata.name == name
+            ),
+            None,
+        )
+
+    async def _lvm_osd_by_name(
+        self,
+        kube: Kube,
+        *,
+        name: str,
+        deadline: Deadline,
+    ) -> CephStorageOSDRecord | None:
+        return next(
+            (
+                item
+                for item in await list_storage_osds(
+                    kube,
+                    timeout=deadline.remaining(),
+                )
+                if item.metadata.name == name
+                and item.spec.origin == "lvm-pv"
+                and item.spec.host_id == self.host_id
+            ),
+            None,
+        )
+
+    async def _loop_osd_by_id(
+        self,
+        kube: Kube,
+        *,
+        osd_id: int,
+        deadline: Deadline,
+    ) -> CephStorageOSDRecord | None:
+        return next(
+            (
+                item
+                for item in await list_storage_osds(
+                    kube,
+                    timeout=deadline.remaining(),
+                )
+                if item.spec.origin == "loop-fallback"
+                and item.status.ceph_osd_id == osd_id
+            ),
+            None,
+        )
+
+    async def _patch_rook_current_osds(
+        self,
+        kube: Kube,
+        *,
+        deadline: Deadline,
+    ) -> None:
+        records = await list_storage_osds(kube, timeout=deadline.remaining())
+        await _patch_rook_device_sets(
+            kube,
+            records=records,
+            timeout=deadline.remaining(),
+        )
+
+    async def _admit_prepared_osd(
+        self,
+        kube: Kube,
+        *,
+        name: str,
+        origin: StorageOSDOrigin,
+        prepared: PreparedOSD,
+        target_bytes: int,
+        phase: StorageOSDPhase,
+        resize_claim: bool,
+        deadline: Deadline,
+    ) -> tuple[CephStorageOSDRecord, _ObservedRookOSD]:
+        spec = _osd_spec(
+            name=name,
+            origin=origin,
+            node_name=self.node_name,
+            host_id=self.host_id,
+            prepared=prepared,
+            target_bytes=target_bytes,
+        )
+        record = await upsert_storage_osd(
+            kube,
+            name=name,
+            spec=spec,
+            phase=phase,
+            timeout=deadline.remaining(),
+        )
+        await self._patch_rook_current_osds(kube, deadline=deadline)
+        if resize_claim:
+            await _resize_osd_claim(
+                kube,
+                record=record,
+                timeout=deadline.remaining(),
+            )
+        observation = await _observe_rook_osd(
+            kube,
+            record=record,
+            timeout=deadline.remaining(),
+        )
+        await patch_storage_osd_status(
+            kube,
+            osd=record,
+            status={
+                "phase": _observed_phase(observation),
+                "observed_bytes": prepared.observed_bytes,
+                "ceph_osd_id": observation.osd_id,
+                "last_error": "",
+            },
+            timeout=deadline.remaining(),
+        )
+        return record, observation
+
+    async def _mark_target_osd_failed(
+        self,
+        kube: Kube,
+        *,
+        action: CephStorageActionRecord,
+        error: BaseException,
+        deadline: Deadline,
+    ) -> None:
+        if action.spec.operation not in {"expand-lvm", "expand-loop", "shrink-lvm"}:
+            return
+        name = self._storage_osd_name(action)
+        record = await self._osd_by_name(kube, name=name, deadline=deadline)
+        if record is None:
+            return
+        await patch_storage_osd_status(
+            kube,
+            osd=record,
+            status={
+                "phase": "Failed",
+                "last_error": str(error),
+            },
+            timeout=deadline.remaining(),
+        )
+
+    async def _execute_expand_lvm(
+        self,
+        kube: Kube,
+        *,
+        action: CephStorageActionRecord,
+        deadline: Deadline,
+    ) -> None:
+        pv_name = self._lvm_pv_name(action)
+        name = self._storage_osd_name(action)
+        target_bytes = self._target_bytes(action)
+        existing = await self._osd_by_name(kube, name=name, deadline=deadline)
+        prepared = await prepare_lvm_osd(
+            name=name,
+            target_bytes=target_bytes,
+            pv_name=pv_name,
+            lv_name=action.spec.lv_name,
+            timeout=deadline.remaining(),
+        )
+        phase: StorageOSDPhase = "Expanding" if existing is not None else "HostPrepared"
+        _, observation = await self._admit_prepared_osd(
+            kube,
+            name=name,
+            origin="lvm-pv",
+            prepared=prepared,
+            target_bytes=target_bytes,
+            phase=phase,
+            resize_claim=True,
+            deadline=deadline,
+        )
+        await self._succeed_action(
+            kube,
+            action=action,
+            status={
+                "message": (
+                    "Rook LVM OSD expansion submitted"
+                    if not observation.ready
+                    else "Rook LVM OSD expansion completed"
+                ),
+                "created_osd_ids": (
+                    [] if observation.osd_id is None else [observation.osd_id]
+                ),
+                "osd_origin": "lvm-pv",
+                "osd_quality": "durable",
+                "source_pv": pv_name,
+                "source_lv": prepared.lv_name,
+                "provisioned_bytes": prepared.observed_bytes,
+            },
+            deadline=deadline,
+        )
+
+    async def _execute_expand_loop(
+        self,
+        kube: Kube,
+        *,
+        action: CephStorageActionRecord,
+        deadline: Deadline,
+    ) -> None:
+        name = self._storage_osd_name(action)
+        target_bytes = self._target_bytes(action)
+        existing = await self._osd_by_name(kube, name=name, deadline=deadline)
+        prepared = await prepare_loop_fallback_osd(
+            name=name,
+            target_bytes=target_bytes,
+            timeout=deadline.remaining(),
+        )
+        phase: StorageOSDPhase = "Expanding" if existing is not None else "HostPrepared"
+        _, observation = await self._admit_prepared_osd(
+            kube,
+            name=name,
+            origin="loop-fallback",
+            prepared=prepared,
+            target_bytes=target_bytes,
+            phase=phase,
+            resize_claim=True,
+            deadline=deadline,
+        )
+        await self._succeed_action(
+            kube,
+            action=action,
+            status={
+                "message": (
+                    "Rook loop fallback OSD expansion submitted"
+                    if not observation.ready
+                    else "Rook loop fallback OSD expansion completed"
+                ),
+                "created_osd_ids": (
+                    [] if observation.osd_id is None else [observation.osd_id]
+                ),
+                "osd_origin": "loop-fallback",
+                "osd_quality": "elastic",
+                "provisioned_bytes": prepared.observed_bytes,
+            },
+            deadline=deadline,
+        )
+
+    async def _execute_shrink_lvm(
+        self,
+        kube: Kube,
+        *,
+        action: CephStorageActionRecord,
+        deadline: Deadline,
+    ) -> None:
+        name = self._storage_osd_name(action)
+        target_bytes = self._target_bytes(action)
+        old_osd_id = self._shrink_osd_id(action)
+        record = await self._lvm_osd_by_name(kube, name=name, deadline=deadline)
+        if record is None:
+            raise self._missing_lvm_record(name)
+        if target_bytes >= record.spec.target_bytes:
+            raise self._invalid_lvm_shrink_target(
+                target_bytes,
+                record.spec.target_bytes,
+            )
+        if record.status.ceph_osd_id != old_osd_id:
+            raise self._mismatched_lvm_osd_id(
+                name,
+                record.status.ceph_osd_id,
+                old_osd_id,
+            )
+        await patch_storage_osd_status(
+            kube,
+            osd=record,
+            status={
+                "phase": "Shrinking",
+                "last_error": "",
+            },
+            timeout=deadline.remaining(),
+        )
+        await self._patch_rook_current_osds(kube, deadline=deadline)
+        await drain_ceph_osd(old_osd_id, timeout=deadline.remaining())
+        await _wait_osd_workloads_gone(
+            kube,
+            record=record,
+            timeout=deadline.remaining(),
+        )
+        await purge_ceph_osd(old_osd_id, timeout=deadline.remaining())
+        await _delete_osd_claims(
+            kube,
+            record=record,
+            timeout=deadline.remaining(),
+        )
+        await _wait_osd_claims_gone(
+            kube,
+            record=record,
+            timeout=deadline.remaining(),
+        )
+        await delete_lvm_osd_substrate(
+            lv_name=record.spec.lv_name,
+            block_path=record.spec.block_path,
+            timeout=deadline.remaining(),
+        )
+        prepared = await prepare_lvm_osd(
+            name=name,
+            target_bytes=target_bytes,
+            pv_name=record.spec.pv_name,
+            lv_name=record.spec.lv_name,
+            timeout=deadline.remaining(),
+        )
+        record, observation = await self._admit_prepared_osd(
+            kube,
+            name=name,
+            origin="lvm-pv",
+            prepared=prepared,
+            target_bytes=target_bytes,
+            phase="HostPrepared",
+            resize_claim=False,
+            deadline=deadline,
+        )
+        await self._succeed_action(
+            kube,
+            action=action,
+            status={
+                "message": (
+                    "Rook LVM OSD shrink submitted"
+                    if not observation.ready
+                    else "Rook LVM OSD shrink completed"
+                ),
+                "removed_osd_ids": [old_osd_id],
+                "created_osd_ids": (
+                    [] if observation.osd_id is None else [observation.osd_id]
+                ),
+                "osd_origin": "lvm-pv",
+                "osd_quality": "durable",
+                "source_pv": record.spec.pv_name,
+                "source_lv": prepared.lv_name,
+                "provisioned_bytes": prepared.observed_bytes,
+            },
+            deadline=deadline,
+        )
+
+    async def _execute_retire_loop(
+        self,
+        kube: Kube,
+        *,
+        action: CephStorageActionRecord,
+        deadline: Deadline,
+    ) -> None:
+        osd_id = self._shrink_osd_id(action)
+        record = await self._loop_osd_by_id(kube, osd_id=osd_id, deadline=deadline)
+        if record is None:
+            raise self._missing_loop_record(osd_id)
+        await patch_storage_osd_status(
+            kube,
+            osd=record,
+            status={
+                "phase": "Retiring",
+                "last_error": "",
+            },
+            timeout=deadline.remaining(),
+        )
+        await drain_loop_osd(osd_id, timeout=deadline.remaining())
+        await self._patch_rook_current_osds(kube, deadline=deadline)
+        await _wait_osd_workloads_gone(
+            kube,
+            record=record,
+            timeout=deadline.remaining(),
+        )
+        await purge_loop_osd(osd_id, timeout=deadline.remaining())
+        await _delete_osd_claims(
+            kube,
+            record=record,
+            timeout=deadline.remaining(),
+        )
+        await delete_loop_fallback_substrate(
+            loop_file=record.spec.loop_file,
+            loop_device=record.spec.loop_device,
+            block_path=record.spec.block_path,
+            timeout=deadline.remaining(),
+        )
+        await patch_storage_osd_status(
+            kube,
+            osd=record,
+            status={
+                "phase": "Retired",
+                "retired_at": datetime.now(UTC).isoformat(),
+                "last_error": "",
+            },
+            timeout=deadline.remaining(),
+        )
+        await self._succeed_action(
+            kube,
+            action=action,
+            status={
+                "message": f"Rook loop fallback retirement completed for osd.{osd_id}",
+                "removed_osd_ids": [osd_id],
+            },
+            deadline=deadline,
+        )
+
     async def _execute_action(
-        self, kube: Kube, *, action: CephStorageActionRecord, deadline: float
+        self, kube: Kube, *, action: CephStorageActionRecord, deadline: Deadline
     ) -> None:
         """Claim and execute one pending action on this node.
 
@@ -2162,452 +2621,71 @@ class CephStorageAgent:
             Active Kubernetes API context.
         action : CephStorageActionRecord
             Pending action assigned to this node.
-        deadline : float
-            Absolute event-loop deadline for this agent run.
+        deadline : Deadline
+            Event-loop deadline for this agent run.
 
         Raises
         ------
         asyncio.CancelledError
             If the surrounding task is cancelled.
         """
-        loop = asyncio.get_running_loop()
         try:
-            await self._patch_action(
-                kube,
-                action=action,
-                status={
-                    "phase": "Running",
-                    "message": "action claimed by node agent",
-                    "worker_node": self.node_name,
-                    "started_at": datetime.now(UTC).isoformat(),
-                },
-                timeout=deadline - loop.time(),
-            )
+            await self._claim_action(kube, action=action, deadline=deadline)
             if action.spec.operation == "expand-lvm":
-                pv_name = self._lvm_pv_name(action)
-                name = self._storage_osd_name(action)
-                existing = next(
-                    (
-                        item
-                        for item in await list_storage_osds(
-                            kube,
-                            timeout=deadline - loop.time(),
-                        )
-                        if item.metadata.name == name
-                    ),
-                    None,
-                )
-                prepared = await prepare_lvm_osd(
-                    name=name,
-                    target_bytes=self._target_bytes(action),
-                    pv_name=pv_name,
-                    lv_name=action.spec.lv_name,
-                    timeout=deadline - loop.time(),
-                )
-                spec = _osd_spec(
-                    name=name,
-                    origin="lvm-pv",
-                    node_name=self.node_name,
-                    host_id=self.host_id,
-                    prepared=prepared,
-                    target_bytes=self._target_bytes(action),
-                )
-                record = await upsert_storage_osd(
-                    kube,
-                    name=name,
-                    spec=spec,
-                    phase="Expanding" if existing is not None else "HostPrepared",
-                    timeout=deadline - loop.time(),
-                )
-                records = await list_storage_osds(kube, timeout=deadline - loop.time())
-                await _patch_rook_device_sets(
-                    kube,
-                    records=records,
-                    timeout=deadline - loop.time(),
-                )
-                await _resize_osd_claim(
-                    kube,
-                    record=record,
-                    timeout=deadline - loop.time(),
-                )
-                observation = await _observe_rook_osd(
-                    kube,
-                    record=record,
-                    timeout=deadline - loop.time(),
-                )
-                await patch_storage_osd_status(
-                    kube,
-                    osd=record,
-                    status={
-                        "phase": _observed_phase(observation),
-                        "observed_bytes": prepared.observed_bytes,
-                        "ceph_osd_id": observation.osd_id,
-                        "last_error": "",
-                    },
-                    timeout=deadline - loop.time(),
-                )
-                await self._patch_action(
+                await self._execute_expand_lvm(
                     kube,
                     action=action,
-                    status={
-                        "phase": "Succeeded",
-                        "message": (
-                            "Rook LVM OSD expansion submitted"
-                            if not observation.ready
-                            else "Rook LVM OSD expansion completed"
-                        ),
-                        "worker_node": self.node_name,
-                        "created_osd_ids": (
-                            [] if observation.osd_id is None else [observation.osd_id]
-                        ),
-                        "osd_origin": "lvm-pv",
-                        "osd_quality": "durable",
-                        "source_pv": pv_name,
-                        "source_lv": prepared.lv_name,
-                        "provisioned_bytes": prepared.observed_bytes,
-                        "finished_at": datetime.now(UTC).isoformat(),
-                    },
-                    timeout=deadline - loop.time(),
+                    deadline=deadline,
                 )
-                return
-            if action.spec.operation == "expand-loop":
-                name = self._storage_osd_name(action)
-                existing = next(
-                    (
-                        item
-                        for item in await list_storage_osds(
-                            kube,
-                            timeout=deadline - loop.time(),
-                        )
-                        if item.metadata.name == name
-                    ),
-                    None,
-                )
-                prepared = await prepare_loop_fallback_osd(
-                    name=name,
-                    target_bytes=self._target_bytes(action),
-                    timeout=deadline - loop.time(),
-                )
-                spec = _osd_spec(
-                    name=name,
-                    origin="loop-fallback",
-                    node_name=self.node_name,
-                    host_id=self.host_id,
-                    prepared=prepared,
-                    target_bytes=self._target_bytes(action),
-                )
-                record = await upsert_storage_osd(
-                    kube,
-                    name=name,
-                    spec=spec,
-                    phase="Expanding" if existing is not None else "HostPrepared",
-                    timeout=deadline - loop.time(),
-                )
-                records = await list_storage_osds(kube, timeout=deadline - loop.time())
-                await _patch_rook_device_sets(
-                    kube,
-                    records=records,
-                    timeout=deadline - loop.time(),
-                )
-                await _resize_osd_claim(
-                    kube,
-                    record=record,
-                    timeout=deadline - loop.time(),
-                )
-                observation = await _observe_rook_osd(
-                    kube,
-                    record=record,
-                    timeout=deadline - loop.time(),
-                )
-                await patch_storage_osd_status(
-                    kube,
-                    osd=record,
-                    status={
-                        "phase": _observed_phase(observation),
-                        "observed_bytes": prepared.observed_bytes,
-                        "ceph_osd_id": observation.osd_id,
-                        "last_error": "",
-                    },
-                    timeout=deadline - loop.time(),
-                )
-                await self._patch_action(
+            elif action.spec.operation == "expand-loop":
+                await self._execute_expand_loop(
                     kube,
                     action=action,
-                    status={
-                        "phase": "Succeeded",
-                        "message": (
-                            "Rook loop fallback OSD expansion submitted"
-                            if not observation.ready
-                            else "Rook loop fallback OSD expansion completed"
-                        ),
-                        "worker_node": self.node_name,
-                        "created_osd_ids": (
-                            [] if observation.osd_id is None else [observation.osd_id]
-                        ),
-                        "osd_origin": "loop-fallback",
-                        "osd_quality": "elastic",
-                        "provisioned_bytes": prepared.observed_bytes,
-                        "finished_at": datetime.now(UTC).isoformat(),
-                    },
-                    timeout=deadline - loop.time(),
+                    deadline=deadline,
                 )
-                return
-            if action.spec.operation == "shrink-lvm":
-                name = self._storage_osd_name(action)
-                target_bytes = self._target_bytes(action)
-                old_osd_id = self._shrink_osd_id(action)
-                records = await list_storage_osds(kube, timeout=deadline - loop.time())
-                record = next(
-                    (
-                        item
-                        for item in records
-                        if item.metadata.name == name
-                        and item.spec.origin == "lvm-pv"
-                        and item.spec.host_id == self.host_id
-                    ),
-                    None,
-                )
-                if record is None:
-                    raise self._missing_lvm_record(name)
-                if target_bytes >= record.spec.target_bytes:
-                    raise self._invalid_lvm_shrink_target(
-                        target_bytes,
-                        record.spec.target_bytes,
-                    )
-                if record.status.ceph_osd_id != old_osd_id:
-                    raise self._mismatched_lvm_osd_id(
-                        name,
-                        record.status.ceph_osd_id,
-                        old_osd_id,
-                    )
-                await patch_storage_osd_status(
-                    kube,
-                    osd=record,
-                    status={
-                        "phase": "Shrinking",
-                        "last_error": "",
-                    },
-                    timeout=deadline - loop.time(),
-                )
-                records = await list_storage_osds(kube, timeout=deadline - loop.time())
-                await _patch_rook_device_sets(
-                    kube,
-                    records=records,
-                    timeout=deadline - loop.time(),
-                )
-                await drain_ceph_osd(old_osd_id, timeout=deadline - loop.time())
-                await _wait_osd_workloads_gone(
-                    kube,
-                    record=record,
-                    timeout=deadline - loop.time(),
-                )
-                await purge_ceph_osd(old_osd_id, timeout=deadline - loop.time())
-                await _delete_osd_claims(
-                    kube,
-                    record=record,
-                    timeout=deadline - loop.time(),
-                )
-                await _wait_osd_claims_gone(
-                    kube,
-                    record=record,
-                    timeout=deadline - loop.time(),
-                )
-                await delete_lvm_osd_substrate(
-                    lv_name=record.spec.lv_name,
-                    block_path=record.spec.block_path,
-                    timeout=deadline - loop.time(),
-                )
-                prepared = await prepare_lvm_osd(
-                    name=name,
-                    target_bytes=target_bytes,
-                    pv_name=record.spec.pv_name,
-                    lv_name=record.spec.lv_name,
-                    timeout=deadline - loop.time(),
-                )
-                spec = _osd_spec(
-                    name=name,
-                    origin="lvm-pv",
-                    node_name=self.node_name,
-                    host_id=self.host_id,
-                    prepared=prepared,
-                    target_bytes=target_bytes,
-                )
-                record = await upsert_storage_osd(
-                    kube,
-                    name=name,
-                    spec=spec,
-                    phase="HostPrepared",
-                    timeout=deadline - loop.time(),
-                )
-                records = await list_storage_osds(kube, timeout=deadline - loop.time())
-                await _patch_rook_device_sets(
-                    kube,
-                    records=records,
-                    timeout=deadline - loop.time(),
-                )
-                observation = await _observe_rook_osd(
-                    kube,
-                    record=record,
-                    timeout=deadline - loop.time(),
-                )
-                await patch_storage_osd_status(
-                    kube,
-                    osd=record,
-                    status={
-                        "phase": _observed_phase(observation),
-                        "observed_bytes": prepared.observed_bytes,
-                        "ceph_osd_id": observation.osd_id,
-                        "last_error": "",
-                    },
-                    timeout=deadline - loop.time(),
-                )
-                await self._patch_action(
+            elif action.spec.operation == "shrink-lvm":
+                await self._execute_shrink_lvm(
                     kube,
                     action=action,
-                    status={
-                        "phase": "Succeeded",
-                        "message": (
-                            "Rook LVM OSD shrink submitted"
-                            if not observation.ready
-                            else "Rook LVM OSD shrink completed"
-                        ),
-                        "worker_node": self.node_name,
-                        "removed_osd_ids": [old_osd_id],
-                        "created_osd_ids": (
-                            [] if observation.osd_id is None else [observation.osd_id]
-                        ),
-                        "osd_origin": "lvm-pv",
-                        "osd_quality": "durable",
-                        "source_pv": record.spec.pv_name,
-                        "source_lv": prepared.lv_name,
-                        "provisioned_bytes": prepared.observed_bytes,
-                        "finished_at": datetime.now(UTC).isoformat(),
-                    },
-                    timeout=deadline - loop.time(),
+                    deadline=deadline,
                 )
-                return
-            osd_id = self._shrink_osd_id(action)
-            records = await list_storage_osds(kube, timeout=deadline - loop.time())
-            record = next(
-                (
-                    item
-                    for item in records
-                    if item.spec.origin == "loop-fallback"
-                    and item.status.ceph_osd_id == osd_id
-                ),
-                None,
-            )
-            if record is None:
-                raise self._missing_loop_record(osd_id)
-            await patch_storage_osd_status(
-                kube,
-                osd=record,
-                status={
-                    "phase": "Retiring",
-                    "last_error": "",
-                },
-                timeout=deadline - loop.time(),
-            )
-            await drain_loop_osd(osd_id, timeout=deadline - loop.time())
-            records = await list_storage_osds(kube, timeout=deadline - loop.time())
-            await _patch_rook_device_sets(
-                kube,
-                records=records,
-                timeout=deadline - loop.time(),
-            )
-            await _wait_osd_workloads_gone(
-                kube,
-                record=record,
-                timeout=deadline - loop.time(),
-            )
-            await purge_loop_osd(osd_id, timeout=deadline - loop.time())
-            await _delete_osd_claims(
-                kube,
-                record=record,
-                timeout=deadline - loop.time(),
-            )
-            await delete_loop_fallback_substrate(
-                loop_file=record.spec.loop_file,
-                loop_device=record.spec.loop_device,
-                block_path=record.spec.block_path,
-                timeout=deadline - loop.time(),
-            )
-            await patch_storage_osd_status(
-                kube,
-                osd=record,
-                status={
-                    "phase": "Retired",
-                    "retired_at": datetime.now(UTC).isoformat(),
-                    "last_error": "",
-                },
-                timeout=deadline - loop.time(),
-            )
-            await self._patch_action(
-                kube,
-                action=action,
-                status={
-                    "phase": "Succeeded",
-                    "message": (
-                        f"Rook loop fallback retirement completed for osd.{osd_id}"
-                    ),
-                    "worker_node": self.node_name,
-                    "removed_osd_ids": [osd_id],
-                    "finished_at": datetime.now(UTC).isoformat(),
-                },
-                timeout=deadline - loop.time(),
-            )
+            else:
+                await self._execute_retire_loop(
+                    kube,
+                    action=action,
+                    deadline=deadline,
+                )
         except asyncio.CancelledError:
             raise
         except (OSError, TimeoutError, ValueError, RuntimeError) as err:
             with suppress(OSError, TimeoutError, ValueError):
-                if action.spec.operation in {"expand-lvm", "expand-loop", "shrink-lvm"}:
-                    name = self._storage_osd_name(action)
-                    records = await list_storage_osds(
-                        kube,
-                        timeout=deadline - loop.time(),
-                    )
-                    record = next(
-                        (item for item in records if item.metadata.name == name),
-                        None,
-                    )
-                    if record is not None:
-                        await patch_storage_osd_status(
-                            kube,
-                            osd=record,
-                            status={
-                                "phase": "Failed",
-                                "last_error": str(err),
-                            },
-                            timeout=deadline - loop.time(),
-                        )
-            await self._patch_action(
+                await self._mark_target_osd_failed(
+                    kube,
+                    action=action,
+                    error=err,
+                    deadline=deadline,
+                )
+            await self._fail_action(
                 kube,
                 action=action,
-                status={
-                    "phase": "Failed",
-                    "message": str(err),
-                    "diagnostics": str(err),
-                    "worker_node": self.node_name,
-                    "finished_at": datetime.now(UTC).isoformat(),
-                },
-                timeout=deadline - loop.time(),
+                error=err,
+                deadline=deadline,
             )
 
-    async def sync(self, kube: Kube, *, deadline: float) -> None:
+    async def sync(self, kube: Kube, *, deadline: Deadline) -> None:
         """Run one node-agent synchronization pass.
 
         Parameters
         ----------
         kube : Kube
             Active Kubernetes API context.
-        deadline : float
-            Absolute event-loop deadline for this synchronization pass.
+        deadline : Deadline
+            Event-loop deadline for this synchronization pass.
         """
-        loop = asyncio.get_running_loop()
-        await self._recover_missing_osd_records(kube, timeout=deadline - loop.time())
-        await self._recover_loop_devices(kube, timeout=deadline - loop.time())
-        await self._upsert_node_report(kube, timeout=deadline - loop.time())
-        for action in await self._pending_actions(kube, timeout=deadline - loop.time()):
+        await self._recover_missing_osd_records(kube, deadline=deadline)
+        await self._recover_loop_devices(kube, deadline=deadline)
+        await self._upsert_node_report(kube, deadline=deadline)
+        for action in await self._pending_actions(kube, deadline=deadline):
             await self._execute_action(kube, action=action, deadline=deadline)
 
     async def run(self, *, timeout: float = INFINITY) -> None:
@@ -2626,8 +2704,10 @@ class CephStorageAgent:
         if timeout <= 0:
             msg = "agent timeout must be positive"
             raise TimeoutError(msg)
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + timeout
+        deadline = Deadline.from_timeout(
+            timeout,
+            message="agent timeout must be positive",
+        )
         wake = asyncio.Event()
         wake.set()
         with Kube.inside_cluster() as kube:
@@ -2637,9 +2717,8 @@ class CephStorageAgent:
                 )
                 while True:
                     if not wake.is_set():
-                        wait_timeout = min(
-                            STORAGE_AGENT_SYNC_INTERVAL_SECONDS,
-                            deadline - loop.time(),
+                        wait_timeout = deadline.bounded(
+                            STORAGE_AGENT_SYNC_INTERVAL_SECONDS
                         )
                         with suppress(TimeoutError):
                             await asyncio.wait_for(

@@ -9,29 +9,69 @@ from kubernetes import client as kube_client
 
 from bertrand.env.git import until
 
-from .api._helpers import (
-    _create_or_patch,
-    _list_cluster_items,
-    _typed_payload,
-    _validate_delete_status,
-    _wait_until_deleted,
-)
 from .api.metadata import KubeMetadata
+from .api.resource import ClusterMutableResourceMixin, ResourceClient
 
 CRD_WAIT_POLL_INTERVAL_SECONDS = 0.5
 
 if TYPE_CHECKING:
-    import builtins
     from collections.abc import Collection, Mapping
 
     from .api.client import Kube
 
 
 @dataclass(frozen=True)
-class CustomResourceDefinition(KubeMetadata[kube_client.V1CustomResourceDefinition]):
+class CustomResourceDefinition(
+    ClusterMutableResourceMixin[kube_client.V1CustomResourceDefinition],
+    KubeMetadata[kube_client.V1CustomResourceDefinition],
+):
     """General-purpose wrapper around one Kubernetes CRD object."""
 
     _obj: kube_client.V1CustomResourceDefinition
+
+    @classmethod
+    def _client(
+        cls,
+    ) -> ResourceClient[kube_client.V1CustomResourceDefinition, Self]:
+        return ResourceClient(
+            scope="cluster",
+            kind="CustomResourceDefinition",
+            expected=kube_client.V1CustomResourceDefinition,
+            list_type=kube_client.V1CustomResourceDefinitionList,
+            wrapper=lambda payload: cls(_obj=payload),
+            read=lambda kube, _namespace, name, request_timeout: (
+                kube.apiextensions.read_custom_resource_definition(
+                    name=name,
+                    _request_timeout=request_timeout,
+                )
+            ),
+            list_all=lambda kube, label_selector, field_selector, request_timeout: (
+                kube.apiextensions.list_custom_resource_definition(
+                    label_selector=label_selector,
+                    field_selector=field_selector,
+                    _request_timeout=request_timeout,
+                )
+            ),
+            create=lambda kube, _namespace, _name, manifest, request_timeout: (
+                kube.apiextensions.create_custom_resource_definition(
+                    body=manifest,
+                    _request_timeout=request_timeout,
+                )
+            ),
+            patch=lambda kube, _namespace, name, manifest, request_timeout: (
+                kube.apiextensions.patch_custom_resource_definition(
+                    name=name,
+                    body=manifest,
+                    _request_timeout=request_timeout,
+                )
+            ),
+            delete=lambda kube, _namespace, name, request_timeout: (
+                kube.apiextensions.delete_custom_resource_definition(
+                    name=name,
+                    _request_timeout=request_timeout,
+                )
+            ),
+        )
 
     @staticmethod
     def _manifest(
@@ -83,88 +123,6 @@ class CustomResourceDefinition(KubeMetadata[kube_client.V1CustomResourceDefiniti
                 "versions": [version_entry],
             },
         }
-
-    @classmethod
-    async def get(cls, kube: Kube, *, name: str, timeout: float) -> Self | None:
-        """Read one Kubernetes CustomResourceDefinition by name.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        name : str
-            CRD name to read.
-        timeout : float
-            Maximum request budget in seconds. If infinite, wait indefinitely.
-
-        Returns
-        -------
-        CustomResourceDefinition | None
-            Wrapped Kubernetes CRD, or `None` if it does not exist.
-
-        """
-        payload = await kube.run(
-            lambda request_timeout: kube.apiextensions.read_custom_resource_definition(
-                name=name,
-                _request_timeout=request_timeout,
-            ),
-            timeout=timeout,
-            context=f"failed to read CustomResourceDefinition {name!r}",
-        )
-        if payload is None:
-            return None
-        return cls(
-            _obj=_typed_payload(
-                payload,
-                kube_client.V1CustomResourceDefinition,
-                context="CRD",
-            )
-        )
-
-    @classmethod
-    async def list(
-        cls,
-        kube: Kube,
-        *,
-        timeout: float,
-        labels: Mapping[str, str] | None = None,
-    ) -> builtins.list[Self]:
-        """List Kubernetes CustomResourceDefinitions with optional filtering.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        timeout : float
-            Maximum request budget in seconds. If infinite, wait indefinitely.
-        labels : Mapping[str, str] | None, optional
-            Optional label selector key/value pairs.
-
-        Returns
-        -------
-        list[CustomResourceDefinition]
-            Wrapped CRDs matching the requested filters.
-
-        """
-        return [
-            cls(_obj=item)
-            for item in await _list_cluster_items(
-                kube,
-                timeout=timeout,
-                labels=labels,
-                list_items=lambda label_selector, request_timeout: (
-                    kube.apiextensions.list_custom_resource_definition(
-                        label_selector=label_selector,
-                        _request_timeout=request_timeout,
-                    )
-                ),
-                list_type=kube_client.V1CustomResourceDefinitionList,
-                item_type=kube_client.V1CustomResourceDefinition,
-                context="failed to list CustomResourceDefinitions",
-                list_context="CRD",
-                item_context="CRD",
-            )
-        ]
 
     @classmethod
     async def upsert(
@@ -249,28 +207,12 @@ class CustomResourceDefinition(KubeMetadata[kube_client.V1CustomResourceDefiniti
             scope=scope,
             short_names=short_names,
         )
-        payload = await _create_or_patch(
+        return await cls._client().upsert(
             kube,
+            name=name,
+            manifest=body,
             timeout=timeout,
-            create=lambda request_timeout: (
-                kube.apiextensions.create_custom_resource_definition(
-                    body=body,
-                    _request_timeout=request_timeout,
-                )
-            ),
-            patch=lambda request_timeout: (
-                kube.apiextensions.patch_custom_resource_definition(
-                    name=name,
-                    body=body,
-                    _request_timeout=request_timeout,
-                )
-            ),
-            create_context=f"failed to create CustomResourceDefinition {name}",
-            patch_context=f"failed to patch CustomResourceDefinition {name}",
-            expected=kube_client.V1CustomResourceDefinition,
-            payload_context="CRD",
         )
-        return cls(_obj=payload)
 
     @property
     def is_established(self) -> bool:
@@ -286,65 +228,6 @@ class CustomResourceDefinition(KubeMetadata[kube_client.V1CustomResourceDefiniti
             if condition.type == "Established" and condition.status == "True":
                 return True
         return False
-
-    async def refresh(self, kube: Kube, *, timeout: float) -> Self | None:
-        """Re-read this CRD by name.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        timeout : float
-            Maximum request budget in seconds. If infinite, wait indefinitely.
-
-        Returns
-        -------
-        CustomResourceDefinition | None
-            Fresh wrapper for the same CRD, or `None` if it no longer exists.
-        """
-        name = self._require_name("refresh CRD")
-        return await type(self).get(kube, name=name, timeout=timeout)
-
-    async def delete(self, kube: Kube, *, timeout: float) -> None:
-        """Delete this CRD from the cluster.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        timeout : float
-            Maximum request budget in seconds. If infinite, wait indefinitely.
-        """
-        name = self._require_name("delete CRD")
-        payload = await kube.run(
-            lambda request_timeout: (
-                kube.apiextensions.delete_custom_resource_definition(
-                    name=name,
-                    _request_timeout=request_timeout,
-                )
-            ),
-            timeout=timeout,
-            context=f"failed to delete CRD {name}",
-        )
-        _validate_delete_status(payload, label=self._object_label(name))
-
-    async def wait_deleted(self, kube: Kube, *, timeout: float) -> None:
-        """Wait until this CRD is deleted from the cluster.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        timeout : float
-            Maximum wait time in seconds. Must be positive.
-
-        """
-        name = self._require_name("wait for CRD deletion")
-        await _wait_until_deleted(
-            label=self._object_label(name),
-            timeout=timeout,
-            refresh=lambda remaining: self.refresh(kube, timeout=remaining),
-        )
 
     async def wait_established(self, kube: Kube, *, timeout: float) -> Self:
         """Wait until this CRD reports `Established=True`.

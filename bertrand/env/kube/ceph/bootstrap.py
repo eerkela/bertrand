@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 from typing import TYPE_CHECKING
 
-from bertrand.env.git import BERTRAND_ENV, until
+from bertrand.env.git import BERTRAND_ENV, Deadline, until
 from bertrand.env.kube.api.bootstrap import kubectl
 from bertrand.env.kube.ceph.csi import CSI_DRIVER_NAME
 from bertrand.env.kube.crd import CustomResourceDefinition
@@ -68,34 +67,36 @@ async def ensure_rook_ceph_base(kube: Kube, *, timeout: float) -> None:
     if timeout <= 0:
         msg = "Rook Ceph base convergence timeout must be positive"
         raise TimeoutError(msg)
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
-    await _ensure_namespace_owned(kube, ROOK_NAMESPACE, timeout=deadline - loop.time())
+    deadline = Deadline.from_timeout(
+        timeout,
+        message="Rook Ceph base convergence timeout must be positive",
+    )
+    await _ensure_namespace_owned(kube, ROOK_NAMESPACE, timeout=deadline.remaining())
     await _apply_urls(
         ROOK_CRDS_URL,
         ROOK_COMMON_URL,
         ROOK_OPERATOR_URL,
-        timeout=deadline - loop.time(),
+        timeout=deadline.remaining(),
     )
     await _wait_crd_established(
         kube,
         "cephclusters.ceph.rook.io",
-        timeout=deadline - loop.time(),
+        timeout=deadline.remaining(),
     )
     await _wait_crd_established(
         kube,
         "cephfilesystems.ceph.rook.io",
-        timeout=deadline - loop.time(),
+        timeout=deadline.remaining(),
     )
     await _wait_deployment(
         kube,
         namespace=ROOK_NAMESPACE,
         name=ROOK_OPERATOR_DEPLOYMENT,
-        timeout=deadline - loop.time(),
+        timeout=deadline.remaining(),
     )
-    await _ensure_rook_storage_classes(timeout=deadline - loop.time())
-    await _ensure_rook_cluster(timeout=deadline - loop.time())
-    await _apply_urls(ROOK_TOOLBOX_URL, timeout=deadline - loop.time())
+    await _ensure_rook_storage_classes(timeout=deadline.remaining())
+    await _ensure_rook_cluster(timeout=deadline.remaining())
+    await _apply_urls(ROOK_TOOLBOX_URL, timeout=deadline.remaining())
 
 
 async def wait_rook_ceph_ready(kube: Kube, *, timeout: float) -> None:
@@ -109,16 +110,18 @@ async def wait_rook_ceph_ready(kube: Kube, *, timeout: float) -> None:
     if timeout <= 0:
         msg = "Rook Ceph readiness timeout must be positive"
         raise TimeoutError(msg)
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
-    await _wait_ceph_cluster_ready(kube, timeout=deadline - loop.time())
+    deadline = Deadline.from_timeout(
+        timeout,
+        message="Rook Ceph readiness timeout must be positive",
+    )
+    await _wait_ceph_cluster_ready(kube, timeout=deadline.remaining())
     await _wait_deployment(
         kube,
         namespace=ROOK_NAMESPACE,
         name=ROOK_TOOLBOX_DEPLOYMENT,
-        timeout=deadline - loop.time(),
+        timeout=deadline.remaining(),
     )
-    await _wait_storage_classes(kube, timeout=deadline - loop.time())
+    await _wait_storage_classes(kube, timeout=deadline.remaining())
 
 
 async def rook_ceph_ready(kube: Kube, *, timeout: float) -> bool:
@@ -157,14 +160,16 @@ async def _ensure_namespace_owned(kube: Kube, name: str, *, timeout: float) -> N
 
 
 async def _apply_urls(*urls: str, timeout: float) -> None:
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
+    deadline = Deadline.from_timeout(
+        timeout,
+        message="storage backend manifest apply timeout must be positive",
+    )
     for url in urls:
         try:
             await kubectl(
                 ["apply", "--server-side", "-f", url],
                 capture_output=True,
-                timeout=deadline - loop.time(),
+                timeout=deadline.remaining(),
             )
         except OSError as err:
             msg = f"failed to apply storage backend manifest {url!r}"

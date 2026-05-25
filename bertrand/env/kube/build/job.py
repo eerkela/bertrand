@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import json
 import uuid
@@ -13,6 +12,7 @@ from typing import TYPE_CHECKING
 from bertrand.env.git import (
     BERTRAND_ENV,
     BERTRAND_NAMESPACE,
+    Deadline,
 )
 from bertrand.env.kube.api.spec import (
     ContainerResourcesSpec,
@@ -256,13 +256,14 @@ class _ProjectBuildExecutor:
             raise TimeoutError(msg)
         spec = self.spec
         worktree_id = spec.worktree_id
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + timeout
+        deadline = Deadline.from_timeout(
+            timeout, message="timeout must be non-negative"
+        )
 
         async with self._prepared_source(
             kube,
             build_name=build_name,
-            timeout=deadline - loop.time(),
+            timeout=deadline.remaining(),
         ) as source:
             (
                 capability_volumes,
@@ -272,11 +273,11 @@ class _ProjectBuildExecutor:
             ) = await self._capability_mounts(
                 kube,
                 worktree_id=worktree_id,
-                timeout=deadline - loop.time(),
+                timeout=deadline.remaining(),
             )
             targets = await self._schedule(
                 kube,
-                timeout=deadline - loop.time(),
+                timeout=deadline.remaining(),
             )
             run_id = uuid.uuid4().hex[:BUILD_PLATFORM_RUN_ID_BYTES]
             results: dict[str, str] = {}
@@ -307,7 +308,7 @@ class _ProjectBuildExecutor:
                             job,
                         )
                     ),
-                    timeout=deadline - loop.time(),
+                    timeout=deadline.remaining(),
                 )
                 results[platform] = digest_ref(image, digest)
             return dict(sorted(results.items()))
@@ -329,8 +330,9 @@ class _ProjectBuildExecutor:
         if timeout <= 0:
             msg = "BuildKit target image build timeout must be non-negative"
             raise TimeoutError(msg)
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + timeout
+        deadline = Deadline.from_timeout(
+            timeout, message="timeout must be non-negative"
+        )
         job_name = self._job_name()
         dra_claims = resource_claim_intents(
             owner=job_name,
@@ -342,7 +344,7 @@ class _ProjectBuildExecutor:
             namespace=BERTRAND_NAMESPACE,
             intents=dra_claims,
             labels=self.labels,
-            timeout=deadline - loop.time(),
+            timeout=deadline.remaining(),
         )
         try:
             job = await Job.create(
@@ -406,12 +408,12 @@ class _ProjectBuildExecutor:
                     node_selector=target.node_selector,
                 ),
                 ttl_seconds_after_finished=BUILD_JOB_TTL_SECONDS,
-                timeout=deadline - loop.time(),
+                timeout=deadline.remaining(),
             )
             logs = await run_observed_job(
                 kube,
                 job,
-                timeout=deadline - loop.time(),
+                timeout=deadline.remaining(),
                 failure_context=f"BuildKit image build for {image!r} failed",
                 log_heading="Build pod logs",
                 log_failure_label="BuildKit build pod logs",
@@ -443,14 +445,15 @@ class _ProjectBuildExecutor:
         if timeout <= 0:
             msg = "BuildKit source preparation timeout must be non-negative"
             raise TimeoutError(msg)
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + timeout
+        deadline = Deadline.from_timeout(
+            timeout, message="timeout must be non-negative"
+        )
         config_name: str | None = None
         async with prepared_repository_build_source(
             kube,
             repo_id=self.spec.repo_id,
             build_name=build_name,
-            timeout=deadline - loop.time(),
+            timeout=deadline.remaining(),
         ) as repo_source:
             config_name = _dockerfile_config_name()
             await ConfigMap.upsert(
@@ -459,7 +462,7 @@ class _ProjectBuildExecutor:
                 name=config_name,
                 labels=self.labels,
                 data={BUILD_JOB_DOCKERFILE_KEY: self.spec.dockerfile},
-                timeout=deadline - loop.time(),
+                timeout=deadline.remaining(),
             )
             try:
                 yield _PreparedBuildContext(
@@ -508,8 +511,9 @@ class _ProjectBuildExecutor:
         dict[str, str],
         dict[str, str],
     ]:
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + timeout
+        deadline = Deadline.from_timeout(
+            timeout, message="timeout must be non-negative"
+        )
         volumes: list[VolumeSpec] = []
         mounts: list[VolumeMountSpec] = []
         secret_paths: dict[str, str] = {}
@@ -531,7 +535,7 @@ class _ProjectBuildExecutor:
                     worktree_id=worktree_id,
                     repo_id=self.spec.repo_id,
                     required=required,
-                    timeout=deadline - loop.time(),
+                    timeout=deadline.remaining(),
                 )
                 if capability is None:
                     continue
@@ -583,15 +587,16 @@ class _ProjectBuildExecutor:
         if timeout <= 0:
             msg = "BuildKit build scheduling timeout must be non-negative"
             raise TimeoutError(msg)
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + timeout
+        deadline = Deadline.from_timeout(
+            timeout, message="timeout must be non-negative"
+        )
         config_hash = await IMAGES.current_buildkit_config_hash(
             kube,
-            timeout=deadline - loop.time(),
+            timeout=deadline.remaining(),
         )
         groups = await BUILDKIT_POOL._ready_platform_nodes(
             kube,
-            timeout=deadline - loop.time(),
+            timeout=deadline.remaining(),
             config_hash=config_hash,
         )
 
@@ -601,7 +606,7 @@ class _ProjectBuildExecutor:
                 kube,
                 requests=self.spec.devices,
                 node_names=node_names,
-                timeout=deadline - loop.time(),
+                timeout=deadline.remaining(),
             )
             targets.append(
                 _BuildKitTarget(

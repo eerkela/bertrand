@@ -197,18 +197,11 @@ class ClangTidy(Resource):
             ),
         ]
 
-    async def init(self, config: Config, cli: Config.Init) -> dict[str, Any]:
-        """Return default clang-tidy configuration.
-
-        Returns
-        -------
-        dict[str, Any]
-            Default clang-tidy configuration data.
-        """
-        _ = config, cli
-        return self.Model.model_construct().model_dump(by_alias=True)
-
-    async def validate(self, config: Config, fragment: Any) -> Model | None:
+    async def validate(
+        self,
+        config: Config,  # noqa: ARG002
+        fragment: Any,
+    ) -> Model | None:
         """Validate clang-tidy configuration.
 
         Returns
@@ -216,7 +209,6 @@ class ClangTidy(Resource):
         Model | None
             Validated clang-tidy configuration.
         """
-        _ = config
         return self.Model.model_validate(fragment)
 
     async def render(self, config: Config, *, image_build: bool) -> None:
@@ -277,13 +269,3 @@ class ClangTidy(Resource):
             dump_yaml(content, resource_name=self.name),
             encoding="utf-8",
         )
-
-    async def schema(self) -> dict[str, Any]:
-        """Return the clang-tidy configuration schema.
-
-        Returns
-        -------
-        dict[str, Any]
-            JSON Schema for the clang-tidy configuration.
-        """
-        return self.Model.model_json_schema(by_alias=True, mode="validation")

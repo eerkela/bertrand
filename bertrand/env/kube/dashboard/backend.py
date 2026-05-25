@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-import asyncio
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Protocol
 
-from bertrand.env.git import BERTRAND_ENV, BERTRAND_NAMESPACE
+from bertrand.env.git import BERTRAND_ENV, BERTRAND_NAMESPACE, Deadline
 from bertrand.env.kube.api.spec import (
     ContainerPortSpec,
     ContainerSpec,
@@ -78,20 +77,19 @@ async def ensure_dashboard_backend(kube: Kube, *, timeout: float) -> Deployment:
     TimeoutError
         If convergence cannot start before `timeout` expires.
     """
+    msg = "dashboard convergence timeout must be positive"
     if timeout <= 0:
-        msg = "dashboard convergence timeout must be positive"
         raise TimeoutError(msg)
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
+    deadline = Deadline.from_timeout(timeout, message=msg)
 
-    await _assert_existing_resources(kube, timeout=deadline - loop.time())
+    await _assert_existing_resources(kube, timeout=deadline.remaining())
 
     await ServiceAccount.upsert(
         kube,
         namespace=BERTRAND_NAMESPACE,
         name=DASHBOARD_NAME,
         labels=DASHBOARD_LABELS,
-        timeout=deadline - loop.time(),
+        timeout=deadline.remaining(),
     )
     await Role.upsert(
         kube,
@@ -99,7 +97,7 @@ async def ensure_dashboard_backend(kube: Kube, *, timeout: float) -> Deployment:
         name=DASHBOARD_NAME,
         rules=_namespace_rules(),
         labels=DASHBOARD_LABELS,
-        timeout=deadline - loop.time(),
+        timeout=deadline.remaining(),
     )
     await RoleBinding.upsert(
         kube,
@@ -109,14 +107,14 @@ async def ensure_dashboard_backend(kube: Kube, *, timeout: float) -> Deployment:
         service_account_name=DASHBOARD_NAME,
         service_account_namespace=BERTRAND_NAMESPACE,
         labels=DASHBOARD_LABELS,
-        timeout=deadline - loop.time(),
+        timeout=deadline.remaining(),
     )
     await ClusterRole.upsert(
         kube,
         name=DASHBOARD_NAME,
         rules=_cluster_read_rules(),
         labels=DASHBOARD_LABELS,
-        timeout=deadline - loop.time(),
+        timeout=deadline.remaining(),
     )
     await ClusterRoleBinding.upsert(
         kube,
@@ -125,7 +123,7 @@ async def ensure_dashboard_backend(kube: Kube, *, timeout: float) -> Deployment:
         service_account_name=DASHBOARD_NAME,
         service_account_namespace=BERTRAND_NAMESPACE,
         labels=DASHBOARD_LABELS,
-        timeout=deadline - loop.time(),
+        timeout=deadline.remaining(),
     )
 
     deployment = await Deployment.upsert(
@@ -136,7 +134,7 @@ async def ensure_dashboard_backend(kube: Kube, *, timeout: float) -> Deployment:
         selector=DASHBOARD_SELECTOR,
         pod_template=_pod_template(),
         replicas=1,
-        timeout=deadline - loop.time(),
+        timeout=deadline.remaining(),
     )
     await Service.upsert(
         kube,
@@ -151,12 +149,12 @@ async def ensure_dashboard_backend(kube: Kube, *, timeout: float) -> Deployment:
             ),
         ),
         labels=DASHBOARD_LABELS,
-        timeout=deadline - loop.time(),
+        timeout=deadline.remaining(),
     )
     return await deployment.wait_available(
         kube,
         minimum=_WAIT_MINIMUM_REPLICAS,
-        timeout=deadline - loop.time(),
+        timeout=deadline.remaining(),
     )
 
 
@@ -175,79 +173,78 @@ async def delete_dashboard_backend(kube: Kube, *, timeout: float) -> None:
     TimeoutError
         If cleanup cannot start before `timeout` expires.
     """
+    msg = "dashboard cleanup timeout must be positive"
     if timeout <= 0:
-        msg = "dashboard cleanup timeout must be positive"
         raise TimeoutError(msg)
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
+    deadline = Deadline.from_timeout(timeout, message=msg)
 
     deployment = await Deployment.get(
         kube,
         namespace=BERTRAND_NAMESPACE,
         name=DASHBOARD_NAME,
-        timeout=deadline - loop.time(),
+        timeout=deadline.remaining(),
     )
     if deployment is not None:
         _assert_managed(deployment, kind="Deployment")
-        await deployment.delete(kube, timeout=deadline - loop.time())
+        await deployment.delete(kube, timeout=deadline.remaining())
 
     service = await Service.get(
         kube,
         namespace=BERTRAND_NAMESPACE,
         name=DASHBOARD_NAME,
-        timeout=deadline - loop.time(),
+        timeout=deadline.remaining(),
     )
     if service is not None:
         _assert_managed(service, kind="Service")
-        await service.delete(kube, timeout=deadline - loop.time())
+        await service.delete(kube, timeout=deadline.remaining())
 
     role_binding = await RoleBinding.get(
         kube,
         namespace=BERTRAND_NAMESPACE,
         name=DASHBOARD_NAME,
-        timeout=deadline - loop.time(),
+        timeout=deadline.remaining(),
     )
     if role_binding is not None:
         _assert_managed(role_binding, kind="RoleBinding")
-        await role_binding.delete(kube, timeout=deadline - loop.time())
+        await role_binding.delete(kube, timeout=deadline.remaining())
 
     role = await Role.get(
         kube,
         namespace=BERTRAND_NAMESPACE,
         name=DASHBOARD_NAME,
-        timeout=deadline - loop.time(),
+        timeout=deadline.remaining(),
     )
     if role is not None:
         _assert_managed(role, kind="Role")
-        await role.delete(kube, timeout=deadline - loop.time())
+        await role.delete(kube, timeout=deadline.remaining())
 
     service_account = await ServiceAccount.get(
         kube,
         namespace=BERTRAND_NAMESPACE,
         name=DASHBOARD_NAME,
-        timeout=deadline - loop.time(),
+        timeout=deadline.remaining(),
     )
     if service_account is not None:
         _assert_managed(service_account, kind="ServiceAccount")
-        await service_account.delete(kube, timeout=deadline - loop.time())
+        await service_account.delete(kube, timeout=deadline.remaining())
 
     cluster_role_binding = await ClusterRoleBinding.get(
         kube,
         name=DASHBOARD_NAME,
-        timeout=deadline - loop.time(),
+        timeout=deadline.remaining(),
     )
     if cluster_role_binding is not None:
         _assert_managed(cluster_role_binding, kind="ClusterRoleBinding")
-        await cluster_role_binding.delete(kube, timeout=deadline - loop.time())
+        await cluster_role_binding.delete(kube, timeout=deadline.remaining())
 
     cluster_role = await ClusterRole.get(
         kube,
         name=DASHBOARD_NAME,
-        timeout=deadline - loop.time(),
+        timeout=deadline.remaining(),
     )
     if cluster_role is not None:
         _assert_managed(cluster_role, kind="ClusterRole")
-        await cluster_role.delete(kube, timeout=deadline - loop.time())
+        await cluster_role.delete(kube, timeout=deadline.remaining())
 
 
 async def _assert_existing_resources(kube: Kube, *, timeout: float) -> None:

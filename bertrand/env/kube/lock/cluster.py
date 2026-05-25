@@ -14,7 +14,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, ClassVar, Self, cast
 
-from bertrand.env.git import BERTRAND_ENV, BERTRAND_NAMESPACE
+from bertrand.env.git import BERTRAND_ENV, BERTRAND_NAMESPACE, Deadline
+from bertrand.env.kube.api._helpers import _is_conflict, _is_not_found
 from bertrand.env.kube.lease import Lease
 
 if TYPE_CHECKING:
@@ -144,6 +145,20 @@ class ClusterLock:
             raise RuntimeError(msg)
         return task
 
+    def _clear_owner(
+        self,
+        *,
+        owner: asyncio.Task[Any] | None = None,
+        unregister: bool = False,
+    ) -> None:
+        with CLUSTER_LOCK_GUARD:
+            if owner is not None and self._owner != owner:
+                return
+            self._owner = None
+            self._depth = 0
+            if unregister:
+                CLUSTER_LOCKS.pop(self._registry_key, None)
+
     @property
     def holder(self) -> str:
         """Return this process's Lease holder identity.
@@ -212,8 +227,7 @@ class ClusterLock:
                 annotations=self._annotations(),
             )
         except OSError as err:
-            detail = str(err).lower()
-            if "status 409" in detail or "already exists" in detail:
+            if _is_conflict(err):
                 return False
             raise
         return True
@@ -240,12 +254,7 @@ class ClusterLock:
                 annotations=self._annotations(),
             )
         except OSError as err:
-            detail = str(err).lower()
-            if (
-                "status 409" in detail
-                or "status 404" in detail
-                or "not found" in detail
-            ):
+            if _is_conflict(err) or _is_not_found(err):
                 return False
             raise
         return True
@@ -278,16 +287,11 @@ class ClusterLock:
             return updated
         return False
 
-    async def _acquire_lease(self, deadline: float) -> bool:
-        loop = asyncio.get_running_loop()
-        timestamp = loop.time()
-        while timestamp <= deadline:
-            if await self._try_acquire_lease(deadline - timestamp):
+    async def _acquire_lease(self, deadline: Deadline) -> bool:
+        while deadline.remaining() > 0:
+            if await self._try_acquire_lease(deadline.remaining()):
                 return True
-            timestamp = loop.time()
-            await asyncio.sleep(
-                min(CLUSTER_LOCK_POLL_SECONDS, max(0.0, deadline - timestamp))
-            )
+            await asyncio.sleep(deadline.bounded(CLUSTER_LOCK_POLL_SECONDS))
         return False
 
     async def _clear_lease(self) -> None:
@@ -357,12 +361,8 @@ class ClusterLock:
             self._renew_stop.set()
         if self._renew_task is not None:
             self._renew_task.cancel()
-            try:
+            with contextlib.suppress(asyncio.CancelledError):
                 await self._renew_task
-            except asyncio.CancelledError:
-                pass
-            except Exception:  # noqa: BLE001
-                pass
         self._renew_stop = None
         self._renew_task = None
 
@@ -378,14 +378,19 @@ class ClusterLock:
         ------
         TimeoutError
             If the lock cannot be acquired before its timeout.
+        OSError
+            If the Lease cannot be read, created, renewed, or cleaned up after a failed
+            acquisition.
         """
         if self.timeout <= 0:
             msg = f"could not acquire cluster lock within {self.timeout} seconds"
             raise TimeoutError(msg)
 
         owner = self._get_owner()
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + self.timeout
+        deadline = Deadline.from_timeout(
+            self.timeout,
+            message=f"could not acquire cluster lock within {self.timeout} seconds",
+        )
         while True:
             with CLUSTER_LOCK_GUARD:
                 if self._owner is None:
@@ -395,22 +400,20 @@ class ClusterLock:
                 if self._owner == owner:
                     self._depth += 1
                     return self
-            if loop.time() >= deadline:
+            if deadline.remaining() <= 0:
                 msg = f"could not acquire cluster lock within {self.timeout} seconds"
                 raise TimeoutError(msg)
-            await asyncio.sleep(CLUSTER_LOCK_POLL_SECONDS)
+            await asyncio.sleep(deadline.bounded(CLUSTER_LOCK_POLL_SECONDS))
 
         try:
             if not await self._acquire_lease(deadline):
                 msg = f"could not acquire cluster lock within {self.timeout} seconds"
-                raise TimeoutError(msg)  # noqa: TRY301
+                raise TimeoutError(msg)
             return self  # noqa: TRY300
-        except Exception:
+        except OSError:
             with contextlib.suppress(Exception):
                 await self._stop_renew_loop()
-            with CLUSTER_LOCK_GUARD:
-                self._owner = None
-                self._depth = 0
+            self._clear_owner(owner=owner)
             raise
 
     async def try_lock(self) -> bool:
@@ -421,6 +424,11 @@ class ClusterLock:
         bool
             `True` if the lock was acquired, otherwise `False`.
 
+        Raises
+        ------
+        OSError
+            If the Lease cannot be read, created, renewed, or cleaned up after a failed
+            acquisition.
         """
         owner = self._get_owner()
         with CLUSTER_LOCK_GUARD:
@@ -434,22 +442,16 @@ class ClusterLock:
 
         try:
             acquired = await self._try_acquire_lease(CLUSTER_LOCK_QUERY_TIMEOUT_SECONDS)
-        except Exception:
+        except OSError:
             with contextlib.suppress(Exception):
                 await self._stop_renew_loop()
-            with CLUSTER_LOCK_GUARD:
-                if self._owner == owner:
-                    self._owner = None
-                    self._depth = 0
+            self._clear_owner(owner=owner)
             raise
 
         if acquired:
             return True
 
-        with CLUSTER_LOCK_GUARD:
-            if self._owner == owner:
-                self._owner = None
-                self._depth = 0
+        self._clear_owner(owner=owner)
         return False
 
     async def unlock(self, *, ignore_errors: bool = False) -> None:
@@ -465,6 +467,8 @@ class ClusterLock:
         ------
         RuntimeError
             If the current task does not hold this lock.
+        OSError
+            If the Lease cannot be released and `ignore_errors` is `False`.
         """
         owner = self._get_owner()
         with CLUSTER_LOCK_GUARD:
@@ -478,14 +482,11 @@ class ClusterLock:
         try:
             await self._stop_renew_loop()
             await self._clear_lease()
-        except Exception:
+        except OSError:
             if not ignore_errors:
                 raise
         finally:
-            with CLUSTER_LOCK_GUARD:
-                self._owner = None
-                self._depth = 0
-                CLUSTER_LOCKS.pop(self._registry_key, None)
+            self._clear_owner(unregister=True)
 
         if not ignore_errors and self._renew_error is not None:
             error = self._renew_error

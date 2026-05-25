@@ -29,7 +29,7 @@ from bertrand.env.kube.ceph.capacity import (
 from bertrand.env.kube.volume import PersistentVolumeClaim
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping
+    from collections.abc import Awaitable, Callable, Mapping
 
 CSI_DRIVER_NAME = "osd.csi.bertrand.dev"
 CSI_CONTROLLER_SOCKET = "/run/bertrand-csi/csi.sock"
@@ -213,6 +213,11 @@ def _abort(context: Any, code_name: str, message: str) -> None:
     context.abort(getattr(grpc.StatusCode, code_name), message)
 
 
+async def _invoke_inside_cluster(func: Callable[[Kube], Awaitable[Any]]) -> Any:
+    with Kube.inside_cluster() as kube:
+        return await func(kube)
+
+
 class BertrandOSDCSIDriver:
     """Minimal CSI endpoint for Bertrand-managed Rook OSD PVCs."""
 
@@ -223,12 +228,8 @@ class BertrandOSDCSIDriver:
         if role == "node":
             self.host_id = host_id_from_host_state()
 
-    def _run(self, func: Callable[[Kube], Any]) -> Any:
-        async def invoke() -> Any:
-            with Kube.inside_cluster() as kube:
-                return await func(kube)
-
-        return asyncio.run(invoke())
+    def _run(self, func: Callable[[Kube], Awaitable[Any]]) -> Any:
+        return asyncio.run(_invoke_inside_cluster(func))
 
     async def _record_for_volume(
         self,
@@ -580,6 +581,26 @@ def _method_table(
     }
 
 
+class _CSIHandler:
+    def __init__(
+        self,
+        grpc: Any,
+        methods: Mapping[str, Callable[[bytes, Any], bytes]],
+    ) -> None:
+        self._grpc = grpc
+        self._methods = methods
+
+    def service(self, handler_call_details: Any) -> Any:
+        method = self._methods.get(handler_call_details.method)
+        if method is None:
+            return None
+        return self._grpc.unary_unary_rpc_method_handler(
+            method,
+            request_deserializer=lambda payload: payload,
+            response_serializer=lambda payload: payload,
+        )
+
+
 def serve_csi(*, role: str, endpoint: str, node_name: str = "") -> None:
     """Serve the Bertrand OSD CSI endpoint over a Unix-domain socket.
 
@@ -597,21 +618,9 @@ def serve_csi(*, role: str, endpoint: str, node_name: str = "") -> None:
     with suppress(FileNotFoundError):
         socket_path.unlink()
     driver = BertrandOSDCSIDriver(role=role, node_name=node_name)
-    methods = _method_table(driver)
-
-    class Handler(grpc.GenericRpcHandler):  # type: ignore[misc]
-        def service(self, handler_call_details: Any) -> Any:
-            method = methods.get(handler_call_details.method)
-            if method is None:
-                return None
-            return grpc.unary_unary_rpc_method_handler(
-                method,
-                request_deserializer=lambda payload: payload,
-                response_serializer=lambda payload: payload,
-            )
 
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=8))
-    server.add_generic_rpc_handlers((Handler(),))
+    server.add_generic_rpc_handlers((_CSIHandler(grpc, _method_table(driver)),))
     server.add_insecure_port(endpoint)
     server.start()
     try:

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import platform
 import uuid
@@ -13,14 +12,12 @@ from typing import TYPE_CHECKING, Annotated, Literal, Self
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from bertrand.env.config.core import _check_uuid
-from bertrand.env.git import BERTRAND_ENV
+from bertrand.env.git import BERTRAND_ENV, Deadline
 from bertrand.env.host import HOST_ID_FILE
-from bertrand.env.kube.crd import CustomResourceDefinition
-from bertrand.env.kube.custom_object import (
-    CustomObjectClient,
-    CustomObjectMetadata,
-    CustomObjectSpec,
-)
+from bertrand.env.kube.capability.base import delete_capabilities_for_scope
+from bertrand.env.kube.capability.device import delete_device_inventory_for_host
+from bertrand.env.kube.custom_object import CustomObjectMetadata
+from bertrand.env.kube.custom_resource import CustomResource
 from bertrand.env.kube.node import Node
 
 if TYPE_CHECKING:
@@ -56,17 +53,6 @@ _BERTRAND_NODE_SPEC_SCHEMA = {
         "retired_at": {"type": "string", "format": "date-time", "nullable": True},
     },
 }
-_BERTRAND_NODE_CLIENT = CustomObjectClient(
-    CustomObjectSpec(
-        group=BERTRAND_NODE_GROUP,
-        version=BERTRAND_NODE_VERSION,
-        kind=BERTRAND_NODE_KIND,
-        plural=BERTRAND_NODE_PLURAL,
-        scope="cluster",
-        labels=_BERTRAND_NODE_LABELS,
-    )
-)
-
 type _NonEmptyString = Annotated[str, Field(min_length=1)]
 type _BertrandNodePhase = Literal["Active", "Retired"]
 
@@ -190,6 +176,19 @@ class BertrandNodeRecord:
         return self.spec.retired_at
 
 
+_BERTRAND_NODE_RESOURCE = CustomResource[BertrandNodeRecord](
+    group=BERTRAND_NODE_GROUP,
+    version=BERTRAND_NODE_VERSION,
+    kind=BERTRAND_NODE_KIND,
+    plural=BERTRAND_NODE_PLURAL,
+    singular="bertrandnode",
+    parser=BertrandNodeRecord.from_payload,
+    spec_schema=_BERTRAND_NODE_SPEC_SCHEMA,
+    labels=_BERTRAND_NODE_LABELS,
+    scope="cluster",
+)
+
+
 async def ensure_bertrand_node_crd(kube: Kube, *, timeout: float) -> None:
     """Converge the cluster-scoped Bertrand node identity CRD.
 
@@ -208,19 +207,7 @@ async def ensure_bertrand_node_crd(kube: Kube, *, timeout: float) -> None:
     if timeout <= 0:
         msg = "BertrandNode CRD timeout must be non-negative"
         raise TimeoutError(msg)
-    crd = await CustomResourceDefinition.upsert(
-        kube,
-        group=BERTRAND_NODE_GROUP,
-        version=BERTRAND_NODE_VERSION,
-        plural=BERTRAND_NODE_PLURAL,
-        singular="bertrandnode",
-        kind=BERTRAND_NODE_KIND,
-        spec_schema=_BERTRAND_NODE_SPEC_SCHEMA,
-        labels=_BERTRAND_NODE_LABELS,
-        scope="Cluster",
-        timeout=timeout,
-    )
-    await crd.wait_established(kube, timeout=timeout)
+    await _BERTRAND_NODE_RESOURCE.ensure_crd(kube, timeout=timeout)
 
 
 async def ensure_local_bertrand_node(
@@ -278,7 +265,7 @@ async def ensure_local_bertrand_node(
         last_seen_at=now,
         retired_at=None,
     )
-    obj = await _BERTRAND_NODE_CLIENT.upsert(
+    return await _BERTRAND_NODE_RESOURCE.upsert(
         kube,
         name=bertrand_node_name(host_id),
         spec=spec.model_dump(mode="json"),
@@ -289,7 +276,6 @@ async def ensure_local_bertrand_node(
         },
         timeout=timeout,
     )
-    return BertrandNodeRecord.from_payload(obj.payload)
 
 
 async def get_bertrand_node(
@@ -305,14 +291,11 @@ async def get_bertrand_node(
     BertrandNodeRecord | None
         Matching record, or ``None`` when it does not exist.
     """
-    obj = await _BERTRAND_NODE_CLIENT.get(
+    return await _BERTRAND_NODE_RESOURCE.get(
         kube,
         name=bertrand_node_name(host_id),
         timeout=timeout,
     )
-    if obj is None:
-        return None
-    return BertrandNodeRecord.from_payload(obj.payload)
 
 
 async def retire_bertrand_node(
@@ -360,7 +343,7 @@ async def retire_bertrand_node(
         last_seen_at=existing.spec.last_seen_at,
         retired_at=existing.retired_at or now,
     )
-    obj = await _BERTRAND_NODE_CLIENT.upsert(
+    return await _BERTRAND_NODE_RESOURCE.upsert(
         kube,
         name=existing.name,
         spec=spec.model_dump(mode="json"),
@@ -371,7 +354,6 @@ async def retire_bertrand_node(
         },
         timeout=timeout,
     )
-    return BertrandNodeRecord.from_payload(obj.payload)
 
 
 async def list_bertrand_nodes(
@@ -388,8 +370,7 @@ async def list_bertrand_nodes(
     list[BertrandNodeRecord]
         Matching Bertrand node records.
     """
-    objects = await _BERTRAND_NODE_CLIENT.list(kube, timeout=timeout)
-    records = [BertrandNodeRecord.from_payload(obj.payload) for obj in objects]
+    records = await _BERTRAND_NODE_RESOURCE.list(kube, timeout=timeout)
     allowed_hosts = {_check_uuid(item) for item in host_ids or ()}
     allowed_nodes = {item.strip() for item in node_names or () if item.strip()}
     if allowed_hosts:
@@ -488,15 +469,14 @@ async def gc_retired_bertrand_node_state(
     if limit == 0:
         return []
 
-    from bertrand.env.kube.capability.base import delete_capabilities_for_scope
-    from bertrand.env.kube.capability.device import delete_device_inventory_for_host
-
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
+    deadline = Deadline.from_timeout(
+        timeout,
+        message="BertrandNode GC timeout must be non-negative",
+    )
     now = datetime.now(UTC)
     grace = timedelta(seconds=grace_seconds)
     collected: list[BertrandNodeRecord] = []
-    for record in await list_bertrand_nodes(kube, timeout=deadline - loop.time()):
+    for record in await list_bertrand_nodes(kube, timeout=deadline.remaining()):
         if len(collected) >= limit:
             break
         if record.phase != "Retired" or record.retired_at is None:
@@ -507,17 +487,17 @@ async def gc_retired_bertrand_node_state(
             kube,
             scope="node",
             scope_value=record.host_id,
-            timeout=deadline - loop.time(),
+            timeout=deadline.remaining(),
         )
         await delete_device_inventory_for_host(
             kube,
             host_id=record.host_id,
-            timeout=deadline - loop.time(),
+            timeout=deadline.remaining(),
         )
-        await _BERTRAND_NODE_CLIENT.delete_by_name(
+        await _BERTRAND_NODE_RESOURCE.delete_by_name(
             kube,
             name=record.name,
-            timeout=deadline - loop.time(),
+            timeout=deadline.remaining(),
         )
         collected.append(record)
     return collected

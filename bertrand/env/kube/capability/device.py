@@ -13,7 +13,8 @@ from typing import TYPE_CHECKING, Annotated, Self
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from bertrand.env.config.core import _check_kube_name, _check_uuid
-from bertrand.env.git import BERTRAND_ENV, BERTRAND_NAMESPACE, INFINITY
+from bertrand.env.git import BERTRAND_ENV, BERTRAND_NAMESPACE, INFINITY, Deadline
+from bertrand.env.kube.api.client import Kube
 from bertrand.env.kube.api.spec import (
     ContainerSpec,
     EnvVarSpec,
@@ -21,12 +22,8 @@ from bertrand.env.kube.api.spec import (
     PodTemplateSpec,
     PolicyRuleSpec,
 )
-from bertrand.env.kube.crd import CustomResourceDefinition
-from bertrand.env.kube.custom_object import (
-    CustomObjectClient,
-    CustomObjectMetadata,
-    CustomObjectSpec,
-)
+from bertrand.env.kube.custom_object import CustomObjectMetadata
+from bertrand.env.kube.custom_resource import CustomResource
 from bertrand.env.kube.daemonset import DaemonSet
 from bertrand.env.kube.dra import (
     DEVICE_CLASS_PLURAL,
@@ -44,8 +41,6 @@ from bertrand.env.kube.service_account import ServiceAccount
 
 if TYPE_CHECKING:
     from collections.abc import Collection, Mapping
-
-    from bertrand.env.kube.api.client import Kube
 
 DRA_DRIVER_NAME = "bertrand.dev"
 DRA_DEVICE_CLASS = "bertrand-devices"
@@ -76,16 +71,6 @@ _BERTRAND_DEVICE_LABELS = {
     BERTRAND_ENV: "1",
     BERTRAND_DEVICE_LABEL: BERTRAND_DEVICE_LABEL_VALUE,
 }
-_BERTRAND_DEVICE_CLIENT = CustomObjectClient(
-    CustomObjectSpec(
-        group=BERTRAND_DEVICE_GROUP,
-        version=BERTRAND_DEVICE_VERSION,
-        kind=BERTRAND_DEVICE_KIND,
-        plural=BERTRAND_DEVICE_PLURAL,
-        scope="cluster",
-        labels=_BERTRAND_DEVICE_LABELS,
-    )
-)
 _NON_EMPTY = {"type": "string", "minLength": 1}
 _BERTRAND_DEVICE_SPEC_SCHEMA = {
     "type": "object",
@@ -262,6 +247,19 @@ class BertrandDeviceRecord:
         return self.spec.cdi_selector
 
 
+_BERTRAND_DEVICE_RESOURCE = CustomResource[BertrandDeviceRecord](
+    group=BERTRAND_DEVICE_GROUP,
+    version=BERTRAND_DEVICE_VERSION,
+    kind=BERTRAND_DEVICE_KIND,
+    plural=BERTRAND_DEVICE_PLURAL,
+    singular="bertranddevice",
+    parser=BertrandDeviceRecord.from_payload,
+    spec_schema=_BERTRAND_DEVICE_SPEC_SCHEMA,
+    labels=_BERTRAND_DEVICE_LABELS,
+    scope="cluster",
+)
+
+
 @dataclass(frozen=True)
 class DRADeviceRequest:
     """Validated DRA device capability request.
@@ -348,33 +346,32 @@ async def ensure_dra_backend(
     if not image:
         msg = "DRA provider image cannot be empty"
         raise ValueError(msg)
+    message = "DRA backend convergence timeout must be non-negative"
     if timeout <= 0:
-        msg = "DRA backend convergence timeout must be non-negative"
-        raise TimeoutError(msg)
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
-    await ensure_dra_api(kube, timeout=deadline - loop.time())
-    await ensure_device_inventory_crd(kube, timeout=deadline - loop.time())
+        raise TimeoutError(message)
+    deadline = Deadline.from_timeout(timeout, message=message)
+    await ensure_dra_api(kube, timeout=deadline.remaining())
+    await ensure_device_inventory_crd(kube, timeout=deadline.remaining())
     await DeviceClass.upsert(
         kube,
         name=DRA_DEVICE_CLASS,
         spec=_device_class_spec(),
         labels=_DRA_LABELS,
-        timeout=deadline - loop.time(),
+        timeout=deadline.remaining(),
     )
     await ServiceAccount.upsert(
         kube,
         namespace=BERTRAND_NAMESPACE,
         name=DRA_PROVIDER_SERVICE_ACCOUNT,
         labels=_DRA_LABELS,
-        timeout=deadline - loop.time(),
+        timeout=deadline.remaining(),
     )
     await ClusterRole.upsert(
         kube,
         name=DRA_PROVIDER_NAME,
         labels=_DRA_LABELS,
         rules=_provider_rules(),
-        timeout=deadline - loop.time(),
+        timeout=deadline.remaining(),
     )
     await ClusterRoleBinding.upsert(
         kube,
@@ -383,7 +380,7 @@ async def ensure_dra_backend(
         service_account_name=DRA_PROVIDER_SERVICE_ACCOUNT,
         service_account_namespace=BERTRAND_NAMESPACE,
         labels=_DRA_LABELS,
-        timeout=deadline - loop.time(),
+        timeout=deadline.remaining(),
     )
     daemonset = await DaemonSet.upsert(
         kube,
@@ -415,9 +412,9 @@ async def ensure_dra_backend(
             automount_service_account_token=True,
             node_selector={"kubernetes.io/os": "linux"},
         ),
-        timeout=deadline - loop.time(),
+        timeout=deadline.remaining(),
     )
-    await daemonset.wait_rollout(kube, timeout=deadline - loop.time())
+    await daemonset.wait_rollout(kube, timeout=deadline.remaining())
 
 
 async def ensure_device_inventory_crd(kube: Kube, *, timeout: float) -> None:
@@ -430,19 +427,7 @@ async def ensure_device_inventory_crd(kube: Kube, *, timeout: float) -> None:
     timeout : float
         Maximum convergence budget in seconds.
     """
-    crd = await CustomResourceDefinition.upsert(
-        kube,
-        group=BERTRAND_DEVICE_GROUP,
-        version=BERTRAND_DEVICE_VERSION,
-        plural=BERTRAND_DEVICE_PLURAL,
-        singular="bertranddevice",
-        kind=BERTRAND_DEVICE_KIND,
-        spec_schema=_BERTRAND_DEVICE_SPEC_SCHEMA,
-        labels=_BERTRAND_DEVICE_LABELS,
-        scope="Cluster",
-        timeout=timeout,
-    )
-    await crd.wait_established(kube, timeout=timeout)
+    await _BERTRAND_DEVICE_RESOURCE.ensure_crd(kube, timeout=timeout)
 
 
 async def list_device_inventory(
@@ -481,13 +466,12 @@ async def list_device_inventory(
     allowed_hosts = {_check_uuid(host_id) for host_id in host_ids or ()}
     if len(allowed_hosts) == 1:
         labels[BERTRAND_DEVICE_HOST_LABEL] = _label_value(next(iter(allowed_hosts)))
-    objects = await _BERTRAND_DEVICE_CLIENT.list(
+    records = await _BERTRAND_DEVICE_RESOURCE.list(
         kube,
         labels=labels,
         timeout=timeout,
     )
     allowed_nodes = {name.strip() for name in node_names or () if name.strip()}
-    records = [BertrandDeviceRecord.from_payload(obj.payload) for obj in objects]
     if allowed_hosts:
         records = [record for record in records if record.host_id in allowed_hosts]
     if allowed_nodes:
@@ -543,7 +527,7 @@ async def upsert_device_inventory(
         cdi_selector=cdi_selector,
         attributes=dict(attributes or {}),
     )
-    obj = await _BERTRAND_DEVICE_CLIENT.upsert(
+    return await _BERTRAND_DEVICE_RESOURCE.upsert(
         kube,
         name=_device_inventory_name(spec),
         spec=spec.model_dump(mode="json"),
@@ -554,7 +538,6 @@ async def upsert_device_inventory(
         },
         timeout=timeout,
     )
-    return BertrandDeviceRecord.from_payload(obj.payload)
 
 
 async def delete_device_inventory(
@@ -608,7 +591,7 @@ async def delete_device_inventory(
         for record in records
     ):
         return False
-    await _BERTRAND_DEVICE_CLIENT.delete_by_name(
+    await _BERTRAND_DEVICE_RESOURCE.delete_by_name(
         kube,
         name=name,
         timeout=timeout,
@@ -644,7 +627,7 @@ async def delete_device_inventory_for_host(
         timeout=timeout,
     )
     for record in records:
-        await _BERTRAND_DEVICE_CLIENT.delete_by_name(
+        await _BERTRAND_DEVICE_RESOURCE.delete_by_name(
             kube,
             name=record.name,
             timeout=timeout,
@@ -707,11 +690,10 @@ async def select_device_claims(
     OSError
         If a required device capability has no matching inventory.
     """
+    message = "DRA device request resolution timeout must be non-negative"
     if timeout <= 0:
-        msg = "DRA device request resolution timeout must be non-negative"
-        raise TimeoutError(msg)
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
+        raise TimeoutError(message)
+    deadline = Deadline.from_timeout(timeout, message=message)
     selected: list[DRADeviceRequest] = []
     for raw_id, required in sorted(requests.items()):
         capability_id = _check_kube_name(str(raw_id))
@@ -720,7 +702,7 @@ async def select_device_claims(
             capability_id=capability_id,
             host_ids=host_ids,
             node_names=node_names,
-            timeout=deadline - loop.time(),
+            timeout=deadline.remaining(),
         )
         if not inventory:
             if required:
@@ -813,8 +795,12 @@ async def create_resource_claim_templates(
     tuple[ResourceClaimTemplate, ...]
         Created templates.
     """
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
+    if not intents:
+        return ()
+    deadline = Deadline.from_timeout(
+        timeout,
+        message="DRA ResourceClaimTemplate creation timeout must be positive",
+    )
     created: list[ResourceClaimTemplate] = []
     template_labels = dict(_DRA_LABELS)
     template_labels.update(labels)
@@ -825,7 +811,7 @@ async def create_resource_claim_templates(
             name=intent.template_name,
             spec={"spec": _resource_claim_spec(intent.capability_id)},
             labels=template_labels,
-            timeout=deadline - loop.time(),
+            timeout=deadline.remaining(),
         )
         created.append(template)
     return tuple(created)
@@ -859,8 +845,12 @@ async def upsert_resource_claim_templates(
     tuple[ResourceClaimTemplate, ...]
         Converged templates.
     """
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
+    if not intents:
+        return ()
+    deadline = Deadline.from_timeout(
+        timeout,
+        message="DRA ResourceClaimTemplate convergence timeout must be positive",
+    )
     rendered: list[ResourceClaimTemplate] = []
     template_labels = dict(_DRA_LABELS)
     template_labels.update(labels)
@@ -871,7 +861,7 @@ async def upsert_resource_claim_templates(
             name=intent.template_name,
             spec={"spec": _resource_claim_spec(intent.capability_id)},
             labels=template_labels,
-            timeout=deadline - loop.time(),
+            timeout=deadline.remaining(),
         )
         rendered.append(template)
     return tuple(rendered)
@@ -942,20 +932,17 @@ async def run_dra_provider_agent(*, timeout: float = INFINITY) -> None:
     OSError
         If the node name cannot be resolved.
     """
+    message = "DRA provider agent timeout must be positive"
     if timeout <= 0:
-        msg = "DRA provider agent timeout must be positive"
-        raise TimeoutError(msg)
+        raise TimeoutError(message)
+    deadline = Deadline.from_timeout(timeout, message=message)
     node_name = os.environ.get(DRA_NODE_ENV, "").strip()
     if not node_name:
         msg = "DRA provider agent requires NODE_NAME from the Downward API"
         raise OSError(msg)
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
-    from bertrand.env.kube.api.client import Kube
-
     with Kube.inside_cluster(namespace=BERTRAND_NAMESPACE) as kube:
         while True:
-            remaining = deadline - loop.time()
+            remaining = deadline.remaining()
             if remaining <= 0:
                 return
             with suppress(OSError, TimeoutError, ValueError):
@@ -964,7 +951,7 @@ async def run_dra_provider_agent(*, timeout: float = INFINITY) -> None:
                     node_name=node_name,
                     timeout=min(DRA_SYNC_SECONDS, remaining),
                 )
-            await asyncio.sleep(min(DRA_SYNC_SECONDS, max(0.0, deadline - loop.time())))
+            await asyncio.sleep(deadline.bounded(DRA_SYNC_SECONDS))
 
 
 def main() -> int:

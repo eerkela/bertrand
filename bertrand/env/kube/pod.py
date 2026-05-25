@@ -10,6 +10,8 @@ from typing import TYPE_CHECKING, Any, Self
 import kubernetes
 from kubernetes.stream import stream as kubernetes_stream
 
+from bertrand.env.git import Deadline
+
 from .api._helpers import _validate_delete_status
 from .api._render import _pod_template_manifest
 from .api.metadata import NamespacedKubeMetadata
@@ -845,10 +847,12 @@ class Pod(NamespacedKubeMetadata[kubernetes.client.V1Pod]):
         if timeout <= 0:
             msg = f"timed out waiting for pod {namespace}/{name} terminal phase"
             raise TimeoutError(msg)
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + timeout
+        deadline = Deadline.from_timeout(
+            timeout,
+            message=f"timed out waiting for pod {namespace}/{name} terminal phase",
+        )
         while True:
-            remaining = deadline - loop.time()
+            remaining = deadline.remaining()
             if remaining <= 0:
                 msg = f"timed out waiting for pod {namespace}/{name} terminal phase"
                 raise TimeoutError(msg)
@@ -861,7 +865,7 @@ class Pod(NamespacedKubeMetadata[kubernetes.client.V1Pod]):
                 raise OSError(msg)
             if live.is_terminal:
                 return live
-            await asyncio.sleep(min(POD_WAIT_POLL_INTERVAL_SECONDS, remaining))
+            await asyncio.sleep(deadline.bounded(POD_WAIT_POLL_INTERVAL_SECONDS))
 
     async def evict(
         self,

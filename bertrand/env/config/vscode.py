@@ -158,11 +158,15 @@ class VSCodeWorkspace(Resource):
     editor state into the source worktree.
     """
 
-    async def render(self, config: Config, *, image_build: bool) -> None:
+    async def render(
+        self,
+        config: Config,  # noqa: ARG002
+        *,
+        image_build: bool,
+    ) -> None:
         """Render the workspace and MCP artifacts inside image/dev contexts."""
         if not image_build:
             return
-        del config
         atomic_write_text(
             VSCODE_WORKSPACE_FILE,
             json.dumps(_workspace_config(), indent=2, sort_keys=True) + "\n",

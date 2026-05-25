@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-import asyncio
 from dataclasses import replace
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, cast
 
 from bertrand.env.config.bertrand import Bertrand
 from bertrand.env.config.core import Config, _check_uuid
+from bertrand.env.git import Deadline
 from bertrand.env.kube.build.lifecycle import (
     require_active_project_image,
     retire_project_images,
@@ -17,7 +17,7 @@ from bertrand.env.kube.build.project import project_image_build, project_worktre
 from bertrand.env.kube.build.refs import digest_from_ref, digest_ref
 from bertrand.env.kube.node_identity import resolve_host_id_for_node
 from bertrand.env.kube.workload.base import WorkloadIdentity
-from bertrand.env.kube.workload.config import workload_pod_from_config
+from bertrand.env.kube.workload.config import WorkloadConfig, workload_pod_from_config
 from bertrand.env.kube.workload.controller import (
     StableWorkloadController,
     WorkloadRemoveResult,
@@ -34,6 +34,7 @@ if TYPE_CHECKING:
     from bertrand.env.kube.api.client import Kube
     from bertrand.env.kube.build.request import ProjectImageIdentity
     from bertrand.env.kube.job import Job
+    from bertrand.env.kube.workload.base import WorkloadPod
 
 
 async def ensure_project_workload_controller(
@@ -85,11 +86,11 @@ async def ensure_project_workload_controller(
         raise TimeoutError(msg)
     _require_active_config(config)
     identity = _project_workload_identity(config, repo_id=repo_id)
-    bertrand = config.get(Bertrand)
+    bertrand = _project_workload_config(config)
     if bertrand is None or not bertrand.containers:
         return await ensure_workload_controller(
             kube,
-            config=cast("Any", bertrand),
+            config=bertrand,
             workload=identity,
             timeout=timeout,
             primary_args=primary_args,
@@ -98,43 +99,31 @@ async def ensure_project_workload_controller(
     if bertrand.topology.kind == "job":
         return await ensure_workload_controller(
             kube,
-            config=cast("Any", bertrand),
+            config=bertrand,
             workload=identity,
             timeout=timeout,
             primary_args=primary_args,
             interactive=interactive,
         )
 
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
-    image_identity = project_image_build(config, repo_id=repo_id).identity
-    host_id = await _project_workload_host_id(
+    deadline = Deadline.from_timeout(
+        timeout,
+        message="project workload controller convergence timeout must be positive",
+    )
+    workload = await _materialize_project_workload_pod(
         kube,
-        config=cast("Any", bertrand),
+        config=config,
+        workload_config=bertrand,
+        repo_id=repo_id,
         node=node,
-        timeout=deadline - loop.time(),
-    )
-    image = await _project_workload_image_ref(
-        kube,
-        identity=image_identity,
         image_ref=image_ref,
-        timeout=deadline - loop.time(),
-    )
-    workload = await workload_pod_from_config(
-        kube,
-        config=cast("Any", bertrand),
-        repo_id=image_identity.repo_id,
-        worktree=image_identity.worktree,
-        worktree_id=image_identity.worktree_id,
-        image=image,
-        host_id=host_id,
-        timeout=deadline - loop.time(),
+        deadline=deadline,
     )
     return await ensure_workload_controller(
         kube,
-        config=cast("Any", bertrand),
+        config=bertrand,
         workload=workload or identity,
-        timeout=deadline - loop.time(),
+        timeout=deadline.remaining(),
         primary_args=primary_args,
         interactive=interactive,
     )
@@ -190,7 +179,7 @@ async def create_project_workload_job_run(
         msg = "project workload Job run creation timeout must be positive"
         raise TimeoutError(msg)
     _require_active_config(config)
-    bertrand = config.get(Bertrand)
+    bertrand = _project_workload_config(config)
     if bertrand is None or not bertrand.containers:
         msg = "project workload Job runs require configured containers"
         raise ValueError(msg)
@@ -198,39 +187,27 @@ async def create_project_workload_job_run(
         msg = "project workload Job runs require Job topology"
         raise ValueError(msg)
 
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
-    image_identity = project_image_build(config, repo_id=repo_id).identity
-    host_id = await _project_workload_host_id(
+    deadline = Deadline.from_timeout(
+        timeout,
+        message="project workload Job run creation timeout must be positive",
+    )
+    workload = await _materialize_project_workload_pod(
         kube,
-        config=cast("Any", bertrand),
+        config=config,
+        workload_config=bertrand,
+        repo_id=repo_id,
         node=node,
-        timeout=deadline - loop.time(),
-    )
-    image = await _project_workload_image_ref(
-        kube,
-        identity=image_identity,
         image_ref=image_ref,
-        timeout=deadline - loop.time(),
-    )
-    workload = await workload_pod_from_config(
-        kube,
-        config=cast("Any", bertrand),
-        repo_id=image_identity.repo_id,
-        worktree=image_identity.worktree,
-        worktree_id=image_identity.worktree_id,
-        image=image,
-        host_id=host_id,
-        timeout=deadline - loop.time(),
+        deadline=deadline,
     )
     if workload is None:
         msg = "project workload Job runs require a rendered workload pod"
         raise ValueError(msg)
     return await create_workload_job_run(
         kube,
-        config=cast("Any", bertrand),
+        config=bertrand,
         workload=workload,
-        timeout=deadline - loop.time(),
+        timeout=deadline.remaining(),
         primary_args=primary_args,
         interactive=interactive,
     )
@@ -278,7 +255,7 @@ async def scale_project_workload(
     _require_active_config(config)
     return await scale_workload(
         kube,
-        config=cast("Any", config.get(Bertrand)),
+        config=_project_workload_config(config),
         identity=_project_workload_identity(config, repo_id=repo_id),
         replicas=replicas,
         grace_period_seconds=grace_period_seconds,
@@ -323,20 +300,22 @@ async def remove_project_workload(
         msg = "project workload removal timeout must be positive"
         raise TimeoutError(msg)
     _require_active_config(config)
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
+    deadline = Deadline.from_timeout(
+        timeout,
+        message="project workload removal timeout must be positive",
+    )
     identity = _project_workload_identity(config, repo_id=repo_id)
     result = await remove_workload(
         kube,
         identity=identity,
         grace_period_seconds=grace_period_seconds,
-        timeout=deadline - loop.time(),
+        timeout=deadline.remaining(),
     )
     retired = await retire_project_images(
         kube,
         repo_id=identity.repo_id,
         worktree_id=identity.worktree_id,
-        timeout=deadline - loop.time(),
+        timeout=deadline.remaining(),
     )
     return replace(result, images_retired=tuple(record.name for record in retired))
 
@@ -350,14 +329,72 @@ def _project_workload_identity(config: Config, *, repo_id: str) -> WorkloadIdent
     )
 
 
+def _project_workload_config(config: Config) -> WorkloadConfig | None:
+    return cast("WorkloadConfig | None", config.get(Bertrand))
+
+
+async def _materialize_project_workload_pod(
+    kube: Kube,
+    *,
+    config: Config,
+    workload_config: WorkloadConfig,
+    repo_id: str,
+    node: str | None,
+    image_ref: str | None,
+    deadline: Deadline,
+) -> WorkloadPod | None:
+    image_identity = project_image_build(config, repo_id=repo_id).identity
+    image = await _project_workload_image_ref(
+        kube,
+        identity=image_identity,
+        image_ref=image_ref,
+        timeout=deadline.remaining(),
+    )
+    return await _render_project_workload_pod(
+        kube,
+        workload_config=workload_config,
+        image_identity=image_identity,
+        image=image,
+        node=node,
+        deadline=deadline,
+    )
+
+
+async def _render_project_workload_pod(
+    kube: Kube,
+    *,
+    workload_config: WorkloadConfig,
+    image_identity: ProjectImageIdentity,
+    image: str,
+    node: str | None,
+    deadline: Deadline,
+) -> WorkloadPod | None:
+    host_id = await _project_workload_host_id(
+        kube,
+        config=workload_config,
+        node=node,
+        timeout=deadline.remaining(),
+    )
+    return await workload_pod_from_config(
+        kube,
+        config=workload_config,
+        repo_id=image_identity.repo_id,
+        worktree=image_identity.worktree,
+        worktree_id=image_identity.worktree_id,
+        image=image,
+        host_id=host_id,
+        timeout=deadline.remaining(),
+    )
+
+
 async def _project_workload_host_id(
     kube: Kube,
     *,
-    config: Any,
+    config: WorkloadConfig,
     node: str | None,
     timeout: float,
 ) -> str | None:
-    node_name = (node or getattr(config, "node", None) or "").strip()
+    node_name = (node or config.node or "").strip()
     if not node_name:
         return None
     return await resolve_host_id_for_node(kube, node_name=node_name, timeout=timeout)

@@ -35,28 +35,40 @@ if TYPE_CHECKING:
     )
 
 
-class _WorkloadPort(Protocol):
+class WorkloadPortConfig(Protocol):
+    """Typed view of one configured container port."""
+
     name: str
     port: int
     protocol: str
 
 
-class _WorkloadResources(Protocol):
-    @property
-    def requests(self) -> Mapping[str, str]: ...
+class WorkloadResourcesConfig(Protocol):
+    """Typed view of configured container resource requirements."""
 
     @property
-    def limits(self) -> Mapping[str, str]: ...
+    def requests(self) -> Mapping[str, str]:
+        """Resource requests keyed by Kubernetes resource name."""
+        ...
+
+    @property
+    def limits(self) -> Mapping[str, str]:
+        """Resource limits keyed by Kubernetes resource name."""
+        ...
 
 
-class _WorkloadProbeHTTP(Protocol):
+class WorkloadProbeHTTPConfig(Protocol):
+    """Typed view of an HTTP probe target."""
+
     path: str
     port: int | str
 
 
-class _WorkloadProbe(Protocol):
+class WorkloadProbeConfig(Protocol):
+    """Typed view of a configured startup, readiness, or liveness probe."""
+
     cmd: Sequence[str]
-    http: _WorkloadProbeHTTP | None
+    http: WorkloadProbeHTTPConfig | None
     tcp: int | str | None
     delay: int | None
     period: int | None
@@ -65,46 +77,133 @@ class _WorkloadProbe(Protocol):
     failure: int | None
 
 
-class _WorkloadCapabilities(Protocol):
+class WorkloadLinuxCapabilitiesConfig(Protocol):
+    """Typed view of Linux capability additions and drops."""
+
     add: Sequence[str]
     drop: Sequence[str]
 
 
-class _WorkloadSeccomp(Protocol):
+class WorkloadSeccompConfig(Protocol):
+    """Typed view of a configured seccomp profile."""
+
     type: str
     profile: str | None
 
 
-class _WorkloadSecurity(Protocol):
+class WorkloadSecurityConfig(Protocol):
+    """Typed view of one container security context."""
+
     privileged: bool | None
     allow_privilege_escalation: bool | None
     read_only_root_filesystem: bool | None
     run_as_user: int | None
     run_as_group: int | None
     run_as_non_root: bool | None
-    capabilities: _WorkloadCapabilities
-    seccomp: _WorkloadSeccomp | None
+    capabilities: WorkloadLinuxCapabilitiesConfig
+    seccomp: WorkloadSeccompConfig | None
 
 
-class _WorkloadContainer(Protocol):
+class WorkloadContainerConfig(Protocol):
+    """Typed view of one runnable workload container."""
+
     name: str
     cmd: Sequence[str]
-    resources: _WorkloadResources | None
-    startup: _WorkloadProbe | None
-    readiness: _WorkloadProbe | None
-    liveness: _WorkloadProbe | None
-    security: _WorkloadSecurity | None
-    ports: Sequence[_WorkloadPort]
+    resources: WorkloadResourcesConfig | None
+    startup: WorkloadProbeConfig | None
+    readiness: WorkloadProbeConfig | None
+    liveness: WorkloadProbeConfig | None
+    security: WorkloadSecurityConfig | None
+    ports: Sequence[WorkloadPortConfig]
     secrets: Sequence[WorkloadSecretRequest]
     ssh: Sequence[WorkloadSSHRequest]
     devices: Sequence[WorkloadDeviceRequest]
 
 
-class _WorkloadExecution(Protocol):
+class WorkloadExecutionConfig(Protocol):
+    """Typed view of workload execution and Job retry settings."""
+
     restart: str
+    retries: int
+    timeout: int | None
+    ttl: int | None
+    parallelism: int
+    completions: int | None
+    completion: str
 
 
-class _WorkloadToleration(Protocol):
+class WorkloadScheduleHistoryConfig(Protocol):
+    """Typed view of CronJob history retention settings."""
+
+    success: int | None
+    failure: int | None
+
+
+class WorkloadScheduleConfig(Protocol):
+    """Typed view of CronJob schedule settings."""
+
+    cron: str
+    timezone: str | None
+    concurrency: str
+    start_deadline: int | None
+    suspend: bool | None
+    history: WorkloadScheduleHistoryConfig
+
+
+class WorkloadScaleConfig(Protocol):
+    """Typed view of stable Deployment replica settings."""
+
+    replicas: int
+
+
+class WorkloadRolloutConfig(Protocol):
+    """Typed view of Deployment rollout settings."""
+
+    strategy: str
+    max_surge: int | str | None
+    max_unavailable: int | str | None
+    min_ready: int | None
+    timeout: int | None
+    history: int | None
+    paused: bool | None
+
+
+class WorkloadRouteConfig(Protocol):
+    """Typed view of one HTTP route intent."""
+
+    @property
+    def host(self) -> str:
+        """External hostname matched by the route."""
+        ...
+
+    @property
+    def port(self) -> str:
+        """Named Service port targeted by the route."""
+        ...
+
+    @property
+    def path(self) -> str:
+        """HTTP path prefix matched by the route."""
+        ...
+
+
+class WorkloadNetworkConfig(Protocol):
+    """Typed view of workload network policy and route settings."""
+
+    @property
+    def policy(self) -> str:
+        """Configured workload network policy."""
+        ...
+
+    @property
+    def routes(self) -> Sequence[WorkloadRouteConfig]:
+        """Configured external HTTP route intents."""
+        ...
+
+
+class WorkloadTolerationConfig(Protocol):
+    """Typed view of one Kubernetes toleration setting."""
+
     key: str | None
     operator: str
     value: str | None
@@ -112,22 +211,44 @@ class _WorkloadToleration(Protocol):
     seconds: int | None
 
 
-class _WorkloadConfig(Protocol):
-    containers: Sequence[_WorkloadContainer]
-    execution: _WorkloadExecution | None
+class WorkloadConfig(Protocol):
+    """Typed view of the workload-related Bertrand project config."""
+
+    containers: Sequence[WorkloadContainerConfig]
+    execution: WorkloadExecutionConfig | None
     topology: WorkloadTopology
     termination_grace: int | None
     service_account: str | None
     node: str | None
     node_selector: Mapping[str, str]
     priority_class: str | None
-    tolerations: Sequence[_WorkloadToleration]
+    tolerations: Sequence[WorkloadTolerationConfig]
+
+    @property
+    def schedule(self) -> WorkloadScheduleConfig | None:
+        """CronJob schedule config, if configured."""
+        ...
+
+    @property
+    def scale(self) -> WorkloadScaleConfig | None:
+        """Deployment replica config, if configured."""
+        ...
+
+    @property
+    def rollout(self) -> WorkloadRolloutConfig | None:
+        """Deployment rollout config, if configured."""
+        ...
+
+    @property
+    def network(self) -> WorkloadNetworkConfig:
+        """Workload network config."""
+        ...
 
 
 async def workload_pod_from_config(
     kube: Kube,
     *,
-    config: _WorkloadConfig | None,
+    config: WorkloadConfig | None,
     repo_id: str,
     worktree: str | PurePosixPath,
     worktree_id: str,
@@ -141,7 +262,7 @@ async def workload_pod_from_config(
     ----------
     kube : Kube
         Active Kubernetes API context.
-    config : _WorkloadConfig
+    config : WorkloadConfig
         Validated `[tool.bertrand]` config object, or `None` for image/library-only
         worktrees.
     repo_id : str
@@ -260,7 +381,7 @@ def _workload_command(command: Sequence[str], *, container: str) -> tuple[str, .
 
 
 def _container_ports(
-    ports: Sequence[_WorkloadPort],
+    ports: Sequence[WorkloadPortConfig],
 ) -> tuple[ContainerPortSpec, ...]:
     return tuple(
         ContainerPortSpec(
@@ -273,7 +394,7 @@ def _container_ports(
 
 
 def _resources(
-    resources: _WorkloadResources | None,
+    resources: WorkloadResourcesConfig | None,
     *,
     claims: tuple[str, ...],
 ) -> ContainerResourcesSpec | None:
@@ -284,7 +405,7 @@ def _resources(
     return ContainerResourcesSpec(requests=requests, limits=limits, claims=claims)
 
 
-def _probe(probe: _WorkloadProbe | None) -> ProbeSpec | None:
+def _probe(probe: WorkloadProbeConfig | None) -> ProbeSpec | None:
     if probe is None:
         return None
     kwargs = {
@@ -319,7 +440,7 @@ def _probe_command(command: Sequence[str]) -> tuple[str, ...]:
 
 
 def _security_context(
-    security: _WorkloadSecurity | None,
+    security: WorkloadSecurityConfig | None,
 ) -> SecurityContextSpec | None:
     if security is None:
         return None
@@ -342,7 +463,7 @@ def _security_context(
     )
 
 
-def _restart_policy(config: _WorkloadConfig) -> str | None:
+def _restart_policy(config: WorkloadConfig) -> str | None:
     if config.topology.kind not in ("job", "cronjob"):
         return None
     restart = config.execution.restart if config.execution is not None else "never"
@@ -352,7 +473,7 @@ def _restart_policy(config: _WorkloadConfig) -> str | None:
 
 
 def _tolerations(
-    tolerations: Sequence[_WorkloadToleration],
+    tolerations: Sequence[WorkloadTolerationConfig],
 ) -> tuple[TolerationSpec, ...]:
     return tuple(
         TolerationSpec(

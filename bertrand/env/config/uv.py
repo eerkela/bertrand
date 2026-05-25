@@ -7,13 +7,13 @@ additional uv-native keys to pass through unchanged for forward compatibility.
 from __future__ import annotations
 
 from pathlib import PosixPath
-from typing import Annotated, Any
+from typing import Annotated
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from bertrand.env.version import VERSION
 
-from .core import Config, Resource, Trimmed, resource
+from .core import Resource, Trimmed, resource
 
 UV_CACHE: PosixPath = PosixPath("/tmp/.cache/uv")
 
@@ -79,40 +79,3 @@ class UvConfig(Resource):
                 description="Prerelease selection policy for dependency solving.",
             ),
         ]
-
-    async def init(self, config: Config, cli: Config.Init) -> dict[str, Any]:
-        """Render default uv configuration for new projects.
-
-        Returns
-        -------
-        dict[str, Any]
-            Alias-aware default uv configuration fragment.
-        """
-        _ = config, cli
-        return self.Model.model_construct().model_dump(by_alias=True)
-
-    async def validate(self, config: Config, fragment: Any) -> Model | None:
-        """Validate a parsed `[tool.uv]` fragment.
-
-        Parameters
-        ----------
-        fragment : Any
-            Parsed TOML fragment to validate.
-
-        Returns
-        -------
-        Model | None
-            Validated uv model.
-        """
-        _ = config
-        return self.Model.model_validate(fragment)
-
-    async def schema(self) -> dict[str, Any]:
-        """Return the validation schema for `[tool.uv]`.
-
-        Returns
-        -------
-        dict[str, Any]
-            Alias-aware JSON schema for uv configuration.
-        """
-        return self.Model.model_json_schema(by_alias=True, mode="validation")

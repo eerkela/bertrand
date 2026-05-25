@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-import asyncio
 import shlex
 import uuid
 from types import MappingProxyType
 from typing import TYPE_CHECKING
 
 from bertrand.env.config.core import _check_kube_name, _check_uuid
-from bertrand.env.git import BERTRAND_ENV, BERTRAND_NAMESPACE
+from bertrand.env.git import BERTRAND_ENV, BERTRAND_NAMESPACE, Deadline
 from bertrand.env.kube.api.spec import ContainerSpec, EnvVarSpec, PodTemplateSpec
 from bertrand.env.kube.build.execution import run_observed_job
 from bertrand.env.kube.build.lifecycle import (
@@ -109,14 +108,16 @@ async def _publish_project_image_manifest(
     repo_id = _check_uuid(identity.repo_id)
 
     platform_refs = _validate_platform_refs(platform_refs, repository)
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
+    deadline = Deadline.from_timeout(
+        timeout,
+        message="image manifest publish timeout must be non-negative",
+    )
     auth_secret = await _resolve_auth_secret(
         kube,
         auth_id=auth_id,
         worktree_id=worktree_id,
         repo_id=repo_id,
-        timeout=deadline - loop.time(),
+        timeout=deadline.remaining(),
     )
     script = _manifest_script(
         image=internal_service_ref,
@@ -148,12 +149,12 @@ async def _publish_project_image_manifest(
             ],
         ),
         ttl_seconds_after_finished=MANIFEST_JOB_TTL_SECONDS,
-        timeout=deadline - loop.time(),
+        timeout=deadline.remaining(),
     )
     logs = await run_observed_job(
         kube,
         job,
-        timeout=deadline - loop.time(),
+        timeout=deadline.remaining(),
         failure_context=f"image manifest assembly failed for {image!r}",
         log_heading="manifest Job logs",
         log_failure_label="manifest Job pod logs",
@@ -176,7 +177,7 @@ async def _publish_project_image_manifest(
         identity=identity,
         image_digest_ref=internal_digest_ref,
         platform_images=MappingProxyType(dict(platform_refs)),
-        timeout=deadline - loop.time(),
+        timeout=deadline.remaining(),
     )
     return ProjectImagePublication(
         record=record,

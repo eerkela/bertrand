@@ -15,6 +15,7 @@ from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, cast
+from urllib.parse import unquote, urlparse
 
 from bertrand.env.git import CONTAINER_ARTIFACT_MOUNT, WORKTREE_MOUNT
 
@@ -1423,7 +1424,6 @@ def _int(request_params: JSON, key: str) -> int:
 def _path_from_uri(uri: str) -> Path | None:
     if not uri.startswith("file://"):
         return None
-    from urllib.parse import unquote, urlparse
 
     parsed = urlparse(uri)
     return Path(unquote(parsed.path)).resolve()

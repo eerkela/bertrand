@@ -12,6 +12,8 @@ from typing import Literal, cast
 import kubernetes
 from kubernetes.client.rest import ApiException
 
+from bertrand.env.git import Deadline
+
 from ._helpers import _label_selector
 
 type WatchEventType = Literal["ADDED", "MODIFIED", "DELETED", "BOOKMARK", "ERROR"]
@@ -141,9 +143,10 @@ async def watch[T](
     if timeout <= 0:
         msg = f"{context} watch timed out before request could start"
         raise TimeoutError(msg)
-
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
+    deadline = Deadline.from_timeout(
+        timeout,
+        message=f"{context} watch timed out before request could start",
+    )
     kwargs = dict(api_kwargs or {})
     label_selector = _label_selector(labels)
     if label_selector is not None:
@@ -163,10 +166,9 @@ async def watch[T](
     iterator = watcher.stream(fn, **kwargs)
     try:
         while True:
-            remaining = deadline - loop.time()
-            if remaining <= 0:
-                msg = f"{context} watch timed out after {timeout} seconds"
-                raise TimeoutError(msg)
+            remaining = deadline.check(
+                f"{context} watch timed out after {timeout} seconds"
+            )
             try:
                 payload = await asyncio.wait_for(
                     asyncio.to_thread(_next_watch_payload, iterator),

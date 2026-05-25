@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import re
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING
 
 import packaging.version
 
@@ -18,11 +18,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from bertrand.env.config.bertrand import Bertrand
-
-
-class _CapabilityRequest(Protocol):
-    id: str
-    required: bool
+    from bertrand.env.kube.workload.capability import CapabilityRequest
 
 
 @dataclass(frozen=True)
@@ -138,7 +134,7 @@ def _run_lines(*, run_mounts: list[str], build_args: list[str]) -> list[str]:
 
 def _capability_mount_specs(
     kind: str,
-    requests: Sequence[_CapabilityRequest],
+    requests: Sequence[CapabilityRequest],
 ) -> list[str]:
     out: list[str] = []
     for request in sorted(requests, key=lambda entry: entry.id):

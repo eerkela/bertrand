@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Protocol
 
 from bertrand.env.config.core import _check_kube_name
+from bertrand.env.git import Deadline
 from bertrand.env.kube.api.spec import (
     SecretVolumeItemSpec,
     VolumeMountSpec,
@@ -33,13 +33,13 @@ CAPABILITY_VALUE_KEY = "value"
 SSH_PRIVATE_KEY_FILE = "ssh-privatekey"
 
 
-class WorkloadSecretRequest(Protocol):
-    """Structural runtime Secret capability request.
+class CapabilityRequest(Protocol):
+    """Structural capability request with an ID and required flag.
 
     Attributes
     ----------
     id : KubeName
-        Host-agnostic Secret capability ID.
+        Host-agnostic capability ID.
     required : bool
         Whether resolution must fail if the capability is unavailable.
     """
@@ -48,7 +48,11 @@ class WorkloadSecretRequest(Protocol):
     required: bool
 
 
-class WorkloadSSHRequest(Protocol):
+class WorkloadSecretRequest(CapabilityRequest, Protocol):
+    """Structural runtime Secret capability request."""
+
+
+class WorkloadSSHRequest(CapabilityRequest, Protocol):
     """Structural runtime SSH credential capability request.
 
     Attributes
@@ -59,11 +63,8 @@ class WorkloadSSHRequest(Protocol):
         Whether resolution must fail if the capability is unavailable.
     """
 
-    id: KubeName
-    required: bool
 
-
-class WorkloadDeviceRequest(Protocol):
+class WorkloadDeviceRequest(CapabilityRequest, Protocol):
     """Structural runtime device capability request.
 
     Attributes
@@ -73,9 +74,6 @@ class WorkloadDeviceRequest(Protocol):
     required : bool
         Whether resolution must fail if the capability is unavailable.
     """
-
-    id: KubeName
-    required: bool
 
 
 class WorkloadContainerCapabilityRequest(Protocol):
@@ -225,8 +223,10 @@ async def resolve_workload_capabilities(
     if timeout <= 0:
         msg = "workload capability resolution timeout must be non-negative"
         raise TimeoutError(msg)
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
+    deadline = Deadline.from_timeout(
+        timeout,
+        message="workload capability resolution timeout must be non-negative",
+    )
     volumes: dict[str, VolumeSpec] = {}
     mounts_by_container: dict[str, list[VolumeMountSpec]] = {
         _check_kube_name(container.name): [] for container in containers
@@ -247,7 +247,7 @@ async def resolve_workload_capabilities(
                 repo_id=repo_id,
                 host_id=host_id,
                 required=request.required,
-                timeout=deadline - loop.time(),
+                timeout=deadline.remaining(),
             )
             if capability is None:
                 continue
@@ -289,7 +289,7 @@ async def resolve_workload_capabilities(
                 repo_id=repo_id,
                 host_id=host_id,
                 required=request.required,
-                timeout=deadline - loop.time(),
+                timeout=deadline.remaining(),
             )
             if capability is None:
                 continue
@@ -335,7 +335,7 @@ async def resolve_workload_capabilities(
             },
             host_ids=(host_id,) if host_id is not None else None,
             node_names=(node_name,) if node_name is not None else None,
-            timeout=deadline - loop.time(),
+            timeout=deadline.remaining(),
         )
         resource_claims.extend(
             resource_claim_intents(

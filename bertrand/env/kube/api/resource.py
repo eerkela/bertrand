@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, Self, cast
 
 from ._helpers import (
     _create_or_patch,
@@ -179,6 +179,7 @@ class ResourceClient[PayloadT, WrapperT]:
                 ),
                 timeout=timeout,
                 context=f"failed to list {self.kind}s",
+                missing_ok=False,
             )
             return [
                 self.wrapper(item)
@@ -206,6 +207,7 @@ class ResourceClient[PayloadT, WrapperT]:
                 ),
                 timeout=timeout,
                 context=f"failed to list {self.kind}s across all namespaces",
+                missing_ok=False,
             )
             if payload is not None:
                 payloads.append(payload)
@@ -221,6 +223,7 @@ class ResourceClient[PayloadT, WrapperT]:
                     ),
                     timeout=timeout,
                     context=f"failed to list {self.kind}s in namespace {selected!r}",
+                    missing_ok=False,
                 )
                 if payload is not None:
                     payloads.append(payload)
@@ -484,3 +487,401 @@ class ResourceClient[PayloadT, WrapperT]:
 
     def _label(self, namespace: str | None, name: str) -> str:
         return f"{namespace}/{name}" if namespace else name
+
+
+def _resource_client[WrapperT](
+    owner: type[WrapperT],
+) -> ResourceClient[object, WrapperT]:
+    factory = getattr(owner, "_client", None)
+    if not callable(factory):
+        msg = f"{owner.__name__} does not define a Kubernetes resource client"
+        raise NotImplementedError(msg)
+    return cast("ResourceClient[object, WrapperT]", factory())
+
+
+class ClusterResourceMixin[PayloadT]:
+    """Shared read/list/refresh helpers for cluster-scoped wrappers."""
+
+    @classmethod
+    async def get(cls, kube: Kube, *, name: str, timeout: float) -> Self | None:
+        """Read one cluster-scoped Kubernetes resource by name.
+
+        Parameters
+        ----------
+        kube : Kube
+            Active Kubernetes API context.
+        name : str
+            Resource name to read.
+        timeout : float
+            Maximum request budget in seconds. If infinite, wait indefinitely.
+
+        Returns
+        -------
+        Self | None
+            Wrapped Kubernetes object, or ``None`` if it does not exist.
+        """
+        client = cast("ResourceClient[PayloadT, Self]", _resource_client(cls))
+        return await client.get(kube, name=name, timeout=timeout)
+
+    @classmethod
+    async def list(
+        cls,
+        kube: Kube,
+        *,
+        timeout: float,
+        labels: Mapping[str, str] | None = None,
+        field_selector: str | None = None,
+    ) -> builtins.list[Self]:
+        """List cluster-scoped Kubernetes resources.
+
+        Parameters
+        ----------
+        kube : Kube
+            Active Kubernetes API context.
+        timeout : float
+            Maximum request budget in seconds. If infinite, wait indefinitely.
+        labels : Mapping[str, str] | None, optional
+            Optional exact-match label selector.
+        field_selector : str | None, optional
+            Raw Kubernetes field selector.
+
+        Returns
+        -------
+        list[Self]
+            Wrapped Kubernetes resources matching the filters.
+        """
+        client = cast("ResourceClient[PayloadT, Self]", _resource_client(cls))
+        return await client.list(
+            kube,
+            timeout=timeout,
+            labels=labels,
+            field_selector=field_selector,
+        )
+
+    async def refresh(self, kube: Kube, *, timeout: float) -> Self | None:
+        """Re-read this resource by its metadata name.
+
+        Parameters
+        ----------
+        kube : Kube
+            Active Kubernetes API context.
+        timeout : float
+            Maximum request budget in seconds. If infinite, wait indefinitely.
+
+        Returns
+        -------
+        Self | None
+            Fresh wrapper for the same object, or ``None`` if it no longer exists.
+        """
+        name = _resource_name(self, f"refresh {type(self).__name__}")
+        return await type(self).get(kube, name=name, timeout=timeout)
+
+
+class ClusterMutableResourceMixin[PayloadT](ClusterResourceMixin[PayloadT]):
+    """Shared delete helpers for cluster-scoped wrappers."""
+
+    async def delete(self, kube: Kube, *, timeout: float) -> None:
+        """Delete this resource from the cluster.
+
+        Parameters
+        ----------
+        kube : Kube
+            Active Kubernetes API context.
+        timeout : float
+            Maximum request budget in seconds. If infinite, wait indefinitely.
+        """
+        name = _resource_name(self, f"delete {type(self).__name__}")
+        client = cast("ResourceClient[PayloadT, Self]", _resource_client(type(self)))
+        await client.delete_by_name(kube, name=name, timeout=timeout)
+
+    async def wait_deleted(self, kube: Kube, *, timeout: float) -> None:
+        """Wait until this resource is deleted from the cluster.
+
+        Parameters
+        ----------
+        kube : Kube
+            Active Kubernetes API context.
+        timeout : float
+            Maximum wait budget in seconds.
+        """
+        name = _resource_name(self, f"wait for {type(self).__name__} deletion")
+        client = cast("ResourceClient[PayloadT, Self]", _resource_client(type(self)))
+        await client.wait_deleted(
+            label=_resource_label(self, name=name),
+            timeout=timeout,
+            refresh=lambda remaining: self.refresh(kube, timeout=remaining),
+        )
+
+
+class ClusterWatchMixin[PayloadT]:
+    """Shared watch helper for cluster-scoped wrappers."""
+
+    @classmethod
+    async def watch(
+        cls,
+        kube: Kube,
+        *,
+        timeout: float,
+        labels: Mapping[str, str] | None = None,
+        field_selector: str | None = None,
+        resource_version: str | None = None,
+    ) -> AsyncIterator[WatchEvent[Self]]:
+        """Watch cluster-scoped Kubernetes resources.
+
+        Parameters
+        ----------
+        kube : Kube
+            Active Kubernetes API context.
+        timeout : float
+            Maximum watch budget in seconds. If infinite, wait indefinitely.
+        labels : Mapping[str, str] | None, optional
+            Optional exact-match label selector.
+        field_selector : str | None, optional
+            Raw Kubernetes field selector.
+        resource_version : str | None, optional
+            Resource version to watch from.
+
+        Yields
+        ------
+        WatchEvent[Self]
+            Typed watch events containing wrapped resources.
+        """
+        client = cast("ResourceClient[PayloadT, Self]", _resource_client(cls))
+        async for event in client.watch(
+            kube,
+            timeout=timeout,
+            labels=labels,
+            field_selector=field_selector,
+            resource_version=resource_version,
+        ):
+            yield event
+
+
+class NamespacedResourceMixin[PayloadT]:
+    """Shared read/list/refresh helpers for namespaced wrappers."""
+
+    @classmethod
+    async def get(
+        cls,
+        kube: Kube,
+        *,
+        namespace: str,
+        name: str,
+        timeout: float,
+    ) -> Self | None:
+        """Read one namespaced Kubernetes resource by name.
+
+        Parameters
+        ----------
+        kube : Kube
+            Active Kubernetes API context.
+        namespace : str
+            Namespace that owns the resource.
+        name : str
+            Resource name to read.
+        timeout : float
+            Maximum request budget in seconds. If infinite, wait indefinitely.
+
+        Returns
+        -------
+        Self | None
+            Wrapped Kubernetes object, or ``None`` if it does not exist.
+        """
+        client = cast("ResourceClient[PayloadT, Self]", _resource_client(cls))
+        return await client.get(
+            kube,
+            namespace=namespace,
+            name=name,
+            timeout=timeout,
+        )
+
+    @classmethod
+    async def list(
+        cls,
+        kube: Kube,
+        *,
+        timeout: float,
+        namespaces: Collection[str] | None = None,
+        labels: Mapping[str, str] | None = None,
+        field_selector: str | None = None,
+    ) -> builtins.list[Self]:
+        """List namespaced Kubernetes resources.
+
+        Parameters
+        ----------
+        kube : Kube
+            Active Kubernetes API context.
+        timeout : float
+            Maximum request budget in seconds. If infinite, wait indefinitely.
+        namespaces : Collection[str] | None, optional
+            Optional namespace filters. ``None`` queries all namespaces.
+        labels : Mapping[str, str] | None, optional
+            Optional exact-match label selector.
+        field_selector : str | None, optional
+            Raw Kubernetes field selector.
+
+        Returns
+        -------
+        list[Self]
+            Wrapped Kubernetes resources matching the filters.
+        """
+        client = cast("ResourceClient[PayloadT, Self]", _resource_client(cls))
+        return await client.list(
+            kube,
+            timeout=timeout,
+            namespaces=namespaces,
+            labels=labels,
+            field_selector=field_selector,
+        )
+
+    async def refresh(self, kube: Kube, *, timeout: float) -> Self | None:
+        """Re-read this resource by its metadata namespace and name.
+
+        Parameters
+        ----------
+        kube : Kube
+            Active Kubernetes API context.
+        timeout : float
+            Maximum request budget in seconds. If infinite, wait indefinitely.
+
+        Returns
+        -------
+        Self | None
+            Fresh wrapper for the same object, or ``None`` if it no longer exists.
+        """
+        namespace, name = _resource_namespace_name(
+            self,
+            f"refresh {type(self).__name__}",
+        )
+        return await type(self).get(
+            kube,
+            namespace=namespace,
+            name=name,
+            timeout=timeout,
+        )
+
+
+class NamespacedMutableResourceMixin[PayloadT](NamespacedResourceMixin[PayloadT]):
+    """Shared delete helpers for namespaced wrappers."""
+
+    async def delete(self, kube: Kube, *, timeout: float) -> None:
+        """Delete this resource from the cluster.
+
+        Parameters
+        ----------
+        kube : Kube
+            Active Kubernetes API context.
+        timeout : float
+            Maximum request budget in seconds. If infinite, wait indefinitely.
+        """
+        namespace, name = _resource_namespace_name(
+            self,
+            f"delete {type(self).__name__}",
+        )
+        client = cast("ResourceClient[PayloadT, Self]", _resource_client(type(self)))
+        await client.delete_by_name(
+            kube,
+            namespace=namespace,
+            name=name,
+            timeout=timeout,
+        )
+
+    async def wait_deleted(self, kube: Kube, *, timeout: float) -> None:
+        """Wait until this resource is deleted from the cluster.
+
+        Parameters
+        ----------
+        kube : Kube
+            Active Kubernetes API context.
+        timeout : float
+            Maximum wait budget in seconds.
+        """
+        namespace, name = _resource_namespace_name(
+            self,
+            f"wait for {type(self).__name__} deletion",
+        )
+        client = cast("ResourceClient[PayloadT, Self]", _resource_client(type(self)))
+        await client.wait_deleted(
+            label=_resource_label(self, name=name, namespace=namespace),
+            timeout=timeout,
+            refresh=lambda remaining: self.refresh(kube, timeout=remaining),
+        )
+
+
+class NamespacedWatchMixin[PayloadT]:
+    """Shared watch helper for namespaced wrappers."""
+
+    @classmethod
+    async def watch(
+        cls,
+        kube: Kube,
+        *,
+        timeout: float,
+        namespace: str | None = None,
+        labels: Mapping[str, str] | None = None,
+        field_selector: str | None = None,
+        resource_version: str | None = None,
+    ) -> AsyncIterator[WatchEvent[Self]]:
+        """Watch namespaced Kubernetes resources.
+
+        Parameters
+        ----------
+        kube : Kube
+            Active Kubernetes API context.
+        timeout : float
+            Maximum watch budget in seconds. If infinite, wait indefinitely.
+        namespace : str | None, optional
+            Namespace to watch. If omitted, watches across all namespaces.
+        labels : Mapping[str, str] | None, optional
+            Optional exact-match label selector.
+        field_selector : str | None, optional
+            Raw Kubernetes field selector.
+        resource_version : str | None, optional
+            Resource version to watch from.
+
+        Yields
+        ------
+        WatchEvent[Self]
+            Typed watch events containing wrapped resources.
+        """
+        client = cast("ResourceClient[PayloadT, Self]", _resource_client(cls))
+        async for event in client.watch(
+            kube,
+            timeout=timeout,
+            namespace=namespace,
+            labels=labels,
+            field_selector=field_selector,
+            resource_version=resource_version,
+        ):
+            yield event
+
+
+def _resource_name(resource: object, action: str) -> str:
+    name = str(getattr(resource, "name", "") or "").strip()
+    if not name:
+        msg = f"cannot {action} with missing metadata.name"
+        raise OSError(msg)
+    return name
+
+
+def _resource_namespace_name(resource: object, action: str) -> tuple[str, str]:
+    namespace = str(getattr(resource, "namespace", "") or "").strip()
+    name = str(getattr(resource, "name", "") or "").strip()
+    if not namespace or not name:
+        msg = f"cannot {action} with missing metadata.name/namespace"
+        raise OSError(msg)
+    return namespace, name
+
+
+def _resource_label(
+    resource: object,
+    *,
+    name: str,
+    namespace: str | None = None,
+) -> str:
+    label = getattr(resource, "_object_label", None)
+    if callable(label):
+        return str(label(name=name, namespace=namespace))
+    if namespace:
+        return f"{type(resource).__name__} {namespace}/{name}"
+    return f"{type(resource).__name__} {name}"

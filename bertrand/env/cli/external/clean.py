@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING
 from uuid import UUID
 
 from bertrand.env.git import (
+    Deadline,
     confirm,
     symlink_points_to,
 )
@@ -58,8 +59,8 @@ class CleanState:
         Whether interactive confirmations should be auto-accepted.
     force : bool
         Whether intermediate stage errors should be downgraded to warnings.
-    deadline : float
-        Absolute event-loop timestamp when cleanup must finish.
+    deadline : Deadline
+        Shared cleanup deadline.
     kube : Kube | None
         Optional Kubernetes API context.  When unavailable under `--force`, cleanup
         is limited to local host state.
@@ -71,7 +72,7 @@ class CleanState:
 
     assume_yes: bool
     force: bool
-    deadline: float
+    deadline: Deadline
     kube: Kube | None
     host_id: str | None
     captured_aliases: set[Path] = field(default_factory=set)
@@ -84,15 +85,18 @@ def _host_id() -> str | None:
         return None
 
 
+def _warn(message: str) -> None:
+    print(f"bertrand: warning: {message}", file=sys.stderr)
+
+
 async def _clean_repo_mounts_aliases(state: CleanState) -> None:
-    loop = asyncio.get_running_loop()
     if state.kube is not None and state.host_id is not None:
         # This is the only durable cluster mutation in `bertrand clean`: retire
         # this host's mount aliases while preserving repository volumes for
         # recovery or future explicit destructive cleanup.
         await ensure_repository_mount_crd(
             state.kube,
-            timeout=state.deadline - loop.time(),
+            timeout=state.deadline.remaining(),
         )
         records = await list_repository_mount_records(
             state.kube,
@@ -102,7 +106,7 @@ async def _clean_repo_mounts_aliases(state: CleanState) -> None:
                 ),
                 REPOSITORY_MOUNT_PHASE_LABEL: "active",
             },
-            timeout=state.deadline - loop.time(),
+            timeout=state.deadline.remaining(),
         )
         for record in records:
             if record.host_id != state.host_id or record.phase != "Active":
@@ -113,7 +117,7 @@ async def _clean_repo_mounts_aliases(state: CleanState) -> None:
             await retire_repository_mount_record(
                 state.kube,
                 record=record,
-                timeout=state.deadline - loop.time(),
+                timeout=state.deadline.remaining(),
             )
             if symlink_points_to(alias, hidden_mount):
                 alias.unlink()
@@ -124,7 +128,7 @@ async def _clean_repo_mounts_aliases(state: CleanState) -> None:
                 )
                 if not state.force:
                     raise OSError(msg)
-                print(f"bertrand: warning: {msg}", file=sys.stderr)
+                _warn(msg)
 
     if not REPO_DIR.exists():
         return
@@ -147,7 +151,7 @@ async def _clean_repo_mounts_aliases(state: CleanState) -> None:
         mount_path = repo_root / REPO_MOUNT_EXT
         mount = MountInfo.search(mount_path)
         if mount is not None:
-            await mount.unmount(timeout=state.deadline - loop.time(), force=True)
+            await mount.unmount(timeout=state.deadline.remaining(), force=True)
         shutil.rmtree(repo_root)
 
     # safety sweep in case metadata was missing or corrupt
@@ -157,46 +161,41 @@ async def _clean_repo_mounts_aliases(state: CleanState) -> None:
         reverse=True,
     )
     for mount in mounts:
-        await mount.unmount(timeout=state.deadline - loop.time(), force=True)
+        await mount.unmount(timeout=state.deadline.remaining(), force=True)
 
 
 async def _disable_unmount_run_tmpfs(state: CleanState) -> None:
-    loop = asyncio.get_running_loop()
-
-    await disable_run_tmpfs_mount(timeout=state.deadline - loop.time())
+    await disable_run_tmpfs_mount(timeout=state.deadline.remaining())
 
     # always attempt runtime tmpfs unmount, even without systemd
     run_mount = MountInfo.search(RUN_DIR)
     if run_mount is not None:
-        await run_mount.unmount(timeout=state.deadline - loop.time(), force=True)
+        await run_mount.unmount(timeout=state.deadline.remaining(), force=True)
 
 
 async def _clean_dashboard_backend(state: CleanState) -> None:
     if state.kube is None:
         return
-    loop = asyncio.get_running_loop()
-    await delete_dashboard_backend(state.kube, timeout=state.deadline - loop.time())
+    await delete_dashboard_backend(state.kube, timeout=state.deadline.remaining())
 
 
 async def _clean_dev_backend(state: CleanState) -> None:
     if state.kube is None:
         return
-    loop = asyncio.get_running_loop()
     await delete_dev_backend_state(
         state.kube,
         host_id=state.host_id,
-        timeout=state.deadline - loop.time(),
+        timeout=state.deadline.remaining(),
     )
 
 
 async def _retire_local_node_record(state: CleanState) -> None:
     if state.kube is None or state.host_id is None:
         return
-    loop = asyncio.get_running_loop()
     await retire_bertrand_node(
         state.kube,
         host_id=state.host_id,
-        timeout=state.deadline - loop.time(),
+        timeout=state.deadline.remaining(),
     )
 
 
@@ -213,16 +212,13 @@ def _runtime_residue(state: CleanState) -> tuple[list[str], list[str]]:
 
 
 async def _finalize_cleanup(state: CleanState) -> None:
-    loop = asyncio.get_running_loop()
     issues: list[str] = []
 
     # attempt final remediation
     residual_mounts, residual_aliases = _runtime_residue(state)
     if (residual_mounts or residual_aliases) and state.force:
         await _clean_repo_mounts_aliases(state)
-        if loop.time() >= state.deadline:
-            msg = "bertrand clean stage 'finalize_cleanup' timed out"
-            raise TimeoutError(msg)
+        state.deadline.check("bertrand clean stage 'finalize_cleanup' timed out")
         await _disable_unmount_run_tmpfs(state)
         residual_mounts, residual_aliases = _runtime_residue(state)
     if residual_mounts:
@@ -261,11 +257,10 @@ CLEAN_STAGES: tuple[tuple[str, Callable[[CleanState], Awaitable[None]]], ...] = 
 
 
 async def _run_clean_stages(state: CleanState) -> None:
-    loop = asyncio.get_running_loop()
     for i, (name, stage) in enumerate(CLEAN_STAGES):
-        if loop.time() >= state.deadline:
-            msg = f"bertrand clean stage '{name}' timed out before execution"
-            raise TimeoutError(msg)
+        state.deadline.check(
+            f"bertrand clean stage '{name}' timed out before execution"
+        )
         try:
             await stage(state)
         except asyncio.CancelledError:
@@ -274,10 +269,8 @@ async def _run_clean_stages(state: CleanState) -> None:
             if not state.force or i == len(CLEAN_STAGES) - 1:
                 msg = f"bertrand clean stage {name!r} failed: {err}"
                 raise OSError(msg) from err
-            print(
-                f"bertrand: warning: clean stage {name!r} failed; continuing due to "
-                f"--force: {err}",
-                file=sys.stderr,
+            _warn(
+                f"clean stage {name!r} failed; continuing due to --force: {err}"
             )
 
 
@@ -304,9 +297,10 @@ async def bertrand_clean(*, timeout: float, assume_yes: bool, force: bool) -> No
     OSError
         If cleanup fails to converge.
     """
+    message = "timed out before cleanup started"
     if timeout <= 0:
-        msg = "timed out before cleanup started"
-        raise TimeoutError(msg)
+        raise TimeoutError(message)
+    deadline = Deadline.from_timeout(timeout, message=message)
 
     # require root privileges for global cleanup
     if os.geteuid() != 0:
@@ -328,11 +322,9 @@ async def bertrand_clean(*, timeout: float, assume_yes: bool, force: bool) -> No
         msg = "Cleanup declined by user."
         raise PermissionError(msg)
 
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
     kube: Kube | None = None
     try:
-        kube = await Kube.host(timeout=deadline - loop.time())
+        kube = await Kube.host(timeout=deadline.remaining())
     except Exception as err:
         if not force:
             msg = (
@@ -341,11 +333,10 @@ async def bertrand_clean(*, timeout: float, assume_yes: bool, force: bool) -> No
                 f"it can retire this host's records without guessing: {err}"
             )
             raise OSError(msg) from err
-        print(
-            "bertrand: warning: continuing local cleanup without Kubernetes mount "
-            "record retirement due to --force. Repository PVCs and active mount "
-            f"records may remain recoverable in the shared cluster: {err}",
-            file=sys.stderr,
+        _warn(
+            "continuing local cleanup without Kubernetes mount record retirement due "
+            "to --force. Repository PVCs and active mount records may remain "
+            f"recoverable in the shared cluster: {err}"
         )
 
     host_id = _host_id()

@@ -5,7 +5,8 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING
 
-from bertrand.env.git import BERTRAND_ENV, BERTRAND_NAMESPACE
+from bertrand.env.git import BERTRAND_ENV, BERTRAND_NAMESPACE, Deadline
+from bertrand.env.kube.api._helpers import _is_missing_api_resource
 from bertrand.env.kube.gateway import Gateway, GatewayClass
 
 if TYPE_CHECKING:
@@ -35,6 +36,15 @@ HTTP_ROUTE_LABELS = {
 }
 
 
+def _deadline_or_expired(timeout: float) -> Deadline:
+    if timeout <= 0:
+        return Deadline(
+            expires_at=asyncio.get_running_loop().time(),
+            timeout=timeout,
+        )
+    return Deadline.from_timeout(timeout, message="")
+
+
 async def ensure_bertrand_gateway(kube: Kube, *, timeout: float) -> Gateway:
     """Converge Bertrand's shared Gateway API substrate.
 
@@ -61,13 +71,15 @@ async def ensure_bertrand_gateway(kube: Kube, *, timeout: float) -> Gateway:
     if timeout <= 0:
         msg = "Bertrand Gateway convergence timeout must be positive"
         raise TimeoutError(msg)
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
+    deadline = Deadline.from_timeout(
+        timeout,
+        message="Bertrand Gateway convergence timeout must be positive",
+    )
     try:
         current_class = await GatewayClass.get(
             kube,
             name=BERTRAND_GATEWAY_CLASS,
-            timeout=deadline - loop.time(),
+            timeout=deadline.remaining(),
         )
         _assert_managed_gateway_resource(current_class, kind="GatewayClass")
         await GatewayClass.upsert(
@@ -75,7 +87,7 @@ async def ensure_bertrand_gateway(kube: Kube, *, timeout: float) -> Gateway:
             name=BERTRAND_GATEWAY_CLASS,
             controller_name=ENVOY_GATEWAY_CONTROLLER,
             labels=GATEWAY_LABELS,
-            timeout=deadline - loop.time(),
+            timeout=deadline.remaining(),
         )
     except OSError as err:
         message = _gateway_api_error_message("upsert GatewayClass", err)
@@ -84,14 +96,14 @@ async def ensure_bertrand_gateway(kube: Kube, *, timeout: float) -> Gateway:
         raise
     await _wait_gateway_class_accepted(
         kube,
-        timeout=deadline - loop.time(),
+        timeout=deadline.remaining(),
     )
     try:
         current_gateway = await Gateway.get(
             kube,
             namespace=BERTRAND_NAMESPACE,
             name=BERTRAND_GATEWAY,
-            timeout=deadline - loop.time(),
+            timeout=deadline.remaining(),
         )
         _assert_managed_gateway_resource(current_gateway, kind="Gateway")
         await Gateway.upsert(
@@ -101,14 +113,14 @@ async def ensure_bertrand_gateway(kube: Kube, *, timeout: float) -> Gateway:
             gateway_class=BERTRAND_GATEWAY_CLASS,
             listeners=_bertrand_gateway_listeners(),
             labels=GATEWAY_LABELS,
-            timeout=deadline - loop.time(),
+            timeout=deadline.remaining(),
         )
     except OSError as err:
         message = _gateway_api_error_message("upsert Gateway", err)
         if message is not None:
             raise OSError(message) from err
         raise
-    return await _wait_gateway_address(kube, timeout=deadline - loop.time())
+    return await _wait_gateway_address(kube, timeout=deadline.remaining())
 
 
 def gateway_api_crd_missing(err: OSError) -> bool:
@@ -125,13 +137,7 @@ def gateway_api_crd_missing(err: OSError) -> bool:
         ``True`` when the error suggests the Gateway API resource type is not
         installed in the cluster.
     """
-    detail = str(err).lower()
-    return (
-        "gateway api crds are missing" in detail
-        or "status 404" in detail
-        or "the server could not find the requested resource" in detail
-        or "not found" in detail
-    )
+    return _is_missing_api_resource(err)
 
 
 def bertrand_gateway_parent_refs() -> tuple[dict[str, object], ...]:
@@ -164,11 +170,10 @@ def _bertrand_gateway_listeners() -> tuple[dict[str, object], ...]:
 
 
 async def _wait_gateway_class_accepted(kube: Kube, *, timeout: float) -> GatewayClass:
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
+    deadline = _deadline_or_expired(timeout)
     last: GatewayClass | None = None
     while True:
-        remaining = deadline - loop.time()
+        remaining = deadline.remaining()
         if remaining <= 0:
             detail = f": {last.acceptance_message}" if last is not None else ""
             msg = (
@@ -186,14 +191,13 @@ async def _wait_gateway_class_accepted(kube: Kube, *, timeout: float) -> Gateway
             last = current
             if current.accepted:
                 return current
-        await asyncio.sleep(min(0.5, max(0.0, deadline - loop.time())))
+        await asyncio.sleep(deadline.bounded(0.5))
 
 
 async def _wait_gateway_address(kube: Kube, *, timeout: float) -> Gateway:
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
+    deadline = _deadline_or_expired(timeout)
     while True:
-        remaining = deadline - loop.time()
+        remaining = deadline.remaining()
         if remaining <= 0:
             msg = (
                 f"Gateway {BERTRAND_NAMESPACE}/{BERTRAND_GATEWAY} has no external "
@@ -210,7 +214,7 @@ async def _wait_gateway_address(kube: Kube, *, timeout: float) -> Gateway:
         )
         if current is not None and current.addresses:
             return current
-        await asyncio.sleep(min(0.5, max(0.0, deadline - loop.time())))
+        await asyncio.sleep(deadline.bounded(0.5))
 
 
 def _gateway_api_error_message(action: str, err: OSError) -> str | None:

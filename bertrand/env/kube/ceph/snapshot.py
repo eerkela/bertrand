@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import uuid
 from contextlib import asynccontextmanager, suppress
@@ -11,12 +10,22 @@ from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
 from bertrand.env.config.core import _check_uuid
-from bertrand.env.git import BERTRAND_ENV, BERTRAND_NAMESPACE, REPO_ID_ENV
+from bertrand.env.git import BERTRAND_ENV, BERTRAND_NAMESPACE, REPO_ID_ENV, Deadline
+from bertrand.env.kube.api._helpers import _is_conflict
+from bertrand.env.kube.ceph.refs import (
+    CEPHFS_STORAGE_CLASS_PREFERENCES,
+    REPOSITORY_BUILD_SOURCE_LABEL,
+    REPOSITORY_BUILD_SOURCE_LABEL_VALUE,
+    REPOSITORY_SNAPSHOT_LABEL,
+    REPOSITORY_SNAPSHOT_LABEL_VALUE,
+    REPOSITORY_SNAPSHOT_PURPOSE_BUILD,
+    REPOSITORY_SNAPSHOT_PURPOSE_LABEL,
+    REPOSITORY_SNAPSHOT_PURPOSE_RETAINED,
+)
 from bertrand.env.kube.snapshot import VolumeSnapshot, VolumeSnapshotClass
 from bertrand.env.kube.volume import PersistentVolumeClaim, StorageClass
 
 from .volume import (
-    CEPHFS_STORAGE_CLASS_PREFERENCES,
     REPO_VOLUME_ENV,
     CephRepositoryVolumeRecord,
     RepoVolume,
@@ -28,12 +37,7 @@ if TYPE_CHECKING:
 
     from bertrand.env.kube.api.client import Kube
 
-REPOSITORY_SNAPSHOT_LABEL = "bertrand.dev/ceph-repository-snapshot"
-REPOSITORY_SNAPSHOT_LABEL_VALUE = "v1"
-REPOSITORY_SNAPSHOT_PURPOSE_LABEL = "bertrand.dev/ceph-repository-snapshot-purpose"
 REPOSITORY_SNAPSHOT_CLASS_LABEL = "bertrand.dev/ceph-repository-snapshot-class"
-REPOSITORY_BUILD_SOURCE_LABEL = "bertrand.dev/ceph-repository-build-source"
-REPOSITORY_BUILD_SOURCE_LABEL_VALUE = "v1"
 REPOSITORY_BUILD_REQUEST_LABEL = "bertrand.dev/buildkit-build-name"
 REPOSITORY_SNAPSHOT_SOURCE_CLAIM_ANNOTATION = (
     "bertrand.dev/ceph-repository-source-claim"
@@ -41,8 +45,6 @@ REPOSITORY_SNAPSHOT_SOURCE_CLAIM_ANNOTATION = (
 REPOSITORY_BUILD_SOURCE_SNAPSHOT_ANNOTATION = (
     "bertrand.dev/ceph-repository-build-snapshot"
 )
-REPOSITORY_SNAPSHOT_PURPOSE_RETAINED = "retained"
-REPOSITORY_SNAPSHOT_PURPOSE_BUILD = "build"
 REPOSITORY_SNAPSHOT_INTERVAL_SECONDS = 86_400
 REPOSITORY_SNAPSHOT_RETENTION_SECONDS = 1_209_600
 REPOSITORY_SNAPSHOT_CREATE_LIMIT = 4
@@ -88,11 +90,10 @@ async def ensure_repository_snapshot_support(
     if timeout <= 0:
         msg = "repository snapshot support timeout must be non-negative"
         raise TimeoutError(msg)
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
+    deadline = Deadline.from_timeout(timeout, message="timeout must be non-negative")
     storage = await StorageClass.select(
         kube,
-        timeout=deadline - loop.time(),
+        timeout=deadline.remaining(),
         preferences=CEPHFS_STORAGE_CLASS_PREFERENCES,
         require_expansion=True,
     )
@@ -105,7 +106,7 @@ async def ensure_repository_snapshot_support(
     return await _ensure_snapshot_class(
         kube,
         storage=storage,
-        timeout=deadline - loop.time(),
+        timeout=deadline.remaining(),
     )
 
 
@@ -183,15 +184,13 @@ async def maintain_repository_snapshots(
     if create_limit < 0 or delete_limit < 0:
         msg = "repository snapshot maintenance limits must be non-negative"
         raise ValueError(msg)
-
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
-    await ensure_repository_snapshot_support(kube, timeout=deadline - loop.time())
+    deadline = Deadline.from_timeout(timeout, message="timeout must be non-negative")
+    await ensure_repository_snapshot_support(kube, timeout=deadline.remaining())
 
     now = datetime.now(UTC)
     inventory = await _snapshot_inventory(
         kube,
-        timeout=deadline - loop.time(),
+        timeout=deadline.remaining(),
     )
     deleted = await _delete_expired_retained_snapshots(
         kube,
@@ -199,12 +198,12 @@ async def maintain_repository_snapshots(
         now=now,
         retention=timedelta(seconds=retention_seconds),
         limit=delete_limit,
-        timeout=deadline - loop.time(),
+        timeout=deadline.remaining(),
     )
     if deleted:
         inventory = await _snapshot_inventory(
             kube,
-            timeout=deadline - loop.time(),
+            timeout=deadline.remaining(),
         )
 
     created = 0
@@ -223,7 +222,7 @@ async def maintain_repository_snapshots(
         await create_repository_snapshot(
             kube,
             repo_id=record.repo_id,
-            timeout=deadline - loop.time(),
+            timeout=deadline.remaining(),
         )
         created += 1
 
@@ -267,13 +266,11 @@ async def next_repository_snapshot_time(
     if interval_seconds <= 0 or retention_seconds <= 0:
         msg = "repository snapshot interval and retention must be positive"
         raise ValueError(msg)
-
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
+    deadline = Deadline.from_timeout(timeout, message="timeout must be non-negative")
     now = datetime.now(UTC)
     inventory = await _snapshot_inventory(
         kube,
-        timeout=deadline - loop.time(),
+        timeout=deadline.remaining(),
     )
     retention = timedelta(seconds=retention_seconds)
     if any(
@@ -339,9 +336,7 @@ async def prepared_repository_build_source(
     if not build_name:
         msg = "repository build snapshot requires a non-empty build name"
         raise ValueError(msg)
-
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
+    deadline = Deadline.from_timeout(timeout, message="timeout must be non-negative")
     snapshot: VolumeSnapshot | None = None
     pvc: PersistentVolumeClaim | None = None
     try:
@@ -350,12 +345,12 @@ async def prepared_repository_build_source(
             repo_id=repo_id,
             purpose=REPOSITORY_SNAPSHOT_PURPOSE_BUILD,
             build_name=build_name,
-            timeout=deadline - loop.time(),
+            timeout=deadline.remaining(),
         )
         volume = await _repository_volume(
             kube,
             repo_id=repo_id,
-            timeout=deadline - loop.time(),
+            timeout=deadline.remaining(),
         )
         pvc = await PersistentVolumeClaim.create_from_snapshot(
             kube,
@@ -369,9 +364,9 @@ async def prepared_repository_build_source(
             annotations={
                 REPOSITORY_BUILD_SOURCE_SNAPSHOT_ANNOTATION: snapshot.name,
             },
-            timeout=deadline - loop.time(),
+            timeout=deadline.remaining(),
         )
-        pvc = await pvc.wait_bound(kube, timeout=deadline - loop.time())
+        pvc = await pvc.wait_bound(kube, timeout=deadline.remaining())
         yield pvc.name
     finally:
         await _cleanup_build_source(kube, pvc=pvc, snapshot=snapshot)
@@ -424,8 +419,7 @@ async def cleanup_orphaned_build_sources(
     active = {name.strip() for name in active_build_names if name and name.strip()}
     now = datetime.now(UTC)
     max_age = timedelta(seconds=max_age_seconds)
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
+    deadline = Deadline.from_timeout(timeout, message="timeout must be non-negative")
     deleted = 0
 
     pvcs = await PersistentVolumeClaim.list(
@@ -435,7 +429,7 @@ async def cleanup_orphaned_build_sources(
             BERTRAND_ENV: "1",
             REPOSITORY_BUILD_SOURCE_LABEL: REPOSITORY_BUILD_SOURCE_LABEL_VALUE,
         },
-        timeout=deadline - loop.time(),
+        timeout=deadline.remaining(),
     )
     for pvc in sorted(pvcs, key=lambda item: item.name):
         if deleted >= limit:
@@ -448,14 +442,14 @@ async def cleanup_orphaned_build_sources(
             max_age=max_age,
         ):
             continue
-        await pvc.delete(kube, timeout=deadline - loop.time())
+        await pvc.delete(kube, timeout=deadline.remaining())
         deleted += 1
 
     snapshots = await VolumeSnapshot.list(
         kube,
         namespace=BERTRAND_NAMESPACE,
         labels=_snapshot_labels(purpose=REPOSITORY_SNAPSHOT_PURPOSE_BUILD),
-        timeout=deadline - loop.time(),
+        timeout=deadline.remaining(),
     )
     for snapshot in sorted(snapshots, key=lambda item: item.name):
         if deleted >= limit:
@@ -468,66 +462,10 @@ async def cleanup_orphaned_build_sources(
             max_age=max_age,
         ):
             continue
-        await snapshot.delete(kube, timeout=deadline - loop.time())
+        await snapshot.delete(kube, timeout=deadline.remaining())
         deleted += 1
 
     return deleted
-
-
-async def delete_repository_snapshot_artifacts(
-    kube: Kube,
-    *,
-    repo_id: str,
-    timeout: float,
-) -> None:
-    """Delete all snapshot resources associated with one repository.
-
-    Parameters
-    ----------
-    kube : Kube
-        Active Kubernetes API context.
-    repo_id : str
-        Stable repository UUID.
-    timeout : float
-        Maximum deletion budget in seconds.
-
-    Raises
-    ------
-    TimeoutError
-        If `timeout` is non-positive or deletion exceeds the budget.
-    """
-    if timeout <= 0:
-        msg = "repository snapshot artifact deletion timeout must be non-negative"
-        raise TimeoutError(msg)
-    repo_id = _check_uuid(repo_id)
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
-    pvcs = await PersistentVolumeClaim.list(
-        kube,
-        namespaces=(BERTRAND_NAMESPACE,),
-        labels={
-            BERTRAND_ENV: "1",
-            REPO_ID_ENV: repo_id,
-            REPOSITORY_BUILD_SOURCE_LABEL: REPOSITORY_BUILD_SOURCE_LABEL_VALUE,
-        },
-        timeout=deadline - loop.time(),
-    )
-    for pvc in sorted(pvcs, key=lambda item: item.name):
-        await pvc.delete(kube, timeout=deadline - loop.time())
-        await pvc.wait_deleted(kube, timeout=deadline - loop.time())
-
-    snapshots = await VolumeSnapshot.list(
-        kube,
-        namespace=BERTRAND_NAMESPACE,
-        labels={
-            BERTRAND_ENV: "1",
-            REPO_ID_ENV: repo_id,
-            REPOSITORY_SNAPSHOT_LABEL: REPOSITORY_SNAPSHOT_LABEL_VALUE,
-        },
-        timeout=deadline - loop.time(),
-    )
-    for snapshot in sorted(snapshots, key=lambda item: item.name):
-        await snapshot.delete(kube, timeout=deadline - loop.time())
 
 
 async def _ensure_snapshot_class(
@@ -539,9 +477,8 @@ async def _ensure_snapshot_class(
     if timeout <= 0:
         msg = "repository snapshot class timeout must be non-negative"
         raise TimeoutError(msg)
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
-    classes = await VolumeSnapshotClass.list(kube, timeout=deadline - loop.time())
+    deadline = Deadline.from_timeout(timeout, message="timeout must be non-negative")
+    classes = await VolumeSnapshotClass.list(kube, timeout=deadline.remaining())
     matches = [
         item
         for item in classes
@@ -554,7 +491,7 @@ async def _ensure_snapshot_class(
     existing = await VolumeSnapshotClass.get(
         kube,
         name=name,
-        timeout=deadline - loop.time(),
+        timeout=deadline.remaining(),
     )
     if existing is not None:
         _assert_snapshot_class(existing, driver=storage.provisioner)
@@ -570,16 +507,15 @@ async def _ensure_snapshot_class(
                 BERTRAND_ENV: "1",
                 REPOSITORY_SNAPSHOT_CLASS_LABEL: "v1",
             },
-            timeout=deadline - loop.time(),
+            timeout=deadline.remaining(),
         )
     except OSError as err:
-        detail = str(err).lower()
-        if "status 409" not in detail and "already exists" not in detail:
+        if not _is_conflict(err):
             raise
     existing = await VolumeSnapshotClass.get(
         kube,
         name=name,
-        timeout=deadline - loop.time(),
+        timeout=deadline.remaining(),
     )
     if existing is None:
         msg = f"VolumeSnapshotClass {name!r} disappeared during convergence"
@@ -596,17 +532,16 @@ async def _create_snapshot(
     build_name: str | None,
     timeout: float,
 ) -> VolumeSnapshot:
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
+    deadline = Deadline.from_timeout(timeout, message="timeout must be non-negative")
     volume = await _repository_volume(
         kube,
         repo_id=repo_id,
-        timeout=deadline - loop.time(),
+        timeout=deadline.remaining(),
     )
-    await volume.pvc.wait_bound(kube, timeout=deadline - loop.time())
+    await volume.pvc.wait_bound(kube, timeout=deadline.remaining())
     snapshot_class = await ensure_repository_snapshot_support(
         kube,
-        timeout=deadline - loop.time(),
+        timeout=deadline.remaining(),
     )
     snapshot = await VolumeSnapshot.create(
         kube,
@@ -622,9 +557,9 @@ async def _create_snapshot(
         annotations={
             REPOSITORY_SNAPSHOT_SOURCE_CLAIM_ANNOTATION: volume.pvc.name,
         },
-        timeout=deadline - loop.time(),
+        timeout=deadline.remaining(),
     )
-    return await snapshot.wait_ready(kube, timeout=deadline - loop.time())
+    return await snapshot.wait_ready(kube, timeout=deadline.remaining())
 
 
 async def _repository_volume(
@@ -657,14 +592,13 @@ async def _snapshot_inventory(
     *,
     timeout: float,
 ) -> _RepositorySnapshotInventory:
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
-    retained = await _retained_snapshots(kube, timeout=deadline - loop.time())
+    deadline = Deadline.from_timeout(timeout, message="timeout must be non-negative")
+    retained = await _retained_snapshots(kube, timeout=deadline.remaining())
     active_records = [
         record
         for record in await list_repository_volume_records(
             kube,
-            timeout=deadline - loop.time(),
+            timeout=deadline.remaining(),
         )
         if record.phase == "Ready"
     ]
@@ -689,8 +623,7 @@ async def _delete_expired_retained_snapshots(
     limit: int,
     timeout: float,
 ) -> int:
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
+    deadline = Deadline.from_timeout(timeout, message="timeout must be non-negative")
     deleted = 0
     for snapshot in sorted(snapshots, key=lambda item: item.name):
         if deleted >= limit:
@@ -698,7 +631,7 @@ async def _delete_expired_retained_snapshots(
         created_at = snapshot.created_at
         if created_at is None or now - created_at < retention:
             continue
-        await snapshot.delete(kube, timeout=deadline - loop.time())
+        await snapshot.delete(kube, timeout=deadline.remaining())
         deleted += 1
     return deleted
 
@@ -709,15 +642,17 @@ async def _cleanup_build_source(
     pvc: PersistentVolumeClaim | None,
     snapshot: VolumeSnapshot | None,
 ) -> None:
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + REPOSITORY_BUILD_SOURCE_CLEANUP_TIMEOUT_SECONDS
+    deadline = Deadline.from_timeout(
+        REPOSITORY_BUILD_SOURCE_CLEANUP_TIMEOUT_SECONDS,
+        message="repository build-source cleanup timeout must be non-negative",
+    )
     if pvc is not None:
         with suppress(OSError, TimeoutError, ValueError):
-            await pvc.delete(kube, timeout=deadline - loop.time())
-            await pvc.wait_deleted(kube, timeout=deadline - loop.time())
+            await pvc.delete(kube, timeout=deadline.remaining())
+            await pvc.wait_deleted(kube, timeout=deadline.remaining())
     if snapshot is not None:
         with suppress(OSError, TimeoutError, ValueError):
-            await snapshot.delete(kube, timeout=deadline - loop.time())
+            await snapshot.delete(kube, timeout=deadline.remaining())
 
 
 def _snapshot_labels(

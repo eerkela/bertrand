@@ -9,12 +9,10 @@ import sys
 from typing import TYPE_CHECKING
 
 from bertrand.env.cli.external._helper import (
-    prune_repository_mounts_quietly,
-    resolve_project_worktree,
+    _project_command_context,
 )
-from bertrand.env.config.core import Config, _check_kube_name
-from bertrand.env.git import BERTRAND_NAMESPACE, INFINITY
-from bertrand.env.kube.api.client import Kube
+from bertrand.env.config.core import _check_kube_name
+from bertrand.env.git import BERTRAND_NAMESPACE, INFINITY, Deadline
 from bertrand.env.kube.build.controller import BUILDKIT_BUILD_CONTROLLER
 from bertrand.env.kube.build.daemon import BUILDKIT_POOL
 from bertrand.env.kube.build.execution import job_logs
@@ -27,7 +25,9 @@ from bertrand.env.kube.job import Job
 if TYPE_CHECKING:
     from pathlib import Path
 
+    from bertrand.env.config.core import Config
     from bertrand.env.git import GitRepository
+    from bertrand.env.kube.api.client import Kube
     from bertrand.env.kube.build.lifecycle import ProjectImagePublication
     from bertrand.env.kube.build.request import BuildKitBuildRecord
 
@@ -94,46 +94,34 @@ async def bertrand_build(
 
     result: ProjectImagePublication | None = None
     request_name: str | None = None
-    with await Kube.host(timeout=INFINITY) as kube:
-        repo, worktree = await resolve_project_worktree(
-            kube,
-            target,
-            timeout=INFINITY,
-        )
-        config = await Config.load(worktree, kube=kube, repo=repo, timeout=INFINITY)
-        async with config:
-            await _assert_build_runtime(kube, timeout=INFINITY)
-            publish_repo = await _publish_repository(config.repo, publish)
-            repo_id = config.repo.repo_id
-            build = project_image_build(config, repo_id=repo_id)
+    async with _project_command_context(target, timeout=INFINITY) as context:
+        publish_repo = await _publish_repository(context.config.repo, publish)
+        repo_id = context.config.repo.repo_id
+        if detach:
+            await _assert_build_runtime(context.kube, timeout=INFINITY)
+            build = project_image_build(context.config, repo_id=repo_id)
             external_image = (
                 _external_image(publish_repo, build.identity.image)
                 if publish_repo is not None
                 else None
             )
-            if detach:
-                request = await build.submit(
-                    kube,
-                    timeout=INFINITY,
-                    external_image=external_image,
-                    auth_id=auth,
-                )
-                request_name = request.name
-            else:
-                follower = None if quiet else BuildLogFollower(kube)
-                try:
-                    on_update = None if follower is None else follower.update
-                    result = await build.publish(
-                        kube,
-                        timeout=INFINITY,
-                        external_image=external_image,
-                        auth_id=auth,
-                        on_update=on_update,
-                    )
-                finally:
-                    if follower is not None:
-                        await follower.close()
-        await prune_repository_mounts_quietly(kube, timeout=INFINITY)
+            request = await build.submit(
+                context.kube,
+                timeout=INFINITY,
+                external_image=external_image,
+                auth_id=auth,
+            )
+            request_name = request.name
+        else:
+            result = await _publish_project_image(
+                context.kube,
+                config=context.config,
+                repo_id=repo_id,
+                timeout=INFINITY,
+                external_repository=publish_repo,
+                auth_id=auth,
+                quiet=quiet,
+            )
 
     if not quiet:
         if detach:
@@ -245,6 +233,39 @@ def _external_image(repo: str, image: str) -> str:
     return f"{repo}:{tag}"
 
 
+async def _publish_project_image(
+    kube: Kube,
+    *,
+    config: Config,
+    repo_id: str,
+    timeout: float,
+    external_repository: str | None = None,
+    auth_id: str | None = None,
+    quiet: bool = False,
+    ensure_crds: bool = True,
+) -> ProjectImagePublication:
+    await _assert_build_runtime(kube, timeout=timeout)
+    build = project_image_build(config, repo_id=repo_id)
+    external_image = (
+        _external_image(external_repository, build.identity.image)
+        if external_repository is not None
+        else None
+    )
+    follower = None if quiet else BuildLogFollower(kube)
+    try:
+        return await build.publish(
+            kube,
+            timeout=timeout,
+            external_image=external_image,
+            auth_id=auth_id,
+            on_update=None if follower is None else follower.update,
+            ensure_crds=ensure_crds,
+        )
+    finally:
+        if follower is not None:
+            await follower.close()
+
+
 def _print_result(result: ProjectImagePublication) -> None:
     record = result.record
     print(f"image: {record.image}")
@@ -259,25 +280,24 @@ def _print_request(name: str) -> None:
 
 
 async def _assert_build_runtime(kube: Kube, *, timeout: float) -> None:
+    msg = "image build runtime readiness timeout must be non-negative"
     if timeout <= 0:
-        msg = "image build runtime readiness timeout must be non-negative"
         raise TimeoutError(msg)
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
-    registry = await IMAGES.status(kube, timeout=deadline - loop.time())
+    deadline = Deadline.from_timeout(timeout, message=msg)
+    registry = await IMAGES.status(kube, timeout=deadline.remaining())
     buildkit = await BUILDKIT_POOL.status(
         kube,
-        timeout=deadline - loop.time(),
+        timeout=deadline.remaining(),
         config_hash=await IMAGES.current_buildkit_config_hash(
             kube,
-            timeout=deadline - loop.time(),
+            timeout=deadline.remaining(),
         ),
     )
     controller = await Deployment.get(
         kube,
         namespace=BERTRAND_NAMESPACE,
         name=BUILDKIT_BUILD_CONTROLLER,
-        timeout=deadline - loop.time(),
+        timeout=deadline.remaining(),
     )
     failures = [*registry.failures, *buildkit.failures]
     if controller is None:

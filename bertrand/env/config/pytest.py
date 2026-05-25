@@ -7,13 +7,13 @@ pytest-native keys to pass through unchanged for forward compatibility.
 from __future__ import annotations
 
 import re
-from typing import Annotated, Any
+from typing import Annotated
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
 from bertrand.env.version import VERSION
 
-from .core import Config, Resource, resource
+from .core import Resource, resource
 
 type PytestString = Annotated[
     str, StringConstraints(strip_whitespace=True, min_length=1)
@@ -125,35 +125,3 @@ class PytestConfig(Resource):
                 description="Whether strict mode checks are enabled for pytest.",
             ),
         ]
-
-    async def init(self, config: Config, cli: Config.Init) -> dict[str, Any]:
-        """Return default pytest configuration.
-
-        Returns
-        -------
-        dict[str, Any]
-            Default pytest configuration data.
-        """
-        _ = config, cli
-        return self.Model.model_construct().model_dump(by_alias=True)
-
-    async def validate(self, config: Config, fragment: Any) -> Model | None:
-        """Validate pytest configuration.
-
-        Returns
-        -------
-        Model | None
-            Validated pytest configuration.
-        """
-        _ = config
-        return self.Model.model_validate(fragment)
-
-    async def schema(self) -> dict[str, Any]:
-        """Return the pytest configuration schema.
-
-        Returns
-        -------
-        dict[str, Any]
-            JSON Schema for the pytest configuration.
-        """
-        return self.Model.model_json_schema(by_alias=True, mode="validation")

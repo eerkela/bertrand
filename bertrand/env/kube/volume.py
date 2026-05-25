@@ -12,19 +12,22 @@ from typing import TYPE_CHECKING, Self
 
 import kubernetes
 
-from bertrand.env.git import until
+from bertrand.env.git import Deadline, until
 
 from .api._helpers import (
-    _list_cluster_items,
-    _list_namespaced_items,
-    _typed_payload,
+    _is_conflict,
+    _is_not_found,
     _validate_delete_status,
     _wait_until_deleted,
 )
 from .api.metadata import KubeMetadata, NamespacedKubeMetadata
+from .api.resource import (
+    ClusterResourceMixin,
+    NamespacedResourceMixin,
+    ResourceClient,
+)
 
 if TYPE_CHECKING:
-    import builtins
     from collections.abc import Collection, Mapping
 
     from .api.client import Kube
@@ -51,8 +54,20 @@ STORAGE_FACTORS: dict[str, Decimal] = {
 }
 
 
+def _deadline_from_budget(seconds: float) -> Deadline:
+    if seconds <= 0:
+        return Deadline(
+            expires_at=asyncio.get_running_loop().time(),
+            timeout=seconds,
+        )
+    return Deadline.from_timeout(seconds, message="")
+
+
 @dataclass(frozen=True)
-class StorageClass(KubeMetadata[kubernetes.client.V1StorageClass]):
+class StorageClass(
+    ClusterResourceMixin[kubernetes.client.V1StorageClass],
+    KubeMetadata[kubernetes.client.V1StorageClass],
+):
     """General-purpose wrapper around one Kubernetes StorageClass object.
 
     Parameters
@@ -64,92 +79,27 @@ class StorageClass(KubeMetadata[kubernetes.client.V1StorageClass]):
     _obj: kubernetes.client.V1StorageClass
 
     @classmethod
-    async def get(
-        cls,
-        kube: Kube,
-        *,
-        timeout: float,
-        name: str,
-    ) -> Self | None:
-        """Read one Kubernetes StorageClass by name.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        timeout : float
-            Maximum runtime budget in seconds.  If infinite, wait indefinitely.
-        name : str
-            StorageClass name to read.
-
-        Returns
-        -------
-        StorageClass | None
-            Validated wrapper, or `None` if missing.
-
-        """
-        payload = await kube.run(
-            lambda request_timeout: kube.storage.read_storage_class(
-                name=name,
-                _request_timeout=request_timeout,
+    def _client(cls) -> ResourceClient[kubernetes.client.V1StorageClass, Self]:
+        return ResourceClient(
+            scope="cluster",
+            kind="StorageClass",
+            expected=kubernetes.client.V1StorageClass,
+            list_type=kubernetes.client.V1StorageClassList,
+            wrapper=lambda payload: cls(_obj=payload),
+            read=lambda kube, _namespace, name, request_timeout: (
+                kube.storage.read_storage_class(
+                    name=name,
+                    _request_timeout=request_timeout,
+                )
             ),
-            timeout=timeout,
-            context=f"failed to read StorageClass {name!r}",
+            list_all=lambda kube, label_selector, field_selector, request_timeout: (
+                kube.storage.list_storage_class(
+                    label_selector=label_selector,
+                    field_selector=field_selector,
+                    _request_timeout=request_timeout,
+                )
+            ),
         )
-        if payload is None:
-            return None
-        return cls(
-            _obj=_typed_payload(
-                payload,
-                kubernetes.client.V1StorageClass,
-                context="StorageClass",
-            )
-        )
-
-    @classmethod
-    async def list(
-        cls,
-        kube: Kube,
-        *,
-        timeout: float,
-        labels: Mapping[str, str] | None = None,
-    ) -> builtins.list[Self]:
-        """List Kubernetes StorageClasses with optional label filtering.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        timeout : float
-            Maximum request budget in seconds. If infinite, wait indefinitely.
-        labels : Mapping[str, str] | None, optional
-            Optional label selector key/value pairs.
-
-        Returns
-        -------
-        list[StorageClass]
-            Wrapped Kubernetes StorageClasses matching the requested filters.
-
-        """
-        return [
-            cls(_obj=item)
-            for item in await _list_cluster_items(
-                kube,
-                timeout=timeout,
-                labels=labels,
-                list_items=lambda label_selector, request_timeout: (
-                    kube.storage.list_storage_class(
-                        label_selector=label_selector,
-                        _request_timeout=request_timeout,
-                    )
-                ),
-                list_type=kubernetes.client.V1StorageClassList,
-                item_type=kubernetes.client.V1StorageClass,
-                context="failed to list Kubernetes StorageClasses",
-                list_context="StorageClass",
-                item_context="StorageClass",
-            )
-        ]
 
     @classmethod
     async def select(
@@ -253,7 +203,8 @@ class StorageClass(KubeMetadata[kubernetes.client.V1StorageClass]):
 
 @dataclass(frozen=True)
 class PersistentVolumeClaim(
-    NamespacedKubeMetadata[kubernetes.client.V1PersistentVolumeClaim]
+    NamespacedResourceMixin[kubernetes.client.V1PersistentVolumeClaim],
+    NamespacedKubeMetadata[kubernetes.client.V1PersistentVolumeClaim],
 ):
     """General-purpose wrapper around one Kubernetes PersistentVolumeClaim object.
 
@@ -272,109 +223,38 @@ class PersistentVolumeClaim(
     _obj: kubernetes.client.V1PersistentVolumeClaim
 
     @classmethod
-    async def get(
+    def _client(
         cls,
-        kube: Kube,
-        *,
-        namespace: str,
-        timeout: float,
-        name: str,
-    ) -> Self | None:
-        """Read one Kubernetes PersistentVolumeClaim by name.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        namespace : str
-            Namespace that owns the claim.
-        timeout : float
-            Maximum request budget in seconds. If infinite, wait indefinitely.
-        name : str
-            Claim name to read.
-
-        Returns
-        -------
-        PersistentVolumeClaim | None
-            Wrapped Kubernetes claim, or `None` if it does not exist.
-        """
-        payload = await kube.run(
-            lambda request_timeout: kube.core.read_namespaced_persistent_volume_claim(
-                name=name,
-                namespace=namespace,
-                _request_timeout=request_timeout,
+    ) -> ResourceClient[kubernetes.client.V1PersistentVolumeClaim, Self]:
+        return ResourceClient(
+            scope="namespaced",
+            kind="PersistentVolumeClaim",
+            expected=kubernetes.client.V1PersistentVolumeClaim,
+            list_type=kubernetes.client.V1PersistentVolumeClaimList,
+            wrapper=lambda payload: cls(_obj=payload),
+            read=lambda kube, namespace, name, request_timeout: (
+                kube.core.read_namespaced_persistent_volume_claim(
+                    name=name,
+                    namespace=namespace,
+                    _request_timeout=request_timeout,
+                )
             ),
-            timeout=timeout,
-            context=f"failed to read PVC {name!r} in namespace {namespace!r}",
+            list_all=lambda kube, label_selector, field_selector, request_timeout: (
+                kube.core.list_persistent_volume_claim_for_all_namespaces(
+                    label_selector=label_selector,
+                    field_selector=field_selector,
+                    _request_timeout=request_timeout,
+                )
+            ),
+            list_namespace=lambda kube, namespace, labels, fields, timeout: (
+                kube.core.list_namespaced_persistent_volume_claim(
+                    namespace=namespace,
+                    label_selector=labels,
+                    field_selector=fields,
+                    _request_timeout=timeout,
+                )
+            ),
         )
-        if payload is None:
-            return None
-        return cls(
-            _obj=_typed_payload(
-                payload,
-                kubernetes.client.V1PersistentVolumeClaim,
-                context="PersistentVolumeClaim",
-            )
-        )
-
-    @classmethod
-    async def list(
-        cls,
-        kube: Kube,
-        *,
-        timeout: float,
-        namespaces: Collection[str] | None = None,
-        labels: Mapping[str, str] | None = None,
-    ) -> builtins.list[Self]:
-        """List Kubernetes PersistentVolumeClaims by namespace and label selectors.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        timeout : float
-            Maximum runtime budget in seconds.  If infinite, wait indefinitely.
-        namespaces : Collection[str] | None, optional
-            Optional namespace filters.  `None` queries all namespaces.  Otherwise,
-            names are normalized (trimmed), deduplicated, and queried individually.
-        labels : Mapping[str, str] | None, optional
-            Optional label filters.
-
-        Returns
-        -------
-        list[PersistentVolumeClaim]
-            Wrapped Kubernetes PersistentVolumeClaims matching the requested filters.
-        """
-        return [
-            cls(_obj=item)
-            for item in await _list_namespaced_items(
-                kube,
-                timeout=timeout,
-                namespaces=namespaces,
-                labels=labels,
-                list_all=lambda label_selector, request_timeout: (
-                    kube.core.list_persistent_volume_claim_for_all_namespaces(
-                        label_selector=label_selector,
-                        _request_timeout=request_timeout,
-                    )
-                ),
-                list_namespace=lambda namespace, label_selector, request_timeout: (
-                    kube.core.list_namespaced_persistent_volume_claim(
-                        namespace=namespace,
-                        label_selector=label_selector,
-                        _request_timeout=request_timeout,
-                    )
-                ),
-                list_type=kubernetes.client.V1PersistentVolumeClaimList,
-                item_type=kubernetes.client.V1PersistentVolumeClaim,
-                all_context="failed to list PVCs across all namespaces",
-                namespace_context=lambda namespace: (
-                    f"failed to list PVCs in namespace {namespace!r}"
-                ),
-                list_context="PersistentVolumeClaim",
-                item_context="PersistentVolumeClaim",
-            )
-        ]
 
     @staticmethod
     def _manifest(
@@ -478,8 +358,7 @@ class PersistentVolumeClaim(
             raise OSError(msg)
         parse_pvc_size(storage_request)
 
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + timeout
+        deadline = _deadline_from_budget(timeout)
         manifest = cls._manifest(
             namespace=namespace,
             name=name,
@@ -499,12 +378,12 @@ class PersistentVolumeClaim(
                         _request_timeout=request_timeout,
                     )
                 ),
-                timeout=deadline - loop.time(),
+                timeout=deadline.remaining(),
                 context=f"failed to create PersistentVolumeClaim {namespace}/{name}",
+                missing_ok=False,
             )
         except OSError as err:
-            detail = str(err).lower()
-            if "status 409" not in detail and "already exists" not in detail:
+            if not _is_conflict(err):
                 raise
         else:
             if not isinstance(payload, kubernetes.client.V1PersistentVolumeClaim):
@@ -518,7 +397,7 @@ class PersistentVolumeClaim(
         live = await cls.get(
             kube,
             namespace=namespace,
-            timeout=deadline - loop.time(),
+            timeout=deadline.remaining(),
             name=name,
         )
         if live is None:
@@ -533,7 +412,7 @@ class PersistentVolumeClaim(
         return await live._grow(
             storage_request,
             kube=kube,
-            timeout=deadline - loop.time(),
+            timeout=deadline.remaining(),
         )
 
     @classmethod
@@ -635,6 +514,7 @@ class PersistentVolumeClaim(
                 f"failed to create PersistentVolumeClaim {namespace}/{name} "
                 f"from VolumeSnapshot {snapshot_name!r}"
             ),
+            missing_ok=False,
         )
         if not isinstance(payload, kubernetes.client.V1PersistentVolumeClaim):
             msg = (
@@ -713,14 +593,13 @@ class PersistentVolumeClaim(
         new_size = parse_pvc_size(requested)
         namespace, name = self._require_namespace_name("resize PVC")
         patch = {"spec": {"resources": {"requests": {"storage": requested}}}}
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + timeout
+        deadline = _deadline_from_budget(timeout)
 
         for attempt in range(PVC_GROW_RETRIES):
             live = await type(self).get(
                 kube,
                 namespace=namespace,
-                timeout=deadline - loop.time(),
+                timeout=deadline.remaining(),
                 name=name,
             )
             if live is None:
@@ -739,26 +618,22 @@ class PersistentVolumeClaim(
                             _request_timeout=request_timeout,
                         )
                     ),
-                    timeout=deadline - loop.time(),
+                    timeout=deadline.remaining(),
                     context=f"failed to patch PVC {name!r} during resize lifecycle",
+                    missing_ok=False,
                 )
             except OSError as err:
-                detail = str(err).lower()
-                if "status 404" in detail or "not found" in detail:
+                if _is_not_found(err):
                     msg = f"PVC {name!r} disappeared during resize lifecycle"
                     raise OSError(msg) from err
-                if (
-                    "status 409" in detail
-                    or "conflict" in detail
-                    or "the object has been modified" in detail
-                ) and attempt + 1 < PVC_GROW_RETRIES:
+                if _is_conflict(err) and attempt + 1 < PVC_GROW_RETRIES:
                     continue
                 raise
 
             live = await type(self).get(
                 kube,
                 namespace=namespace,
-                timeout=deadline - loop.time(),
+                timeout=deadline.remaining(),
                 name=name,
             )
             if live is None:
@@ -799,29 +674,6 @@ class PersistentVolumeClaim(
         )
         _validate_delete_status(
             payload, label=self._object_label(name=name, namespace=namespace)
-        )
-
-    async def refresh(self, kube: Kube, *, timeout: float) -> Self | None:
-        """Re-read this PVC by its metadata namespace and name.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        timeout : float
-            Maximum request budget in seconds. If infinite, wait indefinitely.
-
-        Returns
-        -------
-        PersistentVolumeClaim | None
-            Fresh wrapper for the same claim, or `None` if it no longer exists.
-        """
-        namespace, name = self._require_namespace_name("refresh PVC")
-        return await type(self).get(
-            kube,
-            namespace=namespace,
-            timeout=timeout,
-            name=name,
         )
 
     async def wait_bound(self, kube: Kube, *, timeout: float) -> Self:
@@ -985,7 +837,10 @@ class PersistentVolumeClaim(
 
 
 @dataclass(frozen=True)
-class PersistentVolume(KubeMetadata[kubernetes.client.V1PersistentVolume]):
+class PersistentVolume(
+    ClusterResourceMixin[kubernetes.client.V1PersistentVolume],
+    KubeMetadata[kubernetes.client.V1PersistentVolume],
+):
     """General-purpose wrapper around one Kubernetes PersistentVolume object.
 
     Parameters
@@ -997,110 +852,27 @@ class PersistentVolume(KubeMetadata[kubernetes.client.V1PersistentVolume]):
     _obj: kubernetes.client.V1PersistentVolume
 
     @classmethod
-    async def get(
-        cls,
-        kube: Kube,
-        *,
-        timeout: float,
-        name: str,
-    ) -> Self | None:
-        """Read one Kubernetes PersistentVolume by name.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        timeout : float
-            Maximum request budget in seconds. If infinite, wait indefinitely.
-        name : str
-            PersistentVolume name to read.
-
-        Returns
-        -------
-        PersistentVolume | None
-            Wrapped Kubernetes PersistentVolume, or `None` if it does not exist.
-
-        """
-        payload = await kube.run(
-            lambda request_timeout: kube.core.read_persistent_volume(
-                name=name,
-                _request_timeout=request_timeout,
+    def _client(cls) -> ResourceClient[kubernetes.client.V1PersistentVolume, Self]:
+        return ResourceClient(
+            scope="cluster",
+            kind="PersistentVolume",
+            expected=kubernetes.client.V1PersistentVolume,
+            list_type=kubernetes.client.V1PersistentVolumeList,
+            wrapper=lambda payload: cls(_obj=payload),
+            read=lambda kube, _namespace, name, request_timeout: (
+                kube.core.read_persistent_volume(
+                    name=name,
+                    _request_timeout=request_timeout,
+                )
             ),
-            timeout=timeout,
-            context=f"failed to read PersistentVolume {name!r}",
+            list_all=lambda kube, label_selector, field_selector, request_timeout: (
+                kube.core.list_persistent_volume(
+                    label_selector=label_selector,
+                    field_selector=field_selector,
+                    _request_timeout=request_timeout,
+                )
+            ),
         )
-        if payload is None:
-            return None
-        return cls(
-            _obj=_typed_payload(
-                payload,
-                kubernetes.client.V1PersistentVolume,
-                context="PersistentVolume",
-            )
-        )
-
-    @classmethod
-    async def list(
-        cls,
-        kube: Kube,
-        *,
-        timeout: float,
-        labels: Mapping[str, str] | None = None,
-    ) -> builtins.list[Self]:
-        """List Kubernetes PersistentVolumes with optional label filtering.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        timeout : float
-            Maximum request budget in seconds. If infinite, wait indefinitely.
-        labels : Mapping[str, str] | None, optional
-            Optional label selector key/value pairs.
-
-        Returns
-        -------
-        list[PersistentVolume]
-            Wrapped Kubernetes PersistentVolumes matching the requested filters.
-
-        """
-        return [
-            cls(_obj=item)
-            for item in await _list_cluster_items(
-                kube,
-                timeout=timeout,
-                labels=labels,
-                list_items=lambda label_selector, request_timeout: (
-                    kube.core.list_persistent_volume(
-                        label_selector=label_selector,
-                        _request_timeout=request_timeout,
-                    )
-                ),
-                list_type=kubernetes.client.V1PersistentVolumeList,
-                item_type=kubernetes.client.V1PersistentVolume,
-                context="failed to list Kubernetes PersistentVolumes",
-                list_context="PersistentVolume",
-                item_context="PersistentVolume",
-            )
-        ]
-
-    async def refresh(self, kube: Kube, *, timeout: float) -> Self | None:
-        """Re-read this PersistentVolume by name.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        timeout : float
-            Maximum request budget in seconds. If infinite, wait indefinitely.
-
-        Returns
-        -------
-        PersistentVolume | None
-            Fresh wrapper for the same volume, or `None` if it no longer exists.
-        """
-        name = self._require_name("refresh PersistentVolume")
-        return await type(self).get(kube, timeout=timeout, name=name)
 
     @classmethod
     async def wait_present(

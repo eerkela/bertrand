@@ -17,13 +17,12 @@ from .api._render import (
 )
 from .api.metadata import NamespacedKubeMetadata
 from .api.resource import ResourceClient
+from .pod import Pod
 
 if TYPE_CHECKING:
     import builtins
     from collections.abc import AsyncIterator, Collection, Mapping
     from datetime import datetime
-
-    from bertrand.env.kube.pod import Pod
 
     from .api.client import Kube
     from .api.spec import PodTemplateSpec
@@ -514,8 +513,6 @@ class Job(NamespacedKubeMetadata[kubernetes.client.V1Job]):
         list[Pod]
             Pods selected by Kubernetes' standard Job ownership labels.
         """
-        from bertrand.env.kube.pod import Pod
-
         namespace, name = self._require_namespace_name("list Job pods")
         pods = await Pod.list(
             kube,

@@ -4,13 +4,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from bertrand.env.cli.external._helper import (
-    prune_repository_mounts_quietly,
-    resolve_project_worktree,
-)
-from bertrand.env.config.core import Config
+from bertrand.env.cli.external._helper import _project_command_context
 from bertrand.env.git import INFINITY
-from bertrand.env.kube.api.client import Kube
 from bertrand.env.kube.workload.project import remove_project_workload
 
 if TYPE_CHECKING:
@@ -56,22 +51,14 @@ async def bertrand_rm(
         msg = "rm timeout must be positive"
         raise TimeoutError(msg)
 
-    with await Kube.host(timeout=timeout) as kube:
-        repo, worktree = await resolve_project_worktree(
-            kube,
-            target,
+    async with _project_command_context(target, timeout=timeout) as context:
+        result = await remove_project_workload(
+            context.kube,
+            config=context.config,
+            repo_id=context.config.repo.repo_id,
+            grace_period_seconds=grace_period_seconds,
             timeout=timeout,
         )
-        config = await Config.load(worktree, kube=kube, repo=repo, timeout=timeout)
-        async with config:
-            result = await remove_project_workload(
-                kube,
-                config=config,
-                repo_id=config.repo.repo_id,
-                grace_period_seconds=grace_period_seconds,
-                timeout=timeout,
-            )
-        await prune_repository_mounts_quietly(kube, timeout=timeout)
     _print_rm_result(result)
 
 

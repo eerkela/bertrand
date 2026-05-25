@@ -9,10 +9,9 @@ from typing import TYPE_CHECKING, Literal, Self, cast
 import kubernetes
 
 from .api.metadata import NamespacedKubeMetadata
-from .api.resource import ResourceClient
+from .api.resource import NamespacedMutableResourceMixin, ResourceClient
 
 if TYPE_CHECKING:
-    import builtins
     from collections.abc import Collection, Mapping
 
     from .api.client import Kube
@@ -23,7 +22,10 @@ _POLICY_TYPES = frozenset({"Ingress", "Egress"})
 
 
 @dataclass(frozen=True)
-class NetworkPolicy(NamespacedKubeMetadata[kubernetes.client.V1NetworkPolicy]):
+class NetworkPolicy(
+    NamespacedMutableResourceMixin[kubernetes.client.V1NetworkPolicy],
+    NamespacedKubeMetadata[kubernetes.client.V1NetworkPolicy],
+):
     """General-purpose wrapper around one Kubernetes NetworkPolicy object.
 
     Parameters
@@ -91,75 +93,6 @@ class NetworkPolicy(NamespacedKubeMetadata[kubernetes.client.V1NetworkPolicy]):
                     _request_timeout=request_timeout,
                 )
             ),
-        )
-
-    @classmethod
-    async def get(
-        cls,
-        kube: Kube,
-        *,
-        namespace: str,
-        name: str,
-        timeout: float,
-    ) -> Self | None:
-        """Read one Kubernetes NetworkPolicy by name.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        namespace : str
-            Namespace that owns the NetworkPolicy.
-        name : str
-            NetworkPolicy name to read.
-        timeout : float
-            Maximum request budget in seconds. If infinite, wait indefinitely.
-
-        Returns
-        -------
-        NetworkPolicy | None
-            Wrapped Kubernetes NetworkPolicy, or `None` if it does not exist.
-        """
-        return await cls._client().get(
-            kube,
-            namespace=namespace,
-            name=name,
-            timeout=timeout,
-        )
-
-    @classmethod
-    async def list(
-        cls,
-        kube: Kube,
-        *,
-        timeout: float,
-        namespaces: Collection[str] | None = None,
-        labels: Mapping[str, str] | None = None,
-    ) -> builtins.list[Self]:
-        """List Kubernetes NetworkPolicies with optional filtering.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        timeout : float
-            Maximum request budget in seconds. If infinite, wait indefinitely.
-        namespaces : Collection[str] | None, optional
-            Optional namespace filters. `None` queries all namespaces. Otherwise,
-            entries are trimmed, deduplicated, and queried individually.
-        labels : Mapping[str, str] | None, optional
-            Optional label selector key/value pairs.
-
-        Returns
-        -------
-        list[NetworkPolicy]
-            Wrapped Kubernetes NetworkPolicies matching the requested filters.
-        """
-        return await cls._client().list(
-            kube,
-            timeout=timeout,
-            namespaces=namespaces,
-            labels=labels,
         )
 
     @staticmethod
@@ -324,74 +257,6 @@ class NetworkPolicy(NamespacedKubeMetadata[kubernetes.client.V1NetworkPolicy]):
             Whether the NetworkPolicy pod selector exactly matches `selector`.
         """
         return dict(self.pod_selector) == dict(selector)
-
-    async def refresh(self, kube: Kube, *, timeout: float) -> Self | None:
-        """Re-read this NetworkPolicy by its metadata namespace and name.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        timeout : float
-            Maximum request budget in seconds. If infinite, wait indefinitely.
-
-        Returns
-        -------
-        NetworkPolicy | None
-            Fresh wrapper for the same NetworkPolicy, or `None` if deleted.
-        """
-        namespace, name = self._require_namespace_name("refresh NetworkPolicy")
-        return await type(self).get(
-            kube,
-            namespace=namespace,
-            name=name,
-            timeout=timeout,
-        )
-
-    async def delete(self, kube: Kube, *, timeout: float) -> None:
-        """Delete this NetworkPolicy from the cluster.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        timeout : float
-            Maximum request budget in seconds. If infinite, wait indefinitely.
-        """
-        namespace, name = self._require_namespace_name("delete NetworkPolicy")
-        await (
-            type(self)
-            ._client()
-            .delete_by_name(
-                kube,
-                namespace=namespace,
-                name=name,
-                timeout=timeout,
-            )
-        )
-
-    async def wait_deleted(self, kube: Kube, *, timeout: float) -> None:
-        """Wait until this NetworkPolicy is deleted from the cluster.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        timeout : float
-            Maximum wait time in seconds. Must be positive.
-        """
-        namespace, name = self._require_namespace_name(
-            "wait for NetworkPolicy deletion"
-        )
-        await (
-            type(self)
-            ._client()
-            .wait_deleted(
-                label=self._object_label(name=name, namespace=namespace),
-                timeout=timeout,
-                refresh=lambda remaining: self.refresh(kube, timeout=remaining),
-            )
-        )
 
 
 def _policy_types(

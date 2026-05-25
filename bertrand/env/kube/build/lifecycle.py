@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -12,19 +11,16 @@ from typing import TYPE_CHECKING, Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from bertrand.env.git import BERTRAND_ENV, BERTRAND_NAMESPACE
+from bertrand.env.config.core import _check_uuid
+from bertrand.env.git import BERTRAND_ENV, BERTRAND_NAMESPACE, Deadline
 from bertrand.env.kube.build.refs import (
     DIGEST_REF_RE,
     digest_from_ref,
     digest_ref,
 )
 from bertrand.env.kube.build.repository import IMAGES, ImageRepository
-from bertrand.env.kube.crd import CustomResourceDefinition
-from bertrand.env.kube.custom_object import (
-    CustomObjectClient,
-    CustomObjectMetadata,
-    CustomObjectSpec,
-)
+from bertrand.env.kube.custom_object import CustomObjectMetadata  # noqa: TC001
+from bertrand.env.kube.custom_resource import CustomResource
 from bertrand.env.kube.pod import Pod
 
 if TYPE_CHECKING:
@@ -176,14 +172,6 @@ _PROJECT_IMAGE_LABELS = {
     BERTRAND_ENV: "1",
     PROJECT_IMAGE_LABEL: PROJECT_IMAGE_LABEL_VALUE,
 }
-_PROJECT_IMAGE_SPEC = CustomObjectSpec(
-    group=PROJECT_IMAGE_GROUP,
-    version=PROJECT_IMAGE_VERSION,
-    kind=PROJECT_IMAGE_KIND,
-    plural=PROJECT_IMAGE_PLURAL,
-    labels=_PROJECT_IMAGE_LABELS,
-)
-_PROJECT_IMAGE_CLIENT = CustomObjectClient(_PROJECT_IMAGE_SPEC)
 
 
 class ProjectImageRecord(BaseModel):
@@ -245,7 +233,7 @@ class ProjectImageRecord(BaseModel):
             )
             raise OSError(msg)
         try:
-            _ = record.digest
+            digest_from_ref(record.spec.digest_ref)
         except ValueError as err:
             msg = f"malformed {PROJECT_IMAGE_KIND} {record.name!r}: {err}"
             raise OSError(msg) from err
@@ -471,6 +459,20 @@ class ProjectImagePublication:
     external_digest_ref: str | None = None
 
 
+_PROJECT_IMAGE_RESOURCE = CustomResource[ProjectImageRecord](
+    group=PROJECT_IMAGE_GROUP,
+    version=PROJECT_IMAGE_VERSION,
+    kind=PROJECT_IMAGE_KIND,
+    plural=PROJECT_IMAGE_PLURAL,
+    singular="bertrandimage",
+    short_names=("bimg",),
+    parser=ProjectImageRecord.from_payload,
+    spec_schema=_PROJECT_IMAGE_SPEC_SCHEMA,
+    labels=_PROJECT_IMAGE_LABELS,
+    default_namespace=BERTRAND_NAMESPACE,
+)
+
+
 async def ensure_project_image_crd(kube: Kube, *, timeout: float) -> None:
     """Converge the project image lifecycle CRD.
 
@@ -489,21 +491,7 @@ async def ensure_project_image_crd(kube: Kube, *, timeout: float) -> None:
     if timeout <= 0:
         msg = "project image CRD timeout must be non-negative"
         raise TimeoutError(msg)
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
-    crd = await CustomResourceDefinition.upsert(
-        kube,
-        group=PROJECT_IMAGE_GROUP,
-        version=PROJECT_IMAGE_VERSION,
-        plural=PROJECT_IMAGE_PLURAL,
-        singular="bertrandimage",
-        kind=PROJECT_IMAGE_KIND,
-        short_names=("bimg",),
-        spec_schema=_PROJECT_IMAGE_SPEC_SCHEMA,
-        labels=_PROJECT_IMAGE_LABELS,
-        timeout=deadline - loop.time(),
-    )
-    await crd.wait_established(kube, timeout=deadline - loop.time())
+    await _PROJECT_IMAGE_RESOURCE.ensure_crd(kube, timeout=timeout)
 
 
 async def list_project_images(
@@ -528,13 +516,11 @@ async def list_project_images(
     list[ProjectImageRecord]
         Validated project image lifecycle records.
     """
-    objects = await _PROJECT_IMAGE_CLIENT.list(
+    return await _PROJECT_IMAGE_RESOURCE.list(
         kube,
-        namespace=BERTRAND_NAMESPACE,
         labels=labels,
         timeout=timeout,
     )
-    return [ProjectImageRecord.from_payload(obj.payload) for obj in objects]
 
 
 async def get_project_image(
@@ -559,15 +545,11 @@ async def get_project_image(
     ProjectImageRecord | None
         Project image record, or `None` if it does not exist.
     """
-    obj = await _PROJECT_IMAGE_CLIENT.get(
+    return await _PROJECT_IMAGE_RESOURCE.get(
         kube,
-        namespace=BERTRAND_NAMESPACE,
         name=name,
         timeout=timeout,
     )
-    if obj is None:
-        return None
-    return ProjectImageRecord.from_payload(obj.payload)
 
 
 async def require_active_project_image(
@@ -605,16 +587,19 @@ async def require_active_project_image(
         msg = "active project image lookup timeout must be non-negative"
         raise TimeoutError(msg)
 
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
-    await ensure_project_image_crd(kube, timeout=deadline - loop.time())
+    deadline = Deadline.from_timeout(
+
+        timeout, message="timeout must be non-negative"
+
+    )
+    await ensure_project_image_crd(kube, timeout=deadline.remaining())
     records = await list_project_images(
         kube,
         labels=_ProjectImageSpec.identity_labels(
             repo_id=identity.repo_id,
             worktree_id=identity.worktree_id,
         ),
-        timeout=deadline - loop.time(),
+        timeout=deadline.remaining(),
     )
     records = [
         record
@@ -700,24 +685,25 @@ async def retire_project_images(
     TimeoutError
         If `timeout` is non-positive or retirement exceeds the budget.
     """
-    from bertrand.env.config.core import _check_uuid
-
     if timeout <= 0:
         msg = "project image retirement timeout must be non-negative"
         raise TimeoutError(msg)
     repo_id = _check_uuid(repo_id)
     worktree_id = _check_uuid(worktree_id)
 
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
-    await ensure_project_image_crd(kube, timeout=deadline - loop.time())
+    deadline = Deadline.from_timeout(
+
+        timeout, message="timeout must be non-negative"
+
+    )
+    await ensure_project_image_crd(kube, timeout=deadline.remaining())
     records = await list_project_images(
         kube,
         labels=_ProjectImageSpec.identity_labels(
             repo_id=repo_id,
             worktree_id=worktree_id,
         ),
-        timeout=deadline - loop.time(),
+        timeout=deadline.remaining(),
     )
     now = datetime.now(UTC)
     retired: list[ProjectImageRecord] = []
@@ -731,7 +717,7 @@ async def retire_project_images(
                 phase="Retired",
                 retired_at=record.retired_at or now,
                 last_error="",
-                timeout=deadline - loop.time(),
+                timeout=deadline.remaining(),
             )
         )
     return retired
@@ -784,20 +770,23 @@ async def gc_project_images(
     if limit == 0:
         return []
 
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
-    await ensure_project_image_crd(kube, timeout=deadline - loop.time())
+    deadline = Deadline.from_timeout(
+
+        timeout, message="timeout must be non-negative"
+
+    )
+    await ensure_project_image_crd(kube, timeout=deadline.remaining())
     records = await list_project_images(
         kube,
         labels={PROJECT_IMAGE_PHASE_LABEL: "retired"},
-        timeout=deadline - loop.time(),
+        timeout=deadline.remaining(),
     )
     active_records = await list_project_images(
         kube,
         labels={PROJECT_IMAGE_PHASE_LABEL: "active"},
-        timeout=deadline - loop.time(),
+        timeout=deadline.remaining(),
     )
-    live_refs = await _active_pod_image_refs(kube, timeout=deadline - loop.time())
+    live_refs = await _active_pod_image_refs(kube, timeout=deadline.remaining())
     active_digest_refs = _active_record_digest_refs(active_records)
     now = datetime.now(UTC)
     collected: list[ProjectImageRecord] = []
@@ -816,13 +805,12 @@ async def gc_project_images(
             for digest_ref in _record_digest_refs(record):
                 await repository.delete_manifest(
                     digest_ref,
-                    timeout=deadline - loop.time(),
+                    timeout=deadline.remaining(),
                 )
-            await _PROJECT_IMAGE_CLIENT.delete_by_name(
+            await _PROJECT_IMAGE_RESOURCE.delete_by_name(
                 kube,
-                namespace=BERTRAND_NAMESPACE,
                 name=record.name,
-                timeout=deadline - loop.time(),
+                timeout=deadline.remaining(),
             )
         except (OSError, TimeoutError, ValueError) as err:
             await _transition_project_image(
@@ -832,7 +820,7 @@ async def gc_project_images(
                 retired_at=record.retired_at,
                 last_gc_at=now,
                 last_error=str(err),
-                timeout=deadline - loop.time(),
+                timeout=deadline.remaining(),
             )
             continue
         collected.append(record)
@@ -881,13 +869,16 @@ async def next_project_image_gc_time(
         msg = "project image GC scheduling grace_seconds must be non-negative"
         raise ValueError(msg)
 
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
-    await ensure_project_image_crd(kube, timeout=deadline - loop.time())
+    deadline = Deadline.from_timeout(
+
+        timeout, message="timeout must be non-negative"
+
+    )
+    await ensure_project_image_crd(kube, timeout=deadline.remaining())
     records = await list_project_images(
         kube,
         labels={PROJECT_IMAGE_PHASE_LABEL: "retired"},
-        timeout=deadline - loop.time(),
+        timeout=deadline.remaining(),
     )
     if not records:
         return None
@@ -965,15 +956,16 @@ async def record_project_image(
         published_at=now,
         timeout=timeout,
     )
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
+    deadline = Deadline.from_timeout(
+        timeout, message="timeout must be non-negative"
+    )
     peers = await list_project_images(
         kube,
         labels=_ProjectImageSpec.identity_labels(
             repo_id=identity.repo_id,
             worktree_id=identity.worktree_id,
         ),
-        timeout=deadline - loop.time(),
+        timeout=deadline.remaining(),
     )
     for peer in peers:
         if peer.name == record.name or peer.phase != "Active":
@@ -984,7 +976,7 @@ async def record_project_image(
             phase="Retired",
             retired_at=peer.retired_at or now,
             last_error="",
-            timeout=deadline - loop.time(),
+            timeout=deadline.remaining(),
         )
     return record
 
@@ -1038,17 +1030,16 @@ async def _upsert_project_image_record(
         platform_images=platform_images,
         published_at=published_at,
     )
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
-    obj = await _PROJECT_IMAGE_CLIENT.upsert(
+    deadline = Deadline.from_timeout(
+        timeout, message="timeout must be non-negative"
+    )
+    return await _PROJECT_IMAGE_RESOURCE.upsert(
         kube,
-        namespace=BERTRAND_NAMESPACE,
         name=name,
         spec=spec.payload(),
         labels=spec.labels,
-        timeout=deadline - loop.time(),
+        timeout=deadline.remaining(),
     )
-    return ProjectImageRecord.from_payload(obj.payload)
 
 
 async def _transition_project_image(
@@ -1064,23 +1055,22 @@ async def _transition_project_image(
     if timeout <= 0:
         msg = "project image phase transition timeout must be non-negative"
         raise TimeoutError(msg)
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
+    deadline = Deadline.from_timeout(
+        timeout, message="timeout must be non-negative"
+    )
     spec = record._lifecycle_spec(
         phase=phase,
         retired_at=retired_at,
         last_gc_at=record.last_gc_at if last_gc_at is None else last_gc_at,
         last_error=last_error,
     )
-    obj = await _PROJECT_IMAGE_CLIENT.upsert(
+    return await _PROJECT_IMAGE_RESOURCE.upsert(
         kube,
-        namespace=BERTRAND_NAMESPACE,
         name=record.name,
         spec=spec.payload(),
         labels=spec.labels,
-        timeout=deadline - loop.time(),
+        timeout=deadline.remaining(),
     )
-    return ProjectImageRecord.from_payload(obj.payload)
 
 
 async def _active_pod_image_refs(kube: Kube, *, timeout: float) -> frozenset[str]:

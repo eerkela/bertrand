@@ -9,22 +9,23 @@ from typing import TYPE_CHECKING, Literal, Self
 import kubernetes
 
 from .api.metadata import NamespacedKubeMetadata
-from .api.resource import ResourceClient
+from .api.resource import NamespacedMutableResourceMixin, ResourceClient
 from .api.view import ServicePortView
 
 if TYPE_CHECKING:
-    import builtins
     from collections.abc import Collection, Mapping
 
     from .api.client import Kube
     from .api.spec import ServicePortSpec
 
-SERVICE_WAIT_INTERVAL = 0.5
 type ServiceType = Literal["ClusterIP", "NodePort", "LoadBalancer", "ExternalName"]
 
 
 @dataclass(frozen=True)
-class Service(NamespacedKubeMetadata[kubernetes.client.V1Service]):
+class Service(
+    NamespacedMutableResourceMixin[kubernetes.client.V1Service],
+    NamespacedKubeMetadata[kubernetes.client.V1Service],
+):
     """General-purpose wrapper around one Kubernetes Service object.
 
     Parameters
@@ -92,75 +93,6 @@ class Service(NamespacedKubeMetadata[kubernetes.client.V1Service]):
                     _request_timeout=request_timeout,
                 )
             ),
-        )
-
-    @classmethod
-    async def get(
-        cls,
-        kube: Kube,
-        *,
-        namespace: str,
-        timeout: float,
-        name: str,
-    ) -> Self | None:
-        """Read one Kubernetes Service by name.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        namespace : str
-            Namespace that owns the Service.
-        timeout : float
-            Maximum request budget in seconds. If infinite, wait indefinitely.
-        name : str
-            Service name to read.
-
-        Returns
-        -------
-        Service | None
-            Wrapped Kubernetes Service, or `None` if it does not exist.
-        """
-        return await cls._client().get(
-            kube,
-            namespace=namespace,
-            name=name,
-            timeout=timeout,
-        )
-
-    @classmethod
-    async def list(
-        cls,
-        kube: Kube,
-        *,
-        timeout: float,
-        namespaces: Collection[str] | None = None,
-        labels: Mapping[str, str] | None = None,
-    ) -> builtins.list[Self]:
-        """List Kubernetes Services with optional namespace and label filtering.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        timeout : float
-            Maximum request budget in seconds. If infinite, wait indefinitely.
-        namespaces : Collection[str] | None, optional
-            Optional namespace filters. `None` queries all namespaces. Otherwise,
-            entries are trimmed, deduplicated, and queried individually.
-        labels : Mapping[str, str] | None, optional
-            Optional label selector key/value pairs.
-
-        Returns
-        -------
-        list[Service]
-            Wrapped Kubernetes Services matching the requested filters.
-        """
-        return await cls._client().list(
-            kube,
-            timeout=timeout,
-            namespaces=namespaces,
-            labels=labels,
         )
 
     @staticmethod
@@ -389,71 +321,4 @@ class Service(NamespacedKubeMetadata[kubernetes.client.V1Service]):
             self.type == service_type
             and self.selects(selector)
             and all(self.exposes(port) for port in ports)
-        )
-
-    async def refresh(self, kube: Kube, *, timeout: float) -> Self | None:
-        """Re-read this Service by its metadata namespace and name.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        timeout : float
-            Maximum request budget in seconds. If infinite, wait indefinitely.
-
-        Returns
-        -------
-        Service | None
-            Fresh wrapper for the same Service, or `None` if it no longer exists.
-        """
-        namespace, name = self._require_namespace_name("refresh Service")
-        return await type(self).get(
-            kube,
-            namespace=namespace,
-            timeout=timeout,
-            name=name,
-        )
-
-    async def delete(self, kube: Kube, *, timeout: float) -> None:
-        """Delete this Service from the cluster.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        timeout : float
-            Maximum request budget in seconds. If infinite, wait indefinitely.
-        """
-        namespace, name = self._require_namespace_name("delete Service")
-        await (
-            type(self)
-            ._client()
-            .delete_by_name(
-                kube,
-                namespace=namespace,
-                name=name,
-                timeout=timeout,
-            )
-        )
-
-    async def wait_deleted(self, kube: Kube, *, timeout: float) -> None:
-        """Wait until this Service is deleted from the cluster.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        timeout : float
-            Maximum wait time in seconds. Must be positive.
-
-        """
-        namespace, name = self._require_namespace_name("wait for Service deletion")
-        await (
-            type(self)
-            ._client()
-            .wait_deleted(
-                label=self._object_label(name=name, namespace=namespace),
-                timeout=timeout,
-                refresh=lambda remaining: self.refresh(kube, timeout=remaining),
-            )
         )

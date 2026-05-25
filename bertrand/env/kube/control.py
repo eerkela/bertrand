@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-import asyncio
 import os
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+
+from bertrand.env.git import Deadline
 
 CONTROL_PLANE_IMAGE_ENV = "BERTRAND_CONTROL_PLANE_IMAGE"
 
@@ -45,31 +46,32 @@ class MaintenanceClock:
         self,
         now: datetime,
         *,
-        loop_deadline: float,
+        deadline: Deadline,
         timeout: float,
-    ) -> float | None:
-        """Return a bounded event-loop deadline when maintenance is due.
+    ) -> Deadline | None:
+        """Return a bounded deadline when maintenance is due.
 
         Parameters
         ----------
         now : datetime
             Current controller timestamp.
-        loop_deadline : float
-            Absolute outer event-loop deadline.
+        deadline : Deadline
+            Outer controller deadline.
         timeout : float
             Maximum maintenance pass budget in seconds.
 
         Returns
         -------
-        float | None
-            Absolute event-loop deadline for this maintenance pass, or `None` when
-            maintenance is not due or no runtime budget remains.
+        Deadline | None
+            Deadline for this maintenance pass, or `None` when maintenance is not due
+            or no runtime budget remains.
         """
         if not self.due(now):
             return None
-        loop = asyncio.get_running_loop()
-        deadline = min(loop_deadline, loop.time() + timeout)
-        return deadline if deadline > loop.time() else None
+        pass_timeout = deadline.bounded(timeout)
+        if pass_timeout <= 0:
+            return None
+        return Deadline.from_timeout(pass_timeout, message="")
 
     def schedule_after(self, seconds: float) -> None:
         """Schedule maintenance after a relative delay.
